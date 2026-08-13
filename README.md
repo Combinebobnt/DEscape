@@ -246,6 +246,8 @@ whether UI graphics could enhance the viewer too, parked rather than wired in.
 
 ## License
 
+Copyright (C) 2026 Combinebobnt
+
 GPL-3.0-or-later: this program is free software, redistributable and
 modifiable under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or (at your
@@ -259,7 +261,13 @@ regardless.
 
 The committed game-derived data files (`descape/terrain_texture_map.json`,
 `tree_unit_ids.json`, `unit_render_data.json`) are factual id/name/filename
-correspondence tables, not game asset content. Nothing in this repository
+correspondence tables, not game asset content. The four committed
+`.aoe2scenario` files (`descape/templates/blank_120x120.aoe2scenario` and the
+three blanks under `tests/fixtures/`) are unit-stripped exports of the in-game
+editor's own "Blank" map style - default structural data containing no authored
+scenario content. They are kept as real game exports rather than generated
+files because `tests/test_scenario_new.py` uses them as byte oracles (see
+`tests/README.md`). Nothing in this repository
 grants any rights over Microsoft's Age of Empires II content; use of game
 assets from your own install is governed by Microsoft's Game Content Usage
 Rules.
@@ -280,3 +288,7 @@ Rules.
   SiegeEngineers organization — parses the game's own `.dat` file to keep
   `descape/terrain_texture_map.json` accurate (see "Real terrain colors"
   above).
+- [genie](https://github.com/fredreichbier/genie) by fredreichbier — its
+  documentation of the classic SLP sprite format is the basis for
+  `descape/slp_decoder.py`'s reimplementation (no code reused; see that
+  module's docstring).

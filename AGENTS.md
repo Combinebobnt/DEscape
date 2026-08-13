@@ -13,6 +13,14 @@ commands, and architecture.
   tree/doodad graphic-variant index (integer values well outside `[0, 2π)`, e.g.
   7..53). Any future write path must pass it through verbatim, never normalize it.
 
+## Changelog
+
+If a change is something a user or builder of DEscape would notice
+(behavior, rendering, the write path, a new tool), give it a `CHANGELOG.md`
+entry. Scaffolding and no-op refactors do not get one. `CHANGELOG.md`
+explains its own scope, versioning scheme (`MAJOR.MINOR`, no patch number)
+and conventions at the top - read it there rather than here.
+
 ## Private maintainer repo
 
 A `maintainer/` directory may exist alongside this repo on disk, gitignored
