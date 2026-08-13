@@ -1,0 +1,14 @@
+# Runtime dependencies for descape/ and the tools/ scripts users normally run.
+#
+# AoE2ScenarioParser is pinned, not just listed -- descape/scenario_io.py reaches
+# into several of its *private* methods (see README.md), so an unpinned install
+# could silently pick up a version where those methods changed or were removed.
+# Confirmed this exact version's PyPI release corresponds to git tag v0.8.3
+# (commit b763e2e37006bedab50c7d349b3ce24b9c2497f6) -- see README.md if you want
+# that source available locally to read/debug against instead of a plain install.
+AoE2ScenarioParser==0.8.3
+
+numpy
+Pillow
+PyQt5
+PyYAML

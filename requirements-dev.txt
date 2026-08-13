@@ -1,0 +1,24 @@
+# Dependencies for maintaining this repo, NOT needed to run the viewer.
+#
+# pytest runs the regression suite in tests/ (.venv/bin/python3 -m pytest --
+# see tests/README.md for tiers). Along with ruff below, these are the two
+# entries a contributor actually needs before doing any work in this repo.
+pytest
+
+# ruff backs tests/test_lint.py, part of the default (fast) pytest tier --
+# that test fails outright (not skips) if ruff isn't installed, so this is
+# not optional the way genieutils-py/cython below are. See ruff.toml for the
+# ruleset and tests/README.md for how the gate is wired in.
+ruff
+
+# genieutils-py is only used by tools/gen_terrain_texture_map.py, to regenerate
+# descape/terrain_texture_map.json if the game updates its terrain table. Not a
+# runtime dependency of anything a normal user runs.
+genieutils-py
+
+# Cython is only used to build native/iso_render/iso_kernel.pyx, the Phase 0
+# rendering-backend benchmark prototype for the isometric Z-height terrain
+# rendering plan (v2.6) -- reproduce via
+# tools/bench_iso_backend.py. Not a runtime dependency: the actual decision
+# was to build Phase 1 onward in pure numpy, not on top of this extension.
+cython

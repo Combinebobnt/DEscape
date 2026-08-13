@@ -1,0 +1,31 @@
+# Not pyproject.toml -- this repo has no pyproject.toml on purpose (it isn't
+# pip-installable), see tests/README.md.
+#
+# select is pinned explicitly to the classic minimal ruff set (E4/E7/E9/F)
+# rather than left at this ruff version's real installed defaults, which
+# turned out to be much broader (tryceratops, flake8-blind-except,
+# flake8-executable, pyupgrade, import sorting, a couple security-adjacent
+# rules) -- 98 findings on the first cold run here, only 2 of them F821, the
+# rule this gate actually exists for (62 of 64 files in this repo use
+# `from __future__ import annotations`, which makes an annotation-only
+# reference to a name a later edit removed invisible at runtime). Broadening
+# past this set is real, deliberately deferred work.
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# tools/*.py scripts add the repo root to sys.path before importing
+# descape/other tools modules, so the import can't be at the literal top of
+# the file. Idiom, not a defect -- see tests/README.md's own note on why
+# tools/ scripts aren't pip-installable-package modules.
+"tools/*.py" = ["E402"]
+
+# tools/verify_copy_paste.py and tools/verify_iso_viewer_pick.py each hold a
+# QApplication in a variable deliberately (own in-file comment: an
+# unassigned QApplication(...) crashes the first ViewerWindow(), since PyQt5
+# doesn't keep it alive via its own singleton registration alone) -- not
+# unused. Both files are mid-migration into tests/ and are kept
+# byte-for-byte untouched until their own per-script review lands, so this
+# is a config-level ignore, not a code fix.
+"tools/verify_copy_paste.py" = ["F841"]
+"tools/verify_iso_viewer_pick.py" = ["F841"]
