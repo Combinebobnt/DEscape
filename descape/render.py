@@ -6,7 +6,9 @@ PyQt5 viewer's canvas.
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
@@ -224,20 +226,33 @@ CONTACT_SHADE = 0.65
 def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     """float32 darkening factors aligned 1:1 with
     iso_geometry.shadow_quad_indices(tile_px, rise_px, side)'s own output
-    (same call, same cache key shape) -- factor = 1 at the contact row's
-    own far edge, CONTACT_SHADE at depth=0 (the row touching the caster's
-    diamond), linearly interpolated between. Normalized on rise_px, not an
-    absolute pixel falloff: that's what makes a delta=1 step a tight
-    contact band and a tall column a long soft gradient, rather than every
-    delta getting the same fixed-width band regardless of how tall the
-    drop actually is.
+    (same call, same cache key shape) -- CONTACT_SHADE at depth=0 (the row
+    touching the caster's diamond), fading to no darkening at the far edge
+    of that column's own exposed sliver, linearly interpolated between.
+
+    Normalized per-column on that column's OWN span, not on rise_px: the
+    band is a wedge tapering to zero at the caster's apex (see
+    shadow_quad_indices' docstring), so every column's gradient runs the
+    full CONTACT_SHADE->1 range over however many rows that particular
+    column actually has. A bigger delta therefore makes the band SHORTER,
+    not longer -- it hides more of the neighbor -- until at
+    rise_px >= 2*half_h - 2 there is nothing exposed left to shade at all.
+
+    depth / span, not depth / (span - 1): the latter divides by zero at
+    span == 1 (common at tile_px=8, rise_px=1), and depth/span also
+    preserves the "factor = 1 at the far edge" exclusive-endpoint
+    convention this function has always had.
 
     float32, not float64: _clipped_darken multiplies this against a uint8
     image and truncates back to uint8 either way, and pinning the
     intermediate dtype is what keeps the full-canvas and scratch-canvas
     paint paths bit-identical."""
-    _dst_y, _dst_x, depth = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
-    return (1 - (1 - CONTACT_SHADE) * (1 - depth.astype(np.float32) / rise_px)).astype(np.float32)
+    _dst_y, _dst_x, depth, span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
+    # span.astype(np.float32) is mandatory, not redundant -- do NOT
+    # simplify it away: float32 / int64 promotes to float64, which breaks
+    # the bit-identity pinning this function's whole dtype note is about.
+    t = depth.astype(np.float32) / span.astype(np.float32)
+    return (1 - (1 - CONTACT_SHADE) * (1 - t)).astype(np.float32)
 
 
 def _clipped_darken(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, factors: np.ndarray) -> None:
@@ -247,17 +262,17 @@ def _clipped_darken(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, fac
     docstring for why clipping matters at all: a scratch-canvas call site
     composites a rect where most candidate tiles only partially overlap).
 
-    Unlike _clipped_paint, THIS function's full-canvas call site (offset
-    (0, 0), against render_terrain_iso_with_proj()'s full map canvas) CAN
-    legitimately drop pixels: shadow_quad_indices' dst_y goes negative by
-    design (a shadow reaches above its own tile's row 0), and
-    iso_geometry.tile_screen_bounds_swept's own widened headroom is a
-    documented, accepted worst-case bound (see canvas_size_and_origin's
-    "Canvas is not resized" note) -- the canvas itself is NOT grown to
-    guarantee every theoretical shadow position
-    stays in bounds, only wide/tall enough for every real example file
-    measured so far. Rely on this clip for that rare top-edge overflow,
-    same as the scratch-canvas case relies on it for partial-rect overlap.
+    The clip exists for the scratch-canvas `offset` call site only. It
+    used to be load-bearing at the full-canvas call site too, back when a
+    contact-shadow band was a constant rise_px-tall strip that could
+    overshoot its neighbor entirely -- that is no longer true: the band is
+    now a subset of the back neighbor's own diamond by construction (see
+    iso_geometry.shadow_quad_indices), and every real tile's diamond is in
+    bounds on the full canvas by construction too, so the full-canvas call
+    site no longer drops shadow pixels. Kept unconditional anyway, same as
+    _clipped_paint: the scratch-canvas case still needs it for partial-rect
+    overlap, and one shared implementation is what keeps the two paths from
+    drifting.
 
     Must stay MULTIPLICATIVE and bounded below by a non-zero factor (see
     CONTACT_SHADE): `0 * f == 0` is what keeps a still-unpainted background
@@ -307,11 +322,10 @@ def _clipped_paint(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, valu
     see tools/verify_iso_render.py's bounds/coverage checks) never actually
     drops a pixel HERE -- diamonds and skirts always land in bounds at the
     full-canvas call site; this exists for refresh_region_iso()'s scratch-
-    canvas call site. NOT true of every caller in this same pipeline any
-    more: _clipped_darken() below (the contact-shadow compositor) CAN drop
-    pixels even at the full-canvas call site, since a shadow's dst_y goes
-    negative by design -- see that function's own docstring for why that's
-    an accepted, documented tradeoff rather than a bug to fix here."""
+    canvas call site. Same for _clipped_darken() below (the contact-shadow
+    compositor): its band is confined to the back neighbor's own diamond,
+    so it too only ever drops pixels at the scratch-canvas call site -- see
+    that function's own docstring."""
     ay = base_y + dst_y
     ax = base_x + dst_x
     in_bounds = (ay >= 0) & (ay < img.shape[0]) & (ax >= 0) & (ax < img.shape[1])
@@ -415,7 +429,14 @@ def _render_tile_iso(
         if delta <= 0:
             continue  # this tile isn't higher than that back neighbor -- no shadow to cast
         rise_px = delta * proj.elev_step
-        s_dst_y, s_dst_x, _depth = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
+        s_dst_y, s_dst_x, _depth, _span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
+        if s_dst_y.size == 0:
+            # This tile fully hides that neighbor -- nothing exposed to
+            # shade. Skipping is not needed for correctness (the empty path
+            # is inert), but at elev_step_pct=200 EVERY band on the map is
+            # empty, and without this a 480x480 map pays ~460k pointless
+            # cache lookups per full render.
+            continue
         _clipped_darken(img, base_y, base_x, s_dst_y, s_dst_x, _shadow_factors(tile_px, rise_px, side))
 
 
@@ -772,6 +793,350 @@ def composite_rect_iso(
     return scratch
 
 
+# Phase 6 (Sloped): which corner_rise_px() rule is active. A named policy
+# constant, not a structural choice -- switching it never touches
+# sloped_quad_indices or anything downstream (see that function's own
+# docstring). "average" per the 2026-08-09 preliminary screenshot read;
+# docs/PLAN_V2_6.md's Track C6 is the place to revisit this once round-2
+# screenshots settle it for real.
+SLOPE_CORNER_RULE = "average"
+
+# Sloped has no skirts and no contact shadow to fall back on (adjacent
+# tiles share corner heights by construction -- see corner_rise_px's own
+# docstring -- so there is no vertical face left for either to draw): a
+# directional (Lambert-style) shade is the user's explicit replacement
+# depth cue (docs/PLAN_V2_6.md's Track C decisions), NOT the
+# direction-independent "slope magnitude only" CONTACT_SHADE's own comment
+# argues for elsewhere in this module -- that argument doesn't carry over
+# here because Sloped has no other depth cue left to fall back on, so this
+# is a deliberate, confined departure, not an oversight.
+#
+# Anchored at horizontal, not textbook absolute Lambert
+# (ambient + (1-ambient)*dot(n,L)): shade = 1 + STRENGTH*(dot(n,L) -
+# dot(up,L)), i.e. the darkening is relative to what a FLAT face would
+# already give under this same light, not to n.L in absolute terms.
+# Written the textbook way instead, a flat map would come out uniformly
+# darkened (or brightened) by dot(up,L) < 1, breaking
+# render_terrain_sloped's flat-map byte-identity oracle against
+# render_terrain_iso -- this form gives exactly shade=1.0 at n=up (a flat
+# tile's normal) for ANY light direction, since dot(n,L)-dot(up,L) == 0
+# there, while still being genuinely directional for anything tilted (a
+# face tilted toward the light brightens, away from it darkens -- unlike a
+# magnitude-only cue, which would shade a hill's two opposite faces
+# identically).
+SLOPE_LIGHT_DIR = tuple(
+    c / math.sqrt(0.35**2 + 0.35**2 + 0.87**2) for c in (-0.35, -0.35, 0.87)
+)  # mostly-overhead sun leaning toward -mapx/-mapy; a look-and-feel constant, not a measured one
+SLOPE_SHADE_STRENGTH = 0.35
+SLOPE_SHADE_MIN = 0.6
+SLOPE_SHADE_MAX = 1.25
+
+
+def _slope_shade(tile_px: int, nw: int, ne: int, sw: int, se: int, elev_step: int) -> np.ndarray:
+    """Per-pixel shading factor over one tile's sloped_quad_indices(tile_px,
+    ...) footprint, aligned 1:1 with that call's own output (same
+    tile_uv_fractions(tile_px) source, so same length/order) -- multiply
+    directly against sampled texture color, same "float32 factor, truncate
+    back to uint8" contract render.py's other shading (_shadow_factors)
+    already uses.
+
+    nw/ne/sw/se are the tile's 4 corner rises AFTER normalization against
+    their own minimum (same convention sloped_quad_indices itself takes) --
+    only their DIFFERENCES matter for a gradient, so the normalization is
+    harmless here, not just permitted.
+
+    The surface gradient is a closed-form derivative of the SAME bilinear
+    patch tile_uv_fractions()/sloped_quad_indices() rasterize -- see
+    tile_uv_fractions' docstring for the fx=1-fq, fy=fp identity this
+    expands from: height(fx, fy) = NW(1-fx)(1-fy) + NE*fx*(1-fy) +
+    SW*(1-fx)*fy + SE*fx*fy, so d(height)/d(fx) = (1-fy)*(NE-NW) +
+    fy*(SE-SW) and d(height)/d(fy) = (1-fx)*(SW-NW) + fx*(SE-NE);
+    substituting fx=1-fq, fy=fp gives the gx/gy lines below directly in
+    terms of the (fp, fq) this module already has in hand.
+
+    elev_step is the scale a gradient of exactly 1 elev_step-per-tile-width
+    (the steepest ramp this project's own +-1-elevation-neighbor invariant
+    ever produces, see iso_geometry.ELEV_STEP_DIVISOR's own comment) is
+    normalized against, giving that steepest-real-ramp case a 45-degree
+    tilt in the corresponding axis -- a natural reference already tied to
+    an existing project constant, not a new unrelated tuning knob."""
+    fp, fq = iso_geometry.tile_uv_fractions(tile_px)
+    gx = (1 - fp) * (ne - nw) + fp * (se - sw)
+    gy = fq * (sw - nw) + (1 - fq) * (se - ne)
+    nx = -gx / elev_step
+    ny = -gy / elev_step
+    nz = np.ones_like(nx)
+    norm = np.sqrt(nx * nx + ny * ny + nz * nz)
+    nx, ny, nz = nx / norm, ny / norm, nz / norm
+    lx, ly, lz = SLOPE_LIGHT_DIR
+    dot = nx * lx + ny * ly + nz * lz
+    shade = 1.0 + SLOPE_SHADE_STRENGTH * (dot - lz)
+    return np.clip(shade, SLOPE_SHADE_MIN, SLOPE_SHADE_MAX).astype(np.float32)
+
+
+def _render_tile_sloped(
+    img: np.ndarray,
+    tile,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray,
+    offset: tuple[int, int] = (0, 0),
+) -> None:
+    """Sloped mode's counterpart to _render_tile_iso -- same texture-crop
+    and offset/clip contract, but no skirt loop and no contact-shadow loop
+    (see SLOPE_CORNER_RULE's own comment for why neither has anything to
+    draw here), and a single sloped_quad_indices() paint instead of
+    diamond_indices' uniform one, shaded via _slope_shade() instead of
+    plain texture color.
+
+    corner_rise is corner_rise_px()'s (h+1, w+1) whole-map output --
+    precomputed once per render/patch (like _render_tile_iso's own
+    `elevations` parameter), not recomputed per tile.
+
+    Placed at elevation=0 (tile_screen_origin(tile.x, tile.y, 0, proj)),
+    NOT tile.elevation: corner_rise's own values already encode the full
+    absolute elevation-to-pixel scale directly (see corner_rise_px's
+    docstring), so adding a second elevation*elev_step term here would
+    double-count it. base_y is further shifted by -d_min, matching
+    sloped_quad_indices' own normalization contract (see that function's
+    docstring for why the caller, not that function, owns folding d_min
+    back in)."""
+    texture = asset_source.get_terrain_texture_array(tile.terrain_id)
+    if texture is not None:
+        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
+        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
+    else:
+        r, g, b = color_for_terrain_id(tile.terrain_id)
+        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
+
+    d_nw = int(corner_rise[tile.y, tile.x])
+    d_ne = int(corner_rise[tile.y, tile.x + 1])
+    d_sw = int(corner_rise[tile.y + 1, tile.x])
+    d_se = int(corner_rise[tile.y + 1, tile.x + 1])
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+
+    off_x, off_y = offset
+    base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, 0, proj)
+    base_x -= off_x
+    base_y -= off_y + d_min
+
+    dst_y, dst_x, src_y, src_x = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    top = top_block[src_y, src_x]
+    shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
+    shaded = np.clip(top.astype(np.float32) * shade[:, None], 0, 255).astype(np.uint8)
+    _clipped_paint(img, base_y, base_x, dst_y, dst_x, shaded)
+
+
+def _draw_unit_sloped(
+    img: np.ndarray,
+    unit,
+    color: tuple[int, int, int],
+    tile_w: int,
+    tile_h: int,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    elevation: int,
+    offset: tuple[int, int] = (0, 0),
+) -> None:
+    """Sloped's counterpart to _draw_unit_iso -- same per-footprint-tile
+    diamond-mark paint, but takes a precomputed SCALAR elevation LEVEL
+    (already derived from the unit's own tile's 4 corners by
+    _paint_tile_and_units_sloped, see that function) instead of a whole-map
+    elevations array to index. Sloped has no such array (corner_rise_px
+    replaces it) -- allocating a throwaway full-size one just to satisfy
+    _draw_unit_iso's/​_unit_iso_footprint's existing signature would cost
+    O(map_h * map_w) per UNIT, not per render, so this takes the scalar
+    directly and calls _unit_tile_bounds() (bounds only, no elevation
+    lookup) instead of _unit_iso_footprint()."""
+    bounds = _unit_tile_bounds(unit, tile_w, tile_h)
+    if bounds is None:
+        return
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
+    values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
+    off_x, off_y = offset
+    for ty in range(tile_y0, tile_y1):
+        for tx in range(tile_x0, tile_x1):
+            base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
+            _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values)
+
+
+def _paint_tile_and_units_sloped(
+    img: np.ndarray,
+    tile,
+    units_by_tile: dict,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray,
+    map_w: int,
+    map_h: int,
+    offset: tuple[int, int] = (0, 0),
+) -> None:
+    """Sloped's counterpart to _paint_tile_and_units_iso -- same
+    "terrain then this tile's own units, interleaved in depth_order" step
+    (see that function's own docstring for why interleaving is load-
+    bearing, not a style choice).
+
+    Units are drawn via _draw_unit_sloped() at a flat elevation LEVEL
+    averaged from the tile's own 4 corners -- a coarser placement than
+    Stepped's (which uses the tile's own real elevation exactly), since
+    Sloped has no single "this tile's elevation" pixel value once corners
+    can differ, but not yet the real per-unit sub-tile interpolation Track
+    C5 (docs/PLAN_V2_6.md) will replace this with. Accepted, temporary gap
+    until C5 lands: a building on sloped ground currently reads as sitting
+    on a small flat pad at roughly the right height, not conforming to the
+    slope."""
+    _render_tile_sloped(img, tile, tile_px, proj, corner_rise, offset=offset)
+    entries = units_by_tile.get((tile.x, tile.y), ())
+    if not entries:
+        return
+    avg_rise_px = 0.25 * (
+        int(corner_rise[tile.y, tile.x])
+        + int(corner_rise[tile.y, tile.x + 1])
+        + int(corner_rise[tile.y + 1, tile.x])
+        + int(corner_rise[tile.y + 1, tile.x + 1])
+    )
+    elevation = round(avg_rise_px / proj.elev_step)
+    for unit, color in entries:
+        _draw_unit_sloped(img, unit, color, map_w, map_h, tile_px, proj, elevation, offset=offset)
+
+
+def sloped_elevations_and_proj(
+    scenario: LoadedScenario,
+) -> tuple[np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
+    """(elevations, corner_rise, proj) only -- no tile_grid, no
+    compositing -- Sloped's counterpart to elevations_and_proj(), the cheap
+    half a chunk-cache-backed viewer init needs (Track C3) without first
+    paying for a full composite it's about to render lazily instead.
+
+    corner_headroom_steps=1 (see IsoProjection.corner_headroom_px's own
+    comment) -- Stepped/Flat's elevations_and_proj()/canvas_size_and_origin
+    calls leave this at its 0 default."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    tile_px = tile_pixels_for_map(w, h)
+    elevations = np.zeros((h, w), dtype=np.int64)
+    for tile in mm.terrain:
+        elevations[tile.y, tile.x] = tile.elevation
+    proj = iso_geometry.canvas_size_and_origin(
+        w,
+        h,
+        tile_px,
+        iso_geometry.MIN_ELEVATION,
+        iso_geometry.MAX_ELEVATION,
+        elev_step_pct=settings.get_elev_step_pct(),
+        corner_headroom_steps=1,
+    )
+    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=SLOPE_CORNER_RULE)
+    return elevations, corner_rise, proj
+
+
+def render_terrain_sloped_with_proj(
+    scenario: LoadedScenario, with_units: bool = True
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
+    """render_terrain_sloped()'s real body, additionally returning the
+    (h, w) elevations array, the (h+1, w+1) corner_rise array, and the
+    IsoProjection the render was actually computed from -- Sloped's
+    counterpart to render_terrain_iso_with_proj(), same reasons (Track C3's
+    viewer wiring needs the extra values for hit-testing/patching against
+    the exact snapshot that produced the pixels on screen).
+
+    Canvas allocation intentionally matches render_terrain_iso_with_proj()'s
+    OWN formula exactly (same skirt_headroom padding, even though Sloped
+    paints no skirts) rather than a tighter Sloped-specific bound: keeping
+    the two canvases the SAME shape for the same map is what makes a
+    flat-map render_terrain_sloped output comparable to render_terrain_iso's
+    at all -- see tests/test_sloped_render.py's byte-identity oracle."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    tile_px = tile_pixels_for_map(w, h)
+    tile_grid, elevations = _terrain_grid_and_elevations(scenario)
+    min_elev, max_elev = iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
+    proj = iso_geometry.canvas_size_and_origin(
+        w,
+        h,
+        tile_px,
+        min_elev,
+        max_elev,
+        elev_step_pct=settings.get_elev_step_pct(),
+        corner_headroom_steps=1,
+    )
+    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=SLOPE_CORNER_RULE)
+
+    skirt_headroom = (max_elev - min_elev) * proj.elev_step
+    img = np.zeros((proj.canvas_h + skirt_headroom, proj.canvas_w, 3), dtype=np.uint8)
+
+    units_by_tile = _units_by_tile(scenario) if with_units else {}
+    for x, y in iso_geometry.depth_order(w, h):
+        _paint_tile_and_units_sloped(img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h)
+    return img, elevations, corner_rise, proj
+
+
+def render_terrain_sloped(scenario: LoadedScenario, with_units: bool = True) -> np.ndarray:
+    """Sloped mode's top-level renderer -- the Phase 6 counterpart to
+    render_terrain_iso(). Thin wrapper around
+    render_terrain_sloped_with_proj() for callers that only need the
+    pixels (render_scenario(), tools/dump_scenario.py,
+    tools/gen_elevation_reference.py's own reference renders)."""
+    img, _elevations, _corner_rise, _proj = render_terrain_sloped_with_proj(scenario, with_units=with_units)
+    return img
+
+
+def composite_rect_sloped(
+    scenario: LoadedScenario,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    corner_rise: np.ndarray,
+    proj: iso_geometry.IsoProjection,
+    tile_px: int,
+    units_by_tile: dict,
+    building_bboxes: dict,
+    with_units: bool = True,
+) -> np.ndarray:
+    """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
+    contract (see that function's own docstring for the full argument: a
+    chunk's pixels can never depend on which OTHER rects happen to have
+    been requested, since both the patch path and the chunk cache composite
+    through this SAME function), same candidate enumeration via
+    iso_geometry.tiles_in_screen_rect() and the same building-bystander
+    merge, just painted via _paint_tile_and_units_sloped() instead of
+    _paint_tile_and_units_iso().
+
+    proj here must carry corner_headroom_steps=1 (see
+    sloped_elevations_and_proj()) -- tiles_in_screen_rect()'s own candidate
+    sweep uses proj.corner_headroom_px via tile_screen_bounds_swept(), so a
+    proj built without it could under-enumerate candidates near a chunk's
+    own edge."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+
+    candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
+
+    if with_units and building_bboxes:
+        seen = {(int(cx), int(cy)) for cx, cy in candidates}
+        bystanders = [
+            (px, py)
+            for (px, py), (ux0, uy0, ux1, uy1) in building_bboxes.items()
+            if (px, py) not in seen and ux0 < x1 and ux1 > x0 and uy0 < y1 and uy1 > y0
+        ]
+        if bystanders:
+            extra = np.array(bystanders, dtype=np.int64)
+            combined = np.concatenate([candidates, extra], axis=0)
+            xs, ys = combined[:, 0], combined[:, 1]
+            order = np.lexsort((xs, ys - xs))
+            candidates = combined[order]
+
+    scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+    for cx, cy in candidates:
+        tile = mm.get_tile(int(cx), int(cy))
+        _paint_tile_and_units_sloped(
+            scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h, offset=(x0, y0)
+        )
+    return scratch
+
+
 def _blit_clipped(dst: np.ndarray, block: np.ndarray, x: int, y: int) -> None:
     """Blits block into dst at offset (x, y) -- both pixel-space, dst's own
     origin -- clipping to whichever of block's four edges fall outside
@@ -978,22 +1343,114 @@ class _ChunkCacheBase:
 
     A subclass must, in its own __init__ (kept fully subclass-owned, not
     called from here, so each cache's own constructor signature/docstring
-    stays exactly as-is): set self.chunk_px, call self._refresh_source_caches()
-    once, then call self._init_max_chunks(max_chunks). It must also implement:
-      - canvas_dims() -> (width, height) in canvas pixels
-      - _composite_rect(x0, y0, x1, y1) -> (h, w, 3) uint8 array
+    stays exactly as-is): set self.chunk_px, call self._init_mip_levels(...)
+    (Phase B-D-a; the level table must exist before _init_max_chunks() can
+    read canvas_dims()), call self._refresh_source_caches() once, then call
+    self._init_max_chunks(chunk_px, max_chunks). It must also implement:
+      - canvas_dims(mip=0) -> (width, height) in LEVEL canvas pixels
+      - _composite_rect(mip, x0, y0, x1, y1) -> (h, w, 3) uint8 array
       - _refresh_source_caches() -> None
       - a `style` class attribute ("stepped" / "flat") -- checked at the
         MapView.set_source() boundary (Phase B-E) to catch a cache wired to
         the wrong terrain style at construction time, rather than only once
         an edit exposes the mismatch later.
 
-    mip is part of every cache key (Phase B-B); get_chunk()/render_rect()'s
-    own literal "chunk 0" callers and patch()/invalidate_region()'s
-    mip-independent chunk-index math are Phase B-D's to fix -- unchanged
-    here, this extraction is behavior-preserving."""
+    Coordinate-space convention (Phase B-D-a; PLAN_MIPS.md never states
+    this explicitly): render_rect()/get_chunk()/canvas_dims() all take
+    LEVEL pixels/indices -- a caller past this class (Phase B-D-c's paint())
+    is expected to already know which level it's asking for. patch()/
+    invalidate_region() instead take REFERENCE canvas pixels, because their
+    only real callers (ViewerWindow._apply_dirty, via dirty_screen_bbox_iso
+    and a locally-recomputed reference tile_px) have no notion of levels at
+    all -- Track B-D-a/b deliberately never touch viewer.py. _bbox_to_level()
+    is the one conversion point between the two spaces.
+
+    mip is part of every cache key (Phase B-B); Phase B-D-a makes get_chunk()/
+    render_rect() actually use it for the pixel math (previously always 0),
+    and patch()/invalidate_region() fan out across every RESIDENT level
+    (not every enumerated one -- see _init_mip_levels' docstring) instead of
+    hardcoding chunk 0."""
 
     style: str = ""
+
+    def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
+        """Enumerates the level set ONCE, at construction -- never lazily.
+        Level 0 must be present and must equal self.tile_px (D2: scene
+        space is pinned to the reference level, permanently).
+
+        Phase B-D-a passes a literal {0: self.tile_px} (no other levels
+        exist yet); Phase B-D-b replaces that call with a real per-level
+        set from iso_geometry.mip_projections_for()/mip_tile_px_candidates().
+        Enumerating eagerly (geometry only -- tile_px/proj are cheap) while
+        leaving PIXELS and per-level source state lazy is what phase b's
+        non-tautology byte-identity test depends on: the level set must
+        already be fixed before that test's ground-truth call gets its
+        tile_pixels_for_map() monkeypatched.
+
+        Level index L means tile_px = reference_tile_px * 2**L: POSITIVE L
+        is FINER (mip-up), NEGATIVE L is COARSER (mip-down) -- the only
+        reading consistent with mip_for_scale()'s
+        clamp(floor(log2(scale)), ...) rule, since zooming in raises scale
+        and must raise the selected level."""
+        assert tile_px_by_level.get(0) == self.tile_px, (
+            f"level 0 must be the reference tile_px ({self.tile_px}), got {tile_px_by_level.get(0)!r}"
+        )
+        self._mip_tile_px: dict[int, int] = dict(sorted(tile_px_by_level.items()))
+
+    def mip_levels(self) -> list[int]:
+        """Every enumerated level index, ascending. Always contains 0.
+        Length 1 is a normal case, not a degenerate one -- e.g. a reference
+        tile_px of 16 at elev_step_pct=10 has no exact neighbor at all
+        (measured, see iso_geometry.mip_projections_for's own docstring)."""
+        return list(self._mip_tile_px)
+
+    def mip_tile_px(self, mip: int = 0) -> int:
+        return self._mip_tile_px[mip]
+
+    def mip_scale(self, mip: int = 0) -> float:
+        """Scene-space scale factor for this level: reference_tile_px /
+        level_tile_px == 2**-mip. Both operands are always powers of two in
+        [MIP_MIN_TILE_PIXELS, MIP_MAX_TILE_PIXELS], so this division is
+        exactly representable in binary float -- mip_scale(0) == 1.0 is an
+        EXACT comparison, which is what Phase B-D-c's "keep the point
+        overload at S == 1.0" safety branch relies on."""
+        return self._mip_tile_px[0] / self._mip_tile_px[mip]
+
+    def mip_for_scale(self, scale: float) -> int:
+        """The finest level whose own scene-to-device magnification stays
+        >= 1 (never minify past what's actually resident): clamp(floor(
+        log2(scale)), min(mip_levels()), max(mip_levels())). scale <= 0 is
+        guarded by returning the coarsest available level rather than
+        raising -- a defensive floor for a degenerate transform, not a
+        case Phase B-D-c's real callers are expected to hit."""
+        levels = self.mip_levels()
+        if scale <= 0:
+            return levels[0]
+        raw = math.floor(math.log2(scale))
+        return max(levels[0], min(levels[-1], raw))
+
+    def _bbox_to_level(self, mip: int, bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """A REFERENCE-canvas-pixel bbox converted to level `mip` pixels.
+        All-integer and superset-safe in BOTH directions: floor the low
+        edge, ceil the high edge, so the level rect is never a strict
+        subset of the true footprint (a subset would leave stale pixels
+        behind). Exact because canvas dims scale by exactly
+        level_tile_px/reference_tile_px -- proven per level by
+        is_exact_mip (Phase B-D-b), asserted on canvas_dims() itself
+        (the value the blit actually trusts) at construction.
+
+        Identity whenever mip's tile_px equals the reference's -- true for
+        every mip in Phase B-D-a, since the level set is still {0}."""
+        t_ref, t_lvl = self._mip_tile_px[0], self._mip_tile_px[mip]
+        if t_lvl == t_ref:
+            return bbox
+        px0, py0, px1, py1 = bbox
+        return (
+            (px0 * t_lvl) // t_ref,
+            (py0 * t_lvl) // t_ref,
+            -((-px1 * t_lvl) // t_ref),
+            -((-py1 * t_lvl) // t_ref),
+        )
 
     def _init_max_chunks(self, chunk_px: int, max_chunks: int | None) -> None:
         """Whole-canvas-at-chunk_px default, not some smaller fixed
@@ -1003,55 +1460,91 @@ class _ChunkCacheBase:
         needs again) instead of ever reaching a warm, blit-only steady
         state -- the exact failure mode a chunk cache exists to avoid. See
         each subclass's own docstring for the measured memory cost of this
-        default."""
+        default.
+
+        Phase B-D-a: max_chunks explicitly passed keeps capping by COUNT
+        with no byte bound at all (preserves every existing caller that
+        passes one, e.g. tools/verify_iso_chunks.py's max_chunks=2/100000
+        eviction tests, with no test edits); max_chunks=None (the real
+        app's default) switches to a BYTE budget sized at exactly today's
+        admitted set (canvas_dims() area * 3), tracked incrementally in
+        self._cache_bytes rather than recomputed per eviction check. A
+        byte budget is not itself the mechanism that stops N resident mip
+        levels multiplying memory -- with chunk_px constant in LEVEL
+        pixels, a byte budget is approximately a count budget too; what
+        actually bounds total memory is the single shared global LRU
+        below, unchanged, evicting across every level's chunks under one
+        shared bound. The byte form matters for exactness on the ragged
+        last chunk at each level, and because "N levels redistribute
+        memory, they don't multiply it" is a claim about bytes."""
         self.chunk_px = chunk_px
         self._cache: OrderedDict[tuple[int, int, int], np.ndarray] = OrderedDict()
+        self._cache_bytes = 0
         if max_chunks is None:
             canvas_w, canvas_h = self.canvas_dims()
-            max_chunks = ((canvas_w + chunk_px - 1) // chunk_px) * ((canvas_h + chunk_px - 1) // chunk_px)
-        self.max_chunks = max_chunks
+            self.max_chunks: int | None = None
+            self.max_bytes: int | None = canvas_w * canvas_h * 3
+        else:
+            self.max_chunks = max_chunks
+            self.max_bytes = None
 
-    def canvas_dims(self) -> tuple[int, int]:
+    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
         raise NotImplementedError
 
-    def _composite_rect(self, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
         raise NotImplementedError
 
     def _refresh_source_caches(self) -> None:
         raise NotImplementedError
 
+    def _evict(self) -> None:
+        """Evicts least-recently-used chunks while EITHER configured bound
+        (see _init_max_chunks) is exceeded. A chunk is at most chunk_px**2
+        * 3 bytes and is clipped to canvas bounds at the high edge, so a
+        just-inserted chunk can never itself exceed max_bytes on a
+        default-constructed cache -- this can't evict down to empty."""
+        while self._cache and (
+            (self.max_chunks is not None and len(self._cache) > self.max_chunks)
+            or (self.max_bytes is not None and self._cache_bytes > self.max_bytes)
+        ):
+            _key, victim = self._cache.popitem(last=False)
+            self._cache_bytes -= victim.nbytes
+
     def get_chunk(self, mip: int, cx: int, cy: int) -> np.ndarray:
         """Returns chunk (mip, cx, cy)'s composited pixels, from cache if
         present (moved to most-recently-used), else composited fresh via
-        self._composite_rect() and inserted, evicting the least-recently-used
-        entry past max_chunks. Clipped to canvas bounds at the high edge --
-        a chunk straddling the canvas edge is smaller than chunk_px x
-        chunk_px, same "ragged last chunk" shape any tile-based grid has."""
+        self._composite_rect() and inserted, evicting past either bound
+        (see _evict). Clipped to canvas bounds at the high edge -- a chunk
+        straddling the canvas edge is smaller than chunk_px x chunk_px,
+        same "ragged last chunk" shape any tile-based grid has. cx/cy are
+        LEVEL chunk-grid indices, sized against that level's own
+        canvas_dims(mip)."""
         key = (mip, cx, cy)
         cached = self._cache.get(key)
         if cached is not None:
             self._cache.move_to_end(key)
             return cached
 
-        canvas_w, canvas_h = self.canvas_dims()
+        canvas_w, canvas_h = self.canvas_dims(mip)
         x0, y0 = cx * self.chunk_px, cy * self.chunk_px
         x1, y1 = min(x0 + self.chunk_px, canvas_w), min(y0 + self.chunk_px, canvas_h)
-        chunk = self._composite_rect(x0, y0, x1, y1)
+        chunk = self._composite_rect(mip, x0, y0, x1, y1)
         self._cache[key] = chunk
+        self._cache_bytes += chunk.nbytes
         self._cache.move_to_end(key)
-        while len(self._cache) > self.max_chunks:
-            self._cache.popitem(last=False)
+        self._evict()
         return chunk
 
-    def render_rect(self, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        """Assembles pixels for [x0, x1) x [y0, y1) (clipped to canvas
-        bounds) from chunks -- fetching/compositing each via get_chunk() as
-        needed. The stitched result must be byte-identical to the
-        corresponding crop of an independent full render regardless of
-        chunk request order or what was already cached -- see
-        tools/verify_iso_chunks.py (Stepped) / tests/test_flat_chunks.py
-        (Flat)."""
-        canvas_w, canvas_h = self.canvas_dims()
+    def render_rect(self, x0: int, y0: int, x1: int, y1: int, mip: int = 0) -> np.ndarray:
+        """Assembles pixels for [x0, x1) x [y0, y1) -- LEVEL `mip` pixels,
+        clipped to that level's own canvas bounds -- from chunks, fetching/
+        compositing each via get_chunk() as needed. The stitched result
+        must be byte-identical to the corresponding crop of an independent
+        full render at that level regardless of chunk request order or
+        what was already cached -- see tools/verify_iso_chunks.py (Stepped)
+        / tests/test_flat_chunks.py (Flat) at mip=0, tests/
+        test_mip_geometry.py (Phase B-D-b) at mip != 0."""
+        canvas_w, canvas_h = self.canvas_dims(mip)
         x0, y0 = max(0, x0), max(0, y0)
         x1, y1 = min(canvas_w, x1), min(canvas_h, y1)
         if x1 <= x0 or y1 <= y0:
@@ -1062,7 +1555,7 @@ class _ChunkCacheBase:
         cx1, cy1 = (x1 - 1) // self.chunk_px, (y1 - 1) // self.chunk_px
         for cy in range(cy0, cy1 + 1):
             for cx in range(cx0, cx1 + 1):
-                chunk = self.get_chunk(0, cx, cy)
+                chunk = self.get_chunk(mip, cx, cy)
                 chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
                 ox0, oy0 = max(x0, chunk_x0), max(y0, chunk_y0)
                 ox1, oy1 = min(x1, chunk_x0 + chunk.shape[1]), min(y1, chunk_y0 + chunk.shape[0])
@@ -1074,15 +1567,22 @@ class _ChunkCacheBase:
         return out
 
     def patch(self, bbox: tuple[int, int, int, int]) -> None:
-        """"Patch, don't drop": for
-        every chunk CURRENTLY cached that bbox overlaps, recomposites just
-        the intersected sub-rect via self._composite_rect() and writes it
-        into the existing chunk array in place -- the cached chunk stays
-        valid immediately, without paying a full chunk recomposite (or
-        leaving a stale one on screen until the next get_chunk() eviction).
-        Chunks NOT currently cached need no action: get_chunk() always
-        composites fresh against the current state, so there's nothing
-        stale to fix for those.
+        """"Patch, don't drop": for every chunk CURRENTLY cached, at every
+        RESIDENT mip level, that bbox (REFERENCE canvas pixels) overlaps
+        once converted to that level, recomposites just the intersected
+        sub-rect via self._composite_rect() and writes it into the
+        existing chunk array in place -- the cached chunk stays valid
+        immediately, without paying a full chunk recomposite (or leaving a
+        stale one on screen until the next get_chunk() eviction). Chunks
+        NOT currently cached need no action: get_chunk() always composites
+        fresh against the current state, so there's nothing stale to fix
+        for those.
+
+        Iterates RESIDENT levels ({key[0] for key in self._cache}), not
+        every ENUMERATED level (mip_levels()) -- a level holding zero
+        cached chunks is never entered, which is what keeps a single edit's
+        cost from scaling with the total level count rather than with how
+        many levels are actually warm.
 
         Looks up the overlapping chunk-grid range directly (same index math
         as invalidate_region()) rather than scanning every cached entry --
@@ -1099,25 +1599,25 @@ class _ChunkCacheBase:
         px0, py0, px1, py1 = bbox
         if px1 <= px0 or py1 <= py0:
             return
-        cx0, cy0 = px0 // self.chunk_px, py0 // self.chunk_px
-        cx1, cy1 = (px1 - 1) // self.chunk_px, (py1 - 1) // self.chunk_px
-        for cy in range(cy0, cy1 + 1):
-            for cx in range(cx0, cx1 + 1):
-                # Mip hardcoded to 0: nothing writes a mip != 0 key today, so
-                # this is behavior-preserving for now. Whoever adds mip levels
-                # (Track B-D) must patch every cached mip whose footprint
-                # overlaps bbox here, not just mip 0.
-                chunk = self._cache.get((0, cx, cy))
-                if chunk is None:
-                    continue
-                chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
-                chunk_x1, chunk_y1 = chunk_x0 + chunk.shape[1], chunk_y0 + chunk.shape[0]
-                ix0, iy0 = max(px0, chunk_x0), max(py0, chunk_y0)
-                ix1, iy1 = min(px1, chunk_x1), min(py1, chunk_y1)
-                if ix1 <= ix0 or iy1 <= iy0:
-                    continue
-                patched = self._composite_rect(ix0, iy0, ix1, iy1)
-                chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
+        for mip in sorted({key[0] for key in self._cache}):
+            lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
+            if lx1 <= lx0 or ly1 <= ly0:
+                continue
+            cx0, cy0 = lx0 // self.chunk_px, ly0 // self.chunk_px
+            cx1, cy1 = (lx1 - 1) // self.chunk_px, (ly1 - 1) // self.chunk_px
+            for cy in range(cy0, cy1 + 1):
+                for cx in range(cx0, cx1 + 1):
+                    chunk = self._cache.get((mip, cx, cy))
+                    if chunk is None:
+                        continue
+                    chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
+                    chunk_x1, chunk_y1 = chunk_x0 + chunk.shape[1], chunk_y0 + chunk.shape[0]
+                    ix0, iy0 = max(lx0, chunk_x0), max(ly0, chunk_y0)
+                    ix1, iy1 = min(lx1, chunk_x1), min(ly1, chunk_y1)
+                    if ix1 <= ix0 or iy1 <= iy0:
+                        continue
+                    patched = self._composite_rect(mip, ix0, iy0, ix1, iy1)
+                    chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
 
     def patch_rects(self, rects) -> None:
         """patch() for each rect in rects -- Phase B-E's Flat edits patch
@@ -1128,7 +1628,8 @@ class _ChunkCacheBase:
             self.patch(rect)
 
     def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:
-        """Evicts every cached chunk whose grid cell intersects bbox --
+        """Evicts every cached chunk, at every RESIDENT mip level, whose
+        grid cell (once bbox is converted to that level) intersects it --
         forces a full recomposite from get_chunk() next time that chunk is
         requested, rather than trusting whatever's cached. Distinct from
         patch(): patch() keeps a cached chunk valid immediately at the cost
@@ -1137,14 +1638,54 @@ class _ChunkCacheBase:
         elsewhere can't be masked by patch() quietly papering over it;
         tools/verify_iso_chunks.py's "invalidate_region round-trips" check
         calls this directly, forces a real recomposite via get_chunk(), and
-        compares against a fresh full render."""
+        compares against a fresh full render.
+
+        Per-level conversion fixes a real latent bug the old mip-agnostic
+        chunk-index match had: a finer level's canvas is LARGER, so its
+        chunk grid extends further -- a reference-derived index range used
+        unconverted would under-evict a finer level's chunks near the
+        canvas high edge, leaving stale pixels there. Coarser levels were
+        merely over-evicted (harmless); this fixes both directions the same
+        way, by computing each resident level's own true chunk-index
+        range instead of reusing the reference's."""
         px0, py0, px1, py1 = bbox
-        cx0, cy0 = px0 // self.chunk_px, py0 // self.chunk_px
-        cx1, cy1 = (px1 - 1) // self.chunk_px, (py1 - 1) // self.chunk_px
+        ranges: dict[int, tuple[int, int, int, int]] = {}
+        for mip in {key[0] for key in self._cache}:
+            lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
+            if lx1 <= lx0 or ly1 <= ly0:
+                continue
+            ranges[mip] = (
+                lx0 // self.chunk_px,
+                ly0 // self.chunk_px,
+                (lx1 - 1) // self.chunk_px,
+                (ly1 - 1) // self.chunk_px,
+            )
         for key in list(self._cache):
-            _mip, cx, cy = key
+            mip, cx, cy = key
+            rng = ranges.get(mip)
+            if rng is None:
+                continue
+            cx0, cy0, cx1, cy1 = rng
             if cx0 <= cx <= cx1 and cy0 <= cy <= cy1:
+                self._cache_bytes -= self._cache[key].nbytes
                 del self._cache[key]
+
+
+@dataclass
+class _IsoLevel:
+    """One mip level's own state (Phase B-D). tile_px/proj are enumerated
+    at construction (see _ChunkCacheBase._init_mip_levels) and are pure
+    geometry -- cheap, and IsoChunkCache.canvas_dims() reads .proj
+    DIRECTLY, never through _level(), so sizing the cache can never trigger
+    a bbox build. building_bboxes is the expensive, PROJECTION-DEPENDENT
+    part (see _building_bboxes_iso/_unit_screen_bbox_iso): built lazily on
+    first composite at this level, and rebuilt lazily whenever `gen` falls
+    behind the cache's own _source_gen -- see IsoChunkCache._level()."""
+
+    tile_px: int
+    proj: iso_geometry.IsoProjection
+    building_bboxes: dict | None = None
+    gen: int = -1
 
 
 class IsoChunkCache(_ChunkCacheBase):
@@ -1152,8 +1693,15 @@ class IsoChunkCache(_ChunkCacheBase):
     (mip, chunk_x, chunk_y) -- Phase B-B of Track B.
     chunk_x/chunk_y are chunk-GRID indices: canvas pixel
     (chunk_x*chunk_px, chunk_y*chunk_px) is that chunk's own origin. mip is
-    always 0 today (Phase B-D adds real mip levels); the key already
-    carries it so B-D doesn't need a cache-key migration later.
+    real as of Phase B-D-a (previously always 0); Phase B-D-b (this
+    version) enumerates the REAL per-level projection set via
+    iso_geometry.mip_projections_for(), keyed off settings.get_elev_step_pct()
+    -- the same function every real proj-construction site in this module
+    already calls, so the cache reading it too reproduces exactly what
+    built `proj`. Neither B-D-a nor B-D-b changes a single rendered pixel
+    reachable from the running app: nothing outside this class and its
+    tests ever asks for mip != 0 until Phase B-D-c wires MapCanvasItem.
+    paint() to a real LOD signal.
 
     Each chunk is composited independently via composite_rect_iso() -- the
     SAME function render_terrain_iso_with_proj()'s full loop and
@@ -1203,32 +1751,91 @@ class IsoChunkCache(_ChunkCacheBase):
         self.proj = proj
         self.tile_px = tile_px
         self.with_units = with_units
+        # Phase B-D-b: the REAL per-level projection set. settings.
+        # get_elev_step_pct() is read here rather than threaded through as
+        # a parameter because it's exactly the same function every real
+        # proj-construction site in this module already calls to build
+        # `proj` itself -- so this reproduces what built `proj`, and
+        # mip_projections_for's own identity-level self-check (an assert)
+        # fails loudly if the two ever disagreed. Must happen before
+        # _init_max_chunks(), which reads canvas_dims() -> self._levels[0].proj.
+        mm = scenario.map_manager
+        projs = iso_geometry.mip_projections_for(mm.map_width, mm.map_height, proj, settings.get_elev_step_pct())
+        self._levels: dict[int, _IsoLevel] = {level: _IsoLevel(tile_px=p.tile_px, proj=p) for level, p in projs.items()}
+        self._init_mip_levels({level: lvl.tile_px for level, lvl in self._levels.items()})
+        # canvas_dims()'s own exactness assert: is_exact_mip() proves every
+        # IsoProjection field scales exactly, but canvas_dims() adds the
+        # skirt-headroom term (_canvas_pixel_dims) on top of proj.canvas_h --
+        # the value the blit actually trusts -- so assert it here too,
+        # against the real function rather than duplicating its formula
+        # into iso_geometry (a second place that formula could drift).
+        ref_w, ref_h = _canvas_pixel_dims(proj)
+        for lvl in self._levels.values():
+            lw, lh = _canvas_pixel_dims(lvl.proj)
+            assert lw * proj.tile_px == ref_w * lvl.tile_px and lh * proj.tile_px == ref_h * lvl.tile_px, (
+                f"level tile_px={lvl.tile_px}'s canvas_dims (skirt headroom included) isn't an "
+                f"exact mip of the reference's -- {(lw, lh)} vs reference {(ref_w, ref_h)}"
+            )
+        self._source_gen = 0
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
     def _refresh_source_caches(self) -> None:
-        """Recomputes units_by_tile/building_bboxes against the CURRENT
-        self.elevations -- must run whenever elevations could have changed
-        underneath this cache (construction, and every patch()), since a
-        building's own screen bbox depends on its center tile's elevation
-        (_unit_screen_bbox_iso). Cheap relative to a full chunk recomposite,
-        but still real work at ~11k units on this project's bigger real
-        files -- runs once per edit here, never once per chunk, which is
-        the whole reason composite_rect_iso() takes these as precomputed
-        arguments instead of computing them itself."""
-        mm = self.scenario.map_manager
-        w, h = mm.map_width, mm.map_height
+        """Rebuilds the SHARED, tile-space units_by_tile and bumps the
+        source generation counter -- must run whenever elevations could
+        have changed underneath this cache (construction, and every
+        patch()). Deliberately does NOT rebuild any level's
+        building_bboxes here: those are PROJECTION-dependent (a building's
+        screen bbox depends on its center tile's elevation via
+        _unit_screen_bbox_iso), so under mips they are per-level, and
+        rebuilding every ENUMERATED level here would make a single edit
+        pay ~15-20ms x N levels on an 11k-unit map -- for levels that may
+        hold no cached chunks at all. Each level's bboxes are instead
+        rebuilt lazily, in _level(), the first time that level is actually
+        composited after this bump -- see _level()'s own docstring."""
         self.units_by_tile = _units_by_tile(self.scenario) if self.with_units else {}
-        self.building_bboxes = (
-            _building_bboxes_iso(self.units_by_tile, w, h, self.proj, self.elevations) if self.with_units else {}
-        )
+        self._source_gen += 1
 
-    def canvas_dims(self) -> tuple[int, int]:
-        """(width, height) in canvas pixels, including skirt headroom --
-        see _canvas_pixel_dims()."""
-        return _canvas_pixel_dims(self.proj)
+    def _level(self, mip: int) -> _IsoLevel:
+        """The mip level's own state, rebuilding its building_bboxes if
+        stale (gen != self._source_gen). Called only from _composite_rect,
+        so a level is never rebuilt just because it's resident -- only
+        when actually composited. Combined with patch()'s "iterate resident
+        levels only" (_ChunkCacheBase.patch), an edit at a fixed zoom (one
+        level resident) pays exactly one _building_bboxes_iso rebuild,
+        identical to pre-mip behavior; immediately after a mip switch (two
+        levels resident), the first edit pays two -- units_by_tile itself
+        is still built once per edit regardless of level count, so the
+        real cost is bounded by resident level count, not enumerated level
+        count."""
+        lvl = self._levels[mip]
+        if lvl.gen != self._source_gen:
+            mm = self.scenario.map_manager
+            lvl.building_bboxes = (
+                _building_bboxes_iso(self.units_by_tile, mm.map_width, mm.map_height, lvl.proj, self.elevations)
+                if self.with_units
+                else {}
+            )
+            lvl.gen = self._source_gen
+        return lvl
 
-    def _composite_rect(self, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+    @property
+    def building_bboxes(self) -> dict:
+        """Level 0's building_bboxes, forcing a rebuild first if stale.
+        Debugging/introspection accessor only -- composite_rect_iso() is
+        always called with a specific level's own bboxes via _level(mip),
+        never through this property."""
+        return self._level(0).building_bboxes
+
+    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
+        """(width, height) in LEVEL `mip` canvas pixels, including skirt
+        headroom -- see _canvas_pixel_dims(). Indexes self._levels[mip]
+        DIRECTLY (never through _level()), so sizing the cache can never
+        trigger a building_bboxes build."""
+        return _canvas_pixel_dims(self._levels[mip].proj)
+
+    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+        lvl = self._level(mip)
         return composite_rect_iso(
             self.scenario,
             x0,
@@ -1236,10 +1843,10 @@ class IsoChunkCache(_ChunkCacheBase):
             x1,
             y1,
             self.elevations,
-            self.proj,
-            self.tile_px,
+            lvl.proj,
+            lvl.tile_px,
             self.units_by_tile,
-            self.building_bboxes,
+            lvl.building_bboxes,
             self.with_units,
         )
 
@@ -1288,6 +1895,19 @@ class FlatChunkCache(_ChunkCacheBase):
         self.scenario = scenario
         self.tile_px = tile_px
         self.with_units = with_units
+        # Phase B-D-b: the real candidate ladder, UNFILTERED -- Flat has no
+        # projection (canvas_dims() is a bare multiply, exact at every
+        # tile_px, no elev_step term to break exactness), so every power of
+        # two mip_tile_px_candidates() finds is a real exact level, unlike
+        # Stepped's mip_projections_for() which must filter through a real
+        # exactness check. Must precede _init_max_chunks(), which reads
+        # canvas_dims().
+        self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px))
+        # Per-level unit_draws (Phase B-D, PLAN_MIPS.md's own "Flat's real
+        # per-level work is unit_draws"). Level 0's draws live in
+        # self.unit_draws (unchanged attribute, still read directly by
+        # tests/test_flat_chunks.py); other levels are built lazily here.
+        self._level_draws: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -1304,18 +1924,158 @@ class FlatChunkCache(_ChunkCacheBase):
         style refresh -- for a future unit-editing feature (v3.5) whose
         edits _refresh_source_caches()'s no-op would otherwise miss. Not
         called anywhere today; exists so that no-op doesn't become a trap
-        once unit edits are real."""
+        once unit edits are real. Also drops every other level's cached
+        draws, same reasoning."""
         if hasattr(self, "unit_draws"):
             del self.unit_draws
+        self._level_draws.clear()
         self._refresh_source_caches()
 
-    def canvas_dims(self) -> tuple[int, int]:
-        mm = self.scenario.map_manager
-        return mm.map_width * self.tile_px, mm.map_height * self.tile_px
+    def _level_unit_draws(self, mip: int) -> tuple[np.ndarray, np.ndarray] | None:
+        """Per-level _flat_unit_draws() -- Flat's counterpart to Stepped's
+        per-level building_bboxes. No generation counter needed here,
+        unlike IsoChunkCache._level(): unit_draws depends only on
+        unit.x/unit.y, unit_const, owning player index and map dimensions,
+        none of which any terrain/elevation edit touches -- the same
+        property that makes _refresh_source_caches() a no-op after
+        construction. invalidate_units() is what actually goes stale (a
+        future unit-editing feature), and it already clears this dict."""
+        if not self.with_units:
+            return None
+        if mip == 0:
+            return self.unit_draws
+        draws = self._level_draws.get(mip)
+        if draws is None:
+            draws = _flat_unit_draws(self.scenario, self._mip_tile_px[mip])
+            self._level_draws[mip] = draws
+        return draws
 
-    def _composite_rect(self, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
+        mm = self.scenario.map_manager
+        tile_px = self._mip_tile_px[mip]
+        return mm.map_width * tile_px, mm.map_height * tile_px
+
+    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
         return composite_rect_flat(
-            self.scenario, x0, y0, x1, y1, self.tile_px, unit_draws=self.unit_draws, with_units=self.with_units
+            self.scenario,
+            x0,
+            y0,
+            x1,
+            y1,
+            self._mip_tile_px[mip],
+            unit_draws=self._level_unit_draws(mip),
+            with_units=self.with_units,
+        )
+
+
+class SlopedChunkCache(_ChunkCacheBase):
+    """Qt-free LRU cache of composited Sloped-mode canvas chunks -- Phase 6
+    (docs/PLAN_V2_6.md)'s Track C3 counterpart to IsoChunkCache/
+    FlatChunkCache. Same grid/LRU mechanics (_ChunkCacheBase), composited
+    via composite_rect_sloped() instead of composite_rect_iso()/
+    composite_rect_flat() -- a chunk's pixels never depend on which OTHER
+    chunks happen to be cached or in what order they were requested, the
+    same correctness bar tools/verify_iso_chunks.py/tests/
+    test_flat_chunks.py hold their own compositors to (see tests/
+    test_sloped_chunks.py for this class's own version of those checks).
+
+    Single mip level (_init_mip_levels({0: tile_px})) -- deliberately, not
+    an oversight: this is the same "level set is still {0}" intermediate
+    state IsoChunkCache/FlatChunkCache themselves were in before Track
+    B-D's real per-level ladder landed (see _ChunkCacheBase._init_mip_
+    levels' own docstring), and it lands during that same track's active
+    development. A genuine Sloped mip ladder is a legitimate follow-up --
+    this class's bilinear warp would need its own per-level corner_rise_px
+    array, mirroring IsoChunkCache's per-level building_bboxes -- kept out
+    of Track C's own approved scope rather than built inline here.
+
+    proj must carry corner_headroom_steps=1 (see sloped_elevations_and_
+    proj()) -- built by the caller and passed in, matching IsoChunkCache's
+    own convention of taking proj as a constructor parameter rather than
+    building it itself."""
+
+    style = "sloped"
+
+    def __init__(
+        self,
+        scenario: LoadedScenario,
+        elevations: np.ndarray,
+        corner_rise: np.ndarray,
+        proj: iso_geometry.IsoProjection,
+        tile_px: int,
+        chunk_px: int = DEFAULT_CHUNK_PX,
+        max_chunks: int | None = None,
+        with_units: bool = True,
+    ):
+        self.scenario = scenario
+        self.elevations = elevations
+        self.corner_rise = corner_rise
+        self.proj = proj
+        self.tile_px = tile_px
+        self.with_units = with_units
+        self._init_mip_levels({0: tile_px})
+        self._refresh_source_caches()
+        self._init_max_chunks(chunk_px, max_chunks)
+
+    def _refresh_source_caches(self) -> None:
+        """Rebuilds units_by_tile and building_bboxes -- unlike
+        IsoChunkCache, no generation-counter laziness: this cache has only
+        one (mip 0) level, so there is no "rebuild only when actually
+        composited at THIS level" saving to make (see IsoChunkCache.
+        _refresh_source_caches()'s own docstring for why that laziness
+        exists there and would buy nothing here).
+
+        building_bboxes reuses _building_bboxes_iso()/_unit_screen_bbox_
+        iso() UNCHANGED, not a Sloped-specific reimplementation: a
+        building's screen bbox only ever depends on proj + elevations,
+        never on corner_rise, and Sloped's own proj is geometrically
+        identical to Stepped's for the same map (see IsoProjection.
+        corner_headroom_px's own comment). The "bystander" widening this
+        feeds is already an accepted coarse superset per composite_rect_
+        iso()'s own docstring ("a union bbox flagging a tile as a
+        bystander slightly more often than the tightest possible test
+        would is a no-op extra paint, never a missed one"), so reusing
+        Stepped's exact function costs nothing in correctness."""
+        self.units_by_tile = _units_by_tile(self.scenario) if self.with_units else {}
+        mm = self.scenario.map_manager
+        self.building_bboxes = (
+            _building_bboxes_iso(self.units_by_tile, mm.map_width, mm.map_height, self.proj, self.elevations)
+            if self.with_units
+            else {}
+        )
+
+    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
+        """(width, height) in canvas pixels -- proj.canvas_w/canvas_h alone,
+        NOT render_terrain_sloped_with_proj()'s own padded allocation
+        (that function adds Stepped's skirt_headroom formula on top,
+        purely so a flat map's output is byte-identical to render_terrain_
+        iso's -- see its own docstring). Sloped paints no skirts (see
+        corner_rise_px's own docstring), so real content never needs that
+        extra padding; get_chunk()'s existing high-edge clip already
+        handles this cache's canvas being smaller than that function's.
+        A pixel that rounds just past this tight boundary at the very top
+        edge (corner_headroom_px's own float-rounding safety margin, see
+        IsoProjection's comment) is silently dropped by _clipped_paint,
+        the same accepted tradeoff that function's own docstring documents
+        for its scratch-canvas call site -- not new here, not a correctness
+        gap this class introduces."""
+        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
+        return self.proj.canvas_w, self.proj.canvas_h
+
+    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
+        return composite_rect_sloped(
+            self.scenario,
+            x0,
+            y0,
+            x1,
+            y1,
+            self.corner_rise,
+            self.proj,
+            self.tile_px,
+            self.units_by_tile,
+            self.building_bboxes,
+            self.with_units,
         )
 
 
@@ -1598,14 +2358,31 @@ def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, t
             _draw_unit(img, unit, color, tile_w, tile_h, tile_px)
 
 
-def render_scenario(scenario: LoadedScenario, with_units: bool = True, isometric: bool = False) -> np.ndarray:
+def render_scenario(
+    scenario: LoadedScenario, with_units: bool = True, isometric: bool = False, style: str | None = None
+) -> np.ndarray:
     """isometric=True renders Stepped mode (render_terrain_iso) instead of
-    Flat (render_terrain). with_units applies in both modes now (Phase 5):
-    Stepped draws each unit at its own tile's elevation, interleaved with
-    terrain in depth order via render_terrain_iso()'s own with_units
-    parameter -- see _paint_tile_and_units_iso()'s docstring for why that
-    has to be interleaved rather than a separate overlay pass, the way Flat
-    mode's overlay_units() draws over an already-finished terrain image."""
+    Flat (render_terrain). with_units applies in every mode now (Phase 5 for
+    Stepped, Phase 6 for Sloped): each draws units at their own tile's
+    elevation, interleaved with terrain in depth order via that mode's own
+    with_units parameter -- see _paint_tile_and_units_iso()'s/​
+    _paint_tile_and_units_sloped()'s docstrings for why that has to be
+    interleaved rather than a separate overlay pass, the way Flat mode's
+    overlay_units() draws over an already-finished terrain image.
+
+    style, if given ("flat"/"stepped"/"sloped"), selects the render and
+    overrides isometric -- Phase 6 (Sloped)'s own entry point, added
+    without changing isometric's existing meaning or any existing call
+    site: dump_scenario.py's --iso flag and save_png()'s own isometric
+    passthrough both keep working exactly as before when style is left at
+    its None default. isometric stays a valid way to select Stepped
+    (style="stepped" is equivalent, not required)."""
+    if style is not None:
+        if style not in ("flat", "stepped", "sloped"):
+            raise ValueError(f"style must be 'flat', 'stepped', or 'sloped', got {style!r}")
+        if style == "sloped":
+            return render_terrain_sloped(scenario, with_units=with_units)
+        isometric = style == "stepped"
     if isometric:
         return render_terrain_iso(scenario, with_units=with_units)
     img = render_terrain(scenario)
@@ -1620,10 +2397,11 @@ def save_png(
     with_units: bool = True,
     scale: int = 1,
     isometric: bool = False,
+    style: str | None = None,
 ) -> None:
     from PIL import Image
 
-    img = render_scenario(scenario, with_units=with_units, isometric=isometric)
+    img = render_scenario(scenario, with_units=with_units, isometric=isometric, style=style)
     pil_img = Image.fromarray(img, mode="RGB")
     if scale != 1:
         pil_img = pil_img.resize(

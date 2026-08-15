@@ -15,7 +15,18 @@ import math
 
 import numpy as np
 from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt5.QtGui import QBrush, QColor, QFont, QImage, QKeySequence, QPainter, QPalette, QPen, QPolygonF
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPolygonF,
+)
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -28,6 +39,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QFrame,
     QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsPolygonItem,
     QGraphicsScene,
     QGraphicsView,
@@ -52,16 +64,18 @@ from PyQt5.QtWidgets import (
 
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import asset_source, debug_log, iso_geometry, settings
-from descape.edit_history import EditHistory
-from descape.elevation_tools import set_tile_elevation
+from descape import asset_source, brush, debug_log, iso_geometry, settings
+from descape.edit_history import EditHistory, tile_state
+from descape.elevation_tools import set_tile_elevation, set_tiles_elevation
 from descape.fill_tools import flood_fill_terrain
 from descape.render import (
     SMALL_MAP_TILE_PIXELS,
     FlatChunkCache,
     IsoChunkCache,
+    SlopedChunkCache,
     dirty_screen_bbox_iso,
     elevations_and_proj,
+    sloped_elevations_and_proj,
     tile_pixels_for_map,
 )
 from descape.scenario_io import (
@@ -129,9 +143,37 @@ CLICK_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.click_only)
 # reads -- see ViewerWindow._update_tool_enabled's tool-param visibility
 # block.
 _TOOL_PARAM = {t.tool_id: t.param_widget for t in settings.TOOLS}
+# Tools whose stroke applies across a brush footprint (size + shape) rather
+# than always exactly one tile -- see ToolDef.supports_brush's own comment.
+BRUSH_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_brush)
 
 STATUS_OK_COLOR = "#4caf50"
 STATUS_ERROR_COLOR = "#e05252"
+
+
+def _max_axis_scale(transform) -> float:
+    """The largest singular value of `transform`'s 2x2 linear part -- i.e.
+    the greatest factor by which it stretches ANY direction, which is the
+    scale a mip level has to keep up with. Phase B-D-c's LOD metric.
+
+    Deliberately NOT QStyleOptionGraphicsItem.levelOfDetailFromTransform():
+    measured on Flat's own scale(1, 0.5) + rotate(-45) at 2x zoom, that
+    returns 1.5811 where the true max stretch is 2.0 -- floor(log2(...)) of
+    0 vs 1, i.e. a different level, one octave of blur along Flat's
+    stretched axis. Both numbers are reproduced as an oracle in
+    tests/test_mip_viewer.py.
+
+    Qt's m12/m21 naming can't silently transpose this: singular values are
+    invariant under transpose, so the metric is identical either way (also
+    pinned in that test file)."""
+    a, b = transform.m11(), transform.m21()
+    c, d = transform.m12(), transform.m22()
+    half_sum_sq = (a * a + b * b + c * c + d * d) / 2.0
+    det = a * d - b * c
+    # max(0, ...) only guards float error at the equal-singular-value
+    # (pure uniform scale/rotation) case, where the discriminant is 0.
+    disc = math.sqrt(max(0.0, half_sum_sq * half_sum_sq - det * det))
+    return math.sqrt(half_sum_sq + disc)
 
 
 class MapCanvasItem(QGraphicsItem):
@@ -176,6 +218,17 @@ class MapCanvasItem(QGraphicsItem):
     # unaffected either way, only clipped to canvas bounds like the
     # unpadded block always was.
     #
+    # Phase B-D-d note: 2px was justified above (and in PLAN_MIPS.md) partly
+    # by "residual magnification in [1, 2) means bilinear reaches at most 1
+    # source texel past a block edge", which mip-down's clamp at the coarsest
+    # level makes no longer universally true -- below that level the residual
+    # is a MINIFICATION. Measured across residuals 0.3/0.5/0.8/0.95 (see
+    # tests/test_mip_viewer.py's minifying-band A/B), tiled and single-draw
+    # renders still come back byte-identical, so 2px stands unchanged for the
+    # minifying band too: bilinear samples a 2x2 texel neighbourhood whatever
+    # the ratio, so its reach past a block edge is set by the filter, not by
+    # the scale factor.
+    #
     # PAINT_BLOCK_PX: at fit-to-view (the whole map exposed at once, e.g.
     # right after opening a file), a single render_rect() call over the
     # entire exposedRect would allocate one full-canvas-sized stitched
@@ -189,12 +242,53 @@ class MapCanvasItem(QGraphicsItem):
     PAINT_PAD_PX = 2
     PAINT_BLOCK_PX = 2048
 
-    def __init__(self, cache: "IsoChunkCache | FlatChunkCache"):
+    def __init__(self, cache: "IsoChunkCache | FlatChunkCache | SlopedChunkCache"):
         super().__init__()
         self._cache = cache
+        # Scene space is pinned to the REFERENCE level permanently (plan
+        # decision D2), so boundingRect never follows the selected mip --
+        # that's what leaves _pick_tile/_pos_on_map/the overscroll scene
+        # rect/set_isometric/wheelEvent untouched by this whole track.
         canvas_w, canvas_h = cache.canvas_dims()
         self._bounding_rect = QRectF(0, 0, canvas_w, canvas_h)
+        # Write-only, for tests/debugging to see what paint() selected.
+        # paint() never reads it back: selection stays a pure function of
+        # the painter transform (see _select_mip). It records the LAST
+        # paint only, so a reader treating it as "the level this render
+        # chose" has to have driven exactly one paint (Phase B-D-d's tests
+        # do, via a single scene.render() -- worth keeping in mind before
+        # reusing it after a repaint that Qt may have split).
+        self._last_mip = 0
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
+
+    def _select_mip(self, painter: QPainter) -> int:
+        """The mip level to paint from, as a pure function of `painter`'s
+        transform -- no hysteresis, no stored state. Same view state must
+        always yield the same pixels, or every scene-render byte-identity
+        check in this track becomes history-dependent.
+
+        Reads deviceTransform(), not worldTransform(): measured, at
+        QT_SCALE_FACTOR=2 the device transform's m11 is 6.0 where world's
+        is 3.0, so selecting from device gets HiDPI right for free. The
+        blit itself stays in logical coordinates, so DPR never enters the
+        destination-rect math.
+
+        The rule itself (clamp(floor(log2(scale)), coarsest, finest), plus
+        the degenerate scale <= 0 guard) lives on the cache as
+        mip_for_scale() and is deliberately not restated here -- Phase
+        B-D-c carried a local copy only because it clamped the floor at the
+        reference level; Phase B-D-d, which extends selection below the
+        reference, has nothing left to add to the cache's own rule.
+
+        floor(log2(scale)) is derived, not tuned: one level-L pixel covers
+        mip_scale(L) * scale device pixels, and requiring that be >= 1
+        (never minify) is exactly L <= log2(scale). Residual magnification
+        then lands in [1, 2) whenever the derived level is actually
+        available; below the coarsest enumerated level the clamp binds
+        instead and the residual becomes a minification, bounded only by
+        how far MapView's zoom-out floor lets the view go (see
+        _capture_zoom_baseline)."""
+        return self._cache.mip_for_scale(_max_axis_scale(painter.deviceTransform()))
 
     def boundingRect(self) -> QRectF:
         return self._bounding_rect
@@ -203,14 +297,25 @@ class MapCanvasItem(QGraphicsItem):
         rect = option.exposedRect.intersected(self._bounding_rect)
         if rect.isEmpty():
             return
+        # Everything below tiles and pads in LEVEL pixels, deriving each
+        # destination rect in scene units by multiplying back by `scale`.
+        # Doing it the other way (tiling in scene units) would round block
+        # edges independently per block, so adjacent blocks' destination
+        # rects could fail to abut -- `scale` is an exact power of two, so
+        # this way they always do.
+        mip = self._select_mip(painter)
+        self._last_mip = mip
+        scale = self._cache.mip_scale(mip)
         # Floor/ceil, not round -- the composited block must fully cover
         # exposedRect (a gap at the edge would leave a visible unpainted
         # sliver), matching iso_geometry's own "whole pixels only" integer
         # discipline throughout this project's rendering code.
-        x0, y0 = int(math.floor(rect.left())), int(math.floor(rect.top()))
-        x1, y1 = int(math.ceil(rect.right())), int(math.ceil(rect.bottom()))
-        canvas_w = int(self._bounding_rect.width())
-        canvas_h = int(self._bounding_rect.height())
+        x0, y0 = int(math.floor(rect.left() / scale)), int(math.floor(rect.top() / scale))
+        x1, y1 = int(math.ceil(rect.right() / scale)), int(math.ceil(rect.bottom() / scale))
+        canvas_w, canvas_h = self._cache.canvas_dims(mip)
+        x1, y1 = min(x1, canvas_w), min(y1, canvas_h)
+        if x1 <= x0 or y1 <= y0:
+            return
 
         # Tile [x0,x1)x[y0,y1) into PAINT_BLOCK_PX-aligned sub-blocks (grid
         # anchored at the canvas origin, not at x0/y0, so repeated partial
@@ -233,13 +338,26 @@ class MapCanvasItem(QGraphicsItem):
                 py0 = max(0, cy0 - self.PAINT_PAD_PX)
                 px1 = min(canvas_w, cx1 + self.PAINT_PAD_PX)
                 py1 = min(canvas_h, cy1 + self.PAINT_PAD_PX)
-                block = self._cache.render_rect(px0, py0, px1, py1)
+                block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
                 if block.size == 0:
                     continue
                 h, w = block.shape[:2]
                 contiguous = np.ascontiguousarray(block)
                 qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
-                painter.drawImage(px0, py0, qimg)
+                if scale == 1.0:
+                    # The point overload is a different QPainter code path
+                    # from the scaled one and is not guaranteed
+                    # bit-identical to it at unit scale. Keeping it for the
+                    # reference level is what makes this phase structurally
+                    # incapable of regressing any existing byte-identity
+                    # bar, rather than merely empirically not doing so.
+                    painter.drawImage(px0, py0, qimg)
+                else:
+                    painter.drawImage(
+                        QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
+                        qimg,
+                        QRectF(0, 0, w, h),
+                    )
 
     def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:
         """Schedules a Qt repaint for exactly the given canvas-pixel bbox --
@@ -283,6 +401,10 @@ class MapView(QGraphicsView):
     # cleanly without mipmapping); zoom-in past this just shows the same
     # finite per-tile texture resolution increasingly blurry/blocky, with no
     # more real detail to reveal.
+    # Phase B-D-d divides the zoom-out half of this by the coarsest available
+    # mip level's scale -- see _capture_zoom_baseline(). The zoom-in half is
+    # untouched: mip levels finer than the reference are a real-detail win,
+    # not a reason to allow more magnification past the finest one.
     MIN_ZOOM_FRACTION_OF_FIT = 0.5
     MAX_ZOOM_MULTIPLE_OF_FIT = 40.0
 
@@ -339,7 +461,32 @@ class MapView(QGraphicsView):
         # with no special-casing.
         self._on_click_edit = on_click_edit
         self._stroke_active = False
+        # Keyed on the CURSOR tile, not the painted tile -- a cheap early
+        # out only (skip re-entering _touch_tile/on_stroke_tile for a mouse
+        # move that hasn't left the current cursor tile), not a correctness
+        # guarantee. With a brush bigger than one tile, one painted tile
+        # falls under many distinct cursor tiles during a drag, so the
+        # tile-level dedupe that actually matters (e.g. Elevate's
+        # accumulating +/-1 must apply once per stroke, not once per cursor
+        # tile that overlapped it) is ViewerWindow._stroke_painted instead.
         self._stroke_touched: set[tuple[int, int]] = set()
+        # Brush footprint for the hover-preview highlight -- ViewerWindow
+        # keeps the authoritative (size, shape) and pushes it here via
+        # set_brush() whenever the toolbar spinbox/combo changes. Size 1 /
+        # square makes brush_tiles() degrade to exactly the old single-tile
+        # footprint, so a tool with supports_brush=False (or before any map
+        # is loaded) previews correctly with no special-casing.
+        self._brush_size = brush.BRUSH_SIZE_MIN
+        self._brush_shape = brush.BRUSH_SHAPE_SQUARE
+        # Set by set_source() alongside each render, cleared by clear_image()
+        # -- needed to clip the brush footprint the same way
+        # ViewerWindow.on_edit_stroke_tile clips a single tile today.
+        self._map_width: int | None = None
+        self._map_height: int | None = None
+        # Memoizes the last highlight built, so mouseMoveEvent's per-pixel
+        # calls into _update_highlight() don't rebuild an up-to-81-tile
+        # QPainterPath every time the mouse moves within the same tile.
+        self._highlight_key: tuple[int, int, int, str] | None = None
         self._map_rect: QRectF | None = None
         # Real value is set by set_source() alongside each render. This default
         # only matters before any scenario has loaded, when mouseMoveEvent
@@ -365,9 +512,18 @@ class MapView(QGraphicsView):
         self._iso_elevations: np.ndarray | None = None
         self._iso_proj: iso_geometry.IsoProjection | None = None
         self._tool = "pan"
-        self._highlight_outline_item: QGraphicsPolygonItem | None = None
-        self._highlight_fill_item: QGraphicsPolygonItem | None = None
+        # QGraphicsPathItem, not QGraphicsPolygonItem: the edit-mode
+        # highlight covers the whole brush footprint (up to
+        # brush.BRUSH_SIZE_MAX**2 tiles), built as one QPainterPath with one
+        # addPolygon() per tile -- see _update_highlight(). Still exactly
+        # two scene items regardless of footprint size, so _on_pulse_tick()
+        # (which only ever calls setOpacity() on _highlight_fill_item)
+        # needs no change.
+        self._highlight_outline_item: QGraphicsPathItem | None = None
+        self._highlight_fill_item: QGraphicsPathItem | None = None
         # Pan mode's own quieter highlight -- see PAN_HIGHLIGHT_PEN above.
+        # Always exactly one tile (Pan has no brush), so this stays a plain
+        # QGraphicsPolygonItem.
         self._pan_highlight_item: QGraphicsPolygonItem | None = None
         # Which button started the active stroke (Qt.LeftButton raises
         # elevation, Qt.RightButton lowers it -- see _touch_tile). None
@@ -397,6 +553,30 @@ class MapView(QGraphicsView):
         self.setTransformationAnchor(
             QGraphicsView.AnchorUnderMouse if centered_on_cursor else QGraphicsView.AnchorViewCenter
         )
+
+    def set_brush(self, size: int, shape: str) -> None:
+        """Updates the brush the hover-preview highlight (and, via
+        ViewerWindow reading these same values back at stroke time, the
+        actual edit) uses. Only the preview needs to react here -- the
+        active stroke's own footprint is computed fresh per cursor tile in
+        ViewerWindow.on_edit_stroke_tile, not cached."""
+        self._brush_size = size
+        self._brush_shape = shape
+        self._highlight_key = None  # force the next _update_highlight to rebuild
+
+    def refresh_highlight(self, tile: tuple[int, int] | None) -> None:
+        """Rebuilds the edit-mode hover highlight for `tile` right now,
+        using whatever brush state set_brush() last set -- for a caller
+        (ViewerWindow's brush size/shape widgets) that changes brush state
+        without the mouse having moved, so the preview doesn't sit stale
+        until the next mouseMoveEvent. tile is typically ViewerWindow's own
+        _hover_tile, last reported by on_hover(). A None tile, or a tool
+        with no highlight of this kind, just clears it -- same as if the
+        mouse had left the map."""
+        if tile is not None and self._tool in EDIT_TOOLS:
+            self._update_highlight(*tile)
+        else:
+            self._clear_highlight()
 
     def set_tool(self, tool: str) -> None:
         # Switching tools mid-drag (e.g. a keyboard shortcut fired while the
@@ -445,6 +625,10 @@ class MapView(QGraphicsView):
             return iso_geometry.screen_to_tile(
                 int(pos.x()), int(pos.y()), self._iso_elevations, self._iso_proj
             )
+        if self._terrain_style == "sloped":
+            # Hit-testing is Track C4's job, not this phase's -- no analytic
+            # inverse yet for a bilinear-blended ramp surface.
+            return None
         return int(pos.x()) // self._tile_pixels, int(pos.y()) // self._tile_pixels
 
     def _pos_on_map(self, pos: QPointF) -> bool:
@@ -452,9 +636,12 @@ class MapView(QGraphicsView):
         mode to "does this pixel unproject to a real tile" -- the map's
         silhouette there is a diamond inscribed in _map_rect (the full
         pixmap bounding box), with real background pixels in the corners
-        _map_rect.contains(pos) alone would wrongly call on-map."""
+        _map_rect.contains(pos) alone would wrongly call on-map. Sloped has
+        no hit-testing yet (see _pick_tile), so it's never on-map."""
         if self._terrain_style == "stepped":
             return self._pick_tile(pos) is not None
+        if self._terrain_style == "sloped":
+            return False
         return self._map_rect is not None and self._map_rect.contains(pos)
 
     def _touch_tile(self, tile_x: int, tile_y: int, modifiers) -> None:
@@ -586,6 +773,9 @@ class MapView(QGraphicsView):
                     QPointF(ox, oy + half_h),
                 ]
             )
+        if self._terrain_style == "sloped":
+            # No highlight/outline polygon until C4 builds real hit-testing.
+            return None
         tp = self._tile_pixels
         x0, y0 = tile_x * tp, tile_y * tp
         return QPolygonF(
@@ -593,19 +783,48 @@ class MapView(QGraphicsView):
         )
 
     def _update_highlight(self, tile_x: int, tile_y: int) -> None:
-        polygon = self._tile_polygon(tile_x, tile_y)
-        if polygon is None:
+        """The edit-mode hover highlight, covering the WHOLE brush footprint
+        centered on (tile_x, tile_y) -- not just that one tile -- so it
+        reads as exactly the tiles a stroke would paint from here, per-tile
+        borders included (one addPolygon() per tile into a single
+        QPainterPath, deliberately not .simplified(): a bounding outline
+        would misrepresent a circle brush's actual footprint). Memoized on
+        (tile_x, tile_y, size, shape) since this runs on every pixel of
+        mouseMoveEvent -- see _highlight_key's own comment in __init__."""
+        key = (tile_x, tile_y, self._brush_size, self._brush_shape)
+        if key == self._highlight_key:
+            return
+        self._highlight_key = key
+        if self._map_width is None or self._map_height is None:
+            tiles = [(tile_x, tile_y)]
+        else:
+            tiles = brush.brush_tiles(
+                tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height
+            )
+        path = QPainterPath()
+        for tx, ty in tiles:
+            polygon = self._tile_polygon(tx, ty)
+            if polygon is not None:
+                path.addPolygon(polygon)
+        if path.isEmpty():
+            self._clear_highlight()
             return
         if self._highlight_outline_item is None:
-            self._highlight_outline_item = self.scene().addPolygon(polygon, self.HIGHLIGHT_OUTLINE_PEN)
-            self._highlight_fill_item = self.scene().addPolygon(
-                polygon, QPen(Qt.NoPen), QBrush(self.HIGHLIGHT_FILL_COLOR)
+            self._highlight_outline_item = self.scene().addPath(path, self.HIGHLIGHT_OUTLINE_PEN)
+            self._highlight_fill_item = self.scene().addPath(
+                path, QPen(Qt.NoPen), QBrush(self.HIGHLIGHT_FILL_COLOR)
             )
         else:
-            self._highlight_outline_item.setPolygon(polygon)
-            self._highlight_fill_item.setPolygon(polygon)
+            self._highlight_outline_item.setPath(path)
+            self._highlight_fill_item.setPath(path)
 
     def _clear_highlight(self) -> None:
+        # Always resets _highlight_key too, not just on a state change that
+        # routes through set_brush()/set_source() -- leaveEvent()/set_tool()
+        # call this directly, and without the reset, moving back onto the
+        # exact same tile with the same brush afterwards would match the
+        # stale key and skip rebuilding the (now-removed) scene items.
+        self._highlight_key = None
         if self._highlight_outline_item is not None:
             self.scene().removeItem(self._highlight_outline_item)
             self.scene().removeItem(self._highlight_fill_item)
@@ -652,9 +871,12 @@ class MapView(QGraphicsView):
         self.scene().clear()
         self._canvas_item = None
         self._map_rect = None
+        self._map_width = None
+        self._map_height = None
         self._highlight_outline_item = None
         self._highlight_fill_item = None
         self._pan_highlight_item = None
+        self._highlight_key = None
         self._stroke_active = False
         self._stroke_touched = set()
 
@@ -681,7 +903,7 @@ class MapView(QGraphicsView):
         self,
         tile_pixels: int,
         terrain_style: str = "flat",
-        cache: "IsoChunkCache | FlatChunkCache | None" = None,
+        cache: "IsoChunkCache | FlatChunkCache | SlopedChunkCache | None" = None,
         elevations: np.ndarray | None = None,
         proj: "iso_geometry.IsoProjection | None" = None,
     ) -> None:
@@ -707,10 +929,16 @@ class MapView(QGraphicsView):
         self._terrain_style = terrain_style
         self._iso_elevations = elevations
         self._iso_proj = proj
+        # Tile-count dims (not cache.canvas_dims()'s pixel dims) for clipping
+        # the hover-preview brush footprint the same way
+        # ViewerWindow.on_edit_stroke_tile clips a stroke's own footprint.
+        mm = cache.scenario.map_manager
+        self._map_width, self._map_height = mm.map_width, mm.map_height
         self.scene().clear()
         self._highlight_outline_item = None
         self._highlight_fill_item = None
         self._pan_highlight_item = None
+        self._highlight_key = None
 
         self._canvas_item = MapCanvasItem(cache)
         self.scene().addItem(self._canvas_item)
@@ -723,10 +951,11 @@ class MapView(QGraphicsView):
 
         # Outline the actual map extent so it stays visually distinct from
         # the overscroll margin once you've panned past an edge. In Stepped
-        # mode the extent is a diamond (the grid's own silhouette, ignoring
-        # elevation -- see ground_outline_corners' docstring), not the full
-        # pixmap rect, which is mostly background there.
-        if terrain_style == "stepped" and proj is not None and elevations is not None:
+        # and Sloped modes the extent is a diamond (the grid's own
+        # silhouette, ignoring elevation -- see ground_outline_corners'
+        # docstring), not the full pixmap rect, which is mostly background
+        # there.
+        if terrain_style in ("stepped", "sloped") and proj is not None and elevations is not None:
             map_h, map_w = elevations.shape
             corners = iso_geometry.ground_outline_corners(map_w, map_h, proj)
             self.scene().addPolygon(
@@ -740,15 +969,16 @@ class MapView(QGraphicsView):
     def set_isometric(self, enabled: bool) -> None:
         self._isometric = enabled
         self.resetTransform()
-        # Stepped's projection is already baked into the pixels -- this
-        # whole method (below this point) is Flat mode's own QTransform
-        # trick (see the class comment above) and has nothing left to do
-        # for a Stepped image beyond the same plain "whole canvas fits the
-        # viewport" fit Flat's own "unchecked" case already uses.
-        # ViewerWindow greys out the View > Isometric View checkbox whenever
-        # Terrain Style != Flat, so this method only ever reaches the
-        # enabled=True rotate/squash path below while Flat is active.
-        if self._terrain_style == "stepped" or not enabled:
+        # Stepped's (and Sloped's) projection is already baked into the
+        # pixels -- this whole method (below this point) is Flat mode's own
+        # QTransform trick (see the class comment above) and has nothing
+        # left to do for a Stepped/Sloped image beyond the same plain
+        # "whole canvas fits the viewport" fit Flat's own "unchecked" case
+        # already uses. ViewerWindow greys out the View > Isometric View
+        # checkbox whenever Terrain Style != Flat, so this method only ever
+        # reaches the enabled=True rotate/squash path below while Flat is
+        # active.
+        if self._terrain_style in ("stepped", "sloped") or not enabled:
             if self._map_rect is not None:
                 self.fitInView(self._map_rect, Qt.KeepAspectRatio)
                 self._capture_zoom_baseline()
@@ -783,6 +1013,19 @@ class MapView(QGraphicsView):
         self.centerOn(self._map_rect.center())
         self._capture_zoom_baseline()
 
+    def _coarsest_mip_scale(self) -> float:
+        """How many scene units one pixel of the COARSEST enumerated mip
+        level covers -- i.e. how much coarser than the reference the level
+        set actually goes. Always >= 1.0, and exactly 1.0 both when no
+        canvas item exists yet and when the level set enumerates nothing
+        below the reference (a normal case, e.g. elev_step_pct=10, where it
+        makes _capture_zoom_baseline's floor identical to the pre-mip
+        one)."""
+        if self._canvas_item is None:
+            return 1.0
+        cache = self._canvas_item._cache
+        return cache.mip_scale(cache.mip_levels()[0])
+
     def _capture_zoom_baseline(self) -> None:
         # Real per-tile texture detail (see render.py) is high-frequency
         # enough that zooming out past a few times the "whole map fits in
@@ -800,8 +1043,35 @@ class MapView(QGraphicsView):
         # determinant() gives the transform's area scale factor independent
         # of rotation, so this stays valid even under the isometric
         # transform's rotation + anisotropic squash.
+        #
+        # Phase B-D-d: mipmapping now exists below the reference level, so
+        # the zoom-out floor gets divided by exactly how much coarser the
+        # ladder goes. The property that buys, stated so it can't drift into
+        # an overclaim: at the floor the residual minification is UNCHANGED
+        # from the pre-mip one (the floor scales by 1/S while the level
+        # painted there is S times coarser), and the reachable zoom-out range
+        # grows by exactly the mip depth. Both halves are one line of algebra
+        # and neither depends on window size. At a fixed scale the coarser
+        # level does alias S times less, but that is not what this floor is
+        # claiming -- see PLAN_MIPS.md's correction entry for the version of
+        # this comparison that got the direction backwards.
+        #
+        # Fit-RELATIVE rather than an absolute scale bound, which is what the
+        # plan originally specified: an absolute floor has no notion of how
+        # big the canvas is in the window, so it lands above fit-to-view on a
+        # big map (measured, 480x480 at a 480px window: fit is scale 0.0413,
+        # an absolute floor of 1/(4 * 4) = 0.0625 would refuse zoom-out
+        # everywhere and strand the user above fit). This form cannot do that
+        # for anyone: mip_scale >= 1 always, so it is never tighter than the
+        # pre-mip floor, and a level set with nothing below the reference
+        # (elev_step_pct=10 enumerates {0, 1}) reduces it to exactly the
+        # pre-mip expression rather than needing a special case.
+        #
+        # Both bounds go stale after a window resize: _capture_zoom_baseline
+        # is only called from set_isometric() and there is no resizeEvent
+        # override. Pre-existing, unchanged by Phase B-D-d.
         baseline = abs(self.transform().determinant()) ** 0.5
-        self._min_linear_scale = self.MIN_ZOOM_FRACTION_OF_FIT * baseline
+        self._min_linear_scale = self.MIN_ZOOM_FRACTION_OF_FIT * baseline / self._coarsest_mip_scale()
         self._max_linear_scale = self.MAX_ZOOM_MULTIPLE_OF_FIT * baseline
 
     def wheelEvent(self, event):
@@ -828,7 +1098,9 @@ class MapView(QGraphicsView):
         # (that's exactly what _pick_tile/_pos_on_map do there) -- avoid
         # re-running screen_to_tile a second time for the same pixel on
         # every mouse move by not routing through _pos_on_map here too.
-        if self._terrain_style == "stepped":
+        # Sloped shares this branch: its _pick_tile always returns None (no
+        # hit-testing until C4), so on_map stays False there too, safely.
+        if self._terrain_style in ("stepped", "sloped"):
             on_map = tile is not None
         else:
             on_map = self._map_rect is not None and self._map_rect.contains(pos)
@@ -1008,9 +1280,15 @@ class SettingsDialog(QDialog):
         height_row = QHBoxLayout()
         height_row.addWidget(QLabel("Stepped elevation height:"))
         self.elev_step_slider = QSlider(Qt.Horizontal)
-        self.elev_step_slider.setRange(settings.ELEV_STEP_PCT_MIN, settings.ELEV_STEP_PCT_MAX)
-        self.elev_step_slider.setSingleStep(5)
-        self.elev_step_slider.setPageStep(10)
+        # Value space is the 1-based stop index, not the pct -- setSingleStep
+        # alone only governs arrow keys and the wheel, so a drag would still
+        # produce arbitrary off-stop pcts via QStyle::sliderValueFromPosition.
+        # Same shape as graphics_quality_slider above.
+        self.elev_step_slider.setRange(1, len(settings.ELEV_STEP_PCT_STOPS))
+        self.elev_step_slider.setTickInterval(1)
+        self.elev_step_slider.setTickPosition(QSlider.TicksBelow)
+        self.elev_step_slider.setSingleStep(1)
+        self.elev_step_slider.setPageStep(1)
         self.elev_step_slider.setToolTip(
             "Stepped rendering mode only -- how tall one elevation level's "
             "displacement reads on screen. Default is Tall; the range above "
@@ -1020,7 +1298,7 @@ class SettingsDialog(QDialog):
             "tiles hide behind their taller neighbors as easily as a single "
             "sharp step would."
         )
-        self.elev_step_slider.setValue(settings.get_elev_step_pct())
+        self.elev_step_slider.setValue(settings.elev_step_index(settings.get_elev_step_pct()))
         self.elev_step_value_label = QLabel()
         self._update_elev_step_label(settings.get_elev_step_pct())
         self._elev_step_apply_timer = QTimer(self)
@@ -1062,7 +1340,9 @@ class SettingsDialog(QDialog):
         self.elev_step_value_label.setText(f"{pct}%{suffix}")
 
     def _on_elev_step_slider_changed(self, value: int) -> None:
-        self._update_elev_step_label(value)
+        # value is a stop index -- _update_elev_step_label still takes a pct,
+        # so its "(Tall, default)" test against ELEV_STEP_DEFAULT_PCT holds.
+        self._update_elev_step_label(settings.elev_step_pct_for_index(value))
         # Each application is a full Stepped-mode re-render
         # (elevations_and_proj + IsoChunkCache rebuild) -- expensive enough
         # on a real map that applying it live per-pixel would make dragging
@@ -1075,7 +1355,7 @@ class SettingsDialog(QDialog):
         self._elev_step_apply_timer.start(200)
 
     def _apply_elev_step_pct(self) -> None:
-        value = self.elev_step_slider.value()
+        value = settings.elev_step_pct_for_index(self.elev_step_slider.value())
         settings.set_elev_step_pct(value)
         self._window._log_status(f"Stepped elevation height: {value}%")
         self._window.refresh_map()
@@ -1292,11 +1572,12 @@ class ViewerWindow(QMainWindow):
         # default. Cleared by a successful Save As, by File > Open, and by Close.
         self._untitled = False
         # Holds whichever style's chunk cache is current -- an IsoChunkCache
-        # (Stepped) or a FlatChunkCache (Flat, since Phase B-E; previously a
-        # separate self._img numpy array, retired in that phase). Set by
+        # (Stepped), a FlatChunkCache (Flat, since Phase B-E; previously a
+        # separate self._img numpy array, retired in that phase), or a
+        # SlopedChunkCache (Sloped, since Track C3). Set by
         # _render_current(), matching self._terrain_style/self.map_view's
         # own paired state.
-        self._cache: IsoChunkCache | FlatChunkCache | None = None
+        self._cache: IsoChunkCache | FlatChunkCache | SlopedChunkCache | None = None
         # Stepped mode only, set together with self._cache by
         # _render_current() -- the exact elevation snapshot and
         # IsoProjection self._cache was built from, and the SAME
@@ -1550,7 +1831,7 @@ class ViewerWindow(QMainWindow):
         # elevation at all, so Stepped is the more useful default view.
         toolbar.addWidget(QLabel(" Elevation View: "))
         self.terrain_style_combo = QComboBox()
-        self.terrain_style_combo.addItems(["Flat", "Stepped"])
+        self.terrain_style_combo.addItems(["Flat", "Stepped", "Sloped"])
         self.terrain_style_combo.setCurrentText("Stepped")  # before connect(): no spurious signal
         self.terrain_style_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.terrain_style_combo.currentTextChanged.connect(self.on_terrain_style_changed)
@@ -1572,7 +1853,9 @@ class ViewerWindow(QMainWindow):
         self.terrain_action = QAction("Terrain", self)
         self.terrain_action.setCheckable(True)
         self.terrain_action.setEnabled(False)  # re-gated by _update_tool_enabled()
-        self.terrain_action.setToolTip("Paint the selected terrain type (Edit mode) -- drag to paint a trail")
+        self.terrain_action.setToolTip(
+            "Paint the selected terrain type over the brush footprint (Edit mode) -- drag to paint a trail"
+        )
         self.terrain_action.toggled.connect(lambda on: on and self._on_tool_selected("terrain"))
         tool_group.addAction(self.terrain_action)
         toolbar.addAction(self.terrain_action)
@@ -1592,8 +1875,8 @@ class ViewerWindow(QMainWindow):
         self.elevation_action.setCheckable(True)
         self.elevation_action.setEnabled(False)
         self.elevation_action.setToolTip(
-            "Left click/drag to raise elevation by 1; right click/drag (or Shift+left) to lower "
-            "(Edit mode, square maps only)"
+            "Left click/drag to raise the brush footprint's elevation by 1; right click/drag "
+            "(or Shift+left) to lower (Edit mode, square maps only)"
         )
         self.elevation_action.toggled.connect(lambda on: on and self._on_tool_selected("elevation"))
         tool_group.addAction(self.elevation_action)
@@ -1603,7 +1886,8 @@ class ViewerWindow(QMainWindow):
         self.set_level_action.setCheckable(True)
         self.set_level_action.setEnabled(False)
         self.set_level_action.setToolTip(
-            "Click/drag to set elevation to the level below (Edit mode, square maps only)"
+            "Click/drag to set the brush footprint's elevation to the level below "
+            "(Edit mode, square maps only)"
         )
         self.set_level_action.toggled.connect(lambda on: on and self._on_tool_selected("set_level"))
         tool_group.addAction(self.set_level_action)
@@ -1630,6 +1914,26 @@ class ViewerWindow(QMainWindow):
         self.elevation_level_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.level_param_spin_action = toolbar.addWidget(self.elevation_level_spin)
 
+        # Brush size/shape -- shown for any ToolDef.supports_brush tool
+        # (Terrain, Elevate, Set Elevation), same visibility/enabled
+        # convention as the two params above. Deliberately session-only, not
+        # read from or written to settings.py's config: every launch starts
+        # at BRUSH_SIZE_MIN/square, so nothing here persists.
+        self.brush_param_label_action = toolbar.addWidget(QLabel(" Brush: "))
+        self.brush_size_spin = QSpinBox()
+        self.brush_size_spin.setRange(brush.BRUSH_SIZE_MIN, brush.BRUSH_SIZE_MAX)
+        self.brush_size_spin.setValue(brush.BRUSH_SIZE_MIN)
+        self.brush_size_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.brush_size_spin.valueChanged.connect(self._on_brush_changed)
+        self.brush_size_spin_action = toolbar.addWidget(self.brush_size_spin)
+
+        self.brush_shape_combo = QComboBox()
+        self.brush_shape_combo.addItem("Square", brush.BRUSH_SHAPE_SQUARE)
+        self.brush_shape_combo.addItem("Circle", brush.BRUSH_SHAPE_CIRCLE)
+        self.brush_shape_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.brush_shape_combo.currentIndexChanged.connect(self._on_brush_changed)
+        self.brush_shape_combo_action = toolbar.addWidget(self.brush_shape_combo)
+
     def _build_status_bar(self) -> None:
         self.mode_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.mode_status_label)
@@ -1639,6 +1943,22 @@ class ViewerWindow(QMainWindow):
         tool = _TOOL_LABELS.get(self._current_tool, self._current_tool)
         style = self._terrain_style.capitalize()
         self.mode_status_label.setText(f"  Mode: {self.mode.capitalize()}  |  Tool: {tool}  |  Style: {style}  ")
+
+    def _adjust_tool_value(self, delta: int) -> None:
+        """Backs the "]"/"[" tool_value_inc/dec_action shortcuts -- see their
+        own comment in _build_keybind_actions for the brush-vs-level
+        priority rule. Reads each spinbox's live isEnabled() (kept correct
+        by _update_tool_enabled, which gates the actions themselves the same
+        way) rather than re-deriving BRUSH_TOOLS/_TOOL_PARAM membership
+        here, so there is exactly one place that decides which widget is
+        "the active tool's value" at any given moment."""
+        if self.brush_size_spin.isEnabled():
+            spin = self.brush_size_spin
+        elif self.elevation_level_spin.isEnabled():
+            spin = self.elevation_level_spin
+        else:
+            return
+        spin.stepUp() if delta > 0 else spin.stepDown()
 
     def _build_keybind_actions(self) -> None:
         # Mode switching has no QAction of its own (it's a toolbar QComboBox)
@@ -1653,17 +1973,23 @@ class ViewerWindow(QMainWindow):
         self.mode_edit_action.triggered.connect(lambda: self.mode_combo.setCurrentText("Edit"))
         self.addAction(self.mode_edit_action)
 
-        # The active tool's own "primary value" -- today that's only Set
-        # Elevation's Level spinbox. Gated the same way the spinbox itself
-        # is (see _update_tool_enabled) so the shortcut is dead whenever the
-        # spinbox would be greyed out. stepUp/stepDown clamp to the
-        # spinbox's own range, same as clicking its arrows would.
+        # The active tool's own "primary value" -- brush size for any
+        # supports_brush tool (Terrain, Elevate, Set Elevation), falling back
+        # to Set Elevation's Level spinbox when the active tool has no brush.
+        # Brush wins the overlap on Set Elevation, which has both: this is
+        # what "]"/"[" -- picked as brush-size-style inc/dec keys, see
+        # REBINDABLE_ACTIONS's adjust_increment/adjust_decrement comment in
+        # settings.py -- were always meant to drive. Gated the same way the
+        # spinboxes themselves are (see _update_tool_enabled) so the
+        # shortcut is dead whenever neither would apply. stepUp/stepDown
+        # clamp to the target spinbox's own range, same as clicking its
+        # arrows would.
         self.tool_value_inc_action = QAction("Increase Tool Value", self)
-        self.tool_value_inc_action.triggered.connect(self.elevation_level_spin.stepUp)
+        self.tool_value_inc_action.triggered.connect(lambda: self._adjust_tool_value(+1))
         self.addAction(self.tool_value_inc_action)
 
         self.tool_value_dec_action = QAction("Decrease Tool Value", self)
-        self.tool_value_dec_action.triggered.connect(self.elevation_level_spin.stepDown)
+        self.tool_value_dec_action.triggered.connect(lambda: self._adjust_tool_value(-1))
         self.addAction(self.tool_value_dec_action)
 
         # Every tool's toolbar action reused directly -- no separate action
@@ -1751,12 +2077,16 @@ class ViewerWindow(QMainWindow):
         # same as Flat's own. Editing is gated the same way in both styles
         # from here on.
         editable = self.mode == "edit"
+        # Sloped has no hit-testing yet (Track C4), so none of the paint/
+        # elevation tools can resolve a click to a tile there -- disabled
+        # outright until C4 lands, regardless of write_ok/elevation_ok.
+        sloped_editable = self._terrain_style != "sloped"
 
         self.pan_action.setEnabled(has_map)
-        self.terrain_action.setEnabled(has_map and editable and write_ok)
-        self.fill_action.setEnabled(has_map and editable and write_ok)
-        self.elevation_action.setEnabled(has_map and editable and elevation_ok)
-        self.set_level_action.setEnabled(has_map and editable and elevation_ok)
+        self.terrain_action.setEnabled(has_map and editable and write_ok and sloped_editable)
+        self.fill_action.setEnabled(has_map and editable and write_ok and sloped_editable)
+        self.elevation_action.setEnabled(has_map and editable and elevation_ok and sloped_editable)
+        self.set_level_action.setEnabled(has_map and editable and elevation_ok and sloped_editable)
         self.close_action.setEnabled(has_map)
         self.save_as_action.setEnabled(write_ok)
         self.terrain_style_combo.setEnabled(has_map)
@@ -1787,15 +2117,30 @@ class ViewerWindow(QMainWindow):
         param = _TOOL_PARAM.get(self._current_tool, "")
         terrain_param_ok = param == "terrain" and (self.terrain_action.isEnabled() or self.fill_action.isEnabled())
         level_param_ok = param == "level" and self.set_level_action.isEnabled()
+        # Brush size/shape -- reuses current_action (computed above for the
+        # forced-back-to-Pan check) rather than re-deriving write_ok/
+        # elevation_ok: brush_ok should track exactly whether the active
+        # tool's own toolbar action is enabled, same as terrain_param_ok/
+        # level_param_ok already do via terrain_action/fill_action/
+        # set_level_action above. Elevate has no param_widget at all today
+        # (param == ""), so this is the first param group it ever shows --
+        # see the separator line below, which previously assumed Elevate
+        # showed nothing.
+        brush_ok = self._current_tool in BRUSH_TOOLS and current_action is not None and current_action.isEnabled()
         self.terrain_param_label_action.setVisible(terrain_param_ok)
         self.terrain_param_combo_action.setVisible(terrain_param_ok)
         self.terrain_combo.setEnabled(terrain_param_ok)
         self.level_param_label_action.setVisible(level_param_ok)
         self.level_param_spin_action.setVisible(level_param_ok)
         self.elevation_level_spin.setEnabled(level_param_ok)
-        self.tool_value_inc_action.setEnabled(level_param_ok)
-        self.tool_value_dec_action.setEnabled(level_param_ok)
-        self.tool_param_separator_action.setVisible(terrain_param_ok or level_param_ok)
+        self.brush_param_label_action.setVisible(brush_ok)
+        self.brush_size_spin_action.setVisible(brush_ok)
+        self.brush_size_spin.setEnabled(brush_ok)
+        self.brush_shape_combo_action.setVisible(brush_ok)
+        self.brush_shape_combo.setEnabled(brush_ok)
+        self.tool_value_inc_action.setEnabled(level_param_ok or brush_ok)
+        self.tool_value_dec_action.setEnabled(level_param_ok or brush_ok)
+        self.tool_param_separator_action.setVisible(terrain_param_ok or level_param_ok or brush_ok)
 
         # v2.7 copy/paste -- deliberately placed after the
         # forced-back-to-Pan block above, not before: that block can flip
@@ -1840,9 +2185,27 @@ class ViewerWindow(QMainWindow):
         kind_for_tool = "terrain" if self._current_tool in ("terrain", "fill") else "elevation"
         self.paste_action.setEnabled(copy_ok and clipboard_kind == kind_for_tool)
 
+    def _sync_map_view_brush(self) -> None:
+        """Pushes the toolbar's current brush size/shape into MapView's
+        hover-preview state -- but only for a tool that actually has one
+        (BRUSH_TOOLS); Pan and Paint Can always preview a single tile
+        regardless of what size/shape the spinbox/combo were last left at
+        for Terrain/Elevate/Set Elevation. Called both when the brush
+        widgets change and when the active tool changes, so the preview is
+        never stale in either direction."""
+        if self._current_tool in BRUSH_TOOLS:
+            self.map_view.set_brush(self.brush_size_spin.value(), self.brush_shape_combo.currentData())
+        else:
+            self.map_view.set_brush(brush.BRUSH_SIZE_MIN, brush.BRUSH_SHAPE_SQUARE)
+
+    def _on_brush_changed(self) -> None:
+        self._sync_map_view_brush()
+        self.map_view.refresh_highlight(self._hover_tile)
+
     def _on_tool_selected(self, tool: str) -> None:
         self._current_tool = tool
         self.map_view.set_tool(tool)
+        self._sync_map_view_brush()
         self._update_mode_status()
         self._log_status(f"Tool changed to {tool}")
         # v2.7 copy/paste: Copy/Paste's enabled state depends on which tool
@@ -1901,25 +2264,57 @@ class ViewerWindow(QMainWindow):
         if self.scenario is None:
             return
         self.edit_history.begin_stroke(self.scenario.map_manager.terrain)
-        self._stroke_seen_dirty: set[int] = set()
+        # index -> the tile state as of the last time we handed that index to
+        # _apply_dirty. A dict, not a set of indices: elevation propagation
+        # can change one tile SEVERAL times over a single drag, and a
+        # membership-only set silently drops every change after the first --
+        # see on_edit_stroke_tile's own comment.
+        self._stroke_seen_state: dict[int, tuple[int, int, int]] = {}
+        # Painted-tile dedupe for this stroke, keyed on the actual tile a
+        # brush touched -- see on_edit_stroke_tile's own comment for why
+        # this must be separate from MapView._stroke_touched (which is
+        # keyed on the CURSOR tile, and is only a cheap early-out, not a
+        # correctness guarantee once a brush is bigger than one tile).
+        self._stroke_painted: set[tuple[int, int]] = set()
 
     def on_edit_stroke_tile(self, x: int, y: int, modifiers) -> None:
         if self.scenario is None:
             return
         mm = self.scenario.map_manager
-        if not (0 <= x < mm.map_width and 0 <= y < mm.map_height):
+        # Every drag tool reaching this method today (terrain/elevation/
+        # set_level) has supports_brush=True, so this is BRUSH_TOOLS in
+        # practice -- checked explicitly rather than assumed, so a future
+        # is_edit_tool tool with no brush still degrades to its old
+        # single-tile behavior instead of silently expanding.
+        if self._current_tool in BRUSH_TOOLS:
+            footprint = brush.brush_tiles(
+                x, y, self.brush_size_spin.value(), self.brush_shape_combo.currentData(), mm.map_width, mm.map_height
+            )
+        elif 0 <= x < mm.map_width and 0 <= y < mm.map_height:
+            footprint = [(x, y)]
+        else:
+            footprint = []
+        # Dedupe against tiles this stroke already painted -- NOT against
+        # MapView._stroke_touched's cursor-tile set. With a brush bigger
+        # than one tile, a single painted tile falls under many distinct
+        # cursor tiles during a drag; without this, Elevate's accumulating
+        # +/-1 (see below) would raise/lower the same tile once per cursor
+        # tile that overlapped it, not once per stroke.
+        footprint = [t for t in footprint if t not in self._stroke_painted]
+        if not footprint:
             return
 
         if self._current_tool == "terrain":
-            tile = mm.get_tile(x, y)
-            tile.terrain_id = self.terrain_combo.currentData()
-            # Clear a stale double-terrain blend -- render.py doesn't draw
-            # `layer`, but the game does, and leaving it set after changing
-            # terrain_id would make this tool's own render lie about what
-            # the game will actually show.
-            tile.layer = -1
+            terrain_id = self.terrain_combo.currentData()
+            for tx, ty in footprint:
+                tile = mm.get_tile(tx, ty)
+                tile.terrain_id = terrain_id
+                # Clear a stale double-terrain blend -- render.py doesn't draw
+                # `layer`, but the game does, and leaving it set after changing
+                # terrain_id would make this tool's own render lie about what
+                # the game will actually show.
+                tile.layer = -1
         elif self._current_tool == "elevation":
-            tile = mm.get_tile(x, y)
             delta = -1 if modifiers & Qt.ShiftModifier else 1
             # Clamp to the legal range Set Elevation's spinbox already
             # enforces (ELEVATION_LEVEL_MAX) -- Elevate had no clamp at all
@@ -1932,21 +2327,57 @@ class ViewerWindow(QMainWindow):
             # Stepped mode's incremental redraw to stay safe. Both real, not
             # hypothetical -- confirmed by reading scenario_write.py and by
             # descape.render.dirty_screen_bbox_iso's own guard below.
-            new_elevation = max(0, min(ELEVATION_LEVEL_MAX, tile.elevation + delta))
-            set_tile_elevation(mm, x, y, new_elevation)
+            #
+            # Every target's current elevation is read here, before ANY tile
+            # in this footprint is written -- set_tiles_elevation's
+            # propagation pass can still change a not-yet-processed
+            # footprint tile's elevation (that's the whole point of a
+            # footprint-wide xys), and reading "current" late would apply
+            # delta on top of that propagated value instead of the value
+            # this cursor tile's drag actually found.
+            targets = [
+                (tx, ty, max(0, min(ELEVATION_LEVEL_MAX, mm.get_tile(tx, ty).elevation + delta)))
+                for tx, ty in footprint
+            ]
+            set_tiles_elevation(mm, targets)
         elif self._current_tool == "set_level":
-            set_tile_elevation(mm, x, y, self.elevation_level_spin.value())
+            level = self.elevation_level_spin.value()
+            set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
         else:
             return
 
+        self._stroke_painted.update(footprint)
+
         # Cumulative dirty set since stroke start, minus what's already been
-        # redrawn this stroke -- avoids repainting the same tile repeatedly
-        # as the drag continues over tiles elevation propagation already
-        # touched. See EditHistory.stroke_dirty_indices's docstring for the
-        # cost of this (a linear scan) at this project's map sizes.
-        all_dirty = set(self.edit_history.stroke_dirty_indices(mm.terrain))
-        new_dirty = all_dirty - self._stroke_seen_dirty
-        self._stroke_seen_dirty = all_dirty
+        # redrawn AT ITS CURRENT STATE this stroke -- avoids repainting the
+        # same tile repeatedly as the drag continues over tiles elevation
+        # propagation already touched. See EditHistory.stroke_dirty_indices's
+        # docstring for the cost of this (a linear scan) at this project's map
+        # sizes -- this is exactly why the brush footprint is expanded HERE,
+        # once per cursor tile, rather than by calling this method once per
+        # brush tile from MapView: doing that would multiply an already-O(map)
+        # scan by the brush's area on every mouse-move. Same warning on_fill's
+        # own docstring carries for its single full-map fill.
+        #
+        # Compared on STATE, not on index membership. stroke_dirty_indices is
+        # cumulative (everything differing from the stroke-start snapshot), so
+        # once a tile appears it stays for the rest of the drag -- and
+        # set_tiles_elevation's propagation routinely changes one tile several
+        # times as the brush moves over it. Subtracting a plain set of indices
+        # therefore synced each tile exactly once, at its FIRST value, and
+        # froze it there: _apply_dirty -> dirty_screen_bbox_iso is the only
+        # thing that writes MapView._iso_elevations, so that snapshot drifted
+        # permanently out of sync with tile.elevation. Measured on one
+        # 8-step Set Elevation drag: 131 tiles wrong, 35 of them sitting at
+        # elevation 6 while the snapshot still read lower, some off by 2.
+        # Top faces still looked right (they render from tile.elevation), but
+        # the hover highlight and screen_to_tile hit-testing read the array,
+        # and _render_tile_iso mixes the two when it computes skirt/contact-
+        # shadow deltas as tile.elevation - elevations[neighbour].
+        all_dirty = self.edit_history.stroke_dirty_indices(mm.terrain)
+        new_dirty = {i for i in all_dirty if tile_state(mm.terrain[i]) != self._stroke_seen_state.get(i)}
+        for i in all_dirty:
+            self._stroke_seen_state[i] = tile_state(mm.terrain[i])
         self._apply_dirty(new_dirty)
 
     def on_edit_stroke_end(self) -> None:
@@ -1954,7 +2385,8 @@ class ViewerWindow(QMainWindow):
             return
         label = _STROKE_LABELS.get(self._current_tool, "Edit")
         self.edit_history.commit_stroke(label, self.scenario.map_manager.terrain)
-        self._stroke_seen_dirty = set()
+        self._stroke_seen_state = {}
+        self._stroke_painted = set()
         self._update_edit_actions()
         self._update_title()
 
@@ -2347,6 +2779,16 @@ class ViewerWindow(QMainWindow):
                 self._cache = IsoChunkCache(self.scenario, elevations, proj, tile_px)
                 self.map_view.set_source(
                     tile_px, terrain_style="stepped", cache=self._cache, elevations=elevations, proj=proj
+                )
+            elif self._terrain_style == "sloped":
+                # No incremental-edit elevation snapshot: Sloped has no live
+                # editing yet (Track C4), only Stepped's dirty-patch path
+                # (_apply_dirty above) reads self._iso_elevations/_iso_proj.
+                elevations, corner_rise, proj = sloped_elevations_and_proj(self.scenario)
+                self._iso_elevations, self._iso_proj = None, None
+                self._cache = SlopedChunkCache(self.scenario, elevations, corner_rise, proj, tile_px)
+                self.map_view.set_source(
+                    tile_px, terrain_style="sloped", cache=self._cache, elevations=elevations, proj=proj
                 )
             else:
                 self._iso_elevations, self._iso_proj = None, None

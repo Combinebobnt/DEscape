@@ -109,18 +109,46 @@ def set_zoom_centered_on_cursor(enabled: bool) -> None:
 # iso_geometry.canvas_size_and_origin's elev_step_pct param and
 # ELEV_STEP_DEFAULT_PCT's own comment for why headroom above the default is
 # offered here (unlike the old divisor-based control this replaces).
-ELEV_STEP_PCT_MIN = 10
+ELEV_STEP_PCT_MIN = 25
 ELEV_STEP_PCT_MAX = 200
+
+# The control is a stop space, not a continuous range: every off-stop value
+# enumerates a shallower mip ladder than the nearest stop would (see
+# maintainer/docs/PLAN_MIPS.md), so the slider's value space IS the stop
+# index and every entry point snaps.
+ELEV_STEP_PCT_STEP = 25
+ELEV_STEP_PCT_STOPS = tuple(range(ELEV_STEP_PCT_MIN, ELEV_STEP_PCT_MAX + 1, ELEV_STEP_PCT_STEP))
 
 _elev_step_pct: int | None = None
 
 
+def snap_elev_step_pct(value: int) -> int:
+    """Nearest legal stop to `value`, clamped into range first. No tie-break
+    rule is needed: a stop midpoint is never an integer at STEP=25."""
+    value = max(ELEV_STEP_PCT_MIN, min(ELEV_STEP_PCT_MAX, value))
+    return min(ELEV_STEP_PCT_STOPS, key=lambda stop: abs(stop - value))
+
+
+def elev_step_index(pct: int) -> int:
+    """1-based stop index for a pct, for driving the slider's value space.
+    Snaps first, so an off-stop caller gets the nearest stop rather than a
+    ValueError out of the lookup."""
+    return ELEV_STEP_PCT_STOPS.index(snap_elev_step_pct(pct)) + 1
+
+
+def elev_step_pct_for_index(index: int) -> int:
+    """Inverse of elev_step_index() -- the pct a slider position means."""
+    return ELEV_STEP_PCT_STOPS[index - 1]
+
+
 def get_elev_step_pct() -> int:
-    """Current Stepped-mode elev_step, as a percent of half_h. Falls back to
-    iso_geometry.ELEV_STEP_DEFAULT_PCT if never set, out of
-    [ELEV_STEP_PCT_MIN, ELEV_STEP_PCT_MAX], or malformed. Migrates the
-    legacy "elev_step_divisor" key (this control's previous divisor-based
-    form) on first read if "elev_step_pct" itself isn't present."""
+    """Current Stepped-mode elev_step, as a percent of half_h, always one of
+    ELEV_STEP_PCT_STOPS. Falls back to iso_geometry.ELEV_STEP_DEFAULT_PCT if
+    never set, above ELEV_STEP_PCT_MAX, or malformed; an in-range off-stop
+    value (including one written below today's MIN by an older build) snaps
+    to its nearest stop instead. Migrates the legacy "elev_step_divisor" key
+    (this control's previous divisor-based form) on first read if
+    "elev_step_pct" itself isn't present."""
     global _elev_step_pct
     if _elev_step_pct is None:
         config = _load_config()
@@ -129,16 +157,20 @@ def get_elev_step_pct() -> int:
             legacy_divisor = config.get("elev_step_divisor")
             if isinstance(legacy_divisor, int) and legacy_divisor > 0:
                 raw = 100 // legacy_divisor
-        if isinstance(raw, int) and ELEV_STEP_PCT_MIN <= raw <= ELEV_STEP_PCT_MAX:
-            _elev_step_pct = raw
+        # Gates on 1 <= raw <= MAX rather than snapping bare, so a nonsense
+        # value still falls back to the default instead of snapping to MAX.
+        if isinstance(raw, int) and 1 <= raw <= ELEV_STEP_PCT_MAX:
+            _elev_step_pct = snap_elev_step_pct(raw)
         else:
             _elev_step_pct = iso_geometry.ELEV_STEP_DEFAULT_PCT
     return _elev_step_pct
 
 
 def set_elev_step_pct(value: int) -> None:
+    # Snaps rather than only clamping -- a programmatic caller would
+    # otherwise persist an off-stop value and silently shrink the mip set.
     global _elev_step_pct
-    value = max(ELEV_STEP_PCT_MIN, min(ELEV_STEP_PCT_MAX, value))
+    value = snap_elev_step_pct(value)
     _elev_step_pct = value
     config = _load_config()
     config["elev_step_pct"] = value
@@ -214,14 +246,23 @@ class ToolDef:
     # Drives which of the two tool-param widgets viewer.py shows/hides for
     # the active tool -- see _TOOL_PARAM there.
     param_widget: str = ""
+    # Whether this tool's stroke applies across a brush footprint (size +
+    # shape) instead of always exactly one tile. A separate bool rather than
+    # folding into param_widget: brush is orthogonal to a tool's "primary
+    # value" param -- Terrain wants terrain type AND brush, Set Elevation
+    # wants level AND brush, Elevate wants brush with no param_widget at all
+    # -- so param_widget's existing single-valued "" | "terrain" | "level"
+    # semantics stay exactly as they are. Paint Can is click_only and never
+    # sets this: one flood fill per click has no brush to speak of.
+    supports_brush: bool = False
 
 
 TOOLS: list[ToolDef] = [
     ToolDef("pan", "Pan", is_edit_tool=False, default_key="M"),
-    ToolDef("terrain", "Terrain", stroke_label="Paint terrain", default_key="T", param_widget="terrain"),
+    ToolDef("terrain", "Terrain", stroke_label="Paint terrain", default_key="T", param_widget="terrain", supports_brush=True),
     ToolDef("fill", "Paint Can", stroke_label="Fill terrain", default_key="P", click_only=True, param_widget="terrain"),
-    ToolDef("elevation", "Elevate", stroke_label="Elevate", default_key="R"),
-    ToolDef("set_level", "Set Elevation", stroke_label="Set elevation", default_key="L", param_widget="level"),
+    ToolDef("elevation", "Elevate", stroke_label="Elevate", default_key="R", supports_brush=True),
+    ToolDef("set_level", "Set Elevation", stroke_label="Set elevation", default_key="L", param_widget="level", supports_brush=True),
 ]
 
 # (action_id, display label, default key sequence string) -- the one source

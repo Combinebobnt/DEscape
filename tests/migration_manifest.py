@@ -187,9 +187,12 @@ MANIFEST: list[ManifestEntry] = [
     ),
     ManifestEntry(
         "verify_iso_geometry", "check_shadow_geometry", "none", (), "",
-        "shadow_quad_indices() output stays within its documented extent, is internally unique "
-        "and disjoint between its two sides and from diamond/skirt pixels, its column union "
-        "matches diamond_indices', and raises ValueError on a bad side or non-positive rise_px.",
+        "shadow_quad_indices()'s wedge band exactly equals the back neighbour's own exposed "
+        "sliver (2-D set equality against an independently-derived oracle -- soundness and "
+        "completeness at once), stays within its documented extent including the apex-column "
+        "exclusion, is internally unique and disjoint between its two sides and from "
+        "diamond/skirt pixels, empties exactly at rise_px >= 2*half_h - 2, and raises "
+        "ValueError on a bad side or non-positive rise_px.",
     ),
     ManifestEntry(
         "verify_iso_geometry", "check_ground_outline_corners", "none", (), "",
@@ -217,7 +220,10 @@ MANIFEST: list[ManifestEntry] = [
     ),
     ManifestEntry(
         "verify_iso_render", "check_shadow_clipping", "none", (), "",
-        "Shadow rendering clips without crash or index wraparound at the canvas edge.",
+        "Every contact-shadow band pixel lands in bounds on the full canvas (the positive "
+        "invariant that replaced the old negative-absolute-row premise, unreachable since the "
+        "band became a wedge), and the scratch-canvas offset call site still clips without "
+        "crash or index wraparound.",
     ),
     ManifestEntry(
         "verify_iso_render", "generate_reference_pngs", "special", ("corpus",),

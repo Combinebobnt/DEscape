@@ -223,7 +223,9 @@ def _staircase() -> tuple[int, int, dict]:
     elevation brush should produce at a single point, so the comparison
     screenshot is checking the tool's real single-point path, not a shape
     this script invented."""
-    radius = 7  # matches MAX_ELEVATION -- see iso_geometry.py
+    radius = 7  # deliberate fixed value, no longer tracking MAX_ELEVATION (now 15) --
+    # changing it would regenerate the probe map and invalidate the in-game
+    # comparison screenshots already taken against this exact ring shape.
     size = 2 * radius + 3  # +3 margin beyond the ring's own reach on every side
     center = size // 2
     return size, size, {(center, center): radius}
@@ -452,6 +454,16 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
         if write_renders:
             reloaded = load_map_and_units(out_path)
             img, _elevations, proj = render.render_terrain_iso_with_proj(reloaded, with_units=False)
+            # Sloped's own proj is geometrically identical to Stepped's for
+            # the same map/tile_px (corner_headroom_px doesn't affect canvas
+            # sizing -- see IsoProjection's own comment), so the same
+            # _crop_bbox_px() call below is valid for both without separate
+            # crop math. Phase 6 (Sloped)'s reference render, for Track C6's
+            # side-by-side against the in-game screenshots this script's own
+            # docstring hands off (docs/ELEVATION_REFERENCE.md).
+            sloped_img, _sloped_elevations, _sloped_corner_rise, _sloped_proj = (
+                render.render_terrain_sloped_with_proj(reloaded, with_units=False)
+            )
             renders_dir = out_dir / "renders"
             renders_dir.mkdir(parents=True, exist_ok=True)
             for meta in file_regions:
@@ -462,6 +474,12 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
                 _save_png(crop, render_path)
                 meta["render_path"] = render_path
                 print(f"  {meta['name']}: cropped {crop.shape[1]}x{crop.shape[0]} -> {render_path}")
+
+                sloped_px1, sloped_py1 = min(px1, sloped_img.shape[1]), min(py1, sloped_img.shape[0])
+                sloped_crop = sloped_img[py0:sloped_py1, px0:sloped_px1]
+                sloped_render_path = renders_dir / f"{meta['name']}_sloped.png"
+                _save_png(sloped_crop, sloped_render_path)
+                meta["sloped_render_path"] = sloped_render_path
 
         regions.extend(file_regions)
 

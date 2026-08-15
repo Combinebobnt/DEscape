@@ -31,6 +31,8 @@ OUT_PATH = ROOT / "config.example.yaml"
 
 _QUALITY_LABELS = ", ".join(f"{n}={label}" for n, label in sorted(settings.GRAPHICS_QUALITY_LABELS.items()))
 
+_ELEV_STEP_STOP_COUNT = len(settings.ELEV_STEP_PCT_STOPS)
+
 
 def render() -> str:
     keybinds_yaml = yaml.safe_dump(
@@ -59,8 +61,10 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # Default: {settings.GRAPHICS_QUALITY_DEFAULT}.
 graphics_quality: {settings.GRAPHICS_QUALITY_DEFAULT}
 
-# Stepped elevation height, percent of half_h ({settings.ELEV_STEP_PCT_MIN}-{settings.ELEV_STEP_PCT_MAX}),
-# see settings.ELEV_STEP_PCT_MIN/MAX. Default: {iso_geometry.ELEV_STEP_DEFAULT_PCT}.
+# Stepped elevation height, percent of half_h. Only the {_ELEV_STEP_STOP_COUNT} stops
+# {settings.ELEV_STEP_PCT_MIN}-{settings.ELEV_STEP_PCT_MAX} in steps of {settings.ELEV_STEP_PCT_STEP} are legal; anything else snaps to the
+# nearest one on read, see settings.ELEV_STEP_PCT_STOPS.
+# Default: {iso_geometry.ELEV_STEP_DEFAULT_PCT}.
 elev_step_pct: {iso_geometry.ELEV_STEP_DEFAULT_PCT}
 
 # Anchor mouse-wheel zoom under the cursor (true) or the view center

@@ -329,44 +329,106 @@ def check_pick_oracle() -> tuple[bool, str]:
 
 
 def check_shadow_clipping() -> tuple[bool, str]:
-    """Forces a genuinely negative ABSOLUTE canvas row for the v2.6 contact
-    shadow (not just a negative offset relative to its own tile -- see
-    shadow_quad_indices' own docstring for why that part is by design) and
-    confirms render._clipped_darken() clips it away instead of crashing or
-    wrapping via numpy fancy-index underflow.
+    """Two halves, both about the contact-shadow band and
+    render._clipped_darken().
 
-    (w-2, 0), not the true corner (w-1, 0): canvas_size_and_origin() sizes
-    origin_y so (y=0, x=w-1, elevation=max_elev) lands at screen_y=0
-    exactly (its own worst case) -- but that literal corner tile has NO
-    in-bounds back neighbor at all (up_left is (w-1,-1), up_right is
-    (w,0), both off-map), so it can never actually cast a shadow. One tile
-    in from the corner still starts close enough to row 0 that a
-    Delta=7 seam's rise_px reach pushes it negative, while its up_right
-    back neighbor (w-1, 0) is real and in-bounds."""
+    Name kept deliberately (it is a tests/migration_manifest.py key, so a
+    rename is a manifest change), but the BODY was retargeted when the
+    band became a wedge. Its old premise -- a full-canvas shadow pixel at
+    a genuinely negative ABSOLUTE canvas row -- is now structurally
+    unreachable, not merely hard to hit: the band is confined to the back
+    neighbor's own diamond by construction (see shadow_quad_indices'
+    docstring), and every real tile's diamond is in bounds on the full
+    canvas by construction. No re-tuning of the old parameters can bring
+    it back, so this asserts the POSITIVE invariant instead.
+
+    1. Full canvas: every band pixel of every shadow-casting tile lands in
+       bounds. Uses a delta small enough to leave a NON-empty band --
+       MAX_ELEVATION would NOT work here: on this 6x6 map elev_step is 8,
+       so rise_px = 15*8 = 120 against an emptiness threshold of
+       2*half_h - 2 = 30, making every band empty and the assertion
+       vacuous over zero-size arrays.
+    2. Scratch canvas: the `offset` call site, where clipping is still
+       genuinely reachable (a rect deliberately straddling the canvas's
+       own top-left corner), confirming _clipped_darken still drops
+       out-of-bounds pixels rather than crashing or wrapping.
+
+    The anti-wraparound row-0/last-row oracle is kept from the original:
+    a wrapped negative index would silently darken the OTHER end of the
+    canvas instead of being dropped."""
     w, h = 6, 6
     cx, cy = w - 2, 0
-
-    def elev(x, y):
-        return 7 if (x, y) == (cx, cy) else 0
-
-    scenario, _elevations = synthetic_scenario(w, h, elev)
     tile_px = render.tile_pixels_for_map(w, h)
     proj = iso_geometry.canvas_size_and_origin(
         w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
     )
-    rise_px = 7 * proj.elev_step
-    base_x, base_y = iso_geometry.tile_screen_origin(cx, cy, 7, proj)
-    dst_y, _dst_x, _depth = iso_geometry.shadow_quad_indices(tile_px, rise_px, "up_right")
-    if (base_y + dst_y).min() >= 0:
+    _half_w, half_h = iso_geometry.half_dims(tile_px)
+
+    # Largest delta that still leaves something exposed to shade.
+    seam_delta = max(1, (2 * half_h - 3) // proj.elev_step)
+    if seam_delta * proj.elev_step >= 2 * half_h - 2:
         return False, (
-            f"test setup didn't actually reach a negative absolute row (min "
-            f"{(base_y + dst_y).min()}) -- doesn't exercise the clip path this check exists for"
+            f"test setup picked seam_delta={seam_delta}, whose rise_px "
+            f"{seam_delta * proj.elev_step} is already an empty band (threshold {2 * half_h - 2})"
         )
+
+    def elev(x, y):
+        return seam_delta if (x, y) == (cx, cy) else 0
+
+    scenario, elevations = synthetic_scenario(w, h, elev)
+    rise_px = seam_delta * proj.elev_step
+    dst_y, dst_x, _depth, _span = iso_geometry.shadow_quad_indices(tile_px, rise_px, "up_right")
+    if dst_y.size == 0:
+        return False, "test setup produced an empty band -- doesn't exercise anything"
+
+    # Half 1: the positive invariant, over every real casting (tile, side).
+    for y in range(h):
+        for x in range(w):
+            e = int(elevations[y, x])
+            bx, by = iso_geometry.tile_screen_origin(x, y, e, proj)
+            for side, nx, ny in (("up_left", x, y - 1), ("up_right", x + 1, y)):
+                if not (0 <= nx < w and 0 <= ny < h):
+                    continue
+                delta = e - int(elevations[ny, nx])
+                if delta <= 0:
+                    continue
+                sy, sx, _d, _s = iso_geometry.shadow_quad_indices(tile_px, delta * proj.elev_step, side)
+                if sy.size == 0:
+                    continue
+                ay, ax = by + sy, bx + sx
+                if ay.min() < 0 or ay.max() >= proj.canvas_h or ax.min() < 0 or ax.max() >= proj.canvas_w:
+                    return False, (
+                        f"tile ({x},{y}) side={side}: band left the full canvas -- "
+                        f"rows [{ay.min()},{ay.max()}] cols [{ax.min()},{ax.max()}] "
+                        f"vs canvas {proj.canvas_h}x{proj.canvas_w}"
+                    )
 
     try:
         img = render.render_terrain_iso(scenario, with_units=False)
     except Exception as e:  # noqa: BLE001 -- exactly what "no crash" means here
         return False, f"render_terrain_iso raised {type(e).__name__}: {e}"
+
+    # Half 2: _render_tile_iso's `offset` (scratch-canvas) call site, where
+    # the clip is still genuinely reachable -- a tiny scratch canvas with an
+    # offset that puts the caster mostly outside it, so its band straddles
+    # every edge at once. Row 0 / column 0 of that scratch canvas are the
+    # numpy-negative-index wrap targets, so this also re-checks wraparound
+    # at the call site that can actually produce it.
+    grid = _tile_grid(scenario)
+    caster = grid[cy][cx]
+    scratch = np.zeros((2 * tile_px, 2 * tile_px, 3), dtype=np.uint8)
+    cbx, cby = iso_geometry.tile_screen_origin(cx, cy, seam_delta, proj)
+    for off in ((cbx - 2, cby - 2), (cbx + tile_px, cby + tile_px), (cbx - 3 * tile_px, cby - 3 * tile_px)):
+        before = scratch.copy()
+        try:
+            render._render_tile_iso(scratch, caster, tile_px, proj, elevations, w, h, offset=off)
+        except Exception as e:  # noqa: BLE001
+            return False, f"_render_tile_iso raised {type(e).__name__}: {e} at scratch offset {off}"
+        if off == (cbx - 3 * tile_px, cby - 3 * tile_px) and not np.array_equal(scratch, before):
+            return False, (
+                f"offset {off} puts the tile entirely off the scratch canvas, yet pixels changed "
+                f"-- looks like index wraparound rather than a clip"
+            )
 
     # No wraparound into row 0 (or any row): a wrapped negative index would
     # silently darken pixels at the OTHER end of the canvas instead of
@@ -381,7 +443,10 @@ def check_shadow_clipping() -> tuple[bool, str]:
     if not np.array_equal(img[0], flat_img[0]) or not np.array_equal(img[-1], flat_img[-1]):
         return False, "row 0 or the last row differs from a flat render -- looks like index wraparound"
 
-    return True, f"OK (shadow's absolute row reached {(base_y + dst_y).min()}, clipped without crash or wraparound)"
+    return True, (
+        f"OK (seam delta={seam_delta} rise_px={rise_px}, {dst_y.size}-px band; every full-canvas band "
+        f"pixel in bounds, scratch-canvas clip exercised, no wraparound)"
+    )
 
 
 def main() -> None:

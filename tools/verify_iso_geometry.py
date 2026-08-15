@@ -320,23 +320,35 @@ def check_skirt_geometry() -> tuple[bool, str]:
 def check_shadow_geometry() -> tuple[bool, str]:
     """shadow_quad_indices() has no coverage from any other check here --
     modeled directly on check_skirt_geometry() above. Over tile_px in
-    (8, 16, 32, 64) x rise_px in (1, half_h, 3*half_h) x both sides,
-    checks:
+    (8, 16, 32, 64) x a rise_px sweep that STRADDLES the band's own
+    emptiness boundary x both sides, checks:
+    - 2-D SET EQUALITY against the neighbor's exposed sliver, derived
+      independently here from diamond_indices' own pixels rather than
+      restating the function's formula. This is the check that matters and
+      it asserts both halves at once: soundness (no darkened pixel ever
+      leaves the back neighbor whose delta produced it -- THE bug, 61.3%
+      on target at tile_px=64 before the fix) and completeness (the band
+      is the WHOLE exposed sliver, not a fixed-height strip clipped to
+      it). Replaces a former columns-only equality against
+      diamond_indices' column set, which this strictly subsumes and which
+      no longer holds anyway: the wedge tapers to zero at the two
+      apex-adjacent columns, so it legitimately never paints them.
     - documented extent: dst_x in [1, 2*half_w - 2] (the TIGHT bound --
       not skirt_quad_indices' looser [0, 2*half_w), since admitting
       columns 0/2*half_w-1 here would be the same used-filter bug Step 0
-      fixed for skirts), dst_y in [-rise_px, half_h - 2], depth in
-      [0, rise_px).
+      fixed for skirts) AND never exactly half_w - 1 or half_w -- that
+      apex-column assertion is specifically what catches the used[partner]
+      mask being dropped, which is where the flat-ground shadows came
+      from. dst_y in [rise_px - half_h + 1, half_h - 2]. depth in
+      [0, span) elementwise.
+    - the empty case is exact, not approximate: empty if and only if
+      rise_px >= 2*half_h - 2 (measured first-empty rise 6/14/30 for
+      tile_px 16/32/64), with all four arrays still int64 when empty.
     - (dst_y, dst_x) pairs are unique within a side (no column/row painted
       twice by one call).
     - the two sides are disjoint from each other (no shared pixel -- see
       shadow_quad_indices' own docstring for why, unlike skirt's
       deliberately-shared apex column).
-    - the union of both sides' dst_x columns EXACTLY equals
-      diamond_indices(tile_px)'s own column set -- an equality, catching
-      the same class of comb defect check_skirt_geometry's own equality
-      check guards against, compared against diamond_indices' real
-      columns rather than a hand-computed range.
     - disjoint from diamond_indices' own (dst_y, dst_x) pixels and from
       skirt_quad_indices' (using a representative drop_px), confirming the
       shadow band never overlaps the tile's own top face or its skirts.
@@ -345,9 +357,9 @@ def check_shadow_geometry() -> tuple[bool, str]:
     n_checked = 0
     for tile_px in (8, 16, 32, 64):
         half_w, half_h = iso_geometry.half_dims(tile_px)
+        tops, _bottoms, used = iso_geometry._diamond_column_edges(tile_px)
         diamond_dst_y, diamond_dst_x, _sy, _sx = iso_geometry.diamond_indices(tile_px)
         diamond_pixels = set(zip(diamond_dst_y.tolist(), diamond_dst_x.tolist()))
-        diamond_cols = set(np.unique(diamond_dst_x).tolist())
 
         skirt_pixels: set = set()
         for drop_px in (1, half_h, half_h * 3):
@@ -355,23 +367,64 @@ def check_shadow_geometry() -> tuple[bool, str]:
                 sk_y, sk_x, _sy2, _sx2 = iso_geometry.skirt_quad_indices(tile_px, drop_px, side)
                 skirt_pixels |= set(zip(sk_y.tolist(), sk_x.tolist()))
 
-        shadow_cols: set = set()
-        side_pixels: dict[str, set] = {}
-        for rise_px in (1, half_h, half_h * 3):
+        empty_threshold = 2 * half_h - 2
+        side_pixels: dict = {}
+        # Straddles empty_threshold deliberately -- 1 and half_h//2 are
+        # comfortably non-empty, the last three bracket the boundary itself.
+        rise_sweep = sorted(
+            {1, max(1, half_h // 2), empty_threshold - 1, empty_threshold, empty_threshold + 1, half_h * 3}
+        )
+        for rise_px in rise_sweep:
             for side in ("up_left", "up_right"):
-                dst_y, dst_x, depth = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
+                dst_y, dst_x, depth, span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
                 n_checked += 1
                 label = f"tile_px={tile_px} rise_px={rise_px} side={side}"
-                if dst_x.min() < 1 or dst_x.max() > 2 * half_w - 2:
-                    problems.append(f"{label}: dst_x out of [1, {2 * half_w - 2}]: [{dst_x.min()}, {dst_x.max()}]")
-                if dst_y.min() < -rise_px or dst_y.max() > half_h - 2:
-                    problems.append(f"{label}: dst_y out of [{-rise_px}, {half_h - 2}]: [{dst_y.min()}, {dst_y.max()}]")
-                if depth.min() < 0 or depth.max() >= rise_px:
-                    problems.append(f"{label}: depth out of [0, {rise_px}): [{depth.min()}, {depth.max()}]")
+
+                for name, arr in (("dst_y", dst_y), ("dst_x", dst_x), ("depth", depth), ("span", span)):
+                    if arr.dtype != np.int64:
+                        problems.append(f"{label}: {name} dtype is {arr.dtype}, not int64")
+                if not (dst_y.shape == dst_x.shape == depth.shape == span.shape):
+                    problems.append(f"{label}: the four arrays' shapes disagree")
+
+                # Emptiness is exact, both directions.
+                should_be_empty = rise_px >= empty_threshold
+                if should_be_empty and dst_y.size != 0:
+                    problems.append(f"{label}: expected an empty band (rise_px >= {empty_threshold}), got {dst_y.size} px")
+                if not should_be_empty and dst_y.size == 0:
+                    problems.append(f"{label}: expected a non-empty band (rise_px < {empty_threshold}), got none")
+
+                # The independent oracle: the neighbor's own diamond,
+                # shifted into the caster's frame, restricted to this
+                # side's columns and to rows above the caster's silhouette.
+                off_x = -half_w if side == "up_left" else half_w
+                neighbor = {(r - half_h + rise_px, c + off_x) for r, c in diamond_pixels}
+                exposed = {
+                    (r, c)
+                    for (r, c) in neighbor
+                    if 0 <= c < 2 * half_w and used[c] and (c < half_w) == (side == "up_left") and r < tops[c]
+                }
                 pixels = list(zip(dst_y.tolist(), dst_x.tolist()))
-                if len(pixels) != len(set(pixels)):
-                    problems.append(f"{label}: (dst_y, dst_x) pairs not unique")
                 pixel_set = set(pixels)
+                if len(pixels) != len(pixel_set):
+                    problems.append(f"{label}: (dst_y, dst_x) pairs not unique")
+                if pixel_set != exposed:
+                    problems.append(
+                        f"{label}: band != the neighbor's exposed sliver "
+                        f"(extra={sorted(pixel_set - exposed)[:6]}, missing={sorted(exposed - pixel_set)[:6]})"
+                    )
+
+                if dst_y.size:
+                    if dst_x.min() < 1 or dst_x.max() > 2 * half_w - 2:
+                        problems.append(f"{label}: dst_x out of [1, {2 * half_w - 2}]: [{dst_x.min()}, {dst_x.max()}]")
+                    apex_cols = {half_w - 1, half_w} & set(dst_x.tolist())
+                    if apex_cols:
+                        problems.append(f"{label}: dst_x reached apex column(s) {sorted(apex_cols)} -- used[partner] mask dropped?")
+                    lo = rise_px - half_h + 1
+                    if dst_y.min() < lo or dst_y.max() > half_h - 2:
+                        problems.append(f"{label}: dst_y out of [{lo}, {half_h - 2}]: [{dst_y.min()}, {dst_y.max()}]")
+                    if depth.min() < 0 or not (depth < span).all():
+                        problems.append(f"{label}: depth out of [0, span) elementwise")
+
                 other_side = "up_right" if side == "up_left" else "up_left"
                 other_pixels = side_pixels.get((tile_px, rise_px, other_side))
                 if other_pixels is not None and (pixel_set & other_pixels):
@@ -381,15 +434,6 @@ def check_shadow_geometry() -> tuple[bool, str]:
                     problems.append(f"{label}: overlaps diamond_indices' own pixels")
                 if pixel_set & skirt_pixels:
                     problems.append(f"{label}: overlaps skirt_quad_indices' own pixels")
-                shadow_cols |= set(np.unique(dst_x).tolist())
-
-        if shadow_cols != diamond_cols:
-            missing = diamond_cols - shadow_cols
-            extra = shadow_cols - diamond_cols
-            problems.append(
-                f"tile_px={tile_px}: shadow columns != diamond_indices columns "
-                f"(missing={sorted(missing)[:10]}, extra={sorted(extra)[:10]})"
-            )
 
     try:
         iso_geometry.shadow_quad_indices(64, 4, "bogus_side")
@@ -405,8 +449,9 @@ def check_shadow_geometry() -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, (
-        f"OK ({n_checked} (tile_px, rise_px, side) combinations, all indices in bounds, "
-        f"disjoint from each other/diamond/skirts, columns match diamond_indices)"
+        f"OK ({n_checked} (tile_px, rise_px, side) combinations, every band exactly equals its "
+        f"neighbor's exposed sliver, all indices in bounds, disjoint from each other/diamond/skirts, "
+        f"emptiness boundary exact)"
     )
 
 

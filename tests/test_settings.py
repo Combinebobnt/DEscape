@@ -92,8 +92,60 @@ def test_set_elev_step_pct_migrates_away_legacy_divisor(tmp_path: Path) -> None:
     _write_config(tmp_path, "elev_step_divisor: 4\n")
     settings.set_elev_step_pct(60)
     on_disk = (tmp_path / "config.yaml").read_text()
-    assert "elev_step_pct: 60" in on_disk
+    # 50, not 60 -- set_elev_step_pct snaps, so a programmatic caller can't
+    # persist an off-stop value.
+    assert "elev_step_pct: 50" in on_disk
     assert "elev_step_divisor" not in on_disk
+
+
+def test_elev_step_stops_span_min_to_max() -> None:
+    assert settings.ELEV_STEP_PCT_STOPS[0] == settings.ELEV_STEP_PCT_MIN
+    assert settings.ELEV_STEP_PCT_STOPS[-1] == settings.ELEV_STEP_PCT_MAX
+    assert all(
+        b - a == settings.ELEV_STEP_PCT_STEP
+        for a, b in zip(settings.ELEV_STEP_PCT_STOPS, settings.ELEV_STEP_PCT_STOPS[1:])
+    )
+
+
+def test_the_default_pct_is_itself_a_stop() -> None:
+    """Load-bearing twice over: the slider's index lookup can't represent an
+    off-stop default, and _update_elev_step_label's "(Tall, default)" suffix
+    only ever shows if some stop equals ELEV_STEP_DEFAULT_PCT."""
+    assert iso_geometry.ELEV_STEP_DEFAULT_PCT in settings.ELEV_STEP_PCT_STOPS
+
+
+def test_off_stop_config_value_snaps_on_read(tmp_path: Path) -> None:
+    _write_config(tmp_path, "elev_step_pct: 48\n")
+    assert settings.get_elev_step_pct() == 50
+
+
+def test_config_value_below_the_new_floor_snaps_up_not_to_default(tmp_path: Path) -> None:
+    """10 was the old ELEV_STEP_PCT_MIN, so real configs hold it. The read
+    gate gates on 1 <= raw <= MAX, not MIN, precisely so this snaps to the
+    floor rather than falling back to the default."""
+    _write_config(tmp_path, "elev_step_pct: 10\n")
+    assert settings.get_elev_step_pct() == settings.ELEV_STEP_PCT_MIN
+
+
+def test_elev_step_index_round_trips_every_stop() -> None:
+    for pct in settings.ELEV_STEP_PCT_STOPS:
+        assert settings.elev_step_pct_for_index(settings.elev_step_index(pct)) == pct
+
+
+def test_elev_step_index_snaps_an_off_stop_pct_instead_of_raising() -> None:
+    # A bare ELEV_STEP_PCT_STOPS.index() would raise ValueError here, which
+    # would crash SettingsDialog on construction rather than degrade.
+    assert settings.elev_step_index(48) == settings.elev_step_index(50)
+
+
+def test_a_snapped_write_survives_a_fresh_read_from_disk(tmp_path: Path, monkeypatch) -> None:
+    """The other set_elev_step_pct tests read back through the module-level
+    _elev_step_pct cache, so they'd pass even if the snap never reached the
+    file. Clearing the cache forces the real between-sessions path."""
+    settings.set_elev_step_pct(60)
+    monkeypatch.setattr(settings, "_elev_step_pct", None)
+    assert settings.get_elev_step_pct() == 50
+    assert "elev_step_pct: 50" in (tmp_path / "config.yaml").read_text()
 
 
 def test_get_window_size_falls_back_below_minimum(tmp_path: Path) -> None:

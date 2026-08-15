@@ -98,7 +98,12 @@ def _scripted_ops(mm):
 
     def op_raise():
         tile = mm.get_tile(cx, cy)
-        set_tile_elevation(mm, cx, cy, min(iso_geometry.MAX_ELEVATION, tile.elevation + 1))
+        # A plain min(MAX_ELEVATION, elevation + 1) is a silent no-op when the
+        # tile is already at the ceiling, which produces no dirty tiles and
+        # silently skips this op instead of exercising it -- raise if below
+        # the ceiling, otherwise lower, so the op always produces a real change.
+        target = tile.elevation + 1 if tile.elevation < iso_geometry.MAX_ELEVATION else max(iso_geometry.MIN_ELEVATION, tile.elevation - 1)
+        set_tile_elevation(mm, cx, cy, target)
 
     def op_lower():
         tile = mm.get_tile(cx, cy)

@@ -26,6 +26,13 @@ def main() -> None:
         "displacement) instead of Flat. No effect without --png. Units render "
         "here too, each at its own tile's elevation.",
     )
+    parser.add_argument(
+        "--sloped",
+        action="store_true",
+        help="Render --png in Sloped mode (Phase 6: continuous per-corner "
+        "ramps, no skirts) instead of Flat. Takes precedence over --iso if "
+        "both are given. No effect without --png.",
+    )
     args = parser.parse_args()
 
     s = load_map_and_units(args.scenario)
@@ -59,8 +66,10 @@ def main() -> None:
     if args.png:
         from descape.render import save_png
 
-        save_png(s, str(args.png), scale=args.scale, isometric=args.iso)
-        print(f"\nWrote {args.png}{' (Stepped isometric)' if args.iso else ''}")
+        style = "sloped" if args.sloped else None
+        save_png(s, str(args.png), scale=args.scale, isometric=args.iso, style=style)
+        label = " (Sloped)" if args.sloped else (" (Stepped isometric)" if args.iso else "")
+        print(f"\nWrote {args.png}{label}")
 
 
 if __name__ == "__main__":

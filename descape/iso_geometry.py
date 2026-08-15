@@ -33,7 +33,7 @@ project's real Phase 0 benchmark numbers.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import lru_cache
 
 import numpy as np
@@ -58,9 +58,11 @@ import numpy as np
 #
 # At this fraction, half_dims(tile_px) works out so a diamond's bounding
 # box is exactly (tile_px, tile_px // 2) for tile_px divisible by 4 (true
-# for every tile_px this project actually uses: 64, 32, 16) -- i.e. the
-# diamond keeps its source texture's full width and halves its height, the
-# standard "square texture warped to an isometric diamond" convention.
+# for every tile_px this project actually uses: 8, 16, 32, 64, 128 as of
+# Phase B-D's mip levels, MIP_MIN/MAX_TILE_PIXELS below -- previously just
+# 64, 32, 16 pre-mips) -- i.e. the diamond keeps its source texture's full
+# width and halves its height, the standard "square texture warped to an
+# isometric diamond" convention.
 ISO_HALF_W_FRACTION = 0.5
 
 # How many elevation levels it takes to raise a tile by one full half_h --
@@ -111,29 +113,53 @@ ELEV_STEP_DIVISOR = 2
 # is just where the dial starts, not a ceiling.
 ELEV_STEP_DEFAULT_PCT = 100 // ELEV_STEP_DIVISOR
 
-# The real legal elevation range -- 0..7 covers everything observed in this
-# project's example scenario data (0..~6), and the in-game brush doesn't
-# expose raw byte values above that either (viewer.py's Set Elevation
-# spinbox is capped the same way). Phase 2/3 sized the Stepped canvas from
-# each file's own *observed* min/max elevation instead of this fixed range,
-# which is exactly what makes Phase 4's incremental redraw unsafe: raising a
-# tile above a file's observed max moves it outside the canvas
-# canvas_size_and_origin() already allocated, and tile_screen_origin()'s
-# resulting negative screen_y silently wraps via numpy fancy indexing rather
-# than raising -- confirmed as a real reachable bug (the Elevate tool has no
-# upper clamp), not a hypothetical one. Sizing the canvas to this fixed
-# range instead (see render.py's render_terrain_iso_with_proj) closes the
-# gap outright: the canvas shape becomes a pure function of the map's
-# width/height, stable across every elevation edit, which is also a
-# precondition for Phase 4's own byte-identical-to-a-full-recomposite
-# acceptance bar -- that bar is meaningless if an edit could change the
-# canvas shape out from under the comparison. The cost is negligible,
-# confirmed directly: for a 200x200@64px map (half_h=16, elev_step=8),
-# widening from a typical observed range of ~6 to the full 7 adds at most
-# one extra elev_step of canvas headroom (<10 rows out of ~6400) and one
-# extra candidate elevation for screen_to_tile's O(range) scan.
+# The real legal elevation range -- 0..15, DE's own editor authoring ceiling
+# (the scenario format stores elevation as a u8, so a generator-made file
+# could in principle exceed 15, but no editor-authored file ever will).
+# viewer.py's Set Elevation spinbox is capped the same way. Phase 2/3 sized
+# the Stepped canvas from each file's own *observed* min/max elevation
+# instead of this fixed range, which is exactly what makes Phase 4's
+# incremental redraw unsafe: raising a tile above a file's observed max
+# moves it outside the canvas canvas_size_and_origin() already allocated,
+# and tile_screen_origin()'s resulting negative screen_y silently wraps via
+# numpy fancy indexing rather than raising -- confirmed as a real reachable
+# bug (the Elevate tool has no upper clamp), not a hypothetical one. Sizing
+# the canvas to this fixed range instead (see render.py's
+# render_terrain_iso_with_proj) closes the gap outright: the canvas shape
+# becomes a pure function of the map's width/height, stable across every
+# elevation edit, which is also a precondition for Phase 4's own
+# byte-identical-to-a-full-recomposite acceptance bar -- that bar is
+# meaningless if an edit could change the canvas shape out from under the
+# comparison. Measured cost of the full 0..15 range across the corpus: a
+# 240x240@64px map (largest corpus file) gains 64 canvas rows (+0.8%); a
+# 480x480@32px map (largest fixture) gains 32 rows (+0.4%); a 120x120@64px
+# blank template gains 64 rows (+1.6%). screen_to_tile's O(range) scan goes
+# from 8 to 16 iterations of cheap float ops -- negligible. A file with any
+# tile above this ceiling still degrades gracefully rather than corrupting:
+# refresh_region_iso / dirty_screen_bbox_iso (render.py) decline any edit
+# touching an out-of-range tile and viewer.py's _apply_dirty falls back to
+# a full re-render, which is the deliberate backstop for that case, not a
+# bug.
 MIN_ELEVATION = 0
-MAX_ELEVATION = 7
+MAX_ELEVATION = 15
+
+# Mip level ladder's content floor and ceiling, in tile_px (Phase B-D).
+#
+# MIP_MIN_TILE_PIXELS is a CONTENT floor, not a sharpness one: below 8,
+# unit dots stop being drawable at all, and a 4x4 window of a noisy
+# 512-square texture (render.py's _tile_block slices at 1:1 texel density)
+# is an arbitrary point sample, so adjacent tiles get UNCORRELATED colors
+# -- coarse levels would get noisier, the opposite of a mip. Runner-up 16:
+# visually safer, gives up a level at the default elev_step_pct and 4x the
+# fit-to-view memory. Fall back to 16 if a real eyeball pass (Phase B-D-d)
+# finds 8 too noisy.
+#
+# MIP_MAX_TILE_PIXELS = 128 is the real texel ceiling minus one octave:
+# asset_source.LOADED_TEXTURE_SIZE = 512, and render.py's _crop_offset
+# requires tile_px to divide it evenly -- 128 is the largest power of two
+# under that ceiling with real headroom left for a wraparound-free crop.
+MIP_MIN_TILE_PIXELS = 8
+MIP_MAX_TILE_PIXELS = 128
 
 
 def half_dims(tile_px: int) -> tuple[int, int]:
@@ -170,10 +196,34 @@ class IsoProjection:
     canvas_h: int
     min_elev: int
     max_elev: int
+    # Extra up-screen headroom (canvas pixels) tile_screen_bounds_swept()
+    # widens by, on top of its own elev_span term -- Stepped/Flat leave this
+    # at 0 (default, so every existing construction site is unchanged) since
+    # a tile's footprint there is fully described by its own elevation.
+    # Sloped's per-corner blend (iso_geometry.corner_rise_px) can put a
+    # corner up to one elev_step above this tile's own elevation (it's
+    # blended with neighbors, and real maps only ever have a +-1 elevation
+    # delta between neighbors), so a sloped tile's rendered footprint can
+    # reach one elev_step higher than tile_screen_bounds_swept's existing
+    # per-elevation sweep alone would predict. Deliberately NOT folded into
+    # canvas_size_and_origin's own canvas_h/origin_y math above -- see this
+    # field's own construction site (canvas_size_and_origin's
+    # corner_headroom_steps param) for why keeping it out of canvas sizing
+    # matters: a Sloped-only canvas-shape change would make
+    # render_terrain_sloped's flat-map byte-identity oracle against
+    # render_terrain_iso unreachable for a trivial reason (mismatched array
+    # shapes) rather than a real one.
+    corner_headroom_px: int = 0
 
 
 def canvas_size_and_origin(
-    w: int, h: int, tile_px: int, min_elev: int, max_elev: int, elev_step_pct: int = ELEV_STEP_DEFAULT_PCT
+    w: int,
+    h: int,
+    tile_px: int,
+    min_elev: int,
+    max_elev: int,
+    elev_step_pct: int = ELEV_STEP_DEFAULT_PCT,
+    corner_headroom_steps: int = 0,
 ) -> IsoProjection:
     """Canvas dimensions and the (origin_x, origin_y) screen offset needed
     so every tile of a w x h map, at any elevation actually observed in
@@ -207,6 +257,15 @@ def canvas_size_and_origin(
     1 rather than raising, matching this function's existing max(1, ...)
     floor on the resulting elev_step.
 
+    corner_headroom_steps sets IsoProjection.corner_headroom_px (in elev_step
+    units, not raw pixels -- elev_step is a value this function computes, not
+    one the caller has in hand yet) -- see that field's own comment. It
+    deliberately does NOT affect canvas_h/origin_y/canvas_w below: it's
+    consumed only by tile_screen_bounds_swept(), never by this function's own
+    canvas-sizing math, so Sloped's canvas shape stays identical to Stepped's
+    for the same map -- required for render_terrain_sloped's flat-map
+    byte-identity oracle against render_terrain_iso to even be comparable.
+
     Does NOT reserve any headroom for skirt_quad_indices() output -- a
     skirt hangs drop_px pixels *below* its tile's own bbox (see that
     function's docstring), and how large a drop can occur is a Phase 2
@@ -234,7 +293,164 @@ def canvas_size_and_origin(
         canvas_h=canvas_h,
         min_elev=min_elev,
         max_elev=max_elev,
+        corner_headroom_px=corner_headroom_steps * elev_step,
     )
+
+
+# Fields is_exact_mip() treats as EQUAL rather than SCALED -- absolute
+# elevation indices, not pixels, so a projection sized for a different
+# elevation range must never pass as an exact mip even if every pixel
+# field happens to cross-multiply cleanly.
+_MIP_EQUAL_FIELDS = ("min_elev", "max_elev")
+
+
+def is_exact_mip(base: IsoProjection, other: IsoProjection) -> bool:
+    """True iff `other` is an exact integer rescaling of `base` -- i.e.
+    every pixel-valued field is in the exact ratio other.tile_px :
+    base.tile_px, and min_elev/max_elev (absolute elevation indices, not
+    pixels) are identical.
+
+    Deliberately iterates dataclasses.fields(base) DYNAMICALLY rather than
+    a hand-maintained field list: IsoProjection gained a new field
+    (corner_headroom_px, for Phase 6/Sloped) during this very mip-level
+    work's own development, which is exactly the kind of drift a
+    hardcoded list would silently stop checking the day a new field
+    landed. tile_px itself is skipped (it's the ratio's own basis, and
+    other.tile_px != base.tile_px is the whole point of calling this).
+
+    Pure integer cross-multiplication (`getattr(other, f) * base.tile_px
+    == getattr(base, f) * other.tile_px`) for every scaled field -- no
+    float, no epsilon. CONSTRUCT AND COMPARE, never predict: a closed-form
+    shortcut like `half_h * elev_step_pct % 100 == 0` is sufficient but
+    not necessary and is wrong in both directions at low elev_step_pct
+    values (measured directly against canvas_size_and_origin)."""
+    for f in fields(base):
+        name = f.name
+        if name == "tile_px":
+            continue
+        base_val, other_val = getattr(base, name), getattr(other, name)
+        if name in _MIP_EQUAL_FIELDS:
+            if base_val != other_val:
+                return False
+        elif other_val * base.tile_px != base_val * other.tile_px:
+            return False
+    return True
+
+
+def mip_projection(
+    w: int,
+    h: int,
+    tile_px: int,
+    base: IsoProjection,
+    elev_step_pct: int,
+    corner_headroom_steps: int = 0,
+) -> IsoProjection | None:
+    """`base` re-derived at `tile_px`, or None if the result is not an
+    exact mip of it (see is_exact_mip). canvas_size_and_origin() stays the
+    ONLY IsoProjection constructor -- this calls it again with a different
+    tile_px and the SAME elev_step_pct, taking min_elev/max_elev from
+    `base` itself so the two can never disagree about the elevation range.
+    Returning None rather than raising is what lets a caller's level set
+    degrade to "shallower" off an elev_step_pct that yields fewer exact
+    neighbors, instead of crashing."""
+    candidate = canvas_size_and_origin(
+        w, h, tile_px, base.min_elev, base.max_elev, elev_step_pct=elev_step_pct,
+        corner_headroom_steps=corner_headroom_steps,
+    )
+    return candidate if is_exact_mip(base, candidate) else None
+
+
+def mip_tile_px_candidates(base_tile_px: int) -> dict[int, int]:
+    """Level index -> tile_px, for every power-of-two tile_px in
+    [MIP_MIN_TILE_PIXELS, MIP_MAX_TILE_PIXELS] reachable from
+    base_tile_px by a power-of-two ratio (tile_px = base_tile_px * 2**L,
+    L any integer). Level 0 (tile_px == base_tile_px) is always present,
+    even when base_tile_px itself falls outside [MIN, MAX] -- D2: scene
+    space is pinned to the reference level regardless of where it falls
+    on the mip ladder.
+
+    Pure integer arithmetic throughout -- no float, no log2. Geometry-free:
+    Flat has no projection (canvas_dims() is a bare multiply, exact at
+    every tile_px, no elev_step term to break exactness), so
+    FlatChunkCache uses this ladder UNFILTERED; IsoChunkCache instead
+    filters it through mip_projection()'s real exactness check, since
+    Stepped's elev_step term can and does break exactness at some
+    elev_step_pct values (see mip_projections_for)."""
+    out = {0: base_tile_px}
+    tile_px, level = base_tile_px, 1
+    while True:
+        tile_px *= 2
+        if tile_px > MIP_MAX_TILE_PIXELS:
+            break
+        out[level] = tile_px
+        level += 1
+    tile_px, level = base_tile_px, -1
+    while tile_px % 2 == 0:
+        tile_px //= 2
+        if tile_px < MIP_MIN_TILE_PIXELS:
+            break
+        out[level] = tile_px
+        level -= 1
+    return out
+
+
+def mip_projections_for(
+    w: int, h: int, base: IsoProjection, elev_step_pct: int, corner_headroom_steps: int = 0
+) -> dict[int, IsoProjection]:
+    """Level index -> IsoProjection, for every exact mip of `base` among
+    mip_tile_px_candidates(base.tile_px) (see is_exact_mip). Level L means
+    tile_px = base.tile_px * 2**L: POSITIVE L is FINER (mip-up), NEGATIVE L
+    is COARSER (mip-down) -- the scene-space scale factor a caller needs is
+    base.tile_px / level.tile_px == 2**-L.
+
+    Level 0 is always present and IS `base` itself (not a reconstructed
+    copy) -- and doubles as the self-check on elev_step_pct: the identity
+    level is built exactly like every other candidate and REQUIRED to come
+    back field-equal to `base`, via an assert, so a caller passing an
+    elev_step_pct that did not produce `base` fails loudly here rather
+    than silently yielding a wrong level set. Measured on 480x480 with
+    base built at tile_px=32/elev_step_pct=50: passing 25 or 75 here
+    raises (25's own exact set doesn't even contain 32; 75's is empty),
+    while passing 55 -- inside the same round() band at this half_h --
+    reproduces base exactly and merely yields a SHALLOWER set ({8,16,32}
+    instead of {8,16,32,64,128}). A genuinely wrong elev_step_pct fails
+    loudly; one inside the rounding band degrades safely, never silently
+    wrong.
+
+    Returns a dict of length >= 1. A length-1 result ({0: base}) is a
+    normal answer, not a failure: base.tile_px=16 at elev_step_pct=10
+    (reachable via render.tile_pixels_for_map at Potato/Potatest quality)
+    has NO exact neighbor at all -- callers must handle mip_levels() == [0].
+
+    The exactness matrix, re-measured against canvas_size_and_origin
+    itself for 480x480, 120x120 and 200x144 (identical in all three) at
+    base tile_px 32 and 64:
+
+        elev_step_pct 10                -> {32, 64}
+        elev_step_pct 25, 75, 125, 175  -> {16, 32, 64, 128}
+        elev_step_pct 50, 150           -> {8, 16, 32, 64, 128}
+        elev_step_pct 100, 200          -> {4, 8, 16, 32, 64, 128}, 4 excluded by MIP_MIN
+
+    The set is BASE-RELATIVE, not absolute: at elev_step_pct=10 with base
+    16 it is the singleton {16}."""
+    out: dict[int, IsoProjection] = {}
+    for level, tile_px in mip_tile_px_candidates(base.tile_px).items():
+        if level == 0:
+            identity = canvas_size_and_origin(
+                w, h, tile_px, base.min_elev, base.max_elev, elev_step_pct=elev_step_pct,
+                corner_headroom_steps=corner_headroom_steps,
+            )
+            assert is_exact_mip(base, identity), (
+                f"mip_projections_for's identity level (tile_px={tile_px}) did not reproduce "
+                f"`base` exactly -- elev_step_pct={elev_step_pct} is probably not the value "
+                f"`base` was itself built with"
+            )
+            out[0] = base
+            continue
+        candidate = mip_projection(w, h, tile_px, base, elev_step_pct, corner_headroom_steps=corner_headroom_steps)
+        if candidate is not None:
+            out[level] = candidate
+    return out
 
 
 def tile_screen_origin(x: int, y: int, elevation: int, proj: IsoProjection) -> tuple[int, int]:
@@ -296,8 +512,10 @@ def diamond_indices(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
 
     lru_cache is safe and bounded here: tile_px only ever takes one of a
     handful of discrete values in this project (SMALL/LARGE_MAP_TILE_PIXELS,
-    each optionally halved again by potato mode -- 64, 32, 16 today, see
-    render.py's tile_pixels_for_map), so the cache can't grow unbounded."""
+    each optionally halved again by potato mode -- 64, 32, 16 pre-mips, see
+    render.py's tile_pixels_for_map; Phase B-D's mip levels make the full
+    live set MIP_MIN_TILE_PIXELS..MIP_MAX_TILE_PIXELS, i.e. 8..128, still
+    only 5 values), so this cache (maxsize=8) can't grow unbounded."""
     half_w, half_h = half_dims(tile_px)
     dy, dx = np.mgrid[0 : 2 * half_h, 0 : 2 * half_w]
     inside = _diamond_membership(dx, dy, half_w, half_h)
@@ -398,16 +616,31 @@ def skirt_quad_indices(
 
 
 @lru_cache(maxsize=256)
-def shadow_quad_indices(tile_px: int, rise_px: int, side: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pure geometry for one contact-shadow band -- the rise_px-tall strip
-    cast UP-SCREEN from a raised column's own two BACK-facing diamond
-    edges, onto whatever terrain is already painted behind it (an earlier,
-    smaller-d tile in depth_order -- see render.py's _render_tile_iso for
-    how a caller turns this into a real darkened composite). The up-screen
-    counterpart to skirt_quad_indices' down-screen drop, for the two
-    diamond edges a skirt never touches: "up_left" (back neighbor
-    (x, y-1), up-LEFT on screen since screen_x=(x+y)*half_w) and
-    "up_right" (back neighbor (x+1, y), up-RIGHT).
+def shadow_quad_indices(
+    tile_px: int, rise_px: int, side: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Pure geometry for one contact-shadow band -- the WEDGE of the back
+    neighbor still visible above a raised column's own two BACK-facing
+    diamond edges, onto whatever terrain is already painted behind it (an
+    earlier, smaller-d tile in depth_order -- see render.py's
+    _render_tile_iso for how a caller turns this into a real darkened
+    composite). The up-screen counterpart to skirt_quad_indices'
+    down-screen drop, for the two diamond edges a skirt never touches:
+    "up_left" (back neighbor (x, y-1), up-LEFT on screen since
+    screen_x=(x+y)*half_w) and "up_right" (back neighbor (x+1, y),
+    up-RIGHT).
+
+    A WEDGE, not a constant rise_px-tall strip -- this is the whole point,
+    and the earlier constant-height version was a real bug (measured: only
+    61.3% of darkened pixels landed on the intended neighbor at
+    tile_px=64, the rest on tiles never tested for an elevation delta,
+    usually the diagonal (x+1, y-1) at the SAME elevation as the caster,
+    i.e. a shadow drawn across flat ground -- see maintainer/docs/
+    PLAN_CONTACT_SHADOW.md). The caster's back half-edge and the
+    neighbor's overlapping half-edge run at OPPOSITE slopes and converge
+    at the caster's apex column, so the neighbor's exposed sliver tapers
+    to zero there. Each column gets its own height, `avail`, and the band
+    is by construction a SUBSET of the neighbor's own diamond.
 
     Column split is a strict, non-overlapping partition of the diamond's
     real columns (per _diamond_column_edges' `used` mask): up_left gets
@@ -418,51 +651,283 @@ def shadow_quad_indices(tile_px: int, rise_px: int, side: str) -> tuple[np.ndarr
     owns a disjoint half of the top edge, and a shared column here would
     double-darken that column when both neighbors are lower.
 
-    Returns (dst_y, dst_x, depth) -- THREE arrays, not four like
-    diamond_indices/skirt_quad_indices. No src_y/src_x: this paints no
-    texture, only darkens whatever's already there, so there's nothing to
-    sample. depth is a 0-based row distance from the contact row (0 at the
-    row touching the diamond's own top edge, rise_px-1 at the band's
-    farthest row) -- render.py's compositor turns depth into a darkening
-    factor; falloff is compositing POLICY and deliberately doesn't live
-    here, the same split skirt_quad_indices already keeps (SKIRT_SHADE
-    lives in render.py, not in this module).
+    Returns (dst_y, dst_x, depth, span) -- FOUR int64 arrays. No
+    src_y/src_x: this paints no texture, only darkens whatever's already
+    there, so there's nothing to sample. depth is a 0-based row distance
+    from the contact row (0 at the row touching the diamond's own top
+    edge); span is that column's own total band height, repeated for every
+    one of its rows, so `0 <= depth < span` holds elementwise.
+
+    depth and span are returned as separate INTEGERS rather than a
+    pre-divided float ratio on purpose: depth/span is a normalisation
+    choice, i.e. the first step of falloff POLICY, and this module's
+    documented split keeps policy in render.py (SKIRT_SHADE/CONTACT_SHADE
+    live there, not here -- the same split skirt_quad_indices already
+    keeps). It also keeps _shadow_factors' float32 pinning a render.py
+    decision rather than a cross-module dtype coupling, and lets
+    tools/verify_iso_geometry.py assert 0 <= depth < span elementwise.
 
     Documented extent -- dst_x in [1, 2*half_w - 2] (NOT the looser
     [0, 2*half_w) skirt_quad_indices documents: admitting columns 0 or
     2*half_w - 1 here would be exactly the _diamond_column_edges `used`-
-    filter bug Step 0 fixed for skirts, recurring). dst_y in
-    [-rise_px, half_h - 2] -- goes NEGATIVE by design (the whole point is
-    reaching above the diamond's own row 0), callers MUST clip (see
-    render.py's _clipped_darken). depth in [0, rise_px).
+    filter bug Step 0 fixed for skirts, recurring), and additionally never
+    exactly half_w - 1 or half_w -- the two apex-adjacent columns, where
+    the wedge has tapered to zero. dst_y in [rise_px - half_h + 1,
+    half_h - 2] -- still goes NEGATIVE (the whole point is reaching above
+    the diamond's own row 0), so callers MUST still clip (see render.py's
+    _clipped_darken), but by at most half_h - 2 rather than by rise_px,
+    and the reach SHRINKS as rise_px grows. depth in [0, span).
+
+    EMPTY BAND: once rise_px >= 2*half_h - 2 the caster fully hides its
+    neighbor and all four arrays come back empty (measured first-empty
+    rise: 6 / 14 / 30 for tile_px 16 / 32 / 64). Nothing is drawn -- no
+    1px floor, no clamp. Callers must tolerate size-0 arrays.
 
     NOT a mirror of skirt_quad_indices' geometry -- don't read it as one.
     A skirt bridges the real gap between two tiles' diamonds (its own
     neighbor's elevation sets drop_px exactly). This doesn't bridge
-    anything: at delta=2, the back neighbor's own diamond already sits at
-    the caster's own rows, so a 2*elev_step band clears the neighbor
-    entirely and darkens terrain further back still. Harmless for the
-    readability goal (the band still hugs the column's own silhouette),
-    and irrelevant under this project's +-1 elevation invariant, but the
-    two functions answer different geometric questions and happen to
-    share a construction technique, not a shape."""
+    anything -- it SUBSETS: the band is by construction confined to the
+    part of the back neighbor's own diamond the caster doesn't already
+    cover, so a larger delta shades LESS (and eventually nothing), where a
+    larger skirt drop covers more. The two functions answer different
+    geometric questions and happen to share a construction technique, not
+    a shape."""
     if side not in ("up_left", "up_right"):
         raise ValueError(f"side must be 'up_left' or 'up_right', got {side!r}")
     if rise_px <= 0:
         raise ValueError(f"rise_px must be positive, got {rise_px}")
-    half_w, _half_h = half_dims(tile_px)
+    half_w, half_h = half_dims(tile_px)
     tops, _bottoms, used = _diamond_column_edges(tile_px)
     cols = np.arange(2 * half_w)
     in_side = (cols < half_w) if side == "up_left" else (cols >= half_w)
     edge_x = cols[used & in_side]
-    edge_y = tops[edge_x] - 1
+    # The neighbor's column overlapping this one: its diamond sits at
+    # (-half_w, -half_h + rise_px) from ours for up_left, (+half_w, same)
+    # for up_right -- so its row r maps to our r - half_h + rise_px.
+    # in_side is applied first, so partner is always in range; a defensive
+    # clip here would only mask an indexing bug.
+    partner = edge_x + (half_w if side == "up_left" else -half_w)
 
-    depths = np.arange(rise_px)
-    n_edge = edge_x.size
-    dst_y = (edge_y[:, None] - depths[None, :]).ravel().astype(np.int64)
-    dst_x = np.broadcast_to(edge_x[:, None], (n_edge, rise_px)).ravel().astype(np.int64)
-    depth = np.broadcast_to(depths[None, :], (n_edge, rise_px)).ravel().astype(np.int64)
-    return dst_y, dst_x, depth
+    # used[partner] is REQUIRED, not belt-and-braces: tops is argmax over
+    # the membership mask, which returns 0 for the two UNUSED columns (0
+    # and 2*half_w - 1). The apex-adjacent caster column pairs with an
+    # unused partner, so without this mask the formula reads tops == 0 and
+    # invents a half_h - rise_px tall band exactly where the diagonal
+    # (x+1, y-1) sits -- the mechanism behind the flat-ground shadows.
+    avail = np.where(used[partner], tops[edge_x] - (tops[partner] - half_h + rise_px), 0)
+    avail = np.maximum(avail, 0)
+    keep = avail > 0
+    edge_x = edge_x[keep]
+    avail = avail[keep]
+
+    # cumsum(avail) - avail, NOT concatenate(([0], cumsum(avail)[:-1])):
+    # the latter is length 1 when avail is empty and np.repeat then
+    # raises. This form makes the empty case fall out with no branch.
+    starts = np.cumsum(avail) - avail
+    depth = np.arange(int(avail.sum())) - np.repeat(starts, avail)
+    dst_y = (np.repeat(tops[edge_x] - 1, avail) - depth).astype(np.int64)
+    dst_x = np.repeat(edge_x, avail).astype(np.int64)
+    span = np.repeat(avail, avail).astype(np.int64)
+    return dst_y, dst_x, depth.astype(np.int64), span
+
+
+def corner_rise_px(elevations: np.ndarray, proj: IsoProjection, rule: str = "average") -> np.ndarray:
+    """Phase 6 (Sloped)'s per-corner height field: a (h+1, w+1) int64 array
+    of canvas-pixel rise, corner_rise[cy, cx] blending the up-to-4 real
+    tiles whose own grid footprint touches grid vertex (cx, cy) -- tiles
+    (cx-1, cy-1)/(cx, cy-1)/(cx-1, cy)/(cx, cy) ["NW"/"NE"/"SW"/"SE" from
+    the corner's own point of view], clipped at the map edge (a border
+    vertex has as few as 1 touching tile, a corner one has exactly 1, an
+    interior vertex has all 4).
+
+    rule picks how those 1-4 touching elevations combine into one corner
+    value -- "max"/"min" (steepest reasonable readings of a convex/concave
+    corner) or "average" (today's default, per the 2026-08-09 preliminary
+    screenshot read -- see docs/PLAN_V2_6.md's Track C. A constant, not a
+    structural choice: switching it never touches sloped_quad_indices or
+    anything downstream). "average" is computed as
+    `sum(touching elevations) * elev_step // count`, NOT
+    `mean(touching elevations * elev_step)` -- the two differ whenever
+    count doesn't evenly divide the sum, and only the sum-first form
+    guarantees a FLAT map (every touching tile at the same elevation e)
+    yields exactly `e * elev_step` at every corner, integer, no rounding --
+    the property render_terrain_sloped's flat-map oracle against
+    render_terrain_iso depends on.
+
+    Whole-array, not per-tile: called once per render/patch (like
+    render.py's _terrain_grid_and_elevations), not once per tile -- a
+    tile's own 4 corner values are then plain (cy, cx) lookups into this
+    array's output, shared with its neighbors by construction (the same
+    array index for the same physical grid vertex from every tile that
+    touches it), which is what keeps neighboring tiles' sloped_quad_indices
+    calls seeing IDENTICAL corner values at a shared vertex -- see that
+    function's own docstring for why that identity is what keeps adjacent
+    tiles' warps meeting exactly rather than merely approximately."""
+    if rule not in ("max", "min", "average"):
+        raise ValueError(f"rule must be 'max', 'min', or 'average', got {rule!r}")
+    h, w = elevations.shape
+    elev_step = proj.elev_step
+    sums = np.zeros((h + 1, w + 1), dtype=np.int64)
+    counts = np.zeros((h + 1, w + 1), dtype=np.int64)
+    maxes = np.full((h + 1, w + 1), -1, dtype=np.int64)
+    mins = np.full((h + 1, w + 1), np.iinfo(np.int64).max, dtype=np.int64)
+    # (rows, cols) is where THIS tile's elevation lands in the (h+1, w+1)
+    # corner grid -- e.g. rows=slice(1, h+1), cols=slice(1, w+1) places tile
+    # (x, y)'s elevation at corner (x+1, y+1), its own SE corner, which is
+    # simultaneously corner (cx, cy)'s "NW-quadrant tile" from that corner's
+    # point of view. Four placements, one per quadrant, each just the same
+    # elevations array shifted by one row and/or column.
+    for rows, cols in (
+        (slice(1, h + 1), slice(1, w + 1)),  # this tile is corner's NW-quadrant tile
+        (slice(1, h + 1), slice(0, w)),  # NE-quadrant tile
+        (slice(0, h), slice(1, w + 1)),  # SW-quadrant tile
+        (slice(0, h), slice(0, w)),  # SE-quadrant tile
+    ):
+        sums[rows, cols] += elevations
+        counts[rows, cols] += 1
+        maxes[rows, cols] = np.maximum(maxes[rows, cols], elevations)
+        mins[rows, cols] = np.minimum(mins[rows, cols], elevations)
+    if rule == "max":
+        return maxes * elev_step
+    if rule == "min":
+        return mins * elev_step
+    return (sums * elev_step) // counts
+
+
+@lru_cache(maxsize=8)
+def tile_uv_fractions(tile_px: int) -> tuple[np.ndarray, np.ndarray]:
+    """(fp, fq), one entry per diamond_indices(tile_px) destination pixel in
+    the SAME order (zip against diamond_indices' own dst_y/dst_x to know
+    which physical pixel each value belongs to) -- each in [0, 1],
+    independently reaching 0/1 exactly at the diamond's own 4 tips.
+
+    Derived from each destination pixel's (u, v) diamond-local coordinate
+    -- the same change of basis _inverse_sample uses for texture sampling,
+    reused here for a different purpose. The identity
+    |u|+|v| == max(|u+v|, |v-u|) (a 45-degree rotation) turns the diamond
+    |u|+|v|<=1 into the full unit square in (p, q) = (u+v, v-u) space, so
+    (fp, fq) = ((p+1)/2, (q+1)/2) parameterize that square directly --
+    which is what lets Phase 6 (Sloped)'s _corner_weights() do a plain
+    bilinear blend instead of a general barycentric triangle split, and
+    what lets render.py's slope shading take a closed-form gradient of
+    that same bilinear patch.
+
+    Tip -> grid-corner correspondence (derived directly from the continuous
+    isometric formula screen_x=(mapx+mapy)*half_w, screen_y=(mapy-mapx)*
+    half_h relative to a tile's own center -- not guessed, and confirmed by
+    tests/test_sloped_geometry.py's partition check): the diamond's
+    screen-TOP tip (fp=0, fq=0) is grid corner (x+1, y) ["NE"],
+    screen-LEFT (fp=0, fq=1) is (x, y) ["NW"], screen-BOTTOM (fp=1, fq=1)
+    is (x, y+1) ["SW"], screen-RIGHT (fp=1, fq=0) is (x+1, y+1) ["SE"].
+    Equivalently, in AXIS-ALIGNED tile-fraction terms (fx = mapx - x,
+    fy = mapy - y, both in [0, 1]): fx = 1 - fq, fy = fp.
+
+    lru_cache is safe/bounded here for the same reason diamond_indices'
+    own cache is: tile_px only ever takes a handful of discrete values."""
+    dst_y, dst_x, _src_y, _src_x = diamond_indices(tile_px)
+    half_w, half_h = half_dims(tile_px)
+    u = (dst_x.astype(np.float64) + 0.5 - half_w) / half_w
+    v = (dst_y.astype(np.float64) + 0.5 - half_h) / half_h
+    fp = (u + v + 1.0) / 2.0
+    fq = (v - u + 1.0) / 2.0
+    return fp, fq
+
+
+@lru_cache(maxsize=8)
+def _corner_weights(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(w_nw, w_ne, w_sw, w_se) bilinear corner-blend weights, one entry per
+    diamond_indices(tile_px) destination pixel, in the SAME order as
+    tile_uv_fractions() (see that function for the (fp, fq) derivation and
+    the tip <-> grid-corner correspondence this directly encodes)."""
+    fp, fq = tile_uv_fractions(tile_px)
+    w_ne = (1 - fp) * (1 - fq)
+    w_nw = (1 - fp) * fq
+    w_sw = fp * fq
+    w_se = fp * (1 - fq)
+    return w_nw, w_ne, w_sw, w_se
+
+
+@lru_cache(maxsize=2048)
+def sloped_quad_indices(
+    tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sloped mode's counterpart to diamond_indices -- same destination
+    PIXEL SET and same source sampling (this never changes which pixels a
+    tile owns or which texel each one reads, only how far up-screen each
+    pixel sits), with dst_y additionally warped by the tile's 4 corner
+    pixel-rises (corner_rise_px()'s output at this tile's own 4 grid
+    corners: (x, y), (x+1, y), (x, y+1), (x+1, y+1) for d_nw/d_ne/d_sw/d_se
+    respectively) instead of diamond_indices' single uniform per-tile shift.
+
+    Normalizes against min(d_nw, d_ne, d_sw, d_se) before computing anything
+    -- dst_y's own smallest value stays 0, matching diamond_indices'
+    convention, and the cache key collapses every "all four corners equal"
+    case (any absolute elevation) to the SAME normalized (0, 0, 0, 0) key.
+    The caller MUST subtract that same minimum from tile_screen_origin()'s
+    own base_y before painting -- this function folds the remainder into
+    dst_y, not into a returned offset, the same "derived pixel quantity
+    folded into base_y, not returned separately" pattern render.py's
+    skirt/shadow callers already use. See render.py's _render_tile_sloped.
+
+    Delegates to diamond_indices(tile_px) verbatim when all four corners
+    are equal (always (0, 0, 0, 0) after normalization) -- not an
+    approximation of that case, the EXACT SAME arrays, floating-point warp
+    math never runs. That's what makes render_terrain_sloped's flat-map
+    output assertable byte-identical to render_terrain_iso's, rather than
+    merely close: an independently-derived bilinear result at equal
+    corners could differ from diamond_indices' by a stray floating-point
+    ULP at a floor() boundary, which byte-identity would catch as a
+    (spurious) failure.
+
+    The warp is applied as ONE rounded shift per screen column (that
+    column's mean rise, rounded once), not per pixel. Rounding each pixel's
+    rise independently is what the first version did, and it left thin
+    unpainted seams inside every sloped tile: within a column, rise varies
+    over its full corner-to-corner range, so wherever it DECREASED down the
+    column, round() ticked down by 1 across some row -- that -1 cancelled
+    the +1 step dst_y already takes, two source pixels collapsed onto one
+    destination row, and the row between them was never written at all.
+    Against a zeroed canvas that read on screen as nested dark arcs
+    following the bilinear iso-contour. A rigid per-column translation of
+    an already-contiguous run (diamond_indices guarantees each column's
+    un-warped dst_y values are contiguous, by construction of a real
+    diamond) can produce neither a gap nor a duplicate -- see
+    tests/test_sloped_geometry.py's per-column contiguity check.
+
+    What that gives up, stated plainly because it is a geometric
+    approximation and not a rounding detail: a rigid shift carries no
+    intra-column COMPRESSION, so a tile keeps its full unwarped 2*half_h
+    vertical extent instead of foreshortening with the slope. At
+    tile_px=64 (elev_step=8), a one-level north-south ramp paints 32 rows
+    where the true sloped silhouette is 24. This is forced, not chosen:
+    under this function's fixed pixel count, a per-column mapping that is
+    contiguous and order-preserving can ONLY be a rigid translation, so
+    real compression means a variable-length resample -- a different return
+    contract, which would also break _slope_shade's positional alignment
+    and the whole-map partition counts. That is the thing to revisit
+    alongside the known tile-to-tile boundary seams, not separately.
+
+    maxsize=2048, not skirt_quad_indices'/shadow_quad_indices' 256: this
+    key is a 4-tuple under an averaging rule, not those functions' 3-tuple,
+    so the reachable key space is larger for the same real maps -- see
+    tests/test_sloped_geometry.py's corpus-tier cardinality measurement,
+    which this constant should be revisited against if it ever undersizes
+    in practice (a bounded lru_cache degrades to slower re-computation on a
+    miss, never incorrect output, so undersizing is a perf regression, not
+    a correctness one)."""
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+    nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    if nw == 0 and ne == 0 and sw == 0 and se == 0:
+        return diamond_indices(tile_px)
+    dst_y, dst_x, src_y, src_x = diamond_indices(tile_px)
+    w_nw, w_ne, w_sw, w_se = _corner_weights(tile_px)
+    rise = w_nw * nw + w_ne * ne + w_sw * sw + w_se * se
+    half_w, _half_h = half_dims(tile_px)
+    col_sum = np.bincount(dst_x, weights=rise, minlength=2 * half_w)
+    col_count = np.bincount(dst_x, minlength=2 * half_w)
+    col_shift = np.round(col_sum / np.maximum(col_count, 1)).astype(np.int64)
+    sloped_dst_y = dst_y - col_shift[dst_x]
+    return sloped_dst_y, dst_x, src_y, src_x
 
 
 def ground_outline_corners(w: int, h: int, proj: IsoProjection) -> tuple[tuple[int, int], ...]:
@@ -536,10 +1001,11 @@ def tile_screen_bounds_swept(x, y, proj: IsoProjection):
     need to change it in one place. x-extent is elevation-independent
     (screen_x doesn't depend on elevation at all -- see tile_screen_origin);
     y-extent is tallest at max_elev, MINUS the contact-shadow headroom a
-    tile at max_elev could cast even further up-screen onto whatever's
-    behind it (shadow_quad_indices' own dst_y goes negative by design --
-    see that function's docstring), and lowest (plus a full skirt-headroom
-    drop) at min_elev, matching canvas_size_and_origin's own derivation.
+    tile could cast even further up-screen onto whatever's behind it
+    (shadow_quad_indices' own dst_y still goes negative, though now by at
+    most half_h - 2 rather than by rise_px -- see that function's
+    docstring), and lowest (plus a full skirt-headroom drop) at min_elev,
+    matching canvas_size_and_origin's own derivation.
     Callers that don't need the full sweep (e.g. a single tile at its own
     real elevation) should use tile_screen_origin directly instead -- this
     is deliberately looser than that, by construction.
@@ -569,14 +1035,21 @@ def tile_screen_bounds_swept(x, y, proj: IsoProjection):
     # to measure: the whole-grid caller below builds and discards a
     # 230,400-entry array for it on this project's largest real map.
     y1 = y0 + 2 * half_h + 2 * elev_span
-    # A tile at max_elev can cast a contact shadow reaching up to elev_span
-    # rows further up-screen than its own top diamond (a full-range delta
-    # against a same-column back neighbor at min_elev) -- widen the top
-    # edge by the same elev_span skirt headroom already uses for the
-    # bottom edge, not a separate constant (see shadow_quad_indices'
-    # docstring: reach = delta * elev_step, delta capped at elev_span/
-    # elev_step, same scale skirt drop uses).
-    y0 = y0 - elev_span
+    # Contact-shadow headroom above the top edge. The band is a wedge whose
+    # rows run from the caster's own top edge up to at most half_h - 2 above
+    # it (dst_y bottoms out at rise_px - half_h + 1, so the reach SHRINKS as
+    # rise_px grows and is independent of max_elev) -- half_w/half_h scale,
+    # not elev_span scale, which is why half_h is the term that actually
+    # covers it. The elev_span term stays only as retained slack: it was the
+    # old (pre-wedge) bound and dropping it would tighten the candidate set
+    # for no correctness gain, while a looser bbox only ever costs a few
+    # extra rejected candidates -- never a missed one.
+    #
+    # corner_headroom_px (0 for Stepped/Flat, see IsoProjection's own
+    # comment) widens the same top edge further still -- Sloped's per-corner
+    # blend can put a corner up to one elev_step above this tile's own
+    # elevation, which shadow/skirt reach alone doesn't account for.
+    y0 = y0 - elev_span - half_h - proj.corner_headroom_px
     return x0, y0, x1, y1
 
 
@@ -626,18 +1099,25 @@ def tiles_in_screen_rect(x0: int, y0: int, x1: int, y1: int, w: int, h: int, pro
     # a contact shadow only ever reaches up-screen, never down, so it can
     # never make a tile whose downward reach doesn't touch the rect newly
     # relevant. d_hi (governed by tile_y0, the UPWARD reach) does: a tile's
-    # effective upward reach is tile_y0(d) - max_drop once its own contact
-    # shadow is counted (max_drop doubles as the max shadow reach here --
-    # see tile_screen_bounds_swept's own widening, same elev_span value),
-    # so the threshold against the rect's bottom edge (y1) has to allow for
-    # that extra reach too, or a caster tile sitting just past this rect's
-    # far edge -- close enough for its shadow to land inside, too far for
-    # its own diamond to -- gets enumerated out before the "keep" filter
-    # (which DOES already account for it, via tile_screen_bounds_swept)
-    # ever sees it. Exactly the systematic per-chunk-boundary miss
-    # tools/verify_iso_chunks.py's byte-identity check would catch.
+    # effective upward reach is tile_y0(d) - max_drop - half_h once its own
+    # contact shadow is counted, so the threshold against the rect's bottom
+    # edge (y1) has to allow for that extra reach too, or a caster tile
+    # sitting just past this rect's far edge -- close enough for its shadow
+    # to land inside, too far for its own diamond to -- gets enumerated out
+    # before the "keep" filter (which DOES already account for it, via
+    # tile_screen_bounds_swept) ever sees it. Exactly the systematic
+    # per-chunk-boundary miss tools/verify_iso_chunks.py's byte-identity
+    # check would catch.
+    #
+    # Both terms MUST match tile_screen_bounds_swept's own y0 widening
+    # exactly (max_drop is its elev_span, half_h its half_h -- the wedge
+    # band's real reach, see that function's own comment): this enumeration
+    # bound and that per-candidate "keep" filter are proven equivalent by
+    # tools/verify_iso_rect_candidates.py, so widening one without the other
+    # breaks that equivalence. Do NOT lean on the trailing +1 pad below,
+    # whose own comment declares it not load-bearing.
     d_lo = math.floor((y0 - proj.origin_y + proj.min_elev * proj.elev_step - 2 * half_h - max_drop) / half_h) - 1
-    d_hi = math.ceil((y1 - proj.origin_y + proj.max_elev * proj.elev_step + max_drop) / half_h) + 1
+    d_hi = math.ceil((y1 - proj.origin_y + proj.max_elev * proj.elev_step + max_drop + half_h) / half_h) + 1
 
     s_vals = np.arange(s_lo, s_hi + 1)
     d_vals = np.arange(d_lo, d_hi + 1)

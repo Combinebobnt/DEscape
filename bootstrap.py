@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
+VENV_SENTINEL = VENV_DIR / ".bootstrap_complete"
 READY_TIMEOUT = 30.0
 
 _TERMINAL_CANDIDATES = [
@@ -159,12 +160,21 @@ def run_step(reporter, cmd: list[str], status_text: str) -> int:
 
 
 def find_or_create_venv(reporter) -> None:
-    if VENV_PYTHON.exists():
+    if VENV_PYTHON.exists() and VENV_SENTINEL.exists():
         return
+    if VENV_DIR.exists():
+        # VENV_PYTHON exists without the sentinel (or the directory is
+        # otherwise present) means a previous run was interrupted mid-setup
+        # -- `python -m venv` creates the interpreter early, well before the
+        # venv is actually usable. Trusting a half-built venv produces
+        # confusing pip/import errors instead of just fixing itself, so wipe
+        # it and start clean.
+        shutil.rmtree(VENV_DIR)
     if run_step(reporter, [sys.executable, "-m", "venv", str(VENV_DIR)], "First-time setup -- this can take a minute...") != 0:
         fail(reporter, "couldn't create the Python virtual environment (.venv).")
     if run_step(reporter, [str(VENV_PYTHON), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], "Upgrading pip...") != 0:
         fail(reporter, "couldn't update pip.")
+    VENV_SENTINEL.touch()
 
 
 def install_dependencies(reporter) -> None:

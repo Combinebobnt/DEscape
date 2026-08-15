@@ -12,7 +12,7 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 run_all_tests.bat                                   # same, for Windows
 .venv/bin/python3 -m pytest                         # same thing, invoked directly
 
-./run_corpus_quick.sh                                # corpus/gui tier, QUICK_CORPUS_NAMES only -- ~15 min, the default
+./run_corpus_quick.sh                                # corpus/gui tier, QUICK_CORPUS_NAMES only -- ~11 min, the default
 .venv/bin/python3 -m pytest -m "corpus or slow"      # same thing, invoked directly (no flag needed)
 
 ./run_corpus_stress.sh                               # corpus/gui tier, the FULL corpus -- ~27 min
@@ -30,6 +30,15 @@ still needs the `-m` flag spelled out above.
 not skips, if ruff isn't installed. `.venv/bin/python3 -m pip install ruff`
 (`requirements-dev.txt`) before running the suite for the first time.
 
+**Anything that rebuilds `.venv` drops the dev dependencies, pytest
+included** -- `bootstrap.py` (what the `LAUNCH_DESCAPE_*` launchers run)
+installs `requirements.txt` only, correctly, since it sets up an end-user
+install rather than a development one. So a cold launcher run, or deleting
+`.venv` by hand, leaves `.venv/bin/python3 -m pytest` reporting
+`No module named pytest` until you reinstall:
+`.venv/bin/python3 -m pip install -r requirements-dev.txt`. The app itself
+works fine in that state, which is what makes it confusing.
+
 Bare `pytest` (not `.venv/bin/python3 -m pytest`) is not the documented
 invocation -- this repo has no `pyproject.toml` on purpose and isn't
 pip-installable, so nothing guarantees `pytest` on PATH resolves to this
@@ -40,11 +49,12 @@ against the real 18-file `examples/` corpus (full-canvas render comparisons
 on files up to 480x480, `~30` random rects per file per check, etc.) --
 expensive enough that running it after every routine change was its own
 problem. `conftest.py`'s `QUICK_CORPUS_NAMES` (`2_Joan_coop_1`,
-`C2_ElCid_coop_1`, `F7_2_Dos Pilas`, `F7_3_York` -- one file per real
-map-size band, including the 480x480 outlier that dominates full-corpus
+`C2_ElCid_coop_1`, `F7_2_Dos Pilas` -- a small cross-section of real
+map-size bands, including the 480x480 outlier that dominates full-corpus
 runtime the most) is what `-m "corpus or slow"` runs **by default now**,
-with no flag needed, in about 15 minutes (measured: 13m40s). Pass
-`--corpus-full` for the
+with no flag needed. `F7_3_York` (220x220) was dropped from this set
+2026-08-13; runtime dropped to about 11 minutes (measured: 11m02s), down
+from the old ~15 min (13m40s) figure. Pass `--corpus-full` for the
 complete corpus before a release or after touching rendering/write-path
 internals specifically -- routine feature work only needs the quick
 default. When iterating on a change that only touches one or two scripts,
@@ -59,7 +69,7 @@ assuming the full corpus needs re-running.
 | Marker | Contents | Default |
 |---|---|---|
 | _(none)_ | synthetic + fixture-based tests | runs |
-| `corpus` | needs the real `examples/` corpus | deselected; `-m "corpus or slow"` to opt in, restricted to `QUICK_CORPUS_NAMES` (~15 min) unless `--corpus-full` (~27 min) is also passed |
+| `corpus` | needs the real `examples/` corpus | deselected; `-m "corpus or slow"` to opt in, restricted to `QUICK_CORPUS_NAMES` (~11 min) unless `--corpus-full` (~27 min) is also passed |
 | `slow` | full-render comparisons, O(pixels) sweeps | deselected (unused so far -- no Phase 1 entry needed it) |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
 
@@ -115,7 +125,7 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   (a mix of scenario versions, sizes up to 480x480). Absent on a fresh
   clone or worktree; the corpus tier reports why it skipped rather than
   silently passing. `conftest.py`'s `QUICK_CORPUS_NAMES` is a checked-in
-  list of 4 filenames from within this corpus, not a separate directory or
+  list of 3 filenames from within this corpus, not a separate directory or
   fixture -- these are third-party scenario files, not this repo's own
   content, so nothing under `examples/` itself is ever committed. The quick
   tier is "the full corpus, filtered by name" rather than its own asset.

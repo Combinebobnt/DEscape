@@ -75,7 +75,7 @@ def pytest_addoption(parser):
     )
 
 
-# One file from each real map-size band already in examples/ (120/144/
+# A small cross-section of real map-size bands from examples/ (120/144/
 # 168/200/220/240/480 -- see README.md's "File > New Map" section for the
 # full confirmed-size list), including the 480x480 outlier that dominates
 # full-corpus runtime the most (O(pixels) render comparisons). This is the
@@ -90,7 +90,6 @@ QUICK_CORPUS_NAMES = frozenset(
         "2_Joan_coop_1_v0_13.aoe2scenario",  # 144x144
         "C2_ElCid_coop_1_v0_16.aoe2scenario",  # 120x120
         "F7_2_Dos Pilas (648).aoe2scenario",  # 480x480, the stress outlier
-        "F7_3_York (865).aoe2scenario",  # 220x220
     }
 )
 

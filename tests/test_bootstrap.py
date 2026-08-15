@@ -140,13 +140,24 @@ def test_find_or_create_venv_runs_pip_upgrade_when_missing(monkeypatch, tmp_path
     fake_venv_dir = tmp_path / ".venv"
     monkeypatch.setattr(bootstrap, "VENV_DIR", fake_venv_dir)
     monkeypatch.setattr(bootstrap, "VENV_PYTHON", bootstrap.venv_python_path(fake_venv_dir))
+    monkeypatch.setattr(bootstrap, "VENV_SENTINEL", fake_venv_dir / ".bootstrap_complete")
     calls: list[list[str]] = []
-    monkeypatch.setattr(bootstrap.subprocess, "Popen", _make_recorder(calls))
+
+    def fake_popen(cmd, **kwargs):
+        # The real `python -m venv` call is mocked out, so nothing actually
+        # creates fake_venv_dir on disk -- do it here so the later
+        # VENV_SENTINEL.touch() has a directory to land in, same as a real
+        # (successful) venv creation would leave behind.
+        fake_venv_dir.mkdir(parents=True, exist_ok=True)
+        return _make_recorder(calls)(cmd, **kwargs)
+
+    monkeypatch.setattr(bootstrap.subprocess, "Popen", fake_popen)
 
     bootstrap.find_or_create_venv(_FakeReporter())
 
     assert any("venv" in c for c in calls[0])
     assert calls[1][-4:] == ["install", "--quiet", "--upgrade", "pip"]
+    assert bootstrap.VENV_SENTINEL.exists()
 
 
 def test_find_or_create_venv_skips_pip_upgrade_when_venv_exists(monkeypatch, tmp_path) -> None:
@@ -154,14 +165,49 @@ def test_find_or_create_venv_skips_pip_upgrade_when_venv_exists(monkeypatch, tmp
     fake_venv_python = bootstrap.venv_python_path(fake_venv_dir)
     fake_venv_python.parent.mkdir(parents=True)
     fake_venv_python.touch()
+    fake_sentinel = fake_venv_dir / ".bootstrap_complete"
+    fake_sentinel.touch()
     monkeypatch.setattr(bootstrap, "VENV_DIR", fake_venv_dir)
     monkeypatch.setattr(bootstrap, "VENV_PYTHON", fake_venv_python)
+    monkeypatch.setattr(bootstrap, "VENV_SENTINEL", fake_sentinel)
     calls: list[list[str]] = []
     monkeypatch.setattr(bootstrap.subprocess, "Popen", _make_recorder(calls))
 
     bootstrap.find_or_create_venv(_FakeReporter())
 
     assert calls == []
+
+
+def test_find_or_create_venv_wipes_and_recreates_when_incomplete(monkeypatch, tmp_path) -> None:
+    """Regression test, ported from daubED after the same bug was found and
+    fixed there: force-quitting mid-setup leaves VENV_PYTHON on disk (python
+    -m venv creates the interpreter early) but the venv otherwise broken.
+    Without the sentinel, find_or_create_venv would trust that half-built
+    venv forever and every later launch would need a manual `.venv` delete
+    to recover."""
+    fake_venv_dir = tmp_path / ".venv"
+    fake_venv_python = bootstrap.venv_python_path(fake_venv_dir)
+    fake_venv_python.parent.mkdir(parents=True)
+    fake_venv_python.touch()
+    canary = fake_venv_dir / "leftover_from_interrupted_run"
+    canary.touch()
+    # Deliberately no sentinel -- this is the "interrupted mid-setup" state.
+    monkeypatch.setattr(bootstrap, "VENV_DIR", fake_venv_dir)
+    monkeypatch.setattr(bootstrap, "VENV_PYTHON", fake_venv_python)
+    monkeypatch.setattr(bootstrap, "VENV_SENTINEL", fake_venv_dir / ".bootstrap_complete")
+    calls: list[list[str]] = []
+
+    def fake_popen(cmd, **kwargs):
+        fake_venv_dir.mkdir(parents=True, exist_ok=True)
+        return _make_recorder(calls)(cmd, **kwargs)
+
+    monkeypatch.setattr(bootstrap.subprocess, "Popen", fake_popen)
+
+    bootstrap.find_or_create_venv(_FakeReporter())
+
+    assert not canary.exists()
+    assert any("venv" in c for c in calls[0])
+    assert bootstrap.VENV_SENTINEL.exists()
 
 
 def test_install_dependencies_uses_requirements_txt(monkeypatch, tmp_path) -> None:

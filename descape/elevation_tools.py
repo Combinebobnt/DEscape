@@ -20,6 +20,8 @@ doesn't cover a case we need -- see descape/scenario_io.py's module docstring.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 
 
@@ -32,3 +34,32 @@ def set_tile_elevation(mm: MapManager, x: int, y: int, elevation: int) -> None:
     tile = mm.get_tile(x, y)
     tile.elevation = elevation
     mm._elevation_tile_recursion(tile, {tile.xy})
+
+
+def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]]) -> None:
+    """Multi-tile counterpart to set_tile_elevation() above, for a brush
+    footprint -- every (x, y, elevation) in `targets` is assigned first, then
+    _elevation_tile_recursion() is run once per target tile with `xys` set to
+    the WHOLE footprint, exactly mirroring MapManager.set_elevation()'s own
+    multi-tile rectangle branch (map_manager.py's `source_tiles`/`xys`/
+    `edge_tiles` construction).
+
+    Do NOT build this by calling set_tile_elevation() once per target: that
+    passes xys={tile.xy}, a single tile, so each call's propagation is free
+    to rewrite any OTHER target tile a previous call in the same loop already
+    set -- _elevation_tile_recursion()'s `(new_x, new_y) not in xys` guard is
+    exactly what stops that, and it only works if xys is the full set up
+    front. Confirmed empirically: on flat ground the two approaches happen to
+    agree, but on ordinary uneven terrain the per-tile-loop version badly
+    over-smooths (observed flood-filling a uniform plateau across a region
+    several tiles wider than the brush, instead of a clean per-tile delta).
+
+    Requires mm.map_width == mm.map_height, same as set_tile_elevation()."""
+    footprint = {(x, y) for x, y, _ in targets}
+    tiles = []
+    for x, y, elevation in targets:
+        tile = mm.get_tile(x, y)
+        tile.elevation = elevation
+        tiles.append(tile)
+    for tile in tiles:
+        mm._elevation_tile_recursion(tile, footprint)

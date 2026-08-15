@@ -42,17 +42,28 @@ from pathlib import Path
 import pytest
 from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 
+from descape import iso_geometry
 from descape.edit_history import EditHistory, tile_state
 from descape.elevation_tools import set_tile_elevation
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
 
-# Three tile indices used by the edit-then-reload and history checks below --
-# arbitrary but fixed, and distinct from each other. Both the fixture and
-# every real example file have at least this many tiles (smallest is
-# 120x120=14,400).
-TILE_A, TILE_B, TILE_C = 0, 1, 2
+
+def _pick_tile_indices(mm) -> tuple[int, int, int]:
+    # TILE_A is always 0 (top-left corner). TILE_B and TILE_C used to be the
+    # fixed indices 1 and 2 -- directly adjacent tiles in the row-major
+    # terrain array -- which meant elevating one could pull the other along
+    # via set_tile_elevation's neighbor-slope propagation (its own docstring
+    # warns against this: "Do NOT build this by calling set_tile_elevation()
+    # once per target"). Quarter- and three-quarter-map placement keeps B and
+    # C far enough apart that no propagation cone (bounded by the elevation
+    # delta, <= MAX_ELEVATION) can reach between them, even on the smallest
+    # 120x120 fixture.
+    w, h = mm.map_width, mm.map_height
+    x1, y1 = w // 4, h // 4
+    x2, y2 = 3 * w // 4, 3 * h // 4
+    return 0, y1 * w + x1, y2 * w + x2
 
 
 def _pick_different_terrain(current: int) -> int:
@@ -64,9 +75,10 @@ def _pick_different_terrain(current: int) -> int:
 
 
 def _pick_different_elevation(current: int) -> int:
-    # +1 mod 8 always differs from `current` for any current in [0, 7] --
-    # ELEVATION_LEVEL_MAX in viewer.py.
-    return (current + 1) % 8
+    # +1 mod (MAX_ELEVATION + 1) always differs from `current` for any
+    # current in [0, MAX_ELEVATION]. Import the constant rather than
+    # restating it so this can't drift out of sync again.
+    return (current + 1) % (iso_geometry.MAX_ELEVATION + 1)
 
 
 def _check_zero_edit_identity(path: Path, tmp_dir: Path) -> tuple[bool, str]:
@@ -87,6 +99,7 @@ def _check_zero_edit_identity(path: Path, tmp_dir: Path) -> tuple[bool, str]:
 def _check_edit_reload(path: Path, tmp_dir: Path) -> tuple[bool, str]:
     s = load_map_and_units(path)
     mm = s.map_manager
+    TILE_A, TILE_B, TILE_C = _pick_tile_indices(mm)
 
     tile_a = mm.terrain[TILE_A]
     new_terrain = _pick_different_terrain(tile_a.terrain_id)
@@ -130,6 +143,7 @@ def _check_history_invariants(path: Path) -> tuple[bool, str]:
 
     s = load_map_and_units(path)
     mm = s.map_manager
+    TILE_A, TILE_B, TILE_C = _pick_tile_indices(mm)
     tiles = mm.terrain
     hist = EditHistory()
 
