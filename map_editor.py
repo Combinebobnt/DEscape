@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Launches DEscape.
 
-The easiest way to run this is LAUNCH_DESCAPE_LinuxMac.sh (Linux/macOS) or
-LAUNCH_DESCAPE_Windows.bat (Windows) in the project root -- those also create the
+The easiest way to run this is LAUNCH_DEscape_LinuxMac.sh (Linux/macOS) or
+LAUNCH_DEscape_Windows.bat (Windows) in the project root -- those also create the
 venv and install dependencies automatically on first run. See README.md.
 
 Can also be run directly from anywhere once the venv exists: `python3

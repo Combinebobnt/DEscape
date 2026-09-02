@@ -74,21 +74,39 @@ TREE_UNIT_IDS: frozenset[int] = frozenset(
 )
 TREE_COLOR: tuple[int, int, int] = (35, 65, 30)
 
-# unit_const -> (radius_x, radius_y) footprint (buildings) / real minimap RGB
-# (resources) -- see tools/gen_unit_render_data.py. Any unit_const not present
-# in either dict is a non-building, non-resource-special object: 1-tile dot,
-# owner color.
+# unit_const -> (span_x, span_y) footprint size in whole tiles (buildings) /
+# real minimap RGB (resources) -- see tools/gen_unit_render_data.py. Any
+# unit_const not present in either dict is a non-building, non-resource-special
+# object: 1-tile dot, owner color.
+#
+# Spans, not radii. The name says so because every consumer of the older
+# BUILDING_FOOTPRINTS read its values as a radius about a centre tile, which
+# can only express odd sizes -- the bug that made every even-footprint
+# building render a tile too large per axis.
 _UNIT_RENDER_DATA = json.loads(
     (Path(__file__).resolve().parent / "unit_render_data.json").read_text()
 )
-BUILDING_FOOTPRINTS: dict[int, tuple[int, int]] = {
-    int(uid): (rx, ry) for uid, (rx, ry) in _UNIT_RENDER_DATA["buildings"].items()
+BUILDING_TILE_SPANS: dict[int, tuple[int, int]] = {
+    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA["buildings"].items()
 }
 RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {
     int(uid): tuple(rgb) for uid, rgb in _UNIT_RENDER_DATA["resource_colors"].items()
 }
 
-# Distinct colors for GAIA (index 0) + up to 8 players, for unit dots.
+# unit_const -> terrain_id, for every building whose .dat entry declares a
+# foundation terrain (`building.foundation_terrain_id >= 0`). A raw mirror of
+# the field, not a "renders as terrain" policy -- most buildings here also
+# have a real .sld and must keep drawing as their sprite; render.py's
+# _terrain_overlay_for is what decides which consts actually use this.
+FOUNDATION_TERRAIN: dict[int, int] = {
+    int(uid): tid for uid, tid in _UNIT_RENDER_DATA["foundation_terrain"].items()
+}
+
+# Distinct colors for GAIA (index 0) + up to 8 players, for unit dots. This is
+# the IDENTITY fallback -- player N's color when no valid stored override
+# exists -- not the general case: a scenario author picks each player's color
+# independently in the in-game editor, and resolve_player_colors() below is
+# what actually renders that choice.
 PLAYER_COLORS: list[tuple[int, int, int]] = [
     (90, 90, 90),      # GAIA
     (60, 110, 220),    # P1 blue
@@ -96,7 +114,56 @@ PLAYER_COLORS: list[tuple[int, int, int]] = [
     (70, 200, 90),     # P3 green
     (230, 210, 40),    # P4 yellow
     (60, 200, 200),    # P5 cyan
-    (220, 120, 220),   # P6 magenta/pink
-    (140, 90, 40),     # P7 orange/brown
+    (225, 55, 205),    # P6 magenta
+    (250, 130, 15),    # P7 orange
     (230, 230, 230),   # P8 white/gray
 ]
+
+# ColorId-indexed (0..7), for a unit's REAL stored color override. Reuses
+# PLAYER_COLORS' hand-tuned RGBs, but the last two are swapped from their
+# PLAYER_COLORS position: the game's own ColorId enum orders GRAY (6) before
+# ORANGE (7), the reverse of PLAYER_COLORS' "P7 orange, P8 white/gray"
+# labeling, which assumed (wrongly) that player N always gets color N.
+PLAYER_COLOR_BY_ID: list[tuple[int, int, int]] = [
+    PLAYER_COLORS[1],  # ColorId 0 BLUE
+    PLAYER_COLORS[2],  # ColorId 1 RED
+    PLAYER_COLORS[3],  # ColorId 2 GREEN
+    PLAYER_COLORS[4],  # ColorId 3 YELLOW
+    PLAYER_COLORS[5],  # ColorId 4 AQUA
+    PLAYER_COLORS[6],  # ColorId 5 PURPLE
+    PLAYER_COLORS[8],  # ColorId 6 GRAY
+    PLAYER_COLORS[7],  # ColorId 7 ORANGE
+]
+
+
+def resolve_player_colors(
+    color_ids: list[int] | tuple[int, ...],
+) -> tuple[tuple[tuple[int, int, int], ...], tuple[int, ...]]:
+    """The 8 stored per-player ColorId overrides (P1..P8, as read from
+    PlayerDataTwo -- see scenario_io._read_player_colors()) resolved to two
+    9-tuples, both indexed by player_id (0 = GAIA):
+
+    - dots: the RGB each player renders with -- a drop-in for the
+      PLAYER_COLORS[player_id % len(PLAYER_COLORS)] expression it replaces.
+    - team_indices: the TEAM_COLORS/unit_sprites tint index for each
+      player's real sprite -- color_id + 1, since TEAM_COLORS is GAIA-first
+      while color_ids is not. Using color_id directly here would tint every
+      BLUE (id 0) player untinted (TEAM_COLORS[0] is GAIA's white).
+
+    GAIA is never overridden -- its own PlayerDataTwo slot is known junk,
+    not a real color (see the maintainer doc). An out-of-range id (never
+    observed across this project's corpus, but not guaranteed) falls back to
+    that player's identity default, matching PLAYER_COLORS' own fallback
+    role.
+    """
+    dots: list[tuple[int, int, int]] = [PLAYER_COLORS[0]]
+    team_indices: list[int] = [0]
+    for player_id in range(1, 9):
+        color_id = color_ids[player_id - 1]
+        if 0 <= color_id < len(PLAYER_COLOR_BY_ID):
+            dots.append(PLAYER_COLOR_BY_ID[color_id])
+            team_indices.append(color_id + 1)
+        else:
+            dots.append(PLAYER_COLORS[player_id])
+            team_indices.append(player_id)
+    return tuple(dots), tuple(team_indices)

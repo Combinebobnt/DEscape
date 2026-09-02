@@ -24,21 +24,20 @@ across sizes 1-9.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 
 BRUSH_SIZE_MIN = 1
 BRUSH_SIZE_MAX = 9
 
 BRUSH_SHAPE_SQUARE = "square"
 BRUSH_SHAPE_CIRCLE = "circle"
-BRUSH_SHAPES = (BRUSH_SHAPE_SQUARE, BRUSH_SHAPE_CIRCLE)
 
 
 def clamp_brush_size(size: int) -> int:
     return max(BRUSH_SIZE_MIN, min(BRUSH_SIZE_MAX, size))
 
 
-@lru_cache(maxsize=None)
+@cache
 def brush_offsets(size: int, shape: str) -> tuple[tuple[int, int], ...]:
     """(dx, dy) offsets from the cursor tile for a brush of the given size
     and shape, in stable row-major order (y ascending, then x ascending).

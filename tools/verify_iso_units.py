@@ -61,7 +61,7 @@ import numpy as np
 
 from descape import iso_geometry, render
 from descape.edit_history import EditHistory
-from descape.terrain_palette import BUILDING_FOOTPRINTS, PLAYER_COLORS
+from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 
 
 @dataclass
@@ -105,15 +105,19 @@ class _FakeScenario:
     def __init__(self, w: int, h: int, tiles: list[SyntheticTile], units_by_player: list[list[SyntheticUnit]]):
         self.map_manager = _FakeMapManager(w, h, tiles)
         self.unit_manager = _FakeUnitManager(units_by_player)
+        # Identity default -- no synthetic scenario here stores a color
+        # override.
+        self.player_colors = tuple(PLAYER_COLORS)
+        self.team_indices = tuple(range(len(PLAYER_COLORS)))
 
 
-# A real unit_const with a >1 footprint radius (not just a single-tile
-# marker) -- needed for the multi-tile-building checks (3b/3c above). Picked
-# dynamically rather than hardcoded so this doesn't silently stop testing
-# anything if tools/gen_unit_render_data.json's data ever changes shape.
-_BUILDING_RADIUS = 2
+# A real unit_const spanning more than one tile per axis (not a single-tile
+# marker) -- needed for the multi-tile-building checks (3b/3c above). The SPAN
+# is fixed; only the const answering to it is looked up, so this doesn't
+# silently stop testing anything if the .dat's data ever changes shape.
+_BUILDING_SPAN = 4
 _BUILDING_UNIT_CONST = next(
-    uid for uid, (rx, ry) in BUILDING_FOOTPRINTS.items() if rx == _BUILDING_RADIUS and ry == _BUILDING_RADIUS
+    uid for uid, (sx, sy) in BUILDING_TILE_SPANS.items() if sx == _BUILDING_SPAN and sy == _BUILDING_SPAN
 )
 
 
@@ -353,12 +357,26 @@ def check_incremental_building_corner() -> tuple[bool, str]:
     wiped by the fresh terrain underneath it). This is the case
     render.py's refresh_region_iso() needs its footprint-radius seed
     dilation (and the unit-carrier scan) for, not just the +-1 a terrain
-    skirt alone would need -- a corner _BUILDING_RADIUS=2 tiles from its own
-    center is exactly the case a naive +-1 dilation would miss."""
+    skirt alone would need -- a corner two tiles from the building's own
+    tile is exactly the case a naive +-1 dilation would miss.
+
+    The corner is derived from unit_tile_bounds() rather than written as
+    cx - 2: that literal is only the real corner when the unit sits at
+    integer x/y, and this one deliberately sits at a half-tile coordinate.
+    The FAR corner specifically -- an even span is not centred on the own
+    tile, so its near corner is only one tile out, which is exactly what a
+    +-1 dilation already covers and would make this check vacuous."""
     w, h = 16, 16
     cx, cy = 8, 8
-    corner_x, corner_y = cx - _BUILDING_RADIUS, cy - _BUILDING_RADIUS
-    scenario, _ = _flat_scenario(w, h, [[], [SyntheticUnit(x=cx + 0.5, y=cy + 0.5, unit_const=_BUILDING_UNIT_CONST)]])
+    unit = SyntheticUnit(x=cx + 0.5, y=cy + 0.5, unit_const=_BUILDING_UNIT_CONST)
+    x0, x1, y0, y1 = render.unit_tile_bounds(unit, w, h)
+    corner_x, corner_y = x1 - 1, y1 - 1
+    if not (corner_x - int(unit.x) > 1 and corner_y - int(unit.y) > 1):
+        return False, (
+            f"footprint corner ({corner_x}, {corner_y}) is within +-1 of the unit's own tile "
+            f"({int(unit.x)}, {int(unit.y)}) -- this check no longer exercises the dilation it exists for"
+        )
+    scenario, _ = _flat_scenario(w, h, [[], [unit]])
     tile_px = render.tile_pixels_for_map(w, h)
     problems = _apply_and_check_incremental(
         scenario,

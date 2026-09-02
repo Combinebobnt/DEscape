@@ -11,7 +11,7 @@
 #
 # macOS note: double-clicking a .sh file in Finder usually opens it in a text
 # editor rather than running it (Finder doesn't execute plain shell scripts
-# by default). Run it from Terminal instead (`./LAUNCH_DESCAPE_LinuxMac.sh`), or
+# by default). Run it from Terminal instead (`./LAUNCH_DEscape_LinuxMac.sh`), or
 # rename this file's extension to .command, which Finder does execute on
 # double-click.
 set -uo pipefail

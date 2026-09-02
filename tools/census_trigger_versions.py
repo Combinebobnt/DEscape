@@ -67,6 +67,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from testkit.scenario_targets import collect_files
+
 # Marks the worker's one machine-readable line, so library chatter on stdout (version
 # warnings, progress lines) can't be mistaken for the result.
 RECORD_PREFIX = "##CENSUS##"
@@ -135,26 +137,6 @@ def run_worker(path: Path) -> dict:
         "status": "WORKERFAIL",
         "detail": f"exit {proc.returncode}: {detail}",
     }
-
-
-def collect_files(targets: list[Path], on_missing) -> list[Path]:
-    """Directories recurse for *.aoe2scenario; explicitly named files are taken as-is
-    whatever their extension (examples/play_Test has none)."""
-    files: list[Path] = []
-    seen: set[Path] = set()
-    for target in targets:
-        # A mistyped path would otherwise be reported as LOADFAIL -- a legitimate
-        # result category here -- and exit 0, which reads as "measured, unloadable"
-        # rather than "you named a file that isn't there".
-        if not target.exists():
-            on_missing(f"no such file or directory: {target}")
-        found = sorted(target.rglob("*.aoe2scenario")) if target.is_dir() else [target]
-        for path in found:
-            resolved = path.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                files.append(path)
-    return sorted(files)
 
 
 def format_line(record: dict) -> str:

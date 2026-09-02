@@ -15,9 +15,11 @@ file.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
-from descape.edit_history import EditHistory
+from descape.edit_history import DiffRecord, EditHistory, TriggerDiffRecord, UnitDiffRecord
 
 
 class FakeTile:
@@ -152,3 +154,133 @@ def test_reset_clears_everything() -> None:
     assert hist.saved_at_cursor == 0
     assert not hist.is_dirty
     hist.begin_stroke(tiles)  # would raise if reset() didn't clear _stroke_before
+
+
+# -- the second record type -------------------------------------------------
+#
+# Still duck-typed, and deliberately only one method wide: restore() is the
+# single entry point EditHistory uses on the trigger side, which is what keeps
+# this module free of AoE2ScenarioParser. A fake needing five private
+# attributes would mean edit_history.py had reached into the model itself.
+# Behaviour against the real library lives in tests/test_trigger_undo.py.
+
+
+class FakeTriggerModel:
+    def __init__(self):
+        self.restored: list[str] = []
+
+    def restore(self, snapshot) -> None:
+        self.restored.append(snapshot)
+
+
+def _trigger_record(label: str = "trigger edit") -> TriggerDiffRecord:
+    return TriggerDiffRecord(label, before=f"{label}:before", after=f"{label}:after", touched=[3])
+
+
+def test_trigger_record_undo_restores_the_before_snapshot() -> None:
+    hist = EditHistory()
+    model = FakeTriggerModel()
+    hist.push_trigger_record(_trigger_record())
+
+    assert hist.undo([], model) == [], "trigger records yield no tile indices"
+    assert model.restored == ["trigger edit:before"]
+    assert hist.redo([], model) == []
+    assert model.restored == ["trigger edit:before", "trigger edit:after"]
+
+
+def test_trigger_record_without_a_model_raises_before_moving_the_cursor() -> None:
+    hist = EditHistory()
+    hist.push_trigger_record(_trigger_record())
+    with pytest.raises(RuntimeError, match="no TriggerEditModel"):
+        hist.undo([])
+    assert hist.cursor == 1, "a refused undo must not move the cursor"
+    assert hist.can_undo
+
+
+def test_pushing_a_trigger_record_marks_the_document_dirty() -> None:
+    hist = EditHistory()
+    hist.push_trigger_record(_trigger_record())
+    assert hist.is_dirty
+    hist.mark_saved()
+    assert not hist.is_dirty
+
+
+def test_a_trigger_push_truncates_the_redo_tail() -> None:
+    """The shared _push() path, reached from the trigger side: pushing while
+    the cursor is behind the tip must discard the records after it, exactly as
+    commit_stroke does."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.apply("paint", tiles, _paint(tiles, 0, 6))
+    hist.undo(tiles)
+    assert hist.can_redo
+
+    hist.push_trigger_record(_trigger_record())
+    assert not hist.can_redo
+    assert [record.kind for record in hist.records] == ["tile", "trigger"]
+
+
+def test_a_trigger_push_overflows_the_cap_like_a_tile_push() -> None:
+    """_push()'s saved_at_cursor arithmetic is the part a second push path
+    would get subtly wrong -- the symptom (a file that stops reading as dirty)
+    surfaces nowhere near the bug."""
+    hist = EditHistory(max_records=3)
+    for i in range(5):
+        hist.push_trigger_record(_trigger_record(f"edit {i}"))
+
+    assert len(hist.records) == 3
+    assert hist.cursor == 3
+    assert [record.label for record in hist.records] == ["edit 2", "edit 3", "edit 4"]
+    assert hist.saved_at_cursor is None, "the saved state fell off the front"
+    assert hist.is_dirty
+
+
+def test_mixed_records_keep_their_own_undo_behaviour() -> None:
+    hist = EditHistory()
+    model = FakeTriggerModel()
+    tiles = [FakeTile()]
+
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.push_trigger_record(_trigger_record())
+
+    assert hist.peek_undo().kind == "trigger"
+    assert hist.undo(tiles, model) == []
+    assert tiles[0].terrain_id == 5, "the tile edit must survive a trigger undo"
+
+    assert hist.peek_undo().kind == "tile"
+    assert hist.undo(tiles, model) == [0]
+    assert tiles[0].terrain_id == 0
+    assert model.restored == ["trigger edit:before"]
+
+
+def test_peek_does_not_move_the_cursor() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    assert hist.peek_undo() is None
+    assert hist.peek_redo() is None
+
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    assert hist.peek_undo().label == "paint"
+    assert hist.peek_redo() is None
+    assert hist.cursor == 1
+
+    hist.undo(tiles)
+    assert hist.peek_undo() is None
+    assert hist.peek_redo().label == "paint"
+    assert hist.cursor == 0
+
+
+def test_every_diffrecord_subclass_accepts_the_four_parameter_shape() -> None:
+    """Plan stage 4.4 (descape-units-write-path.md): threading `units` as a
+    fourth target through require_target/undo/redo means a missed subclass
+    fails at runtime, not at import -- this is what actually catches it, and
+    it survives a fifth record kind arriving later without another edit
+    here."""
+    subclasses = DiffRecord.__subclasses__()
+    assert UnitDiffRecord in subclasses
+    assert TriggerDiffRecord in subclasses
+    for cls in subclasses:
+        for name in ("require_target", "undo", "redo"):
+            params = list(inspect.signature(getattr(cls, name)).parameters)
+            assert "units" in params, f"{cls.__name__}.{name} has no `units` parameter: {params}"

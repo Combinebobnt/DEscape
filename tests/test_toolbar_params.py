@@ -1,5 +1,6 @@
 """Tool-param toolbar widgets (Terrain type / Level / Brush) show only for the
-tool that reads them, driven through a real offscreen ViewerWindow -- same
+tool that reads them, and mode-inapplicable tool buttons hide rather than
+grey out (ToolDef.modes) -- driven through a real offscreen ViewerWindow, same
 technique and default-tier rationale as tests/test_fill_tool.py.
 
 Asserts on the captured QAction handles (terrain_param_combo_action,
@@ -19,49 +20,57 @@ from __future__ import annotations
 import pytest
 
 import conftest
-from descape.scenario_io import BLANK_TEMPLATE_PATH
+from descape import settings, viewer_common
 
 pytestmark = [
     pytest.mark.gui,
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
 
+# Derived from settings.TOOLS rather than hand-listed, so a new tool (or a
+# param_widget/supports_brush change to an existing one) can't silently drift
+# out of sync -- this file's own dicts used to omit Ruler for exactly that
+# reason. Every Units-mode-only tool (Place Unit and Convert, both
+# modes == ("units",)) is excluded: this file's fixture is Terrain mode
+# throughout, where either action stays both hidden AND disabled, which
+# would fail a param- or brush-visibility assertion for a reason that has
+# nothing to do with what this file tests. See tests/test_unit_edit_viewer.py
+# for Units-mode tools' own coverage.
+_TERRAIN_MODE_TOOLS = [t for t in settings.TOOLS if t.modes != ("units",)]
+
 # Which of the two single-valued params (if either) is expected to be
-# visible for each tool once a square map is loaded and Edit mode is active.
-_EXPECTED_PARAM = {
-    "pan": None,
-    "terrain": "terrain",
-    "fill": "terrain",
-    "elevation": None,
-    "set_level": "level",
-}
+# visible for each tool once a square map is loaded and Terrain mode is active.
+_EXPECTED_PARAM = {t.tool_id: (t.param_widget or None) for t in _TERRAIN_MODE_TOOLS}
 
 # Brush size/shape is orthogonal to _EXPECTED_PARAM above -- Set Elevation
 # shows both a level AND a brush, Elevate shows a brush with no
 # _EXPECTED_PARAM entry at all. See settings.ToolDef.supports_brush.
-_EXPECTED_BRUSH = {
-    "pan": False,
-    "terrain": True,
-    "fill": False,
-    "elevation": True,
-    "set_level": True,
-}
+_EXPECTED_BRUSH = {t.tool_id: t.supports_brush for t in _TERRAIN_MODE_TOOLS}
 
 
-def _edit_window():
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Edit")
-    return window
+def test_tool_visibility_matches_mode_applicability() -> None:
+    """Closes the "Tools that don't apply to the current mode should be
+    hidden, not just grayed out" TODO item. Checked generically against
+    settings.TOOLS/ToolDef.modes rather than hardcoding which tools are
+    Terrain-only, so a future mode-gated tool is covered for free."""
+    window = conftest.blank_window()
+    try:
+        for mode_text, mode_id in [("View", "view"), ("Terrain", "terrain"), ("Units", "units")]:
+            window.mode_combo.setCurrentText(mode_text)
+            for tool in settings.TOOLS:
+                action = getattr(window, f"{tool.tool_id}_action")
+                assert action.isVisible() == viewer_common.tool_applicable(tool.tool_id, mode_id), (
+                    tool.tool_id,
+                    mode_text,
+                )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
 
 
 @pytest.mark.parametrize("tool", list(_EXPECTED_PARAM))
 def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
-    window = _edit_window()
+    window = conftest.terrain_edit_window()
     try:
         window._on_tool_selected(tool)
         expected = _EXPECTED_PARAM[tool]
@@ -83,15 +92,15 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
         window.close()
 
 
-def test_level_spin_dead_while_terrain_selected() -> None:
+def test_level_spin_dead_while_draw_selected() -> None:
     """The discriminating check: gating the Level spinbox on its own
     enabled state alone (orthogonal to visibility) would leave it live
-    while hidden whenever Terrain is active. Terrain's ]/[ keys are alive
+    while hidden whenever Draw is active. Draw's ]/[ keys are alive
     for a different reason now -- see test_brush_size_owns_keys_over_level
     below -- so they are not asserted dead here."""
-    window = _edit_window()
+    window = conftest.terrain_edit_window()
     try:
-        window._on_tool_selected("terrain")
+        window._on_tool_selected("draw")
         assert not window.level_param_spin_action.isVisible()
         assert not window.elevation_level_spin.isEnabled()
     finally:
@@ -105,9 +114,9 @@ def test_brush_size_owns_keys_over_level() -> None:
     the active tool has no brush at all. Set Elevation is the one tool
     with both a level AND a brush -- brush wins there, which is the
     overlap this test pins."""
-    window = _edit_window()
+    window = conftest.terrain_edit_window()
     try:
-        window._on_tool_selected("terrain")
+        window._on_tool_selected("draw")
         assert window.tool_value_inc_action.isEnabled()
         before = window.brush_size_spin.value()
         window.tool_value_inc_action.trigger()
@@ -146,11 +155,11 @@ def test_tool_params_hidden_before_map_loaded() -> None:
 
 def test_tool_params_hidden_in_view_mode() -> None:
     """View mode forces the active tool back to Pan (on_mode_changed), so
-    Terrain's own params stay hidden even though they were showing moments
+    Draw's own params stay hidden even though they were showing moments
     before the mode switch."""
-    window = _edit_window()
+    window = conftest.terrain_edit_window()
     try:
-        window._on_tool_selected("terrain")
+        window._on_tool_selected("draw")
         assert window.terrain_param_combo_action.isVisible()
         assert window.brush_size_spin_action.isVisible()
 

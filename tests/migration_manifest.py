@@ -1,23 +1,29 @@
-"""Tracks all 44 verify_*.py checks through the pytest migration. Keyed
+"""Tracks all 45 verify_*.py checks through the pytest migration. Keyed
 on nodeids once migrated, not on original_module/
 original_check_name -- see Phase 4's coverage guard for why: those two
 fields point at files/functions that stop existing once Phase 3 deletes
 the verify scripts, so only the nodeid can still be checked for
 collectability at that point.
 
-The inventory is 44, not the 42 a plain "^def check" scan finds:
-generate_reference_pngs (verify_iso_render.py's 6th checks-list entry, no
-check_ prefix, but returns (ok, detail) and counts toward that script's own
-pass tally) and verify_roundtrip.py's own main()-level "every file loads
-without raising" assertion (a separate try/except from check_tail_
-completeness) are two more pass/fail entries hiding outside the naming
-convention -- 42 + 1 + 1 = 44. generate_reference_pngs's own entry records
-its Ordering-step-4 destination as a tool path, not a nodeid, once
+The original migration inventory was 44, not the 42 a plain "^def check"
+scan finds: generate_reference_pngs (verify_iso_render.py's 6th checks-list
+entry, no check_ prefix, but returns (ok, detail) and counts toward that
+script's own pass tally) and verify_roundtrip.py's own main()-level "every
+file loads without raising" assertion (a separate try/except from
+check_tail_completeness) are two more pass/fail entries hiding outside the
+naming convention -- 42 + 1 + 1 = 44. generate_reference_pngs's own entry
+records its Ordering-step-4 destination as a tool path, not a nodeid, once
 extracted. The two purely-informational latency/chunk-size benches
 (bench_incremental_latency, bench_chunk_px) are a separate thing again:
 main()'s own "checks" list never counted either as pass/fail, so neither
 one ever had a manifest entry to begin with -- they're just extracted into
 tools/bench_*.py alongside generate_reference_pngs in that same step.
+
+44 -> 45: the Units-section write path split verify_batch_api.py's
+check_unit_edit_not_persisted into check_raw_unit_mutation_does_not_persist
+(renamed, same check) and check_unit_edit_persists_through_the_model (new)
+once units gained a real write path -- the old check's docstring ("save()
+does not persist unit edits") stopped being true unconditionally.
 
 `family` is this file's own bookkeeping for tests/conftest.py's Phase 1
 adapter dispatch (which fixtures a generated test needs) -- not part of
@@ -150,9 +156,17 @@ MANIFEST: list[ManifestEntry] = [
         "(clamped), once per unique tile -- the guarantee a naive per-unit loop lacks.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_unit_edit_not_persisted", "path_tmp", ("corpus",), "",
-        "Mutate a real unit's player, save, reload: the reloaded unit's player is unchanged -- "
-        "batch_api.py's documented save()-doesn't-persist-unit-edits limitation.",
+        "verify_batch_api", "check_raw_unit_mutation_does_not_persist", "path_tmp", ("corpus",), "",
+        "Renamed from check_unit_edit_not_persisted (phase 3.5a, stage 5.1): mutate a real "
+        "unit's player directly (the banned `unit.player =` setter, not a UnitEditModel), save "
+        "with no model, reload: the reloaded unit's player is unchanged -- the containment "
+        "guarantee phase 3.5a's write path depends on.",
+    ),
+    ManifestEntry(
+        "verify_batch_api", "check_unit_edit_persists_through_the_model", "path_tmp", ("corpus",), "",
+        "New in phase 3.5a (stage 5.1), the other half of the pair above: the same kind of edit "
+        "(a player reassignment), made through a UnitEditModel and passed to save(units=...), "
+        "does persist -- proving persistence is opt-in per edit, not a per-script flag.",
     ),
     ManifestEntry(
         "verify_iso_geometry", "check_full_pixel_roundtrip", "none", (), "",
@@ -323,4 +337,4 @@ MANIFEST: list[ManifestEntry] = [
     ),
 ]
 
-assert len(MANIFEST) == 44, f"expected 44 manifest entries, got {len(MANIFEST)}"
+assert len(MANIFEST) == 45, f"expected 45 manifest entries, got {len(MANIFEST)}"

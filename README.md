@@ -10,12 +10,12 @@ in-game editor.
 ### Quickest way to run it
 
 No command line needed beyond installing Python itself. Double-click:
-- **Windows:** `LAUNCH_DESCAPE_Windows.bat` (UNTESTED!)
-- **Linux:** `LAUNCH_DESCAPE_LinuxMac.sh` (from a terminal: `./LAUNCH_DESCAPE_LinuxMac.sh`)
-- **macOS:** `LAUNCH_DESCAPE_LinuxMac.sh`, but run it from Terminal
-  (`./LAUNCH_DESCAPE_LinuxMac.sh`) — Finder usually opens a plain `.sh` file in a
+- **Windows:** `LAUNCH_DEscape_Windows.bat` (UNTESTED!)
+- **Linux:** `LAUNCH_DEscape_LinuxMac.sh` (from a terminal: `./LAUNCH_DEscape_LinuxMac.sh`)
+- **macOS:** `LAUNCH_DEscape_LinuxMac.sh`, but run it from Terminal
+  (`./LAUNCH_DEscape_LinuxMac.sh`) — Finder usually opens a plain `.sh` file in a
   text editor instead of running it on double-click; renaming a copy to
-  `LAUNCH_DESCAPE_LinuxMac.command` makes Finder execute it instead, if you want
+  `LAUNCH_DEscape_LinuxMac.command` makes Finder execute it instead, if you want
   double-click to work there too. (UNTESTED!)
 
 The only prerequisite is Python 3 itself — get it from
@@ -81,12 +81,12 @@ for just the current shell. Use `python`/`py -3`, not `python3` — the official
 Windows installer doesn't add a `python3` command the way Linux/macOS do.
 
 **Verification note:** confirmed working end-to-end via
-`LAUNCH_DESCAPE_LinuxMac.sh`'s own first-run path — a fresh `.venv`
+`LAUNCH_DEscape_LinuxMac.sh`'s own first-run path — a fresh `.venv`
 with no packages installed,
 `pip install -r requirements.txt` pulling everything (including
 `AoE2ScenarioParser`) from PyPI for real, and the editor launching
 successfully from it. Only checked on Linux so far — that covers the manual
-steps and the logic `LAUNCH_DESCAPE_Windows.bat` shares with the `.sh` script,
+steps and the logic `LAUNCH_DEscape_Windows.bat` shares with the `.sh` script,
 but the `.bat` file itself has not been run on a real Windows machine; the
 Windows steps above
 are believed correct but unverified in practice.
@@ -131,8 +131,8 @@ real scenario and check the output still looks sane before trusting it.
 
 ## Usage
 
-The easiest way to start the GUI is `LAUNCH_DESCAPE_LinuxMac.sh`/
-`LAUNCH_DESCAPE_Windows.bat` (see "Quickest way to run it" above) — it doesn't
+The easiest way to start the GUI is `LAUNCH_DEscape_LinuxMac.sh`/
+`LAUNCH_DEscape_Windows.bat` (see "Quickest way to run it" above) — it doesn't
 need a venv already set up or
 activated. Once one exists (via either setup path), it can also be run
 directly:
@@ -152,6 +152,10 @@ python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file 
 # Round-trip / tail-completeness check (now a pytest suite -- see tests/README.md)
 .venv/bin/python3 -m pytest tests/test_scenario_io.py -m "corpus or slow"
 ```
+
+Saving (Ctrl+S or File > Save) leaves a `.bak` and, on the first save of a
+given file, a one-time `.orig` snapshot beside it, so the write path always
+has something to fall back to.
 
 ## Scriptable batch edits
 
@@ -210,10 +214,17 @@ starts returning better numbers.
 Easiest way: use the "AoE2DE install path" field in the viewer's sidebar (type
 or Browse… to it, then Load) — it validates the path and writes it to
 `config.yaml` for you. Equivalently, copy `config.example.yaml` to
-`config.yaml` (gitignored) yourself and set `aoe2de_install` to your AoE2DE
-install root (or set `AOE2DE_INSTALL_PATH` instead — checked first). No
-install configured, or a specific terrain missing from it, both fall back to
-the guessed palette automatically — this is optional, not a hard dependency.
+`config.yaml` yourself and set `aoe2de_install` to your AoE2DE install root
+(or set `AOE2DE_INSTALL_PATH` instead — checked first). `config.yaml` lives
+at the OS-standard per-user config location, not in the repo checkout:
+- **Linux:** `$XDG_CONFIG_HOME/DEscape/config.yaml`, falling back to
+  `~/.config/DEscape/config.yaml`
+- **macOS:** `~/Library/Application Support/DEscape/config.yaml`
+- **Windows:** `%APPDATA%\DEscape\config.yaml`
+
+No install configured, or a specific terrain missing from it, both fall back
+to the guessed palette automatically — this is optional, not a hard
+dependency.
 
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`
@@ -243,6 +254,11 @@ again if the game updates its terrain table; not a runtime dependency.
 
 A related SLP-icon decoder (`descape/slp_decoder.py`) exists from investigating
 whether UI graphics could enhance the viewer too, parked rather than wired in.
+
+`descape/sld_decoder.py` reads AoE2:DE's own in-world sprite format (`.sld`)
+from your install, groundwork for drawing real unit and building graphics
+instead of colored marks. Nothing calls it yet, so it has no effect on what
+the viewer draws today.
 
 ## License
 
@@ -292,3 +308,7 @@ Rules.
   documentation of the classic SLP sprite format is the basis for
   `descape/slp_decoder.py`'s reimplementation (no code reused; see that
   module's docstring).
+- [openage](https://github.com/SFTtech/openage) by the SFTtech authors — its
+  documentation and reference decoder for AoE2:DE's SLD sprite format are the
+  basis for `descape/sld_decoder.py`'s reimplementation (no code reused; see
+  that module's docstring). GPL-3.0-or-later, the same license as this tool.

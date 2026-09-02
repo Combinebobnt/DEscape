@@ -219,7 +219,14 @@ Configures pre/post-scenario movie clips. Mainly a campaign feature; the guide n
 
 ## 9. Diplomacy
 
-- **Diplomacy Stance**: grid of checkboxes, one per player-pair.
+- **Diplomacy Stance**: a directional 8x8 grid, one row per player's stance
+  toward every other player (stance[i][j] need not equal stance[j][i], and
+  the file measurably distinguishes both directions rather than storing one
+  shared value per pair). Each cell is one of three states -- Ally, Neutral,
+  Enemy -- not a checkbox: on-disk sampling across a large scenario corpus
+  found Neutral in real use on hundreds of cells, so a two-state reading
+  would misrepresent files that use it. There is no GAIA row or column; only
+  players 1-8 are addressable.
 - **Lock Teams**: prevents in-game team changes by players (triggers can still change them).
 - **Players Choose Teams**: disabling removes team choice from the lobby (teams can still change in-game unless Lock Teams is also on).
 - **Random Start Points**: guide notes it appears to have no observed effect.

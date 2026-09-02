@@ -1,24 +1,63 @@
 # Not pyproject.toml -- this repo has no pyproject.toml on purpose (it isn't
 # pip-installable), see tests/README.md.
 #
-# select is pinned explicitly to the classic minimal ruff set (E4/E7/E9/F)
-# rather than left at this ruff version's real installed defaults, which
-# turned out to be much broader (tryceratops, flake8-blind-except,
-# flake8-executable, pyupgrade, import sorting, a couple security-adjacent
-# rules) -- 98 findings on the first cold run here, only 2 of them F821, the
-# rule this gate actually exists for (62 of 64 files in this repo use
-# `from __future__ import annotations`, which makes an annotation-only
-# reference to a name a later edit removed invisible at runtime). Broadening
-# past this set is real, deliberately deferred work.
+# select started as the classic minimal ruff set (E4/E7/E9/F) and was broadened
+# deliberately -- ruff's own real installed defaults are NOT a safe target to
+# adopt wholesale: they enable only E722/E902/W605 from the E/W families, so
+# switching to "defaults" would silently drop E401/E402 and E711/E712/E721/E731,
+# weakening this gate rather than widening it. Every family below was added by
+# name, and every `ignore` entry exists because that rule's findings here are a
+# deliberate repo idiom, not a defect -- see the comment on each.
+target-version = "py311"
+line-length = 140   # governs only import wrapping (I001) -- E501 is not selected
+
 [lint]
+# select is broadened incrementally, one stage at a time, each landing with the
+# code fixes its own findings require. Currently: stage 0 (config foundation
+# only, no new rules).
 select = ["E4", "E7", "E9", "F"]
+ignore = [
+  "EXE001",   # 34 hits, all vestigial: every .py here with a shebang is always
+              # invoked as `python3 <path>`, never `./<path>` -- setting +x would
+              # imply a direct-execution path that doesn't work (system python3
+              # lacks the deps), so it would be a worse signal than the shebang.
+  "PLC0415",  # 242 hits: lazy/function-local imports are deliberate throughout
+              # this PyQt app (e.g. avoiding a Qt import before ensure_qapp()).
+  "PLW0603",  # 22 hits: settings.py-style module-level globals are the intended
+              # design, not an accident.
+  "RUF001",   # 7 hits, all U+00D7 MULTIPLICATION SIGN in UI strings like
+              # "120 x 120" (real character, not ASCII x) -- intentional
+              # typography, not a paste artifact.
+  "S101",     # 1651 hits: `assert` is how the test suite is written.
+  "S603", "S606", "S607",  # tools/ and tests/ shell out to real subprocesses
+              # (bootstrap, corpus scripts) deliberately.
+]
+
+[lint.flake8-bugbear]
+# UnitFilter is @dataclass(frozen=True) (descape/unit_filter.py) -- its
+# immutability is load-bearing (the chunk cache keys invalidation on filter
+# equality), so using it as a default-argument value is safe, not a B008 bug.
+extend-immutable-calls = ["descape.unit_filter.UnitFilter"]
+
+[lint.isort]
+# conftest and test_unit_sprites are this repo's own test-support modules
+# (importable via pytest.ini's `pythonpath = .`), not third-party packages --
+# without this, isort sorts them alphabetically among third-party imports and
+# collapses the deliberate local-import group used across ~23 test files.
+known-local-folder = ["conftest", "test_unit_sprites"]
 
 [lint.per-file-ignores]
 # tools/*.py scripts add the repo root to sys.path before importing
 # descape/other tools modules, so the import can't be at the literal top of
 # the file. Idiom, not a defect -- see tests/README.md's own note on why
 # tools/ scripts aren't pip-installable-package modules.
-"tools/*.py" = ["E402"]
+"tools/*.py" = ["E402", "BLE001"]
+
+# bootstrap.py runs before dependencies (including a logging setup) exist, so
+# there is nowhere to log to yet -- it IS the fallback ladder that constructs
+# a reporter, and a blind except/pass here is how it falls through to the
+# next candidate.
+"bootstrap.py" = ["BLE001", "S110"]
 
 # tools/verify_copy_paste.py and tools/verify_iso_viewer_pick.py each hold a
 # QApplication in a variable deliberately (own in-file comment: an
@@ -29,3 +68,18 @@ select = ["E4", "E7", "E9", "F"]
 # is a config-level ignore, not a code fix.
 "tools/verify_copy_paste.py" = ["F841"]
 "tools/verify_iso_viewer_pick.py" = ["F841"]
+
+# tools/bench_sloped_patch.py's timing lambdas are called synchronously,
+# same iteration, by _time_ms() -- never stored or deferred, so the loop
+# variables they close over can't have been rebound. B023 false positive.
+"tools/bench_sloped_patch.py" = ["B023"]
+
+# key_extent()'s `_cache={}` is a deliberate mutable-default memo (comment in
+# place at the call site): resolved once per distinct key rather than once
+# per tile, which is what keeps corpus-tier runs affordable.
+"tests/test_sloped_geometry.py" = ["B006"]
+
+# debug_log.py is an in-memory, never-written-to-disk debug aid (Help > Debug
+# Log) -- local wall-clock time is exactly right for "what did the app just
+# do", and only %H:%M:%S is formatted, never compared or serialized.
+"descape/debug_log.py" = ["DTZ005"]

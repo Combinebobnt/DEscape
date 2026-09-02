@@ -44,7 +44,7 @@ _OTHER_TERRAIN = 2  # BEACH
 
 
 def _edit_window(tool: str = "fill"):
-    """Loads the blank template, switches to Edit mode with `tool` active,
+    """Loads the blank template, switches to Terrain mode with `tool` active,
     and selects _FILL_TERRAIN on terrain_combo. Caller must
     edit_history.mark_saved() + close()."""
     conftest.ensure_qapp()
@@ -53,7 +53,7 @@ def _edit_window(tool: str = "fill"):
     window = ViewerWindow()
     window.load_scenario(BLANK_TEMPLATE_PATH)
     assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Edit")
+    window.mode_combo.setCurrentText("Terrain")
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
     return window
@@ -71,14 +71,6 @@ def _shown_flat(window) -> None:
     window.terrain_style_combo.setCurrentText("Flat")
     window.show()
     QApplication.processEvents()
-
-
-def _viewport_pos(map_view, tile_x: int, tile_y: int):
-    from PyQt5.QtCore import QPointF
-
-    tile_px = map_view._tile_pixels
-    scene_pt = QPointF((tile_x + 0.5) * tile_px, (tile_y + 0.5) * tile_px)
-    return QPointF(map_view.mapFromScene(scene_pt))
 
 
 def _mouse_event(kind, pos, button, buttons):
@@ -99,7 +91,8 @@ def test_fill_registered_as_keybind_and_toolbar_action() -> None:
 
     window = ViewerWindow()
     try:
-        # Proves viewer.py:1610's getattr(self, f"{tool_id}_action") wiring
+        # Proves ViewerWindow._build_keybind_actions's
+        # getattr(self, f"{tool_id}_action") wiring
         # (no default -- an AttributeError there would already have failed
         # window construction, but this pins the specific mapping too).
         assert window._keybind_actions["tool_fill"] is window.fill_action
@@ -109,7 +102,7 @@ def test_fill_registered_as_keybind_and_toolbar_action() -> None:
         window.close()
 
 
-def test_fill_enable_gating_matches_terrain_tool() -> None:
+def test_fill_enable_gating_matches_draw_tool() -> None:
     from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
@@ -118,15 +111,19 @@ def test_fill_enable_gating_matches_terrain_tool() -> None:
         assert not window.fill_action.isEnabled()  # no map loaded yet
 
         window.load_scenario(BLANK_TEMPLATE_PATH)
-        assert not window.fill_action.isEnabled()  # still View mode
+        # Mode-inapplicable tools hide rather than grey now (ToolDef.modes),
+        # so View mode is asserted on visibility, not enabled state -- write_ok
+        # alone already makes fill_action enabled once a map is loaded.
+        assert not window.fill_action.isVisible()  # still View mode
 
-        window.mode_combo.setCurrentText("Edit")
+        window.mode_combo.setCurrentText("Terrain")
+        assert window.fill_action.isVisible()
         assert window.fill_action.isEnabled()
-        # Paint Can shares Terrain's gate (write_ok only), not Elevate's
+        # Paint Can shares Draw's gate (write_ok only), not Elevate's
         # (write_ok and map_is_square) -- assert the two stay equal rather
         # than hardcoding True, so a future gating change to either tool
         # can't silently diverge them unnoticed.
-        assert window.fill_action.isEnabled() == window.terrain_action.isEnabled()
+        assert window.fill_action.isEnabled() == window.draw_action.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -136,7 +133,7 @@ def test_selecting_fill_configures_map_view() -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QGraphicsView
 
-    from descape.viewer import CLICK_TOOLS, EDIT_TOOLS
+    from descape.viewer_common import CLICK_TOOLS, EDIT_TOOLS
 
     window = _edit_window("fill")
     try:
@@ -189,13 +186,13 @@ def test_drag_after_click_fills_only_once() -> None:
         _shown_flat(window)
         map_view = window.map_view
 
-        press_pos = _viewport_pos(map_view, 0, 0)
+        press_pos = conftest.viewport_pos(map_view, 0, 0)
         map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, press_pos, Qt.LeftButton, Qt.LeftButton))
         assert len(window.edit_history.records) == 1
         assert map_view._stroke_active is False
 
         for tx, ty in [(1, 0), (2, 0), (0, 1)]:
-            move_pos = _viewport_pos(map_view, tx, ty)
+            move_pos = conftest.viewport_pos(map_view, tx, ty)
             map_view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, move_pos, Qt.NoButton, Qt.LeftButton))
             assert len(window.edit_history.records) == 1
 
@@ -216,7 +213,7 @@ def test_right_click_is_inert() -> None:
     try:
         _shown_flat(window)
         map_view = window.map_view
-        pos = _viewport_pos(map_view, 0, 0)
+        pos = conftest.viewport_pos(map_view, 0, 0)
 
         map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton))
 
@@ -245,9 +242,9 @@ def test_mid_drag_tool_switch_to_fill_does_not_wedge_history() -> None:
     """Regression guard for the stroke-chain shape this feature deliberately
     avoided (see MapView.mousePressEvent's own comment): if Paint Can were
     ever moved back into the drag-stroke path, a mid-drag switch away from
-    Terrain could leave an EditHistory stroke snapshot open forever.
+    Draw could leave an EditHistory stroke snapshot open forever.
 
-    Drives a real mouse press to open the Terrain stroke (rather than
+    Drives a real mouse press to open the Draw stroke (rather than
     calling ViewerWindow.on_edit_stroke_start()/on_edit_stroke_tile()
     directly) so map_view._stroke_active is genuinely True when the tool
     switches -- that's what makes MapView.set_tool()'s dangling-stroke-close
@@ -255,40 +252,41 @@ def test_mid_drag_tool_switch_to_fill_does_not_wedge_history() -> None:
     even though the CLICK_TOOLS shape makes it pass trivially today, so a
     future refactor regressing that shape gets caught here.
 
-    Does NOT assert the committed record's label: found while writing this
-    test that _on_tool_selected() sets self._current_tool to the NEW tool
-    before calling map_view.set_tool() (which can synchronously close the
-    OLD tool's dangling stroke via _end_stroke()/on_edit_stroke_end(), which
-    reads self._current_tool for the label) -- so the closed Terrain stroke
-    ends up committed labelled "Fill terrain", not "Paint terrain".
-    Confirmed pre-existing and not specific to Paint Can (Terrain -> Elevate
-    mid-drag hits the same mislabel); left as a known open item rather than
-    a fix here per the parent plan's decision to leave adjacent
-    pre-existing issues out of this feature's scope. The diff content itself is
-    unaffected (commit_stroke() diffs against begin_stroke()'s snapshot
-    regardless of label), which is what this test actually needs to hold."""
+    Asserts the committed record's label: found while writing this test that
+    _on_tool_selected() set self._current_tool to the NEW tool before calling
+    map_view.set_tool() (which can synchronously close the OLD tool's
+    dangling stroke via _end_stroke()/on_edit_stroke_end(), which reads
+    self._current_tool for the label) -- so the closed Draw stroke used to
+    commit labelled "Fill terrain", not "Paint terrain". Confirmed
+    pre-existing and not specific to Paint Can (Draw -> Elevate mid-drag hit
+    the same mislabel); fixed by reordering _on_tool_selected() to call
+    set_tool() first. The diff content itself was never affected either way
+    (commit_stroke() diffs against begin_stroke()'s snapshot regardless of
+    label), which is what this test's earlier revision actually needed to
+    hold before the label fix landed."""
     from PyQt5.QtCore import QEvent, Qt
 
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         _shown_flat(window)
         map_view = window.map_view
         mm = window.scenario.map_manager
-        pos = _viewport_pos(map_view, 0, 0)
+        pos = conftest.viewport_pos(map_view, 0, 0)
         map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
         assert map_view._stroke_active is True
-        assert mm.terrain[0].terrain_id == _FILL_TERRAIN  # the Terrain stroke actually painted (0, 0)
+        assert mm.terrain[0].terrain_id == _FILL_TERRAIN  # the Draw stroke actually painted (0, 0)
 
-        window._on_tool_selected("fill")  # set_tool() closes the outgoing Terrain stroke
+        window._on_tool_selected("fill")  # set_tool() closes the outgoing Draw stroke
         assert map_view._stroke_active is False
         assert len(window.edit_history.records) == 1
         assert window.edit_history.can_undo
+        assert window.edit_history.records[0].label == "Paint terrain"  # the OUTGOING tool, not "Fill terrain"
 
         window.on_fill(1, 1, 0)  # must not raise RuntimeError -- fills the rest of the map
         assert len(window.edit_history.records) == 2
         assert mm.terrain[2 * mm.map_width + 2].terrain_id == _FILL_TERRAIN
 
-        window._on_tool_selected("terrain")
+        window._on_tool_selected("draw")
         window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_OTHER_TERRAIN))
         window.on_edit_stroke_start()
         window.on_edit_stroke_tile(2, 2, 0)
@@ -309,6 +307,30 @@ def test_copy_paste_gating_treats_fill_as_terrain_kind() -> None:
         window.copy_tile()
         assert window._clipboard["kind"] == "terrain"
         assert window.paste_action.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_copy_terrain_selects_it_for_drawing() -> None:
+    """copy_tile()'s terrain branch must load the picked terrain into
+    terrain_combo, not just the clipboard -- Draw/Fill both paint from
+    terrain_combo.currentData() (on_edit_stroke_tile/on_fill), never from
+    the clipboard, so a Copy that only fills the clipboard leaves a
+    subsequent drag-painted stroke using whatever terrain_combo already
+    showed. _edit_window() starts terrain_combo on _FILL_TERRAIN; this sets
+    the hovered tile to the other value directly (no stroke needed) so
+    Copy's effect on the combo is observable."""
+    window = _edit_window("draw")
+    try:
+        mm = window.scenario.map_manager
+        mm.get_tile(0, 0).terrain_id = _OTHER_TERRAIN
+        assert window.terrain_combo.currentData() == _FILL_TERRAIN  # sanity: still the starting selection
+
+        window.on_hover((0, 0))
+        window.copy_tile()
+        assert window.terrain_combo.currentData() == _OTHER_TERRAIN
+        assert window._clipboard == {"kind": "terrain", "terrain_id": _OTHER_TERRAIN, "layer": -1}
     finally:
         window.edit_history.mark_saved()
         window.close()

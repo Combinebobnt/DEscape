@@ -1,4 +1,4 @@
-"""Verifies descape.render.SlopedChunkCache -- Phase 6 (Sloped)'s
+"""Verifies descape.render_cache.SlopedChunkCache -- Phase 6 (Sloped)'s
 counterpart to IsoChunkCache/FlatChunkCache, docs/PLAN_V2_6.md's Track C3.
 Mirrors tests/test_flat_chunks.py's load-bearing checks for the Sloped
 compositor: composite_rect_sloped() must be provably indistinguishable,
@@ -33,7 +33,8 @@ import numpy as np
 import pytest
 
 from descape.elevation_tools import set_tile_elevation
-from descape.render import SlopedChunkCache, render_terrain_sloped, sloped_elevations_and_proj, tile_pixels_for_map
+from descape.render import render_terrain_sloped, sloped_elevations_and_proj, tile_pixels_for_map
+from descape.render_cache import SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 RNG_SEED = 20260813
@@ -111,14 +112,17 @@ def test_patch_after_elevation_edit_matches_full_render():
     changed_ys, changed_xs = np.nonzero(before != after)
     assert changed_xs.size > 0, "set_tile_elevation produced no change -- test setup is broken"
 
-    elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
+    elevations, _corner_rise, proj = sloped_elevations_and_proj(scenario)
+    # Only elevations is re-seeded: corner_rise is derived state that
+    # patch() re-derives from it (SlopedChunkCache._refresh_source_caches),
+    # so assigning it here would mask that rebuild rather than exercise it.
     cache.elevations = elevations
-    cache.corner_rise = corner_rise
 
     # Conservative dirty bbox: the swept bbox (any elevation) of every
     # changed tile PLUS a one-tile ring, unioned -- generous on purpose
-    # (this test verifies chunk-cache plumbing, not the tight bbox Track
-    # C4's own dirty_screen_bbox_sloped will derive).
+    # (this test verifies chunk-cache plumbing, not the tight bbox
+    # dirty_screen_bbox_sloped derives; tests/test_sloped_edit.py covers
+    # that).
     from descape import iso_geometry as ig
 
     x0 = y0 = x1 = y1 = None

@@ -7,44 +7,30 @@ this is the one capability category with no in-game equivalent to match.
 
 Nothing here is a new capability the object model didn't already have --
 AoE2ScenarioParser's managers already expose per-tile/per-unit mutation, and
-scenario_write.write_scenario() already persists terrain edits made that way
-(see the IMPORTANT note by the load/save re-exports below for the real limit
-on that: unit edits don't persist yet). What's missing without this module is
-the glue a script author would otherwise have to rebuild every time (which
-unit_consts are buildings, adjacent-tile lookup, what counts as "water", the
-correct elevation clamp, and the order-safe way to bulk-edit many units at
-once) -- see each function's docstring for which upstream fact it's standing
-in for.
+scenario_write.write_scenario() already persists terrain edits made that way,
+and (since phase 3.5a) unit edits made *through a UnitEditModel* -- see the
+IMPORTANT note by the load/save re-exports below for exactly what does and
+does not persist. What's missing without this module is the glue a script
+author would otherwise have to rebuild every time (which unit_consts are
+buildings, adjacent-tile lookup, what counts as "water", the correct
+elevation clamp, and the order-safe way to bulk-edit many units at once) --
+see each function's docstring for which upstream fact it's standing in for.
 
 See batch_scripts/ for runnable examples.
 
-Known AoE2ScenarioParser gotcha for scripts that process many files in one
-process (e.g. "apply this edit to every scenario in my mod folder"): calling
-UnitManager.add_unit()/clone_unit() to create a *new* unit can raise
-UnsupportedAttributeError on caption_string_id/caption_string if any
-older-format (pre-1.54/1.55) scenario was loaded earlier in the same process
--- even when the *current* scenario's own version supports those fields
-fine. Confirmed directly (two files loaded back-to-back in one interpreter,
-not just read from source): AoE2ScenarioParser version-gates those two
-fields via a class-level property swap the first time an unsupported version
-is seen, and per the library's own TODO in
-sections/retrievers/retriever_object_link.py, that swap is never reverted
-for later scenarios in the same process. Same family of bug as the one
-scenario_write.py's own docstring documents for commit()/write_to_file() --
-just hitting Unit construction instead of scenario serialization.
-
-Passing explicit caption_string_id=None, caption_string=None to
-add_unit()/clone_unit() avoids the crash *at construction* (confirmed: the
-swapped setter only raises for a non-None value), but the swap also poisons
-the *getter* unconditionally -- confirmed separately: merely repr()'ing or
-logging the resulting unit afterward still raises, since Unit.__repr__ reads
-caption_string_id directly. So the explicit-None workaround only helps a
-script that never reads those two fields back (including indirectly, e.g. no
-debug print of the unit) for the rest of the process. A script that does
-need to read them back, or that calls add_unit()/clone_unit() without
-thinking about this ahead of time, should process each file in its own
-subprocess instead. Not something this module works around itself -- that
-would mean patching the vendored library, out of scope here.
+Known AoE2ScenarioParser gotcha, fixed at the load path for units (phase
+3.5a's stage 0: descape/scenario_io.py's _load_map_and_units() now calls
+library_compat.depoison() unconditionally before every load, not only before
+a Triggers parse). A script that processes many files in one process can
+still hit the *reading* half of this for units: descape/unit_model.py's own
+module docstring documents that there is no parse_units()-style re-depoison
+hook the way parse_triggers() has one, so reading a unit's
+caption_string_id/caption_string on document A after opening document B in
+the same process can still raise UnsupportedAttributeError if B's version
+doesn't support those fields. A script that reads captions back across
+multiple open documents should process each file in its own subprocess, the
+same advice this paragraph used to give for the write side before stage 0
+fixed it.
 """
 
 from __future__ import annotations
@@ -58,22 +44,38 @@ from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import MAX_ELEVATION
 from descape.scenario_io import LoadedScenario, load_map_and_units
 from descape.scenario_write import write_scenario
+from descape.unit_model import UnitEditModel  # noqa: F401 -- re-exported, see below
 
 # Re-exported under this module so a batch script only needs `from descape
-# import batch_api` and never has to know which of scenario_io/scenario_write
-# actually implements load/save.
+# import batch_api` and never has to know which of scenario_io/scenario_write/
+# unit_model actually implements load/save/unit editing.
 #
-# IMPORTANT: save() (scenario_write.write_scenario) only ever writes Map
-# terrain -- Units and the trigger tail pass through byte-for-byte from the
-# original file regardless of what's in memory. buildings_of()/tile_under()
-# hand back real, mutable Unit objects, but editing one (player, x/y,
-# rotation, ...) and calling save() silently drops that edit -- confirmed
-# directly: mutating a unit's `player`, saving, and reloading shows the
-# original player, not the edited one. Only tile.terrain_id/elevation/layer
-# mutations persist. A future version might extend the write path to cover
-# Units too, but nothing here does yet.
+# IMPORTANT: save() (scenario_write.write_scenario) always writes Map
+# terrain. Units only persist when edited *through* a UnitEditModel and that
+# model is passed to save(units=...); mutating a Unit object directly (its
+# `player`, x/y, rotation, ...) and calling save() with no model still
+# silently drops the edit, on purpose -- that containment is what makes a
+# script's ad-hoc inspection of buildings_of()/tile_under()'s returned Unit
+# objects safe by default. To make a unit edit persist:
+#
+#     units = batch_api.UnitEditModel(scenario)
+#     units.set_position(unit, new_x, new_y, unit.z)   # or reassign()/add()/remove()
+#     batch_api.save(scenario, out_path, units=units)
+#
+# UnitEditModel is not memoized per scenario here -- construct one explicitly
+# per script, the same way a TriggerEditModel or OptionsEditModel would be. A
+# hidden per-scenario cache is exactly the kind of process-global state
+# descape/library_compat.py exists to route around; see this module's own
+# docstring above for the read-side gotcha that still applies across
+# multiple open documents in one process.
 load = load_map_and_units
 save = write_scenario
+
+# IMPORTANT: any new elevation-writing helper added to this module must go
+# through set_tile_elevation() above, never assign a tile's `elevation`
+# directly. Skipping it can produce an illegal seam that crashes AoE2:DE on
+# load, not just render wrong (see scenario_write._patch_terrain_block's own
+# note).
 
 # Every unit_const that's a building, per AoE2ScenarioParser's own
 # BuildingInfo dataset -- Unit itself carries no is-this-a-building flag,
@@ -195,7 +197,7 @@ def set_terrain(tile: TerrainTile, terrain_id: int) -> None:
     blend) left over from whatever the tile used to be -- render.py doesn't
     draw `layer`, but the game does, so leaving it set after changing
     terrain_id would make this terrain a lie about what the game actually
-    shows (same fix viewer.py's Terrain tool already applies per-click; see
+    shows (same fix viewer.py's Draw tool already applies per-click; see
     its own comment in ViewerWindow's mouse handler)."""
     tile.terrain_id = terrain_id
     tile.layer = -1

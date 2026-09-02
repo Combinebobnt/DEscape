@@ -7,7 +7,7 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 if [ ! -x ".venv/bin/python3" ]; then
-    echo "No .venv/bin/python3 found -- see LAUNCH_DESCAPE_LinuxMac.sh or README.md to set one up." >&2
+    echo "No .venv/bin/python3 found -- see LAUNCH_DEscape_LinuxMac.sh or README.md to set one up." >&2
     exit 1
 fi
 

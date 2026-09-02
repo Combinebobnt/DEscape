@@ -51,8 +51,9 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render, settings
 from descape.scenario_io import load_map_and_units
+from descape.terrain_palette import PLAYER_COLORS
 
 
 @dataclass
@@ -92,6 +93,10 @@ class _FakeScenario:
     def __init__(self, w: int, h: int, tiles: list[SyntheticTile]):
         self.map_manager = _FakeMapManager(w, h, tiles)
         self.unit_manager = _FakeUnitManager()
+        # Identity default -- no synthetic scenario here stores a color
+        # override.
+        self.player_colors = tuple(PLAYER_COLORS)
+        self.team_indices = tuple(range(len(PLAYER_COLORS)))
 
 
 def synthetic_scenario(w: int, h: int, elevation_fn) -> tuple[_FakeScenario, np.ndarray]:
@@ -127,14 +132,20 @@ def _replay_expected_paint(scenario, elevations: np.ndarray):
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = render.tile_pixels_for_map(w, h)
-    # Fixed legal range, matching render_terrain_iso_with_proj() -- not this
-    # synthetic scenario's own observed min/max. Must track render.py's real
-    # sizing decision (see iso_geometry.MIN_ELEVATION/MAX_ELEVATION's own
-    # comment on why, added for Phase 4) or this independent oracle computes
-    # a differently-shaped canvas than the real renderer and every check
-    # below fails on a shape mismatch, not a real bug.
+    # Fixed legal range and the real configured elev_step_pct, matching
+    # render_terrain_iso_with_proj() -- not this synthetic scenario's own
+    # observed min/max, and not canvas_size_and_origin's own default. Must
+    # track render.py's real sizing decision (see iso_geometry.MIN_ELEVATION/
+    # MAX_ELEVATION's own comment on why, added for Phase 4) or this
+    # independent oracle computes a differently-shaped canvas than the real
+    # renderer and every check below fails on a shape mismatch, not a real
+    # bug -- confirmed: this is exactly what happened standalone under any
+    # configured elev_step_pct other than canvas_size_and_origin's own
+    # default (pytest's autouse settings reset masked it under the suite).
     min_elev, max_elev = iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
-    proj = iso_geometry.canvas_size_and_origin(w, h, tile_px, min_elev, max_elev)
+    proj = iso_geometry.canvas_size_and_origin(
+        w, h, tile_px, min_elev, max_elev, elev_step_pct=settings.get_elev_step_pct()
+    )
     skirt_headroom = (max_elev - min_elev) * proj.elev_step
     canvas_h = proj.canvas_h + skirt_headroom
 
@@ -250,12 +261,14 @@ def check_occlusion_scripted() -> tuple[bool, str]:
     raised_img = render.render_terrain_iso(raised_scn)
 
     tile_px = render.tile_pixels_for_map(w, h)
-    # Fixed legal range, matching render_terrain_iso_with_proj() (Phase 4) --
-    # both scenarios render onto the identically-shaped/positioned canvas
-    # the real renderer now always uses, not one sized from each synthetic
-    # scenario's own (here: 0-0 and 0-1) observed range.
+    # Fixed legal range and the real configured elev_step_pct, matching
+    # render_terrain_iso_with_proj() (Phase 4) -- both scenarios render onto
+    # the identically-shaped/positioned canvas the real renderer now always
+    # uses, not one sized from each synthetic scenario's own (here: 0-0 and
+    # 0-1) observed range, and not canvas_size_and_origin's own default pct.
     proj_flat = iso_geometry.canvas_size_and_origin(
-        w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
+        w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION,
+        elev_step_pct=settings.get_elev_step_pct(),
     )
     proj_raised = proj_flat
     dst_y, dst_x, _, _ = iso_geometry.diamond_indices(tile_px)

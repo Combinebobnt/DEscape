@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Sets up the venv, installs dependencies, and starts the editor -- with
 progress feedback visible even when there's no attached terminal (a
-double-clicked LAUNCH_DESCAPE_*).
+double-clicked LAUNCH_DEscape_*).
 
-Invoked by LAUNCH_DESCAPE_LinuxMac.sh / LAUNCH_DESCAPE_Windows.bat, which only
+Invoked by LAUNCH_DEscape_LinuxMac.sh / LAUNCH_DEscape_Windows.bat, which only
 locate a Python 3 interpreter before handing off here. Stdlib only -- this
 runs before PyQt5/numpy/etc. are guaranteed to be installed, so it must not
 import anything from descape/.

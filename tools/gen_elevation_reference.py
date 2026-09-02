@@ -16,10 +16,13 @@ Loads examples/blank_map.aoe2scenario (Track A0 -- a blank, square, unit-free
 base the user created in-game; a real example file can't be reused here:
 this repo's write path only ever touches the terrain struct array, so an
 example file's
-existing trees can't be cleared first). Writes 3 scenario files into
-build/elevation_reference/, each holding 3 widely-separated "regions" (one
+existing trees can't be cleared first). Writes 4 scenario files into
+build/elevation_reference/, each holding widely-separated "regions" (one
 per elevation pattern, see PATTERNS below) so the slow in-game editor only
-has to open 3 files, not 9. For every written file also renders this tool's
+has to open a handful of files, not one per pattern. Three of them hold 3
+regions each; reference_d_CRASHES_DE holds the single illegal steep_seam
+pattern alone, because DE crashes loading it and would otherwise take two
+legal regions down with it. For every written file also renders this tool's
 own Stepped-mode compositor and crops one reference PNG per region (Track
 A2) -- the point of the exercise is comparing the game's rendering against
 this tool's, not producing screenshots in isolation.
@@ -344,10 +347,16 @@ PATTERNS = {
     ),
 }
 
+# steep_seam is isolated in its own file on purpose: it is an intentionally
+# illegal Delta>=2 seam, and DE CRASHES loading any scenario containing one
+# (answered 2026-08-22). Grouping it with l_shape/diagonal made those two
+# unopenable as collateral. Keep it emitted -- it is the only reproduction
+# of that crash -- but keep it alone.
 FILE_GROUPS = [
     ("reference_a", ["lone_bump", "lone_pit", "ridge"]),
     ("reference_b", ["staircase", "plateau", "plateau_control"]),
-    ("reference_c", ["l_shape", "diagonal", "steep_seam"]),
+    ("reference_c", ["l_shape", "diagonal"]),
+    ("reference_d_CRASHES_DE", ["steep_seam"]),
 ]
 
 
@@ -448,7 +457,10 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
             )
 
         out_path = out_dir / f"{file_stem}.aoe2scenario"
-        write_scenario(scenario, out_path)
+        # backup=False: this regenerates a maintainer reference directory, so
+        # a .orig here would be a permanently stale snapshot of generated
+        # output, never the thing a real backup is for.
+        write_scenario(scenario, out_path, backup=False)
         print(f"wrote {out_path} ({len(pattern_names)} regions)")
 
         if write_renders:
@@ -524,8 +536,11 @@ def _write_doc(regions: list[dict], out_dir: Path) -> None:
         "Then open each from the in-game scenario editor's own file list "
         "(not Explorer/Finder) and switch to Terrain view to see the raised "
         "regions -- each is flagged with a grey ROAD-terrain frame so it's "
-        "findable on the minimap. Only 3 files to open in total, each "
-        "holding 3 regions, so this is a 3-load pass, not 9.",
+        "findable on the minimap. 4 files to open in total, so this is a "
+        "4-load pass, not 9. WARNING: do NOT open "
+        "reference_d_CRASHES_DE -- it holds the single intentionally "
+        "illegal Delta>=2 seam, and the game crashes on load. It is "
+        "generated to keep that crash reproducible, not to be opened.",
         "",
         "## What to screenshot",
         "",
@@ -546,7 +561,9 @@ def _write_doc(regions: list[dict], out_dir: Path) -> None:
         lines.append("")
         for meta in file_regions:
             fx0, fy0, fx1, fy1 = meta["frame_bbox"]
-            render_rel = Path("..") / "build" / "elevation_reference" / "renders" / f"{meta['name']}.png"
+            renders_rel = Path("..") / "build" / "elevation_reference" / "renders"
+            render_rel = renders_rel / f"{meta['name']}.png"
+            sloped_rel = renders_rel / f"{meta['name']}_sloped.png"
             lines.append(f"#### {meta['name']}")
             lines.append("")
             lines.append(f"- **Settles:** {meta['question']}")
@@ -555,7 +572,12 @@ def _write_doc(regions: list[dict], out_dir: Path) -> None:
                 f"- **Map location:** tiles ({fx0}, {fy0}) to ({fx1}, {fy1}), "
                 f"max elevation {meta['max_elev']}"
             )
-            lines.append(f"- **This tool's own render, for comparison:** `{render_rel.as_posix()}`")
+            # Sloped first: it is the one that models what the game draws,
+            # so it is the render a screenshot should be compared against.
+            # Stepped is kept alongside it as this tool's other style, not
+            # as a second opinion on the same question.
+            lines.append(f"- **This tool's own Sloped render, for comparison:** `{sloped_rel.as_posix()}`")
+            lines.append(f"- **Stepped render of the same region:** `{render_rel.as_posix()}`")
             lines.append("")
 
     DOC_PATH.parent.mkdir(parents=True, exist_ok=True)

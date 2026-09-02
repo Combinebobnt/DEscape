@@ -14,13 +14,13 @@ another checkout's examples/ directory (e.g.
 ~/source/DEscape/examples) if the current one doesn't have it.
 
 Checks, per real example file with terrain_write_supported (files without it
-are reported as skipped, not failed -- Edit mode's tools are disabled for
+are reported as skipped, not failed -- Terrain mode's tools are disabled for
 them entirely, so there is nothing to copy/paste):
 
 1. Copy/Paste disabled while Pan is active, and while no map is loaded --
    never enabled for the one tool (Pan) with no per-tile data to copy.
 2. Terrain copy/paste round trip -- paint a known terrain_id onto a source
-   tile through the real Terrain tool stroke path, copy it, give the
+   tile through the real Draw tool stroke path, copy it, give the
    destination tile a stale non--1 `layer` (simulating a leftover
    double-terrain blend), paste, and confirm the destination's terrain_id
    matches the source AND `layer` was reset to -1 -- the layer-reset
@@ -43,9 +43,9 @@ them entirely, so there is nothing to copy/paste):
 5. Type-mismatch behavior -- the decision documented in
    ViewerWindow._update_tool_enabled() (disable Paste outright on a kind
    mismatch, rather than letting the clipboard's kind override the active
-   tool): copy while on Terrain, switch to Elevate, confirm paste_action is
+   tool): copy while on Draw, switch to Elevate, confirm paste_action is
    disabled and that calling paste_tile() directly (bypassing the QAction)
-   is still a defensive no-op; switch back to Terrain, confirm paste_action
+   is still a defensive no-op; switch back to Draw, confirm paste_action
    is enabled again.
 """
 
@@ -90,7 +90,7 @@ def check_file(path: Path) -> tuple[bool | None, str]:
             return None, "skipped (map too small for this script's fixed tile offsets)"
 
         problems: list[str] = []
-        window.mode_combo.setCurrentText("Edit")
+        window.mode_combo.setCurrentText("Terrain")
 
         # -- 1. Pan: never enabled, regardless of clipboard state --
         window._on_tool_selected("pan")
@@ -100,9 +100,9 @@ def check_file(path: Path) -> tuple[bool | None, str]:
             problems.append("paste_action enabled while Pan is active")
 
         # -- 2. Terrain copy/paste round trip --
-        window._on_tool_selected("terrain")
-        if not window.terrain_action.isEnabled():
-            return None, "skipped (Terrain tool disabled for this file)"
+        window._on_tool_selected("draw")
+        if not window.draw_action.isEnabled():
+            return None, "skipped (Draw tool disabled for this file)"
 
         src_x, src_y = 0, 0
         dst_x, dst_y = 3, 0
@@ -127,7 +127,7 @@ def check_file(path: Path) -> tuple[bool | None, str]:
 
         window.on_hover((src_x, src_y))
         if not window.copy_action.isEnabled():
-            problems.append("copy_action disabled on Terrain tool with a map loaded")
+            problems.append("copy_action disabled on Draw tool with a map loaded")
         window.copy_tile()
         if window._clipboard != {"kind": "terrain", "terrain_id": new_terrain_id, "layer": -1}:
             problems.append(f"copy_tile() captured unexpected clipboard: {window._clipboard}")
@@ -165,7 +165,7 @@ def check_file(path: Path) -> tuple[bool | None, str]:
         window.paste_tile()  # direct call, bypassing the disabled QAction -- must still no-op
         if len(window.edit_history.records) != records_before_mismatched_paste:
             problems.append("paste_tile() mutated state despite a clipboard/tool kind mismatch")
-        window._on_tool_selected("terrain")
+        window._on_tool_selected("draw")
         if not window.paste_action.isEnabled():
             problems.append("paste_action didn't re-enable after switching back to the matching tool")
 

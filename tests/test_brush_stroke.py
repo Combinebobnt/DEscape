@@ -1,4 +1,4 @@
-"""Brush size/shape wiring for the drag-stroke edit tools (Terrain, Elevate,
+"""Brush size/shape wiring for the drag-stroke edit tools (Draw, Elevate,
 Set Elevation), driven through a real offscreen ViewerWindow -- same
 technique and default-tier rationale as tests/test_fill_tool.py and
 tests/test_toolbar_params.py. tests/test_brush.py covers the pure geometry;
@@ -27,14 +27,14 @@ pytestmark = [
 _TERRAIN = 15  # GRASS_1, distinct from the blank template's own terrain_id=0
 
 
-def _edit_window(tool: str = "terrain"):
+def _edit_window(tool: str = "draw"):
     conftest.ensure_qapp()
     from descape.viewer import ViewerWindow
 
     window = ViewerWindow()
     window.load_scenario(BLANK_TEMPLATE_PATH)
     assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Edit")
+    window.mode_combo.setCurrentText("Terrain")
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_TERRAIN))
     return window
@@ -46,14 +46,6 @@ def _shown_flat(window) -> None:
     window.terrain_style_combo.setCurrentText("Flat")
     window.show()
     QApplication.processEvents()
-
-
-def _viewport_pos(map_view, tile_x: int, tile_y: int):
-    from PyQt5.QtCore import QPointF
-
-    tile_px = map_view._tile_pixels
-    scene_pt = QPointF((tile_x + 0.5) * tile_px, (tile_y + 0.5) * tile_px)
-    return QPointF(map_view.mapFromScene(scene_pt))
 
 
 def _mouse_event(kind, pos, button, buttons):
@@ -74,7 +66,7 @@ def _stroke(window, cx: int, cy: int, modifiers: int = 0) -> None:
 
 
 def test_square_brush_paints_whole_footprint_in_one_undo_record() -> None:
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         window.brush_size_spin.setValue(3)
         window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_SQUARE))
@@ -93,7 +85,7 @@ def test_square_brush_paints_whole_footprint_in_one_undo_record() -> None:
 def test_circle_brush_paints_exactly_the_circle_footprint() -> None:
     from descape.brush import brush_tiles
 
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         window.brush_size_spin.setValue(5)
         window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_CIRCLE))
@@ -136,13 +128,13 @@ def test_elevate_drag_raises_each_tile_at_most_once_per_stroke() -> None:
         mm = window.scenario.map_manager
 
         cx, cy = 10, 10
-        press_pos = _viewport_pos(map_view, cx, cy)
+        press_pos = conftest.viewport_pos(map_view, cx, cy)
         map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, press_pos, Qt.LeftButton, Qt.LeftButton))
 
         # Drag right one cursor tile at a time -- each step's 3x3 footprint
         # overlaps the previous step's by two columns.
         for step in range(1, 5):
-            move_pos = _viewport_pos(map_view, cx + step, cy)
+            move_pos = conftest.viewport_pos(map_view, cx + step, cy)
             map_view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, move_pos, Qt.NoButton, Qt.LeftButton))
 
         map_view.mouseReleaseEvent(
@@ -165,7 +157,7 @@ def test_elevate_drag_raises_each_tile_at_most_once_per_stroke() -> None:
 
 
 def test_footprint_clipped_at_map_corner_does_not_raise() -> None:
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         window.brush_size_spin.setValue(9)
         window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_SQUARE))
@@ -185,7 +177,7 @@ def test_footprint_clipped_at_map_corner_does_not_raise() -> None:
 
 
 def test_brush_size_1_matches_pre_brush_single_tile_behavior() -> None:
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         assert window.brush_size_spin.value() == 1  # the default
         mm = window.scenario.map_manager
@@ -226,7 +218,7 @@ def test_hover_preview_matches_the_stroke_footprint() -> None:
 
     from descape.brush import brush_tiles
 
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         window.brush_size_spin.setValue(5)
         window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_CIRCLE))
@@ -257,7 +249,7 @@ def test_hover_preview_matches_the_stroke_footprint() -> None:
 
 
 def test_brush_size_change_refreshes_preview_without_a_mouse_move() -> None:
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         window.on_hover((40, 40))
         map_view = window.map_view
@@ -277,7 +269,7 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
     with no settings.py config key, so a fresh window always starts at
     size 1 / square regardless of what a previous window in the same
     process left the spinbox/combo at."""
-    window = _edit_window("terrain")
+    window = _edit_window("draw")
     try:
         window.brush_size_spin.setValue(9)
         window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_CIRCLE))
@@ -285,7 +277,7 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
         window.edit_history.mark_saved()
         window.close()
 
-    fresh = _edit_window("terrain")
+    fresh = _edit_window("draw")
     try:
         assert fresh.brush_size_spin.value() == 1
         assert fresh.brush_shape_combo.currentData() == BRUSH_SHAPE_SQUARE

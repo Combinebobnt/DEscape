@@ -5,28 +5,36 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Two tables, both keyed by unit_const:
+Three tables, all keyed by unit_const:
 
-- "buildings": [radius_x, radius_y] in tiles, for every unit whose `building`
-  field is populated (i.e. it's an actual placeable structure, not a
-  resource/decoration/mobile unit). Each axis is
-  round(clearance_size_<axis>) independently -- clearance_size is the game's
-  own per-unit half-footprint in tiles. No minimum floor: a rounded radius of
-  0 is correct and renders as a real 1-tile-wide dot, not "invisible" (a
-  single dot is already visible -- there's no reason to inflate it).
-  Confirmed against real footprints: Town Center/Castle clearance (2.0, 2.0)
-  are the game's actual 4x4 buildings; Mill/House clearance (1.0, 1.0) are
-  the actual 2x2 buildings; stone/palisade Wall clearance (0.5, 0.5) rounds
-  to (0, 0) -- a real 1x1 wall segment, matching the game (a wall line is
-  many 1-tile segments, not one thick object); axis-aligned Gate segments
-  clearance (2.0, 0.5)/(0.5, 2.0) round to a long, 1-tile-wide strip along
-  their axis, matching the real 1x4 gate shape; diagonal Gate end caps
-  clearance (0.5, 0.5) round to (0, 0), a real 1x1 tile, same as the main
-  Wall; the diagonal Gate's own center piece is a separate, larger
-  unit_const. Earlier version of this script collapsed both axes to a single
-  square radius via max(x, y) and floored it at 1 -- that turned every 1-tile
-  wall segment into an oversized 3x3 square and squashed long gate strips
-  into fat squares; per-axis radius with no floor fixes both.
+- "buildings": [span_x, span_y] -- the footprint's real width and height in
+  TILES, for every unit whose `building` field is populated (i.e. it's an
+  actual placeable structure, not a resource/decoration/mobile unit). Each
+  axis is max(1, round(2 * clearance_size_<axis>)) independently.
+  clearance_size is the game's own per-unit HALF-footprint, so doubling it is
+  what makes even spans expressible at all: Town Center/Castle clearance
+  (2.0, 2.0) are the game's actual 4x4 buildings, Mill/House clearance
+  (1.0, 1.0) the actual 2x2 ones, stone/palisade Wall clearance (0.5, 0.5) a
+  real 1x1 segment (a wall line is many 1-tile segments, not one thick
+  object), and axis-aligned Gate segments clearance (2.0, 0.5)/(0.5, 2.0) the
+  real 1x4 strip along their axis. Diagonal Gate end caps are (0.5, 0.5),
+  1x1, same as the main Wall; the diagonal Gate's own center piece is a
+  separate, larger unit_const.
+
+  2 * clearance is an exact integer for 918 of the 940 axis values across all
+  470 building consts. The 22 exceptions are small decoratives at clearance
+  0.2/0.25/0.3, and 66 further axis values are exactly 0 -- all want a 1x1
+  dot, which is what the max(1, ...) floor gives them.
+
+  Two superseded versions of this rule, both kept because each failure is
+  easy to reintroduce: the first collapsed both axes to one square radius via
+  max(x, y) floored at 1, which turned every 1-tile wall segment into a 3x3
+  square and squashed long gate strips into fat squares. The second emitted
+  round(clearance) as a per-axis RADIUS, which fixed those two but could only
+  ever produce odd spans downstream (2r + 1 tiles) -- so every even-span
+  building rendered a tile too large per axis, and round()'s round-half-even
+  made Farm (1.5) doubly wrong. Per-axis span, doubled before rounding, fixes
+  all of it.
 - "resource_colors": real RGB per non-building unit whose `minimap_color`
   field is nonzero, resolved against the game's own palette
   (resources/_common/palettes/original.pal, JASC-PAL format). The field is a
@@ -45,6 +53,18 @@ Two tables, both keyed by unit_const:
   in-game, buildings always render in owner player color on the minimap, not
   a resource color, so render.py should never consult this table for a unit
   that's also in "buildings".
+- "foundation_terrain": int terrain_id -- every building unit's own
+  `building.foundation_terrain_id` field, when it's a valid table index
+  (>= 0; -1 means "no foundation terrain," used by several invisible
+  internal helper consts). This is a raw mirror of the .dat field, not a
+  filtered "which of these should render as terrain" set -- render.py's
+  own policy (see _terrain_overlay_for) decides that by also checking
+  unit_graphic_map.json, since a real .sld should win over a terrain
+  override wherever one exists (e.g. Wonder and several other consts here
+  also have a foundation terrain, purely for the in-game construction
+  outline, and must keep drawing as their sprite). Farm and the rest of
+  its family are the only consts that end up with a foundation terrain
+  AND no .sld today.
 
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install -- neither of which this repo depends on for normal use, only for
@@ -98,13 +118,17 @@ def main() -> None:
 
     buildings: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
+    foundation_terrain: dict[str, int] = {}
 
     for unit_const, unit in enumerate(units):
         if unit is None:
             continue
         if unit.building is not None:
             cx, cy = unit.clearance_size
-            buildings[str(unit_const)] = [round(cx), round(cy)]
+            buildings[str(unit_const)] = [max(1, round(cx * 2)), max(1, round(cy * 2))]
+            terrain_id = unit.building.foundation_terrain_id
+            if terrain_id is not None and terrain_id >= 0:
+                foundation_terrain[str(unit_const)] = terrain_id
             continue  # buildings never get a resource_colors entry
         if unit.minimap_color:
             idx = _unwrap_signed_byte(unit.minimap_color)
@@ -120,14 +144,18 @@ def main() -> None:
                 "resource_colors": dict(
                     sorted(resource_colors.items(), key=lambda kv: int(kv[0]))
                 ),
+                "foundation_terrain": dict(
+                    sorted(foundation_terrain.items(), key=lambda kv: int(kv[0]))
+                ),
             },
             indent=2,
         )
         + "\n"
     )
     print(
-        f"Wrote {len(buildings)} building footprints and "
-        f"{len(resource_colors)} resource colors to {out_path}"
+        f"Wrote {len(buildings)} building footprints, "
+        f"{len(resource_colors)} resource colors and "
+        f"{len(foundation_terrain)} foundation terrains to {out_path}"
     )
 
 

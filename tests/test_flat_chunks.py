@@ -53,7 +53,8 @@ import numpy as np
 import pytest
 
 from descape.edit_history import EditHistory
-from descape.render import FlatChunkCache, _flat_unit_draws, composite_rect_flat, render_scenario, tile_pixels_for_map
+from descape.render import _flat_unit_draws, composite_rect_flat, render_scenario, tile_pixels_for_map
+from descape.render_cache import FlatChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 

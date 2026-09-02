@@ -5,7 +5,7 @@ scripts are not the convention going forward") instead.
 
 B-C replaced Stepped mode's single monolithic QPixmap with MapCanvasItem
 (descape/viewer.py), a QGraphicsItem whose paint() composites only the
-descape.render.IsoChunkCache chunks its own exposedRect actually needs.
+descape.render_cache.IsoChunkCache chunks its own exposedRect actually needs.
 ItemUsesExtendedStyleOption is the flag that makes that lazy at all --
 without it Qt always reports the item's FULL boundingRect as "exposed",
 which silently degrades back to full-canvas cost with none of the
@@ -59,10 +59,9 @@ import pytest
 
 import conftest
 from descape.render import render_terrain_iso
+from testkit import qt_capture
 
 if TYPE_CHECKING:
-    from PyQt5.QtCore import QRectF
-
     from descape.viewer import ViewerWindow
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 
@@ -95,24 +94,11 @@ PAN_STEPS = 4
 PAN_STEP_PX = 150
 
 
-def _scene_rect_to_array(scene, rect: "QRectF") -> np.ndarray:
-    """Same technique as tools/verify_iso_viewer_pick.py's own helper --
-    item-agnostic (QGraphicsScene.render(), not reading a specific item's
-    pixmap), so it exercises the real paint dispatch MapCanvasItem.paint()
-    is fed through. Only used by check 3 here -- see the module docstring
-    for why this specific API can't exercise checks 1/2."""
-    from PyQt5.QtCore import QRectF
-    from PyQt5.QtGui import QImage, QPainter
-
-    w, h = int(math.ceil(rect.width())), int(math.ceil(rect.height()))
-    image = QImage(w, h, QImage.Format_RGB888)
-    image.fill(0)
-    painter = QPainter(image)
-    scene.render(painter, QRectF(0, 0, w, h), rect)
-    painter.end()
-    bits = image.constBits()
-    bits.setsize(image.bytesPerLine() * h)
-    return np.array(bits).reshape(h, image.bytesPerLine())[:, : w * 3].reshape(h, w, 3).copy()
+# Item-agnostic (QGraphicsScene.render(), not reading a specific item's
+# pixmap), so it exercises the real paint dispatch MapCanvasItem.paint() is
+# fed through. Only used by check 3 here -- see the module docstring for why
+# this specific API can't exercise checks 1/2.
+_scene_rect_to_array = qt_capture.scene_rect_to_array
 
 
 def _stepped_window(path: Path) -> "ViewerWindow":
@@ -218,7 +204,7 @@ def _check_panning_proportional(path: Path) -> tuple[bool, str]:
         item = window.map_view._canvas_item
         if item is None:
             return False, "Stepped mode produced no MapCanvasItem"
-        cache = item._cache  # descape.render.IsoChunkCache
+        cache = item._cache  # descape.render_cache.IsoChunkCache
         canvas_w, canvas_h = cache.canvas_dims()
         chunk_px = cache.chunk_px
         total_grid_chunks = math.ceil(canvas_w / chunk_px) * math.ceil(canvas_h / chunk_px)

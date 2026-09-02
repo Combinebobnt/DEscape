@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from fractions import Fraction
 from functools import lru_cache
 
 import numpy as np
@@ -145,20 +146,34 @@ MAX_ELEVATION = 15
 
 # Mip level ladder's content floor and ceiling, in tile_px (Phase B-D).
 #
-# MIP_MIN_TILE_PIXELS is a CONTENT floor, not a sharpness one: below 8,
-# unit dots stop being drawable at all, and a 4x4 window of a noisy
-# 512-square texture (render.py's _tile_block slices at 1:1 texel density)
-# is an arbitrary point sample, so adjacent tiles get UNCORRELATED colors
-# -- coarse levels would get noisier, the opposite of a mip. Runner-up 16:
-# visually safer, gives up a level at the default elev_step_pct and 4x the
-# fit-to-view memory. Fall back to 16 if a real eyeball pass (Phase B-D-d)
-# finds 8 too noisy.
+# MIP_MIN_TILE_PIXELS is a CONTENT floor, not a sharpness one: below 16,
+# a 4x4 window of a noisy 512-square texture (render.py's _tile_block
+# slices at 1:1 texel density) is an arbitrary point sample, so adjacent
+# tiles get UNCORRELATED colors -- coarse levels would get noisier, the
+# opposite of a mip. B-D-d's 2026-08-15 eyeball pass provisionally accepted
+# 8 (judged moot: the map is "unreadably small" at max zoom-out regardless
+# of rasterization) but that judgment didn't hold up under further use --
+# the blockiness right before a mip-level switch (see viewer.py's
+# _select_mip: selection allowed up to ~2x magnification of the current
+# level before switching) was visible well before the floor level's own
+# extreme zoom-out band. Raised to 16 (2026-08-27) on that basis, costing
+# one level of the ladder and ~4x the fit-to-view memory at the coarsest
+# reachable level.
+#
+# 2026-08-28: that pre-switch-magnification reason is now MOOT -- mip_
+# for_scale's rule flipped from floor(log2(scale)) to ceil, which never
+# magnifies at all (see that method's own docstring), so the specific
+# blockiness this raise was chasing no longer occurs regardless of this
+# constant's value. Stays 16 anyway: the CONTENT-floor argument two
+# paragraphs up is independent of the selection rule and holds on its own.
+# Whether to revert to 8 now that the other reason is gone is a separate,
+# not-yet-decided question, deliberately not folded into this change.
 #
 # MIP_MAX_TILE_PIXELS = 128 is the real texel ceiling minus one octave:
 # asset_source.LOADED_TEXTURE_SIZE = 512, and render.py's _crop_offset
 # requires tile_px to divide it evenly -- 128 is the largest power of two
 # under that ceiling with real headroom left for a wraparound-free crop.
-MIP_MIN_TILE_PIXELS = 8
+MIP_MIN_TILE_PIXELS = 16
 MIP_MAX_TILE_PIXELS = 128
 
 
@@ -464,7 +479,7 @@ def tile_screen_origin(x: int, y: int, elevation: int, proj: IsoProjection) -> t
     return sx, sy
 
 
-def _diamond_membership(local_x, local_y, half_w: int, half_h: int):
+def diamond_membership(local_x, local_y, half_w: int, half_h: int):
     """Pixel-center rhombus membership test: is the pixel at local (x, y)
     (relative to a tile's own (2*half_w, 2*half_h) bounding box) inside its
     diamond? All-integer arithmetic on purpose (pixel *centers* are always
@@ -518,7 +533,7 @@ def diamond_indices(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
     only 5 values), so this cache (maxsize=8) can't grow unbounded."""
     half_w, half_h = half_dims(tile_px)
     dy, dx = np.mgrid[0 : 2 * half_h, 0 : 2 * half_w]
-    inside = _diamond_membership(dx, dy, half_w, half_h)
+    inside = diamond_membership(dx, dy, half_w, half_h)
     dst_y = dy[inside].astype(np.int64)
     dst_x = dx[inside].astype(np.int64)
     src_y, src_x = _inverse_sample(dst_x, dst_y, half_w, half_h, tile_px)
@@ -546,7 +561,7 @@ def _diamond_column_edges(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndar
     a flat render of the same map, 0 extra with this derived version."""
     half_w, half_h = half_dims(tile_px)
     dy, dx = np.mgrid[0 : 2 * half_h, 0 : 2 * half_w]
-    inside = _diamond_membership(dx, dy, half_w, half_h)
+    inside = diamond_membership(dx, dy, half_w, half_h)
     used = inside.any(axis=0)
     tops = np.argmax(inside, axis=0)
     # reverse-argmax for the last True row per column
@@ -635,8 +650,7 @@ def shadow_quad_indices(
     61.3% of darkened pixels landed on the intended neighbor at
     tile_px=64, the rest on tiles never tested for an elevation delta,
     usually the diagonal (x+1, y-1) at the SAME elevation as the caster,
-    i.e. a shadow drawn across flat ground -- see maintainer/docs/
-    PLAN_CONTACT_SHADOW.md). The caster's back half-edge and the
+    i.e. a shadow drawn across flat ground). The caster's back half-edge and the
     neighbor's overlapping half-edge run at OPPOSITE slopes and converge
     at the caster's apex column, so the neighbor's exposed sliver tapers
     to zero there. Each column gets its own height, `avail`, and the band
@@ -731,6 +745,276 @@ def shadow_quad_indices(
     return dst_y, dst_x, depth.astype(np.int64), span
 
 
+@lru_cache(maxsize=256)
+def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The contact-shadow band's two APEX columns (half_w - 1 and half_w),
+    as their own once-per-tile pass, in shadow_quad_indices' own frame and
+    four-array (dst_y, dst_x, depth, span) format.
+
+    WHY THIS IS A SEPARATE FUNCTION AND NOT A WIDENED shadow_quad_indices.
+    Those two columns are structurally unreachable by either side of the
+    band. up_left's column half_w - 1 pairs with partner 2*half_w - 1 and
+    up_right's column half_w pairs with partner 0, and both partners are
+    exactly the two columns _diamond_column_edges marks unused, so the
+    `used[partner]` mask forces avail to 0 there. That mask is correct and
+    must stay: dropping it is what painted a half_h - rise_px tall band
+    across flat ground (the v0.2 spill bug). Measured across tile_px
+    {8,16,32,64,128} at every rise_px below the empty threshold, neither
+    apex column is ever claimed, 0 exceptions. So the gap is not a
+    partition mistake this can be folded into. It is a real hole with a
+    different owner.
+
+    The owner is the DIAGONAL back neighbour (x+1, y-1), which sits at
+    screen offset (0, -2*half_h + rise_px), i.e. directly above the caster.
+    Neither direct back neighbour reaches these columns at all, which is
+    the same fact the partner mask expresses from the other side.
+
+    WHY THIS DOES NOT REOPEN THE REGRESS A PRIOR DESIGN PASS RULED OUT.
+    That ruling forbids sizing a band from the diagonal's own
+    EXPOSED region, because that region depends on (x, y-1) and (x+1, y)
+    too and so tapers to zero in its turn, one iteration further out. This
+    function's extent depends only on the caster's own diamond and rise_px.
+    Nothing here can taper. The diagonal's elevation is the CALLER's gate
+    (draw or do not draw), never an input to the size, and that distinction
+    is the whole design. See render.py's _render_tile_iso for the gate.
+
+    Height is 2*half_h - rise_px, the full exposure: the diagonal's diamond
+    occupies caster rows rise_px - 2*half_h through rise_px - 1 in these
+    columns, and the caster's own top face covers everything from row 0
+    down, leaving exactly that many rows visible above the apex. Returning
+    the full exposure rather than a pre-capped strip keeps this module to
+    geometry and leaves falloff to render.py's CONTACT_RAMP_DIVISOR, the
+    same split shadow_quad_indices already documents. In practice the ramp
+    reaches an exact 1.0 no-op after a few rows, so most of a tall wedge is
+    an inert multiply rather than visible darkening.
+
+    NOTE THE EMPTY THRESHOLDS DIFFER, deliberately. The band empties once
+    rise_px >= 2*half_h - 2 (the caster hides its direct neighbours); this
+    empties only at rise_px >= 2*half_h, because the diagonal is a further
+    half_h up-screen and stays visible slightly longer. So at the tallest
+    elev_step_pct stops this draws a thin cue where the band draws nothing
+    at all. That is intended, not an overrun.
+
+    depth is 0 at the row touching the caster's apex and grows upward;
+    0 <= depth < span holds elementwise, as for the band. dst_y is always
+    negative (above the caster's own diamond), so callers MUST clip, same
+    as the band."""
+    if rise_px <= 0:
+        raise ValueError(f"rise_px must be positive, got {rise_px}")
+    _half_w, half_h = half_dims(tile_px)
+    avail = 2 * half_h - rise_px
+    if avail <= 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty.copy(), empty.copy(), empty.copy()
+
+    tops, _bottoms, used = _diamond_column_edges(tile_px)
+    cols = np.arange(2 * _half_w)
+    # The columns where the DIAGONAL is the tile immediately above the
+    # caster's own top edge, rather than a direct back neighbor. Derived
+    # by comparing the two tiles' own edges: the diagonal's diamond ends
+    # at caster row rise_px - 1 - tops[c] and the caster's begins at
+    # tops[c], so the diagonal reaches the caster's own top edge exactly
+    # where rise_px >= 2*tops[c]. The bound is INCLUSIVE, and that is not
+    # cosmetic: at `<` the two columns where 2*tops[c] == rise_px are
+    # claimed by neither this pass nor the band, leaving a 2-column hole
+    # on each flank of the wedge (measured at tile_px=64, rise_px=8:
+    # columns 23/24 and 39/40 blank). That set is still disjoint from the
+    # band's own claimed columns, which need tops[c] > rise_px, so the two
+    # passes cannot overlap and cannot double-darken.
+    adjacent = used & (2 * tops <= rise_px)
+    edge_x = cols[adjacent]
+    if edge_x.size == 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty.copy(), empty.copy(), empty.copy()
+
+    depth = np.tile(np.arange(avail, dtype=np.int64), edge_x.size)
+    dst_x = np.repeat(edge_x, avail).astype(np.int64)
+    dst_y = (np.repeat(tops[edge_x] - 1, avail) - depth).astype(np.int64)
+    span = np.full(dst_x.size, avail, dtype=np.int64)
+    return dst_y, dst_x, depth, span
+
+
+@lru_cache(maxsize=256)
+def seam_edge_indices(tile_px: int, side: str) -> tuple[np.ndarray, np.ndarray]:
+    """Pure geometry for one 1px SEAM line -- the topmost pixel of every
+    column on one of a tile's two up-screen diamond edges, i.e. the tile's
+    OWN silhouette against whatever sits behind it. "up_left" is the edge
+    facing back neighbor (x, y-1), "up_right" the edge facing (x+1, y) --
+    the same two sides shadow_quad_indices names, and a caller applies the
+    same per-side `delta > 0` test before drawing either.
+
+    Returns (dst_y, dst_x) -- TWO int64 arrays, same (base_x, base_y) =
+    tile_screen_origin(...) origin diamond_indices uses. No src_y/src_x
+    (nothing is sampled, this only darkens) and no depth/span (the line is
+    1px, so there is no falloff to normalise).
+
+    Why this exists ALONGSIDE shadow_quad_indices rather than replacing
+    it. The band's length is a property of the caster AND its neighbor:
+    the two tiles' back edges converge at the caster's apex, so the
+    neighbor's exposed sliver tapers to zero there and the band stops
+    short -- measured coverage of a tile's back edge at tile_px=64, one
+    level: 83.9% at elev_step_pct=25, 71.0% at 50, 45.2% at 100, 0% at
+    200. Each terrace edge therefore rendered as a DASHED line. This
+    function's extent is a property of the CASTER ALONE -- every used
+    column on that side, always -- so it has no taper, and it is non-empty
+    at every elev_step_pct including 200, where the band is empty by
+    design and there was previously no up-screen elevation cue at all.
+    (This docstring claimed "no taper and no gap" until 2026-08-16. The
+    no-gap half was an overclaim: true within one tile, false across a
+    run of them until seam_apex_indices below existed -- see its
+    docstring for the measurement.)
+
+    Extending the band onto the diagonal neighbor (x+1, y-1) instead is
+    ruled out: that tile's own exposed region depends on (x, y-1) and
+    (x+1, y) as well, so
+    it would taper to zero in its turn -- the same gap one iteration
+    further out.
+
+    Unlike the band, these pixels are ON the tile's own diamond (row
+    tops[c] for each column c), so a caller must draw this AFTER the top
+    face, not before. That also makes it strictly safer than the band for
+    units: a tile's own units are drawn after its terrain, so a seam can
+    never darken one, where a band reaching an earlier-painted tile can.
+
+    `used` is REQUIRED, not defensive -- same trap shadow_quad_indices
+    documents: tops is argmax over the diamond membership mask and returns
+    0 for the two columns that contain no diamond pixels at all (0 and
+    2*half_w - 1), which would put a stray seam pixel at row 0.
+
+    Column split EXCLUDES the two apex columns (half_w - 1 and half_w),
+    which seam_apex_indices owns and a caller draws as its own once-per-
+    tile pass -- up_left gets used columns c < half_w - 1, up_right gets
+    c > half_w. See that function for why the apex cannot belong to either
+    side: this was shadow_quad_indices' strict partition (c < half_w /
+    c >= half_w) until 2026-08-16, and that split left a one-column hole
+    at every tile apex on any run where only one side qualified.
+
+    Not skirt_quad_indices' split either -- that one deliberately SHARES
+    the apex column between its two sides, which is right for a skirt
+    (both sides really do reach the same bottom tip) and wrong here: a
+    shared column would be darkened twice whenever both back neighbors are
+    lower.
+
+    Documented extent -- dst_x in [1, 2*half_w - 2] and dst_y in
+    [0, half_h - 1], both strictly inside the diamond's own bounding box,
+    so unlike the band this never needs clipping on the full canvas. The
+    two sides are disjoint from each other and from the apex pair; all
+    three together cover every used column exactly once."""
+    if side not in ("up_left", "up_right"):
+        raise ValueError(f"side must be 'up_left' or 'up_right', got {side!r}")
+    half_w, _half_h = half_dims(tile_px)
+    tops, _bottoms, used = _diamond_column_edges(tile_px)
+    cols = np.arange(2 * half_w)
+    in_side = (cols < half_w - 1) if side == "up_left" else (cols > half_w)
+    edge_x = cols[used & in_side]
+    return tops[edge_x].astype(np.int64), edge_x.astype(np.int64)
+
+
+@lru_cache(maxsize=256)
+def seam_apex_indices(tile_px: int) -> tuple[np.ndarray, np.ndarray]:
+    """The two apex columns (half_w - 1 and half_w) of the same 1px seam
+    line seam_edge_indices draws, as their own pass -- returns (dst_y,
+    dst_x) in that function's frame and format.
+
+    Why the apex is separate rather than part of whichever side qualifies.
+    The seam's extent is a property of the caster alone, but a terrace
+    edge is drawn by a RUN of tiles, and adjacent tiles sit exactly
+    half_w canvas px apart. Under the old strict partition (up_left took
+    1 .. half_w-1, up_right took half_w .. 2*half_w-2) a run where only
+    ONE side qualified left a hole every half_w px -- measured at
+    tile_px=64 on tests/test_seam_line.py's own pyramid: 558 seam px in 15
+    isolated 8-connected components, one per tile side. Coverage of a
+    tile's half-edge when only one side draws was 75% at tile_px=8, 88% at
+    16, 94% at 32, 97% at 64, 98% at 128 -- which is why a 1-in-32 dash at
+    64 read as continuous to both an A/B render and the eye, while the
+    coarsest mip (8, MIP_MIN_TILE_PIXELS, exactly the zoom for reading
+    terrain shape) was missing a quarter of the line.
+
+    Both directions verified at tile_px=64: an up_left-only run held at
+    canvas col half_w, which HAS diamond pixels (it is up_right's first
+    column, so the caster can claim it); an up_right-only run held at
+    2*half_w - 1, which has NO diamond pixels of its own -- but that same
+    canvas column is the NEXT tile's half_w - 1, which does. So the
+    uniform rule is that both apex columns get drawn whenever either side
+    qualifies, and both lie inside the caster's own diamond, so nothing
+    spills onto a neighbor (this does not reopen the v0.2 spill bug).
+
+    Drawn as a separate once-per-tile pass rather than by letting the
+    qualifying side extend into it: that is what makes double-darkening
+    structurally impossible when BOTH back neighbors are lower. The apex
+    is the most visible column on the tile, and SEAM_SHADE squared there
+    is precisely the artifact the strict partition existed to prevent --
+    so the fix keeps that guarantee instead of trading it away.
+
+    half_w >= 2 always (half_dims doubles half_h >= 1), so both apex
+    columns fall inside the used range [1, 2*half_w - 2] at every tile_px
+    and this is never empty. `used` is still applied, for the same reason
+    seam_edge_indices applies it -- tops is argmax over the membership
+    mask and returns 0 for a column with no diamond pixels.
+
+    Takes no `side`, and "apex" is NOT a side any geometry function here
+    accepts -- seam_edge_indices(tile_px, "apex") raises. It exists as a
+    string only inside render._seam_factors, as that cache's key for this
+    pass's factor array."""
+    half_w, _half_h = half_dims(tile_px)
+    tops, _bottoms, used = _diamond_column_edges(tile_px)
+    cols = np.array([half_w - 1, half_w])
+    edge_x = cols[used[cols]]
+    return tops[edge_x].astype(np.int64), edge_x.astype(np.int64)
+
+
+@lru_cache(maxsize=256)
+def tile_edge_indices(tile_px: int, side: str) -> tuple[np.ndarray, np.ndarray]:
+    """Pure geometry for one 1px OUTLINE edge along a tile's diamond
+    silhouette -- all four sides, unlike seam_edge_indices (up_left/
+    up_right only, and darkens rather than paints) or skirt_quad_indices
+    (left/right only, and a drop_px-tall hanging strip rather than 1px on
+    the diamond itself). Used by the farm-terrain perimeter outline
+    (render.py's SpriteLayer.farm_by_tile), which needs to trace a whole
+    footprint's boundary regardless of which side of the diamond that
+    boundary falls on.
+
+    Same `side` vocabulary and grid-neighbor pairing as skirt_quad_indices
+    and seam_edge_indices -- "left" is the edge facing grid neighbor
+    (x-1, y), "right" faces (x, y+1) (both from `bottoms`, the down-screen
+    edges a skirt hangs off), "up_left" faces (x, y-1) and "up_right"
+    faces (x+1, y) (both from `tops`, the up-screen edges a seam traces) --
+    so a caller translating a footprint boundary into which edges to draw
+    can reuse exactly the same four (side, nx, ny) tuples _render_tile_iso
+    already builds for skirts and seams, rather than a fifth vocabulary.
+
+    Deliberately NOT built by sharing skirt_quad_indices' or
+    seam_edge_indices' own implementations: both are verified paths with
+    apex/depth/falloff handling a flat 1px outline doesn't need. Adjacent
+    tiles' diamond_indices destination sets are disjoint at every tile_px
+    in this project's mip ladder (measured directly, all four grid
+    neighbors, tile_px 8/16/32/64/128 -- zero intersection), so unlike a
+    seam or shadow this needs no interleaving-order reasoning: whichever
+    tile a boundary edge belongs to can draw it at its own moment in
+    depth_order without a later-painted neighbor ever overpainting it.
+
+    Returns (dst_y, dst_x) in tile_screen_origin(...)'s frame, matching
+    seam_edge_indices' shape (no src_y/src_x -- a solid outline color is
+    painted, nothing sampled).
+
+    The two sides of each pair share their apex column (half_w - 1 or
+    half_w), same as skirt_quad_indices -- a flat outline color is a
+    harmless no-op when a column is painted from both sides, not the
+    double-shading hazard seam_edge_indices' own apex split exists to
+    avoid, so this doesn't need that split either."""
+    if side not in ("left", "right", "up_left", "up_right"):
+        raise ValueError(
+            f"side must be one of left/right/up_left/up_right, got {side!r}"
+        )
+    half_w, _half_h = half_dims(tile_px)
+    tops, bottoms, used = _diamond_column_edges(tile_px)
+    cols = np.arange(2 * half_w)
+    in_side = (cols <= half_w) if side in ("left", "up_left") else (cols >= half_w)
+    edge_x = cols[used & in_side]
+    edge_row = bottoms if side in ("left", "right") else tops
+    return edge_row[edge_x].astype(np.int64), edge_x.astype(np.int64)
+
+
 def corner_rise_px(elevations: np.ndarray, proj: IsoProjection, rule: str = "average") -> np.ndarray:
     """Phase 6 (Sloped)'s per-corner height field: a (h+1, w+1) int64 array
     of canvas-pixel rise, corner_rise[cy, cx] blending the up-to-4 real
@@ -741,11 +1025,11 @@ def corner_rise_px(elevations: np.ndarray, proj: IsoProjection, rule: str = "ave
     interior vertex has all 4).
 
     rule picks how those 1-4 touching elevations combine into one corner
-    value -- "max"/"min" (steepest reasonable readings of a convex/concave
-    corner) or "average" (today's default, per the 2026-08-09 preliminary
-    screenshot read -- see docs/PLAN_V2_6.md's Track C. A constant, not a
-    structural choice: switching it never touches sloped_quad_indices or
-    anything downstream). "average" is computed as
+    value -- "max" (today's default: what the game itself was MEASURED to
+    do, off in-game captures, replacing an earlier preliminary read that
+    guessed "average"), "min", or "average". A constant, not a structural
+    choice: switching it never touches sloped_quad_indices or anything
+    downstream. "average" is computed as
     `sum(touching elevations) * elev_step // count`, NOT
     `mean(touching elevations * elev_step)` -- the two differ whenever
     count doesn't evenly divide the sum, and only the sum-first form
@@ -760,9 +1044,16 @@ def corner_rise_px(elevations: np.ndarray, proj: IsoProjection, rule: str = "ave
     array's output, shared with its neighbors by construction (the same
     array index for the same physical grid vertex from every tile that
     touches it), which is what keeps neighboring tiles' sloped_quad_indices
-    calls seeing IDENTICAL corner values at a shared vertex -- see that
-    function's own docstring for why that identity is what keeps adjacent
-    tiles' warps meeting exactly rather than merely approximately."""
+    calls seeing IDENTICAL corner values at a shared vertex.
+
+    That identity is NECESSARY but not SUFFICIENT for adjacent tiles to
+    meet exactly, and the difference is worth stating because this
+    docstring used to claim otherwise: shared corner values held throughout
+    while an east-west ramp still leaked 6600 gap pixels, because the old
+    warp derived each column's shift from its own MEAN rise, which the
+    neighbour never computes. Abutment additionally requires both tiles
+    deriving the same integer cut from the same shared-EDGE interpolation
+    of these values -- see _sloped_column_runs."""
     if rule not in ("max", "min", "average"):
         raise ValueError(f"rule must be 'max', 'min', or 'average', got {rule!r}")
     h, w = elevations.shape
@@ -807,10 +1098,10 @@ def tile_uv_fractions(tile_px: int) -> tuple[np.ndarray, np.ndarray]:
     |u|+|v| == max(|u+v|, |v-u|) (a 45-degree rotation) turns the diamond
     |u|+|v|<=1 into the full unit square in (p, q) = (u+v, v-u) space, so
     (fp, fq) = ((p+1)/2, (q+1)/2) parameterize that square directly --
-    which is what lets Phase 6 (Sloped)'s _corner_weights() do a plain
-    bilinear blend instead of a general barycentric triangle split, and
-    what lets render.py's slope shading take a closed-form gradient of
-    that same bilinear patch.
+    which is what lets render.py's slope shading take a closed-form
+    gradient of a bilinear height patch, and what unit_rise_px converts
+    into axis-aligned tile fractions (fx = 1 - fq, fy = fp) for its own
+    two-triangle rise formula.
 
     Tip -> grid-corner correspondence (derived directly from the continuous
     isometric formula screen_x=(mapx+mapy)*half_w, screen_y=(mapy-mapx)*
@@ -833,35 +1124,191 @@ def tile_uv_fractions(tile_px: int) -> tuple[np.ndarray, np.ndarray]:
     return fp, fq
 
 
+def _round_div(num, den):
+    """Round-half-up integer division. Exact for any sign of `num`, for
+    `den > 0`, and works elementwise on arrays as well as on scalars.
+
+    Round-half-up rather than numpy's round-half-to-even because both sides
+    of a shared tile edge must land on the SAME integer row: banker's
+    rounding breaks ties by the parity of the result, which is not a
+    property the two neighbours compute in common. Floats are avoided here
+    for the same reason -- two mathematically equal float expressions can
+    differ by a ULP and land either side of a .5 boundary."""
+    return (2 * num + den) // (2 * den)
+
+
 @lru_cache(maxsize=8)
-def _corner_weights(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """(w_nw, w_ne, w_sw, w_se) bilinear corner-blend weights, one entry per
-    diamond_indices(tile_px) destination pixel, in the SAME order as
-    tile_uv_fractions() (see that function for the (fp, fq) derivation and
-    the tip <-> grid-corner correspondence this directly encodes)."""
-    fp, fq = tile_uv_fractions(tile_px)
-    w_ne = (1 - fp) * (1 - fq)
-    w_nw = (1 - fp) * fq
-    w_sw = fp * fq
-    w_se = fp * (1 - fq)
-    return w_nw, w_ne, w_sw, w_se
+def _diamond_column_runs(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(cols, tops, lens, col_starts, order) -- the corner-INDEPENDENT half
+    of the sloped column resample, so it is computed once per tile_px
+    rather than once per corner shape.
+
+    INDEXING CONVENTION, which the whole resample depends on: `cols` lists
+    the columns that contain diamond pixels at all, and every OTHER array
+    here is indexed by ABSOLUTE column `c`, i.e. has length 2*half_w with
+    zero-filled entries at the two unused edge columns (0 and 2*half_w - 1;
+    see _diamond_column_edges on why those are empty). This matches
+    _diamond_column_edges' own tops/bottoms/used convention rather than
+    introducing a second, position-in-`cols` one -- mixing the two is
+    exactly where an off-by-one would hide.
+
+    `order` indexes diamond_indices(tile_px)' four arrays, sorted by column
+    and then by row, so `order[col_starts[c] : col_starts[c] + lens[c]]`
+    is column c's pixels top to bottom. That slice is what the resample
+    gathers through, and it is contiguous because a diamond column is."""
+    tops, bottoms, used = _diamond_column_edges(tile_px)
+    half_w, _half_h = half_dims(tile_px)
+    cols = np.flatnonzero(used).astype(np.int64)
+    lens = np.where(used, bottoms - tops + 1, 0).astype(np.int64)
+    col_starts = np.zeros(2 * half_w, dtype=np.int64)
+    col_starts[1:] = np.cumsum(lens)[:-1]
+    dst_y, dst_x, _src_y, _src_x = diamond_indices(tile_px)
+    order = np.lexsort((dst_y, dst_x))
+    return cols, tops.astype(np.int64), lens, col_starts, order
 
 
-@lru_cache(maxsize=2048)
+@lru_cache(maxsize=8)
+def _identity_uv_idx(tile_px: int) -> np.ndarray:
+    """The identity permutation over diamond_indices(tile_px)' pixels, as a
+    read-only cached array -- what sloped_quad_indices' equal-corner branch
+    hands back so that `shade[uv_idx] is shade`-equivalent (a no-op gather)
+    without allocating per call. Read-only because it is module-global
+    shared state, unlike the fresh arrays the sloped path builds."""
+    idx = np.arange(diamond_indices(tile_px)[0].size, dtype=np.int64)
+    idx.flags.writeable = False
+    return idx
+
+
+def _sloped_column_runs(
+    tile_px: int, nw: int, ne: int, sw: int, se: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(cols, run_start, run_len, raw_len) -- where each screen column of a
+    sloped tile starts and how many rows long it is. Absolute-column
+    indexed, per _diamond_column_runs' convention above.
+
+    THE POINT, and the reason the seams existed: each cut is evaluated on
+    the tile EDGE it is shared with, parametrized by column index alone, by
+    integer-only arithmetic. Two tiles meeting at an edge therefore derive
+    the identical cut row from the identical inputs, so they abut exactly.
+    The old rigid per-column shift instead moved a whole column by that
+    column's own MEAN rise -- a quantity the neighbour never computes, so
+    the two disagreed and left a gap or an overlap depending on the sign.
+
+        local column   upper cut edge   lower cut edge   k
+        c < half_w     NW -> NE         NW -> SW         c
+        c >= half_w    NE -> SE         SW -> SE         c - half_w
+
+    The fraction is k/(half_w - 1), not the geometrically exact
+    (2k+1)/(2*half_w), so that a cut lands EXACTLY on the corner value at
+    k = 0 and k = half_w - 1. That is what makes the two apex columns agree
+    with the DIAGONAL neighbour by construction rather than by rounding
+    luck. half_w >= 2 always, so the denominator is never 0.
+
+    `raw_len` is returned pre-clamp on purpose: the `max(_, 1)` clamp is
+    reachable at elev_step_pct=200 (a one-level slope at 45 degrees on
+    screen) and must be an observable, testable path rather than a silent
+    one. The clamp can only ever LENGTHEN a run, so it can only ever cause
+    overlap, never a hole -- which is why gaps are impossible here for any
+    corner input, legal or otherwise. That is strictly stronger than the
+    rigid-translation invariant it replaces, which only ruled out holes
+    WITHIN a tile."""
+    cols, tops, lens, _col_starts, _order = _diamond_column_runs(tile_px)
+    half_w, _half_h = half_dims(tile_px)
+    den = 2 * (half_w - 1)
+
+    left = cols < half_w
+    k = np.where(left, cols, cols - half_w)
+    a_up = np.where(left, nw, ne)
+    b_up = np.where(left, ne, se)
+    a_lo = np.where(left, nw, sw)
+    b_lo = np.where(left, sw, se)
+    r_up = a_up + _round_div(2 * k * (b_up - a_up), den)
+    r_lo = a_lo + _round_div(2 * k * (b_lo - a_lo), den)
+
+    run_start = np.zeros(2 * half_w, dtype=np.int64)
+    run_len = np.zeros(2 * half_w, dtype=np.int64)
+    raw_len = np.zeros(2 * half_w, dtype=np.int64)
+    run_start[cols] = tops[cols] - r_up
+    raw_len[cols] = lens[cols] - (r_lo - r_up)
+    run_len[cols] = np.maximum(raw_len[cols], 1)
+    return cols, run_start, run_len, raw_len
+
+
+def unit_rise_px(corner_rise: np.ndarray, x: int, y: int, fx: float, fy: float) -> int:
+    """The pixel rise of Sloped's own painted surface at one point inside
+    tile (x, y) -- (fx, fy) in [0, 1] are the point's axis-aligned tile
+    fractions (fx = mapx - x, fy = mapy - y), the same convention
+    tile_uv_fractions' docstring names (fx = 1 - fq, fy = fp).
+
+    NOT bilinear -- that was this project's own superseded framing for this
+    surface (every spec source that used to call this "bilinear unit-height
+    interpolation" predates the seam resample). _sloped_column_runs derives
+    each screen column's cut by interpolating corner values along the tile
+    EDGE it shares with a neighbour -- the left half of the tile
+    (column < half_w) only ever sees nw/ne/sw, the right half only ever
+    sees ne/sw/se -- which is a two-triangle piecewise-planar surface split
+    along the screen-vertical NE-SW diagonal (fx + fy = 1), not a smooth
+    4-corner blend:
+
+        fx + fy <= 1:  rise = nw + fx*(ne - nw) + fy*(sw - nw)
+        fx + fy >  1:  rise = se - (1 - fx)*(se - sw) - (1 - fy)*(se - ne)
+
+    Measured against the shipped renderer (recovering the per-pixel rise
+    sloped_quad_indices actually paints, over every painted pixel of all 81
+    corner configurations at tile_px=64, elev_step=8): this two-triangle
+    model disagrees with the renderer by at most 0.88px (integer-rounding
+    residual). A bilinear fit over the same 4 corners disagrees by up to
+    7.99px -- a full elevation level -- because it is not the surface the
+    renderer draws.
+
+    Rounding contract: this and `_round_div` are the only two places this
+    module rounds a rise, and both round half-up, exactly once, from an
+    EXACT rational -- `fx`/`fy` arrive as Python floats with an exact
+    binary value, converted via `fractions.Fraction` rather than scaled and
+    truncated, so the same float bit pattern always produces the same
+    pixel. That matters here even though no neighbour independently
+    recomputes this value (unlike `_sloped_column_runs`' shared-edge
+    agreement): the SAME unit and corners must still yield the SAME pixel
+    in every render and in every pick, or paint and hit-test drift apart
+    silently. Callers must call this function rather than re-deriving the
+    formula, so that guarantee actually holds."""
+    nw = int(corner_rise[y, x])
+    ne = int(corner_rise[y, x + 1])
+    sw = int(corner_rise[y + 1, x])
+    se = int(corner_rise[y + 1, x + 1])
+    p = Fraction(fx)
+    q = Fraction(fy)
+    if p + q <= 1:
+        rise = nw + p * (ne - nw) + q * (sw - nw)
+    else:
+        rise = se - (1 - p) * (se - sw) - (1 - q) * (se - ne)
+    return int(_round_div(rise.numerator, rise.denominator))
+
+
+@lru_cache(maxsize=1024)
 def sloped_quad_indices(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Sloped mode's counterpart to diamond_indices -- same destination
-    PIXEL SET and same source sampling (this never changes which pixels a
-    tile owns or which texel each one reads, only how far up-screen each
-    pixel sits), with dst_y additionally warped by the tile's 4 corner
-    pixel-rises (corner_rise_px()'s output at this tile's own 4 grid
-    corners: (x, y), (x+1, y), (x, y+1), (x+1, y+1) for d_nw/d_ne/d_sw/d_se
-    respectively) instead of diamond_indices' single uniform per-tile shift.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sloped mode's counterpart to diamond_indices -- the same diamond
+    warped so that each screen column is cut where the tile's own 4 corner
+    pixel-rises say it should be (corner_rise_px()'s output at this tile's
+    4 grid corners: (x, y), (x+1, y), (x, y+1), (x+1, y+1) for
+    d_nw/d_ne/d_sw/d_se respectively) instead of diamond_indices' single
+    uniform per-tile shift.
 
-    Normalizes against min(d_nw, d_ne, d_sw, d_se) before computing anything
-    -- dst_y's own smallest value stays 0, matching diamond_indices'
-    convention, and the cache key collapses every "all four corners equal"
+    Returns FIVE arrays, (dst_y, dst_x, src_y, src_x, uv_idx), not
+    diamond_indices' four. A sloped column is a VARIABLE-length run, so the
+    output is no longer a permutation of the diamond's own pixels and no
+    longer positionally aligned with anything derived from
+    tile_uv_fractions(). `uv_idx` is that alignment, restored explicitly:
+    for output pixel i, uv_idx[i] is the diamond_indices/tile_uv_fractions
+    entry it resamples, so a per-pixel quantity computed over the diamond
+    (render._slope_shade's shading factor is the only one today) is
+    gathered as `shade[uv_idx]`. src_y/src_x are already gathered that way
+    here, so callers only need uv_idx for their own parallel arrays.
+
+    Normalizes against min(d_nw, d_ne, d_sw, d_se) before computing
+    anything, so the cache key collapses every "all four corners equal"
     case (any absolute elevation) to the SAME normalized (0, 0, 0, 0) key.
     The caller MUST subtract that same minimum from tile_screen_origin()'s
     own base_y before painting -- this function folds the remainder into
@@ -869,65 +1316,135 @@ def sloped_quad_indices(
     folded into base_y, not returned separately" pattern render.py's
     skirt/shadow callers already use. See render.py's _render_tile_sloped.
 
+    dst_y is NOT bounded below by 0 (an older version of this docstring
+    claimed it was, and that was measured false even then): the bound is
+    0 <= r_up, r_lo <= max(corners), so rows lie in
+    [-max(corners), 2*half_h - 1]. What keeps a negative row safe on canvas
+    is _clipped_paint's masking plus corner_headroom_px' sizing, never a
+    min-0 property -- see tests/test_sloped_geometry.py's
+    test_run_rows_stay_within_derived_bounds.
+
     Delegates to diamond_indices(tile_px) verbatim when all four corners
     are equal (always (0, 0, 0, 0) after normalization) -- not an
-    approximation of that case, the EXACT SAME arrays, floating-point warp
-    math never runs. That's what makes render_terrain_sloped's flat-map
-    output assertable byte-identical to render_terrain_iso's, rather than
-    merely close: an independently-derived bilinear result at equal
-    corners could differ from diamond_indices' by a stray floating-point
-    ULP at a floor() boundary, which byte-identity would catch as a
-    (spurious) failure.
+    approximation of that case, the EXACT SAME arrays, plus
+    _identity_uv_idx's no-op gather as the fifth. Floating-point warp math
+    never runs. That's what makes render_terrain_sloped's flat-map output
+    assertable byte-identical to render_terrain_iso's, rather than merely
+    close. NOTE THE ALIASING ASYMMETRY between the two branches: the
+    equal-corner path hands back module-global CACHED arrays (mutating one
+    corrupts every later tile, which is why _identity_uv_idx is read-only),
+    while the sloped path below allocates all five fresh.
 
-    The warp is applied as ONE rounded shift per screen column (that
-    column's mean rise, rounded once), not per pixel. Rounding each pixel's
-    rise independently is what the first version did, and it left thin
-    unpainted seams inside every sloped tile: within a column, rise varies
-    over its full corner-to-corner range, so wherever it DECREASED down the
-    column, round() ticked down by 1 across some row -- that -1 cancelled
-    the +1 step dst_y already takes, two source pixels collapsed onto one
-    destination row, and the row between them was never written at all.
-    Against a zeroed canvas that read on screen as nested dark arcs
-    following the bilinear iso-contour. A rigid per-column translation of
-    an already-contiguous run (diamond_indices guarantees each column's
-    un-warped dst_y values are contiguous, by construction of a real
-    diamond) can produce neither a gap nor a duplicate -- see
-    tests/test_sloped_geometry.py's per-column contiguity check.
+    Where the cuts come from, and why the old tile-to-tile seams are gone:
+    _sloped_column_runs evaluates every cut on the tile EDGE it is shared
+    with, by integer-only arithmetic, so two neighbours derive the identical
+    cut row from identical inputs and abut exactly. The predecessor shifted
+    each column rigidly by that column's own MEAN rise -- a quantity the
+    neighbour never computes -- which left a 1px diamond lattice of gaps and
+    overlaps across every sloped area. See that function's docstring for the
+    cut table and tests/test_sloped_geometry.py's
+    test_adjacent_tiles_abut_exactly for the proof that replaced the old
+    rigid-translation argument.
 
-    What that gives up, stated plainly because it is a geometric
-    approximation and not a rounding detail: a rigid shift carries no
-    intra-column COMPRESSION, so a tile keeps its full unwarped 2*half_h
-    vertical extent instead of foreshortening with the slope. At
-    tile_px=64 (elev_step=8), a one-level north-south ramp paints 32 rows
-    where the true sloped silhouette is 24. This is forced, not chosen:
-    under this function's fixed pixel count, a per-column mapping that is
-    contiguous and order-preserving can ONLY be a rigid translation, so
-    real compression means a variable-length resample -- a different return
-    contract, which would also break _slope_shade's positional alignment
-    and the whole-map partition counts. That is the thing to revisit
-    alongside the known tile-to-tile boundary seams, not separately.
+    The source resample within a run is a uniform nearest-neighbour pick,
+    integer only: pixel i of a run of run_len takes diamond row
+    ((2*i + 1) * n) // (2 * run_len) of that column's n original rows. Call
+    it what it is -- a LINEARIZATION, not just NN aliasing: `rise` along a
+    column is quadratic in v whenever the twist term (ne - nw - se + sw) is
+    non-zero, so this is exact at both endpoints and at run_len == n (a
+    near-flat tile degrades to the identity gather), and sub-pixel in
+    between for real slopes. It is swappable without touching the contract,
+    since every invariant is stated on dst_y/run_len, never on the pick.
 
-    maxsize=2048, not skirt_quad_indices'/shadow_quad_indices' 256: this
+    maxsize=1024, not skirt_quad_indices'/shadow_quad_indices' 256: this
     key is a 4-tuple under an averaging rule, not those functions' 3-tuple,
     so the reachable key space is larger for the same real maps -- see
     tests/test_sloped_geometry.py's corpus-tier cardinality measurement,
     which this constant should be revisited against if it ever undersizes
     in practice (a bounded lru_cache degrades to slower re-computation on a
     miss, never incorrect output, so undersizing is a perf regression, not
-    a correctness one)."""
+    a correctness one).
+
+    Sized from measurement 2026-08-20, not by feel, because the 5-tuple's
+    per-entry payload is 7.5x the old one's (every array freshly allocated,
+    where the predecessor had three of four aliasing diamond_indices' own
+    cache): 61 KB per entry at tile_px=64, 246 KB at 128. The realistic
+    working set is ONE open map's corner keys across its live mip levels --
+    measured at most 171 distinct corner keys in any single corpus file,
+    times 5 mip levels = 855 entries, about 55 MB with every level
+    resident. 1024 covers that with headroom while halving the theoretical
+    worst case the old 2048 allowed. (329 keys is the count across the
+    WHOLE corpus at once; that is not a working set, since only one map is
+    open at a time.)"""
     d_min = min(d_nw, d_ne, d_sw, d_se)
     nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    dia_dst_y, dia_dst_x, dia_src_y, dia_src_x = diamond_indices(tile_px)
     if nw == 0 and ne == 0 and sw == 0 and se == 0:
-        return diamond_indices(tile_px)
-    dst_y, dst_x, src_y, src_x = diamond_indices(tile_px)
-    w_nw, w_ne, w_sw, w_se = _corner_weights(tile_px)
-    rise = w_nw * nw + w_ne * ne + w_sw * sw + w_se * se
-    half_w, _half_h = half_dims(tile_px)
-    col_sum = np.bincount(dst_x, weights=rise, minlength=2 * half_w)
-    col_count = np.bincount(dst_x, minlength=2 * half_w)
-    col_shift = np.round(col_sum / np.maximum(col_count, 1)).astype(np.int64)
-    sloped_dst_y = dst_y - col_shift[dst_x]
-    return sloped_dst_y, dst_x, src_y, src_x
+        return dia_dst_y, dia_dst_x, dia_src_y, dia_src_x, _identity_uv_idx(tile_px)
+
+    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
+    _cols, _tops, lens, col_starts, order = _diamond_column_runs(tile_px)
+    # Per emitted column (position within `cols`, not absolute column):
+    # its run length, its original diamond length, where its run starts on
+    # canvas, and where its pixels start in `order`.
+    lengths = run_len[cols]
+    n_rows = lens[cols]
+    ends = np.cumsum(lengths)
+    which = np.repeat(np.arange(cols.size, dtype=np.int64), lengths)
+    row_in_run = np.arange(int(ends[-1]), dtype=np.int64) - np.repeat(ends - lengths, lengths)
+
+    dst_x = cols[which]
+    dst_y = run_start[cols][which] + row_in_run
+    # The min() is belt-and-braces, not a live guard: pick(run_len - 1) is
+    # n - ceil(n / (2*run_len)), which is <= n-1 for every run_len >= 1, at
+    # any length ratio. Note run_len > n is the ORDINARY lengthening case
+    # (an east-rising column stretches, ~25% of a tile at tile_px=64), not
+    # the max(raw_len, 1) clamp -- those are different things.
+    pick = np.minimum(((2 * row_in_run + 1) * n_rows[which]) // (2 * lengths[which]), n_rows[which] - 1)
+    uv_idx = order[col_starts[cols][which] + pick]
+    return dst_y, dst_x, dia_src_y[uv_idx], dia_src_x[uv_idx], uv_idx
+
+
+@lru_cache(maxsize=256)
+def sloped_tile_outline(
+    tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
+) -> tuple[tuple[int, int], ...]:
+    """The closed screen outline of one sloped tile, as (x, y) points in the
+    same tile-local space sloped_quad_indices' dst_x/dst_y use -- so a caller
+    places it at exactly the base_x/base_y it would paint that tile at,
+    -d_min normalization included. Track C4's hover/highlight outline.
+
+    A sloped tile is NOT a 4-point diamond and cannot reuse
+    unit_pick.diamond_points: each screen column is cut independently by
+    _sloped_column_runs, so the silhouette is a pair of warped staircases
+    (an east-rising tile is visibly taller on its east side than its west).
+    Traced as the exact pixel boundary -- top edge left to right, then the
+    bottom edge back -- rather than as a smoothed hull through column
+    centres, so the outline bounds precisely the pixels the tile claims and
+    a highlight can never suggest coverage the pick plane disagrees with.
+
+    Columns 0 and 2*half_w - 1 hold no diamond pixels at all (see
+    _diamond_column_edges), so `cols` is contiguous and the two staircases
+    join without a gap. Cached on the same normalized corner key
+    sloped_quad_indices uses, for the same reason: a real map has few
+    distinct corner shapes, and a brush highlight rebuilds this per tile."""
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+    nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
+
+    top: list[tuple[int, int]] = []
+    bottom: list[tuple[int, int]] = []
+    for c in cols.tolist():
+        y0 = int(run_start[c])
+        y1 = y0 + int(run_len[c])
+        top.append((c, y0))
+        top.append((c + 1, y0))
+        bottom.append((c, y1))
+        bottom.append((c + 1, y1))
+    # Reversed so the bottom is walked right-to-left, closing the ring: the
+    # top ends at the rightmost column's right edge and the reversed bottom
+    # starts there, leaving one vertical edge at each end of the tile.
+    return tuple(top + bottom[::-1])
 
 
 def ground_outline_corners(w: int, h: int, proj: IsoProjection) -> tuple[tuple[int, int], ...]:
@@ -1011,7 +1528,7 @@ def tile_screen_bounds_swept(x, y, proj: IsoProjection):
     is deliberately looser than that, by construction.
 
     The shadow-headroom widening is why this bbox is what
-    render.py's IsoChunkCache-backed compositing (composite_rect_iso() via
+    render_cache.py's IsoChunkCache-backed compositing (composite_rect_iso() via
     tiles_in_screen_rect(), which calls this as its own tight per-candidate
     "keep" filter) as well as the incremental-patch path
     (dirty_screen_bbox_iso()) both need to stay correct: a caster tile can
@@ -1193,7 +1710,7 @@ def screen_to_tile(sx: int, sy: int, elevations: np.ndarray, proj: IsoProjection
         cy = (u / proj.half_w + v / proj.half_h) / 2
         # Check both integers surrounding the continuous solve, not just the
         # nearest one: the discrete pixel-center diamond mask (integer
-        # arithmetic, see _diamond_membership) and this continuous solve
+        # arithmetic, see diamond_membership) and this continuous solve
         # (plain float division) don't perfectly agree right at a diamond's
         # sharp top/bottom corner pixels, where naive round() can land one
         # tile off even though the true owning tile is directly adjacent.
@@ -1205,7 +1722,7 @@ def screen_to_tile(sx: int, sy: int, elevations: np.ndarray, proj: IsoProjection
                     continue
                 origin_sx, origin_sy = tile_screen_origin(x, y, e, proj)
                 local_x, local_y = sx - origin_sx, sy - origin_sy
-                if not bool(_diamond_membership(local_x, local_y, proj.half_w, proj.half_h)):
+                if not bool(diamond_membership(local_x, local_y, proj.half_w, proj.half_h)):
                     continue
                 d = y - x
                 if best is None or d > best_d:

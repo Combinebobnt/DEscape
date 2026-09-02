@@ -5,11 +5,36 @@
 # entries a contributor actually needs before doing any work in this repo.
 pytest
 
+# pytest-qt supplies the `qtbot` fixture for the `gui`-marked offscreen
+# ViewerWindow tests. Most of what it offers those tests already hand-roll
+# (tests/conftest.py's shared QApplication, and the QMouseEvent synthesis in
+# test_brush_stroke.py / test_fill_tool.py, which call handlers directly so
+# exceptions already propagate) -- it is here for qtbot.waitUntil/waitSignal
+# on the debounced paths, which otherwise can only be tested by sleeping:
+# the graphics-quality slider's 200ms QTimer and the elevation slider's
+# sliderReleased deferral.
+#
+# NOT a soft dependency once installed: with pytest-qt present but no Qt
+# binding importable, pytest raises a collection ERROR and EVERY test fails,
+# including the pure-geometry ones that never touch Qt -- it does not skip.
+# So installing this makes PyQt5 a prerequisite for running any test at all,
+# where conftest.py's lazy `from PyQt5...` inside ensure_qapp() had kept the
+# non-gui tiers independent of it. Harmless in practice (PyQt5 is a runtime
+# dependency in requirements.txt, so it is always present), but it is a
+# deliberate trade rather than a free addition -- same shape as ruff above.
+# pytest.ini pins `qt_api = pyqt5` so binding detection can't drift.
+pytest-qt
+
 # ruff backs tests/test_lint.py, part of the default (fast) pytest tier --
 # that test fails outright (not skips) if ruff isn't installed, so this is
 # not optional the way genieutils-py/cython below are. See ruff.toml for the
 # ruleset and tests/README.md for how the gate is wired in.
-ruff
+#
+# Pinned, not just listed -- ruff.toml's ruleset was triaged against this
+# exact version's findings, and an unpinned install could silently pick up a
+# newer version with a different real-defaults set or new rules under the
+# selected families.
+ruff==0.16.3
 
 # genieutils-py is only used by tools/gen_terrain_texture_map.py, to regenerate
 # descape/terrain_texture_map.json if the game updates its terrain table. Not a

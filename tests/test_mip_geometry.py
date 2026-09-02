@@ -1,5 +1,5 @@
-"""Phase B-D-b of the mip-level plan (maintainer/docs/PLAN_MIPS.md) --
-real per-level projections, materialized headlessly. Neither this phase
+"""Phase B-D-b of the mip-level plan -- real per-level projections,
+materialized headlessly. Neither this phase
 nor Phase B-D-a (tests/test_mip_cache.py) changes a single pixel reachable
 from the running app: descape/viewer.py still only ever calls with the
 default mip=0 until Phase B-D-c wires a real LOD signal.
@@ -15,7 +15,7 @@ Structured in three layers:
   3. Corpus-marked checks that need real per-file content the unit-free
      120x120 fixture donor can't provide: building_bboxes genuinely
      differing per level (the real gap this whole mip design exists to
-     close -- see IsoChunkCache._level() in descape/render.py), patch()
+     close -- see IsoChunkCache._level() in descape/render_cache.py), patch()
      rebuilding exactly as many levels as are resident (not enumerated),
      patch() re-establishing byte-identity at a non-reference level after
      scripted edits, and invalidate_region()'s high-edge fix for a finer
@@ -31,13 +31,15 @@ import conftest
 from descape import iso_geometry, render
 from descape.edit_history import EditHistory
 from descape.render import (
-    FlatChunkCache,
-    IsoChunkCache,
     dirty_screen_bbox_iso,
     elevations_and_proj,
     render_scenario,
     render_terrain_iso,
     tile_pixels_for_map,
+)
+from descape.render_cache import (
+    FlatChunkCache,
+    IsoChunkCache,
 )
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
@@ -71,8 +73,8 @@ def test_exactness_matrix(w, h, base_tile_px, pct) -> None:
     base = iso_geometry.canvas_size_and_origin(w, h, base_tile_px, 0, 7, elev_step_pct=pct)
     projs = iso_geometry.mip_projections_for(w, h, base, pct)
     got = {p.tile_px for p in projs.values()}
-    # MIP_MIN/MAX_TILE_PIXELS = 8/128 clip the doc's raw table (which
-    # includes 4 at pct in {100, 200}).
+    # MIP_MIN/MAX_TILE_PIXELS = 16/128 clip the doc's raw table (which
+    # includes 4 and 8 at some pct values).
     expected = {tp for tp in _EXPECTED_MATRIX[pct] if iso_geometry.MIP_MIN_TILE_PIXELS <= tp <= iso_geometry.MIP_MAX_TILE_PIXELS}
     assert got == expected
 
@@ -94,7 +96,7 @@ def test_every_level_is_field_by_field_exact(w, h) -> None:
     """Checks each scaled field individually (so a failure names the
     field, not just 'not exact'), plus min_elev/max_elev equality, plus
     the canvas_dims (skirt-headroom-inclusive) cross-check -- the value
-    the blit actually trusts, per render.IsoChunkCache.__init__'s own
+    the blit actually trusts, per render_cache.IsoChunkCache.__init__'s own
     construction-time assert."""
     base = iso_geometry.canvas_size_and_origin(w, h, 32, 0, 7, elev_step_pct=50)
     projs = iso_geometry.mip_projections_for(w, h, base, 50)
@@ -115,12 +117,12 @@ def test_every_level_is_field_by_field_exact(w, h) -> None:
 
 def test_inexact_levels_are_rejected() -> None:
     """Proves the filter isn't returning everything mip_tile_px_candidates
-    offers: at elev_step_pct=25, tile_px=8 is a real candidate of base 32
+    offers: at elev_step_pct=10, tile_px=16 is a real candidate of base 32
     (per mip_tile_px_candidates) but not an exact mip of it (per the
-    matrix above, 25's exact set is {16,32,64,128})."""
-    base = iso_geometry.canvas_size_and_origin(480, 480, 32, 0, 7, elev_step_pct=25)
-    assert 8 in iso_geometry.mip_tile_px_candidates(32).values()
-    assert iso_geometry.mip_projection(480, 480, 8, base, elev_step_pct=25) is None
+    matrix above, 10's exact set is {32,64})."""
+    base = iso_geometry.canvas_size_and_origin(480, 480, 32, 0, 7, elev_step_pct=10)
+    assert 16 in iso_geometry.mip_tile_px_candidates(32).values()
+    assert iso_geometry.mip_projection(480, 480, 16, base, elev_step_pct=10) is None
 
 
 def test_wrong_elev_step_pct_raises_at_the_identity_level() -> None:
@@ -140,7 +142,7 @@ def test_elev_step_pct_inside_the_rounding_band_degrades_safely() -> None:
     base = iso_geometry.canvas_size_and_origin(480, 480, 32, 0, 7, elev_step_pct=50)
     projs = iso_geometry.mip_projections_for(480, 480, base, elev_step_pct=55)
     assert projs[0] is base
-    assert {p.tile_px for p in projs.values()} == {8, 16, 32}
+    assert {p.tile_px for p in projs.values()} == {16, 32}
 
 
 def test_flat_candidates_are_unfiltered_and_not_pct_dependent() -> None:
@@ -149,7 +151,7 @@ def test_flat_candidates_are_unfiltered_and_not_pct_dependent() -> None:
     mip_tile_px_candidates() (used unfiltered by FlatChunkCache) needs no
     exactness check and doesn't vary with elev_step_pct at all."""
     candidates = iso_geometry.mip_tile_px_candidates(32)
-    assert set(candidates.values()) == {8, 16, 32, 64, 128}
+    assert set(candidates.values()) == {16, 32, 64, 128}
     assert candidates[0] == 32
 
 
@@ -258,7 +260,7 @@ def test_building_bboxes_are_genuinely_per_level(corpus_files) -> None:
     tier building_bboxes == {} at EVERY level and a naive test would pass
     vacuously against a broken 'reuse level 0's bboxes at every level'
     implementation -- exactly the gap this whole per-level design exists
-    to close (see render.IsoChunkCache._level()'s own docstring). Only a
+    to close (see render_cache.IsoChunkCache._level()'s own docstring). Only a
     real corpus file with actual buildings can exercise this for real."""
     for path in corpus_files:
         scenario = load_map_and_units(path)

@@ -143,7 +143,7 @@ def main() -> None:
     for label, path in [(f"blank_{BLANK_TEMPLATE_PATH.stem.split('_')[1]}", BLANK_TEMPLATE_PATH)]:
         window = ViewerWindow()
         window.load_scenario(path)
-        window.mode_combo.setCurrentText("Edit")
+        window.mode_combo.setCurrentText("Terrain")
         window._on_tool_selected("fill")
         window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
         output.append(_bench_case(window, "blank_120x120"))
@@ -154,7 +154,7 @@ def main() -> None:
     window = ViewerWindow()
     window.scenario = scenario
     window._render_current()
-    window.mode_combo.setCurrentText("Edit")
+    window.mode_combo.setCurrentText("Terrain")
     window._on_tool_selected("fill")
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
     output.append(_bench_case(window, "blank_480x480"))

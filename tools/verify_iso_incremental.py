@@ -8,6 +8,15 @@ both: does a bounded-region patch, after a real edit, reproduce exactly what
 a full re-composite would show, everywhere -- not just inside the tiles the
 edit directly touched.
 
+Scope: this covers refresh_region_iso() itself, the shared incremental core
+-- NOT the live viewer path, which goes through dirty_screen_bbox_iso() ->
+IsoChunkCache.patch() -> MapCanvasItem.paint() instead (confirmed:
+descape/viewer.py's only two refresh_region_iso mentions are comments, not
+calls). A green run here says nothing about that path on its own --
+tests/test_seam_viewer.py's offscreen ViewerWindow drag test is what
+actually exercises it (skipping IsoChunkCache.patch() in that path turns it
+red, confirmed by mutation).
+
 Byte-identity against a full re-composite, not visual similarity, is the
 acceptance bar throughout, per the parent plan's own Phase 4 section.
 

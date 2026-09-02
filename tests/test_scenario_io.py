@@ -54,7 +54,7 @@ def _check_tail_completeness(path: Path) -> tuple[bool, str]:
 
     data_igen = IncrementalGenerator(name="Scenario Data", file_content=decompressed)
     scenario._decompressed_file_data = decompressed
-    for section_name in scenario.structure.keys():
+    for section_name in scenario.structure:
         if section_name == "FileHeader":
             continue
         scenario._create_and_load_section(section_name, data_igen)

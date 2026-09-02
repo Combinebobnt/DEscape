@@ -12,22 +12,34 @@ Configure the install path via, in priority order:
      "Load" button uses this, so a path picked in the GUI takes effect
      immediately without restarting
   2. the AOE2DE_INSTALL_PATH environment variable
-  3. an "aoe2de_install" key in config.yaml at the repo root (gitignored --
-     see config.example.yaml). set_install_path_override() also persists
-     here on success, so a path loaded once in the GUI is remembered next run.
+  3. an "aoe2de_install" key in config.yaml, at the OS-standard per-user
+     config location (see CONFIG_PATH below). set_install_path_override()
+     also persists here on success, so a path loaded once in the GUI is
+     remembered next run.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 from functools import lru_cache
 from pathlib import Path
 
+import platformdirs
 import yaml
 
+APP_NAME = "DEscape"
+
+
+def _default_config_path() -> Path:
+    return Path(platformdirs.user_config_dir(APP_NAME, appauthor=False, roaming=True)) / "config.yaml"
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = REPO_ROOT / "config.yaml"
+CONFIG_PATH = _default_config_path()
+LEGACY_CONFIG_PATH = REPO_ROOT / "config.yaml"
 TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 
 # Real source textures are 512-2048px square; crops taken from them for tile
@@ -38,6 +50,15 @@ TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 # ~85 distinct texture files a real install has, while still leaving plenty
 # of room to pick varied non-repeating crop origins.
 LOADED_TEXTURE_SIZE = 512
+
+# key-value-strings-utf8.txt is a flat "<int key> \"<value>\"" list per line
+# (comments and blank lines interspersed) -- the same key space
+# gen_object_catalog.py commits as string_id. Backslash-escaped quotes are
+# the only escape this file actually uses (verified against the real file:
+# 109 of ~19k parseable lines carry one, e.g. Sent to \"%s\":).
+_STRING_LINE = re.compile(r'^(\d+)\s+"((?:[^"\\]|\\.)*)"')
+STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-strings-utf8.txt"
+DEFAULT_LANGUAGE = "en"
 
 _override_path: Path | None = None
 
@@ -104,6 +125,97 @@ def set_install_path_override(path: Path | None) -> None:
     get_terrain_texture_path.cache_clear()
     get_terrain_average_color.cache_clear()
     get_terrain_texture_array.cache_clear()
+    _string_table.cache_clear()
+    # Imported here, not at module scope: unit_sprites imports this module, so
+    # a top-level import would be a cycle. Its caches remember MISSES as well
+    # as sprites -- deliberately, since re-deriving one costs a whole file walk
+    # -- so without this, configuring an install for the first time would leave
+    # every unit drawn as a coloured dot until the app was restarted.
+    from descape import unit_sprites
+
+    unit_sprites.clear_caches()
+    # object_catalog.py's name resolution reads resource_string() above --
+    # same reasoning, a different module. Imported here for the same
+    # cycle-avoidance reason (object_catalog.py imports this module).
+    from descape import object_catalog
+
+    object_catalog.clear_caches()
+
+
+def get_language() -> str:
+    """config.yaml's "language" key -- an install language folder name
+    under resources/ (e.g. "en", "de", "fr") -- or DEFAULT_LANGUAGE if unset
+    or unreadable. Not cached, unlike get_install_path(): it is a small file
+    read only when a catalog name is (re)resolved, which object_catalog.py's
+    own caching already makes infrequent, and caching it here too would add
+    another cache set_install_path_override() has no real reason to know
+    about clearing."""
+    if CONFIG_PATH.is_file():
+        try:
+            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        except (yaml.YAMLError, OSError):
+            return DEFAULT_LANGUAGE
+        raw = config.get("language")
+        if raw:
+            return str(raw)
+    return DEFAULT_LANGUAGE
+
+
+def _unescape_string_value(text: str) -> str:
+    return text.replace('\\"', '"').replace("\\\\", "\\")
+
+
+@lru_cache(maxsize=4)
+def _string_table(lang: str) -> dict[int, str]:
+    install = get_install_path()
+    if install is None:
+        return {}
+    path = install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)
+    if not path.is_file():
+        return {}
+    table: dict[int, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _STRING_LINE.match(line)
+        if match is None:
+            continue
+        table[int(match.group(1))] = _unescape_string_value(match.group(2))
+    return table
+
+
+def resource_string(key: int, lang: str | None = None) -> str | None:
+    """The install's own display string for key (a language_dll_name value
+    from empires2_x2_p1.dat), or None if unavailable -- no install
+    configured, no strings file for this language, or no entry for this key.
+    lang defaults to get_language()."""
+    return _string_table(lang or get_language()).get(key)
+
+
+def write_config_file(path: Path, config: dict) -> None:
+    """Creates `path`'s parent directory if needed, then writes `config` to
+    it. Takes the path explicitly -- rather than reading this module's own
+    CONFIG_PATH -- so settings.py can pass its own (separately monkeypatched
+    in tests) global through; a version that read asset_source.CONFIG_PATH
+    internally would silently make settings.CONFIG_PATH decorative."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False))
+
+
+def migrate_legacy_config() -> Path | None:
+    """One-time copy of a pre-relocation repo-root config.yaml to the
+    OS-standard location, idempotent: returns the new path only when it
+    actually copied something, None otherwise (including when there was
+    nothing to migrate). The legacy file is copied, not moved -- it is the
+    user's data, and deleting it is destructive for no gain; it is simply
+    ignored from then on. Must be called explicitly at the GUI entry point,
+    never at import time (see main()'s own call site for why)."""
+    if CONFIG_PATH.exists() or not LEGACY_CONFIG_PATH.is_file():
+        return None
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(LEGACY_CONFIG_PATH, CONFIG_PATH)
+    except OSError:
+        return None  # read-only home, permissions: degrade to defaults, never crash
+    return CONFIG_PATH
 
 
 def save_install_path_to_config(path: Path) -> None:
@@ -116,7 +228,7 @@ def save_install_path_to_config(path: Path) -> None:
         except (yaml.YAMLError, OSError):
             config = {}
     config["aoe2de_install"] = str(path)
-    CONFIG_PATH.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False))
+    write_config_file(CONFIG_PATH, config)
 
 
 @lru_cache(maxsize=256)

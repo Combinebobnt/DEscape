@@ -1,5 +1,5 @@
 """The "Stepped elevation height" slider's value space is the stop index,
-not the pct (Track B-D-e, maintainer/docs/PLAN_MIPS.md).
+not the pct (Track B-D-e of the mip-level plan).
 
 The point of the phase: an off-stop pct enumerates a shallower mip ladder
 than the nearest stop would, and setSingleStep() alone doesn't prevent one --

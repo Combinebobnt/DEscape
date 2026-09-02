@@ -1,6 +1,6 @@
-"""Phase B-D-a of the mip-level plan (maintainer/docs/PLAN_MIPS.md) -- pure
-bookkeeping tests for the mip-level plumbing added to
-descape.render._ChunkCacheBase, IsoChunkCache and FlatChunkCache. Phase a's
+"""Phase B-D-a of the mip-level plan -- pure bookkeeping tests for the
+mip-level plumbing added to descape.render_cache._ChunkCacheBase,
+IsoChunkCache and FlatChunkCache. Phase a's
 own level set is still {0: reference} (no other levels are enumerated
 yet -- that's Phase B-D-b), so this file deliberately owns no full-canvas
 byte-identity assertion: that bar stays with tools/verify_iso_chunks.py /
@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import pytest
 
-from descape.render import DEFAULT_CHUNK_PX, FlatChunkCache, IsoChunkCache, elevations_and_proj, tile_pixels_for_map
+from descape.render import elevations_and_proj, tile_pixels_for_map
+from descape.render_cache import DEFAULT_CHUNK_PX, FlatChunkCache, IsoChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 

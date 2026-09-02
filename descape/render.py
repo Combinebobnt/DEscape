@@ -7,34 +7,50 @@ PyQt5 viewer's canvas.
 from __future__ import annotations
 
 import math
-from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
 
-from descape import asset_source, iso_geometry, settings
+from descape import asset_source, iso_geometry, settings, unit_sprites
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
-    BUILDING_FOOTPRINTS,
+    BUILDING_TILE_SPANS,
+    FOUNDATION_TERRAIN,
     PLAYER_COLORS,
     RESOURCE_COLORS,
     TREE_COLOR,
     TREE_UNIT_IDS,
     color_for_terrain_id,
 )
+from descape.unit_filter import UnitFilter
 
-NON_BUILDING_RADIUS = (0, 0)
+NON_BUILDING_SPAN = (1, 1)
 
-# Largest (rx, ry) in BUILDING_FOOTPRINTS -- the farthest a footprint tile
-# can sit from a unit's own floored (px, py) position. Stepped mode's
-# refresh_region_iso() (Phase 5) needs this to size its lateral seed
-# dilation: an elevation edit on a building's own center tile moves EVERY
-# one of that building's footprint diamonds (they're all drawn at the
-# center's elevation -- see _unit_iso_footprint), not just the center tile
-# itself, so the +-1 dilation that's enough for terrain skirts alone isn't
-# enough once units are interleaved in.
-UNIT_FOOTPRINT_MAX_RADIUS = max((max(rx, ry) for rx, ry in BUILDING_FOOTPRINTS.values()), default=0)
+
+def _sprite_reach_px(proj: iso_geometry.IsoProjection) -> tuple[int, int, int, int]:
+    """(left, up, right, down) canvas-pixel padding a dirty tile's own bbox
+    needs so a sprite anchored on it cannot escape.
+
+    The tile radius above is no substitute, and not because it is slightly too
+    small: it models the terrain diamond, skirt and contact shadow, and no unit
+    PIXEL extent at all. Sprites reach 404/650/424/200 native px from their
+    hotspot (unit_sprites.MAX_SPRITE_REACH_*), which the elevation sweep
+    happens to cover horizontally and badly under-covers upward.
+
+    Integer ceil of reach * sprite_scale, plus 1px: sprite_for() rounds the
+    scaled width and the scaled hotspot INDEPENDENTLY, so the scaled reach on
+    the far side can come out one pixel past (w - hx) * scale."""
+    scale = unit_sprites.sprite_scale(proj.half_w)
+    return tuple(
+        math.ceil(reach * scale) + 1
+        for reach in (
+            unit_sprites.MAX_SPRITE_REACH_LEFT,
+            unit_sprites.MAX_SPRITE_REACH_UP,
+            unit_sprites.MAX_SPRITE_REACH_RIGHT,
+            unit_sprites.MAX_SPRITE_REACH_DOWN,
+        )
+    )
 
 # Pixels per tile side. >1 so real per-tile texture crops (see
 # asset_source.get_terrain_texture_array) show actual detail instead of
@@ -221,37 +237,174 @@ SKIRT_SHADE = {"left": 0.75, "right": 0.55}
 # unit paint-order interleaving _paint_tile_and_units_iso() depends on).
 CONTACT_SHADE = 0.65
 
+# How far up-screen the contact shadow ramps back to no darkening, as a
+# divisor of half_h -- so the ramp is a constant fraction of a tile at every
+# tile_px, and independent of the elevation delta that produced the band.
+#
+# Not a cosmetic knob: shading the band's WHOLE exposed sliver (this is
+# where PLAN_CONTACT_SHADOW.md's decision 1 landed) makes shadow length
+# inversely proportional to step height, since a taller step hides more of
+# its neighbor. Rendered, a 1-level step then darkens 51.6% of the neighbor
+# tile at elev_step_pct=50 and 82.0% at 10, and every up-screen tile reads
+# as a filled triangle -- a lattice of dark triangles rather than relief.
+# An ambient-occlusion band should instead be a roughly fixed screen-space
+# width hugging the occluder's silhouette, which is what this gives.
+#
+# 4 (a quarter of half_h, i.e. 4px at tile_px=64) chosen by A/B render at
+# elev_step_pct 10/50/100 against half_h//2, which still left visible
+# triangle texture at 100 where the sliver is only ~14 rows tall. The band
+# GEOMETRY is untouched by this -- capping is expressed purely as falloff,
+# so the band remains exactly the exposed sliver and simply reaches factor
+# 1.0 (an exact no-op multiply) beyond the ramp.
+CONTACT_RAMP_DIVISOR = 4
+
+# Darkening for the 1px seam line along a tile's own two up-screen diamond
+# edges (see iso_geometry.seam_edge_indices) -- a single symmetric scalar
+# for the same reason CONTACT_SHADE is one, not a per-side dict like
+# SKIRT_SHADE: asymmetry would reintroduce the directional-light claim the
+# ambient-occlusion framing exists to avoid.
+#
+# The seam COMPLEMENTS the contact-shadow band, it does not replace it: the
+# band supplies soft occlusion wherever a lower neighbor is genuinely
+# visible, the seam guarantees the silhouette contour exists everywhere --
+# including near a tile's apex, where the band has tapered out, and at
+# elev_step_pct=200, where the band is empty by design.
+#
+# Slightly darker than CONTACT_SHADE's 0.65 because it is one pixel and has
+# to register at a glance. A/B-rendered against 0.45 and 0.70 at
+# elev_step_pct 25/50/100/200 on a 6-level pyramid and on scattered single
+# raised tiles. Legibility is NOT what separates them -- measured, all
+# three clear the terrain texture's own grain by a wide margin (mean
+# darkening vs mean |pixel - its down-screen neighbor| on the unseamed
+# render, tile_px=64 grass: 6.3x at 0.45, 4.6x at 0.60, 3.4x at 0.70), so
+# "0.70 is too faint" would have been an eyeball claim the numbers do not
+# support. 0.60 is chosen on WEIGHT relative to the band it sits beside:
+# at 0.45 the contour is heavier than the contact shadow whose silhouette
+# it is tracing (0.45 < CONTACT_SHADE's 0.65), which inverts the intended
+# reading -- the band is the feature, the seam only guarantees its contour
+# exists. 0.60 is the one candidate just darker than CONTACT_SHADE rather
+# than well past it.
+SEAM_SHADE = 0.60
+
+
+@lru_cache(maxsize=256)
+def _seam_factors(tile_px: int, side: str) -> np.ndarray:
+    """float32 darkening factors aligned 1:1 with the seam indices for
+    `side` -- iso_geometry.seam_edge_indices(tile_px, side) for "up_left"/
+    "up_right", or seam_apex_indices(tile_px) for "apex", the two-column
+    once-per-tile pass. A flat SEAM_SHADE for every pixel, since the seam
+    is 1px and so has no falloff to express.
+
+    "apex" is served HERE rather than by its own lru_cache'd function on
+    purpose: tests neutralise SEAM_SHADE to 1.0 and call
+    _seam_factors.cache_clear() to get an exact no-op control render. A
+    second cache would keep serving the old 0.60 through that clear, so
+    the control would silently stop being a control. _shadow_factors takes
+    its own "apex" side for the same reason.
+
+    Constant, but still an ARRAY, not a scalar: _clipped_darken does
+    `factors[in_bounds]` and `factors[:, None]`, both of which need a real
+    1-D array of the same length as dst_y. And float32, not float64 -- the
+    same bit-identity pinning _shadow_factors' own dtype note is about
+    (float64 here would make the full-canvas and scratch-canvas paint paths
+    differ by an LSB).
+
+    Length comes from seam_edge_indices itself rather than being
+    recomputed from the diamond's used-column count, so the 1:1 alignment
+    is structural instead of an invariant two functions have to maintain
+    separately -- same shape as _shadow_factors calling shadow_quad_indices.
+
+    Deliberately NOT scaled with half_h. A fixed 1px is what keeps the seam
+    from compounding with the band: the band drawn onto tile N reaches N's
+    own top-edge row, exactly where N's seam goes, and _shadow_factors is
+    at its 1.0 no-op endpoint there in all but two configurations of
+    tile_px {8,16,32,64,128} x elev_step_pct {25,50,100,200} --
+    (16, 25) and (8, 50), where 2 pixels per band sit on a span == 1
+    column near the apex and carry the full CONTACT_SHADE. Worst case is
+    SEAM_SHADE * CONTACT_SHADE = 0.39, dark but nowhere near black --
+    accepted, and pinned by tests/test_seam_line.py so it cannot silently
+    grow. Any thicker seam reaches into depth < span - 1 rows and compounds
+    generally. The relative weight of 1px does grow on small mips (25% of
+    a tile_px=8 diamond's rows vs 3.1% at 64), which is acceptable rather
+    than a flaw: the band degenerates the same way there, since its own
+    ramp floors at 1px too."""
+    if side == "apex":
+        _dst_y, dst_x = iso_geometry.seam_apex_indices(tile_px)
+    else:
+        _dst_y, dst_x = iso_geometry.seam_edge_indices(tile_px, side)
+    return np.full(dst_x.size, SEAM_SHADE, dtype=np.float32)
+
 
 @lru_cache(maxsize=256)
 def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     """float32 darkening factors aligned 1:1 with
     iso_geometry.shadow_quad_indices(tile_px, rise_px, side)'s own output
     (same call, same cache key shape) -- CONTACT_SHADE at depth=0 (the row
-    touching the caster's diamond), fading to no darkening at the far edge
-    of that column's own exposed sliver, linearly interpolated between.
+    touching the caster's diamond), ramping linearly back to exactly 1.0
+    (no darkening) over the next CONTACT_RAMP_DIVISOR-th of half_h rows,
+    and staying at 1.0 for the rest of that column's exposed sliver.
 
-    Normalized per-column on that column's OWN span, not on rise_px: the
-    band is a wedge tapering to zero at the caster's apex (see
-    shadow_quad_indices' docstring), so every column's gradient runs the
-    full CONTACT_SHADE->1 range over however many rows that particular
-    column actually has. A bigger delta therefore makes the band SHORTER,
-    not longer -- it hides more of the neighbor -- until at
-    rise_px >= 2*half_h - 2 there is nothing exposed left to shade at all.
+    The ramp length is a fixed fraction of a tile, NOT the column's own
+    span and NOT rise_px -- see CONTACT_RAMP_DIVISOR's own comment for the
+    measurements behind that. Normalizing on span (what this did until
+    2026-08-15) spread one step's worth of darkening over up to 82% of the
+    neighbor tile, so the whole up-screen half of a hill read as a lattice
+    of dark triangles.
 
-    depth / span, not depth / (span - 1): the latter divides by zero at
-    span == 1 (common at tile_px=8, rise_px=1), and depth/span also
-    preserves the "factor = 1 at the far edge" exclusive-endpoint
-    convention this function has always had.
+    min(span, ramp), not a bare ramp: near the caster's apex the wedge has
+    tapered to fewer rows than the ramp itself, and ramping over the full
+    length there would leave the band's last row still visibly darkened,
+    i.e. a hard truncation edge exactly where the taper is most visible.
+    Compressing the ramp into the shorter sliver fades it out properly.
+
+    INCLUSIVE endpoint (`eff - 1`), unlike the exclusive `depth / span`
+    this used until 2026-08-15. Exclusive was there only to dodge a
+    divide-by-zero at span == 1, and it means no column ever actually
+    reaches 1.0 -- harmless over a 30-row span (last row lands at 0.99)
+    but not over a 3-row one near the apex, which ends at 0.88 and so
+    keeps exactly the truncation edge the paragraph above is about. The
+    max(1, ...) makes the endpoint safe instead of avoiding it: it covers
+    both eff == 1 (a single-pixel apex column, which stays at
+    CONTACT_SHADE either way) and half_h < CONTACT_RAMP_DIVISOR
+    (tile_px=8). One consequence worth stating: the ramp darkens ramp - 1
+    rows, not ramp, since its last row is the 1.0 endpoint itself.
+
+    Reaching EXACTLY 1.0 rather than merely close is deliberate and safe:
+    _clipped_darken's multiply-and-truncate is an exact round trip at
+    factor 1.0, so the tail of a long sliver is a genuine no-op rather
+    than a slow fade the caller pays for and nobody can see. The band
+    GEOMETRY is unchanged by any of this -- it is still exactly the
+    exposed sliver (PLAN_CONTACT_SHADOW.md's decision 1), which is what
+    keeps this a render.py policy change with no geometry, test-oracle or
+    swept-bbox consequences.
 
     float32, not float64: _clipped_darken multiplies this against a uint8
     image and truncates back to uint8 either way, and pinning the
     intermediate dtype is what keeps the full-canvas and scratch-canvas
     paint paths bit-identical."""
-    _dst_y, _dst_x, depth, span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
-    # span.astype(np.float32) is mandatory, not redundant -- do NOT
+    if side == "apex":
+        _dst_y, _dst_x, depth, span = iso_geometry.shadow_apex_indices(tile_px, rise_px)
+    else:
+        _dst_y, _dst_x, depth, span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
+    _half_w, half_h = iso_geometry.half_dims(tile_px)
+    ramp = max(1, half_h // CONTACT_RAMP_DIVISOR)
+    if side == "apex":
+        # HALF the band's ramp, and this is a measured choice, not a knob.
+        # The wedge's own span is the diagonal's full exposure (24 rows at
+        # tile_px=64, elev_step_pct=50), so a shared ramp would render it
+        # 4 rows thick where the band it bridges has already tapered to 2
+        # at the junction. That step reads as a horizontal barb hanging off
+        # every tile's apex, which is the "crisp line that visibly thickens
+        # into a lump" failure a prior design pass worried about. Halving
+        # matches the junction thickness exactly, so the
+        # contour runs at even weight through the join.
+        ramp = max(1, ramp // 2)
+    eff = np.minimum(span, np.int64(ramp))
+    denom = np.maximum(eff - 1, np.int64(1))
+    # denom.astype(np.float32) is mandatory, not redundant -- do NOT
     # simplify it away: float32 / int64 promotes to float64, which breaks
     # the bit-identity pinning this function's whole dtype note is about.
-    t = depth.astype(np.float32) / span.astype(np.float32)
+    t = np.minimum(depth.astype(np.float32) / denom.astype(np.float32), np.float32(1.0))
     return (1 - (1 - CONTACT_SHADE) * (1 - t)).astype(np.float32)
 
 
@@ -334,6 +487,39 @@ def _clipped_paint(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, valu
     img[ay, ax] = values
 
 
+def _clipped_paint_rgba(img: np.ndarray, base_y: int, base_x: int, rgba: np.ndarray) -> None:
+    """Alpha-composites an (h, w, 4) uint8 block onto img at (base_y, base_x),
+    clipping to img's bounds -- _clipped_paint()'s counterpart for sprites
+    (P3-g3).
+
+    Deliberately a sibling rather than a widening of _clipped_paint(): that
+    function's contract is an opaque scatter of per-pixel values at arbitrary
+    (dst_y, dst_x) index arrays, and every existing caller depends on the
+    overwrite being total. A sprite is the opposite shape -- a contiguous
+    rectangle with a real alpha channel, most of it transparent -- so sharing
+    one implementation would mean a branch inside the hottest scatter in the
+    renderer for no gain.
+
+    Clipping is a rectangle intersection rather than a per-pixel mask because
+    the block is contiguous; the same "a scratch canvas is smaller than the
+    thing being drawn into it" reasoning _clipped_paint()'s docstring gives
+    applies here, only more often -- a sprite is far larger than a tile
+    diamond, so partial containment is the normal case, not the edge one."""
+    h, w = rgba.shape[:2]
+    ih, iw = img.shape[:2]
+    sy0, sx0 = max(0, -base_y), max(0, -base_x)
+    sy1, sx1 = min(h, ih - base_y), min(w, iw - base_x)
+    if sy0 >= sy1 or sx0 >= sx1:
+        return
+    block = rgba[sy0:sy1, sx0:sx1]
+    dst = img[base_y + sy0 : base_y + sy1, base_x + sx0 : base_x + sx1]
+    alpha = block[..., 3:4].astype(np.uint16)
+    # Integer blend, so a fully opaque pixel reproduces the source byte exactly
+    # (a float round-trip can land a 255-alpha pixel one off) -- which is what
+    # keeps the stitched-chunk byte-identity check meaningful.
+    dst[...] = ((block[..., :3].astype(np.uint16) * alpha + dst.astype(np.uint16) * (255 - alpha)) // 255).astype(np.uint8)
+
+
 def _render_tile_iso(
     img: np.ndarray,
     tile,
@@ -343,6 +529,7 @@ def _render_tile_iso(
     map_w: int,
     map_h: int,
     offset: tuple[int, int] = (0, 0),
+    terrain_override: int | None = None,
 ) -> None:
     """Paints one tile's skirts (if it's higher than its "left" or "right"
     neighbor -- see iso_geometry.skirt_quad_indices' docstring for exactly
@@ -358,10 +545,11 @@ def _render_tile_iso(
     same removal as render_tile(), same reasoning (see that function's
     docstring): real per-tile Z displacement already shows elevation here,
     a brightness hint on top of that is redundant. Skirt (vertical cliff
-    face) shading and the contact shadow are unrelated and unaffected --
-    SKIRT_SHADE/CONTACT_SHADE below are fixed darkening, not elevation-
-    dependent (a tile darkens a NEIGHBOR because of a height difference,
-    never itself because of its own absolute elevation), and stay.
+    face) shading, the contact shadow and the seam line are unrelated and
+    unaffected -- SKIRT_SHADE/CONTACT_SHADE/SEAM_SHADE below are fixed
+    darkening, not elevation-dependent (a tile is shaded because of a
+    height DIFFERENCE against a neighbor, never because of its own
+    absolute elevation), and stay.
 
     Known consequence, accepted -- units on a shadowed back tile get
     darkened too: a unit's own tile is always safe (drawn after this
@@ -384,13 +572,23 @@ def _render_tile_iso(
     is that region's own (x0, y0), and most candidate tiles only partially
     overlap it by construction -- clipping is what keeps this function the
     single shared implementation both paths use instead of a parallel,
-    could-drift copy."""
-    texture = asset_source.get_terrain_texture_array(tile.terrain_id)
+    could-drift copy.
+
+    terrain_override, when given, replaces tile.terrain_id for the texture
+    lookup only -- skirts, seam and contact shadow all sample from the same
+    top_block this produces, so a farm tile's stepped cliff faces carry
+    crop texture rather than whatever grass/dirt the tile was actually
+    painted with (P3 farm-terrain: a farm renders as its footprint's real
+    terrain, not a coloured mark -- see SpriteLayer.farm_by_tile). This is
+    the ONLY thing terrain_override changes; tile.terrain_id itself, and
+    everything the caller derives from the tile object, is untouched."""
+    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
+    texture = asset_source.get_terrain_texture_array(terrain_id)
     if texture is not None:
         ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
         top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
     else:
-        r, g, b = color_for_terrain_id(tile.terrain_id)
+        r, g, b = color_for_terrain_id(terrain_id)
         top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
     off_x, off_y = offset
@@ -411,6 +609,40 @@ def _render_tile_iso(
 
     dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(tile_px)
     _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x])
+
+    # Seam line: a 1px contour along this tile's OWN two up-screen diamond
+    # edges wherever the neighbor behind that edge is lower -- this tile's
+    # own pixels, so it has to run after the top-face paint just above, and
+    # before the contact-shadow loop below only for readability (the two
+    # write disjoint rows: the seam is at tops[c], the band strictly above
+    # it, off this diamond entirely).
+    #
+    # Its own loop, NOT folded into the shadow loop: that one `continue`s
+    # on an empty band, which is the whole elev_step_pct=200 case -- and
+    # that case, where a caster fully hides its neighbor and the up-screen
+    # half of a hill would otherwise be featureless, is precisely what the
+    # seam exists to fix. See iso_geometry.seam_edge_indices for why the
+    # band alone leaves each terrace edge dashed at every other pct too.
+    seam_qualified = False
+    for side, nx, ny in (("up_left", tile.x, tile.y - 1), ("up_right", tile.x + 1, tile.y)):
+        if not (0 <= nx < map_w and 0 <= ny < map_h):
+            continue  # map edge -- nothing behind this edge to contour against
+        if tile.elevation - int(elevations[ny, nx]) <= 0:
+            continue  # no height discontinuity here -- a seam would be a grid outline on flat ground
+        seam_qualified = True
+        seam_dst_y, seam_dst_x = iso_geometry.seam_edge_indices(tile_px, side)
+        _clipped_darken(img, base_y, base_x, seam_dst_y, seam_dst_x, _seam_factors(tile_px, side))
+
+    # The two apex columns, once, if EITHER side qualified -- they belong
+    # to neither side's range (see iso_geometry.seam_apex_indices): the old
+    # strict partition left a one-column hole at every tile apex on a run
+    # where only one side drew, which is what made the line a dash rather
+    # than a contour at coarse tile_px. Drawing them here rather than
+    # widening the qualifying side is what keeps SEAM_SHADE from squaring
+    # on the tile's most visible column when both neighbors are lower.
+    if seam_qualified:
+        apex_dst_y, apex_dst_x = iso_geometry.seam_apex_indices(tile_px)
+        _clipped_darken(img, base_y, base_x, apex_dst_y, apex_dst_x, _seam_factors(tile_px, "apex"))
 
     # Contact shadow: darkens whatever's ALREADY painted behind this tile
     # (a smaller-d, earlier-painted tile in depth_order) when this tile is
@@ -438,6 +670,35 @@ def _render_tile_iso(
             # cache lookups per full render.
             continue
         _clipped_darken(img, base_y, base_x, s_dst_y, s_dst_x, _shadow_factors(tile_px, rise_px, side))
+
+    # The band's two apex columns, once, onto the DIAGONAL back neighbor
+    # (x+1, y-1). Neither side of the loop above can reach them: each
+    # apex column pairs with one of the diamond's two unused columns, so
+    # shadow_quad_indices' `used[partner]` mask zeroes it, correctly (see
+    # iso_geometry.shadow_apex_indices). That left a 2px hole at every
+    # junction along a terrace, which is why a run of adjacent casters
+    # read as separate blocks rather than one band.
+    #
+    # The diagonal's elevation is a GATE here, never a size: the extent
+    # comes from the caster alone, which is what keeps this clear of the
+    # taper regress a prior design pass ruled out. Paint order is safe
+    # because (x+1, y-1) is d-2 under depth_order's y-x key,
+    # so it is always already painted, unlike a same-d tile.
+    #
+    # Gated on seam_qualified too, not just the diagonal: a caster can be
+    # higher than its diagonal while level with BOTH direct back
+    # neighbors, and darkening the apex there would be a lone floating
+    # mark with no band on either side of it to bridge.
+    nx, ny = tile.x + 1, tile.y - 1
+    if seam_qualified and 0 <= nx < map_w and 0 <= ny < map_h:
+        delta = tile.elevation - int(elevations[ny, nx])
+        if delta > 0:
+            rise_px = delta * proj.elev_step
+            a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_px)
+            if a_dst_y.size:
+                _clipped_darken(
+                    img, base_y, base_x, a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_px, "apex")
+                )
 
 
 def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True) -> np.ndarray:
@@ -497,7 +758,7 @@ def elevations_and_proj(scenario: LoadedScenario) -> tuple[np.ndarray, iso_geome
 
 
 def render_terrain_iso_with_proj(
-    scenario: LoadedScenario, with_units: bool = True
+    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False
 ) -> tuple[np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_iso()'s real body, additionally returning the (h, w)
     elevations array and IsoProjection the render was actually computed
@@ -531,8 +792,15 @@ def render_terrain_iso_with_proj(
     img = np.zeros((proj.canvas_h + skirt_headroom, proj.canvas_w, 3), dtype=np.uint8)
 
     units_by_tile = _units_by_tile(scenario) if with_units else {}
+    # with_sprites defaults False so this stays byte-identical to what it has
+    # always rendered; P3-g4's measurement is what decides whether sprites
+    # become the default. Opting in here is what gives the stitched-chunk
+    # check a full-render ground truth to compare against.
+    sprites = sprite_draws_by_anchor(scenario, proj, elevations) if (with_units and with_sprites) else None
     for x, y in iso_geometry.depth_order(w, h):
-        _paint_tile_and_units_iso(img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h)
+        _paint_tile_and_units_iso(
+            img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites
+        )
     return img, elevations, proj
 
 
@@ -550,7 +818,12 @@ def _canvas_pixel_dims(proj: iso_geometry.IsoProjection) -> tuple[int, int]:
 
 
 def _building_bboxes_iso(
-    units_by_tile: dict, w: int, h: int, proj: iso_geometry.IsoProjection, elevations: np.ndarray
+    units_by_tile: dict,
+    w: int,
+    h: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    extra_top_px: int = 0,
 ) -> dict[tuple[int, int], tuple[int, int, int, int]]:
     """(px, py) -> that tile's own iso screen bbox, for every tile carrying
     at least one BUILDING (nonzero footprint radius) unit -- precomputed
@@ -575,14 +848,37 @@ def _building_bboxes_iso(
     own candidate set is already an accepted strict superset of "every tile
     a full render would paint" (see its docstring), so a union bbox
     flagging a tile as a bystander slightly more often than the tightest
-    possible test would is a no-op extra paint, never a missed one."""
+    possible test would is a no-op extra paint, never a missed one.
+
+    **Deliberately keyed on OWN tiles even though units_by_tile no longer
+    is.** Since units_by_tile buckets a unit into every footprint tile, a
+    naive pass over its items would recompute _unit_screen_bbox_iso() once
+    per footprint tile -- 64 times for a Colosseum instead of once -- on the
+    path whose ~15-20ms rebuild is already the expensive one here. The
+    own-tile gate below restores exactly one bbox computation per unit, and
+    keeps this dict's contents byte-identical to what own-tile bucketing
+    produced. The gate is total because unit_tile_bounds() guarantees a
+    unit's own tile is inside the bounds it was bucketed over.
+
+    extra_top_px is passed straight through to _unit_screen_bbox_iso() --
+    see that function for why only Sloped ever passes a nonzero value, and
+    why it is a top-edge-only widening."""
     out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     for (px, py), entries in units_by_tile.items():
         union: tuple[int, int, int, int] | None = None
         for unit, _color in entries:
-            if BUILDING_FOOTPRINTS.get(unit.unit_const, NON_BUILDING_RADIUS) == NON_BUILDING_RADIUS:
+            if (int(unit.x), int(unit.y)) != (px, py):
+                # Reached through a footprint tile that isn't this unit's own;
+                # it gets its bbox computed once, at its own tile's key.
                 continue
-            bbox = _unit_screen_bbox_iso(unit, w, h, proj, elevations)
+            span_x, span_y = BUILDING_TILE_SPANS.get(unit.unit_const, NON_BUILDING_SPAN)
+            if span_x <= 1 and span_y <= 1:
+                # Single-tile objects only ever paint their own tile, so they
+                # can't make a neighbour a bystander. Written as a span test
+                # rather than a sentinel comparison so it stays true by
+                # construction: the same 140 consts either way (clearance <= 0.5).
+                continue
+            bbox = _unit_screen_bbox_iso(unit, w, h, proj, elevations, extra_top_px)
             if bbox is None:
                 continue
             if union is None:
@@ -599,12 +895,267 @@ def _building_bboxes_iso(
     return out
 
 
+def _dirty_screen_bbox(
+    scenario: LoadedScenario,
+    dirty_indices,
+    elevations: np.ndarray,
+    proj: iso_geometry.IsoProjection,
+    canvas_dims: tuple[int, int],
+    with_units: bool = True,
+    with_sprites: bool = False,
+    sprite_band_radius: int = 0,
+    unit_band_radius: int = 0,
+    elevation_changed: set | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Shared body of dirty_screen_bbox_iso()/dirty_screen_bbox_sloped() --
+    see the former's docstring for the full contract, which is this
+    function's contract too.
+
+    canvas_dims is the ONE thing the two styles disagree about, which is why
+    this is a parameter rather than a `_canvas_pixel_dims(proj)` call: the
+    final clamp must match whatever canvas the caller's chunk cache actually
+    holds, and Sloped's is the tighter of the two (see
+    SlopedChunkCache.canvas_dims()) -- EXCEPT when with_sprites, where the
+    Sloped caller passes the wider skirt-padded value instead (Track P3-g6's
+    Step 0 fix: without it, a sprite reaching past Sloped's tight canvas gets
+    its dirty bbox clamped away before the wider canvas ever gets composited
+    into). Everything above the clamp is style-independent -- both styles
+    project a tile the same way, and a sloped tile's extra corner headroom is
+    already inside tile_screen_bounds_swept() via proj.corner_headroom_px.
+
+    sprite_band_radius (Track P3-g6): how far the with_sprites band below
+    dilates dirty_xy before seeding itself. 0 (the default) uses bare
+    dirty_xy, exact for Stepped -- see that block's own comment for why only
+    an edit to a sprite's OWN centre tile can move it there. Sloped's anchor
+    instead reads its own tile's four CORNERS, each shared with up to four
+    tiles, so an edit to any tile in a changed tile's 3x3 neighbourhood can
+    move a Sloped sprite; its caller passes 1 instead (F2).
+
+    unit_band_radius (draw-perf seed-dilation plan Step 3): the mirror-image
+    parameter for the exact-footprint seed union below -- how far a changed
+    tile's trigger reaches before testing which units' own tile it caught.
+    0 (Stepped) is exact: a unit's footprint moves only when the edit lands
+    on its own tile (_unit_iso_footprint draws it entirely at that tile's
+    elevation). Sloped's dirty_screen_bbox_sloped() passes 1 regardless of
+    with_sprites: unit_rise_px reads a unit's tile's four CORNERS, each
+    shared with up to four tiles, so any tile in the changed tile's 3x3
+    neighborhood can move a Sloped unit's footprint (fact 4) -- the same
+    corner-sharing argument sprite_band_radius answers for sprites, just
+    unconditional here rather than gated on with_sprites.
+
+    Extracted rather than mirrored (Track C4 Step 3): with a single
+    expression separating them, two near-identical 60-line bodies would be a
+    drift hazard, not a safety margin -- the opposite of the
+    testkit/qt_capture split, where the bodies genuinely disagreed.
+
+    elevation_changed (draw-perf plan Step 3): if given, populated with the
+    subset of dirty_xy whose elevation actually moved -- read here, at the
+    one point that sees both the pre-edit value (still in `elevations`) and
+    the post-edit one (mm.get_tile), before the loop below overwrites the
+    array. A terrain-paint-only edit leaves this empty; callers use it to
+    decide whether any elevation-dependent cache state needs a refresh at
+    all, which the dirty set itself (terrain edits included) can't answer."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+
+    dirty_xy = {(mm.terrain[i].x, mm.terrain[i].y) for i in dirty_indices}
+    if not dirty_xy:
+        return None
+
+    # Computed locally and unconditionally now (draw-perf seed-dilation plan
+    # Step 3, fact 3): the seed union below needs this set itself, not just
+    # whatever a caller wanted for its own cache-refresh decision. Aliased
+    # to the caller's set when given, rather than copied, so this is still
+    # the only bookkeeping either use needs.
+    elevation_changed_local = set() if elevation_changed is None else elevation_changed
+    for x, y in dirty_xy:
+        if int(elevations[y, x]) != mm.get_tile(x, y).elevation:
+            elevation_changed_local.add((x, y))
+
+    for x, y in dirty_xy:
+        elevations[y, x] = mm.get_tile(x, y).elevation
+
+    if any(not (proj.min_elev <= int(elevations[y, x]) <= proj.max_elev) for x, y in dirty_xy):
+        return None
+
+    # Lateral expansion, floor of 1 always (draw-perf seed-dilation plan
+    # Step 3): a tile's own skirt geometry samples its "left"/"right"
+    # neighbor's elevation (see _render_tile_iso), so an edited tile can
+    # change a *neighbor's* skirt even though the neighbor's own elevation
+    # never changed -- +-1 is enough for that alone (see
+    # iso_geometry.skirt_quad_indices' docstring for exactly which two of a
+    # tile's four grid-neighbors can ever show a skirt facing it). This
+    # alone is exact for any terrain-only edit: no unit moves, so no pixel
+    # outside dilate(dirty, 1) changes value (fact 2) -- the footprint union
+    # below is additive, not a replacement for this.
+    seed = set(dirty_xy)
+    for x, y in list(dirty_xy):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    seed.add((nx, ny))
+
+    # Exact footprint union, only for triggered buildings (draw-perf
+    # seed-dilation plan Step 3): a unit's footprint is drawn entirely at
+    # its OWN tile's elevation (see _unit_iso_footprint), so it only moves
+    # when an elevation edit lands on that tile -- unit_band_radius away at
+    # most, not a blanket UNIT_FOOTPRINT_MAX_RADIUS dilation applied to
+    # every dirty tile regardless of whether anything elevation-related
+    # changed at all. Skipped entirely when elevation_changed_local is empty
+    # (the terrain-paint-only case, which is most edits) -- no unit scan
+    # runs, matching the with_sprites own-tile-scan block below.
+    #
+    # Dilates the (small) TRIGGER set, not a per-anchor ring scan over every
+    # unit -- same inversion the with_sprites block below could take too
+    # (its own comment flags the O(units) cost of the opposite direction on
+    # an 11k-unit map).
+    if with_units and elevation_changed_local:
+        triggered = set(elevation_changed_local)
+        for x, y in elevation_changed_local:
+            for dx in range(-unit_band_radius, unit_band_radius + 1):
+                for dy in range(-unit_band_radius, unit_band_radius + 1):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        triggered.add((nx, ny))
+        for units in scenario.unit_manager.units:
+            for u in units:
+                if (int(u.x), int(u.y)) not in triggered:
+                    continue
+                bounds = unit_tile_bounds(u, w, h)
+                if bounds is None:
+                    continue
+                fx0, fx1, fy0, fy1 = bounds
+                for fx in range(fx0, fx1):
+                    for fy in range(fy0, fy1):
+                        seed.add((fx, fy))
+
+    # Union screen bbox, each seed tile swept across the WHOLE legal
+    # elevation range rather than just its current one -- this function has
+    # no access to what a tile's elevation was *before* the edit already
+    # applied to mm.terrain (mutated in place before this is called, same
+    # contract refresh_tiles() has), so only a bound this generous
+    # guarantees the tile's old, now-stale screen footprint (wherever it
+    # actually was) falls inside the bbox and gets erased below. Cheap:
+    # this is a handful of bbox corners, not a per-pixel cost. Since a
+    # unit's footprint diamonds use the SAME per-tile sweep formula (just at
+    # the center tile's elevation, always inside [min_elev, max_elev]), this
+    # bbox is automatically big enough for any footprint centered on a seed
+    # tile too -- no separate unit-specific bbox term needed here.
+    x0 = y0 = x1 = y1 = None
+    for x, y in seed:
+        tile_x0, tile_y0, tile_x1, tile_y1 = iso_geometry.tile_screen_bounds_swept(x, y, proj)
+        x0 = tile_x0 if x0 is None else min(x0, tile_x0)
+        x1 = tile_x1 if x1 is None else max(x1, tile_x1)
+        y0 = tile_y0 if y0 is None else min(y0, tile_y0)
+        y1 = tile_y1 if y1 is None else max(y1, tile_y1)
+
+    if with_sprites:
+        # Three things a reader would otherwise have to re-derive:
+        #
+        # DIRTY, not seed. sprite_draws_by_anchor computes a sprite's anchor x
+        # with no elevation term at all, and its anchor y from elevations[
+        # unit.y, unit.x] -- the unit's OWN centre tile. So only an edit to
+        # that tile can MOVE a sprite; a terrain tile repainted underneath one,
+        # or occlusion revealed by a neighbour, is already covered by
+        # composite_rect_iso's bystander set via merge_sprite_bboxes. Widening
+        # per dirty tile rather than per dilated seed tile is exact here, not
+        # an optimisation.
+        #
+        # The elevation sweep, for the same reason the seed union above sweeps:
+        # this function cannot see what the tile's elevation was BEFORE the
+        # edit, so the sprite's own stale position is only guaranteed inside
+        # the bbox if every legal anchor height is covered.
+        #
+        # The half_w/half_h slack, because the anchor is only pinned to its
+        # tile's diamond to within half a tile. _span_start has a half-tile
+        # branch, so an even-span building sits on either parity (46 of 158
+        # Mills in the example corpus do, and a gate is span (4, 1), mixed
+        # within one unit) -- putting ax anywhere in [tile_x0, tile_x0 +
+        # 2*half_w] and ay anywhere in [tile_origin_y, tile_origin_y +
+        # 2*half_h]. BOTH bands are the tile's own diamond bounding box, and
+        # they must stay that way: tile_screen_origin returns that box's
+        # TOP-LEFT, so the y band runs from it, not symmetrically about it.
+        #
+        # The y band read [tile_origin_y -+ half_h] until 2026-08-24, matching
+        # sprite_draws_by_anchor's own half-tile-high anchor. Both were wrong
+        # together, so the suite stayed green while every sprite rendered
+        # floating; fixing the anchor alone then under-covered the BOTTOM edge
+        # by up to half_h, which is the stale-fragment bug this widening
+        # exists to prevent. The two must move together.
+        pad_l, pad_u, pad_r, pad_d = _sprite_reach_px(proj)
+        elev_span = (proj.max_elev - proj.min_elev) * proj.elev_step
+
+        # draw-perf plan Step 4: pad only tiles that can actually MOVE a
+        # sprite -- a plain terrain tile carrying no unit never can (see the
+        # comment above: only a sprite's own anchor tile does). Direct
+        # own-tile scan over scenario.unit_manager.units, not
+        # _units_by_tile()'s footprint bucketing -- that buckets a unit into
+        # EVERY footprint tile, which would over-widen a multi-tile
+        # building's other tiles here and obscure why. Ignores unit_filter
+        # (this function has no access to it): a filtered-out unit's tile
+        # padding a bit further than strictly needed is safe over-inclusion,
+        # the same direction every other widening in this function already
+        # accepts, never a missed one. Not the resolved SpriteLayer either --
+        # at bbox time it still holds the PRE-edit anchor set, and this
+        # function runs BEFORE the cache's own post-edit rebuild.
+        anchor_tiles = {(int(u.x), int(u.y)) for units in scenario.unit_manager.units for u in units}
+        # band_tiles is the set of ANCHOR tiles to pad around, not dirty
+        # tiles: the padding below must be centered on where the sprite
+        # actually sits (an anchor's own tile_screen_origin), never on
+        # whichever dirty tile happened to trigger it -- those can be
+        # different tiles under Sloped's ring (radius=1). An anchor is
+        # triggered when some dirty tile falls within its own radius-ring
+        # (Stepped, radius=0: only the anchor tile itself; Sloped, radius=1:
+        # its 3x3 neighbourhood, since a Sloped anchor reads its tile's four
+        # shared corners).
+        if sprite_band_radius:
+            band_tiles = set()
+            for ax, ay in anchor_tiles:
+                for dx in range(-sprite_band_radius, sprite_band_radius + 1):
+                    for dy in range(-sprite_band_radius, sprite_band_radius + 1):
+                        if (ax + dx, ay + dy) in dirty_xy:
+                            band_tiles.add((ax, ay))
+                            break
+                    else:
+                        continue
+                    break
+        else:
+            band_tiles = dirty_xy & anchor_tiles
+        # Unit MOVES (not applicable here): this function only ever sees
+        # terrain/elevation edits (dirty_indices comes from the terrain
+        # array), and neither can move a unit -- so there is no "old anchor
+        # tile" case to union in. A future unit-move caller of this function
+        # would need to add one; none exists today.
+        for x, y in band_tiles:
+            tx0, ty_hi = iso_geometry.tile_screen_origin(x, y, proj.max_elev, proj)
+            x0 = min(x0, tx0 - pad_l)
+            x1 = max(x1, tx0 + 2 * proj.half_w + pad_r)
+            # y1's 2*half_h is REQUIRED (the band's far end). y0 keeps an extra
+            # half_h beyond the band's near end deliberately, as slack rather
+            # than a derived bound: the exact top is ty_hi, but this is an
+            # under-repaint guard, and the only direction a too-tight bound
+            # fails in is stale pixels. 16px of extra repaint per edit is not
+            # worth being clever about.
+            y0 = min(y0, ty_hi - proj.half_h - pad_u)
+            y1 = max(y1, ty_hi + elev_span + 2 * proj.half_h + pad_d)
+
+    canvas_w, canvas_h = canvas_dims
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(canvas_w, x1), min(canvas_h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
 def dirty_screen_bbox_iso(
     scenario: LoadedScenario,
     dirty_indices,
     elevations: np.ndarray,
     proj: iso_geometry.IsoProjection,
     with_units: bool = True,
+    with_sprites: bool = False,
+    elevation_changed: set | None = None,
 ) -> tuple[int, int, int, int] | None:
     """The (x0, y0, x1, y1) canvas-pixel bbox a just-applied edit could have
     invalidated -- refresh_region_iso()'s original "half 1" (dirty tiles ->
@@ -636,68 +1187,99 @@ def dirty_screen_bbox_iso(
     landing outside it would compute a negative or overlarge screen
     position that silently corrupts unrelated pixels via numpy fancy-index
     wraparound rather than erroring, which is a far worse failure mode than
-    just telling the caller to fall back to a full re-render."""
-    mm = scenario.map_manager
-    w, h = mm.map_width, mm.map_height
+    just telling the caller to fall back to a full re-render.
 
-    dirty_xy = {(mm.terrain[i].x, mm.terrain[i].y) for i in dirty_indices}
-    if not dirty_xy:
-        return None
+    elevation_changed (draw-perf plan Step 3): optional out-param, populated
+    in place with the subset of edited tiles whose elevation actually moved
+    -- see _dirty_screen_bbox()'s own docstring for why this is the only
+    point that can answer that question. None (the default) skips the
+    bookkeeping; only IsoChunkCache.patch()'s caller needs it."""
+    # with_sprites is a PARAMETER as of P3-g's toggle, not a module global read
+    # at call time: sprites are per-cache now, so this function cannot look the
+    # answer up itself. The caller's obligation is therefore load-bearing --
+    # this must be passed the same value IsoChunkCache._level is deciding on,
+    # i.e. that cache's own sprites_enabled. If the two ever disagree about
+    # whether sprites are on, the under-repaint bug this widening exists to fix
+    # comes straight back. ViewerWindow._apply_dirty is the only production
+    # caller that renders through an IsoChunkCache, and
+    # tests/test_sprite_toggle_viewer.py pins that it passes the cache's flag.
+    # Defaults to False so the legacy/tool callers that never enable sprites
+    # keep their exact behavior. The `with_units and` conjunction matters too:
+    # composite_rect_iso already nulls the sprite layer when units are off, so
+    # there is nothing to widen for.
+    return _dirty_screen_bbox(
+        scenario, dirty_indices, elevations, proj, _canvas_pixel_dims(proj), with_units,
+        with_sprites=with_units and with_sprites, elevation_changed=elevation_changed,
+    )
 
-    for x, y in dirty_xy:
-        elevations[y, x] = mm.get_tile(x, y).elevation
 
-    if any(not (proj.min_elev <= int(elevations[y, x]) <= proj.max_elev) for x, y in dirty_xy):
-        return None
+def dirty_screen_bbox_sloped(
+    scenario: LoadedScenario,
+    dirty_indices,
+    elevations: np.ndarray,
+    proj: iso_geometry.IsoProjection,
+    with_units: bool = True,
+    with_sprites: bool = False,
+    elevation_changed: set | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Sloped's counterpart to dirty_screen_bbox_iso() -- Track C4's Step 3.
+    Identical contract, including the in-place elevations mutation (Risk #6:
+    the snapshot the pick plane is rasterized against and the pixels that
+    get redrawn must never drift apart, with no separate "now update the
+    snapshot" step for a caller to forget). Clamped to the SlopedChunkCache's
+    own tighter canvas rather than Stepped's skirt-padded one -- see
+    _dirty_screen_bbox()'s canvas_dims parameter -- UNLESS with_sprites, see
+    below.
 
-    # Lateral expansion: a tile's own skirt geometry samples its "left"/
-    # "right" neighbor's elevation (see _render_tile_iso), so an edited tile
-    # can change a *neighbor's* skirt even though the neighbor's own
-    # elevation never changed (+-1 is enough for that alone -- see
-    # iso_geometry.skirt_quad_indices' docstring for exactly which two of a
-    # tile's four grid-neighbors can ever show a skirt facing it). But a
-    # unit's footprint is drawn entirely at its OWN tile's elevation (see
-    # _unit_iso_footprint), so if a dirty tile happens to be some building's
-    # center, the edit moves footprint diamonds up to UNIT_FOOTPRINT_MAX_
-    # RADIUS tiles away -- a full box in both axes, not just the 4-neighbor
-    # cross skirts alone would need, since a footprint corner can be
-    # diagonal from its own center. Dilating by whichever radius is larger
-    # covers both needs with one sweep.
-    radius = max(1, UNIT_FOOTPRINT_MAX_RADIUS) if with_units else 1
-    seed = set(dirty_xy)
-    for x, y in list(dirty_xy):
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h:
-                    seed.add((nx, ny))
+    corner_rise is deliberately NOT rebuilt here, even though every edit
+    invalidates it: it is derived state owned by the cache, and
+    SlopedChunkCache._refresh_source_caches() rebuilds it as patch()'s first
+    action, reading the elevations this function has just mutated. Splitting
+    it that way keeps one array with one owner instead of handing the caller
+    a second "and now also refresh this" obligation -- exactly the trap the
+    in-place elevations contract exists to avoid.
 
-    # Union screen bbox, each seed tile swept across the WHOLE legal
-    # elevation range rather than just its current one -- this function has
-    # no access to what a tile's elevation was *before* the edit already
-    # applied to mm.terrain (mutated in place before this is called, same
-    # contract refresh_tiles() has), so only a bound this generous
-    # guarantees the tile's old, now-stale screen footprint (wherever it
-    # actually was) falls inside the bbox and gets erased below. Cheap:
-    # this is a handful of bbox corners, not a per-pixel cost. Since a
-    # unit's footprint diamonds use the SAME per-tile sweep formula (just at
-    # the center tile's elevation, always inside [min_elev, max_elev]), this
-    # bbox is automatically big enough for any footprint centered on a seed
-    # tile too -- no separate unit-specific bbox term needed here.
-    x0 = y0 = x1 = y1 = None
-    for x, y in seed:
-        tile_x0, tile_y0, tile_x1, tile_y1 = iso_geometry.tile_screen_bounds_swept(x, y, proj)
-        x0 = tile_x0 if x0 is None else min(x0, tile_x0)
-        x1 = tile_x1 if x1 is None else max(x1, tile_x1)
-        y0 = tile_y0 if y0 is None else min(y0, tile_y0)
-        y1 = tile_y1 if y1 is None else max(y1, tile_y1)
+    The floor-1 dilation _dirty_screen_bbox() always applies is exactly the
+    ONE-TILE RING Sloped needs around the union of every changed tile: an
+    edit moves that tile's four corner values, each corner is shared with up
+    to four tiles (see iso_geometry.corner_rise_px), so every tile in the
+    changed tile's 3x3 neighbourhood is reshaped. Note the ring is around
+    each CHANGED tile, not around a click point -- one elevation click
+    propagates through MapManager._elevation_tile_recursion to many tiles,
+    and dirty_indices is what carries them.
 
-    canvas_w, canvas_h = _canvas_pixel_dims(proj)
-    x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(canvas_w, x1), min(canvas_h, y1)
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return x0, y0, x1, y1
+    unit_band_radius=1 is passed regardless of with_sprites (draw-perf
+    seed-dilation plan Step 3, fact 4) -- unlike sprite_band_radius above,
+    which is gated on with_sprites because sprites are the only thing it
+    affects. unit_rise_px reads a unit's own tile's four corners, the same
+    sharing the ring above exists for, so a Sloped unit's footprint can move
+    from an edit up to one tile away from its own tile whenever units are on
+    at all -- see _dirty_screen_bbox's own unit_band_radius docstring.
+
+    with_sprites (Track P3-g6): must be the live cache's own sprites_enabled,
+    same load-bearing-argument warning dirty_screen_bbox_iso's own docstring
+    carries -- ViewerWindow._apply_dirty is pinned to pass it by
+    tests/test_sprite_toggle_viewer.py. Two things change when it's set:
+
+    - the sprite band's SEED (F2): a Sloped anchor reads its own tile's four
+      corners rather than its centre tile alone (see
+      _dirty_screen_bbox's own with_sprites comment for why DIRTY, not
+      SEED, is exact for Stepped), so every tile in the one-tile ring around
+      each dirty tile can move a sprite, not just the dirty tile itself.
+    - the canvas clamp widens to _canvas_pixel_dims(proj) (the Step 0 fix):
+      SlopedChunkCache.canvas_dims() reports that same wider bound once
+      sprites are on, and this function's own final clamp must agree, or a
+      sprite reaching into the newly-composited strip never gets a dirty
+      bbox wide enough to reach it.
+
+    elevation_changed: same optional out-param as dirty_screen_bbox_iso()'s
+    own -- only SlopedChunkCache.patch()'s caller needs it."""
+    canvas_dims = _canvas_pixel_dims(proj) if with_sprites else (proj.canvas_w, proj.canvas_h)
+    return _dirty_screen_bbox(
+        scenario, dirty_indices, elevations, proj, canvas_dims, with_units,
+        with_sprites=with_sprites, sprite_band_radius=1 if with_sprites else 0,
+        unit_band_radius=1, elevation_changed=elevation_changed,
+    )
 
 
 def composite_rect_iso(
@@ -712,6 +1294,7 @@ def composite_rect_iso(
     units_by_tile: dict,
     building_bboxes: dict,
     with_units: bool = True,
+    sprites: SpriteLayer | None = None,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -787,19 +1370,35 @@ def composite_rect_iso(
     # exactly what a full render's own proven-gap-free tiling (Phase 2's
     # check_full_coverage) would have painted there, units included.
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+    sprite_layer = sprites if with_units else None
     for cx, cy in candidates:
         tile = mm.get_tile(int(cx), int(cy))
-        _paint_tile_and_units_iso(scratch, tile, units_by_tile, tile_px, proj, elevations, w, h, offset=(x0, y0))
+        _paint_tile_and_units_iso(
+            scratch, tile, units_by_tile, tile_px, proj, elevations, w, h,
+            offset=(x0, y0), sprites=sprite_layer,
+        )
     return scratch
 
 
 # Phase 6 (Sloped): which corner_rise_px() rule is active. A named policy
 # constant, not a structural choice -- switching it never touches
 # sloped_quad_indices or anything downstream (see that function's own
-# docstring). "average" per the 2026-08-09 preliminary screenshot read;
-# docs/PLAN_V2_6.md's Track C6 is the place to revisit this once round-2
-# screenshots settle it for real.
-SLOPE_CORNER_RULE = "average"
+# docstring).
+#
+# "max", MEASURED off the 2026-08-22 in-game captures, replacing the
+# "average" that the 2026-08-09 preliminary read had guessed. The decisive
+# evidence is a null result: a one-tile-lower pit inside a raised block
+# renders in DE with a perfectly regular tile grid over it, no dimple at
+# all. "min" would sink that corner a full level and "average" a quarter of
+# one; only "max" predicts nothing. Eight further regions agree, each fit
+# independently.
+#
+# One consequence worth knowing: with "max" over integer elevations every
+# corner value is an integer number of levels, so a tile's shape is always
+# one of a finite set -- which is what DE's own pre-authored slope tiles
+# are. The general quad path reproduces that exactly; it is a superset, not
+# an approximation of it.
+SLOPE_CORNER_RULE = "max"
 
 # Sloped has no skirts and no contact shadow to fall back on (adjacent
 # tiles share corner heights by construction -- see corner_rise_px's own
@@ -824,29 +1423,66 @@ SLOPE_CORNER_RULE = "average"
 # face tilted toward the light brightens, away from it darkens -- unlike a
 # magnitude-only cue, which would shade a hill's two opposite faces
 # identically).
+#
+# MEASURED off the 2026-08-22 in-game captures, replacing the look-and-feel
+# guess that shipped until 2026-08-23. Both halves of that guess were wrong:
+#
+#   * its horizontal direction was INVERTED. It leaned toward -mapx/-mapy
+#     (screen left); DE's light leans toward +mapx/+mapy (screen right and
+#     slightly down). On a +mapx ridge the old constants left the flank DE
+#     darkens almost unshaded (0.997) and darkened the one DE brightens
+#     (0.824), where DE itself is at 0.727 / 1.186.
+#   * its strength was too low AND too overhead to reach DE's range. At
+#     lz = 0.869 the anchored form caps brightening at STRENGTH*(1-lz) =
+#     +4.6%, so the lit side was essentially invisible. DE's light is far
+#     more grazing (lz = 0.351), which is what buys a symmetric response.
+#
+# The old constants scored WORSE than no shading at all (weighted rms 0.177
+# against the null's 0.130) precisely because they shaded the wrong side. The
+# fitted ones score 0.050, and beat both the null and a direction-independent
+# magnitude-only rival on all seven held-out regions -- which is what makes
+# "DE is directional" a measurement rather than an eyeball.
 SLOPE_LIGHT_DIR = tuple(
-    c / math.sqrt(0.35**2 + 0.35**2 + 0.87**2) for c in (-0.35, -0.35, 0.87)
-)  # mostly-overhead sun leaning toward -mapx/-mapy; a look-and-feel constant, not a measured one
-SLOPE_SHADE_STRENGTH = 0.35
-SLOPE_SHADE_MIN = 0.6
-SLOPE_SHADE_MAX = 1.25
+    c / math.sqrt(0.54**2 + 0.76**2 + 0.35**2) for c in (0.54, 0.76, 0.35)
+)  # low sun leaning toward +mapx/+mapy, i.e. screen right; measured, not chosen
+SLOPE_SHADE_STRENGTH = 0.425
+# Guard rails, NOT part of the calibration. At the fitted strength the model
+# spans [0.531, 1.276] over all 81 corner configs ([0.617, 1.257] over the
+# one-level configs ordinary terrain actually produces), so these sit just
+# outside that and never fire on legal geometry. They did not fire at the old
+# strength either -- 0.6/1.25 were unreachable, which is why nothing noticed
+# them for so long -- but they are much closer to live now, so a future
+# strength change has to re-check the range rather than assume headroom.
+# tests/test_sloped_render.py pins both the range and that fact.
+SLOPE_SHADE_MIN = 0.50
+SLOPE_SHADE_MAX = 1.35
 
 
 def _slope_shade(tile_px: int, nw: int, ne: int, sw: int, se: int, elev_step: int) -> np.ndarray:
-    """Per-pixel shading factor over one tile's sloped_quad_indices(tile_px,
-    ...) footprint, aligned 1:1 with that call's own output (same
-    tile_uv_fractions(tile_px) source, so same length/order) -- multiply
-    directly against sampled texture color, same "float32 factor, truncate
+    """Per-pixel shading factor over one tile's DIAMOND footprint, in
+    tile_uv_fractions(tile_px) order (equivalently diamond_indices' own) --
+    multiply against sampled texture color, same "float32 factor, truncate
     back to uint8" contract render.py's other shading (_shadow_factors)
     already uses.
+
+    NOT positionally aligned with sloped_quad_indices' output, which is a
+    variable-length resample and generally a different length entirely.
+    Gather it through that call's fifth return value first:
+    `shade[uv_idx]`. Slicing it to length instead (`shade[:dst_y.size]`)
+    silently mis-shades rather than raising, because the two lengths can
+    coincide -- tests/test_sloped_render.py's
+    test_slope_shade_is_gathered_through_uv_idx pins exactly that case.
 
     nw/ne/sw/se are the tile's 4 corner rises AFTER normalization against
     their own minimum (same convention sloped_quad_indices itself takes) --
     only their DIFFERENCES matter for a gradient, so the normalization is
     harmless here, not just permitted.
 
-    The surface gradient is a closed-form derivative of the SAME bilinear
-    patch tile_uv_fractions()/sloped_quad_indices() rasterize -- see
+    The surface gradient is a closed-form derivative of the bilinear patch
+    tile_uv_fractions() parameterizes over the diamond -- the height field
+    the corner rises define, which is a different derivation from
+    sloped_quad_indices' own integer cuts on shared tile edges, not the
+    same one at a different resolution. See
     tile_uv_fractions' docstring for the fx=1-fq, fy=fp identity this
     expands from: height(fx, fy) = NW(1-fx)(1-fy) + NE*fx*(1-fy) +
     SW*(1-fx)*fy + SE*fx*fy, so d(height)/d(fx) = (1-fy)*(NE-NW) +
@@ -920,45 +1556,117 @@ def _render_tile_sloped(
     base_x -= off_x
     base_y -= off_y + d_min
 
-    dst_y, dst_x, src_y, src_x = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    dst_y, dst_x, src_y, src_x, uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
     top = top_block[src_y, src_x]
     shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
-    shaded = np.clip(top.astype(np.float32) * shade[:, None], 0, 255).astype(np.uint8)
+    shaded = np.clip(top.astype(np.float32) * shade[uv_idx][:, None], 0, 255).astype(np.uint8)
     _clipped_paint(img, base_y, base_x, dst_y, dst_x, shaded)
+
+
+PICK_ID_NONE = -1
+"""The "no tile painted here" sentinel in a Sloped pick plane (Track C4).
+Not 0: tile (0, 0) encodes to id 0 under y * map_w + x, so 0 is a real,
+reachable tile id and a zero-filled plane would report the map's own west
+corner for every unpainted background pixel."""
+
+
+def _render_tile_sloped_ids(
+    plane: np.ndarray,
+    tile,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray,
+    map_w: int,
+    offset: tuple[int, int] = (0, 0),
+) -> None:
+    """Paints one tile's own id into an int32 pick plane over exactly the
+    pixels _render_tile_sloped() paints colour into -- Track C4's
+    hit-testing backend.
+
+    AGREEMENT WITH THE COLOUR PASS IS INHERITED, NOT ARGUED. Every quantity
+    that decides WHICH pixels get touched is computed here the same way
+    _render_tile_sloped() computes it, from the same inputs: the same four
+    corner_rise lookups, the same d_min, the same tile_screen_origin() at
+    elevation 0, the same -d_min subtraction folded into base_y, the same
+    sloped_quad_indices() call (same lru_cache entry, so literally the same
+    dst arrays), and the same _clipped_paint() masking. Only `values`
+    differs. Getting any one of those wrong would be a SILENT disagreement
+    between what the user sees and what a click resolves to, not a crash --
+    which is why they are copied rather than re-derived, and why
+    tests/test_sloped_pick.py mutation-checks the -d_min term specifically.
+
+    src_y/src_x/uv_idx are deliberately unused: a tile id is constant across
+    the tile, so there is no per-pixel quantity to gather. That makes this
+    materially cheaper than the colour pass (no texture crop, no
+    _slope_shade), which is the whole point of a separate ID-only walk.
+
+    Terrain only -- units are NOT painted, and Track C5 deliberately kept it
+    that way. Units paint after terrain into the same colour image, so a
+    terrain-only plane reports the tile UNDER a unit pixel: exactly what
+    tile picking and the tool highlight want, and exactly what unit picking
+    must not use. unit_pick._pick_unit_sloped answers that second question
+    analytically instead, and this plane's one job for it is the terrain
+    tile the occlusion compare needs (SlopedChunkCache.pick_tile). Folding
+    units in here would cost that closed form and reopen the pick plane's
+    own cost measurement."""
+    d_nw = int(corner_rise[tile.y, tile.x])
+    d_ne = int(corner_rise[tile.y, tile.x + 1])
+    d_sw = int(corner_rise[tile.y + 1, tile.x])
+    d_se = int(corner_rise[tile.y + 1, tile.x + 1])
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+
+    off_x, off_y = offset
+    base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, 0, proj)
+    base_x -= off_x
+    base_y -= off_y + d_min
+
+    dst_y, dst_x, _src_y, _src_x, _uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    values = np.full(dst_y.shape[0], tile.y * map_w + tile.x, dtype=np.int32)
+    _clipped_paint(plane, base_y, base_x, dst_y, dst_x, values)
 
 
 def _draw_unit_sloped(
     img: np.ndarray,
     unit,
     color: tuple[int, int, int],
-    tile_w: int,
-    tile_h: int,
+    tx: int,
+    ty: int,
     tile_px: int,
     proj: iso_geometry.IsoProjection,
-    elevation: int,
+    rise_px: int,
     offset: tuple[int, int] = (0, 0),
 ) -> None:
-    """Sloped's counterpart to _draw_unit_iso -- same per-footprint-tile
-    diamond-mark paint, but takes a precomputed SCALAR elevation LEVEL
-    (already derived from the unit's own tile's 4 corners by
-    _paint_tile_and_units_sloped, see that function) instead of a whole-map
-    elevations array to index. Sloped has no such array (corner_rise_px
-    replaces it) -- allocating a throwaway full-size one just to satisfy
-    _draw_unit_iso's/​_unit_iso_footprint's existing signature would cost
+    """Sloped's counterpart to _draw_unit_iso -- same one-diamond-per-call
+    paint (see that function for why a multi-tile unit arrives here once per
+    footprint tile), but takes a precomputed SCALAR PIXEL RISE (already
+    derived from the UNIT'S OWN tile's 4 corners and its own sub-tile
+    position by _paint_tile_and_units_sloped, see that function) instead of
+    a whole-map elevations array to index. Sloped has no such array
+    (corner_rise_px replaces it) -- allocating a throwaway full-size one
+    just to satisfy _draw_unit_iso's existing signature would cost
     O(map_h * map_w) per UNIT, not per render, so this takes the scalar
-    directly and calls _unit_tile_bounds() (bounds only, no elevation
-    lookup) instead of _unit_iso_footprint()."""
-    bounds = _unit_tile_bounds(unit, tile_w, tile_h)
-    if bounds is None:
-        return
-    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    directly.
+
+    Pixels, not an elevation LEVEL, since Track C5: corner_rise is already
+    in canvas pixels, so placing at tile_screen_origin(tx, ty, 0, proj) and
+    subtracting rise_px is the whole conversion -- no elev_step round trip,
+    and no widening of tile_screen_origin, whose docstring promises exact
+    integer arithmetic. Matches _render_tile_sloped's own placement
+    convention (elevation=0 plus a pixel shift) rather than introducing a
+    second one.
+
+    **No sprite path here, still.** A unit whose sprite paints via
+    sprite_draws_by_anchor()/sprites.by_anchor (Track P3-g6) is skipped
+    before it ever reaches this function -- see
+    _paint_tile_and_units_sloped()'s skip_ids gate. This function only ever
+    draws the plain coloured mark: for a unit with no resolved sprite, and
+    always for a farm (Sloped's sprite_draws_by_anchor() call passes
+    with_farms=False, so no farm ever enters skip_ids here)."""
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
     values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
     off_x, off_y = offset
-    for ty in range(tile_y0, tile_y1):
-        for tx in range(tile_x0, tile_x1):
-            base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
-            _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values)
+    base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
+    _clipped_paint(img, base_y - off_y - rise_px, base_x - off_x, dst_y, dst_x, values)
 
 
 def _paint_tile_and_units_sloped(
@@ -971,34 +1679,84 @@ def _paint_tile_and_units_sloped(
     map_w: int,
     map_h: int,
     offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
 ) -> None:
     """Sloped's counterpart to _paint_tile_and_units_iso -- same
     "terrain then this tile's own units, interleaved in depth_order" step
     (see that function's own docstring for why interleaving is load-
     bearing, not a style choice).
 
-    Units are drawn via _draw_unit_sloped() at a flat elevation LEVEL
-    averaged from the tile's own 4 corners -- a coarser placement than
-    Stepped's (which uses the tile's own real elevation exactly), since
-    Sloped has no single "this tile's elevation" pixel value once corners
-    can differ, but not yet the real per-unit sub-tile interpolation Track
-    C5 (docs/PLAN_V2_6.md) will replace this with. Accepted, temporary gap
-    until C5 lands: a building on sloped ground currently reads as sitting
-    on a small flat pad at roughly the right height, not conforming to the
-    slope."""
+    Units are drawn via _draw_unit_sloped() at the PIXEL RISE
+    iso_geometry.unit_rise_px() reports for the unit's own sub-tile
+    position inside its OWN tile -- i.e. on the surface this same function
+    just painted, evaluated at the point the unit stands on (Track C5's
+    Step 2). Until C5 that was an average of the own tile's 4 corners,
+    quantized back to an integer elevation level: a surface the renderer
+    never draws (the two differ on every non-planar tile, by up to a full
+    level in 62 of 81 corner configurations) at a resolution coarser than
+    the one it draws at. A unit is still a flat PAD -- one height for the
+    whole footprint, since buildings are flat in-game -- C5 changed only
+    how that height is computed.
+
+    **The lookup is per-entry, over the unit's own tile, not over `tile`.**
+    Since _units_by_tile() buckets a unit into every footprint tile, `tile`
+    here is usually a FOOTPRINT tile rather than the unit's own one, and
+    interpolating its corners would make the slab conform to the slope
+    tile-by-tile -- silently undoing the flat pad described above. The own
+    tile's corners are always in bounds: unit_tile_bounds() only admitted
+    this unit because its own tile is on-map, and corner_rise is
+    (map_h + 1, map_w + 1).
+
+    map_w/map_h are unused since _draw_unit_sloped() stopped re-deriving
+    bounds; they stay only to keep this signature parallel with
+    _paint_tile_and_units_iso()'s, which the two paths are deliberately
+    written to mirror. Not load-bearing.
+
+    sprites (Track P3-g6): a unit in sprites.skip_ids draws as a real sprite
+    at its anchor tile instead of a mark here -- same skip/blit shape
+    _paint_tile_and_units_iso() uses, minus the farm-terrain-override case
+    (sprite_draws_by_anchor() is always called with with_farms=False for
+    Sloped, so sprites.farm_by_tile is always empty here; farms keep their
+    plain mark unconditionally, see this repo's plan for why a paint-time
+    skip alone would make them invisible instead of deferred)."""
     _render_tile_sloped(img, tile, tile_px, proj, corner_rise, offset=offset)
-    entries = units_by_tile.get((tile.x, tile.y), ())
-    if not entries:
-        return
-    avg_rise_px = 0.25 * (
-        int(corner_rise[tile.y, tile.x])
-        + int(corner_rise[tile.y, tile.x + 1])
-        + int(corner_rise[tile.y + 1, tile.x])
-        + int(corner_rise[tile.y + 1, tile.x + 1])
+    skip = sprites.skip_ids if sprites is not None else frozenset()
+    for unit, color in units_by_tile.get((tile.x, tile.y), ()):
+        if id(unit) in skip:
+            continue  # its sprite paints instead, once, at its anchor tile
+        ux, uy = int(unit.x), int(unit.y)
+        rise_px = iso_geometry.unit_rise_px(corner_rise, ux, uy, unit.x - ux, unit.y - uy)
+        _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset)
+
+    # Sprites last within this tile's step, mirroring _paint_tile_and_units_iso's
+    # own ordering rationale: a unit standing on this tile must not be cut by
+    # its own tile's terrain.
+    if sprites is not None:
+        off_x, off_y = offset
+        for draw, ax, ay in sprites.by_anchor.get((tile.x, tile.y), ()):
+            _clipped_paint_rgba(
+                img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba
+            )
+
+
+def _unit_rise_headroom_px(
+    corner_rise: np.ndarray, elevations: np.ndarray, proj: iso_geometry.IsoProjection
+) -> int:
+    """How many canvas pixels ABOVE `elevation * elev_step` a Sloped unit's
+    own placement can possibly land -- the exact `extra_top_px` bound
+    _unit_screen_bbox_iso() needs (Track C5's Step 2).
+
+    unit_rise_px() interpolates between the unit's OWN tile's four corner
+    rises, so its value is bounded by that tile's own corner maximum; this
+    takes the worst such excess over the whole map. Never negative under
+    SLOPE_CORNER_RULE = "max" (a corner is the max over the tiles touching
+    it, so it includes the tile's own elevation), and exactly 0 on a flat
+    map, which is what keeps flat-map byte-identity against Stepped."""
+    c = corner_rise
+    tile_corner_max = np.maximum(
+        np.maximum(c[:-1, :-1], c[:-1, 1:]), np.maximum(c[1:, :-1], c[1:, 1:])
     )
-    elevation = round(avg_rise_px / proj.elev_step)
-    for unit, color in entries:
-        _draw_unit_sloped(img, unit, color, map_w, map_h, tile_px, proj, elevation, offset=offset)
+    return max(0, int((tile_corner_max - elevations * proj.elev_step).max()))
 
 
 def sloped_elevations_and_proj(
@@ -1032,7 +1790,7 @@ def sloped_elevations_and_proj(
 
 
 def render_terrain_sloped_with_proj(
-    scenario: LoadedScenario, with_units: bool = True
+    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_sloped()'s real body, additionally returning the
     (h, w) elevations array, the (h+1, w+1) corner_rise array, and the
@@ -1046,7 +1804,14 @@ def render_terrain_sloped_with_proj(
     paints no skirts) rather than a tighter Sloped-specific bound: keeping
     the two canvases the SAME shape for the same map is what makes a
     flat-map render_terrain_sloped output comparable to render_terrain_iso's
-    at all -- see tests/test_sloped_render.py's byte-identity oracle."""
+    at all -- see tests/test_sloped_render.py's byte-identity oracle.
+
+    with_sprites (Track P3-g6): same "defaults False so this stays byte-
+    identical to what it has always rendered" reasoning as
+    render_terrain_iso_with_proj()'s own parameter, and what gives the
+    stitched-chunk check a full-render ground truth to compare against.
+    with_farms=False always, matching SlopedChunkCache's own call -- see
+    sprite_draws_by_anchor()'s docstring for why."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
@@ -1067,8 +1832,15 @@ def render_terrain_sloped_with_proj(
     img = np.zeros((proj.canvas_h + skirt_headroom, proj.canvas_w, 3), dtype=np.uint8)
 
     units_by_tile = _units_by_tile(scenario) if with_units else {}
+    sprites = (
+        sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise, with_farms=False)
+        if (with_units and with_sprites)
+        else None
+    )
     for x, y in iso_geometry.depth_order(w, h):
-        _paint_tile_and_units_sloped(img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h)
+        _paint_tile_and_units_sloped(
+            img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites
+        )
     return img, elevations, corner_rise, proj
 
 
@@ -1094,6 +1866,7 @@ def composite_rect_sloped(
     units_by_tile: dict,
     building_bboxes: dict,
     with_units: bool = True,
+    sprites: SpriteLayer | None = None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -1108,7 +1881,11 @@ def composite_rect_sloped(
     sloped_elevations_and_proj()) -- tiles_in_screen_rect()'s own candidate
     sweep uses proj.corner_headroom_px via tile_screen_bounds_swept(), so a
     proj built without it could under-enumerate candidates near a chunk's
-    own edge."""
+    own edge.
+
+    sprites (Track P3-g6): same null-when-units-off rule composite_rect_iso()
+    applies, so a sprite layer built for a with_units=True render is never
+    consulted once units are toggled off."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -1129,12 +1906,57 @@ def composite_rect_sloped(
             candidates = combined[order]
 
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+    sprite_layer = sprites if with_units else None
     for cx, cy in candidates:
         tile = mm.get_tile(int(cx), int(cy))
         _paint_tile_and_units_sloped(
-            scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h, offset=(x0, y0)
+            scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h,
+            offset=(x0, y0), sprites=sprite_layer,
         )
     return scratch
+
+
+def composite_ids_rect_sloped(
+    scenario: LoadedScenario,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    corner_rise: np.ndarray,
+    proj: iso_geometry.IsoProjection,
+    tile_px: int,
+) -> np.ndarray:
+    """composite_rect_sloped()'s ID-plane twin: the half-open screen rect
+    [x0, x1) x [y0, y1) as a fresh (y1-y0, x1-x0) int32 array holding, per
+    pixel, the id (y * map_w + x) of the tile whose surface covers it, or
+    PICK_ID_NONE where no tile does. Track C4's hit-testing primitive.
+
+    Same rect-keyed-core contract as composite_rect_sloped() (see that
+    function): the same candidates from the same
+    iso_geometry.tiles_in_screen_rect() call, walked in the same depth
+    order, overwriting each other in the same sequence -- so the topmost id
+    at a pixel is the tile whose colour won that pixel, and occlusion by a
+    taller neighbour resolves identically. proj must carry
+    corner_headroom_steps=1 for the same reason it must there.
+
+    THE ONE DELIBERATE DIVERGENCE, and why it is safe: no unit pass and no
+    building "bystander" merge. A bystander is by definition a tile that
+    tiles_in_screen_rect() did NOT return, i.e. one whose own terrain does
+    not overlap this rect -- it is merged in there solely so its UNIT mark
+    can paint, and its terrain paint is already a whole-tile no-op that
+    _clipped_paint() discards. Dropping it therefore cannot change a single
+    id. The merge also re-lexsorts into the same depth order it was already
+    in, so the surviving candidates' relative order is untouched either
+    way."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
+
+    plane = np.full((y1 - y0, x1 - x0), PICK_ID_NONE, dtype=np.int32)
+    for cx, cy in candidates:
+        tile = mm.get_tile(int(cx), int(cy))
+        _render_tile_sloped_ids(plane, tile, tile_px, proj, corner_rise, w, offset=(x0, y0))
+    return plane
 
 
 def _blit_clipped(dst: np.ndarray, block: np.ndarray, x: int, y: int) -> None:
@@ -1157,11 +1979,13 @@ def _blit_clipped(dst: np.ndarray, block: np.ndarray, x: int, y: int) -> None:
     dst[dy0:dy1, dx0:dx1] = block[sy0:sy1, sx0:sx1]
 
 
-def _flat_unit_draws(scenario: LoadedScenario, tile_px: int) -> tuple[np.ndarray, np.ndarray]:
+def _flat_unit_draws(
+    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter()
+) -> tuple[np.ndarray, np.ndarray]:
     """Every unit's pixel-space draw, as (N,4) int32 half-open bboxes
     (x0,y0,x1,y1) plus (N,3) uint8 colors -- Phase B-E's precomputed input
     to composite_rect_flat(), built in EXACTLY overlay_units()'s own
-    per-player/per-unit-list order. Off-map units (_unit_tile_bounds()
+    per-player/per-unit-list order. Off-map units (unit_tile_bounds()
     returns None) are dropped: an off-map unit paints nothing anywhere in
     overlay_units() either, so dropping it here can't change any pixel any
     caller of composite_rect_flat() will ever see -- it's not a
@@ -1180,9 +2004,11 @@ def _flat_unit_draws(scenario: LoadedScenario, tile_px: int) -> tuple[np.ndarray
     bboxes = []
     colors = []
     for player_id, units in enumerate(scenario.unit_manager.units):
-        player_color = PLAYER_COLORS[player_id % len(PLAYER_COLORS)]
+        player_color = scenario.player_colors[player_id]
         for unit in units:
-            bounds = _unit_tile_bounds(unit, tile_w, tile_h)
+            if not unit_filter.matches(player_id, unit):
+                continue
+            bounds = unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
             tile_x0, tile_x1, tile_y0, tile_y1 = bounds
@@ -1290,9 +2116,17 @@ def refresh_region_iso(
     Phase B-B: now a thin wrapper -- dirty_screen_bbox_iso() for "what
     changed" (also where elevations gets mutated), composite_rect_iso() for
     "paint that rect" -- kept as its own function, with its own signature
-    unchanged, so every existing caller (viewer.py's ViewerWindow, this
-    project's verify_iso_*.py scripts) is untouched: the same two pieces
-    back Phase B-B's chunk cache without an img array in the picture at all.
+    unchanged: the same two pieces back Phase B-B's chunk cache without an
+    img array in the picture at all.
+
+    **Its callers are this project's tools and tests only.** The live
+    Stepped edit path is ViewerWindow._apply_dirty -> dirty_screen_bbox_iso
+    -> IsoChunkCache.patch, which never comes through here; naming
+    ViewerWindow as a caller (as this docstring used to) has been stale
+    since the chunk cache landed. What this function is now is the
+    byte-identity harness AROUND that real path -- verify_iso_units.py's
+    incremental checks compare it against a fresh full render, which is why
+    it is kept rather than deleted.
 
     with_units=False skips units entirely -- only used by callers that want
     a pure-terrain incremental patch; the real viewer always wants the
@@ -1319,783 +2153,59 @@ def refresh_region_iso(
     return bbox
 
 
-# Default chunk size for IsoChunkCache -- measured, not guessed: benched
-# CHUNK_PX in {256, 512, 1024} via tools/verify_iso_chunks.py on this
-# project's largest real map (480x480, tile_px=32). 1024 wins cold
-# full-canvas assembly by only ~8% over 512 (4.7s vs 5.1s) while being a
-# much coarser invalidation granularity for a moving viewport; 256 loses on
-# both cold assembly (~6s) and warm single-tile patch cost (~44ms vs ~28ms).
-DEFAULT_CHUNK_PX = 512
-
-
-class _ChunkCacheBase:
-    """Grid/LRU bookkeeping shared by IsoChunkCache (Stepped, Phase B-B) and
-    FlatChunkCache (Flat, Phase B-E) -- extracted because get_chunk/
-    render_rect/patch/invalidate_region are pure chunk-grid arithmetic with
-    zero mode-specific content, proven correct by tools/verify_iso_chunks.py's
-    own byte-identity checks well before this split existed. This is NOT a
-    weakening of composite_rect_iso()/composite_rect_flat()'s own "stay an
-    independent implementation, never re-expressed in terms of the chunk
-    path" rule -- that rule is about the COMPOSITOR (only ever reached here
-    through the subclass's _composite_rect() hook, still two genuinely
-    separate functions); this class owns LRU/grid bookkeeping only, the same
-    thing any other chunk cache would.
-
-    A subclass must, in its own __init__ (kept fully subclass-owned, not
-    called from here, so each cache's own constructor signature/docstring
-    stays exactly as-is): set self.chunk_px, call self._init_mip_levels(...)
-    (Phase B-D-a; the level table must exist before _init_max_chunks() can
-    read canvas_dims()), call self._refresh_source_caches() once, then call
-    self._init_max_chunks(chunk_px, max_chunks). It must also implement:
-      - canvas_dims(mip=0) -> (width, height) in LEVEL canvas pixels
-      - _composite_rect(mip, x0, y0, x1, y1) -> (h, w, 3) uint8 array
-      - _refresh_source_caches() -> None
-      - a `style` class attribute ("stepped" / "flat") -- checked at the
-        MapView.set_source() boundary (Phase B-E) to catch a cache wired to
-        the wrong terrain style at construction time, rather than only once
-        an edit exposes the mismatch later.
-
-    Coordinate-space convention (Phase B-D-a; PLAN_MIPS.md never states
-    this explicitly): render_rect()/get_chunk()/canvas_dims() all take
-    LEVEL pixels/indices -- a caller past this class (Phase B-D-c's paint())
-    is expected to already know which level it's asking for. patch()/
-    invalidate_region() instead take REFERENCE canvas pixels, because their
-    only real callers (ViewerWindow._apply_dirty, via dirty_screen_bbox_iso
-    and a locally-recomputed reference tile_px) have no notion of levels at
-    all -- Track B-D-a/b deliberately never touch viewer.py. _bbox_to_level()
-    is the one conversion point between the two spaces.
-
-    mip is part of every cache key (Phase B-B); Phase B-D-a makes get_chunk()/
-    render_rect() actually use it for the pixel math (previously always 0),
-    and patch()/invalidate_region() fan out across every RESIDENT level
-    (not every enumerated one -- see _init_mip_levels' docstring) instead of
-    hardcoding chunk 0."""
-
-    style: str = ""
-
-    def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
-        """Enumerates the level set ONCE, at construction -- never lazily.
-        Level 0 must be present and must equal self.tile_px (D2: scene
-        space is pinned to the reference level, permanently).
-
-        Phase B-D-a passes a literal {0: self.tile_px} (no other levels
-        exist yet); Phase B-D-b replaces that call with a real per-level
-        set from iso_geometry.mip_projections_for()/mip_tile_px_candidates().
-        Enumerating eagerly (geometry only -- tile_px/proj are cheap) while
-        leaving PIXELS and per-level source state lazy is what phase b's
-        non-tautology byte-identity test depends on: the level set must
-        already be fixed before that test's ground-truth call gets its
-        tile_pixels_for_map() monkeypatched.
-
-        Level index L means tile_px = reference_tile_px * 2**L: POSITIVE L
-        is FINER (mip-up), NEGATIVE L is COARSER (mip-down) -- the only
-        reading consistent with mip_for_scale()'s
-        clamp(floor(log2(scale)), ...) rule, since zooming in raises scale
-        and must raise the selected level."""
-        assert tile_px_by_level.get(0) == self.tile_px, (
-            f"level 0 must be the reference tile_px ({self.tile_px}), got {tile_px_by_level.get(0)!r}"
-        )
-        self._mip_tile_px: dict[int, int] = dict(sorted(tile_px_by_level.items()))
-
-    def mip_levels(self) -> list[int]:
-        """Every enumerated level index, ascending. Always contains 0.
-        Length 1 is a normal case, not a degenerate one -- e.g. a reference
-        tile_px of 16 at elev_step_pct=10 has no exact neighbor at all
-        (measured, see iso_geometry.mip_projections_for's own docstring)."""
-        return list(self._mip_tile_px)
-
-    def mip_tile_px(self, mip: int = 0) -> int:
-        return self._mip_tile_px[mip]
-
-    def mip_scale(self, mip: int = 0) -> float:
-        """Scene-space scale factor for this level: reference_tile_px /
-        level_tile_px == 2**-mip. Both operands are always powers of two in
-        [MIP_MIN_TILE_PIXELS, MIP_MAX_TILE_PIXELS], so this division is
-        exactly representable in binary float -- mip_scale(0) == 1.0 is an
-        EXACT comparison, which is what Phase B-D-c's "keep the point
-        overload at S == 1.0" safety branch relies on."""
-        return self._mip_tile_px[0] / self._mip_tile_px[mip]
-
-    def mip_for_scale(self, scale: float) -> int:
-        """The finest level whose own scene-to-device magnification stays
-        >= 1 (never minify past what's actually resident): clamp(floor(
-        log2(scale)), min(mip_levels()), max(mip_levels())). scale <= 0 is
-        guarded by returning the coarsest available level rather than
-        raising -- a defensive floor for a degenerate transform, not a
-        case Phase B-D-c's real callers are expected to hit."""
-        levels = self.mip_levels()
-        if scale <= 0:
-            return levels[0]
-        raw = math.floor(math.log2(scale))
-        return max(levels[0], min(levels[-1], raw))
-
-    def _bbox_to_level(self, mip: int, bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-        """A REFERENCE-canvas-pixel bbox converted to level `mip` pixels.
-        All-integer and superset-safe in BOTH directions: floor the low
-        edge, ceil the high edge, so the level rect is never a strict
-        subset of the true footprint (a subset would leave stale pixels
-        behind). Exact because canvas dims scale by exactly
-        level_tile_px/reference_tile_px -- proven per level by
-        is_exact_mip (Phase B-D-b), asserted on canvas_dims() itself
-        (the value the blit actually trusts) at construction.
-
-        Identity whenever mip's tile_px equals the reference's -- true for
-        every mip in Phase B-D-a, since the level set is still {0}."""
-        t_ref, t_lvl = self._mip_tile_px[0], self._mip_tile_px[mip]
-        if t_lvl == t_ref:
-            return bbox
-        px0, py0, px1, py1 = bbox
-        return (
-            (px0 * t_lvl) // t_ref,
-            (py0 * t_lvl) // t_ref,
-            -((-px1 * t_lvl) // t_ref),
-            -((-py1 * t_lvl) // t_ref),
-        )
-
-    def _init_max_chunks(self, chunk_px: int, max_chunks: int | None) -> None:
-        """Whole-canvas-at-chunk_px default, not some smaller fixed
-        constant: the viewer always fitInView()s the full map on open, so
-        the default/steady-state working set IS every chunk. A smaller cap
-        would silently thrash (evict chunks the very next full repaint
-        needs again) instead of ever reaching a warm, blit-only steady
-        state -- the exact failure mode a chunk cache exists to avoid. See
-        each subclass's own docstring for the measured memory cost of this
-        default.
-
-        Phase B-D-a: max_chunks explicitly passed keeps capping by COUNT
-        with no byte bound at all (preserves every existing caller that
-        passes one, e.g. tools/verify_iso_chunks.py's max_chunks=2/100000
-        eviction tests, with no test edits); max_chunks=None (the real
-        app's default) switches to a BYTE budget sized at exactly today's
-        admitted set (canvas_dims() area * 3), tracked incrementally in
-        self._cache_bytes rather than recomputed per eviction check. A
-        byte budget is not itself the mechanism that stops N resident mip
-        levels multiplying memory -- with chunk_px constant in LEVEL
-        pixels, a byte budget is approximately a count budget too; what
-        actually bounds total memory is the single shared global LRU
-        below, unchanged, evicting across every level's chunks under one
-        shared bound. The byte form matters for exactness on the ragged
-        last chunk at each level, and because "N levels redistribute
-        memory, they don't multiply it" is a claim about bytes."""
-        self.chunk_px = chunk_px
-        self._cache: OrderedDict[tuple[int, int, int], np.ndarray] = OrderedDict()
-        self._cache_bytes = 0
-        if max_chunks is None:
-            canvas_w, canvas_h = self.canvas_dims()
-            self.max_chunks: int | None = None
-            self.max_bytes: int | None = canvas_w * canvas_h * 3
-        else:
-            self.max_chunks = max_chunks
-            self.max_bytes = None
-
-    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
-        raise NotImplementedError
-
-    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        raise NotImplementedError
-
-    def _refresh_source_caches(self) -> None:
-        raise NotImplementedError
-
-    def _evict(self) -> None:
-        """Evicts least-recently-used chunks while EITHER configured bound
-        (see _init_max_chunks) is exceeded. A chunk is at most chunk_px**2
-        * 3 bytes and is clipped to canvas bounds at the high edge, so a
-        just-inserted chunk can never itself exceed max_bytes on a
-        default-constructed cache -- this can't evict down to empty."""
-        while self._cache and (
-            (self.max_chunks is not None and len(self._cache) > self.max_chunks)
-            or (self.max_bytes is not None and self._cache_bytes > self.max_bytes)
-        ):
-            _key, victim = self._cache.popitem(last=False)
-            self._cache_bytes -= victim.nbytes
-
-    def get_chunk(self, mip: int, cx: int, cy: int) -> np.ndarray:
-        """Returns chunk (mip, cx, cy)'s composited pixels, from cache if
-        present (moved to most-recently-used), else composited fresh via
-        self._composite_rect() and inserted, evicting past either bound
-        (see _evict). Clipped to canvas bounds at the high edge -- a chunk
-        straddling the canvas edge is smaller than chunk_px x chunk_px,
-        same "ragged last chunk" shape any tile-based grid has. cx/cy are
-        LEVEL chunk-grid indices, sized against that level's own
-        canvas_dims(mip)."""
-        key = (mip, cx, cy)
-        cached = self._cache.get(key)
-        if cached is not None:
-            self._cache.move_to_end(key)
-            return cached
-
-        canvas_w, canvas_h = self.canvas_dims(mip)
-        x0, y0 = cx * self.chunk_px, cy * self.chunk_px
-        x1, y1 = min(x0 + self.chunk_px, canvas_w), min(y0 + self.chunk_px, canvas_h)
-        chunk = self._composite_rect(mip, x0, y0, x1, y1)
-        self._cache[key] = chunk
-        self._cache_bytes += chunk.nbytes
-        self._cache.move_to_end(key)
-        self._evict()
-        return chunk
-
-    def render_rect(self, x0: int, y0: int, x1: int, y1: int, mip: int = 0) -> np.ndarray:
-        """Assembles pixels for [x0, x1) x [y0, y1) -- LEVEL `mip` pixels,
-        clipped to that level's own canvas bounds -- from chunks, fetching/
-        compositing each via get_chunk() as needed. The stitched result
-        must be byte-identical to the corresponding crop of an independent
-        full render at that level regardless of chunk request order or
-        what was already cached -- see tools/verify_iso_chunks.py (Stepped)
-        / tests/test_flat_chunks.py (Flat) at mip=0, tests/
-        test_mip_geometry.py (Phase B-D-b) at mip != 0."""
-        canvas_w, canvas_h = self.canvas_dims(mip)
-        x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(canvas_w, x1), min(canvas_h, y1)
-        if x1 <= x0 or y1 <= y0:
-            return np.zeros((0, 0, 3), dtype=np.uint8)
-
-        out = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
-        cx0, cy0 = x0 // self.chunk_px, y0 // self.chunk_px
-        cx1, cy1 = (x1 - 1) // self.chunk_px, (y1 - 1) // self.chunk_px
-        for cy in range(cy0, cy1 + 1):
-            for cx in range(cx0, cx1 + 1):
-                chunk = self.get_chunk(mip, cx, cy)
-                chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
-                ox0, oy0 = max(x0, chunk_x0), max(y0, chunk_y0)
-                ox1, oy1 = min(x1, chunk_x0 + chunk.shape[1]), min(y1, chunk_y0 + chunk.shape[0])
-                if ox1 <= ox0 or oy1 <= oy0:
-                    continue
-                out[oy0 - y0 : oy1 - y0, ox0 - x0 : ox1 - x0] = chunk[
-                    oy0 - chunk_y0 : oy1 - chunk_y0, ox0 - chunk_x0 : ox1 - chunk_x0
-                ]
-        return out
-
-    def patch(self, bbox: tuple[int, int, int, int]) -> None:
-        """"Patch, don't drop": for every chunk CURRENTLY cached, at every
-        RESIDENT mip level, that bbox (REFERENCE canvas pixels) overlaps
-        once converted to that level, recomposites just the intersected
-        sub-rect via self._composite_rect() and writes it into the
-        existing chunk array in place -- the cached chunk stays valid
-        immediately, without paying a full chunk recomposite (or leaving a
-        stale one on screen until the next get_chunk() eviction). Chunks
-        NOT currently cached need no action: get_chunk() always composites
-        fresh against the current state, so there's nothing stale to fix
-        for those.
-
-        Iterates RESIDENT levels ({key[0] for key in self._cache}), not
-        every ENUMERATED level (mip_levels()) -- a level holding zero
-        cached chunks is never entered, which is what keeps a single edit's
-        cost from scaling with the total level count rather than with how
-        many levels are actually warm.
-
-        Looks up the overlapping chunk-grid range directly (same index math
-        as invalidate_region()) rather than scanning every cached entry --
-        a real cost difference once max_chunks is in the hundreds and only
-        a handful of chunks overlap a single edit's bbox.
-
-        bbox must already reflect the edit; this method does not mutate any
-        underlying source state itself (elevations, terrain) -- callers
-        that need to (dirty_screen_bbox_iso() for Stepped) do so before
-        calling this. Refreshes this cache's own per-edit derived state
-        first (self._refresh_source_caches()) -- see each subclass's own
-        docstring for what that means to it."""
-        self._refresh_source_caches()
-        px0, py0, px1, py1 = bbox
-        if px1 <= px0 or py1 <= py0:
-            return
-        for mip in sorted({key[0] for key in self._cache}):
-            lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
-            if lx1 <= lx0 or ly1 <= ly0:
-                continue
-            cx0, cy0 = lx0 // self.chunk_px, ly0 // self.chunk_px
-            cx1, cy1 = (lx1 - 1) // self.chunk_px, (ly1 - 1) // self.chunk_px
-            for cy in range(cy0, cy1 + 1):
-                for cx in range(cx0, cx1 + 1):
-                    chunk = self._cache.get((mip, cx, cy))
-                    if chunk is None:
-                        continue
-                    chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
-                    chunk_x1, chunk_y1 = chunk_x0 + chunk.shape[1], chunk_y0 + chunk.shape[0]
-                    ix0, iy0 = max(lx0, chunk_x0), max(ly0, chunk_y0)
-                    ix1, iy1 = min(lx1, chunk_x1), min(ly1, chunk_y1)
-                    if ix1 <= ix0 or iy1 <= iy0:
-                        continue
-                    patched = self._composite_rect(mip, ix0, iy0, ix1, iy1)
-                    chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
-
-    def patch_rects(self, rects) -> None:
-        """patch() for each rect in rects -- Phase B-E's Flat edits patch
-        per-tile rects rather than one union bbox (a union over a scattered
-        undo set can span the whole map, turning patch() into a full
-        recomposite; see ViewerWindow._apply_dirty's Flat branch)."""
-        for rect in rects:
-            self.patch(rect)
-
-    def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:
-        """Evicts every cached chunk, at every RESIDENT mip level, whose
-        grid cell (once bbox is converted to that level) intersects it --
-        forces a full recomposite from get_chunk() next time that chunk is
-        requested, rather than trusting whatever's cached. Distinct from
-        patch(): patch() keeps a cached chunk valid immediately at the cost
-        of only the touched sub-rect; this drops it outright. Exists as its
-        own primitive -- separate from patch() -- so a correctness bug
-        elsewhere can't be masked by patch() quietly papering over it;
-        tools/verify_iso_chunks.py's "invalidate_region round-trips" check
-        calls this directly, forces a real recomposite via get_chunk(), and
-        compares against a fresh full render.
-
-        Per-level conversion fixes a real latent bug the old mip-agnostic
-        chunk-index match had: a finer level's canvas is LARGER, so its
-        chunk grid extends further -- a reference-derived index range used
-        unconverted would under-evict a finer level's chunks near the
-        canvas high edge, leaving stale pixels there. Coarser levels were
-        merely over-evicted (harmless); this fixes both directions the same
-        way, by computing each resident level's own true chunk-index
-        range instead of reusing the reference's."""
-        px0, py0, px1, py1 = bbox
-        ranges: dict[int, tuple[int, int, int, int]] = {}
-        for mip in {key[0] for key in self._cache}:
-            lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
-            if lx1 <= lx0 or ly1 <= ly0:
-                continue
-            ranges[mip] = (
-                lx0 // self.chunk_px,
-                ly0 // self.chunk_px,
-                (lx1 - 1) // self.chunk_px,
-                (ly1 - 1) // self.chunk_px,
-            )
-        for key in list(self._cache):
-            mip, cx, cy = key
-            rng = ranges.get(mip)
-            if rng is None:
-                continue
-            cx0, cy0, cx1, cy1 = rng
-            if cx0 <= cx <= cx1 and cy0 <= cy <= cy1:
-                self._cache_bytes -= self._cache[key].nbytes
-                del self._cache[key]
-
-
-@dataclass
-class _IsoLevel:
-    """One mip level's own state (Phase B-D). tile_px/proj are enumerated
-    at construction (see _ChunkCacheBase._init_mip_levels) and are pure
-    geometry -- cheap, and IsoChunkCache.canvas_dims() reads .proj
-    DIRECTLY, never through _level(), so sizing the cache can never trigger
-    a bbox build. building_bboxes is the expensive, PROJECTION-DEPENDENT
-    part (see _building_bboxes_iso/_unit_screen_bbox_iso): built lazily on
-    first composite at this level, and rebuilt lazily whenever `gen` falls
-    behind the cache's own _source_gen -- see IsoChunkCache._level()."""
-
-    tile_px: int
-    proj: iso_geometry.IsoProjection
-    building_bboxes: dict | None = None
-    gen: int = -1
-
-
-class IsoChunkCache(_ChunkCacheBase):
-    """Qt-free LRU cache of composited Stepped-mode canvas chunks, keyed by
-    (mip, chunk_x, chunk_y) -- Phase B-B of Track B.
-    chunk_x/chunk_y are chunk-GRID indices: canvas pixel
-    (chunk_x*chunk_px, chunk_y*chunk_px) is that chunk's own origin. mip is
-    real as of Phase B-D-a (previously always 0); Phase B-D-b (this
-    version) enumerates the REAL per-level projection set via
-    iso_geometry.mip_projections_for(), keyed off settings.get_elev_step_pct()
-    -- the same function every real proj-construction site in this module
-    already calls, so the cache reading it too reproduces exactly what
-    built `proj`. Neither B-D-a nor B-D-b changes a single rendered pixel
-    reachable from the running app: nothing outside this class and its
-    tests ever asks for mip != 0 until Phase B-D-c wires MapCanvasItem.
-    paint() to a real LOD signal.
-
-    Each chunk is composited independently via composite_rect_iso() -- the
-    SAME function render_terrain_iso_with_proj()'s full loop and
-    refresh_region_iso()'s per-edit patch both reduce to -- so a chunk's
-    pixels never depend on which OTHER chunks happen to be cached or in
-    what order they were requested (this class's own load-bearing
-    correctness bar, see tools/verify_iso_chunks.py). Grid/LRU mechanics
-    (get_chunk/render_rect/patch/invalidate_region) live in _ChunkCacheBase,
-    shared with Phase B-E's FlatChunkCache -- this class supplies only the
-    Stepped-specific pieces: canvas_dims(), _composite_rect(), and
-    _refresh_source_caches().
-
-    Wired into viewer.py's Stepped mode as of Phase B-C, via MapCanvasItem;
-    also exercised standalone by tools/verify_iso_chunks.py and its own
-    bench.
-
-    max_chunks defaults to covering the WHOLE canvas at chunk_px (see
-    _ChunkCacheBase._init_max_chunks()'s own docstring for why).
-
-    NOT free memory-wise: a fully-warmed cache holds roughly as many total
-    pixel bytes as the old single canvas did (this project's biggest real
-    map, 480x480 at chunk_px=512, needs 480 chunks), and render_rect() (see
-    below) additionally allocates a fresh full-canvas-sized stitched output
-    array on every full-viewport call -- so a full-viewport composite
-    transiently needs the persistent cache AND that scratch buffer at once.
-    Measured on that map: peak RSS for an open+warm+edit workflow went
-    743MB -> 1127MB versus the pre-B-C single-buffer approach -- a real,
-    accepted cost of avoiding thrashing at the default zoom, not a memory
-    win. Pass an explicit
-    smaller max_chunks (as tools/verify_iso_chunks.py's eviction tests do)
-    to exercise real LRU eviction instead."""
-
-    style = "stepped"
-
-    def __init__(
-        self,
-        scenario: LoadedScenario,
-        elevations: np.ndarray,
-        proj: iso_geometry.IsoProjection,
-        tile_px: int,
-        chunk_px: int = DEFAULT_CHUNK_PX,
-        max_chunks: int | None = None,
-        with_units: bool = True,
-    ):
-        self.scenario = scenario
-        self.elevations = elevations
-        self.proj = proj
-        self.tile_px = tile_px
-        self.with_units = with_units
-        # Phase B-D-b: the REAL per-level projection set. settings.
-        # get_elev_step_pct() is read here rather than threaded through as
-        # a parameter because it's exactly the same function every real
-        # proj-construction site in this module already calls to build
-        # `proj` itself -- so this reproduces what built `proj`, and
-        # mip_projections_for's own identity-level self-check (an assert)
-        # fails loudly if the two ever disagreed. Must happen before
-        # _init_max_chunks(), which reads canvas_dims() -> self._levels[0].proj.
-        mm = scenario.map_manager
-        projs = iso_geometry.mip_projections_for(mm.map_width, mm.map_height, proj, settings.get_elev_step_pct())
-        self._levels: dict[int, _IsoLevel] = {level: _IsoLevel(tile_px=p.tile_px, proj=p) for level, p in projs.items()}
-        self._init_mip_levels({level: lvl.tile_px for level, lvl in self._levels.items()})
-        # canvas_dims()'s own exactness assert: is_exact_mip() proves every
-        # IsoProjection field scales exactly, but canvas_dims() adds the
-        # skirt-headroom term (_canvas_pixel_dims) on top of proj.canvas_h --
-        # the value the blit actually trusts -- so assert it here too,
-        # against the real function rather than duplicating its formula
-        # into iso_geometry (a second place that formula could drift).
-        ref_w, ref_h = _canvas_pixel_dims(proj)
-        for lvl in self._levels.values():
-            lw, lh = _canvas_pixel_dims(lvl.proj)
-            assert lw * proj.tile_px == ref_w * lvl.tile_px and lh * proj.tile_px == ref_h * lvl.tile_px, (
-                f"level tile_px={lvl.tile_px}'s canvas_dims (skirt headroom included) isn't an "
-                f"exact mip of the reference's -- {(lw, lh)} vs reference {(ref_w, ref_h)}"
-            )
-        self._source_gen = 0
-        self._refresh_source_caches()
-        self._init_max_chunks(chunk_px, max_chunks)
-
-    def _refresh_source_caches(self) -> None:
-        """Rebuilds the SHARED, tile-space units_by_tile and bumps the
-        source generation counter -- must run whenever elevations could
-        have changed underneath this cache (construction, and every
-        patch()). Deliberately does NOT rebuild any level's
-        building_bboxes here: those are PROJECTION-dependent (a building's
-        screen bbox depends on its center tile's elevation via
-        _unit_screen_bbox_iso), so under mips they are per-level, and
-        rebuilding every ENUMERATED level here would make a single edit
-        pay ~15-20ms x N levels on an 11k-unit map -- for levels that may
-        hold no cached chunks at all. Each level's bboxes are instead
-        rebuilt lazily, in _level(), the first time that level is actually
-        composited after this bump -- see _level()'s own docstring."""
-        self.units_by_tile = _units_by_tile(self.scenario) if self.with_units else {}
-        self._source_gen += 1
-
-    def _level(self, mip: int) -> _IsoLevel:
-        """The mip level's own state, rebuilding its building_bboxes if
-        stale (gen != self._source_gen). Called only from _composite_rect,
-        so a level is never rebuilt just because it's resident -- only
-        when actually composited. Combined with patch()'s "iterate resident
-        levels only" (_ChunkCacheBase.patch), an edit at a fixed zoom (one
-        level resident) pays exactly one _building_bboxes_iso rebuild,
-        identical to pre-mip behavior; immediately after a mip switch (two
-        levels resident), the first edit pays two -- units_by_tile itself
-        is still built once per edit regardless of level count, so the
-        real cost is bounded by resident level count, not enumerated level
-        count."""
-        lvl = self._levels[mip]
-        if lvl.gen != self._source_gen:
-            mm = self.scenario.map_manager
-            lvl.building_bboxes = (
-                _building_bboxes_iso(self.units_by_tile, mm.map_width, mm.map_height, lvl.proj, self.elevations)
-                if self.with_units
-                else {}
-            )
-            lvl.gen = self._source_gen
-        return lvl
-
-    @property
-    def building_bboxes(self) -> dict:
-        """Level 0's building_bboxes, forcing a rebuild first if stale.
-        Debugging/introspection accessor only -- composite_rect_iso() is
-        always called with a specific level's own bboxes via _level(mip),
-        never through this property."""
-        return self._level(0).building_bboxes
-
-    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
-        """(width, height) in LEVEL `mip` canvas pixels, including skirt
-        headroom -- see _canvas_pixel_dims(). Indexes self._levels[mip]
-        DIRECTLY (never through _level()), so sizing the cache can never
-        trigger a building_bboxes build."""
-        return _canvas_pixel_dims(self._levels[mip].proj)
-
-    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        lvl = self._level(mip)
-        return composite_rect_iso(
-            self.scenario,
-            x0,
-            y0,
-            x1,
-            y1,
-            self.elevations,
-            lvl.proj,
-            lvl.tile_px,
-            self.units_by_tile,
-            lvl.building_bboxes,
-            self.with_units,
-        )
-
-
-class FlatChunkCache(_ChunkCacheBase):
-    """Flat mode's counterpart to IsoChunkCache -- Phase B-E of Track B. Same
-    grid/LRU mechanics (_ChunkCacheBase), composited via composite_rect_flat()
-    instead of composite_rect_iso()
-    (see that function's own docstring for the correctness argument behind
-    never needing refresh_units_over()'s fixed-point dirty-tile expansion
-    here).
-
-    max_chunks defaults to covering the WHOLE canvas at chunk_px, same as
-    IsoChunkCache and for the same fitInView()-on-open reason -- unchanged
-    here even though Flat's canvas is the LARGER of the two (675 MiB vs
-    340 MiB at 480x480): capping this to something smaller would thrash
-    at the app's own default zoom exactly
-    the way IsoChunkCache's own docstring already argues against. Phase
-    B-D's mip levels are the real fix for the fit-to-view memory cost, not
-    a smaller cap here.
-
-    _refresh_source_caches() is a documented no-op after construction:
-    unlike Stepped's building bboxes (which move with their center tile's
-    elevation, see IsoChunkCache._refresh_source_caches()), Flat's
-    unit_draws (_flat_unit_draws()) derive only from unit.x/unit.y,
-    unit_const, the owning player index, and map dimensions -- none of
-    which any terrain or elevation edit touches. That makes patch() here
-    genuinely cheaper than Stepped's per-edit ~15-20ms units_by_tile/
-    building_bboxes rebuild, not just an equivalent no-op restated. If a
-    future unit-editing feature (v3.5) ever makes unit_draws stale,
-    invalidate_units() is the explicit way to force a rebuild -- don't
-    "fix" this no-op into an unconditional rebuild instead, since that
-    would silently reintroduce the per-edit cost this class exists to
-    avoid paying for edits that were never about units at all."""
-
-    style = "flat"
-
-    def __init__(
-        self,
-        scenario: LoadedScenario,
-        tile_px: int,
-        chunk_px: int = DEFAULT_CHUNK_PX,
-        max_chunks: int | None = None,
-        with_units: bool = True,
-    ):
-        self.scenario = scenario
-        self.tile_px = tile_px
-        self.with_units = with_units
-        # Phase B-D-b: the real candidate ladder, UNFILTERED -- Flat has no
-        # projection (canvas_dims() is a bare multiply, exact at every
-        # tile_px, no elev_step term to break exactness), so every power of
-        # two mip_tile_px_candidates() finds is a real exact level, unlike
-        # Stepped's mip_projections_for() which must filter through a real
-        # exactness check. Must precede _init_max_chunks(), which reads
-        # canvas_dims().
-        self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px))
-        # Per-level unit_draws (Phase B-D, PLAN_MIPS.md's own "Flat's real
-        # per-level work is unit_draws"). Level 0's draws live in
-        # self.unit_draws (unchanged attribute, still read directly by
-        # tests/test_flat_chunks.py); other levels are built lazily here.
-        self._level_draws: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
-        self._refresh_source_caches()
-        self._init_max_chunks(chunk_px, max_chunks)
-
-    def _refresh_source_caches(self) -> None:
-        """See this class's own docstring: a documented no-op once
-        unit_draws already exists (nothing a terrain/elevation edit touches
-        can make it stale), except at construction, where it must actually
-        build unit_draws the first time."""
-        if not hasattr(self, "unit_draws"):
-            self.unit_draws = _flat_unit_draws(self.scenario, self.tile_px) if self.with_units else None
-
-    def invalidate_units(self) -> None:
-        """Forces unit_draws to be rebuilt on the next patch()/construction-
-        style refresh -- for a future unit-editing feature (v3.5) whose
-        edits _refresh_source_caches()'s no-op would otherwise miss. Not
-        called anywhere today; exists so that no-op doesn't become a trap
-        once unit edits are real. Also drops every other level's cached
-        draws, same reasoning."""
-        if hasattr(self, "unit_draws"):
-            del self.unit_draws
-        self._level_draws.clear()
-        self._refresh_source_caches()
-
-    def _level_unit_draws(self, mip: int) -> tuple[np.ndarray, np.ndarray] | None:
-        """Per-level _flat_unit_draws() -- Flat's counterpart to Stepped's
-        per-level building_bboxes. No generation counter needed here,
-        unlike IsoChunkCache._level(): unit_draws depends only on
-        unit.x/unit.y, unit_const, owning player index and map dimensions,
-        none of which any terrain/elevation edit touches -- the same
-        property that makes _refresh_source_caches() a no-op after
-        construction. invalidate_units() is what actually goes stale (a
-        future unit-editing feature), and it already clears this dict."""
-        if not self.with_units:
-            return None
-        if mip == 0:
-            return self.unit_draws
-        draws = self._level_draws.get(mip)
-        if draws is None:
-            draws = _flat_unit_draws(self.scenario, self._mip_tile_px[mip])
-            self._level_draws[mip] = draws
-        return draws
-
-    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
-        mm = self.scenario.map_manager
-        tile_px = self._mip_tile_px[mip]
-        return mm.map_width * tile_px, mm.map_height * tile_px
-
-    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        return composite_rect_flat(
-            self.scenario,
-            x0,
-            y0,
-            x1,
-            y1,
-            self._mip_tile_px[mip],
-            unit_draws=self._level_unit_draws(mip),
-            with_units=self.with_units,
-        )
-
-
-class SlopedChunkCache(_ChunkCacheBase):
-    """Qt-free LRU cache of composited Sloped-mode canvas chunks -- Phase 6
-    (docs/PLAN_V2_6.md)'s Track C3 counterpart to IsoChunkCache/
-    FlatChunkCache. Same grid/LRU mechanics (_ChunkCacheBase), composited
-    via composite_rect_sloped() instead of composite_rect_iso()/
-    composite_rect_flat() -- a chunk's pixels never depend on which OTHER
-    chunks happen to be cached or in what order they were requested, the
-    same correctness bar tools/verify_iso_chunks.py/tests/
-    test_flat_chunks.py hold their own compositors to (see tests/
-    test_sloped_chunks.py for this class's own version of those checks).
-
-    Single mip level (_init_mip_levels({0: tile_px})) -- deliberately, not
-    an oversight: this is the same "level set is still {0}" intermediate
-    state IsoChunkCache/FlatChunkCache themselves were in before Track
-    B-D's real per-level ladder landed (see _ChunkCacheBase._init_mip_
-    levels' own docstring), and it lands during that same track's active
-    development. A genuine Sloped mip ladder is a legitimate follow-up --
-    this class's bilinear warp would need its own per-level corner_rise_px
-    array, mirroring IsoChunkCache's per-level building_bboxes -- kept out
-    of Track C's own approved scope rather than built inline here.
-
-    proj must carry corner_headroom_steps=1 (see sloped_elevations_and_
-    proj()) -- built by the caller and passed in, matching IsoChunkCache's
-    own convention of taking proj as a constructor parameter rather than
-    building it itself."""
-
-    style = "sloped"
-
-    def __init__(
-        self,
-        scenario: LoadedScenario,
-        elevations: np.ndarray,
-        corner_rise: np.ndarray,
-        proj: iso_geometry.IsoProjection,
-        tile_px: int,
-        chunk_px: int = DEFAULT_CHUNK_PX,
-        max_chunks: int | None = None,
-        with_units: bool = True,
-    ):
-        self.scenario = scenario
-        self.elevations = elevations
-        self.corner_rise = corner_rise
-        self.proj = proj
-        self.tile_px = tile_px
-        self.with_units = with_units
-        self._init_mip_levels({0: tile_px})
-        self._refresh_source_caches()
-        self._init_max_chunks(chunk_px, max_chunks)
-
-    def _refresh_source_caches(self) -> None:
-        """Rebuilds units_by_tile and building_bboxes -- unlike
-        IsoChunkCache, no generation-counter laziness: this cache has only
-        one (mip 0) level, so there is no "rebuild only when actually
-        composited at THIS level" saving to make (see IsoChunkCache.
-        _refresh_source_caches()'s own docstring for why that laziness
-        exists there and would buy nothing here).
-
-        building_bboxes reuses _building_bboxes_iso()/_unit_screen_bbox_
-        iso() UNCHANGED, not a Sloped-specific reimplementation: a
-        building's screen bbox only ever depends on proj + elevations,
-        never on corner_rise, and Sloped's own proj is geometrically
-        identical to Stepped's for the same map (see IsoProjection.
-        corner_headroom_px's own comment). The "bystander" widening this
-        feeds is already an accepted coarse superset per composite_rect_
-        iso()'s own docstring ("a union bbox flagging a tile as a
-        bystander slightly more often than the tightest possible test
-        would is a no-op extra paint, never a missed one"), so reusing
-        Stepped's exact function costs nothing in correctness."""
-        self.units_by_tile = _units_by_tile(self.scenario) if self.with_units else {}
-        mm = self.scenario.map_manager
-        self.building_bboxes = (
-            _building_bboxes_iso(self.units_by_tile, mm.map_width, mm.map_height, self.proj, self.elevations)
-            if self.with_units
-            else {}
-        )
-
-    def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
-        """(width, height) in canvas pixels -- proj.canvas_w/canvas_h alone,
-        NOT render_terrain_sloped_with_proj()'s own padded allocation
-        (that function adds Stepped's skirt_headroom formula on top,
-        purely so a flat map's output is byte-identical to render_terrain_
-        iso's -- see its own docstring). Sloped paints no skirts (see
-        corner_rise_px's own docstring), so real content never needs that
-        extra padding; get_chunk()'s existing high-edge clip already
-        handles this cache's canvas being smaller than that function's.
-        A pixel that rounds just past this tight boundary at the very top
-        edge (corner_headroom_px's own float-rounding safety margin, see
-        IsoProjection's comment) is silently dropped by _clipped_paint,
-        the same accepted tradeoff that function's own docstring documents
-        for its scratch-canvas call site -- not new here, not a correctness
-        gap this class introduces."""
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
-        return self.proj.canvas_w, self.proj.canvas_h
-
-    def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
-        return composite_rect_sloped(
-            self.scenario,
-            x0,
-            y0,
-            x1,
-            y1,
-            self.corner_rise,
-            self.proj,
-            self.tile_px,
-            self.units_by_tile,
-            self.building_bboxes,
-            self.with_units,
-        )
-
-
-def _unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int] | None:
+def _span_start(coord: float, span: int) -> int:
+    """Lowest tile of a `span`-wide footprint anchored on `coord`.
+
+    Two branches, because only one of them has measured data behind it.
+
+    A span-1 axis anchors at int(coord) -- the unit's own tile, by definition,
+    and what every unit did before spans existed. This branch carries all
+    non-buildings, whose coordinates are arbitrary floats: 291,148 axis values
+    across the example corpus have 15,370 distinct fractional parts.
+
+    A span > 1 axis works in half-tiles, which is exact because span > 1
+    implies a building, and building coordinates are always exact multiples of
+    0.5 (measured: 27,320 axis values, fractional part 0.0 or 0.5, nothing
+    else). Rounding half up rather than flooring is what keeps the own-tile
+    invariant on legal off-parity placements.
+
+    Per axis, not per unit: a gate segment is (4, 1) and takes both branches.
+    Applying the half-tile branch to a span-1 axis would move any unit whose
+    fractional part exceeds 0.75 a whole tile (5,671 real corpus values do).
+    """
+    if span <= 1:
+        return int(coord)
+    return (round(coord * 2) - span + 1) // 2
+
+
+def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int] | None:
     """(tile_x0, tile_x1, tile_y0, tile_y1) -- the tile-space bounding box
     _draw_unit() would paint for this unit, half-open like Python ranges.
     None if the unit is off-map. Split out from _draw_unit() so
     refresh_units_over() can cheaply test overlap with a dirty-tile set
-    without touching img."""
-    # Positions are tile-centered floats (e.g. 35.50, 8.50) -- floor, don't
-    # round: round()'s round-half-to-even on an always-*.5 value collapses
-    # two adjacent tiles onto one output pixel and skips the next one,
-    # producing a checkerboard gap pattern that isn't there in the real
-    # placement data.
+    without touching img.
+
+    **Size comes from clearance alone, never from position.** The engine and
+    the in-game editor both allow a building to sit on the coordinate parity
+    its size does not "expect" (46 of 158 Mills and 32 of 254 Castles in the
+    example corpus do), so deriving the span from where a unit sits would
+    render every off-grid House 3x3 -- exactly the bug this replaced. Position
+    only picks the anchor; an off-grid building is drawn at its true size,
+    quantized to the nearer tile.
+
+    **Invariant, relied on downstream: (int(unit.x), int(unit.y)) is always
+    inside the returned bounds.** _unit_iso_footprint reads elevations[py, px]
+    for the whole slab, unit_pick's stepped gate keys on own_x/own_y, and
+    _unit_screen_bbox_iso indexes tile_x1 - 1, which is only safe while the
+    clamped range is non-empty. Don't change the anchor rule without
+    re-checking all three."""
     px, py = int(unit.x), int(unit.y)
     if not (0 <= px < tile_w and 0 <= py < tile_h):
         return None
-    rx, ry = BUILDING_FOOTPRINTS.get(unit.unit_const, NON_BUILDING_RADIUS)
-    tile_x0, tile_x1 = max(0, px - rx), min(tile_w, px + rx + 1)
-    tile_y0, tile_y1 = max(0, py - ry), min(tile_h, py + ry + 1)
+    span_x, span_y = BUILDING_TILE_SPANS.get(unit.unit_const, NON_BUILDING_SPAN)
+    x0, y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
+    tile_x0, tile_x1 = max(0, x0), min(tile_w, x0 + span_x)
+    tile_y0, tile_y1 = max(0, y0), min(tile_h, y0 + span_y)
     return tile_x0, tile_x1, tile_y0, tile_y1
 
 
@@ -2106,7 +2216,7 @@ def _unit_color(unit, player_color: tuple[int, int, int]) -> tuple[int, int, int
     get their real minimap color, everything else (including buildings) is
     colored by owning player -- all regardless of owner, matching AoE2's own
     minimap for the first two categories."""
-    is_building = unit.unit_const in BUILDING_FOOTPRINTS
+    is_building = unit.unit_const in BUILDING_TILE_SPANS
     if unit.unit_const in TREE_UNIT_IDS:
         return TREE_COLOR
     if not is_building and unit.unit_const in RESOURCE_COLORS:
@@ -2120,7 +2230,7 @@ def _draw_unit(img: np.ndarray, unit, player_color, tile_w: int, tile_h: int, ti
     everything else. Shared by overlay_units() (every unit, full map) and
     refresh_units_over() (only units overlapping a dirty-tile set, after an
     edit) so the two paths can never draw a unit differently."""
-    bounds = _unit_tile_bounds(unit, tile_w, tile_h)
+    bounds = unit_tile_bounds(unit, tile_w, tile_h)
     if bounds is None:
         return
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
@@ -2141,17 +2251,21 @@ def _unit_iso_footprint(
     unit, tile_w: int, tile_h: int, elevations: np.ndarray
 ) -> tuple[int, int, int, int, int] | None:
     """(tile_x0, tile_x1, tile_y0, tile_y1, elevation) for one unit's iso
-    footprint -- the same tile-space bounds _unit_tile_bounds() computes for
-    Flat mode (see that function's docstring for why int(unit.x)/int(unit.y)
-    is already the footprint's own center by construction), plus the single
-    elevation every footprint tile is drawn at: elevations[py, px], the
+    footprint -- the same tile-space bounds unit_tile_bounds() computes for
+    Flat mode, plus the single elevation every footprint tile is drawn at:
+    elevations[py, px], the
     unit's OWN floored tile's elevation -- not each footprint tile's own
     individual terrain elevation. That's Phase 5's whole plan for
     multi-tile buildings ("center tile's elevation for the whole
     footprint") -- a flat slab, deliberately not per-corner-interpolated
     (real sloped ramps are Phase 6, out of scope here). None if the unit is
-    off-map."""
-    bounds = _unit_tile_bounds(unit, tile_w, tile_h)
+    off-map.
+
+    elevations[py, px] is safe because unit_tile_bounds() guarantees the
+    unit's own tile lies inside the bounds it returns -- see its docstring.
+    An even-span building has no centre tile at all, so "its own tile" is the
+    right way to say this, not "its center"."""
+    bounds = unit_tile_bounds(unit, tile_w, tile_h)
     if bounds is None:
         return None
     px, py = int(unit.x), int(unit.y)
@@ -2162,38 +2276,46 @@ def _draw_unit_iso(
     img: np.ndarray,
     unit,
     color: tuple[int, int, int],
-    tile_w: int,
-    tile_h: int,
+    tx: int,
+    ty: int,
     tile_px: int,
     proj: iso_geometry.IsoProjection,
     elevations: np.ndarray,
     offset: tuple[int, int] = (0, 0),
 ) -> None:
-    """Stepped mode's counterpart to _draw_unit() (Phase 5): paints one unit's
-    mark as a filled iso diamond per occupied footprint tile -- a building
-    spanning multiple tiles gets one diamond per tile (fitting naturally
-    into the same diamond shape terrain tiles paint in), not one scaled-up
-    rectangle the way Flat mode's _draw_unit() draws it. Every footprint
-    tile is placed at the unit's OWN tile's elevation (see
-    _unit_iso_footprint), so a multi-tile building renders as one flat slab
-    at a single height. offset/clipping mirror _render_tile_iso()'s own
-    scratch-canvas contract, for refresh_region_iso()'s incremental redraw."""
-    footprint = _unit_iso_footprint(unit, tile_w, tile_h, elevations)
-    if footprint is None:
-        return
-    tile_x0, tile_x1, tile_y0, tile_y1, elevation = footprint
+    """Stepped mode's counterpart to _draw_unit() (Phase 5): paints ONE of a
+    unit's footprint diamonds -- the one covering tile (tx, ty) -- filled,
+    fitting naturally into the same diamond shape terrain tiles paint in
+    rather than the scaled-up rectangle Flat mode's _draw_unit() uses. A
+    multi-tile building reaches this function once per footprint tile,
+    because _units_by_tile() buckets it into every one of them, so each
+    diamond lands at its own tile's moment in the depth walk instead of the
+    whole slab landing at the unit's own tile's moment (which is what let
+    later terrain tiles paint back over half of it).
 
+    The diamond sits at the unit's OWN tile's elevation, not (tx, ty)'s, so
+    a multi-tile building still renders as one flat slab at a single height
+    -- see _unit_iso_footprint and unit_pick's "asymmetry 1". Reading that
+    elevation directly rather than via _unit_iso_footprint() means this
+    function has no off-map guard of its own; _units_by_tile() has already
+    dropped anything unit_tile_bounds() rejects, which is why the index
+    below is safe. offset/clipping mirror _render_tile_iso()'s own
+    scratch-canvas contract, for refresh_region_iso()'s incremental redraw."""
+    elevation = int(elevations[int(unit.y), int(unit.x)])
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
     values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
     off_x, off_y = offset
-    for ty in range(tile_y0, tile_y1):
-        for tx in range(tile_x0, tile_x1):
-            base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
-            _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values)
+    base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
+    _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values)
 
 
 def _unit_screen_bbox_iso(
-    unit, tile_w: int, tile_h: int, proj: iso_geometry.IsoProjection, elevations: np.ndarray
+    unit,
+    tile_w: int,
+    tile_h: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    extra_top_px: int = 0,
 ) -> tuple[int, int, int, int] | None:
     """(sx0, sy0, sx1, sy1) canvas-pixel bbox a Stepped-mode unit's footprint
     would occupy -- the closed-form counterpart to actually drawing it
@@ -2207,7 +2329,21 @@ def _unit_screen_bbox_iso(
     footprint tile-range's own corners. Used by refresh_region_iso() to
     cheaply test a unit's overlap against a candidate region without an
     O(footprint size) scan, even across this project's ~11,000-unit real
-    files. None if the unit is off-map."""
+    files. None if the unit is off-map.
+
+    extra_top_px raises the TOP edge only (Track C5's Step 2), and is 0 for
+    every Stepped caller so their bboxes stay byte-identical. Sloped needs
+    it because the sentence above -- "a building's screen bbox only ever
+    depends on proj + elevations, never on corner_rise", the grounds on
+    which SlopedChunkCache reuses this function verbatim -- stops being
+    true once a unit sits at unit_rise_px() rather than at
+    elevation * elev_step. Under SLOPE_CORNER_RULE = "max" a corner is
+    never BELOW its own tile's elevation and can be above it, so the
+    interpolated rise only ever moves a unit UP the screen: sy1 is
+    unaffected, and only sy0 needs the headroom. Under-covering here is a
+    MISSED bystander paint (a stale pixel), not a no-op, so the caller
+    passes a proven bound rather than a guess -- see
+    SlopedChunkCache._refresh_source_caches()."""
     footprint = _unit_iso_footprint(unit, tile_w, tile_h, elevations)
     if footprint is None:
         return None
@@ -2217,26 +2353,314 @@ def _unit_screen_bbox_iso(
     sx1, _ = iso_geometry.tile_screen_origin(tile_x1 - 1, tile_y1 - 1, elevation, proj)
     _, sy0 = iso_geometry.tile_screen_origin(tile_x1 - 1, tile_y0, elevation, proj)
     _, sy1 = iso_geometry.tile_screen_origin(tile_x0, tile_y1 - 1, elevation, proj)
-    return sx0, sy0, sx1 + 2 * half_w, sy1 + 2 * half_h
+    return sx0, sy0 - extra_top_px, sx1 + 2 * half_w, sy1 + 2 * half_h
 
 
-def _units_by_tile(scenario: LoadedScenario) -> dict[tuple[int, int], list[tuple]]:
-    """Every unit, grouped by its own floored (x, y) tile -- the key
-    Stepped mode's compositor (_paint_tile_and_units_iso) uses to draw a
-    unit at exactly the point in depth_order's loop where it belongs (Phase
-    5's plan: "for each (x, y) in that loop, after painting that tile, also
-    draw any unit(s) whose floored position is (x, y)"). Preserves
-    overlay_units()'s own per-player/per-unit-list stacking order within
-    each tile's bucket (built by iterating players/units in that same
-    order), so units sharing an exact tile still paint in the same relative
-    order Flat mode would."""
+def _units_by_tile(
+    scenario: LoadedScenario, unit_filter: UnitFilter = UnitFilter()
+) -> dict[tuple[int, int], list[tuple]]:
+    """Every unit, grouped by EVERY tile of its footprint -- the key Stepped
+    mode's compositor (_paint_tile_and_units_iso) uses to draw each of a
+    unit's diamonds at exactly the point in depth_order's loop where that
+    diamond belongs. A multi-tile building therefore appears in as many
+    buckets as it has footprint tiles, and paints one diamond per bucket.
+
+    Own-tile-only bucketing was the earlier shape, and it was a bug: the
+    unit painted its whole footprint slab at its own tile's moment, and
+    every footprint tile later in depth_order then painted its own terrain
+    diamond back over it -- a span-4 building kept about half its footprint.
+
+    Preserves overlay_units()'s own per-player/per-unit-list stacking order
+    within each tile's bucket (built by iterating players/units in that same
+    order), so units sharing a tile still paint in the same relative order
+    Flat mode would.
+
+    **Off-map units are dropped here, and that is load-bearing downstream.**
+    This is now the only off-map guard in the Stepped draw path:
+    _draw_unit_iso() indexes elevations[int(unit.y), int(unit.x)] directly
+    rather than re-deriving bounds, so it relies on this function having
+    already skipped anything unit_tile_bounds() rejects. Buckets over the
+    CLAMPED bounds that function returns; its own-tile invariant guarantees
+    (int(unit.x), int(unit.y)) is among them even for a building hanging off
+    the top-left map edge, which is what keeps _building_bboxes_iso()'s
+    own-tile gate total.
+
+    unit_filter (phase 3) drops non-matching units outright rather than
+    marking them -- so a hidden unit is absent from every downstream
+    consumer at once, including phase 3's pick index, and cannot be
+    selected through a tile it no longer paints on. A default UnitFilter()
+    keeps every unit in its original relative order, which is what makes
+    the filter's arrival a byte-identical no-op for every existing
+    caller."""
+    mm = scenario.map_manager
+    tile_w, tile_h = mm.map_width, mm.map_height
     buckets: dict[tuple[int, int], list] = {}
     for player_id, units in enumerate(scenario.unit_manager.units):
-        player_color = PLAYER_COLORS[player_id % len(PLAYER_COLORS)]
+        player_color = scenario.player_colors[player_id]
         for unit in units:
-            px, py = int(unit.x), int(unit.y)
-            buckets.setdefault((px, py), []).append((unit, _unit_color(unit, player_color)))
+            if not unit_filter.matches(player_id, unit):
+                continue
+            bounds = unit_tile_bounds(unit, tile_w, tile_h)
+            if bounds is None:
+                continue
+            tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+            entry = (unit, _unit_color(unit, player_color))
+            for ty in range(tile_y0, tile_y1):
+                for tx in range(tile_x0, tile_x1):
+                    buckets.setdefault((tx, ty), []).append(entry)
     return buckets
+
+
+@dataclass(frozen=True)
+class SpriteLayer:
+    """Everything the Stepped compositor needs to draw real sprites (P3-g3),
+    precomputed once per elevations snapshot the same way units_by_tile and
+    building_bboxes already are -- resolving and decoding a sprite per chunk
+    would dominate a chunk's cost outright.
+
+    by_anchor maps a tile to the sprites that paint AT that tile, in the
+    units' own relative order. bboxes is keyed the same way and merges
+    straight into building_bboxes, so composite_rect_iso's existing bystander
+    machinery pulls a sprite's anchor tile into the candidate set with no
+    change to that function's logic at all.
+
+    skip_ids holds id(unit) for every unit that resolved to a sprite, so its
+    coloured diamond is not drawn underneath -- a sprite has transparent
+    pixels, so an un-skipped mark shows as a coloured fringe around the
+    building rather than being hidden. Object identity is safe here because
+    the scenario holds every unit alive for the whole life of this snapshot,
+    and by_anchor/units_by_tile are built from those same objects.
+
+    farm_by_tile is the farm-terrain counterpart (P3 farm-terrain plan):
+    unlike a sprite, a farm has no
+    single anchor tile worth compositing at -- it repaints its OWN terrain
+    id at EVERY footprint tile, exactly where _render_tile_iso already
+    paints that tile's terrain -- so this is keyed by every covered tile,
+    not just one. Value is (terrain_id, outline_color, edge_mask):
+    terrain_id feeds _render_tile_iso's terrain_override, outline_color and
+    edge_mask (a bitmask of iso_geometry.tile_edge_indices sides that sit on
+    the footprint's OUTER boundary) drive the perimeter stroke that keeps a
+    placed farm visually distinct from hand-painted farm terrain. A unit
+    that lands here also enters skip_ids, same reason as a sprite: its
+    coloured slab must not draw underneath.
+    """
+
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int]]]
+    bboxes: dict[tuple[int, int], tuple[int, int, int, int]]
+    skip_ids: frozenset[int]
+    farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
+
+
+# iso_geometry.tile_edge_indices side names this farm-outline edge_mask packs,
+# one bit per side -- see sprite_draws_by_anchor's farm branch for how a
+# footprint tile's boundary sides are derived from its bounds.
+EDGE_LEFT = 1
+EDGE_RIGHT = 2
+EDGE_UP_LEFT = 4
+EDGE_UP_RIGHT = 8
+_FARM_EDGE_BITS = (
+    (EDGE_LEFT, "left"),
+    (EDGE_RIGHT, "right"),
+    (EDGE_UP_LEFT, "up_left"),
+    (EDGE_UP_RIGHT, "up_right"),
+)
+
+
+def _terrain_overlay_for(unit_const: int) -> int | None:
+    """The terrain id `unit_const` draws as instead of a coloured mark, or
+    None. A real .sld always wins over a terrain override -- most consts
+    carrying a foundation terrain (see FOUNDATION_TERRAIN's own docstring)
+    are ordinary buildings whose foundation terrain is purely an in-game
+    construction-outline hint, and must keep drawing as their sprite; Farm
+    and its family are the only consts that end up with a foundation
+    terrain AND no .sld today. Gated on TABLE membership, not decode
+    success, so behavior stays deterministic across installs: a const
+    whose .sld happens to be unreadable on THIS install must still fall
+    back to the coloured mark, never silently pick up a terrain override
+    instead."""
+    if unit_const in unit_sprites.graphic_map():
+        return None
+    return FOUNDATION_TERRAIN.get(unit_const)
+
+
+def sprite_draws_by_anchor(
+    scenario: LoadedScenario,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    unit_filter: UnitFilter = UnitFilter(),
+    corner_rise: np.ndarray | None = None,
+    with_farms: bool = True,
+) -> SpriteLayer:
+    """Resolves every visible unit to a real .sld sprite or a farm-terrain
+    override, or leaves it to the coloured mark.
+
+    A unit that resolves nowhere -- no graphic in the table and no
+    foundation terrain, no install, a missing or unreadable file, or a
+    frame that fails to decode -- is simply absent from every field here,
+    which is exactly what makes the sprite/farm path strictly additive.
+
+    **GAIA's `rotation` is never treated as an angle.** For GAIA objects it is
+    a tree/doodad graphic-variant index (integers well outside [0, 2*pi)), so
+    they resolve at angle 0 -- see AGENTS.md's hard rule.
+
+    corner_rise (Track P3-g6): pass Sloped's (h+1, w+1) corner-rise field to
+    anchor sprites at iso_geometry.unit_rise_px() -- the same surface
+    _paint_tile_and_units_sloped()/unit_pick.unit_rise_px_for() already use --
+    instead of Stepped's flat `elevation * elev_step`. None (the default)
+    keeps Stepped's exact expression, including its rounding, so
+    render_terrain_sloped's flat-map byte-identity oracle stays exact
+    character for character.
+
+    with_farms=False (Track P3-g6) suppresses the farm-terrain-override
+    branch entirely -- neither farm_by_tile nor skip_ids gains an entry for
+    a farm unit -- so Sloped keeps today's plain coloured mark for farms
+    without a paint-time skip making them invisible. See
+    _paint_tile_and_units_sloped's own farm handling for the other half of
+    that deferral."""
+    mm = scenario.map_manager
+    tile_w, tile_h = mm.map_width, mm.map_height
+    half_w, half_h = proj.half_w, proj.half_h
+    by_anchor: dict[tuple[int, int], list] = {}
+    bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    skip_ids: set[int] = set()
+    farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        player_color = scenario.player_colors[player_id]
+        for unit in units:
+            if not unit_filter.matches(player_id, unit):
+                continue
+            bounds = unit_tile_bounds(unit, tile_w, tile_h)
+            if bounds is None:
+                continue
+            rotation = 0.0 if player_id == 0 else float(unit.rotation)
+            team_index = scenario.team_indices[player_id]
+            pieces = unit_sprites.sprite_pieces_for(unit.unit_const, rotation, team_index, half_w)
+            if not pieces:
+                terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
+                if terrain_id is not None:
+                    color = _unit_color(unit, player_color)
+                    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+                    for ty in range(tile_y0, tile_y1):
+                        for tx in range(tile_x0, tile_x1):
+                            mask = 0
+                            if tx == tile_x0:
+                                mask |= EDGE_LEFT
+                            if ty == tile_y1 - 1:
+                                mask |= EDGE_RIGHT
+                            if ty == tile_y0:
+                                mask |= EDGE_UP_LEFT
+                            if tx == tile_x1 - 1:
+                                mask |= EDGE_UP_RIGHT
+                            # Later unit wins on overlap -- overlapping farms
+                            # can't happen in-game, but a scenario file can
+                            # contain them, and a byte-identity test needs a
+                            # deterministic answer.
+                            farm_by_tile[(tx, ty)] = (terrain_id, color, mask)
+                    skip_ids.add(id(unit))
+                continue
+
+            span_x, span_y = BUILDING_TILE_SPANS.get(unit.unit_const, NON_BUILDING_SPAN)
+            # The UNCLAMPED footprint start, so a building hanging off a map
+            # edge still anchors on its true centre rather than on the centre
+            # of whatever survived clamping.
+            fx = _span_start(unit.x, span_x) + span_x / 2
+            fy = _span_start(unit.y, span_y) + span_y / 2
+            ux, uy = int(unit.x), int(unit.y)
+            # own_fx/own_fy: sub-tile fractions INSIDE the unit's own tile,
+            # not to be confused with fx/fy above (the FOOTPRINT CENTRE in
+            # continuous tile coords) -- unit_rise_px() needs the former, the
+            # x/y placement below needs the latter. Same names, different
+            # quantities is exactly how this file has produced green-suite
+            # bugs before (see the half-tile floating-sprite bug this
+            # function's own comment below records).
+            own_fx, own_fy = unit.x - ux, unit.y - uy
+            rise_px = (
+                iso_geometry.unit_rise_px(corner_rise, ux, uy, own_fx, own_fy)
+                if corner_rise is not None
+                else int(elevations[uy, ux]) * proj.elev_step
+            )
+            ax = round(proj.origin_x + (fx + fy) * half_w)
+            # The trailing `+ half_h` is not a fudge, and leaving it out is what
+            # made every sprite float exactly half a tile above its ground
+            # (reported from a live window 2026-08-24, and the reason this line
+            # is commented at all).
+            #
+            # origin + ((fx+fy)*half_w, (fy-fx)*half_h) maps INTEGER tile coords
+            # to tile_screen_origin's convention, which is the diamond's
+            # BOUNDING-BOX TOP-LEFT -- not its centre. Feed that map a tile's
+            # four continuous corners and you get a diamond centred half_h ABOVE
+            # the one actually painted; the x term is centred for free (the two
+            # +0.5s add), the y term is not (they cancel). So the ground point a
+            # hotspot must land on is that map's output plus half_h.
+            #
+            # Only y needs it. Verified by measurement, not by eye: a visual
+            # "the base lands on its footprint diamond" check passed while this
+            # was wrong, because half a tile reads as plausible contact shadow.
+            #
+            # rise_px stays INSIDE this round() (Track P3-g6): pulling it out
+            # can differ by 1px from _paint_tile_and_units_sloped's own
+            # rounding and would break the flat-map byte-identity oracle this
+            # expression is required to reduce to exactly.
+            ay = round(proj.origin_y + (fy - fx) * half_h - rise_px) + half_h
+
+            # Every piece paints at the unit's own anchor tile, offset by its
+            # own (dx, dy) -- the degenerate placement case: real per-piece
+            # depth slotting (a town centre villager standing between the
+            # front and back pieces) is unplanned follow-up work. This still
+            # closes the reported bug in full; it only loses cross-piece
+            # unit sandwiching.
+            anchor = unit_sprites.sprite_anchor_tile(*bounds)
+            slot = by_anchor.setdefault(anchor, [])
+            bbox = bboxes.get(anchor)
+            for piece in pieces:
+                px, py = ax + piece.dx, ay + piece.dy
+                slot.append((piece.draw, px, py))
+                h, w = piece.draw.rgba.shape[:2]
+                x0, y0 = px - piece.draw.hotspot_x, py - piece.draw.hotspot_y
+                piece_bbox = (x0, y0, x0 + w, y0 + h)
+                bbox = piece_bbox if bbox is None else (
+                    min(bbox[0], piece_bbox[0]),
+                    min(bbox[1], piece_bbox[1]),
+                    max(bbox[2], piece_bbox[2]),
+                    max(bbox[3], piece_bbox[3]),
+                )
+            bboxes[anchor] = bbox
+            skip_ids.add(id(unit))
+    return SpriteLayer(
+        by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile
+    )
+
+
+def merge_sprite_bboxes(
+    building_bboxes: dict[tuple[int, int], tuple[int, int, int, int]], sprites: SpriteLayer
+) -> dict[tuple[int, int], tuple[int, int, int, int]]:
+    """building_bboxes unioned with a SpriteLayer's own, so composite_rect_iso
+    pulls a sprite's anchor tile in as a bystander.
+
+    **This is the half of P3-g3 that is easiest to skip and ships a VISIBLE
+    chunk-seam clip rather than a latent bug.** _building_bboxes_iso is gated
+    to span > 1 units, on the stated grounds that a single-tile object "can't
+    make a neighbour a bystander". Sprites break that premise outright: a
+    villager's sprite is a 200x200 native canvas against a 64x32 diamond, so
+    even a 1x1 unit's pixels reach several tiles away and across chunk
+    boundaries. Merging here lifts that gate for sprite-bearing units only,
+    while a unit that fell back to a mark keeps today's behaviour exactly.
+
+    Only ever grows a bbox, never shrinks one -- a coarser bystander flag is a
+    no-op extra paint, per composite_rect_iso's own accepted tradeoff."""
+    if not sprites.bboxes:
+        return building_bboxes
+    merged = dict(building_bboxes)
+    for key, bbox in sprites.bboxes.items():
+        prior = merged.get(key)
+        merged[key] = bbox if prior is None else (
+            min(prior[0], bbox[0]),
+            min(prior[1], bbox[1]),
+            max(prior[2], bbox[2]),
+            max(prior[3], bbox[3]),
+        )
+    return merged
 
 
 def _paint_tile_and_units_iso(
@@ -2249,6 +2673,7 @@ def _paint_tile_and_units_iso(
     map_w: int,
     map_h: int,
     offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
 ) -> None:
     """Terrain, then that tile's own units -- the single per-tile step both
     render_terrain_iso_with_proj()'s full loop and refresh_region_iso()'s
@@ -2264,15 +2689,71 @@ def _paint_tile_and_units_iso(
     "units after" pass would draw every affected unit on top regardless of
     whether a later-depth terrain tile should actually cover it, breaking
     exactly the occlusion property this project's own verify_iso_render.py
-    already established for terrain."""
-    _render_tile_iso(img, tile, tile_px, proj, elevations, map_w, map_h, offset=offset)
+    already established for terrain.
+
+    A multi-tile unit contributes ONE diamond here, not its whole footprint:
+    _units_by_tile() buckets it into every tile it covers, so each of its
+    diamonds is painted at that tile's own depth position. That is what
+    makes the interleaving argument above hold across a building's whole
+    slab rather than only at its own tile.
+
+    A farm-terrain tile (sprites.farm_by_tile) is a THIRD case alongside
+    the diamond and the sprite, and it is resolved right here rather than
+    in a separate pass: it changes what _render_tile_iso paints as this
+    tile's own terrain, not something composited on top of it, so the
+    override has to reach that call before it runs. The perimeter stroke
+    that follows still respects the same per-tile depth_order position as
+    everything else here -- an edge belongs to its own tile's diamond, so
+    it paints at that tile's own moment, same as the seam line does."""
+    farm = sprites.farm_by_tile.get((tile.x, tile.y)) if sprites is not None else None
+    terrain_override = farm[0] if farm is not None else None
+    _render_tile_iso(
+        img, tile, tile_px, proj, elevations, map_w, map_h,
+        offset=offset, terrain_override=terrain_override,
+    )
+    if farm is not None:
+        _, outline_color, edge_mask = farm
+        off_x, off_y = offset
+        base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, tile.elevation, proj)
+        base_x -= off_x
+        base_y -= off_y
+        color_arr = np.array(outline_color, dtype=np.uint8)
+        for bit, side in _FARM_EDGE_BITS:
+            if not (edge_mask & bit):
+                continue
+            dst_y, dst_x = iso_geometry.tile_edge_indices(tile_px, side)
+            values = np.broadcast_to(color_arr, (dst_y.size, 3))
+            _clipped_paint(img, base_y, base_x, dst_y, dst_x, values)
+    skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
-        _draw_unit_iso(img, unit, color, map_w, map_h, tile_px, proj, elevations, offset=offset)
+        if id(unit) in skip:
+            continue  # its sprite paints instead, once, at its anchor tile
+        _draw_unit_iso(img, unit, color, tile.x, tile.y, tile_px, proj, elevations, offset=offset)
+
+    # Sprites last within this tile's step, so a unit standing on it is not
+    # cut by its own tile's terrain. A sprite paints ONCE, here at the tile
+    # that comes last in depth_order among its footprint -- see
+    # unit_sprites.sprite_anchor_tile for why that tile and not the unit's own.
+    if sprites is not None:
+        off_x, off_y = offset
+        for draw, ax, ay in sprites.by_anchor.get((tile.x, tile.y), ()):
+            _clipped_paint_rgba(
+                img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba
+            )
 
 
-def overlay_units(img: np.ndarray, scenario: LoadedScenario) -> np.ndarray:
+def overlay_units(
+    img: np.ndarray, scenario: LoadedScenario, unit_filter: UnitFilter = UnitFilter()
+) -> np.ndarray:
     """Draws a colored dot per unit -- see _draw_unit() for the per-unit
-    rules. Mutates and returns img."""
+    rules. Mutates and returns img.
+
+    unit_filter is threaded here for the HEADLESS path only (render_scenario
+    -> save_png, tools/dump_scenario.py): the viewer composites through
+    composite_rect_flat()'s precomputed unit_draws, never through this
+    function. refresh_units_over() deliberately does NOT gain the parameter
+    -- it has no live callers at all today, and adding one to dead code
+    would just be noise."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(tile_w, tile_h)
@@ -2284,8 +2765,10 @@ def overlay_units(img: np.ndarray, scenario: LoadedScenario) -> np.ndarray:
     out = img.copy()
 
     for player_id, units in enumerate(scenario.unit_manager.units):
-        player_color = PLAYER_COLORS[player_id % len(PLAYER_COLORS)]
+        player_color = scenario.player_colors[player_id]
         for unit in units:
+            if not unit_filter.matches(player_id, unit):
+                continue
             _draw_unit(out, unit, player_color, tile_w, tile_h, tile_px)
     return out
 
@@ -2330,8 +2813,13 @@ def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, t
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
 
+    # Left on the identity PLAYER_COLORS, not scenario.player_colors, unlike
+    # every other call site: this function has no live caller anywhere in the
+    # repo (production, tests, or tools) -- see overlay_units()'s docstring --
+    # so there is no path through which a stored color override would ever
+    # need to reach it.
     all_units = [
-        (unit, PLAYER_COLORS[player_id % len(PLAYER_COLORS)], _unit_tile_bounds(unit, tile_w, tile_h))
+        (unit, PLAYER_COLORS[player_id % len(PLAYER_COLORS)], unit_tile_bounds(unit, tile_w, tile_h))
         for player_id, units in enumerate(scenario.unit_manager.units)
         for unit in units
     ]
@@ -2365,7 +2853,7 @@ def render_scenario(
     Flat (render_terrain). with_units applies in every mode now (Phase 5 for
     Stepped, Phase 6 for Sloped): each draws units at their own tile's
     elevation, interleaved with terrain in depth order via that mode's own
-    with_units parameter -- see _paint_tile_and_units_iso()'s/​
+    with_units parameter -- see _paint_tile_and_units_iso()'s/
     _paint_tile_and_units_sloped()'s docstrings for why that has to be
     interleaved rather than a separate overlay pass, the way Flat mode's
     overlay_units() draws over an already-finished terrain image.

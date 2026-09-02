@@ -18,11 +18,11 @@ What this script actually answers: "how long does opening a file take, and
 how much memory does each render mode hold onto, given what actually
 recurs during a session." Confirmed directly against descape/viewer.py
 before writing this: undo/redo (edit_history.py's apply/undo/redo +
-MapView._apply_dirty) do NOT reload from disk and do NOT do a full
+ViewerWindow._apply_dirty) do NOT reload from disk and do NOT do a full
 re-render -- they're the already-fast incremental
 refresh_tiles()/refresh_units_over() path, already covered by
 bench_iso_backend.py's "per-touched-tile incremental" numbers. Opening a
-file (MapView.load_scenario) is the only thing that pays the load-from-disk
+file (ViewerWindow.load_scenario) is the only thing that pays the load-from-disk
 cost, paired with exactly one full render. A future Terrain Style switch
 (the plan's Phase 3, not built) would pay a full RE-RENDER cost per
 refresh_map()'s existing settings-change precedent, but still not a reload

@@ -58,13 +58,13 @@ from descape import iso_geometry
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tile_elevation
 from descape.render import (
-    IsoChunkCache,
     composite_rect_iso,
     dirty_screen_bbox_iso,
     render_terrain_iso,
     render_terrain_iso_with_proj,
     tile_pixels_for_map,
 )
+from descape.render_cache import IsoChunkCache
 from descape.scenario_io import load_map_and_units
 
 RNG_SEED = 20260805

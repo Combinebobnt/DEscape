@@ -7,7 +7,7 @@ REM touching rendering/write-path internals.
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
-    echo No .venv\Scripts\python.exe found - see LAUNCH_DESCAPE_Windows.bat or README.md to set one up. 1>&2
+    echo No .venv\Scripts\python.exe found - see LAUNCH_DEscape_Windows.bat or README.md to set one up. 1>&2
     exit /b 1
 )
 

@@ -30,9 +30,12 @@ terrain block in place and recompressing is.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from AoE2ScenarioParser import settings
 from AoE2ScenarioParser.scenarios.aoe2_de_scenario import AoE2DEScenario
@@ -45,7 +48,16 @@ from AoE2ScenarioParser.scenarios.aoe2_scenario import (
 from AoE2ScenarioParser.helper.incremental_generator import IncrementalGenerator
 from AoE2ScenarioParser.objects.aoe2_object_manager import AoE2ObjectManager
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+from AoE2ScenarioParser.objects.managers.trigger_manager import TriggerManager
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
+
+# Imported for its import-time side effect as much as for its API: library_compat
+# snapshots the library's poisoned classes before any scenario has been loaded, and
+# this module is the only one that loads scenarios, so importing it here is what
+# guarantees the snapshot is clean. Never make this import lazy -- see that
+# module's docstring.
+from descape import library_compat
+from descape.terrain_palette import resolve_player_colors
 
 # AoE2ScenarioParser prints its own "Parsing FileHeader... Gathering FileHeader
 # data... FileHeader" progress lines to the console by default, using carriage
@@ -124,12 +136,15 @@ class LoadedScenario:
     # decompressed_body, at load time. Patching TERRAIN_STRUCT_SIZE * i bytes
     # starting here for each tile index i is the entire write path -- see
     # scenario_write.py. -1 if terrain_write_supported is False (see below).
-    terrain_write_supported: bool  # False disables Edit mode's terrain/elevation
+    terrain_write_supported: bool  # False disables Terrain mode's terrain/elevation
     # tools for this file without refusing to open it read-only -- see the
     # verification in load_map_and_units() for what can make this False.
 
-    # -- units-strip state, used by tools/strip_units.py only -- everything else
-    # in this codebase reads units through unit_manager, never these bytes.
+    # -- units byte-offset state, used by tools/strip_units.py (which never
+    # touches unit_manager) and by descape/unit_model.py's UnitEditModel
+    # (phase 3.5a's write path, which reads units through unit_manager *and*
+    # needs these raw offsets to slice each unit's original byte blob and to
+    # splice the section back in place -- see that module's own docstring).
     units_block_offset: int  # byte offset of the Units section's players_units
     # array (one PlayerUnitsStruct per unit section, unit_count u32 followed by
     # that many UnitStructs) within decompressed_body. -1 if units_write_supported
@@ -140,11 +155,79 @@ class LoadedScenario:
     number_of_unit_sections: int  # length of players_units (9: GAIA + 8 players)
     units_write_supported: bool  # False if the raw per-section unit_count u32s
     # don't match the parsed counts -- see _verify_units_block().
+    # -- trigger read state (phase 4a). Everything here is additive; nothing in
+    # the Map/Units path reads it, and trigger_tail still splices verbatim on
+    # save exactly as before.
+    options_section_end: int  # byte offset where the Options section ends, within
+    # decompressed_body. Options.number_of_triggers is that section's last
+    # retriever in all 19 DE structure versions, so the counter phase 4b has to
+    # patch is the 4 bytes ending here. Recorded now because the walk that knows
+    # it happens at load time and nowhere else.
+    trigger_version: float  # the Triggers section's own f64 version, distinct
+    # from scenario_version. -1.0 if trigger_tail is too short to hold one.
+    triggers_section_end: int  # byte offset where the Triggers section ends,
+    # within decompressed_body. -1 until parse_triggers() has run, since finding
+    # it means parsing Triggers.
+    trigger_read_supported: bool | None  # None = not attempted yet (the parse is
+    # lazy). False means the Triggers section refused to parse, which for the
+    # 1.54/trigger-3.9 set is expected and is not a reason to fail the open.
+    trigger_write_supported: bool  # False until a full section walk has proven
+    # exact byte alignment -- see _trigger_alignment_ok(). Phase 4b's write gate;
+    # nothing writes triggers yet.
+    _trigger_manager: TriggerManager | None  # parse_triggers()'s memo
+
+    # -- Map Options read state. Both are trusted backward-walk anchors for
+    # descape/options_model.py: GlobalVictory and Diplomacy are fully parsed
+    # by the walk below like Options already was, but the byte offset where
+    # each *ends* is only ever knowable from data_igen.progress at the
+    # moment the walk passes through it -- nowhere else recovers it after
+    # the fact. Unlike options_section_end, no existing subsystem already
+    # needed these; they exist solely for descape/options_model.py.
+    global_victory_section_end: int  # byte offset where the GlobalVictory
+    # section ends, within decompressed_body.
+    diplomacy_section_end: int  # byte offset where the Diplomacy section
+    # ends, within decompressed_body.
+    player_data_two_section_end: int  # byte offset where the PlayerDataTwo
+    # section ends, within decompressed_body -- descape/player_fields.py's
+    # anchor for a backward walk across resources/separator/ai_type/ai_files,
+    # the same technique as the two above. Not derived from
+    # global_victory_section_end minus a retriever sum: that sum's safety
+    # depends on GlobalVictory containing no str16, which is true today and
+    # is not something to depend on.
+
+    # -- Messages read/write state (scenario prose). Unlike the anchors
+    # above, both ends of the section are captured -- Messages is not
+    # walked backward from a trusted anchor like options_model.py's fields;
+    # a plain forward walk from messages_section_start already lands exactly
+    # on messages_section_end on every corpus file, so that walk is also
+    # this section's own verification gate. See descape/messages_model.py.
+    messages_section_start: int  # data_igen.progress right after DataHeader.
+    messages_section_end: int  # data_igen.progress right after Messages.
+    header_instructions_span: tuple[int, int]  # (start, end) of
+    # FileHeader.scenario_instructions' *payload* within header_bytes, from a
+    # forward walk of every FileHeader retriever in true on-disk order
+    # (structure.json's declaration order, not the alphabetical order
+    # pprint()ing the dict suggests). (-1, -1) if that walk doesn't reconcile
+    # to exactly len(header_bytes).
+    messages_write_supported: bool  # False disables Messages mode's write
+    # path for this file without refusing to open it read-only -- set by
+    # _verify_messages_block() below, the same fail-closed shape as
+    # terrain_write_supported/units_write_supported.
+
     map_is_square: bool  # MapManager.set_elevation (and map_size, which it goes
     # through even for a single tile) raises ValueError whenever map_width !=
     # map_height -- confirmed directly against AoE2ScenarioParser's source, not
     # just observed. Both elevation tools must stay disabled when this is False;
     # terrain painting has no such constraint.
+
+    player_colors: tuple[tuple[int, int, int], ...]  # 9 entries, indexed by
+    # player_id (0 = GAIA), from resolve_player_colors() against this file's
+    # own stored PlayerDataTwo color overrides -- every render call site's
+    # replacement for PLAYER_COLORS[player_id % len(PLAYER_COLORS)].
+    team_indices: tuple[int, ...]  # 9 entries, indexed by player_id (0 =
+    # GAIA), the sibling tuple from the same resolve_player_colors() call --
+    # unit_sprites.TEAM_COLORS/sprite tint index for each player's real
+    # sprite, distinct from player_colors because TEAM_COLORS is GAIA-first.
 
     # AoE2ScenarioParser registers scenarios in a WeakValueDictionary keyed by uuid;
     # several manager/tile properties (e.g. TerrainTile.x/.y) look themselves back up
@@ -152,6 +235,23 @@ class LoadedScenario:
     # collected the moment load_map_and_units() returns and those lookups start
     # raising "Unable to find scenario based on the given identifier".
     _scenario: AoE2DEScenario
+
+
+def retriever_length(retriever: Any) -> int:
+    """Parsed byte length of one already-loaded retriever.
+
+    Struct retrievers report their own parse-time byte_length, which is the
+    only length that can be trusted here: re-serializing a struct that holds
+    a str32 can change its length. Fixed-width retrievers have no such
+    problem, so their re-serialized length is exact. Shared by
+    descape/trigger_model.py (walking Triggers) and descape/options_model.py
+    (walking GlobalVictory/Diplomacy/Map/Options) -- both need "how many
+    bytes did this retriever actually occupy in the file as parsed", never a
+    hardcoded struct size.
+    """
+    if retriever.datatype.type == "struct":
+        return sum(entry.byte_length for entry in (retriever.data or []))
+    return len(retriever.get_data_as_bytes())
 
 
 def _verify_terrain_block(decompressed: bytes, offset: int, terrain: list) -> bool:
@@ -191,6 +291,104 @@ def _verify_units_block(decompressed: bytes, offset: int, players_units: list) -
             return False
         o += section.byte_length
     return o <= len(decompressed)
+
+
+# Messages' 12 retrievers, in true on-disk order (structure.json's own
+# declaration order -- confirmed identical across all 19 DE structure
+# versions plus this repo's own v1.21 copy): six u32 string-table IDs, then
+# six str16 payloads in the same field order.
+_MESSAGE_ID_FIELDS = ("instructions", "hints", "victory", "loss", "history", "scouts")
+_MESSAGE_TEXT_FIELDS = (
+    "ascii_instructions",
+    "ascii_hints",
+    "ascii_victory",
+    "ascii_loss",
+    "ascii_history",
+    "ascii_scouts",
+)
+_MESSAGE_FIELD_ORDER = _MESSAGE_ID_FIELDS + _MESSAGE_TEXT_FIELDS
+_STR16_PREFIX_SIZE = 2  # str16's length prefix is a 16-bit (2-byte) int
+
+# FileHeader's own retrievers, in true on-disk order -- same caveat as above,
+# confirmed the same way.
+_HEADER_WALK_ORDER = (
+    "version",
+    "header_length",
+    "savable",
+    "timestamp_of_last_save",
+    "scenario_instructions",
+    "player_count",
+    "unknown_value",
+    "unknown_value_2",
+    "amount_of_unknown_numbers",
+    "unknown_numbers",
+    "creator_name",
+    "trigger_count",
+)
+_STR32_PREFIX_SIZE = 4  # str32's length prefix is a 32-bit (4-byte) int
+_STR32_LENGTH_PREFIX_STRUCT = struct.Struct("<I")
+# The two str32 fields in _HEADER_WALK_ORDER, read straight off the raw
+# bytes' own 4-byte length prefix rather than via retriever_length() --
+# see _header_instructions_span()'s docstring for why.
+_HEADER_STR32_FIELDS = frozenset({"scenario_instructions", "creator_name"})
+
+
+def _verify_messages_block(decompressed: bytes, start: int, end: int, retriever_map: dict) -> bool:
+    """True iff a forward walk of the 12 Messages retrievers from `start`
+    lands exactly on `end`, every str16 payload is byte-identical to
+    parsed_value.encode('utf-8'), and no field parsed to bytes instead of
+    str -- the load-time trust check for messages_section_start/_end,
+    mirroring _verify_terrain_block()/_verify_units_block() above."""
+    pos = start
+    for name in _MESSAGE_FIELD_ORDER:
+        retriever = retriever_map[name]
+        length = retriever_length(retriever)
+        if name in _MESSAGE_TEXT_FIELDS:
+            value = retriever.data
+            if not isinstance(value, str):
+                return False
+            payload = decompressed[pos + _STR16_PREFIX_SIZE : pos + length]
+            if payload != value.encode("utf-8"):
+                return False
+        pos += length
+    return pos == end
+
+
+def _header_instructions_span(header_bytes: bytes, retriever_map: dict) -> tuple[int, int]:
+    """Forward walk of every FileHeader retriever, reconciling to exactly
+    len(header_bytes) -- the load-time trust check for
+    header_instructions_span. Returns scenario_instructions' payload span
+    (excluding its own 4-byte length prefix), or (-1, -1) if the walk
+    doesn't reconcile (e.g. an older structure version with an extra field
+    this walk doesn't know about -- header instructions editing degrades
+    gracefully rather than trusting a wrong offset; the Messages copy is
+    still editable).
+
+    The two str32 fields read their length straight off the raw bytes'
+    4-byte prefix rather than via retriever_length()/get_data_as_bytes():
+    the latter re-serializes a NUL terminator onto an *empty* str32 that the
+    real file never wrote one for (confirmed against scenario_instructions,
+    empty on 24 of 25 corpus files: true on-disk length is the bare 4-byte
+    zero prefix, but get_data_as_bytes() reports 5), so trusting it would
+    overcount every empty field by one byte. Non-empty str32 fields (e.g.
+    creator_name, which does carry a trailing NUL on disk) happen to match
+    either way -- this reads the prefix directly for both so the two cases
+    don't need distinguishing here.
+    """
+    pos = 0
+    span = (-1, -1)
+    for name in _HEADER_WALK_ORDER:
+        if name in _HEADER_STR32_FIELDS:
+            (payload_len,) = _STR32_LENGTH_PREFIX_STRUCT.unpack_from(header_bytes, pos)
+            length = _STR32_PREFIX_SIZE + payload_len
+        else:
+            length = retriever_length(retriever_map[name])
+        if name == "scenario_instructions":
+            span = (pos + _STR32_PREFIX_SIZE, pos + length)
+        pos += length
+    if pos != len(header_bytes) or span == (-1, -1):
+        return (-1, -1)
+    return span
 
 
 def load_map_and_units(path: str | Path) -> LoadedScenario:
@@ -233,12 +431,39 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     data_igen = IncrementalGenerator(name="Scenario Data", file_content=decompressed)
     scenario._decompressed_file_data = decompressed
 
+    # Unit is parsed below, not lazily like Triggers, so depoisoning it after
+    # the walk is too late -- see library_compat.depoison()'s docstring.
+    # Unconditional rather than uuid-gated like parse_triggers()'s calls: this
+    # walk always parses Units, so there is no cheap case to skip it for.
+    library_compat.depoison()
+
     map_section_end = None
     units_section_end = None
-    for section_name in scenario.structure.keys():
+    options_section_end = -1
+    global_victory_section_end = -1
+    diplomacy_section_end = -1
+    player_data_two_section_end = -1
+    messages_section_start = -1
+    messages_section_end = -1
+    for section_name in scenario.structure:
         if section_name == "FileHeader":
             continue
         scenario._create_and_load_section(section_name, data_igen)
+        if section_name == "DataHeader":
+            messages_section_start = data_igen.progress
+        if section_name == "Messages":
+            messages_section_end = data_igen.progress
+        if section_name == "PlayerDataTwo":
+            # PlayerDataTwo, GlobalVictory and Diplomacy all sit before
+            # Options in every DE structure version, so this costs nothing
+            # extra -- the walk already passes through them.
+            player_data_two_section_end = data_igen.progress
+        if section_name == "GlobalVictory":
+            global_victory_section_end = data_igen.progress
+        if section_name == "Diplomacy":
+            diplomacy_section_end = data_igen.progress
+        if section_name == "Options":
+            options_section_end = data_igen.progress
         if section_name == "Map":
             map_section_end = data_igen.progress
         if section_name == "Units":
@@ -283,6 +508,16 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     if not units_write_supported:
         units_block_offset = -1
 
+    player_colors, team_indices = resolve_player_colors(_read_player_colors(scenario))
+
+    messages_retriever_map = scenario.sections["Messages"].retriever_map
+    messages_write_supported = _verify_messages_block(
+        decompressed, messages_section_start, messages_section_end, messages_retriever_map
+    )
+    header_instructions_span = _header_instructions_span(
+        header_bytes, scenario.sections["FileHeader"].retriever_map
+    )
+
     return LoadedScenario(
         path=path,
         scenario_version=scenario_version,
@@ -297,6 +532,148 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         units_section_end=units_section_end,
         number_of_unit_sections=number_of_unit_sections,
         units_write_supported=units_write_supported,
+        options_section_end=options_section_end,
+        global_victory_section_end=global_victory_section_end,
+        diplomacy_section_end=diplomacy_section_end,
+        player_data_two_section_end=player_data_two_section_end,
+        messages_section_start=messages_section_start,
+        messages_section_end=messages_section_end,
+        header_instructions_span=header_instructions_span,
+        messages_write_supported=messages_write_supported,
+        trigger_version=_read_trigger_version(trigger_tail),
+        triggers_section_end=-1,
+        trigger_read_supported=None,
+        trigger_write_supported=False,
+        _trigger_manager=None,
         map_is_square=(w == h),
+        player_colors=player_colors,
+        team_indices=team_indices,
         _scenario=scenario,
     )
+
+
+def _read_player_colors(scenario: AoE2DEScenario) -> list[int]:
+    """The 8 raw ColorId ints (P1..P8, in that order) PlayerDataTwo stores --
+    resolve_player_colors()'s input. PlayerDataTwo precedes Map/Units in every
+    DE structure version and is always fully parsed by the section walk
+    above, so this needs no extra parsing of its own.
+
+    resources[0..7] are players 1-8: PlayerResources' own RetrieverObjectLink
+    group builds this list player-1-first (gaia_first=False), not GAIA-first
+    -- resources[8] is GAIA's own (junk, never used) slot, and resources[9..
+    15] is filler. Confirmed against every file in this project's corpus.
+    """
+    resources = scenario.sections["PlayerDataTwo"].retriever_map["resources"].data
+    return [resources[i].retriever_map["player_color"].data for i in range(8)]
+
+
+def _read_trigger_version(trigger_tail: bytes) -> float:
+    """library_compat.trigger_version(), degraded to a sentinel rather than
+    raising: a tail too short to hold one means a file with no parseable
+    Triggers section, which must still open read-only."""
+    try:
+        return library_compat.trigger_version(trigger_tail)
+    except ValueError:
+        return -1.0
+
+
+def _trigger_alignment_ok(trigger_tail: bytes, triggers_igen: IncrementalGenerator) -> bool:
+    """True iff walking Triggers and every section after it consumed exactly
+    len(trigger_tail) bytes, with nothing left over.
+
+    This is the alignment oracle phase 4b's write gate needs, and it is
+    deliberately stricter than a round-trip: a misaligned parse can
+    re-serialize to a self-consistent wrong length, but it cannot land on the
+    exact end of the section it was handed. Equivalent to walking the whole
+    decompressed body, because trigger_tail is exactly
+    decompressed_body[units_section_end:].
+
+    Excludes v1.36/1.37 with no special-casing: the library models no Files
+    section there, so a large remainder goes unconsumed (13.2 MB on
+    0_June_Event_Scenario).
+    """
+    return triggers_igen.progress == len(trigger_tail)
+
+
+# Which scenario the library's class-level trigger state is currently set up
+# for. Module-global because the poisoning it tracks is global to the trigger
+# classes, not per scenario -- see parse_triggers().
+_active_trigger_uuid = None
+
+
+def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
+    """Parse the Triggers section, or return None if it cannot be parsed.
+
+    Lazy and memoized: nothing calls this until the trigger UI actually asks,
+    because the largest file in the corpus carries a 1.17 MB Triggers section
+    and opening a file for terrain editing must not pay for it.
+
+    Returns None rather than raising for the 1.54/trigger-3.9 set, whose
+    Triggers section the library cannot serialize at all ("Unable to convert
+    NoneType with non-zero repeat to bytes"). Those files open and edit
+    normally for terrain and units; only trigger reading is unavailable.
+
+    **Call this again before reading a manager you obtained earlier.** The
+    library's field gating is class-level and therefore global to the process:
+    parsing scenario B disables B's unsupported fields on the same Condition/
+    Effect classes a previously-returned manager for scenario A reads through,
+    so A's objects start raising UnsupportedAttributeError with B's version
+    quoted back. Re-calling is cheap (the parse is memoized, so it costs one
+    depoison() and returns the same manager object), and it is the only thing
+    that makes an earlier manager safe to read again.
+
+    After a depoison() the classes are pristine rather than gated for this
+    file's version, so a field that does not exist in this scenario version
+    reads as None instead of raising. That trade is deliberate: a wrong-version
+    error is a bug, a missing field reading as absent is not.
+    """
+    global _active_trigger_uuid
+
+    scenario = loaded._scenario
+    if loaded._trigger_manager is not None:
+        if _active_trigger_uuid != scenario.uuid:
+            library_compat.depoison()
+            _active_trigger_uuid = scenario.uuid
+        return loaded._trigger_manager
+    if loaded.trigger_read_supported is False:
+        return None
+    try:
+        # The library print()s a multi-thousand-line hex dump of the failing
+        # struct before raising (aoe2_file_section.py:226, bytes_parser.py:72).
+        # For the 1.54/3.9 set that failure is expected and handled, so the dump
+        # is pure console noise -- the same reason PRINT_STATUS_UPDATES is off at
+        # the top of this module. Swallowed only around the parse attempt.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            library_compat.depoison()
+            # Triggers begins at offset 0 of trigger_tail: the Units break
+            # captured units_section_end, and trigger_tail is the rest of the
+            # body from there.
+            igen = IncrementalGenerator(name="Triggers", file_content=loaded.trigger_tail)
+            started = False
+            triggers_end_in_tail = -1
+            for section_name in scenario.structure:
+                if not started and section_name != "Triggers":
+                    continue
+                started = True
+                scenario._create_and_load_section(section_name, igen)
+                if section_name == "Triggers":
+                    triggers_end_in_tail = igen.progress
+            manager = TriggerManager.construct(scenario.uuid)
+    except (ValueError, KeyError, IndexError, TypeError, struct.error):
+        # The shapes a misparse actually throws (the 1.54/3.9 set raises
+        # ValueError). Deliberately not bare `Exception`: an AttributeError from
+        # a library rename, or a MemoryError on the 1.17 MB file, is a real bug
+        # and must surface rather than be reported to the user as "this file has
+        # no triggers". A Triggers section this tool genuinely cannot parse must
+        # still degrade instead of failing the open -- routing around exactly
+        # that is why scenario_io.py exists.
+        loaded.trigger_read_supported = False
+        return None
+
+    _active_trigger_uuid = scenario.uuid
+    loaded.trigger_read_supported = True
+    loaded.trigger_write_supported = _trigger_alignment_ok(loaded.trigger_tail, igen)
+    loaded.triggers_section_end = loaded.units_section_end + triggers_end_in_tail
+    scenario._object_manager.managers["Trigger"] = manager
+    loaded._trigger_manager = manager
+    return manager

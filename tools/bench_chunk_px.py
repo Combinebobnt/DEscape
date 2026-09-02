@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Times descape.render.IsoChunkCache at CHUNK_PX in (256, 512, 1024) on the
+"""Times descape.render_cache.IsoChunkCache at CHUNK_PX in (256, 512, 1024) on the
 largest real map: cold full-canvas assembly (proxy for panning into unseen
 territory) and a warm-cache single-tile edit patch (proxy for live-editing
 stutter). Informational only, matching this project's own bench_iso_backend.py/
@@ -25,7 +25,8 @@ sys.path.insert(0, str(ROOT))
 from descape import iso_geometry
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tile_elevation
-from descape.render import IsoChunkCache, dirty_screen_bbox_iso, render_terrain_iso_with_proj, tile_pixels_for_map
+from descape.render import dirty_screen_bbox_iso, render_terrain_iso_with_proj, tile_pixels_for_map
+from descape.render_cache import IsoChunkCache
 from descape.scenario_io import load_map_and_units
 
 

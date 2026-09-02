@@ -61,7 +61,6 @@ own check.
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 from pathlib import Path
@@ -72,12 +71,11 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PyQt5.QtCore import QRectF
-from PyQt5.QtGui import QImage, QPainter
 from PyQt5.QtWidgets import QApplication
 
 from descape import iso_geometry
 from descape.viewer import ViewerWindow
+from testkit import qt_capture
 
 
 def _current_elevations(scenario) -> np.ndarray:
@@ -88,26 +86,15 @@ def _current_elevations(scenario) -> np.ndarray:
     return elevations
 
 
-def _scene_rect_to_array(scene, rect: QRectF) -> np.ndarray:
-    """A fixed scene-space rect's actual displayed pixels, as an (h, w, 3)
-    uint8 array, rasterized via QGraphicsScene.render() -- for check 4,
-    which needs to confirm an edit made real on-screen pixel changes, not
-    just that ViewerWindow's backing state changed (a bug there could
-    leave the backing state correct while the displayed pixels silently
-    went stale). Deliberately item-agnostic: works the same whether the
-    pixels come from a QGraphicsPixmapItem (Flat mode) or a custom-painted
-    QGraphicsItem like Phase B-C's MapCanvasItem (Stepped mode) -- unlike
-    reading mv._pixmap_item.pixmap() directly, which stopped existing for
-    Stepped mode once Phase B-C replaced it."""
-    w, h = int(math.ceil(rect.width())), int(math.ceil(rect.height()))
-    image = QImage(w, h, QImage.Format_RGB888)
-    image.fill(0)
-    painter = QPainter(image)
-    scene.render(painter, QRectF(0, 0, w, h), rect)
-    painter.end()
-    bits = image.constBits()
-    bits.setsize(image.bytesPerLine() * h)
-    return np.array(bits).reshape(h, image.bytesPerLine())[:, : w * 3].reshape(h, w, 3).copy()
+# Used by check 4, which needs to confirm an edit made real on-screen pixel
+# changes, not just that ViewerWindow's backing state changed (a bug there
+# could leave the backing state correct while the displayed pixels silently
+# went stale). Item-agnostic: works the same whether the pixels come from a
+# QGraphicsPixmapItem (Flat mode) or a custom-painted QGraphicsItem like
+# Phase B-C's MapCanvasItem (Stepped mode) -- unlike reading
+# mv._pixmap_item.pixmap() directly, which stopped existing for Stepped mode
+# once Phase B-C replaced it.
+_scene_rect_to_array = qt_capture.scene_rect_to_array
 
 
 def check_file(path: Path) -> tuple[bool, str]:
@@ -133,10 +120,10 @@ def check_file(path: Path) -> tuple[bool, str]:
         # (on_edit_stroke_start/tile/end -- the same calls MapView's mouse
         # handlers make, just without synthesizing real QMouseEvents).
         window.terrain_style_combo.setCurrentText("Flat")
-        window.mode_combo.setCurrentText("Edit")
+        window.mode_combo.setCurrentText("Terrain")
         window._on_tool_selected("elevation")
         if not window.elevation_action.isEnabled():
-            problems.append("elevation tool unexpectedly disabled in Flat + Edit mode")
+            problems.append("elevation tool unexpectedly disabled in Flat + Terrain mode")
 
         mm = scenario.map_manager
         edited_tiles = [(0, 0), (min(3, mm.map_width - 1), 0), (0, min(2, mm.map_height - 1))]

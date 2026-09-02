@@ -34,10 +34,17 @@ directory of .aoe2scenario files:
    loop does *not* have (see check 1's sibling docstring note and
    raise_elevation_under's own docstring for the confirmed compounding bug
    this replaces).
-8. save() does not persist unit edits -- mutate a real unit's `player`,
-   save, reload, and confirm the reloaded unit's player is unchanged (the
-   real limitation batch_api.py's module docstring documents next to its
-   load/save re-exports).
+8. save() does not persist a *raw* unit mutation -- mutate a real unit's
+   `player` directly (bypassing UnitEditModel entirely) and save with no
+   model, then reload and confirm the reloaded unit's player is unchanged.
+   This is the containment guarantee phase 3.5a's write path depends on: an
+   ad-hoc script inspecting buildings_of()/tile_under()'s returned Unit
+   objects must not accidentally persist an edit just by mutating one.
+9. save() DOES persist a unit edit made *through* a UnitEditModel -- same
+   mutation as check 8, but via `units.reassign(unit, new_player)` and
+   `save(..., units=units)`, confirming the reloaded unit's player changed.
+   The two checks together are what proves persistence is opt-in per edit,
+   not per script.
 
 Checks 1-3 use a real building already in the scenario (via
 _find_probe_building), never UnitManager.add_unit()/clone_unit() -- seen
@@ -300,7 +307,13 @@ def check_raise_elevation_under_many(path: Path, tmp_dir: Path) -> tuple[bool, s
     return True, f"OK (player {best_player}, {len(expected)} unique tile(s), all exactly +1 clamped)"
 
 
-def check_unit_edit_not_persisted(path: Path, tmp_dir: Path) -> tuple[bool, str]:
+def check_raw_unit_mutation_does_not_persist(path: Path, tmp_dir: Path) -> tuple[bool, str]:
+    """Renamed from check_unit_edit_not_persisted (phase 3.5a, stage 5.1):
+    this is now the containment half of a pair -- see check_unit_edit_
+    persists_through_the_model for the other half. Deliberately uses the
+    banned `unit.player = ...` setter, not UnitEditModel.reassign(): the
+    whole point is proving an edit made *outside* a model still does not
+    persist."""
     s = load_map_and_units(path)
     building = _find_probe_building(s)
     if building is None:
@@ -323,10 +336,51 @@ def check_unit_edit_not_persisted(path: Path, tmp_dir: Path) -> tuple[bool, str]
         return False, f"reference_id {original_ref_id} not found in reloaded file at all"
     if match.player != original_player:
         return False, (
-            f"expected save() to leave unit edits out (player should still be {original_player}), "
-            f"but reloaded player is {match.player} -- batch_api.py's documented limitation is wrong"
+            f"expected save() to leave a raw unit mutation out (player should still be "
+            f"{original_player}), but reloaded player is {match.player} -- the containment "
+            f"guarantee is wrong"
         )
     return True, f"OK (player edit to {new_player} correctly did not persist; still {original_player})"
+
+
+def check_unit_edit_persists_through_the_model(path: Path, tmp_dir: Path) -> tuple[bool, str]:
+    """The other half of the pair check_raw_unit_mutation_does_not_persist
+    is one of: the same kind of edit (a player reassignment), but made
+    through a descape.unit_model.UnitEditModel and passed to save(units=...),
+    must persist. Together the two checks prove persistence is opt-in per
+    edit, via the model, not a per-script flag."""
+    s = load_map_and_units(path)
+    if not s.units_write_supported:
+        return None, "units are not editable on this file -- skipped"
+    building = _find_probe_building(s)
+    if building is None:
+        return None, "no player has any on-map building -- skipped"
+
+    from descape.unit_model import UnitEditModel
+
+    original_player = building.player
+    original_ref_id = building.reference_id
+    new_player = 1 if original_player != 1 else 2
+
+    units = UnitEditModel(s)
+    units.reassign(building, new_player)
+
+    out = tmp_dir / f"{path.stem}.batch_unit_persist{path.suffix}"
+    batch_api.save(s, out, units=units)
+    reloaded = load_map_and_units(out)
+
+    match = next(
+        (u for u in reloaded.unit_manager.get_all_units() if u.reference_id == original_ref_id),
+        None,
+    )
+    if match is None:
+        return False, f"reference_id {original_ref_id} not found in reloaded file at all"
+    if match.player != new_player:
+        return False, (
+            f"expected the model-driven reassignment to persist (player should now be "
+            f"{new_player}), but reloaded player is {match.player}"
+        )
+    return True, f"OK (player edit to {new_player} persisted through the model)"
 
 
 def main() -> None:
@@ -344,7 +398,8 @@ def main() -> None:
         ("raise_elevation clamp", check_raise_elevation_clamp),
         ("recolor_dirt_near_water", check_recolor_dirt_near_water),
         ("raise_elevation_under_many", check_raise_elevation_under_many),
-        ("unit edit not persisted", check_unit_edit_not_persisted),
+        ("raw unit mutation does not persist", check_raw_unit_mutation_does_not_persist),
+        ("unit edit persists through the model", check_unit_edit_persists_through_the_model),
     ]
     file_checks_no_tmp = [
         ("raise_elevation off-map", check_raise_elevation_off_map),

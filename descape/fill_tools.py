@@ -30,9 +30,7 @@ from __future__ import annotations
 
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 
-from descape.batch_api import set_terrain
-
-_ORTHOGONAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+from descape.batch_api import _ORTHOGONAL_OFFSETS, set_terrain
 
 
 def contiguous_region(mm: MapManager, x: int, y: int) -> list[int]:

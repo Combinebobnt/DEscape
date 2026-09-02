@@ -31,7 +31,7 @@ not skips, if ruff isn't installed. `.venv/bin/python3 -m pip install ruff`
 (`requirements-dev.txt`) before running the suite for the first time.
 
 **Anything that rebuilds `.venv` drops the dev dependencies, pytest
-included** -- `bootstrap.py` (what the `LAUNCH_DESCAPE_*` launchers run)
+included** -- `bootstrap.py` (what the `LAUNCH_DEscape_*` launchers run)
 installs `requirements.txt` only, correctly, since it sets up an end-user
 install rather than a development one. So a cold launcher run, or deleting
 `.venv` by hand, leaves `.venv/bin/python3 -m pytest` reporting
@@ -102,16 +102,22 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   export that predates that discovery; kept as the strip tool's own no-op
   self-test golden reference (`tests/test_strip_units.py`).
   On the 120x120 donor specifically, every batch_api.py building-dependent
-  check (5 of them:
+  check (6 of them:
   `check_raise_elevation_under_buildings`, `check_raise_elevation_clamp`,
   `check_raise_elevation_off_map`, `check_raise_elevation_under_many`,
-  `check_unit_edit_not_persisted`) returns `None` ("no player has any
-  on-map building") on this file, which the adapter maps to `pytest.skip`,
-  not a pass. Those 5 show up as SKIPPED in the corpus-tier run against the
-  real `examples/` corpus too, on this same file -- not a regression, a
-  known gap. A fixture with real buildings/units/water/elevation variation
-  would close it; see the plan's "Larger fixtures" section for the exact
-  ask (not yet requested).
+  `check_raw_unit_mutation_does_not_persist`,
+  `check_unit_edit_persists_through_the_model`) returns `None` ("no player
+  has any on-map building") on this file, which the adapter maps to
+  `pytest.skip`, not a pass. Those 6 show up as SKIPPED in the corpus-tier
+  run against the real `examples/` corpus too, on this same file -- not a
+  regression, a known gap. `tests/fixtures/units_120x120.aoe2scenario`
+  below has a real building, but it does **not** close this gap:
+  `tools/verify_batch_api.py`'s checks are `tier=("corpus",)` and
+  parametrized only over `examples/*.aoe2scenario`
+  (`tests/conftest.py`'s `pytest_generate_tests`), which never globs
+  `tests/fixtures/`. A fixture *inside* `examples/` with real buildings/
+  units/water/elevation variation would close it; see the plan's "Larger
+  fixtures" section for the exact ask (not yet requested).
 - `tests/fixtures/real_blank_{240x240,480x480}.aoe2scenario` -- real
   AoE2:DE "Blank" map exports (unit-stripped the same way as the donor
   above), moved from `descape/templates/` once `descape/scenario_new.py`
@@ -121,6 +127,47 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   these files *from* the donor would make that comparison a tautology and
   silently stop testing anything. If they're ever replaced, it must be with
   a fresh real game export, never a generator run.
+- `tests/fixtures/triggers_120x120.aoe2scenario` -- the default tier's only
+  scenario that actually has triggers. Generated from the 120x120 donor above
+  by `tools/gen_trigger_fixture.py`; regenerate with
+  `.venv/bin/python3 tools/gen_trigger_fixture.py` and commit the result.
+  **A test input, not a byte oracle** -- the opposite of `real_blank_*` below,
+  and regenerating it is expected rather than forbidden.
+  `tests/test_trigger_fixture.py` pins the committed bytes against a fresh
+  generator run, so a drifting generator shows up as a failure rather than
+  silently.
+  Four triggers, chosen for what each exercises rather than for volume:
+  trigger-to-trigger references (so a reorder/delete has something to remap),
+  an armour effect whose quantity is bit-split across
+  `_quantity_int`/`_quantity_float`/`variable`, a named variable, and populated
+  str32 fields. **Empty strings are written the game's way (length 0), not the
+  library's (length 1 holding a NUL)** -- see the generator's
+  `_game_style_bytes()`. Without that one difference the file is in
+  AoE2ScenarioParser's own normal form, re-serializes through it perfectly, and
+  the default tier cannot tell the phase 4b byte-blob write path apart from
+  whole-section re-serialization (verified by mutation, both ways).
+- `tests/fixtures/units_120x120.aoe2scenario` -- the default tier's only
+  scenario with a non-trivial Units section, for the same reason the trigger
+  fixture above exists: every other tracked fixture is unit-free, and a
+  unit-free file passes every phase 3.5a write-path claim trivially.
+  Generated from the 120x120 donor by `tools/gen_units_fixture.py`;
+  regenerate with `.venv/bin/python3 tools/gen_units_fixture.py` and commit
+  the result. **A test input, not a byte oracle**, same convention as
+  `triggers_120x120.aoe2scenario`. `tests/test_units_fixture.py` pins the
+  committed bytes against a fresh generator run.
+  8 units: two GAIA trees and a GAIA wall covering both `rotation`
+  variant-index encodings AGENTS.md names (a plain integer, and the same
+  index as `k*2pi/5` radians -- neither is an angle), a real on-map
+  building plus two more units for Player 1 (one garrisoned in that
+  building), and two units for Player 2 (one with a non-empty caption --
+  the only coverage anywhere for the caption normalizer's unmeasured
+  non-empty branch, see `descape/unit_model.py`'s `_serialize_unit`
+  docstring). Empty captions are written the game's way (length 0), not the
+  library's (length 1 holding a NUL) -- same `_game_style_bytes()` helper
+  the trigger fixture uses, now shared via `tools/_fixture_bytes.py`.
+  `reference_id`s have a deliberate gap, and `next_unit_id_to_place` sits
+  above every assigned id, mirroring every real corpus file (a naive
+  `len(units)`-based add path fails on either).
 - `examples/` -- untracked, gitignored, opt-in. The real 18-file corpus
   (a mix of scenario versions, sizes up to 480x480). Absent on a fresh
   clone or worktree; the corpus tier reports why it skipped rather than
@@ -135,7 +182,12 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
 Every test gets `descape.settings.CONFIG_PATH` (and `asset_source`'s own
 copy) redirected to a per-test `tmp_path/config.yaml` via `conftest.py`'s
 autouse `_isolated_settings` fixture, and every `settings.py` module-level
-memoized global reset. This is load-bearing, not just hygiene: found by
+memoized global reset. `CONFIG_PATH` now resolves to the OS-standard
+per-user config location rather than a repo-relative path, which makes
+this redirect more important, not less -- an unredirected write now lands
+in the developer's real `~/.config/DEscape/` (or platform equivalent)
+instead of a gitignored file inside the checkout. This is load-bearing,
+not just hygiene: found by
 tracing (not by reading) that `ViewerWindow.closeEvent()` unconditionally
 calls `settings.set_window_size()` on every window close, which without
 this redirect writes straight through to the developer's real
@@ -181,9 +233,11 @@ going forward.
 ## Migration status
 
 - Steps 0-3 done: pytest scaffolding, Phase 1 adapter (`conftest.py` +
-  `test_legacy_adapter.py` + `migration_manifest.py`) wrapping all 44
-  checks with zero edits to the verify scripts, new tests #1-3
-  (`test_private_api_guard.py`, `test_edit_history.py`, `test_settings.py`).
+  `test_legacy_adapter.py` + `migration_manifest.py`) wrapping all 44 (now
+  45 -- phase 3.5a split one `verify_batch_api.py` check into two, see
+  `migration_manifest.py`'s own docstring) checks with zero edits to the
+  verify scripts, new tests #1-3 (`test_private_api_guard.py`,
+  `test_edit_history.py`, `test_settings.py`).
 - Step 4 done: `generate_reference_pngs`/the two benches extracted into
   `tools/gen_iso_reference_pngs.py` / `tools/bench_incremental_latency.py` /
   `tools/bench_chunk_px.py`. All three source verify scripts

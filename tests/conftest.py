@@ -18,10 +18,34 @@ from pathlib import Path
 
 import pytest
 
+from testkit import qt_capture
+
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = ROOT / "tools"
 
 PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
+
+
+def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
+    """Maximal [start, end) spans where two equal-length buffers differ.
+
+    Promoted here (plan verification item 6, descape-units-write-path.md)
+    rather than copied a fifth time -- test_trigger_write_path.py,
+    test_options_write_path.py, test_diplomacy_write_path.py, and
+    test_player_options_write_path.py each already hold their own private
+    copy; new locality tests should import this one instead."""
+    assert len(before) == len(after)
+    ranges: list[tuple[int, int]] = []
+    start = None
+    for i, (a, b) in enumerate(zip(before, after)):
+        if a != b and start is None:
+            start = i
+        elif a == b and start is not None:
+            ranges.append((start, i))
+            start = None
+    if start is not None:
+        ranges.append((start, len(before)))
+    return ranges
 
 _QAPP = None
 
@@ -51,6 +75,123 @@ def ensure_qapp() -> None:
     from PyQt5.QtWidgets import QApplication
 
     _QAPP = QApplication.instance() or QApplication(["pytest"])
+
+
+# Re-exported so the many existing `conftest.scene_rect_to_array(...)` call
+# sites keep working; the implementation now lives in testkit/ so tools/
+# scripts, which can't import conftest, can share it. See that module for
+# why the 1:1 and zoom-parametrized captures stay separate functions.
+scene_rect_to_array = qt_capture.scene_rect_to_array
+
+
+def stepped_window(path, *, elev_step_pct: int | None = None, graphics_quality: int | None = None):
+    """A real, shown ViewerWindow with `path` loaded in Stepped mode,
+    offscreen -- the setup every gui-tier seam test needs, factored out
+    because tests/test_seam_line.py's own module docstring names this
+    exact gap ("nothing in this file mechanically guards" the geometry
+    <-> render link) as the reason that file couldn't close it alone.
+
+    elev_step_pct/graphics_quality, if given, are pinned via the settings
+    MODULE GLOBALS directly, before ViewerWindow() is constructed (its
+    __init__ reads settings.get_window_size(), and _render_current() reads
+    both of these) -- not via settings.set_elev_step_pct()/
+    set_graphics_quality(). Under _isolated_settings' autouse tmp_path
+    redirect either approach is equally safe from touching the real
+    config.yaml; module globals are used here only for consistency with
+    tests/test_seam_line.py's own test_seam_changes_a_hill_at_every_pct_
+    including_200, which already does this and documents why: the real
+    setters persist to disk, which "a test has no business doing" even
+    when the disk in question is a throwaway.
+
+    Does NOT call terrain_style_combo.setCurrentText("Stepped"). Terrain
+    Style already defaults to "stepped" (ViewerWindow._terrain_style), and
+    on_terrain_style_changed() early-returns whenever the requested style
+    matches the current one -- so every earlier gui test doing this
+    (tests/test_lazy_viewport.py, tests/test_mip_viewer.py) was asserting
+    the default, not exercising a real switch. A caller that genuinely
+    needs to drive a style change should go through "Flat" first.
+
+    Caller must call window.edit_history.mark_saved() before
+    window.close() -- see tools/verify_iso_viewer_pick.py's own finally
+    block: closeEvent() -> _confirm_discard_changes() pops a modal
+    QMessageBox on a dirty document, which blocks forever offscreen with
+    nothing to click it."""
+    ensure_qapp()
+    import descape.settings as settings_module
+    from descape.viewer import ViewerWindow
+    from PyQt5.QtWidgets import QApplication
+
+    if elev_step_pct is not None:
+        settings_module._elev_step_pct = elev_step_pct
+    if graphics_quality is not None:
+        settings_module._graphics_quality = graphics_quality
+
+    window = ViewerWindow()
+    window.load_scenario(path)
+    if window.scenario is None:
+        window.close()
+        pytest.skip(f"{Path(path).name} failed to load")
+    window.show()
+    QApplication.processEvents()
+    return window
+
+
+def shown_window():
+    """An empty, shown, 1200x800 ViewerWindow -- no scenario loaded. For
+    tests that drive the window's own chrome (menus, undo stack, panels)
+    and open a document themselves, or not at all."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer import ViewerWindow
+
+    ensure_qapp()
+    window = ViewerWindow()
+    window.resize(1200, 800)
+    window.show()
+    QApplication.processEvents()
+    return window
+
+
+def blank_window(load: bool = True):
+    """A ViewerWindow with the blank template loaded, never shown. Pass
+    load=False for the same window with no document, which is how the
+    has-a-map gating on toolbar and menu actions gets tested."""
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+    from descape.viewer import ViewerWindow
+
+    ensure_qapp()
+    window = ViewerWindow()
+    if load:
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        assert window.scenario is not None, "blank template failed to load"
+    return window
+
+
+def terrain_edit_window():
+    """blank_window() switched into Terrain mode -- the starting point for
+    every paint/fill/param test."""
+    window = blank_window()
+    window.mode_combo.setCurrentText("Terrain")
+    return window
+
+
+def close_window(window) -> None:
+    """Close without the dirty-document modal. Same requirement
+    stepped_window() documents: closeEvent() -> _confirm_discard_changes()
+    pops a QMessageBox that blocks forever offscreen."""
+    window.edit_history.mark_saved()
+    window.close()
+
+
+def viewport_pos(map_view, tile_x: int, tile_y: int):
+    """Viewport-space centre of tile (x, y), for synthesizing mouse events
+    in Flat mode. Stepped/Sloped need the projection, not _tile_pixels --
+    see tests/test_ruler_viewer.py's own style-aware version."""
+    from PyQt5.QtCore import QPointF
+
+    tile_px = map_view._tile_pixels
+    scene_pt = QPointF((tile_x + 0.5) * tile_px, (tile_y + 0.5) * tile_px)
+    return QPointF(map_view.mapFromScene(scene_pt))
 
 
 def pytest_addoption(parser):
@@ -182,6 +323,10 @@ _SETTINGS_MEMOIZED_GLOBALS = (
     "_dark_mode",
     "_elev_step_pct",
     "_window_size",
+    "_split_sizes",
+    "_log_height",
+    "_distance_ticks",
+    "_distance_tick_interval",
     "_keybinds",
 )
 

@@ -13,6 +13,12 @@ to -- c pinned "the reference level is never left downwards", which is
 exactly what d exists to stop doing. Each such test says so in its own
 docstring, with what replaced the property it used to protect.
 
+2026-08-28: mip_for_scale's rule flipped from floor(log2(scale)) to ceil
+(descape/render.py), so residual magnification lands in (0.5, 1.0] instead
+of [1, 2) -- every level at or below native density instead of above it.
+A handful of tests below flip again for the same reason phase d's did:
+each says so in its own docstring.
+
 Layered cheapest-first, same shape as tests/test_mip_geometry.py:
 
 1. _max_axis_scale() against the two numbers the plan measured, plus the
@@ -46,18 +52,32 @@ import numpy as np
 import pytest
 
 import conftest
-from descape.render import _ChunkCacheBase
+from descape.render_cache import _ChunkCacheBase
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
+from testkit import qt_capture
 
 ROOT = Path(__file__).resolve().parent.parent
 
 # Flat's own view transform (MapView.set_isometric's scale(1, 0.5) then
 # rotate(-45)) at 2x zoom, and what the two candidate LOD metrics return on
 # it. The plan chose the max singular value specifically because
-# levelOfDetailFromTransform disagrees HERE: floor(log2()) of 1 vs 0, one
-# whole level, showing as an octave of blur along Flat's stretched axis.
+# levelOfDetailFromTransform disagrees HERE: under the floor(log2()) rule
+# this project used until 2026-08-28, that was 1 vs 0, one whole level,
+# showing as an octave of blur along Flat's stretched axis. Kept as
+# historical record of that derivation -- under the current ceil(log2())
+# rule both metrics land on level 1 here, so this pair no longer
+# straddles; see FLAT_2P4X_* below for a pair that still does.
 FLAT_2X_MAX_SINGULAR_VALUE = 2.0
 FLAT_2X_LEVEL_OF_DETAIL = 1.5811388300841898
+
+# The same transform family at 2.4x zoom instead of 2x -- measured (not
+# derived) the same way as the pair above, chosen because it still
+# straddles a level boundary under ceil(log2()): max_axis_scale=2.4 ->
+# ceil(log2(2.4)) == 2, but levelOfDetailFromTransform=1.897... ->
+# ceil(log2(1.897...)) == 1, still a whole level and still an octave of
+# blur along Flat's stretched axis if Qt's own metric were used instead.
+FLAT_2P4X_MAX_SINGULAR_VALUE = 2.4
+FLAT_2P4X_LEVEL_OF_DETAIL = 1.8973665961010273
 
 # Enough scene-space zoom to push the selected level past the reference on
 # the 120x120 fixture: fit-to-view there is a device scale of ~0.083 (the
@@ -74,21 +94,27 @@ ZOOM_STEPS = (1.0, 8.0, 4.0)
 
 # The HiDPI probe needs the DPR-1 run to land BELOW the finest enumerated
 # level, or "one level finer" is unobservable (doubling just clamps back to
-# the same level). 16x from fit puts the device scale at ~1.3, i.e. level 0
-# with room above it; DPR 2 doubles that to ~2.6, i.e. level 1. The probe
-# reports its own measured device scale so a drift in the fit scale shows
-# up as an explicit skip rather than a silent pass.
-HIDPI_ZOOM_STEPS = (4.0, 4.0)
+# the same level). 2026-08-28: under mip_for_scale's ceil(log2(scale)) rule
+# (was floor), 16x from fit -- device scale ~1.3 -- already selects level 1
+# (the finest one on this fixture, tile_px=64 -> ladder {-2,-1,0,1}), which
+# left no room for DPR-2 to go finer and made the test skip instead of
+# assert. 8x from fit (device scale ~0.65) selects level 0 with room above
+# it; DPR 2 doubles that to ~1.3, i.e. level 1. The probe reports its own
+# measured device scale so a drift in the fit scale shows up as an
+# explicit skip rather than a silent pass.
+HIDPI_ZOOM_STEPS = (4.0, 2.0)
 
 WINDOW_SIZE = 300
 
-# Measured on this machine at every residual magnification in [1, 2)
-# probed (1.0, 1.25, 1.5, 1.85): the tiled and single-draw renders come
-# back BYTE-IDENTICAL, maxdiff 0, not merely close. The bar is left as a
-# bounded difference anyway, per the plan -- padded overlapping draws under
-# a filter are not guaranteed exactly equal, and a stricter-than-necessary
-# bar here would be an environment-dependent tripwire rather than a real
-# regression signal. A genuine seam would be far larger than this.
+# Measured on this machine at every residual magnification probed (1.0,
+# 1.25, 1.5, 1.85 -- all reachable today only via the finest-level clamp,
+# see test_block_tiling_matches_a_single_draw_at_a_scaled_level): the tiled
+# and single-draw renders come back BYTE-IDENTICAL, maxdiff 0, not merely
+# close. The bar is left as a bounded difference anyway, per the plan --
+# padded overlapping draws under a filter are not guaranteed exactly equal,
+# and a stricter-than-necessary bar here would be an environment-dependent
+# tripwire rather than a real regression signal. A genuine seam would be
+# far larger than this.
 MAX_SEAM_DIFF = 2
 
 # The minifying-band seam probe (Phase B-D-d). 960 scene units is 120 pixels
@@ -114,7 +140,7 @@ MINIFYING_BLOCK_PX = 16
 
 
 def _max_axis_scale(transform):
-    from descape.viewer import _max_axis_scale as fn
+    from descape.viewer_canvas import _max_axis_scale as fn
 
     return fn(transform)
 
@@ -157,7 +183,7 @@ class _StubCache:
 
 
 def _canvas_item(levels):
-    from descape.viewer import MapCanvasItem
+    from descape.viewer_canvas import MapCanvasItem
 
     conftest.ensure_qapp()
     return MapCanvasItem(_StubCache(levels))
@@ -179,7 +205,14 @@ def _uniform(scale):
 @pytest.mark.gui
 def test_max_axis_scale_reproduces_the_plan_s_measured_oracle() -> None:
     """The whole reason this project computes its own metric instead of
-    calling Qt's. If this ever stops disagreeing, re-derive the choice."""
+    calling Qt's. If this ever stops disagreeing, re-derive the choice.
+
+    2x zoom no longer straddles a level boundary under mip_for_scale's
+    current ceil(log2(scale)) rule (both metrics land on level 1) -- kept
+    as historical record of the floor-era derivation. The assertion that
+    actually matters now (still disagreeing by a whole level) moved to
+    test_max_axis_scale_reproduces_the_plan_s_measured_oracle_at_2p4x
+    below."""
     from PyQt5.QtGui import QTransform
     from PyQt5.QtWidgets import QStyleOptionGraphicsItem
 
@@ -193,9 +226,37 @@ def test_max_axis_scale_reproduces_the_plan_s_measured_oracle() -> None:
     assert QStyleOptionGraphicsItem.levelOfDetailFromTransform(t) == pytest.approx(
         FLAT_2X_LEVEL_OF_DETAIL
     )
+    # Under floor, this used to be the part that actually cost a level (1
+    # vs 0). Under ceil both now land on 1 -- pinned so a future rule
+    # change that silently restores the disagreement here doesn't go
+    # unnoticed.
+    assert math.ceil(math.log2(_max_axis_scale(t))) == 1
+    assert math.ceil(math.log2(QStyleOptionGraphicsItem.levelOfDetailFromTransform(t))) == 1
+
+
+@pytest.mark.gui
+def test_max_axis_scale_reproduces_the_plan_s_measured_oracle_at_2p4x() -> None:
+    """2026-08-28: the pair above stopped straddling a level boundary when
+    mip_for_scale's rule flipped to ceil(log2(scale)). Same transform
+    family at 2.4x zoom instead of 2x still straddles under the current
+    rule -- this is the live version of the property the test above used
+    to pin."""
+    from PyQt5.QtGui import QTransform
+    from PyQt5.QtWidgets import QStyleOptionGraphicsItem
+
+    conftest.ensure_qapp()
+    t = QTransform()
+    t.scale(1.0, 0.5)
+    t.rotate(-45)
+    t.scale(2.4, 2.4)
+
+    assert _max_axis_scale(t) == pytest.approx(FLAT_2P4X_MAX_SINGULAR_VALUE)
+    assert QStyleOptionGraphicsItem.levelOfDetailFromTransform(t) == pytest.approx(
+        FLAT_2P4X_LEVEL_OF_DETAIL
+    )
     # The part that actually costs a level, not just a different float.
-    assert math.floor(math.log2(_max_axis_scale(t))) == 1
-    assert math.floor(math.log2(QStyleOptionGraphicsItem.levelOfDetailFromTransform(t))) == 0
+    assert math.ceil(math.log2(_max_axis_scale(t))) == 2
+    assert math.ceil(math.log2(QStyleOptionGraphicsItem.levelOfDetailFromTransform(t))) == 1
 
 
 @pytest.mark.gui
@@ -242,11 +303,18 @@ def test_select_mip_clamps_to_the_coarsest_enumerated_level() -> None:
     minification now walks down the ladder and stops at its bottom rung.
     What protects the existing byte-identity bars instead is the weaker,
     still-true property in the two tests below: a UNIT-scale render selects
-    the reference."""
+    the reference.
+
+    2026-08-28: the 0.2 probe moved from -3 to -2 (ceil(log2(0.2)) == -2,
+    was floor's -3) now that mip_for_scale's rule flipped -- it no longer
+    reaches the bottom rung on its own, so 0.1 was added to keep that walk-
+    to-bottom behavior exercised (ceil(log2(0.1)) == -3, still the ladder's
+    coarsest)."""
     item = _canvas_item([-3, -2, -1, 0, 1])
     assert item._select_mip(_StubPainter(_uniform(1.0), _uniform(1.0))) == 0
     assert item._select_mip(_StubPainter(_uniform(0.5), _uniform(0.5))) == -1
-    assert item._select_mip(_StubPainter(_uniform(0.2), _uniform(0.2))) == -3
+    assert item._select_mip(_StubPainter(_uniform(0.2), _uniform(0.2))) == -2
+    assert item._select_mip(_StubPainter(_uniform(0.1), _uniform(0.1))) == -3
     assert item._select_mip(_StubPainter(_uniform(0.001), _uniform(0.001))) == -3
     # A level set with nothing below the reference stays where it was.
     assert _canvas_item([0, 1])._select_mip(_StubPainter(_uniform(0.001), _uniform(0.001))) == 0
@@ -260,7 +328,17 @@ def test_a_unit_scale_transform_selects_the_reference_level() -> None:
     unit-scale device transform) is a Qt behaviour, not arithmetic, and is
     checked for real in test_a_unit_scale_scene_render_paints_the_reference
     below. Split deliberately: this plan has now been wrong three times
-    about what Qt does, and a stubbed transform cannot catch a fourth."""
+    about what Qt does, and a stubbed transform cannot catch a fourth.
+
+    2026-08-28: under mip_for_scale's floor-era rule this property held
+    with a full octave of margin -- any scale in [1.0, 2.0) selected level
+    0. Under the current ceil(log2(scale)) rule scale=1.0 sits exactly ON
+    the level-0/level-1 boundary (ceil(log2(1.0)) == 0 but
+    ceil(log2(1.0000001)) == 1), with no margin either side. Verified safe:
+    _max_axis_scale returns exactly 1.0 for a unit transform (no float
+    slop in the metric itself), and the real byte-identity callers this
+    property protects always render integer-dimensioned rects (see
+    testkit.qt_capture.scene_rect_to_array's own docstring)."""
     for levels in ([-3, -2, -1, 0, 1], [-1, 0], [0]):
         item = _canvas_item(levels)
         assert item._select_mip(_StubPainter(_uniform(1.0), _uniform(1.0))) == 0
@@ -303,36 +381,33 @@ class _FakeCanvasItem:
 
 def _bare_map_view():
     """A MapView with no source set, for the floor arithmetic alone. Its
-    five callbacks are edit-tool plumbing nothing here reaches."""
-    from descape.viewer import MapView
+    eight callbacks are edit-tool, unit-selection and ruler plumbing nothing
+    here reaches."""
+    from descape.map_view import MapView
 
     conftest.ensure_qapp()
     noop = lambda *a, **k: None  # noqa: E731
-    return MapView(noop, noop, noop, noop, noop)
+    return MapView(noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop)
 
 
 @pytest.mark.gui
 @pytest.mark.parametrize("levels", [[0], [0, 1, 2], [-1, 0], [-2, -1, 0, 1, 2], [-3, 0]])
-def test_zoom_out_floor_divides_by_the_mip_depth(levels) -> None:
-    """Phase B-D-d's clamp change, over level sets of every depth rather
-    than whatever one fixture's elev_step_pct happens to enumerate. Two
-    properties, and the second is the one that makes this phase incapable
-    of costing anyone zoom range:
+def test_zoom_bounds_stay_capped_regardless_of_mip_depth(levels) -> None:
+    """Phase B-D-d's clamp divided the floor/ceiling by the mip ladder's
+    depth so wheel-zoom could always reach the sharpest/coarsest enumerated
+    level, growing the reachable range with the ladder rather than leaving
+    the extra levels dead behind a fixed cap.
 
-    1. The floor is the pre-mip one divided by how much coarser the ladder
-       goes, so the reachable zoom-out range grows by exactly the mip depth
-       while the residual minification AT the floor is unchanged.
-    2. It is never TIGHTER than the pre-mip floor -- including for a level
-       set with nothing below the reference, where it must reduce to
-       exactly the old expression rather than to something merely close.
-
-    Deliberately not the plan's original formula, which was an absolute
-    scale bound (1 / (mip_scale * MAX_RESIDUAL_MINIFICATION)). Measured on
-    the 480x480 fixture at a 480px window: fit-to-view is scale 0.0413,
-    where that formula gives 0.0625 -- a floor ABOVE fit, refusing zoom-out
-    everywhere and stranding the view above the whole-map-visible scale.
-    See PLAN_MIPS.md's correction entry."""
-    from descape.viewer import MapView
+    2026-08-30: that widening is now itself capped back to the pre-mip
+    MIN_ZOOM_FRACTION_OF_FIT/MAX_ZOOM_MULTIPLE_OF_FIT bound (see
+    _capture_zoom_baseline's own comment for why -- a fixed 50%-6400%-of-fit
+    range was wanted more than the reachability guarantee). Given
+    _coarsest_mip_scale() >= 1 and _finest_mip_scale() <= 1 always, the
+    widened value is never tighter than the raw bound, so max()/min()-ing
+    against it always lands exactly on the raw bound -- this test's real
+    claim is that this holds at every ladder depth, not just a shallow one.
+    """
+    from descape.map_view import MapView
 
     view = _bare_map_view()
     cache = _StubCache(levels)
@@ -340,11 +415,7 @@ def test_zoom_out_floor_divides_by_the_mip_depth(levels) -> None:
     baseline = abs(view.transform().determinant()) ** 0.5
 
     view._capture_zoom_baseline()
-    depth = cache.mip_scale(levels[0])
-    assert depth == 2.0 ** -levels[0]
-    assert view._min_linear_scale == pytest.approx(MapView.MIN_ZOOM_FRACTION_OF_FIT * baseline / depth)
-    assert view._min_linear_scale <= MapView.MIN_ZOOM_FRACTION_OF_FIT * baseline
-    # The zoom-IN ceiling is untouched by this phase.
+    assert view._min_linear_scale == pytest.approx(MapView.MIN_ZOOM_FRACTION_OF_FIT * baseline)
     assert view._max_linear_scale == pytest.approx(MapView.MAX_ZOOM_MULTIPLE_OF_FIT * baseline)
 
 
@@ -353,7 +424,7 @@ def test_zoom_out_floor_falls_back_to_the_pre_mip_one_with_no_canvas_item() -> N
     """_capture_zoom_baseline runs from set_isometric(), which ViewerWindow
     can reach before any source is set -- so "no canvas item yet" must be a
     plain no-op on the floor, not an attribute error or an inf."""
-    from descape.viewer import MapView
+    from descape.map_view import MapView
 
     view = _bare_map_view()
     assert view._canvas_item is None
@@ -364,22 +435,34 @@ def test_zoom_out_floor_falls_back_to_the_pre_mip_one_with_no_canvas_item() -> N
 
 
 @pytest.mark.gui
-def test_zoom_out_floor_on_a_real_window_matches_the_mip_ladder() -> None:
-    """The formula above against a real fit-to-view baseline and a real
-    enumerated ladder, so a change to either (a different reference
-    tile_px, a shallower elev_step_pct) can't silently decouple them."""
-    from descape.viewer import MapView
+def test_zoom_out_floor_on_a_real_window_stays_capped_despite_a_real_ladder() -> None:
+    """The 2026-08-30 cap (_capture_zoom_baseline's own comment) against a
+    real fit-to-view baseline and a real enumerated ladder, not just the
+    synthetic ladders in test_zoom_bounds_stay_capped_regardless_of_mip_depth
+    -- so a change to either (a different reference tile_px, a shallower
+    elev_step_pct) can't silently decouple the two.
+
+    depth > 1 here is load-bearing: it proves the cap actually engaged
+    (min_linear_scale landed on the raw floor despite a ladder that would
+    have divided it lower pre-cap), not that this ladder happens to be
+    depth 1 where capped and uncapped give the same answer.
+
+    The baseline reads _fit_baseline_scale() rather than the transform, which
+    is what it used before the bounds stopped going stale on resize. This
+    fixture resizes AFTER its fit, so the transform is deliberately stale here
+    -- that staleness is the bug _fit_baseline_scale() exists to fix, and
+    tests/test_zoom_bounds.py is where the two are pinned to each other."""
+    from descape.map_view import MapView
 
     window = _stepped_window()
     try:
         view = window.map_view
         item = view._canvas_item
         assert item is not None
-        baseline = abs(view.transform().determinant()) ** 0.5
+        baseline = view._fit_baseline_scale()
         depth = item._cache.mip_scale(item._cache.mip_levels()[0])
-        assert view._min_linear_scale == pytest.approx(
-            MapView.MIN_ZOOM_FRACTION_OF_FIT * baseline / depth
-        )
+        assert depth > 1
+        assert view._min_linear_scale == pytest.approx(MapView.MIN_ZOOM_FRACTION_OF_FIT * baseline)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -410,7 +493,7 @@ def _stepped_window():
 
 def _paint_spy(monkeypatch):
     """Records (device scale, selected mip) per real paint() call."""
-    from descape.viewer import MapCanvasItem
+    from descape.viewer_canvas import MapCanvasItem
 
     seen: list[tuple[float, int]] = []
     original = MapCanvasItem.paint
@@ -467,7 +550,7 @@ def test_selected_mip_is_the_coarsest_at_fit_and_rises_with_zoom(monkeypatch) ->
             assert seen, f"no paint cycle after a {step}x scale step"
             scale, mip = seen[-1]
             # Selection agrees with the derived rule, not just with itself.
-            expected = max(levels[0], min(levels[-1], math.floor(math.log2(scale))))
+            expected = max(levels[0], min(levels[-1], math.ceil(math.log2(scale))))
             assert mip == expected, f"at device scale {scale}: selected {mip}, rule says {expected}"
             selected.append(mip)
 
@@ -531,7 +614,12 @@ def _render_scene_rect(scene, rect, zoom: float) -> np.ndarray:
 
     Drives exactly ONE paint() call, which is what lets callers read
     item._last_mip afterwards as the level THIS render selected rather
-    than as whatever the last of several paints happened to pick."""
+    than as whatever the last of several paints happened to pick.
+
+    Deliberately NOT testkit.qt_capture.scene_rect_to_array with a zoom
+    argument: sizing here truncates via int(), that one rounds up via
+    math.ceil(), so on a fractional rect the two disagree by a pixel even
+    at zoom 1.0. Only the stride extraction is shared."""
     from PyQt5.QtCore import QRectF
     from PyQt5.QtGui import QImage, QPainter
 
@@ -542,9 +630,7 @@ def _render_scene_rect(scene, rect, zoom: float) -> np.ndarray:
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     scene.render(painter, QRectF(0, 0, tw, th), rect)
     painter.end()
-    bits = image.constBits()
-    bits.setsize(image.bytesPerLine() * th)
-    return np.array(bits).reshape(th, image.bytesPerLine())[:, : tw * 3].reshape(th, tw, 3).copy()
+    return qt_capture.qimage_rgb888_to_array(image)
 
 
 @pytest.mark.gui
@@ -560,7 +646,11 @@ def test_a_unit_scale_scene_render_paints_the_reference() -> None:
     Phase B-D-c got that protection from a much stronger property (nothing
     below the reference was ever selected at all). Phase B-D-d deliberately
     gives that up, which is what makes this worth checking directly rather
-    than inferring from what those two files happen to render at."""
+    than inferring from what those two files happen to render at.
+
+    2026-08-28: this now pins an EXACT-boundary property, not one with an
+    octave of margin -- see test_a_unit_scale_transform_selects_the_
+    reference_level's own docstring for why that's safe."""
     from PyQt5.QtCore import QRectF
 
     window = _stepped_window()
@@ -585,11 +675,19 @@ def test_block_tiling_matches_a_single_draw_at_a_scaled_level(monkeypatch, zoom)
     """paint() tiles a large exposedRect into PAINT_BLOCK_PX sub-blocks,
     each independently padded and drawn. Under the scaled blit those
     destination rects have to abut exactly, or block boundaries show as
-    seams. The zoom values are chosen to land the residual magnification
-    strictly inside [1, 2) -- an integer residual would sample texel
-    centres exactly and hide any filtering problem."""
+    seams. The zoom values are chosen to land on a non-integer residual --
+    an integer residual would sample texel centres exactly and hide any
+    filtering problem.
+
+    2026-08-28: under mip_for_scale's floor-era rule these zoom values
+    landed the residual directly, unclamped, strictly inside [1, 2). Under
+    the current ceil(log2(scale)) rule they instead land it via the
+    finest-level CLAMP (ceil(log2(2.5/3.0/3.7)) == 2, clamped down to this
+    fixture's finest enumerated level, same as before) -- same selected
+    level, same residuals (1.25/1.5/1.85), same assertions; only how they're
+    reached changed."""
     from PyQt5.QtCore import QRectF
-    from descape.viewer import MapCanvasItem
+    from descape.viewer_canvas import MapCanvasItem
 
     window = _stepped_window()
     try:
@@ -623,24 +721,29 @@ def test_block_tiling_matches_a_single_draw_at_a_scaled_level(monkeypatch, zoom)
 @pytest.mark.parametrize("residual", [0.3, 0.5, 0.8, 0.95])
 def test_block_tiling_matches_a_single_draw_at_a_minifying_residual(monkeypatch, residual) -> None:
     """The band Phase B-D-c could not reach, and the reason PAINT_PAD_PX
-    needed re-justifying. Its 2px is argued from "residual magnification in
-    [1, 2) means bilinear reaches at most 1 source texel past a block
-    edge" -- true of every zoom B-D-c could select, but mip-down clamps at
-    the coarsest level, so below that the residual is a MINIFICATION and
-    that argument lapses. Live, not theoretical: fit-to-view already sits
-    on the bottom rung, and the zoom-out floor permits 4x further.
+    needed re-justifying. Its 2px is argued from "bilinear reaches at most 1
+    source texel past a block edge regardless of ratio" (see PAINT_PAD_PX's
+    own comment) -- true of every residual this test or the scaled-level one
+    above can reach, magnifying or minifying alike.
 
     Parametrized on the residual rather than on a zoom, since the zoom
     producing a given residual depends on how deep this fixture's ladder
-    goes. residual < 1 also guarantees the clamp binds (log2(zoom) <
-    levels[0]), so the coarsest level really is what gets painted.
+    goes.
+
+    2026-08-28: under mip_for_scale's current ceil(log2(scale)) rule,
+    residual <= 1 no longer uniformly means "the clamp binds" -- 0.3 and
+    0.5 still reach the coarsest level via the clamp (ceil(log2(residual))
+    == -1 relative to it), but 0.8 and 0.95 now reach it EXACTLY, by the
+    rule itself (ceil(log2(residual)) == 0 relative to it), no clamping
+    needed. `assert selected == levels[0]` below holds either way; only
+    which mechanism produces it differs per residual.
 
     PROBE_SCENE_SIDE is measured, not arbitrary -- see its own comment: an
     oversized probe picks up an isolated-pixel noise floor that has nothing
     to do with block seams and would make this test read as a failure of
     something it doesn't test."""
     from PyQt5.QtCore import QRectF
-    from descape.viewer import MapCanvasItem
+    from descape.viewer_canvas import MapCanvasItem
 
     window = _stepped_window()
     try:
@@ -700,7 +803,8 @@ asset_source.CONFIG_PATH = missing
 settings.CONFIG_PATH = missing
 settings._elev_step_pct = None
 settings._graphics_quality = None
-from descape.viewer import MapCanvasItem, ViewerWindow, _max_axis_scale
+from descape.viewer import ViewerWindow
+from descape.viewer_canvas import MapCanvasItem, _max_axis_scale
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 
 seen = []
@@ -724,12 +828,13 @@ view.viewport().update()
 QApplication.processEvents()
 print("MIP", view._canvas_item._last_mip,
       "LEVELS", view._canvas_item._cache.mip_levels()[-1],
+      "COARSEST", view._canvas_item._cache.mip_levels()[0],
       "SCALE", seen[-1] if seen else -1.0)
 window.edit_history.mark_saved(); window.close()
 """
 
 
-def _probe_mip_at_scale_factor(scale_factor: str, steps=HIDPI_ZOOM_STEPS) -> tuple[int, int, float]:
+def _probe_mip_at_scale_factor(scale_factor: str, steps=HIDPI_ZOOM_STEPS) -> tuple[int, int, int, float]:
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["QT_SCALE_FACTOR"] = scale_factor
@@ -743,7 +848,7 @@ def _probe_mip_at_scale_factor(scale_factor: str, steps=HIDPI_ZOOM_STEPS) -> tup
     line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("MIP ")), None)
     assert line, f"probe printed no result at QT_SCALE_FACTOR={scale_factor}: {proc.stdout!r}"
     parts = line.split()
-    return int(parts[1]), int(parts[3]), float(parts[5])
+    return int(parts[1]), int(parts[3]), int(parts[5]), float(parts[7])
 
 
 @pytest.mark.gui
@@ -756,8 +861,8 @@ def test_hidpi_selects_exactly_one_level_finer() -> None:
 
     Skips rather than fails if the finer level would be clamped away:
     "one finer" is unobservable when the level set has already run out."""
-    base_mip, finest, base_scale = _probe_mip_at_scale_factor("1")
-    hidpi_mip, _, hidpi_scale = _probe_mip_at_scale_factor("2")
+    base_mip, finest, _, base_scale = _probe_mip_at_scale_factor("1")
+    hidpi_mip, _, _, hidpi_scale = _probe_mip_at_scale_factor("2")
 
     # The mechanism itself, independent of what level it lands on: the
     # device transform really does carry the DPR, which is the whole reason
@@ -790,12 +895,33 @@ def test_fit_to_view_is_still_a_minification_at_dpr_2() -> None:
     DPR 2 to select a FINER level at fit. It doesn't, because fit is a
     heavy minification -- the canvas is thousands of pixels wide in a 300px
     window, so doubling the device scale only moves it from ~0.083 to
-    ~0.165, still far below 1 and still clamped at the bottom of the
-    ladder. Worth keeping as a real-HiDPI check that the clamp binds at fit
-    rather than DPR silently changing what fit-to-view costs."""
-    mip, _, scale = _probe_mip_at_scale_factor("2", steps=())
+    ~0.165, still far below 1. Worth keeping as a real-HiDPI check that the
+    clamp binds at fit rather than DPR silently changing what fit-to-view
+    costs.
+
+    FLIPPED AGAIN when MIP_MIN_TILE_PIXELS rose 8->16 (2026-08-27): that
+    shrank the ladder by exactly one level, so fit-to-view at DPR 2 now
+    falls in the beyond-the-ladder regime render.py's _select_mip
+    docstring already describes -- the clamp binds at the (now shallower)
+    coarsest level, and the residual there is a genuine minification of
+    that level's own texture rather than the <2x magnification the deeper
+    ladder used to guarantee (at the time). That's the accepted cost of the
+    floor raise (see MIP_MIN_TILE_PIXELS's own comment): benign for
+    quality -- a minified blit downsamples smoothly, it does not blockify
+    -- it only means Qt does a real minifying composite at this one
+    extreme scale instead of a near-1:1 blit. What this test still guards
+    is the mechanism: the clamp must bind at the cache's own actual
+    coarsest enumerated level, not silently pick something else.
+
+    2026-08-28: "genuine minification instead of <2x magnification" is no
+    longer specific to the floor raise -- mip_for_scale's rule flipped to
+    ceil(log2(scale)), so minification at the clamped bottom (and
+    everywhere else in the unclamped range too) is the norm now, not an
+    accepted cost unique to this floor. The property this test checks
+    (clamp binds at the cache's actual coarsest level) is unaffected."""
+    mip, _, coarsest, scale = _probe_mip_at_scale_factor("2", steps=())
     assert scale < 1.0, f"fit-to-view at DPR 2 was not a minification ({scale})"
-    assert 2.0**mip <= scale, (
-        f"fit-to-view at DPR 2 selected level {mip} at device scale {scale} -- that level "
-        f"magnifies rather than being the coarsest one the ladder could offer"
+    assert mip == coarsest, (
+        f"fit-to-view at DPR 2 selected level {mip} at device scale {scale}, but the cache's "
+        f"coarsest enumerated level is {coarsest} -- the clamp did not bind where expected"
     )
