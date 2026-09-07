@@ -20,7 +20,7 @@ APPDIR="build/AppDir"
 APPIMAGETOOL="build/appimagetool-x86_64.AppImage"
 # Pinned to a specific release (not the moving `continuous` tag) so a build
 # run today and one run in a year produce the same appimagetool.
-APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/13/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
 VERSION="$("$PY" -c 'import descape; print(descape.__version__)')"
 OUT="dist/DEscape-${VERSION}-x86_64.AppImage"
 
@@ -70,7 +70,7 @@ echo "==> verifying AppDir structure"
 if [ ! -x "$APPIMAGETOOL" ]; then
     echo "==> downloading appimagetool"
     mkdir -p build
-    curl -L -o "$APPIMAGETOOL" "$APPIMAGETOOL_URL"
+    curl -fL -o "$APPIMAGETOOL" "$APPIMAGETOOL_URL"
     chmod +x "$APPIMAGETOOL"
 fi
 
