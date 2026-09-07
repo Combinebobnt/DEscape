@@ -76,7 +76,9 @@ jobs:
         if: runner.os == 'Linux'
         env:
           PYTHON: python
-        run: packaging/build_appimage.sh
+        # Invoked via bash, not the executable bit -- the script isn't
+        # tracked as executable in git, and CI shouldn't depend on that.
+        run: bash packaging/build_appimage.sh
 
       - name: Stage licenses into the bundle
         run: |
