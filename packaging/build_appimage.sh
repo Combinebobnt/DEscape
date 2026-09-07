@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wraps the PyInstaller onedir bundle (dist/DEscape/) into a single portable
-# DEscape-x86_64.AppImage with desktop integration. Build the onedir first:
+# DEscape-<version>-x86_64.AppImage with desktop integration. Build the onedir first:
 #   .venv/bin/python3 -m PyInstaller packaging/descape.spec --noconfirm
 #
 # Needs a real chmod (AppRun, the downloaded appimagetool) and network
@@ -14,11 +14,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+PY="${PYTHON:-.venv/bin/python3}"
 DIST_EXE="dist/DEscape/DEscape"
 APPDIR="build/AppDir"
 APPIMAGETOOL="build/appimagetool-x86_64.AppImage"
-APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-OUT="dist/DEscape-x86_64.AppImage"
+# Pinned to a specific release (not the moving `continuous` tag) so a build
+# run today and one run in a year produce the same appimagetool.
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/13/appimagetool-x86_64.AppImage"
+VERSION="$("$PY" -c 'import descape; print(descape.__version__)')"
+OUT="dist/DEscape-${VERSION}-x86_64.AppImage"
 
 if [ ! -e "$DIST_EXE" ]; then
     echo "error: $DIST_EXE not found -- build the onedir bundle first:" >&2
@@ -40,7 +44,7 @@ cp "descape/app_icon.png" "$APPDIR/DEscape.png"
 cp "descape/app_icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/DEscape.png"
 
 echo "==> collecting third-party license texts"
-.venv/bin/python3 tools/collect_licenses.py --out "$APPDIR/usr/share/doc/DEscape/third-party"
+"$PY" tools/collect_licenses.py --strict --out "$APPDIR/usr/share/doc/DEscape/third-party"
 cp "LICENSE" "$APPDIR/usr/share/doc/DEscape/LICENSE"
 
 if command -v objdump >/dev/null 2>&1; then
@@ -61,7 +65,7 @@ else
 fi
 
 echo "==> verifying AppDir structure"
-.venv/bin/python3 tools/verify_appdir.py "$APPDIR"
+"$PY" tools/verify_appdir.py "$APPDIR"
 
 if [ ! -x "$APPIMAGETOOL" ]; then
     echo "==> downloading appimagetool"

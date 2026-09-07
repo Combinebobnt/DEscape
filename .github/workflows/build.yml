@@ -12,9 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {runner: ubuntu-22.04, label: linux-x86_64,   upload: DEscape-linux-x86_64.tar.gz}
-          - {runner: macos-15,     label: macos-arm64,    upload: DEscape-macos-arm64.tar.gz}
-          - {runner: windows-2025, label: windows-x86_64, upload: dist/DEscape}
+          - {runner: ubuntu-22.04, label: linux-x86_64}
+          - {runner: macos-15,     label: macos-arm64}
+          - {runner: windows-2025, label: windows-x86_64}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -25,12 +25,29 @@ jobs:
           cache: pip
           cache-dependency-path: requirements*.txt
 
+      - name: Compute version
+        shell: bash
+        run: echo "VERSION=$(python -c 'import descape; print(descape.__version__)')" >> "$GITHUB_ENV"
+
+      # Checked before any build/test minutes are spent on a tag push, so a
+      # mistyped or premature tag fails immediately instead of after ~30
+      # minutes of matrix builds.
+      - name: Check tag matches __version__ / CHANGELOG.md (tag push only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/check_release_tag.py "${{ github.ref_name }}"
+
       - name: Install Qt platform plugin system libs (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 xvfb
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+
+      - name: Run the default test tier (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install pytest pytest-qt ruff==0.16.3
+          xvfb-run -a python -m pytest
 
       - name: Build frozen bundle
         run: python -m PyInstaller packaging/descape.spec --noconfirm
@@ -42,12 +59,51 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a env QT_QPA_PLATFORM=xcb dist/DEscape/DEscape --smoke
 
+      - name: Build AppImage (Linux)
+        if: runner.os == 'Linux'
+        env:
+          PYTHON: python
+        run: packaging/build_appimage.sh
+
+      - name: Stage licenses into the bundle
+        run: |
+          python tools/collect_licenses.py --strict --out dist/DEscape/licenses/third-party
+          python -c "import shutil; shutil.copy('LICENSE', 'dist/DEscape/LICENSE')"
+
       - name: Package for upload (posix)
         if: runner.os != 'Windows'
-        run: tar -czf DEscape-${{ matrix.label }}.tar.gz -C dist DEscape
+        run: tar -czf "DEscape-${VERSION}-${{ matrix.label }}.tar.gz" -C dist DEscape
+
+      - name: Package for upload (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/DEscape -DestinationPath "DEscape-$env:VERSION-${{ matrix.label }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: DEscape-${{ matrix.label }}
-          path: ${{ matrix.upload }}
+          path: |
+            DEscape-${{ env.VERSION }}-${{ matrix.label }}.tar.gz
+            DEscape-${{ env.VERSION }}-${{ matrix.label }}.zip
+            dist/DEscape-*.AppImage
           retention-days: 14
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/check_release_tag.py "${{ github.ref_name }}"
+      - uses: actions/download-artifact@v4
+        with: {path: artifacts, merge-multiple: true}
+      - name: Extract release notes
+        run: python3 tools/release_notes.py "${{ github.ref_name }}" > notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: DEscape ${{ github.ref_name }}
+          body_path: notes.md
+          files: artifacts/*

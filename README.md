@@ -129,6 +129,19 @@ real scenario and check the output still looks sane before trusting it.
 
 </details>
 
+## Prebuilt builds
+
+Each [tagged release](https://github.com/Combinebobnt/DEscape/releases) has
+frozen, no-Python-required builds attached: a `.tar.gz` for Linux/macOS, a
+`.zip` for Windows, and a Linux `.AppImage`. These are built and tested by CI
+on every `v*` tag push; the setup steps above are only needed if you'd
+rather run from source.
+
+The AppImage is type-2, so it needs either a `libfuse2` package installed
+(most distros ship this, or `sudo apt install libfuse2` on Debian/Ubuntu) or
+running it with `./DEscape-*.AppImage --appimage-extract-and-run` if FUSE
+isn't available.
+
 ## Usage
 
 The easiest way to start the GUI is `LAUNCH_DEscape_LinuxMac.sh`/

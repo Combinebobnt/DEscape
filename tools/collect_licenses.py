@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import sysconfig
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,16 +72,31 @@ def collect(site_packages: Path, out_dir: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--site-packages", type=Path, default=ROOT / ".venv" / "lib" / "python3.11" / "site-packages")
+    default_site_packages = ROOT / ".venv" / "lib" / "python3.11" / "site-packages"
+    parser.add_argument("--site-packages", type=Path, default=None)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 if any package has neither license text nor a classifier",
+    )
     args = parser.parse_args()
 
-    if not args.site_packages.is_dir():
-        raise SystemExit(f"no such site-packages dir: {args.site_packages}")
+    site_packages = args.site_packages
+    if site_packages is None:
+        # No --site-packages given: use the checked-in .venv if there is one,
+        # otherwise fall back to whatever interpreter is running this script
+        # (e.g. a bare `python3` on a CI runner with no .venv at all).
+        site_packages = default_site_packages if default_site_packages.is_dir() else Path(sysconfig.get_paths()["purelib"])
 
-    missing = collect(args.site_packages, args.out)
+    if not site_packages.is_dir():
+        raise SystemExit(f"no such site-packages dir: {site_packages}")
+
+    missing = collect(site_packages, args.out)
     if missing:
         print("collect_licenses: no license text or classifier found for:", ", ".join(missing), file=sys.stderr)
+        if args.strict:
+            return 1
     print(f"collect_licenses: wrote license texts to {args.out}")
     return 0
 

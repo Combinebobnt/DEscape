@@ -2,9 +2,9 @@
 
 Notable changes to DEscape, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), except versioning:
-`MAJOR.MINOR` only, no patch number. This project has no CI and cuts
-releases by hand rather than continuously, so the thing a patch number
-usually buys - "bugfix only, safe to upgrade blindly" - doesn't apply here;
+`MAJOR.MINOR` only, no patch number. Pushing a `v*` tag builds every
+platform and drafts a GitHub Release, but the thing a patch number usually
+buys - "bugfix only, safe to upgrade blindly" - still doesn't apply here;
 every release, fix or feature alike, bumps the minor. `1.0` is reserved for
 whenever the on-disk write path is trusted enough to not need Save As as a
 safety net.
