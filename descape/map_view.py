@@ -46,7 +46,7 @@ from descape.render_cache import (
     IsoChunkCache,
     SlopedChunkCache,
 )
-from descape.viewer_canvas import EdgeTickItem, MapCanvasItem
+from descape.viewer_canvas import EdgeTickItem, MapCanvasItem, _max_axis_scale, level_rect_for
 from descape.viewer_common import CLICK_TOOLS, EDIT_TOOLS, TOOL_RULER
 
 # The two non-Flat terrain styles, which share a projected pick plane and a
@@ -96,6 +96,15 @@ class MapView(QGraphicsView):
     # unreachable dead weight in the ladder.
     MIN_ZOOM_FRACTION_OF_FIT = 0.5
     MAX_ZOOM_MULTIPLE_OF_FIT = 64.0
+
+    # Repeating, self-stopping poll interval backing the viewport-changed hook
+    # (maintainer plan 2026-09-07's A2.4) -- PROVISIONAL, to be tuned in the
+    # in-app pass the same way level_warm.BUDGET_MS is. Bounds how often a
+    # margin ring gets rebuilt/re-sorted during a drag (once per this many ms
+    # of motion, not once per mouse-move event, which arrive every ~8ms) while
+    # still giving the ring's leading-side ordering a real displacement to
+    # diff against between fires.
+    VIEWPORT_POLL_MS = 150
 
     # Hover-highlight convention for every brush-style tool (Terrain,
     # Elevate, Set Elevation): an outline plus a translucent gold
@@ -175,6 +184,7 @@ class MapView(QGraphicsView):
         on_ruler_measured,
         on_ruler_changed,
         on_zoom_changed,
+        on_viewport_changed=lambda: None,
     ):
         super().__init__()
         self.setScene(QGraphicsScene(self))
@@ -212,6 +222,29 @@ class MapView(QGraphicsView):
         # _capture_zoom_baseline, clear_image) -- so a status-bar readout can
         # stay live without polling the transform on a timer.
         self._on_zoom_changed = on_zoom_changed
+        # A2's viewport-changed hook (maintainer plan 2026-09-07) -- a
+        # twelfth injected callable, defaulting to a no-op lambda (unlike
+        # every callable above, which every real caller must supply): most
+        # callers reassign this straight to a real target after construction
+        # (ViewerWindow does, see the on_zoom_changed placeholder's own
+        # comment for why a direct constructor argument doesn't work there
+        # either), and every other MapView() call site in the test suite
+        # that doesn't care about margin warming needs no changes at all.
+        # Public (not `_on_viewport_changed`) to mirror how it's reassigned.
+        self.on_viewport_changed = on_viewport_changed
+        # Repeating, self-stopping (see _on_viewport_poll_tick) rather than a
+        # restarted single-shot -- a restart-on-every-move debounce would
+        # never fire during a continuous drag (mouse-moves arrive every
+        # ~8ms, faster than any sane debounce interval), which is exactly
+        # the starvation A2.4 exists to avoid. Started by
+        # _note_viewport_changed(), never directly.
+        self._viewport_poll_timer = QTimer(self)
+        self._viewport_poll_timer.setInterval(self.VIEWPORT_POLL_MS)
+        self._viewport_poll_timer.timeout.connect(self._on_viewport_poll_tick)
+        # The target recorded at the last poll fire (or None before the
+        # first one) -- compared against on every subsequent fire to decide
+        # whether to notify on_viewport_changed() or stop the timer.
+        self._last_viewport_target: tuple[int, int, int, int, int] | None = None
         self._ruler_line_item: QGraphicsLineItem | None = None
         self._ruler_end_items: list[QGraphicsPolygonItem] = []
         self._ruler_label_item: QGraphicsSimpleTextItem | None = None
@@ -1336,6 +1369,14 @@ class MapView(QGraphicsView):
         # bounds against a since-cleared map) -- but the readout still has to
         # fall back to "--", so fire the notification directly.
         self._on_zoom_changed()
+        # Same reasoning: nothing left to warm a margin around, but
+        # viewport_chunk_target() returning None here (no canvas item) still
+        # needs a fire so a stale pre-close target isn't left recorded. Reset
+        # the baseline first (see set_source()'s matching comment) so the
+        # NEXT document's first poll fire can't be silently swallowed by a
+        # coincidentally-equal leftover target.
+        self._last_viewport_target = None
+        self._note_viewport_changed()
         # scene().clear() destroyed these too -- drop the Python-side
         # references and the memo keys, or the next hover matches a stale key
         # and skips rebuilding an item that no longer exists.
@@ -1390,6 +1431,85 @@ class MapView(QGraphicsView):
         margin_x = w * self.OVERSCROLL_FRACTION
         margin_y = h * self.OVERSCROLL_FRACTION
         self.setSceneRect(self._map_rect.adjusted(-margin_x, -margin_y, margin_x, margin_y))
+
+    def viewport_chunk_target(self) -> tuple[int, int, int, int, int] | None:
+        """(mip, cx0, cy0, cx1, cy1) -- the mip a real paint would select
+        right now, and the inclusive chunk-index range the current viewport
+        covers at it -- or None with no canvas item or a degenerate
+        viewport. The paint-free equivalent of what MapCanvasItem.paint()
+        knows: A2's hook for driving a margin warm (descape.margin_warm)
+        off the viewport between paints, since option.exposedRect only
+        exists inside an actual Qt paint call.
+
+        Mip selection mirrors MapCanvasItem._select_mip() exactly but reads
+        the ITEM's deviceTransform(viewportTransform) rather than a live
+        QPainter's deviceTransform() (there is none here).
+        QGraphicsItem.deviceTransform(viewportTransform) is used rather
+        than self.viewportTransform() alone so a future item-level
+        transform can't silently desynchronise this reading from what a
+        real paint selects; multiplying by devicePixelRatioF() folds in
+        DPR the same way ViewerWindow._start_level_warm already does, for
+        the same reason -- scaling a transform by a uniform `s` scales its
+        singular values by `s`, so this is exact, not an approximation.
+
+        Scene rect: the viewport mapped to scene space via
+        mapToScene(...).boundingRect(), intersected with the item's own
+        boundingRect(). Under Flat's rotate+squash view transform, the
+        bounding box of that mapped polygon is precisely the shape a real
+        option.exposedRect already is.
+
+        Correctness is pinned by a test, not by inspection (tests/
+        test_margin_warm.py): after a real paint cycle, this method's mip
+        must equal MapCanvasItem._last_mip, and its chunk range must
+        contain every chunk that paint's own exposed rect resolved to."""
+        item = self._canvas_item
+        if item is None:
+            return None
+        device_transform = item.deviceTransform(self.viewportTransform())
+        scale = _max_axis_scale(device_transform) * self.devicePixelRatioF()
+        cache = item._cache
+        mip = cache.mip_for_scale(scale)
+        scene_rect = self.mapToScene(self.viewport().rect()).boundingRect().intersected(item.boundingRect())
+        if scene_rect.isEmpty():
+            return None
+        level_rect = level_rect_for(cache, mip, scene_rect)
+        if level_rect is None:
+            return None
+        x0, y0, x1, y1 = level_rect
+        cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, x0, y0, x1, y1)
+        return mip, cx0, cy0, cx1, cy1
+
+    def _note_viewport_changed(self) -> None:
+        """Starts the viewport-changed poll if it isn't already running --
+        NEVER restarts an already-active one. That restart guard is the
+        entire mechanism a restart-on-every-move debounce would be missing:
+        see VIEWPORT_POLL_MS's own comment and _on_viewport_poll_tick() for
+        why a restarted timer would starve during a continuous drag.
+
+        Called from every path that can change what viewport_chunk_target()
+        would return: scrollContentsBy (every pan source at once -- left
+        ScrollHandDrag, middle-drag's direct scrollbar writes, keyboard
+        scrolling, centerOn, and the scrollbar shifts a scale() call
+        induces), wheelEvent (a zoom whose scrollbars happen not to move
+        still changes the mip), _capture_zoom_baseline (covers
+        resizeEvent), and set_source()/clear_image() (a new document)."""
+        if not self._viewport_poll_timer.isActive():
+            self._viewport_poll_timer.start()
+
+    def _on_viewport_poll_tick(self) -> None:
+        """One poll fire: notify on_viewport_changed() if the target has
+        moved since the last fire, else stop -- the "self-stopping poll,
+        not a restart-on-change debounce" shape A2.4 spends real space
+        justifying. A REPEATING timer (not single-shot) firing at a bounded
+        cadence throughout a drag, delivering the final target one fire
+        after motion ends, then switching itself off: no trailing-edge
+        special case, and a static view costs nothing once it stops."""
+        target = self.viewport_chunk_target()
+        if target == self._last_viewport_target:
+            self._viewport_poll_timer.stop()
+            return
+        self._last_viewport_target = target
+        self.on_viewport_changed()
 
     def set_source(
         self,
@@ -1519,6 +1639,15 @@ class MapView(QGraphicsView):
         # its own no-argument fit-to-view behavior.
         self._pending_view_restore = view_restore
         self.set_isometric(self._isometric)
+        # Forces the next poll fire to notify regardless of what it finds:
+        # without this, a cache swap whose new viewport_chunk_target()
+        # happens to equal the OLD document's last-recorded one (same mip,
+        # same chunk range -- not far-fetched right after a reset_view=False
+        # graphics-quality change) would see "no change" on its first fire
+        # and stop silently, skipping that document's first margin ring
+        # until the next scroll.
+        self._last_viewport_target = None
+        self._note_viewport_changed()
 
     def _capture_view_state(self) -> tuple[float, QPointF] | None:
         """Snapshot of the current view, as a zoom multiple of the CURRENT
@@ -1740,8 +1869,8 @@ class MapView(QGraphicsView):
         # grows by exactly the mip depth. Both halves are one line of algebra
         # and neither depends on window size. At a fixed scale the coarser
         # level does alias S times less, but that is not what this floor is
-        # claiming -- see PLAN_MIPS.md's correction entry for the version of
-        # this comparison that got the direction backwards.
+        # claiming -- an earlier version of this comparison got the
+        # direction backwards.
         #
         # 2026-08-27: the zoom-in ceiling gets the same treatment, divided by
         # _finest_mip_scale() (<= 1.0, so dividing raises the ceiling). B-D-d
@@ -1821,6 +1950,11 @@ class MapView(QGraphicsView):
         # -- which changes the percentage with no zoom action at all, since
         # _fit_baseline_scale() reads the viewport rect.
         self._on_zoom_changed()
+        # Same coverage argument for the viewport-changed poll: resizeEvent
+        # changes what viewport_chunk_target() would return with no scroll or
+        # zoom action of its own, so it needs its own fire here rather than
+        # relying on scrollContentsBy/wheelEvent.
+        self._note_viewport_changed()
 
     def _repad_edge_ticks(self) -> None:
         """Hands the tick overlay the smallest scale the view can currently
@@ -1860,6 +1994,17 @@ class MapView(QGraphicsView):
         # one, which is what made the stale bounds worth fixing.
         self._capture_zoom_baseline()
 
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        """The one Qt override that catches every pan source at once: left
+        ScrollHandDrag, middle-drag's direct scrollbar writes (see
+        mouseMoveEvent), keyboard scrolling, centerOn(), and the scrollbar
+        shifts a scale() call induces -- all of them move the scrollbars,
+        and this is what Qt calls whenever they do. A pair of scrollbar
+        valueChanged connections would be equivalent but two objects
+        instead of one."""
+        super().scrollContentsBy(dx, dy)
+        self._note_viewport_changed()
+
     def wheelEvent(self, event):
         factor = 1.25 if event.angleDelta().y() > 0 else 0.8
         current_scale = abs(self.transform().determinant()) ** 0.5
@@ -1868,6 +2013,7 @@ class MapView(QGraphicsView):
         if factor > 1.0 and self._max_linear_scale is not None and current_scale * factor > self._max_linear_scale:
             return
         self.scale(factor, factor)
+        self._note_viewport_changed()
         self._on_zoom_changed()
 
     def mouseMoveEvent(self, event):

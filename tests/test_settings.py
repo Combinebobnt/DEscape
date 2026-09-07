@@ -180,6 +180,28 @@ def test_get_log_height_rejects_a_malformed_saved_value(tmp_path: Path) -> None:
     assert settings.get_log_height() is None
 
 
+# --- Settings > Appearance > Preload neighbouring zoom levels --------------
+
+
+def test_preload_zoom_levels_is_on_until_a_config_says_otherwise(tmp_path: Path) -> None:
+    """Default ON, unlike every other expensive toggle here: the warm it
+    gates is sliced across idle ticks and never blocks the window, so there
+    is no open-time cost to opt into (2026-09-04 plan, Step 5)."""
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_preload_zoom_levels() is True
+
+
+def test_preload_zoom_levels_reads_false_from_config(tmp_path: Path) -> None:
+    _write_config(tmp_path, "preload_zoom_levels: false\n")
+    assert settings.get_preload_zoom_levels() is False
+
+
+def test_preload_zoom_levels_round_trips_through_the_file(tmp_path: Path, monkeypatch) -> None:
+    settings.set_preload_zoom_levels(False)
+    monkeypatch.setattr(settings, "_preload_zoom_levels", None)
+    assert settings.get_preload_zoom_levels() is False
+
+
 # --- View > Distance Ticks -------------------------------------------------
 
 
@@ -374,3 +396,32 @@ def test_load_time_reconciliation_is_deterministic_between_two_customized_values
     _write_config(tmp_path, "keybinds:\n  edit_undo: F5\n  edit_redo: F5\n")
     assert settings.get_keybind("edit_undo") == "F5"
     assert settings.get_keybind("edit_redo") == ""
+
+
+def test_keybind_holder_finds_the_action_holding_a_taken_sequence(tmp_path: Path) -> None:
+    _write_config(tmp_path, "keybinds:\n  edit_undo: F5\n")
+    assert settings.keybind_holder("F5") == "edit_undo"
+
+
+def test_keybind_holder_returns_none_for_an_untaken_sequence(tmp_path: Path) -> None:
+    _write_config(tmp_path, "keybinds:\n  edit_undo: F5\n")
+    assert settings.keybind_holder("F9") is None
+
+
+def test_keybind_holder_returns_none_for_an_empty_sequence(tmp_path: Path) -> None:
+    _write_config(tmp_path, "dark_mode: true\n")
+    assert settings.keybind_holder("") is None
+
+
+def test_keybind_holder_returns_none_when_the_only_holder_is_excluded(tmp_path: Path) -> None:
+    _write_config(tmp_path, "keybinds:\n  edit_undo: F5\n")
+    assert settings.keybind_holder("F5", exclude="edit_undo") is None
+
+
+def test_keybind_holder_ignores_a_stale_action_id_not_in_rebindable_actions(tmp_path: Path) -> None:
+    """A removed action_id can still sit in persisted config -- _load_keybinds()
+    does `_keybinds.update(persisted)`, so it survives into the in-memory dict.
+    keybind_holder must iterate REBINDABLE_ACTIONS, not the dict, or a stale
+    entry would produce a refusal with no UI row to resolve it."""
+    _write_config(tmp_path, "keybinds:\n  some_removed_action: F5\n")
+    assert settings.keybind_holder("F5") is None

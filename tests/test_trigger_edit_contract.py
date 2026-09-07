@@ -8,9 +8,8 @@ up as an exception, so the tests here are all end-to-end through the write path
 or through the history, never assertions that a helper was called.
 
 The load-bearing test is test_a_field_edit_then_undo_saves_byte_identically.
-It is the shape descape-4b-headless-slice.md's Decision 3 exists for: one
-EditHistory, so an undone trigger edit must leave the file exactly as it was
-found, not merely "close".
+It is the shape one shared EditHistory exists for: an undone trigger edit
+must leave the file exactly as it was found, not merely "close".
 """
 
 from __future__ import annotations

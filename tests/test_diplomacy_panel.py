@@ -12,7 +12,7 @@ gates the grid specifically -- see viewer.py's _editable_diplomacy_fields()),
 Two differences from PlayersPanel drive most of the tests here:
 
 - The selector lists only this file's *defined* players
-  (diplomacy_fields.defined_player_count()), not a fixed P1..P8, so a
+  (player_fields.defined_player_count()), not a fixed P1..P8, so a
   synthetic 5-defined-player scenario is built by flipping
   DataHeader.player_data_1[].active in the already-parsed retriever data --
   the panel reads player counts and stances off the parsed structures, not
@@ -177,7 +177,7 @@ def test_opening_a_second_map_while_in_the_mode_repopulates() -> None:
 
 def test_player_selector_lists_only_defined_players() -> None:
     """The blank template defines exactly 2 players (pinned by
-    test_diplomacy_fields.test_defined_player_count_matches_the_known_blank_template_default)
+    test_player_write_path.test_defined_player_count_matches_the_known_blank_template_default)
     -- the selector must not fall back to a fixed P1..P8 the way
     PlayersPanel's does."""
     window = _diplomacy_window()
@@ -858,10 +858,10 @@ def test_diplomacy_panel_populates_every_corpus_file(scenario_path) -> None:
     from descape.diplomacy_fields import (
         allied_victory_cell_id,
         allied_victory_value,
-        defined_player_count,
         stance_cell_id,
         stance_value,
     )
+    from descape.player_fields import defined_player_count
 
     window = _window()
     try:
@@ -924,7 +924,7 @@ def test_the_teams_group_populates_every_corpus_file(scenario_path) -> None:
 def test_browsing_diplomacy_leaves_the_document_clean(scenario_path) -> None:
     from PyQt5.QtWidgets import QApplication, QRadioButton
 
-    from descape.diplomacy_fields import defined_player_count
+    from descape.player_fields import defined_player_count
 
     window = _window()
     try:

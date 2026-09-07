@@ -30,10 +30,16 @@ insurance against a future drift source affecting only re-serialized units
 would break every unit in the file), and cost (no commit-readback for units
 nobody touched).
 
-**Rotate is out of scope.** For walls and gates, `rotation` is a shape-variant
-index, not an angle (AGENTS.md's hard rule), and no operation here transforms
-an existing unit's rotation. add()'s `rotation` parameter is a verbatim
-pass-through, never validated or normalized as an angle.
+**Rotate is narrowly scoped, not out of scope.** For walls, gates and most
+GAIA doodads, `rotation` is a shape-variant index rather than an angle
+(AGENTS.md's hard rule), and transforming one would write a value the game
+re-derives or a frame the author never picked. set_rotation() is the sole
+operation here that transforms an existing rotation, and it refuses any const
+descape/unit_rotation.py does not classify ANGLE -- that guard is what carries
+the old blanket rule forward as "never transform a non-angle rotation".
+add()'s `rotation` parameter stays a verbatim pass-through, never validated or
+normalized as an angle: storing a caller-supplied value on a newly placed unit
+transforms nothing.
 
 Units are parsed eagerly at load time (scenario_io._load_map_and_units()
 depoisons and parses them unconditionally, before any lazy step), unlike
@@ -60,6 +66,7 @@ from typing import Sequence
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
+from descape import unit_rotation
 from descape.edit_history import EditHistory, UnitDiffRecord
 from descape.scenario_io import LoadedScenario
 
@@ -202,17 +209,22 @@ def _player_units_link(manager: UnitManager):
     return next(link for link in manager._link_list if getattr(link, "name", None) == _PLAYER_UNITS_LINK_NAME)
 
 
-# The only fields any 3.5a operation mutates in place -- add/remove/reassign
-# move whole Unit objects between/within lists rather than editing fields, so
+# The only fields any in-place operation mutates -- add/remove/reassign move
+# whole Unit objects between/within lists rather than editing fields, so
 # PlayerListSnapshot's `units` list (membership + order, by identity) already
 # covers them. Unit carries no nested mutable graph (unlike Trigger), so a
 # plain value tuple restored by field assignment is enough -- no deepcopy
 # budget to worry about the way TriggerSnapshot's `states` has.
-UnitState = tuple[float, float, float]
+#
+# `rotation` is in here because set_rotation() edits it in place. Leaving it
+# out would make undo restore the BYTES (the blob comes back) while the live
+# Unit object stayed rotated, so the inspector and the render would disagree
+# with what saving would actually write.
+UnitState = tuple[float, float, float, float]
 
 
 def unit_state(unit: Unit) -> UnitState:
-    return (unit.x, unit.y, unit.z)
+    return (unit.x, unit.y, unit.z, unit.rotation)
 
 
 @dataclass
@@ -348,6 +360,32 @@ class UnitEditModel:
         verbatim -- never derived from terrain elevation."""
         player, index = self._locate(unit)
         unit.x, unit.y, unit.z = x, y, z
+        self._blobs[player][index] = None
+        self._dirty = True
+
+    def set_rotation(self, unit: Unit, rotation: float) -> None:
+        """Assigns `rotation` (radians) and marks the unit's blob dirty.
+
+        Refuses -- loudly, never a silent no-op -- any const whose
+        unit_rotation.semantics_for() is not ANGLE. A silent refusal here
+        would leave a caller believing it had rotated a wall, and the whole
+        point of the guard is that the module's own hard rule ("never
+        transform a non-angle rotation") is enforced rather than merely
+        documented.
+
+        The value is passed through as given: wrapping into [0, 2*pi) is
+        unit_rotation.rotate_step()'s job, and every caller in the app already
+        goes through it. That keeps this method's contract the same as
+        set_position()'s -- assign what you were handed, normalize nothing.
+        """
+        if not unit_rotation.rotation_is_angle(unit.unit_const):
+            raise ValueError(
+                f"unit_const {unit.unit_const} stores a graphic-variant index in `rotation`, "
+                f"not an angle ({unit_rotation.semantics_for(unit.unit_const)}) -- refusing to "
+                f"transform it"
+            )
+        player, index = self._locate(unit)
+        unit.rotation = rotation
         self._blobs[player][index] = None
         self._dirty = True
 
@@ -499,7 +537,7 @@ class UnitEditModel:
             manager.units[player][:] = list(pls.units)
             self._blobs[player][:] = list(pls.blobs)
             for unit, state in zip(pls.units, pls.states):
-                unit.x, unit.y, unit.z = state
+                unit.x, unit.y, unit.z, unit.rotation = state
             self._tracked[player][:] = list(pls.units)
         # Trap 1 (plan): restore _player by direct assignment or
         # update_unit_player_values(), never the banned `player` property.
@@ -510,7 +548,7 @@ class UnitEditModel:
     def begin_unit_edit(self, players: Sequence[int]) -> None:
         """Snapshot before mutating. `players` is the caller's declaration of
         which player list(s) the upcoming edit will touch: one of
-        set_position/add/remove, or both of reassign's source and
+        set_position/set_rotation/add/remove, or both of reassign's source and
         destination. Pairs with exactly one commit_unit_edit() or
         abort_unit_edit().
 

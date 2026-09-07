@@ -184,6 +184,24 @@ def install_dependencies(reporter) -> None:
         fail(reporter, "couldn't install dependencies -- check your internet connection.")
 
 
+def newest_crash_dump(dump_dir: Path) -> Path | None:
+    if not dump_dir.is_dir():
+        return None
+    dumps = sorted(dump_dir.glob("crash-*.txt"), key=lambda p: p.stat().st_mtime)
+    return dumps[-1] if dumps else None
+
+
+def _crash_dump_dir() -> Path | None:
+    # Stdlib-only: this module runs on the *system* interpreter, before
+    # PyQt5/descape are guaranteed installed, so platformdirs may be absent
+    # here even though descape's own crash_report.py can rely on it.
+    try:
+        import platformdirs
+    except ImportError:
+        return None
+    return Path(platformdirs.user_config_dir("DEscape", appauthor=False, roaming=True)) / "crashes"
+
+
 def wait_until_ready(reporter, ready_file: Path, proc: subprocess.Popen, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -207,7 +225,12 @@ def launch_app(reporter) -> None:
     ready_file.unlink(missing_ok=True)
     rc = proc.wait()
     if rc != 0:
-        print(f"The editor closed with an error (exit code {rc}).")
+        message = f"The editor closed with an error (exit code {rc})."
+        dump_dir = _crash_dump_dir()
+        dump = newest_crash_dump(dump_dir) if dump_dir is not None else None
+        if dump is not None:
+            message += f" A crash report was saved to {dump}."
+        print(message)
     sys.exit(rc)
 
 

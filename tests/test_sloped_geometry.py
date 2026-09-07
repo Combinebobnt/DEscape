@@ -215,7 +215,7 @@ def test_partition_gentle_multi_tile_ramp():
 def test_partition_steep_single_tile_ramp():
     # The same one-level rise concentrated into a single tile-width seam --
     # the steepest ramp this project's own ±1 real elevation invariant ever
-    # produces (docs/PLAN_V2_6.md's Track C: "steep_seam" tests DELTA>=2,
+    # produces (the "steep_seam" tests DELTA>=2,
     # which is out of scope for a ramp -- MapManager never creates one).
     tile_px = 16
     w = h = 6

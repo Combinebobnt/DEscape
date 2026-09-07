@@ -86,6 +86,9 @@ def _check_zero_edit_identity(path: Path, tmp_dir: Path) -> tuple[bool, str]:
     out = tmp_dir / f"{path.stem}.zero_edit{path.suffix}"
     write_scenario(s, out)
     written = out.read_bytes()
+    original = path.read_bytes()
+    if written == original:
+        return True, "OK (byte-identical)"
     if written[: len(s.header_bytes)] != s.header_bytes:
         return False, "header bytes changed"
     body = _decompress_bytes(written[len(s.header_bytes) :])
@@ -93,7 +96,12 @@ def _check_zero_edit_identity(path: Path, tmp_dir: Path) -> tuple[bool, str]:
         n = min(len(body), len(s.decompressed_body))
         i = next((k for k in range(n) if body[k] != s.decompressed_body[k]), n)
         return False, f"body diverged at byte {i} (lens {len(body)} vs {len(s.decompressed_body)})"
-    return True, "OK (byte-identical)"
+    n = min(len(written), len(original))
+    i = next((k for k in range(n) if written[k] != original[k]), n)
+    return False, (
+        f"decompressed content matches but raw file bytes diverged at byte {i} "
+        f"(lens {len(written)} vs {len(original)})"
+    )
 
 
 def _check_edit_reload(path: Path, tmp_dir: Path) -> tuple[bool, str]:

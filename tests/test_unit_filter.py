@@ -1,6 +1,5 @@
 """Verifies descape.unit_filter.UnitFilter and its threading through
-render.py's unit paths -- phase 3's P3-a (maintainer plan PLAN_PHASE_3.md's
-first step).
+render.py's unit paths -- phase 3's P3-a (first step).
 
 The load-bearing check here is not the filter semantics (those are a
 three-line predicate); it's the **byte-identity gate**. P3-a threads a

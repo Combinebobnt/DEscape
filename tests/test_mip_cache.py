@@ -11,9 +11,8 @@ Every test here is bookkeeping arithmetic plus a handful of chunk touches
 against the small (120x120, unit-free) fixture template -- milliseconds,
 not a corpus pass.
 
-What Phase B-D-a genuinely tests, vs. what it structurally cannot (see
-PLAN_MIPS.md's own "phase a cannot test X" list, reproduced in the plan
-this file implements): the level set is [0]; mip_scale(0) == 1.0 exactly;
+What Phase B-D-a genuinely tests, vs. what it structurally cannot: the
+level set is [0]; mip_scale(0) == 1.0 exactly;
 render_rect()'s trailing mip=0 default matches an explicit call; the byte
 budget's admitted set is arithmetically equal to the old chunk-count
 formula; explicit max_chunks keeps capping strictly by count with no byte

@@ -123,6 +123,37 @@ def test_set_position_dirties_only_the_moved_unit() -> None:
     assert sum(dirty) == 1
 
 
+def test_set_rotation_dirties_only_the_rotated_unit() -> None:
+    loaded, model = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    model.set_rotation(archer, 1.5)
+    assert archer.rotation == 1.5
+    assert model.has_edits
+    dirty = [blob is None for blobs in model._blobs for blob in blobs]
+    assert sum(dirty) == 1
+
+
+@pytest.mark.parametrize("reference_id,unit_const", [(_REF_WALL, None), (_REF_ARCHER_P1, 64)])
+def test_set_rotation_refuses_a_non_angle_const(reference_id, unit_const) -> None:
+    """A wall (shape variants) and a gate (angle_count 1, orientation lives in
+    the const) each raise rather than silently no-op'ing -- and the section
+    stays byte-identical, so a refused rotate leaves nothing behind.
+
+    The gate case swaps a const onto a real fixture unit rather than needing a
+    gate in the fixture: the guard reads unit.unit_const, and a field edit
+    doesn't reach the bytes without a commit (finding 4).
+    """
+    loaded, model = _open()
+    before = model.serialize()
+    unit = _unit(loaded, reference_id)
+    if unit_const is not None:
+        unit.unit_const = unit_const
+    with pytest.raises(ValueError):
+        model.set_rotation(unit, 1.0)
+    assert not model.has_edits
+    assert model.serialize() == before
+
+
 def test_reassign_moves_the_unit_and_marks_no_blob_dirty() -> None:
     """finding 7: player is positional, so reassignment is a pure blob-list
     move with zero re-serialization -- plan verification item 7."""

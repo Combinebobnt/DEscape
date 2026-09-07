@@ -34,6 +34,7 @@ _step_totals: list[float] = []
 _phase_sums: dict[str, float] = {}
 _phase_order: list[str] = []
 _repaint_durations: list[float] = []
+_armed_label: str | None = None
 
 
 def enable(on: bool) -> None:
@@ -74,6 +75,29 @@ def phase(name: str):
     return _PhaseTimer(name)
 
 
+def arm(label: str) -> None:
+    """Records a pending flush label for the next first_paint_done() call --
+    the load path's way of capturing the deferred first-composite cost
+    without threading a callback through MapView.set_source(). No-op while
+    disabled, matching every other hook here."""
+    global _armed_label
+    if not _enabled:
+        return
+    _armed_label = label
+
+
+def first_paint_done() -> None:
+    """Pairs with arm(): if a label is armed, clears it and flushes the
+    repaint duration(s) recorded since under that label. A no-op if nothing
+    is armed (disabled, or a paint that isn't a load's first)."""
+    global _armed_label
+    if not _enabled or _armed_label is None:
+        return
+    label = _armed_label
+    _armed_label = None
+    flush(label)
+
+
 def step() -> None:
     """Closes out the current drag step and starts the next. A no-op while
     disabled, and also while the current step recorded no phases -- e.g. the
@@ -97,25 +121,29 @@ def flush(label: str) -> None:
     if not _enabled:
         return
     n = len(_step_totals)
-    if n == 0:
+    if n == 0 and not _repaint_durations:
         _current_step = {}
-        _repaint_durations = []
         return
-    total = sum(_step_totals)
-    mean_step = total / n
-    max_step = max(_step_totals)
-    phase_line = " ".join(
-        f"{name} {_phase_sums.get(name, 0.0) / n:.1f}" for name in _phase_order
-    )
-    lines = [
-        f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f})",
-        f"  | {phase_line}",
-    ]
+    lines = []
+    if n:
+        total = sum(_step_totals)
+        mean_step = total / n
+        max_step = max(_step_totals)
+        phase_line = " ".join(
+            f"{name} {_phase_sums.get(name, 0.0) / n:.1f}" for name in _phase_order
+        )
+        lines.append(
+            f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f})"
+        )
+        lines.append(f"  | {phase_line}")
     if _repaint_durations:
         r_n = len(_repaint_durations)
         r_total = sum(_repaint_durations)
         r_max = max(_repaint_durations)
-        lines.append(f"  | repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
+        if n:
+            lines.append(f"  | repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
+        else:
+            lines.append(f"perf {label}: repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
     debug_log.log("\n".join(lines))
     _current_step = {}
     _step_totals = []

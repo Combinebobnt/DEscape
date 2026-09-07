@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Times descape.render.composite_rect_sloped against composite_rect_iso at
 edit-sized rects and at a cold full chunk -- Track C4's "Gate 2" measurement,
-the per-tile sloped composite cost docs/PLAN_V2_6.md's Track C flags as
+the per-tile sloped composite cost this project flags as
 "unestimated -- a Phase 6 deliverable to measure, not assume". Informational
 only, matching this project's own bench_chunk_px.py/bench_iso_backend.py
 convention -- always runs, never pass/fail.
@@ -21,8 +21,7 @@ both (2026-08-21), so the real path can now be timed, and was: on a blank
 480x480 at tile_px=32, one elevation click propagating to 9 tiles costs 25ms
 sloped against 11ms stepped, of which 4.6ms is the whole-array corner_rise
 rebuild. Extending this tool to measure that directly is a real follow-up;
-until then the numbers below are still only the constant, and this repo's
-maintainer TODO.md carries the end-to-end figure.
+until then the numbers below are still only the constant.
 
 Expect the sloped constant to be WORSE than it was before the seam resample,
 not better: sloped_quad_indices' non-equal-corner branch now allocates all

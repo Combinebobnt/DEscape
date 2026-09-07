@@ -65,6 +65,36 @@ def _max_axis_scale(transform) -> float:
     return math.sqrt(half_sum_sq + disc)
 
 
+def level_rect_for(cache, mip: int, scene_rect: QRectF) -> tuple[int, int, int, int] | None:
+    """The LEVEL-`mip`-pixel chunk-cache rect a scene-space rect covers --
+    MapCanvasItem.paint()'s own arithmetic (floor the low edge, ceil the
+    high edge, clamp to canvas_dims(mip)), extracted so
+    MapView.viewport_chunk_target() (2026-09-07 plan's A2.3) doesn't grow a
+    second copy that can silently drift from what a real paint selects.
+    Floor/ceil, not round: the level rect must fully cover scene_rect,
+    matching paint()'s own "whole pixels only" discipline -- a gap at the
+    edge would leave a real caller's request under-covered.
+
+    `descape.render_cache._ChunkCacheBase._bbox_to_level()` is deliberately
+    NOT reused here even though it does a similar floor/ceil conversion: it
+    takes an integer REFERENCE-pixel bbox, where both of this function's
+    callers start from a float scene-space QRectF, and mixing the two
+    integer-vs-float conventions in one function would be more confusing
+    than the small amount of shared arithmetic is worth.
+
+    None for a degenerate or empty rect once clamped to canvas bounds --
+    both callers already treat that as "nothing to do" and return early."""
+    scale = cache.mip_scale(mip)
+    x0, y0 = int(math.floor(scene_rect.left() / scale)), int(math.floor(scene_rect.top() / scale))
+    x1, y1 = int(math.ceil(scene_rect.right() / scale)), int(math.ceil(scene_rect.bottom() / scale))
+    canvas_w, canvas_h = cache.canvas_dims(mip)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(x1, canvas_w), min(y1, canvas_h)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
 class MapCanvasItem(QGraphicsItem):
     """Qt-side wrapper around a descape.render chunk cache -- Phase B-C of
     Track B, replacing a mode's single monolithic
@@ -107,7 +137,7 @@ class MapCanvasItem(QGraphicsItem):
     # unaffected either way, only clipped to canvas bounds like the
     # unpadded block always was.
     #
-    # Phase B-D-d note: 2px was justified above (and in PLAN_MIPS.md) partly
+    # Phase B-D-d note: 2px was justified above partly
     # by "residual magnification in [1, 2) means bilinear reaches at most 1
     # source texel past a block edge", which mip-down's clamp at the coarsest
     # level makes no longer universally true -- below that level the residual
@@ -154,6 +184,11 @@ class MapCanvasItem(QGraphicsItem):
         # do, via a single scene.render() -- worth keeping in mind before
         # reusing it after a repaint that Qt may have split).
         self._last_mip = 0
+        # Cleared once, on this item's first paint only -- one new
+        # MapCanvasItem is built per MapView.set_source(), so this is
+        # exactly "first paint of the current canvas item" with no
+        # plumbing back to the load path that constructed it.
+        self._first_paint_pending = True
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
 
     def _select_mip(self, painter: QPainter) -> int:
@@ -193,71 +228,72 @@ class MapCanvasItem(QGraphicsItem):
         return self._bounding_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        with perf_trace.phase("repaint"):
-            rect = option.exposedRect.intersected(self._bounding_rect)
-            if rect.isEmpty():
-                return
-            # Everything below tiles and pads in LEVEL pixels, deriving each
-            # destination rect in scene units by multiplying back by `scale`.
-            # Doing it the other way (tiling in scene units) would round block
-            # edges independently per block, so adjacent blocks' destination
-            # rects could fail to abut -- `scale` is an exact power of two, so
-            # this way they always do.
-            mip = self._select_mip(painter)
-            self._last_mip = mip
-            scale = self._cache.mip_scale(mip)
-            # Floor/ceil, not round -- the composited block must fully cover
-            # exposedRect (a gap at the edge would leave a visible unpainted
-            # sliver), matching iso_geometry's own "whole pixels only" integer
-            # discipline throughout this project's rendering code.
-            x0, y0 = int(math.floor(rect.left() / scale)), int(math.floor(rect.top() / scale))
-            x1, y1 = int(math.ceil(rect.right() / scale)), int(math.ceil(rect.bottom() / scale))
-            canvas_w, canvas_h = self._cache.canvas_dims(mip)
-            x1, y1 = min(x1, canvas_w), min(y1, canvas_h)
-            if x1 <= x0 or y1 <= y0:
-                return
+        first_paint = self._first_paint_pending
+        self._first_paint_pending = False
+        try:
+            with perf_trace.phase("repaint"):
+                rect = option.exposedRect.intersected(self._bounding_rect)
+                if rect.isEmpty():
+                    return
+                # Everything below tiles and pads in LEVEL pixels, deriving each
+                # destination rect in scene units by multiplying back by `scale`.
+                # Doing it the other way (tiling in scene units) would round block
+                # edges independently per block, so adjacent blocks' destination
+                # rects could fail to abut -- `scale` is an exact power of two, so
+                # this way they always do.
+                mip = self._select_mip(painter)
+                self._last_mip = mip
+                scale = self._cache.mip_scale(mip)
+                level_rect = level_rect_for(self._cache, mip, rect)
+                if level_rect is None:
+                    return
+                x0, y0, x1, y1 = level_rect
+                canvas_w, canvas_h = self._cache.canvas_dims(mip)
 
-            # Tile [x0,x1)x[y0,y1) into PAINT_BLOCK_PX-aligned sub-blocks (grid
-            # anchored at the canvas origin, not at x0/y0, so repeated partial
-            # exposures of the same region always request the same block
-            # boundaries -- irrelevant to correctness, since each block is
-            # independently correct, but keeps cache chunk-fetch patterns
-            # stable across paint calls). Overlapping padded draws between
-            # adjacent blocks are harmless: each is an opaque, independently
-            # correct overwrite of its own destination rect.
-            block_x0 = (x0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
-            block_y0 = (y0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
-            for by in range(block_y0, y1, self.PAINT_BLOCK_PX):
-                for bx in range(block_x0, x1, self.PAINT_BLOCK_PX):
-                    cx0, cy0 = max(bx, x0), max(by, y0)
-                    cx1 = min(bx + self.PAINT_BLOCK_PX, x1)
-                    cy1 = min(by + self.PAINT_BLOCK_PX, y1)
-                    if cx1 <= cx0 or cy1 <= cy0:
-                        continue
-                    px0 = max(0, cx0 - self.PAINT_PAD_PX)
-                    py0 = max(0, cy0 - self.PAINT_PAD_PX)
-                    px1 = min(canvas_w, cx1 + self.PAINT_PAD_PX)
-                    py1 = min(canvas_h, cy1 + self.PAINT_PAD_PX)
-                    block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
-                    if block.size == 0:
-                        continue
-                    h, w = block.shape[:2]
-                    contiguous = np.ascontiguousarray(block)
-                    qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
-                    if scale == 1.0:
-                        # The point overload is a different QPainter code path
-                        # from the scaled one and is not guaranteed
-                        # bit-identical to it at unit scale. Keeping it for the
-                        # reference level is what makes this phase structurally
-                        # incapable of regressing any existing byte-identity
-                        # bar, rather than merely empirically not doing so.
-                        painter.drawImage(px0, py0, qimg)
-                    else:
-                        painter.drawImage(
-                            QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
-                            qimg,
-                            QRectF(0, 0, w, h),
-                        )
+                # Tile [x0,x1)x[y0,y1) into PAINT_BLOCK_PX-aligned sub-blocks (grid
+                # anchored at the canvas origin, not at x0/y0, so repeated partial
+                # exposures of the same region always request the same block
+                # boundaries -- irrelevant to correctness, since each block is
+                # independently correct, but keeps cache chunk-fetch patterns
+                # stable across paint calls). Overlapping padded draws between
+                # adjacent blocks are harmless: each is an opaque, independently
+                # correct overwrite of its own destination rect.
+                block_x0 = (x0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
+                block_y0 = (y0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
+                for by in range(block_y0, y1, self.PAINT_BLOCK_PX):
+                    for bx in range(block_x0, x1, self.PAINT_BLOCK_PX):
+                        cx0, cy0 = max(bx, x0), max(by, y0)
+                        cx1 = min(bx + self.PAINT_BLOCK_PX, x1)
+                        cy1 = min(by + self.PAINT_BLOCK_PX, y1)
+                        if cx1 <= cx0 or cy1 <= cy0:
+                            continue
+                        px0 = max(0, cx0 - self.PAINT_PAD_PX)
+                        py0 = max(0, cy0 - self.PAINT_PAD_PX)
+                        px1 = min(canvas_w, cx1 + self.PAINT_PAD_PX)
+                        py1 = min(canvas_h, cy1 + self.PAINT_PAD_PX)
+                        block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
+                        if block.size == 0:
+                            continue
+                        h, w = block.shape[:2]
+                        contiguous = np.ascontiguousarray(block)
+                        qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
+                        if scale == 1.0:
+                            # The point overload is a different QPainter code path
+                            # from the scaled one and is not guaranteed
+                            # bit-identical to it at unit scale. Keeping it for the
+                            # reference level is what makes this phase structurally
+                            # incapable of regressing any existing byte-identity
+                            # bar, rather than merely empirically not doing so.
+                            painter.drawImage(px0, py0, qimg)
+                        else:
+                            painter.drawImage(
+                                QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
+                                qimg,
+                                QRectF(0, 0, w, h),
+                            )
+        finally:
+            if first_paint:
+                perf_trace.first_paint_done()
 
     def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:
         """Schedules a Qt repaint for exactly the given canvas-pixel bbox --

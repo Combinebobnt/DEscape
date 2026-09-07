@@ -14,21 +14,34 @@ verifying at all, and the Map Options carrier model it additively rides in
 also having to verify -- see the maintainer plan's decision 1). Three
 distinct read-only reasons, not two:
 
-- Tier 1 fields (fixed byte length) that this file's own write path failed
-  to verify for -- the window's `read_only_reasons`.
-- Tier 2 fields (personality, civilization, architecture), stored as
-  variable-length data no byte-patch could reach regardless of file --
-  `_TIER2_REASON`, resolved here rather than by the window, since it is a
-  fact about the field, not the file.
+- Tier 1 fields (fixed byte length or, as of the civ/architecture
+  maintainer plan's Step B, a resizable str16) that this file's own write
+  path failed to verify for -- the window's `read_only_reasons`.
+  civilization/architecture ride this same reason as any other Tier-1
+  field: Step A made them writable below scenario version 1.56 (a plain
+  u32), Step B extended that to 1.56+ (a resizing splice), so there is no
+  longer a version-dependent field-kind reason for them to carry.
+- `personality`, stored as variable-length data no byte-patch could reach
+  regardless of file -- `_TIER2_REASON`, resolved here rather than by the
+  window, since it is a fact about the field, not the file.
 - `player_type`, whose semantics are unconfirmed (not "no write path yet"
   -- one exists, but writing a byte nobody has identified is exactly what
   AGENTS.md's pass-it-through-verbatim rules exist to prevent) --
   `_PLAYER_TYPE_REASON`, also resolved here.
 
-`tribe_name` is a fourth, temporary case: player_fields.write_targets()
-already resolves its offset, but its `"c256"` codec is a string and
-OptionsEditModel stays int-only until step 3d, so it is never in
-`editable_fields` yet and gets its own pending-step reason here too.
+`tribe_name` is the one TEXT-kind spec that can be editable (step 3d): it
+gets a `QLineEdit` rather than the read-only `QLabel` the other TEXT spec
+(personality, the only remaining Tier 2 field) renders as. civilization/
+architecture are COMBO-kind, not TEXT, as of Step A -- see
+`player_fields.civilization_choices()`.
+
+Number of Players (step 3e) is the one row here that is not a
+PlayerFieldSpec and not per-player: a single spinbox above the player
+selector, outside every group box, since it describes the scenario rather
+than the selected player. It carries its own gate too -- writing it needs
+FileHeader.player_count's offset as well as the eight `active` flags, and
+the header walk that supplies it fails on a scenario version 1.37 file, so
+it can be the only read-only row on a file whose other rows all edit fine.
 
 GAIA is deliberately never selectable: eight of PlayerFieldSpec's arrays
 have no GAIA slot at all (PlayerArrayLayout.index_for raises for one), and
@@ -39,14 +52,17 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping
 
+from AoE2ScenarioParser.helper.bytes_conversions import str_to_bytes
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QIcon, QPixmap
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QValidator
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -55,27 +71,59 @@ from PyQt5.QtWidgets import (
 from descape.player_fields import (
     CHECKBOX,
     COMBO,
+    NUM_PLAYERS,
+    PLAYER_COUNT_FIELD_ID,
     TEXT,
+    civilization_choices,
     current_value,
-    resolve_civilization_name,
+    defined_player_count,
     specs_for,
 )
 from descape.scenario_io import LoadedScenario
 from descape.viewer_common import _fit_combo_width, _make_spinbox
 
-# resolve_civilization_name() is only correct for these two fields --
-# everything else that renders as TEXT (tribe_name, personality) is a plain
-# string already, and running it through the civilization dataset would risk
-# an accidental match (a tribe name that happens to collide with a
-# Civilization enum value) rather than a deliberate one.
-_CIVILIZATION_STYLE_FIELDS = frozenset({"civilization", "architecture"})
+# Number of Players' own editable range. 1 is refused rather than shown as a
+# floor: every corpus file measured stores 2..8, and a one-player scenario
+# is not something the in-game editor offers either. Widened downward only
+# if a file somehow stores a smaller count, the same never-redraw-a-stored-
+# value rule _out_of_range_label() follows.
+_MIN_PLAYER_COUNT = 2
 
-# Personality/civilization/architecture are the Step 1 doc's Tier 2:
-# variable-length data (ai_names is str16; player_data_1's civ fields are
-# str16 from 1.56 on) that no byte-patch write path could reach even once
-# one exists for the fixed-length Tier 1 fields. Distinct from Tier 1's
-# reason on purpose, so a future write path can tell them apart.
-_TIER2_FIELDS = frozenset({"personality", "civilization", "architecture"})
+# tribe_name's own DataHeader.tribe_names slot is a fixed 256-byte "c256"
+# buffer (player_fields.py). One byte of that is reserved for the NUL
+# terminator bytes_to_fixed_chars()/encode_target() rely on to find the
+# string's end on the next load, leaving 255 usable encoded bytes -- not
+# characters, since str_to_bytes() (the same function encode_target() itself
+# calls) is MAIN_CHARSET (utf-8), multi-byte for non-ASCII input.
+_TRIBE_NAME_MAX_ENCODED_BYTES = 255
+
+
+class _EncodedByteLengthValidator(QValidator):
+    """Rejects a keystroke that would push the encoded byte length (not
+    character count -- see _TRIBE_NAME_MAX_ENCODED_BYTES) past `max_bytes`.
+    QLineEdit.setMaxLength() cannot express this: it counts QChars, which
+    silently over- or under-shoots for multi-byte input."""
+
+    def __init__(self, max_bytes: int, parent=None):
+        super().__init__(parent)
+        self._max_bytes = max_bytes
+
+    def validate(self, text: str, pos: int):
+        if len(str_to_bytes(text)) > self._max_bytes:
+            return QValidator.Invalid, text, pos
+        return QValidator.Acceptable, text, pos
+
+# Fields that key their own combo choices off this file's resolved codec
+# rather than a static spec.choices tuple -- see civilization_choices().
+_DYNAMIC_CHOICE_FIELDS = frozenset({"civilization", "architecture"})
+
+# personality (ai_names, always str16) is the one field left that no
+# byte-patch write path could ever reach regardless of file version --
+# unlike civilization/architecture, which became a plain u32 write below
+# scenario version 1.56 as of Step A. Distinct from Tier 1's read-only
+# reason on purpose, so it can't be confused with "this file's gate
+# failed".
+_TIER2_FIELDS = frozenset({"personality"})
 
 # The four resource-mirrored fields plus Pop Limit: each has an f32 mirror
 # (player_data_4), so the largest integer either stored copy can hold
@@ -114,16 +162,21 @@ class PlayersPanel(QWidget):
         "documented anywhere in AoE2ScenarioParser. Writing a byte nobody has "
         "identified risks corrupting a value whose meaning isn't confirmed."
     )
-    _TRIBE_NAME_PENDING_REASON = (
-        "Its offset is resolved, but editing text needs a widget kind this "
-        "panel hasn't built yet."
+    _PLAYER_COUNT_LABEL = "Number of players"
+    _PLAYER_COUNT_TOOLTIP = (
+        "How many players this scenario defines. Lowering it deactivates the "
+        "highest-numbered players; their other settings are left on disk "
+        "untouched. Written to two places at once (each player's own active "
+        "flag and the file header's count), which is why it can be read-only "
+        "on a file whose other player settings are editable."
     )
 
-    def __init__(self, on_player_field=None):
+    def __init__(self, on_player_field=None, on_player_count=None):
         super().__init__()
-        # No-op default so the panel stays constructible on its own, the
+        # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel's callbacks have.
         self._on_player_field = on_player_field or (lambda *args: None)
+        self._on_player_count = on_player_count or (lambda *args: None)
 
         self._loaded: LoadedScenario | None = None
         self._specs = ()
@@ -133,13 +186,17 @@ class PlayersPanel(QWidget):
         # Not derivable from the widget once editing lands, for the same
         # reason MapOptionsPanel._values isn't: a byte-patch write leaves
         # the parsed retriever holding the ORIGINAL value.
-        self._values: dict[str, int] = {}
+        self._values: dict[str, int | str] = {}
         self._editable_fields: frozenset[str] = frozenset()
         self._read_only_reasons: dict[str, str] = {}
         # {field_id: {player_id: value}} for every player at once, so
         # switching the player combo can show pending edits for the newly
         # selected player without a round trip back to the window.
-        self._pending_values: dict[str, dict[int, int]] = {}
+        self._pending_values: dict[str, dict[int, int | str]] = {}
+        # Number of Players' currently-shown value -- the same "not
+        # derivable from the file once an edit is pending" reasoning
+        # _values has, for the one row that isn't per-player.
+        self._player_count = _MIN_PLAYER_COUNT
         self._populating = False
 
         layout = QVBoxLayout(self)
@@ -148,6 +205,22 @@ class PlayersPanel(QWidget):
         self.status = QLabel(self._NO_DOCUMENT)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+
+        # Above the player selector and outside every group box: this is
+        # the one scenario-wide row on this panel, not a per-player
+        # setting, so putting it inside the form would make it look like it
+        # only applied to whichever player is selected.
+        count_row = QHBoxLayout()
+        count_row.setContentsMargins(0, 0, 0, 0)
+        self.player_count_label = QLabel(self._PLAYER_COUNT_LABEL)
+        count_row.addWidget(self.player_count_label)
+        self.player_count_spin = _make_spinbox(
+            _MIN_PLAYER_COUNT, False, minimum=_MIN_PLAYER_COUNT, maximum=NUM_PLAYERS
+        )
+        self.player_count_spin.valueChanged.connect(self._count_changed)
+        count_row.addWidget(self.player_count_spin)
+        count_row.addStretch(1)
+        layout.addLayout(count_row)
 
         self.player_combo = QComboBox()
         self.player_combo.setEnabled(False)
@@ -182,6 +255,8 @@ class PlayersPanel(QWidget):
             self._editable_fields = frozenset()
             self._read_only_reasons = {}
             self._pending_values = {}
+            self._player_count = _MIN_PLAYER_COUNT
+            self.player_count_spin.setEnabled(False)
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
             self.player_combo.blockSignals(False)
@@ -197,7 +272,8 @@ class PlayersPanel(QWidget):
         loaded: LoadedScenario | None,
         editable_fields: Iterable[str] = (),
         read_only_reasons: Mapping[str, str] | None = None,
-        pending_values: Mapping[str, Mapping[int, int]] | None = None,
+        pending_values: Mapping[str, Mapping[int, int | str]] | None = None,
+        player_count: int | None = None,
     ) -> None:
         """Populate from `loaded`. The single repopulate path -- both
         ViewerWindow._show_players() (mode entry, a new document) and
@@ -215,14 +291,25 @@ class PlayersPanel(QWidget):
         (bare field ids -- the write path's gate is document-wide, not
         per-player, so this set is the same regardless of which player is
         selected). `read_only_reasons` is why, per field id, for ordinary
-        Tier-1 rows a gate refused; Tier 2, `player_type` and `tribe_name`
-        get their own reasons unconditionally, resolved here rather than by
-        the window (see the module docstring).
+        Tier-1 rows (including `tribe_name`, as of step 3d) a gate refused;
+        Tier 2 and `player_type` get their own reasons unconditionally,
+        resolved here rather than by the window (see the module docstring).
 
         `pending_values` is `{field_id: {player_id: value}}` for every
         player at once, not just the one currently shown -- switching the
         player combo has to be able to show a *different* player's pending
         edit without a round trip back to the window.
+
+        `player_count` is Number of Players, which is scenario-wide and so
+        rides neither of those two per-player maps: the window passes its
+        pending value if there is one, and this falls back to what the file
+        stores. Editable when `editable_fields` contains
+        `player_fields.PLAYER_COUNT_FIELD_ID`, with its own gate reason
+        from `read_only_reasons` under the same key -- it is gated
+        separately from every per-player row (its header half needs an
+        offset a scenario version 1.37 header walk cannot supply), so it
+        can legitimately be the only read-only row on a file, or the only
+        editable one.
         """
         if loaded is None:
             self.clear_document()
@@ -234,6 +321,9 @@ class PlayersPanel(QWidget):
         self._editable_fields = frozenset(editable_fields)
         self._read_only_reasons = dict(read_only_reasons or {})
         self._pending_values = {k: dict(v) for k, v in (pending_values or {}).items()}
+        self._populate_player_count(
+            defined_player_count(loaded) if player_count is None else player_count
+        )
 
         if not same_document:
             self._player_id = 1
@@ -246,6 +336,37 @@ class PlayersPanel(QWidget):
             self.player_combo.setEnabled(True)
 
         self._populate_current_player()
+
+    def _populate_player_count(self, count: int) -> None:
+        """Put Number of Players' spinbox in step with `count`, widening its
+        range downward rather than clamping if a file stores fewer than
+        _MIN_PLAYER_COUNT -- never redraw a stored value as something else,
+        the same rule _out_of_range_label() states for per-player rows."""
+        editable = PLAYER_COUNT_FIELD_ID in self._editable_fields
+        self._populating = True
+        try:
+            self._player_count = count
+            self.player_count_spin.setRange(min(_MIN_PLAYER_COUNT, count), NUM_PLAYERS)
+            self.player_count_spin.setValue(count)
+            self.player_count_spin.setEnabled(editable)
+            self.player_count_spin.setToolTip(
+                self._PLAYER_COUNT_TOOLTIP
+                if editable
+                else (self._read_only_reasons.get(PLAYER_COUNT_FIELD_ID, "")
+                      or self._PLAYER_COUNT_TOOLTIP)
+            )
+        finally:
+            self._populating = False
+
+    def _count_changed(self, value: int) -> None:
+        """Number of Players' own edit path -- the same two guards
+        _changed() uses, and for the same reasons."""
+        if self._populating or PLAYER_COUNT_FIELD_ID not in self._editable_fields:
+            return
+        if self._player_count == value:
+            return
+        self._player_count = value
+        self._on_player_count(value)
 
     def select_player(self, player_id: int) -> bool:
         """Backs the player_select_1..8 shortcut in Players mode. GAIA
@@ -277,7 +398,11 @@ class PlayersPanel(QWidget):
             self._populating = False
 
         total = len(self._specs)
-        read_only = total - len(self._editable_fields)
+        # Counted per spec, not as `total - len(self._editable_fields)`:
+        # that set also carries PLAYER_COUNT_FIELD_ID, which has no spec, so
+        # subtracting its size reported "-1 read-only" on a file where every
+        # row is editable.
+        read_only = sum(1 for spec in self._specs if spec.field_id not in self._editable_fields)
         version = self._loaded.scenario_version
         summary = f"{total} setting{'' if total == 1 else 's'} for P{self._player_id} — scenario {version}"
         if read_only == total and total:
@@ -312,17 +437,16 @@ class PlayersPanel(QWidget):
             self._widgets[spec.field_id] = widget
             # Three-way precedence, same as MapOptionsPanel: an out-of-range
             # label has already set its own explanatory tooltip, so only a
-            # widget that hasn't gets a reason -- Tier 2/player_type/
-            # tribe_name resolve their own unconditionally (facts about the
-            # field, not the file); everything else falls back to the
-            # window's per-file gate reason, then the spec's own tooltip.
+            # widget that hasn't gets a reason -- Tier 2/player_type resolve
+            # their own unconditionally (facts about the field, not the
+            # file); everything else, including tribe_name, falls back to
+            # the window's per-file gate reason, then the spec's own
+            # tooltip.
             if not widget.toolTip():
                 if spec.field_id in _TIER2_FIELDS:
                     reason = self._TIER2_REASON
                 elif spec.field_id == "player_type":
                     reason = self._PLAYER_TYPE_REASON
-                elif spec.field_id == "tribe_name" and spec.field_id not in self._editable_fields:
-                    reason = self._TRIBE_NAME_PENDING_REASON
                 else:
                     reason = self._read_only_reasons.get(spec.field_id, "")
                 widget.setToolTip(reason or spec.tooltip)
@@ -335,8 +459,16 @@ class PlayersPanel(QWidget):
         editable = spec.field_id in self._editable_fields
 
         if spec.kind == TEXT:
-            text = resolve_civilization_name(value) if spec.field_id in _CIVILIZATION_STYLE_FIELDS else str(value)
-            label = QLabel(text)
+            if editable:
+                # The only editable TEXT spec (tribe_name) -- everything
+                # else that reaches here is Tier 2, always read-only.
+                widget = QLineEdit(str(value))
+                widget.setValidator(_EncodedByteLengthValidator(_TRIBE_NAME_MAX_ENCODED_BYTES, widget))
+                # editingFinished, not textChanged, so one undo record per
+                # edit rather than one per keystroke.
+                widget.editingFinished.connect(lambda s=spec, w=widget: self._text_changed(s, w))
+                return widget
+            label = QLabel(str(value))
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             return label
 
@@ -350,7 +482,12 @@ class PlayersPanel(QWidget):
         if spec.kind == COMBO:
             widget = QComboBox()
             _fit_combo_width(widget)
-            for choice, choice_label in spec.choices:
+            choices = (
+                civilization_choices(self._loaded)
+                if spec.field_id in _DYNAMIC_CHOICE_FIELDS
+                else spec.choices
+            )
+            for choice, choice_label in choices:
                 widget.addItem(choice_label, choice)
             if widget.findData(value) < 0:
                 # Same rule as MapOptionsPanel/TriggerPanel: an out-of-enum
@@ -423,7 +560,7 @@ class PlayersPanel(QWidget):
 
     # -- reporting an edit -------------------------------------------------
 
-    def _changed(self, spec, value: int) -> None:
+    def _changed(self, spec, value: int | str) -> None:
         """The one place a widget signal becomes a reported edit -- same two
         guards as MapOptionsPanel._changed(), and for the same reasons its
         docstring gives: `_populating` covers a programmatic populate, and
@@ -445,15 +582,26 @@ class PlayersPanel(QWidget):
         self._pending_values.setdefault(spec.field_id, {})[self._player_id] = value
         self._on_player_field(spec, self._player_id, value)
 
+    def _text_changed(self, spec, widget: QLineEdit) -> None:
+        """QLineEdit.editingFinished carries no value -- read it back off
+        the widget and report it the same way every other kind does."""
+        self._changed(spec, widget.text())
+
     # -- read access, for the window and for tests -------------------------
 
     def widget_for(self, field_id: str) -> QWidget | None:
         return self._widgets.get(field_id)
 
-    def current_values(self) -> dict[str, int]:
+    def current_values(self) -> dict[str, int | str]:
         """Raw value per field_id, as currently shown for the selected
-        player."""
+        player. Number of Players is deliberately absent -- it is
+        scenario-wide, not one of this player's settings; see
+        current_player_count()."""
         return dict(self._values)
+
+    def current_player_count(self) -> int:
+        """Number of Players as currently shown."""
+        return self._player_count
 
 
 def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:

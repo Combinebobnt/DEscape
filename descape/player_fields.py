@@ -32,6 +32,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from enum import Enum
+from typing import Mapping, Sequence
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, CivilizationOld, StartingAge
 from AoE2ScenarioParser.datasets.players import ColorId
@@ -99,7 +100,7 @@ class PlayerFieldSpec:
     struct_field: str | None = None  # for struct-array retrievers, e.g.
     # "resources" + "player_color" -- None means the retriever's own repeated
     # value is the field itself (e.g. tribe_names).
-    choices: tuple[tuple[int, str], ...] = ()  # (value, label) pairs, COMBO only
+    choices: tuple[tuple[int | str, str], ...] = ()  # (value, label) pairs, COMBO only
     minimum: int | None = None  # SPINBOX bounds
     maximum: int | None = None
     scale: float = 1.0
@@ -131,14 +132,16 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
     ),
     PlayerFieldSpec(
         "civilization", "Civilization", "Identity",
-        "DataHeader", "player_data_1", TEXT, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
+        "DataHeader", "player_data_1", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
         struct_field="civilization",
         tooltip="An integer index below scenario version 1.56, a string "
-                "(e.g. 'HUN-CIV') from 1.56 on -- see resolve_civilization_name().",
+                "(e.g. 'HUN-CIV') from 1.56 on -- see resolve_civilization_name(). "
+                "Choices are resolved per-file by civilization_choices(), not "
+                "this spec's own (empty) choices tuple.",
     ),
     PlayerFieldSpec(
         "architecture", "Architecture", "Identity",
-        "DataHeader", "player_data_1", TEXT, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
+        "DataHeader", "player_data_1", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
         struct_field="architecture_set",
         tooltip="Same civilization/architecture dataset and the same "
                 "int-then-string version switch as Civilization above -- "
@@ -400,10 +403,55 @@ _CODEC_STRUCT: dict[str, struct.Struct] = {
     "f32": struct.Struct("<f"),
 }
 
+# str16's length prefix -- confirmed against AoE2ScenarioParser.helper.
+# bytes_conversions.parse_val_to_bytes()'s own _combine_int_str(length=2,
+# endian="little", signed=True) call for the "str" datatype family, and
+# byte-for-byte round-tripped against the library's own encoder for real
+# civilization ids (see the maintainer plan's civ/architecture editing
+# plan). Not in _CODEC_STRUCT: unlike every other codec there, its byte
+# length is not fixed, so it needs its own encode_target() branch rather
+# than a plain struct.pack().
+_STR16_LENGTH_STRUCT = struct.Struct("<h")
+
+# What encode_target() will accept for a str16 target -- every real
+# Civilization member, GAIA included. GAIA is excluded from
+# civilization_choices() (a nonsense choice for a real player, one
+# misclick away in a 64-row combo -- see that function's docstring), but
+# that is a UI-level exclusion, not a wire-format one: encode_target() is
+# also what verify_player_block()'s GAIA sentinel re-encodes to check for
+# an offset shift, and GAIA's own slot is real per-file data this module
+# must be able to round-trip, not reject. Computed once at import time
+# since Civilization's membership is fixed.
+_ENCODABLE_CIVILIZATIONS = frozenset(m.value for m in Civilization)
+
 # Never writable, regardless of specs_for()'s presence check: player_type's
-# semantics are unconfirmed (the maintainer plan's decision 2) and Tier 2
-# fields are variable-length strings no byte patch could reach.
-_NEVER_WRITABLE = frozenset({"player_type", "civilization", "architecture", "personality"})
+# semantics are unconfirmed (the maintainer plan's decision 2) and
+# personality is a variable-length string no byte patch could reach.
+_NEVER_WRITABLE = frozenset({"player_type", "personality"})
+
+# civilization/architecture are NOT in _NEVER_WRITABLE: below scenario
+# version 1.56 both are a plain fixed-width u32, writable through
+# _array_target()/encode_target() the same as any other Tier-1 field. At
+# 1.56+ the same field becomes a variable-length str16, routed instead
+# through _player_data_1_variable_target()/OptionsEditModel.serialize_
+# resizes() (Step B of the civ/architecture maintainer plan) -- both
+# versions are writable, they just take different paths to get there. This
+# set marks which two fields need that per-file codec check at all;
+# everything else always uses the fixed-stride path.
+_STR16_CAPABLE_FIELDS = frozenset({"civilization", "architecture"})
+
+
+# Number of Players' own OptionsEditModel id. Deliberately NOT a
+# "player:<field>:<player>" key and NOT a PlayerFieldSpec: it is one
+# scenario-wide scalar the panel renders above its player selector, not a
+# per-player row (see PlayersPanel), and one edit of it writes nine
+# locations -- eight `active` flags plus FileHeader.player_count.
+PLAYER_COUNT_FIELD_ID = "player_count"
+
+# Players 1..8. GAIA (player_data_1 index 8) and indices 9..15 are filler
+# this never reads or writes -- the same scope diplomacy_fields.py's own
+# NUM_PLAYERS sets, restated here since defined_player_ids() moved in.
+NUM_PLAYERS = 8
 
 
 def player_field_id(field_id: str, player_id: int) -> str:
@@ -450,6 +498,52 @@ def _codec_for(retriever) -> str:
 def _retriever_map(loaded: LoadedScenario, section_name: str) -> dict | None:
     section = loaded._scenario.sections.get(section_name)
     return None if section is None else section.retriever_map
+
+
+def _player_data_1_field_codec(loaded: LoadedScenario, struct_field: str) -> str | None:
+    """The codec name (from the retriever the file was actually parsed
+    with) for `struct_field` within player_data_1's first entry, or None if
+    unresolvable. Shared by civilization_choices() and _resolve_all()'s
+    str16 skip so both key off the exact same signal -- never
+    scenario_version, matching specs_for()'s own presence-from-parsed-data
+    reasoning."""
+    retrievers = _retriever_map(loaded, "DataHeader")
+    if retrievers is None:
+        return None
+    retriever = retrievers.get("player_data_1")
+    if retriever is None or not retriever.data:
+        return None
+    field_retriever = retriever.data[0].retriever_map.get(struct_field)
+    if field_retriever is None:
+        return None
+    return _codec_for(field_retriever)
+
+
+def civilization_choices(loaded: LoadedScenario) -> tuple[tuple[int | str, str], ...]:
+    """(value, label) pairs for the Civilization/Architecture combo boxes on
+    `loaded` -- CivilizationOld (int) below scenario version 1.56,
+    Civilization (str) from 1.56 on, keyed off player_data_1's own resolved
+    civilization codec. Architecture rides the same switch (see its own
+    PlayerFieldSpec tooltip: "same int-then-string version switch as
+    Civilization"), so one codec check covers both combos.
+
+    GAIA is excluded -- a legitimate enum member but a nonsense choice for
+    a real player, one misclick away in a 64-row combo. A file that stores
+    GAIA as a player's civilization still displays it (PlayersPanel's
+    "unknown (N)" row keeps any out-of-choice-list value visible); it just
+    isn't selectable here.
+
+    Sorted by display name for a scannable combo.
+    """
+    is_str16 = _player_data_1_field_codec(loaded, "civilization") == "str16"
+    members = Civilization if is_str16 else CivilizationOld
+    pairs = [
+        (member.value, member.name.replace("_", " ").title())
+        for member in members
+        if member.name != "GAIA"
+    ]
+    pairs.sort(key=lambda pair: pair[1])
+    return tuple(pairs)
 
 
 def _struct_field_offset(entry, struct_field: str) -> tuple[int, int, int] | None:
@@ -523,6 +617,18 @@ def _backward_offsets(
 _DATA_HEADER_WANTED = frozenset({
     "tribe_names", "string_table_player_names",
     "per_player_lock_civilization", "per_player_lock_personality",
+    # player_data_1: civilization/architecture's own array base. The plan
+    # this module implements filed this addition under its Step B (the
+    # 1.56+ variable-stride locator), but it turns out to be a load-bearing
+    # prerequisite for Step A too -- _array_target() cannot resolve either
+    # field's u32 form below 1.56 without player_data_1's own base being in
+    # this set (confirmed empirically: without it, _array_target() returns
+    # None for civilization/architecture on every file, pre- or post-1.56,
+    # since it looks up bases["player_data_1"] regardless of struct_field).
+    # The forward walk already crosses player_data_1 to reach
+    # per_player_lock_civilization/_personality either way, so recording
+    # its own base here is free.
+    "player_data_1",
 })
 
 
@@ -641,6 +747,47 @@ def _array_target(
     )
 
 
+def _variable_stride_target(
+    array_start: int, entries: list, index: int, struct_field: str
+) -> _Resolved | None:
+    """One entry's `struct_field` location within a variable-stride struct
+    array -- entries that can differ in byte length from each other, so no
+    single `stride` (unlike `_array_target()`) can locate them. `array_start`
+    is the array's own first byte within decompressed_body, already trusted
+    by the caller; this function only walks *within* it.
+
+    Each entry's own start is the sum of every *earlier* entry's own
+    trusted `byte_length` (parse-time, never a re-serialization). Only the
+    chosen entry's own fields are then walked forward (`_struct_field_offset()`,
+    which does re-serialize via `retriever_length()`), and only trusted if
+    that sum equals the entry's own `byte_length` exactly -- the span check
+    that would catch a variable-length field's re-serialization drifting
+    from what was actually parsed.
+
+    Generalized from what was originally player_data_3.color's own
+    one-off route (the maintainer plan's civ/architecture editing plan,
+    Step B1) so player_data_1's civilization/architecture_set -- str16 from
+    scenario version 1.56 -- can be reached the same way, with one locator
+    for both rather than two.
+    """
+    if not 0 <= index < len(entries):
+        return None
+    entry_start = array_start + sum(e.byte_length for e in entries[:index])
+    entry = entries[index]
+
+    located = _struct_field_offset(entry, struct_field)
+    if located is None:
+        return None
+    field_pos, field_len, total = located
+    if total != entry.byte_length:
+        return None
+    field_retriever = entry.retriever_map[struct_field]
+    return _Resolved(
+        PlayerWriteTarget(entry_start + field_pos, field_len, _codec_for(field_retriever)),
+        field_retriever.data,
+    )
+
+
 def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | None:
     """Units.player_data_3[player_id-1].color -- the mirror decision 4 wants
     kept in sync with the primary (PlayerDataTwo.resources.player_color),
@@ -648,7 +795,8 @@ def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | 
     here so they're replaced in the scenario file. In case it impacts
     gameplay." Confirmed in sync with the primary on all 20 examples/ files.
 
-    Reached differently from every other target in this module:
+    Reached differently from every other target in this module (before
+    civilization/architecture joined it -- see _player_data_1_variable_target()):
     player_data_3 is variable-length (constant_name is a str16, and
     diplomacy_for_interaction/diplomacy_for_ai_system are themselves
     variably-repeated), so there is no trusted end-of-section anchor to
@@ -658,14 +806,8 @@ def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | 
     (players_units' own trusted start) minus player_data_3's total
     retriever_length() -- itself the sum of each entry's own trusted
     byte_length, never a re-serialization -- is player_data_3's own start.
-    Each entry's own start is then the sum of every *earlier* entry's
-    trusted byte_length (entries can differ in length from each other).
-    Only the chosen entry's own fields are walked forward (summing
-    retriever_length(), which does re-serialize), and only trusted if that
-    sum equals the entry's own byte_length exactly -- the span check that
-    would catch a variable-length field's re-serialization drifting from
-    what was actually parsed. Measured against all 20 examples/ files:
-    holds byte-for-byte on every entry of every file.
+    Measured against all 20 examples/ files: holds byte-for-byte on every
+    entry of every file.
     """
     if not loaded.units_write_supported:
         return None
@@ -675,28 +817,283 @@ def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | 
     retriever = retrievers.get("player_data_3")
     if retriever is None or not retriever.data:
         return None
-    entries = retriever.data
-    index = player_id - 1
-    if not 0 <= index < len(entries):
-        return None
-
     array_start = loaded.units_block_offset - retriever_length(retriever)
     if array_start < 0:
         return None
-    entry_start = array_start + sum(e.byte_length for e in entries[:index])
-    entry = entries[index]
+    return _variable_stride_target(array_start, retriever.data, player_id - 1, "color")
 
-    located = _struct_field_offset(entry, "color")
-    if located is None:
+
+def _player_data_1_variable_target(
+    loaded: LoadedScenario, struct_field: str, player_id: int
+) -> _Resolved | None:
+    """civilization/architecture_set's own location within player_data_1 on
+    a 1.56+ file, where the array is variable-stride (str16 fields make
+    entries differ in byte length). Unlike player_data_3, player_data_1's
+    own base offset IS already trusted -- `_data_header_bases()` resolves
+    it via `_DATA_HEADER_WANTED`, span-checked against DataHeader's own
+    parse-time `byte_length` -- so this is the simpler of the two callers
+    of `_variable_stride_target()`."""
+    bases = _data_header_bases(loaded)
+    if bases is None or "player_data_1" not in bases:
         return None
-    field_pos, field_len, total = located
-    if total != entry.byte_length:
+    base = bases["player_data_1"]
+    retrievers = _retriever_map(loaded, "DataHeader")
+    if retrievers is None:
         return None
-    field_retriever = entry.retriever_map["color"]
-    return _Resolved(
-        PlayerWriteTarget(entry_start + field_pos, field_len, _codec_for(field_retriever)),
-        field_retriever.data,
-    )
+    retriever = retrievers.get("player_data_1")
+    if retriever is None or not retriever.data:
+        return None
+    index = PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for(player_id)
+    return _variable_stride_target(base.offset, retriever.data, index, struct_field)
+
+
+# field_id -> struct_field within a player_data_1 entry, for the two str16
+# fields -- kept as an internal detail here (rather than something a caller
+# like options_model.py has to know) the same way _MIRRORS keeps its own
+# routes internal.
+_PLAYER_DATA_1_STRUCT_FIELD = {"civilization": "civilization", "architecture": "architecture_set"}
+
+
+def player_data_1_splice(
+    loaded: LoadedScenario, edits: Sequence[tuple[int, str, str]], body: bytes | None = None
+) -> tuple[int, int, bytes] | None:
+    """(start, end, replacement) for the WHOLE player_data_1 array within
+    decompressed_body, with `edits` -- (player_id, field_id, new_value)
+    triples, field_id "civilization" or "architecture" -- substituted into
+    each entry's bytes. One region, one delta, covering every entry
+    regardless of how many `edits` touches, because a length change to one
+    entry's str16 field shifts every later entry within the array (the
+    maintainer plan's B3: "Emit one replacement for the whole
+    player_data_1 block, not one per field").
+
+    **Never rebuilds an entry from structure.json defaults** -- copies each
+    entry's own bytes out of `body` and only overwrites the edited field's
+    span, exactly the way _matches() reads ground truth elsewhere in this
+    module. This matters concretely: every real 1.56+ corpus file holds
+    `str_sign1`/`str_sign2` as `2656` (`0x0A60`), while every
+    1.56/1.57/1.58 structure.json declares a default of `2565` (`0x0A05`)
+    for those same fields -- rebuilding from defaults would silently
+    corrupt every entry this function touches.
+
+    `body` defaults to `loaded.decompressed_body`, but the write path
+    passes the *partially patched* body instead, and must: Number of
+    Players patches `active` inside this very array through
+    serialize_patches(), and reading the original bytes here would rebuild
+    the array without that patch and silently discard it. Every offset
+    used is a load-time one, which stays valid because every step that can
+    change the body's length (the Units/Triggers assembly, the Messages
+    splice) sits after this array and runs before this splice.
+
+    A single entry with two edits (both civilization and architecture
+    edited for the same player in one save) applies them in descending
+    on-disk offset order, computed from the entry's ORIGINAL structure --
+    civilization always sits before architecture_set, but this does not
+    hardcode that: it re-derives each edit's offset from
+    `_struct_field_offset()` before applying any of them, then applies the
+    rightmost edit first, so replacing one field's bytes (which may grow
+    or shrink) never invalidates an offset already computed for another
+    field in the same entry.
+
+    None if player_data_1's own base offset can't be resolved, or if any
+    edit's entry/field can't be located, or if the array's total measured
+    length disagrees with its trusted `base.length` (the span check that
+    would catch drift before ever producing a corrupt splice) -- fails
+    closed the same way every other target resolver here does. The caller
+    (OptionsEditModel.serialize_resizes()) is expected to have already
+    confirmed players_write_supported() and to call this only when `edits`
+    is non-empty.
+    """
+    bases = _data_header_bases(loaded)
+    if bases is None or "player_data_1" not in bases:
+        return None
+    base = bases["player_data_1"]
+    retrievers = _retriever_map(loaded, "DataHeader")
+    if retrievers is None:
+        return None
+    retriever = retrievers.get("player_data_1")
+    if retriever is None or not retriever.data:
+        return None
+    entries = retriever.data
+    if sum(e.byte_length for e in entries) != base.length:
+        return None
+
+    by_index: dict[int, list[tuple[str, str]]] = {}
+    for player_id, field_id, value in edits:
+        struct_field = _PLAYER_DATA_1_STRUCT_FIELD[field_id]
+        index = PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for(player_id)
+        by_index.setdefault(index, []).append((struct_field, value))
+
+    if body is None:
+        body = loaded.decompressed_body
+    out = bytearray()
+    pos = base.offset
+    for i, entry in enumerate(entries):
+        entry_bytes = bytearray(body[pos : pos + entry.byte_length])
+        field_edits = []
+        for struct_field, value in by_index.get(i, ()):
+            located = _struct_field_offset(entry, struct_field)
+            if located is None:
+                return None
+            field_pos, field_len, total = located
+            if total != entry.byte_length:
+                return None
+            field_edits.append((field_pos, field_len, value))
+        field_edits.sort(key=lambda e: e[0], reverse=True)
+        for field_pos, field_len, value in field_edits:
+            entry_bytes[field_pos : field_pos + field_len] = _encode_str16(value)
+        out += entry_bytes
+        pos += entry.byte_length
+
+    return base.offset, base.offset + base.length, bytes(out)
+
+
+# -- Number of Players ------------------------------------------------------
+
+
+def _active_flag_resolved(loaded: LoadedScenario) -> tuple[_Resolved, ...] | None:
+    """One _Resolved per player 1..NUM_PLAYERS for
+    DataHeader.player_data_1[i].active, in player order. None if any of the
+    eight cannot be located.
+
+    Routed through _player_data_1_variable_target(), never _array_target():
+    player_data_1 is variable-stride from scenario version 1.56 on (its
+    civilization/architecture_set fields are str16, so entries genuinely
+    differ in byte length -- measured at 34..48 bytes within a single
+    file), and _array_target()'s single `base.length // count` stride is
+    wrong there. The variable-stride walk is correct for the fixed-stride
+    versions too, since it sums each entry's own trusted byte_length rather
+    than assuming anything, so one route covers every version. `active` is
+    the entry's first retriever, so it is reached without crossing either
+    str16 field either way.
+    """
+    resolved = []
+    for player_id in range(1, NUM_PLAYERS + 1):
+        item = _player_data_1_variable_target(loaded, "active", player_id)
+        if item is None:
+            return None
+        resolved.append(item)
+    return tuple(resolved)
+
+
+def player_count_targets(loaded: LoadedScenario) -> tuple[PlayerWriteTarget, ...] | None:
+    """The eight `active` flag targets Number of Players writes, in player
+    order (index 0 is P1). None if they cannot all be located.
+
+    Only the body half of this field: FileHeader.player_count is the other
+    half, and lives outside decompressed_body entirely -- see
+    scenario_io.LoadedScenario.header_player_count_span. Only meaningful
+    once verify_player_count_block() has returned True.
+    """
+    resolved = _active_flag_resolved(loaded)
+    return None if resolved is None else tuple(r.target for r in resolved)
+
+
+def encode_player_count(targets: Sequence[PlayerWriteTarget], count: int) -> list[bytes]:
+    """The bytes each of `targets` holds for a scenario with `count`
+    players: 1 for the first `count` slots, 0 for the rest.
+
+    This is what makes Number of Players a *prefix* writer -- see
+    defined_player_ids()'s own docstring for why that differs from how the
+    unedited count is read.
+    """
+    return [
+        encode_target(target, 1 if i < count else 0) for i, target in enumerate(targets)
+    ]
+
+
+def verify_player_count_block(loaded: LoadedScenario) -> bool:
+    """True iff Number of Players' whole write surface can be trusted:
+    every `active` flag's computed offset reproduces the value already
+    parsed there, FileHeader.player_count's own span resolved, and the
+    stored header count already equals the count of active flags among
+    players 1..NUM_PLAYERS.
+
+    A gate of its own rather than a clause inside verify_player_block(),
+    which is what every *other* Players mode row rides. The two genuinely
+    come apart on real files: the FileHeader forward walk does not
+    reconcile on a scenario version 1.37 corpus file, which must leave
+    Number of Players read-only there without greying out the eleven other
+    editable rows on that same file.
+
+    The coupling check is not a rubber stamp either -- it is the premise
+    the write itself rests on (one value, two buffers). A file whose two
+    copies already disagreed would have one of them silently "corrected"
+    by any edit here, so it is refused instead.
+    """
+    resolved = _active_flag_resolved(loaded)
+    if resolved is None:
+        return False
+    start, end = loaded.header_player_count_span
+    if start < 0 or end > len(loaded.header_bytes):
+        return False
+
+    body = loaded.decompressed_body
+    for item in resolved:
+        target = item.target
+        if target.offset < 0 or target.offset + target.length > len(body):
+            return False
+        try:
+            expected = encode_target(target, item.parsed_value)
+        except ValueError:
+            return False
+        if body[target.offset : target.offset + target.length] != expected:
+            return False
+
+    header_count = int.from_bytes(loaded.header_bytes[start:end], "little")
+    return header_count == sum(1 for item in resolved if item.parsed_value)
+
+
+def defined_player_ids(
+    loaded: LoadedScenario, pending: Mapping[str, int | str] | None = None
+) -> list[int]:
+    """Player numbers (1..NUM_PLAYERS) this scenario defines, in ascending
+    order.
+
+    Moved here from descape/diplomacy_fields.py, which owned it while
+    Players mode could only read this count -- now that Number of Players
+    edits it, the reader belongs beside the write path that changes it, and
+    `pending` is how a caller asks for the count *as edited* rather than as
+    stored.
+
+    **The two branches make different guarantees, deliberately.** Read from
+    the file (`pending` absent or carrying no count edit), this reads each
+    DataHeader.player_data_1[i].active flag on its own and does not assume
+    the active set is a contiguous prefix of 1..8 -- every corpus file
+    measured happens to be one, but a sparse file would still resolve to
+    real player numbers rather than the wrong ones. Read from a pending
+    edit, the result is necessarily `range(1, count + 1)`: Number of
+    Players is a single count, so committing one rewrites the flags into a
+    prefix (see encode_player_count()). Editing the count on a
+    hypothetical sparse file therefore normalises it, which is the
+    in-game editor's own behaviour for this control.
+
+    Read from DataHeader rather than FileHeader.player_count, which lives
+    in header_bytes -- a buffer this app writes back verbatim except for
+    the specific fields it patches. Verified working on every examples/
+    file, including pre-1.53 versions where DataHeader.gaia_player_index
+    does not yet exist, since this reader does not depend on it.
+
+    `pending` is OptionsEditModel.pending_values() verbatim -- the same
+    dict viewer.py already filters by key prefix for per-player rows, so
+    callers need no second convention.
+    """
+    if pending is not None and PLAYER_COUNT_FIELD_ID in pending:
+        return list(range(1, int(pending[PLAYER_COUNT_FIELD_ID]) + 1))
+    player_data_1 = loaded._scenario.sections["DataHeader"].retriever_map["player_data_1"].data
+    return [
+        i + 1
+        for i, entry in enumerate(player_data_1[:NUM_PLAYERS])
+        if entry.retriever_map["active"].data
+    ]
+
+
+def defined_player_count(
+    loaded: LoadedScenario, pending: Mapping[str, int | str] | None = None
+) -> int:
+    """Number of players this scenario defines (2..8 across every corpus
+    file measured) -- see defined_player_ids() for the read path, the
+    pending-edit branch, and why DataHeader rather than FileHeader."""
+    return len(defined_player_ids(loaded, pending))
 
 
 def _pop_limit_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | None:
@@ -751,10 +1148,20 @@ def _resolve_all(loaded: LoadedScenario) -> dict[str, tuple[_Resolved, ...]]:
     for spec in specs_for(loaded):
         if spec.field_id in _NEVER_WRITABLE:
             continue
+        is_str16 = (
+            spec.field_id in _STR16_CAPABLE_FIELDS
+            and _player_data_1_field_codec(loaded, spec.struct_field) == "str16"
+        )
         for player_id in range(1, 9):
             index = spec.layout.index_for(player_id)
             if spec.field_id == "pop_limit":
                 primary = _array_target(loaded, "Units", "player_data_4", "population_limit", index)
+            elif is_str16:
+                # Variable-stride: player_data_1's own entries differ in
+                # byte length from each other, so _array_target()'s single
+                # `stride` cannot locate them -- see
+                # _player_data_1_variable_target() (Step B1).
+                primary = _player_data_1_variable_target(loaded, spec.struct_field, player_id)
             else:
                 primary = _array_target(loaded, spec.section, spec.retriever, spec.struct_field, index)
             if primary is None:
@@ -834,11 +1241,34 @@ def verify_player_block(loaded: LoadedScenario) -> bool:
     for spec in specs_for(loaded):
         if spec.field_id in _NEVER_WRITABLE or spec.layout is not PlayerArrayLayout.P1_TO_P8_THEN_GAIA:
             continue
-        gaia = _array_target(loaded, spec.section, spec.retriever, spec.struct_field, 8)
+        if spec.field_id in _STR16_CAPABLE_FIELDS and _player_data_1_field_codec(loaded, spec.struct_field) == "str16":
+            # Step B: with the variable-stride locator able to reach index
+            # 8, this is a *stronger* shift detector than for the
+            # fixed-width fields above -- a wrong entry offset in a
+            # variable-stride array lands mid-string, not on a plausible
+            # integer. GAIA's own value is never written even so (this
+            # loop only ever calls _matches(), never encode_target() for a
+            # new value).
+            gaia = _player_data_1_variable_target(loaded, spec.struct_field, 0)
+        else:
+            gaia = _array_target(loaded, spec.section, spec.retriever, spec.struct_field, 8)
         if gaia is None or not _matches(gaia):
             return False
 
     return True
+
+
+def _encode_str16(value: int | str) -> bytes:
+    """`[int16 LE, signed] payload length + payload (UTF-8, no trailing
+    NUL)` for a civilization/architecture value -- factored out of
+    encode_target() so player_data_1_splice() can call it directly without
+    constructing a throwaway PlayerWriteTarget just to reach this branch.
+    See encode_target()'s own docstring for the format's provenance and
+    the GAIA-inclusion rationale."""
+    if not isinstance(value, str) or value not in _ENCODABLE_CIVILIZATIONS:
+        raise ValueError(f"{value!r} is not a real Civilization member")
+    payload = value.encode("utf-8")
+    return _STR16_LENGTH_STRUCT.pack(len(payload)) + payload
 
 
 def encode_target(target: PlayerWriteTarget, value: int | str) -> bytes:
@@ -853,7 +1283,25 @@ def encode_target(target: PlayerWriteTarget, value: int | str) -> bytes:
     resource fields are s32 on their primary side, so a value that lost
     precision on its f32 mirror would desync the two stored copies instead
     of erroring.
+
+    `str16` encodes `[int16 LE, signed] payload length + payload (UTF-8, no
+    trailing NUL)` -- confirmed byte-for-byte against AoE2ScenarioParser's
+    own `parse_val_to_bytes()` for civilization/architecture_set
+    specifically (both are in that library's `_no_string_trail` list, so
+    -- unlike most `str` fields -- no trailing NUL is appended). The
+    result's length is whatever `value` needs, not `target.length`: a
+    str16 target's own `.length` only describes what is *currently* stored
+    there. Callers must route this through
+    `OptionsEditModel.serialize_resizes()`, never `serialize_patches()`,
+    which assumes `len(result) == target.length` and would silently resize
+    the wrong span otherwise (see `_patch_options()`'s own length assert).
+    Only a real `Civilization` vocabulary member is accepted (GAIA
+    included -- see `_ENCODABLE_CIVILIZATIONS`'s own docstring for why
+    excluding it here would be wrong, unlike in `civilization_choices()`)
+    -- refuses a non-str or out-of-vocabulary value rather than writing it.
     """
+    if target.codec == "str16":
+        return _encode_str16(value)
     if target.codec == "c256":
         encoded = fixed_chars_to_bytes(str(value), target.length)
         if len(encoded) != target.length:

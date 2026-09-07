@@ -8,7 +8,7 @@ player) only when `show_scenario()` is handed a genuinely different document
 -- see that method's own docstring for why, the same reasoning
 PlayersPanel.show_scenario() gives. Unlike PlayersPanel, the selector here
 only lists the players this file actually defines
-(diplomacy_fields.defined_player_ids()), not a fixed P1..P8: a stance
+(player_fields.defined_player_ids()), not a fixed P1..P8: a stance
 toward or from an undefined player has no in-game meaning to edit, even
 though the byte grid stores a slot for it. Driven off that list directly
 rather than range(1, count + 1): the active set is a contiguous prefix in
@@ -76,11 +76,11 @@ from descape import option_fields, trigger_fields
 from descape.diplomacy_fields import (
     allied_victory_cell_id,
     allied_victory_value,
-    defined_player_ids,
     stance_cell_id,
     stance_value,
 )
 from descape.map_options_panel import MapOptionsPanel
+from descape.player_fields import defined_player_ids
 from descape.scenario_io import LoadedScenario
 from descape.viewer_common import _make_spinbox
 
@@ -140,7 +140,7 @@ class DiplomacyPanel(QWidget):
         # host (see _rebuild_host()).
         self._option_specs: tuple[option_fields.OptionFieldSpec, ...] = ()
         # The file's active player numbers, not assumed contiguous from 1 --
-        # see diplomacy_fields.defined_player_ids()'s own docstring. The
+        # see player_fields.defined_player_ids()'s own docstring. The
         # combo and every opponent row are driven off this list, never off
         # range(1, count + 1), so a sparse active set (were one ever found)
         # would still select and label real players rather than silently
@@ -221,25 +221,31 @@ class DiplomacyPanel(QWidget):
         editable_fields: Iterable[str] = (),
         read_only_reasons: Mapping[str, str] | None = None,
         pending_values: Mapping[str, int] | None = None,
+        active_players: Sequence[int] | None = None,
     ) -> None:
         """Populate from `loaded`. The single repopulate path -- both
         ViewerWindow._show_diplomacy() (mode entry, a new document) and
         ._repopulate_diplomacy() (after an edit, an undo, or a refused
         edit) call only this.
 
+        `active_players` is the player numbers to show, defaulting to what
+        the file itself stores. The window passes the *pending* list
+        instead once Players mode's Number of Players row has an
+        uncommitted edit -- the grid has to shrink or grow with it, since
+        both ride the same OptionsEditModel and a save writes them
+        together.
+
         The player selector is only rebuilt -- and the selection reset to
         the file's first defined player -- when `loaded` is a genuinely
         different document (identity, not equality: the same
         LoadedScenario is passed on every repopulate of one open file), OR
-        when the active player list itself changed. The second condition
-        does not fire from anything in the app today (nothing writes
-        DataHeader.player_data_1[].active yet -- see TODO.md's "Player
-        options write path"), but it is what a test harness uses to reach
-        a non-default player count by mutating the already-loaded
-        scenario in place rather than depending on a corpus file (see
-        tests/test_diplomacy_panel.py's module docstring) -- identity
-        alone would treat that mutation as "nothing changed" and leave the
-        selector showing the old count. Otherwise the selector and the
+        when the active player list itself changed. The second condition is
+        live as of step 3e (Number of Players edits it), and is also what a
+        test harness uses to reach a non-default player count by mutating
+        the already-loaded scenario in place rather than depending on a
+        corpus file (see tests/test_diplomacy_panel.py's module docstring)
+        -- identity alone would treat that mutation as "nothing changed"
+        and leave the selector showing the old count. Otherwise the selector and the
         player currently showing are left alone, so an edit on P5 does not
         silently jump the panel back to P1 -- the same rule
         PlayersPanel.show_scenario() follows and for the same reason.
@@ -257,7 +263,9 @@ class DiplomacyPanel(QWidget):
             self.clear_document()
             return
 
-        new_active_players = defined_player_ids(loaded)
+        new_active_players = (
+            list(active_players) if active_players is not None else defined_player_ids(loaded)
+        )
         same_document = loaded is self._loaded and new_active_players == self._active_players
         self._loaded = loaded
         self._active_players = new_active_players

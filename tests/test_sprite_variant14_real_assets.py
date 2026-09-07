@@ -33,7 +33,7 @@ pytestmark = [
 
 # The Stable. Its graphic, b_west_stable_age3_x1, is layout variant 14 -- one
 # of the 226 files the decoder rejected outright until 2026-08, and the exact
-# const TODO.md's open item named.
+# const used below.
 STABLE_CONST = 86
 STABLE_GRAPHIC = "b_west_stable_age3_x1"
 BASE_ELEVATION = 7

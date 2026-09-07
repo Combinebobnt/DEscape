@@ -5,11 +5,13 @@ it is `global`-mutated there, so a re-export would not track it."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtGui import (
     QColor,
+    QDesktopServices,
     QFont,
     QPalette,
 )
@@ -18,6 +20,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QLabel,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -131,3 +134,91 @@ class DebugLogDialog(QDialog):
     def _clear(self) -> None:
         debug_log.clear()
         self._refresh()
+
+
+class CrashReportDialog(QDialog):
+    """Surfaces a crash report: read-only monospace dump text (same shape as
+    DebugLogDialog) plus actions to inspect/save it. Not a QMessageBox --
+    tests/conftest.py records that a message box blocks forever offscreen,
+    which would hang the default-tier test suite; a QDialog is constructible
+    and inspectable in a test without ever calling exec_()."""
+
+    def __init__(
+        self,
+        parent: "ViewerWindow | None",
+        *,
+        summary: str,
+        dump_path: Path,
+        dump_text: str,
+        from_last_session: bool = False,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(
+            "Crash report from your last session" if from_last_session else "Crash report"
+        )
+        self.resize(700, 500)
+        self._dump_path = dump_path
+
+        summary_label = QLabel(summary)
+        summary_label.setWordWrap(True)
+        path_label = QLabel(f"Saved to: {dump_path}")
+        path_label.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(summary_label)
+        layout.addWidget(path_label)
+        if not from_last_session:
+            warning_label = QLabel(
+                "The application may now be in an inconsistent state. If you "
+                "have unsaved work, save it to a new file before continuing."
+            )
+            warning_label.setWordWrap(True)
+            layout.addWidget(warning_label)
+
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setFont(QFont("Monospace"))
+        self.text.setPlainText(dump_text)
+        layout.addWidget(self.text, stretch=1)
+
+        copy_btn = QPushButton("Copy to clipboard")
+        copy_btn.clicked.connect(self._copy_to_clipboard)
+        open_folder_btn = QPushButton("Open containing folder")
+        open_folder_btn.clicked.connect(self._open_containing_folder)
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(open_folder_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        if from_last_session:
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(self.close)
+            buttons.button(QDialogButtonBox.Close).clicked.connect(self.close)
+        else:
+            buttons = QDialogButtonBox()
+            save_as_btn = buttons.addButton("Save As...", QDialogButtonBox.ActionRole)
+            save_as_btn.clicked.connect(self._save_as)
+            # Continue is the default, not Quit: the app survives an
+            # unhandled exception in this PyQt5 (confirmed by probe), and
+            # forcing a quit here would destroy unsaved edits for no reason.
+            continue_btn = buttons.addButton("Continue", QDialogButtonBox.AcceptRole)
+            continue_btn.setDefault(True)
+            quit_btn = buttons.addButton("Quit", QDialogButtonBox.DestructiveRole)
+            quit_btn.clicked.connect(self._quit)
+            buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    def _copy_to_clipboard(self) -> None:
+        QApplication.clipboard().setText(self.text.toPlainText())
+
+    def _open_containing_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._dump_path.parent)))
+
+    def _save_as(self) -> None:
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "save_as"):
+            parent.save_as()
+
+    def _quit(self) -> None:
+        QApplication.instance().quit()

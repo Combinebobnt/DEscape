@@ -472,7 +472,7 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
             # _crop_bbox_px() call below is valid for both without separate
             # crop math. Phase 6 (Sloped)'s reference render, for Track C6's
             # side-by-side against the in-game screenshots this script's own
-            # docstring hands off (docs/ELEVATION_REFERENCE.md).
+            # generated reference doc hands off.
             sloped_img, _sloped_elevations, _sloped_corner_rise, _sloped_proj = (
                 render.render_terrain_sloped_with_proj(reloaded, with_units=False)
             )
@@ -505,7 +505,7 @@ def _save_png(img, out_path: Path) -> None:
 
 
 def _write_doc(regions: list[dict], out_dir: Path) -> None:
-    """Writes docs/ELEVATION_REFERENCE.md (Track A3): what to screenshot per
+    """Writes the elevation reference doc (Track A3): what to screenshot per
     region and which question it settles, plus where the generated files go
     -- generated, not hand-maintained, matching this repo's convention for
     docs derived from something else that can drift (see docs/ACTORS.md/

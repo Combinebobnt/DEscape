@@ -240,6 +240,20 @@ def players_write_supported(loaded: LoadedScenario) -> bool:
     return player_fields.verify_player_block(loaded)
 
 
+def player_count_write_supported(loaded: LoadedScenario) -> bool:
+    """Whether Number of Players can be written back.
+
+    A *fourth* gate, independent of players_write_supported() rather than
+    folded into it, because the two come apart on a real corpus file: this
+    one additionally needs FileHeader.player_count's own offset, which
+    comes from a header walk that does not reconcile on a scenario version
+    1.37 file. Folding it in would grey out every other per-player row on
+    that file to protect one row that is genuinely unwritable there.
+    See player_fields.verify_player_count_block().
+    """
+    return player_fields.verify_player_count_block(loaded)
+
+
 class OptionsEditModel:
     """Per-document map-option edit state: which scalars the user changed, and
     the byte patches that writes them back.
@@ -275,7 +289,7 @@ class OptionsEditModel:
         self._offsets: dict[str, FieldOffset] = {}
         self._packers: dict[str, struct.Struct] = {}
         self._specs: dict[str, OptionFieldSpec] = {}
-        self._original: dict[str, int] = {}
+        self._original: dict[str, int | str] = {}
         for spec, fo in offsets.items():
             retriever = loaded._scenario.sections[spec.section].retriever_map[spec.retriever]
             packer = pack_struct_for(retriever)
@@ -317,26 +331,47 @@ class OptionsEditModel:
         # (player_fields._MIRRORS, plus color/pop_limit's own optional
         # mirrors) patches two or three locations from one edit, which the
         # single-offset _offsets/_packers dicts above have no room for.
-        # tribe_name is skipped: its "c256" codec is a string, and
-        # _original/_pending stay int-only until step 3d widens them.
+        # tribe_name's "c256" codec is a string -- _original/_pending are
+        # int | str (step 3d) so it rides the same additive set as every
+        # other Tier-1 player field, with encode_target() (called from
+        # set_value()/serialize_patches() below) dispatching on the target's
+        # own codec rather than a struct.Struct the way the int-only fields
+        # above do.
         self._player_field_ids: frozenset[str] = frozenset()
         self._player_targets: dict[str, tuple[player_fields.PlayerWriteTarget, ...]] = {}
         if players_write_supported(loaded):
             specs_by_id = {s.field_id: s for s in player_fields.specs_for(loaded)}
             for key, targets in player_fields.write_targets(loaded).items():
-                if targets[0].codec == "c256":
-                    continue
                 field_id, player_id = player_fields.parse_player_field_id(key)
                 spec = specs_by_id[field_id]
                 self._player_targets[key] = targets
                 self._original[key] = player_fields.current_value(loaded, spec, player_id)
             self._player_field_ids = frozenset(self._player_targets)
 
+        # Number of Players: one scenario-wide scalar, not a per-player row,
+        # and the only field in this model whose write reaches two buffers
+        # (eight `active` flags in decompressed_body, plus
+        # FileHeader.player_count in header_bytes -- see header_patch()).
+        # Kept out of _player_targets because its stored value is a *count*,
+        # not a value to encode into each target: set_value() would otherwise
+        # try to pack 5 into each of the eight flags. It is still counted in
+        # _player_field_ids so has_player_edits (and therefore
+        # write_scenario()'s re-gate) covers a count-only edit.
+        self._player_count_targets: tuple[player_fields.PlayerWriteTarget, ...] = ()
+        if player_count_write_supported(loaded):
+            targets = player_fields.player_count_targets(loaded)
+            if targets is not None:
+                self._player_count_targets = targets
+                self._original[player_fields.PLAYER_COUNT_FIELD_ID] = (
+                    player_fields.defined_player_count(loaded)
+                )
+                self._player_field_ids |= {player_fields.PLAYER_COUNT_FIELD_ID}
+
         # field_id -> the value the user set, present only while it differs
         # from what the file holds. Setting a field back to its original value
         # removes it, so a change made and undone leaves has_edits False rather
         # than merely producing identical bytes through the patch path.
-        self._pending: dict[str, int] = {}
+        self._pending: dict[str, int | str] = {}
 
     # -- state ---------------------------------------------------------------
 
@@ -368,18 +403,25 @@ class OptionsEditModel:
         same reason has_diplomacy_edits' docstring gives."""
         return any(field_id in self._player_field_ids for field_id in self._pending)
 
-    def original_value(self, field_id: str) -> int:
+    @property
+    def has_player_count_edit(self) -> bool:
+        """Whether Number of Players is pending -- the signal
+        scenario_write.py needs to re-run player_count_write_supported() on
+        save, and to know it must patch header_bytes as well as the body."""
+        return player_fields.PLAYER_COUNT_FIELD_ID in self._pending
+
+    def original_value(self, field_id: str) -> int | str:
         return self._original[field_id]
 
-    def current_value(self, field_id: str) -> int:
+    def current_value(self, field_id: str) -> int | str:
         return self._pending.get(field_id, self._original[field_id])
 
-    def pending_values(self) -> dict[str, int]:
+    def pending_values(self) -> dict[str, int | str]:
         """Only the fields that differ from the file, for the panel's `values`
         override. Empty for a document nothing has been changed in."""
         return dict(self._pending)
 
-    def set_value(self, field_id: str, value: int) -> None:
+    def set_value(self, field_id: str, value: int | str) -> None:
         """Record `field_id` as set to raw `value`. Must be wrapped in an undo
         record by the caller -- a model that is dirty while the history is not
         closes the document with no save prompt.
@@ -387,8 +429,25 @@ class OptionsEditModel:
         Raises rather than clamping an out-of-range value: every caller here
         comes from a widget whose range is already the field's own, so a value
         this cannot pack means the spec and the file's datatype disagree, which
-        is a bug to surface and not a number to round.
+        is a bug to surface and not a number to round. A player field's own
+        codec decides the check -- encode_target() raises for tribe_name's
+        c256 overflow the same way a struct.Struct.pack() raises for an
+        out-of-range int.
         """
+        if field_id == player_fields.PLAYER_COUNT_FIELD_ID:
+            if not self._player_count_targets:
+                raise KeyError("Number of players is not writable on this file")
+            if not isinstance(value, int) or not 1 <= value <= player_fields.NUM_PLAYERS:
+                raise ValueError(
+                    f"{value!r} is not a player count this file can hold "
+                    f"(1..{player_fields.NUM_PLAYERS})"
+                )
+            if value == self._original[field_id]:
+                self._pending.pop(field_id, None)
+            else:
+                self._pending[field_id] = value
+            return
+
         if field_id in self._player_targets:
             for target in self._player_targets[field_id]:
                 try:
@@ -420,15 +479,87 @@ class OptionsEditModel:
         pending edit, in ascending offset order. Empty for a clean model, which
         is what keeps a browse-only save byte-identical. A Players mode field
         emits one patch per target -- two or three for a mirrored field --
-        rather than the single patch every other field here produces."""
+        rather than the single patch every other field here produces.
+
+        A str16-coded Players mode field (civilization/architecture on a
+        1.56+ file) is excluded here -- routed through serialize_resizes()
+        instead, since it can change the byte length of its containing
+        entry, which this fixed-offset/fixed-length patch shape cannot
+        express. Filtered by the target's own codec, not the field id: a
+        pre-1.56 civilization/architecture edit is a plain u32 and keeps
+        riding this method unchanged."""
         patches: list[tuple[int, bytes]] = []
         for field_id, value in self._pending.items():
-            if field_id in self._player_targets:
+            if field_id == player_fields.PLAYER_COUNT_FIELD_ID:
+                # Nine locations from one edit: the eight `active` flags
+                # here, plus FileHeader.player_count via header_patch(),
+                # which is a different buffer entirely.
+                patches.extend(
+                    zip(
+                        (t.offset for t in self._player_count_targets),
+                        player_fields.encode_player_count(self._player_count_targets, value),
+                    )
+                )
+            elif field_id in self._player_targets:
+                targets = self._player_targets[field_id]
+                if targets[0].codec == "str16":
+                    continue
                 patches.extend(
                     (target.offset, player_fields.encode_target(target, value))
-                    for target in self._player_targets[field_id]
+                    for target in targets
                 )
             else:
                 patches.append((self._offsets[field_id].offset, self._packers[field_id].pack(value)))
         patches.sort()
         return patches
+
+    def header_patch(self) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) for FileHeader.player_count within
+        header_bytes, or None when Number of Players is not pending.
+
+        The only edit in this model that reaches a second buffer: every
+        other one is a decompressed_body offset, which is why this is a
+        separate method rather than another serialize_patches() entry.
+        Shaped like MessagesEditModel.header_patch() so scenario_write.py
+        applies both the same way, but this one never changes the header's
+        length -- player_count is a fixed-width field.
+        """
+        if not self.has_player_count_edit:
+            return None
+        start, end = self.loaded.header_player_count_span
+        count = int(self._pending[player_fields.PLAYER_COUNT_FIELD_ID])
+        return start, end, count.to_bytes(end - start, "little")
+
+    def serialize_resizes(self, body: bytes | None = None) -> list[tuple[int, int, bytes]]:
+        """(start, end, replacement) for every region this save resizes --
+        currently at most one entry, the whole player_data_1 array, emitted
+        only when at least one pending edit is a str16-coded Players mode
+        field (civilization/architecture on a 1.56+ file). Empty for a
+        clean model or one with only serialize_patches()-shaped edits, the
+        same containment every other model in this codebase gives a
+        browse-only save.
+
+        One splice covers every str16 edit in this save, not one per field:
+        player_fields.player_data_1_splice() rebuilds the whole array from
+        the bytes already there with every edited entry's span substituted,
+        so a civilization edit on P3 and an architecture edit on P5 in the
+        same save produce one region, not two overlapping ones.
+
+        `body` is the caller's partially-patched body, and the write path
+        must pass it: Number of Players patches `active` *inside*
+        player_data_1 through serialize_patches(), so rebuilding the array
+        from the original bytes would silently discard a count edit made in
+        the same save. Defaults to the original body for a caller with no
+        patches to preserve.
+        """
+        edits: list[tuple[int, str, str]] = []
+        for field_id, value in self._pending.items():
+            targets = self._player_targets.get(field_id)
+            if targets is None or targets[0].codec != "str16":
+                continue
+            spec_field_id, player_id = player_fields.parse_player_field_id(field_id)
+            edits.append((player_id, spec_field_id, value))
+        if not edits:
+            return []
+        result = player_fields.player_data_1_splice(self.loaded, edits, body)
+        return [] if result is None else [result]

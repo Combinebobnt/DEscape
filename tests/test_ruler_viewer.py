@@ -566,8 +566,8 @@ def test_the_keybind_migration_reaches_the_real_actions(tmp_path) -> None:
 
 
 def test_hard_scrolling_leaves_no_stale_label_fragments() -> None:
-    """The one risk descape-ruler-tool.md singled out as having no in-repo
-    precedent: an ItemIgnoresTransformations item sits awkwardly in the
+    """The one risk with no in-repo precedent: an ItemIgnoresTransformations
+    item sits awkwardly in the
     scene's BSP index, and the documented failure mode is paint artifacts left
     behind on scroll.
 

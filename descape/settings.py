@@ -114,6 +114,32 @@ def set_zoom_centered_on_cursor(enabled: bool) -> None:
     _save_config(config)
 
 
+# Settings > Appearance: warm the neighbouring zoom levels' sprite layers
+# after a file opens, so the first zoom doesn't pay a cold sprite build
+# inside a paint. Default ON, unlike the other expensive toggles here (Show
+# sprites, Enhanced quality): those spend their cost up front and block the
+# window, this one spends it in idle time a slice at a time and never blocks
+# (see descape/level_warm.py).
+_preload_zoom_levels: bool | None = None
+
+
+def get_preload_zoom_levels() -> bool:
+    """Whether a file open queues a background warm of the neighbouring mip
+    levels -- level_warm.LevelWarmer. On by default."""
+    global _preload_zoom_levels
+    if _preload_zoom_levels is None:
+        _preload_zoom_levels = bool(_load_config().get("preload_zoom_levels", True))
+    return _preload_zoom_levels
+
+
+def set_preload_zoom_levels(enabled: bool) -> None:
+    global _preload_zoom_levels
+    _preload_zoom_levels = enabled
+    config = _load_config()
+    config["preload_zoom_levels"] = enabled
+    _save_config(config)
+
+
 # View > Distance Ticks: the ruler strip of tick marks drawn in the void
 # just outside the map's own border, with two persisted halves (whether it
 # is drawn at all, and how many tiles apart the minor ticks sit). Unlike
@@ -415,6 +441,18 @@ TOOLS: list[ToolDef] = [
         "set_level", "Set Elevation", stroke_label="Set elevation", default_key="L",
         param_widget="level", supports_brush=True, modes=("terrain",),
     ),
+    # Track B Stage 1+2 of the 2026-09-05 cliffs plan. Terrain-mode, like the
+    # four tools above. Shipped click_only for Stage 1 (one cliff per click),
+    # then widened to a drag stroke for Stage 2's auto-connecting chain -- a
+    # press-release without moving is still a one-node stroke, so the Stage 1
+    # gesture is unchanged. supports_brush stays False: a cliff's footprint
+    # span comes from its unit_const, and the chain steps on that span's own
+    # lattice, so there is no brush size to apply. Unbound by default: every
+    # short letter is already spoken for, same reasoning as Place Unit/Convert.
+    ToolDef(
+        "cliff", "Cliff", stroke_label="Place cliff", default_key="",
+        param_widget="cliff", modes=("terrain",),
+    ),
     # Measures, never mutates, so is_edit_tool=False puts it alongside Pan
     # rather than the edit tools. It took "R" from Elevate, which moved to the
     # "E" freed by the old mode_edit -> mode_terrain rename; see
@@ -481,7 +519,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # Moved off Ctrl+I when mode_view claimed it below -- see that entry.
     ("view_isometric", "Isometric View", "Ctrl+Shift+I"),
     # Ships unbound, which needs no collision audit (a duplicate binding
-    # silently kills both actions, an open item in TODO.md) and leaves the
+    # silently kills both actions) and leaves the
     # obvious "R" mnemonic free for the separately backlogged Ruler tool.
     # Kept adjacent to view_isometric so _build_keybinds_tab does not emit a
     # second "View" header.
@@ -521,6 +559,26 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_no_players", "No Players", ""),
     ("filter_show_all", "Show All (Filters)", ""),
     ("filter_hide_all", "Hide All (Filters)", ""),
+    # Units-mode Rotate (phase 3.5b's b3) -- turns the selection by whole
+    # stored frames, on the consts whose rotation is genuinely an angle.
+    #
+    # FOUR rows, not two plus a Shift modifier: a QAction's shortcut IS the
+    # key combination, so unlike the arrow-key nudge (which reads a live
+    # `modifiers` off MapView's key event) there is nothing here for a
+    # modifier to be read from. The coarse pair therefore needs its own
+    # bindings.
+    #
+    # "," / "." for the fine step, following the same "an established
+    # convention beats an invented one" reasoning that picked "]"/"[" for
+    # adjust_increment below -- and both are free, unlike every bare letter.
+    # "<" / ">" rather than "Shift+,"/"Shift+." for the coarse pair: those
+    # ARE the shifted keys on the layouts this ships to, and naming the
+    # produced character is what Qt matches most reliably across layouts.
+    # Kept contiguous so _build_keybinds_tab emits one "Units" header.
+    ("unit_rotate_ccw", "Rotate Unit Anticlockwise", ","),
+    ("unit_rotate_cw", "Rotate Unit Clockwise", "."),
+    ("unit_rotate_ccw_coarse", "Rotate Unit Anticlockwise (Quarter Turn)", "<"),
+    ("unit_rotate_cw_coarse", "Rotate Unit Clockwise (Quarter Turn)", ">"),
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
@@ -648,7 +706,7 @@ def get_action_label(action_id: str) -> str:
 
 def set_keybind(action_id: str, key_sequence: str) -> str | None:
     """Persists key_sequence for action_id. Two QActions sharing a sequence
-    make Qt fire neither on press (see TODO.md's keybind-collision item), so
+    make Qt fire neither on press, so
     if key_sequence is already bound to a different action, that other
     action is auto-cleared here rather than left to silently break both.
     Returns the auto-cleared action_id, or None if there was no collision.
@@ -670,3 +728,15 @@ def set_keybind(action_id: str, key_sequence: str) -> str | None:
     config["keybinds"] = keybinds
     _save_config(config)
     return cleared_action_id
+
+
+def keybind_holder(key_sequence: str, exclude: str = "") -> str | None:
+    """action_id currently bound to key_sequence, ignoring `exclude`, or None.
+    Empty sequences never collide -- several actions ship unbound on purpose."""
+    if not key_sequence:
+        return None
+    keybinds = _load_keybinds()
+    for action_id, _label, _default in REBINDABLE_ACTIONS:
+        if action_id != exclude and keybinds.get(action_id, "") == key_sequence:
+            return action_id
+    return None

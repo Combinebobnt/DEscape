@@ -55,6 +55,14 @@ def test_save_writes_back_to_the_open_path_with_no_dialog(tmp_path, monkeypatch)
         window.load_scenario(target)
         assert window.save_action.isEnabled()
 
+        # A real edit, not a zero-edit save: write_scenario()'s own no-op
+        # short circuit means a genuine zero-edit save of this fixture would
+        # not touch the file at all, so the mtime check below needs an
+        # actual change to prove save() wrote back to the open path.
+        tiles = window.scenario.map_manager.terrain
+        new_terrain = 15 if tiles[0].terrain_id == 2 else 2
+        window.edit_history.apply("paint", tiles, lambda: setattr(tiles[0], "terrain_id", new_terrain))
+
         before_mtime = target.stat().st_mtime_ns
         window.save()
 

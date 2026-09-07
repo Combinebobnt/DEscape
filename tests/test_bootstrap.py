@@ -7,8 +7,11 @@ Splash are always faked or monkeypatched."""
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
+
+import pytest
 
 import bootstrap
 
@@ -37,17 +40,22 @@ class _FakeReporter:
 
 
 class _FakeProc:
-    """poll() returns None until the `exits_after`-th call, then a fake exit code."""
+    """poll() returns None until the `exits_after`-th call, then a fake exit
+    code (also `wait()`'s return value, for launch_app()'s own final call)."""
 
-    def __init__(self, exits_after: int | None = None) -> None:
+    def __init__(self, exits_after: int | None = None, returncode: int = 0) -> None:
         self._exits_after = exits_after
         self._calls = 0
+        self.returncode = returncode
 
     def poll(self):
         self._calls += 1
         if self._exits_after is not None and self._calls >= self._exits_after:
-            return 0
+            return self.returncode
         return None
+
+    def wait(self):
+        return self.returncode
 
 
 def _boom():
@@ -220,3 +228,59 @@ def test_install_dependencies_uses_requirements_txt(monkeypatch, tmp_path) -> No
 
     assert calls[0][0] == str(fake_venv_python)
     assert calls[0][-1].endswith("requirements.txt")
+
+
+def test_newest_crash_dump_picks_latest_by_mtime(tmp_path) -> None:
+    older = tmp_path / "crash-20260101-000000-aaaaaaaa.txt"
+    older.write_text("old")
+    newer = tmp_path / "crash-20260102-000000-bbbbbbbb.txt"
+    newer.write_text("new")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    assert bootstrap.newest_crash_dump(tmp_path) == newer
+
+
+def test_newest_crash_dump_none_when_dir_missing(tmp_path) -> None:
+    assert bootstrap.newest_crash_dump(tmp_path / "does-not-exist") is None
+
+
+def test_newest_crash_dump_none_when_dir_empty(tmp_path) -> None:
+    assert bootstrap.newest_crash_dump(tmp_path) is None
+
+
+def test_launch_app_names_the_newest_dump_on_nonzero_exit(monkeypatch, tmp_path, capsys) -> None:
+    dump_dir = tmp_path / "crashes"
+    dump_dir.mkdir()
+    dump = dump_dir / "crash-20260101-000000-aaaaaaaa.txt"
+    dump.write_text("boom")
+
+    monkeypatch.setattr(bootstrap, "_crash_dump_dir", lambda: dump_dir)
+    monkeypatch.setattr(bootstrap, "wait_until_ready", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bootstrap.subprocess, "Popen", lambda *a, **k: _FakeProc(exits_after=1, returncode=1)
+    )
+    monkeypatch.setattr(bootstrap.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap.launch_app(_FakeReporter())
+
+    assert excinfo.value.code == 1
+    output = capsys.readouterr().out
+    assert str(dump) in output
+
+
+def test_launch_app_says_nothing_about_a_dump_when_none_exists(monkeypatch, tmp_path, capsys) -> None:
+    dump_dir = tmp_path / "crashes"
+    monkeypatch.setattr(bootstrap, "_crash_dump_dir", lambda: dump_dir)
+    monkeypatch.setattr(bootstrap, "wait_until_ready", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bootstrap.subprocess, "Popen", lambda *a, **k: _FakeProc(exits_after=1, returncode=1)
+    )
+    monkeypatch.setattr(bootstrap.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    with pytest.raises(SystemExit):
+        bootstrap.launch_app(_FakeReporter())
+
+    output = capsys.readouterr().out
+    assert "crash report" not in output.lower()

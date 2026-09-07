@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -40,6 +41,12 @@ def _default_config_path() -> Path:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = _default_config_path()
 LEGACY_CONFIG_PATH = REPO_ROOT / "config.yaml"
+
+# Legacy migration is a source-distribution concept: under a freeze,
+# LEGACY_CONFIG_PATH resolves to _MEIPASS/config.yaml, which never exists, so
+# migrate_legacy_config() would silently no-op forever anyway -- IS_FROZEN
+# makes that explicit rather than accidental.
+IS_FROZEN = getattr(sys, "frozen", False)
 TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 
 # Real source textures are 512-2048px square; crops taken from them for tile
@@ -208,6 +215,8 @@ def migrate_legacy_config() -> Path | None:
     user's data, and deleting it is destructive for no gain; it is simply
     ignored from then on. Must be called explicitly at the GUI entry point,
     never at import time (see main()'s own call site for why)."""
+    if IS_FROZEN:
+        return None
     if CONFIG_PATH.exists() or not LEGACY_CONFIG_PATH.is_file():
         return None
     try:

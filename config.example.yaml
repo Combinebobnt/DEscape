@@ -39,6 +39,12 @@ zoom_centered_on_cursor: true
 # Dark app-chrome theme, Settings > Appearance. Default: false.
 dark_mode: false
 
+# After a file opens, warm the neighbouring zoom levels' unit sprites in
+# idle time so the first zoom doesn't stutter, Settings > Appearance.
+# Costs a few seconds of background work per open and some memory; never
+# blocks the window. Default: true.
+preload_zoom_levels: true
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false
@@ -102,6 +108,10 @@ keybinds:
   filter_no_players: ''
   filter_show_all: ''
   filter_hide_all: ''
+  unit_rotate_ccw: ','
+  unit_rotate_cw: .
+  unit_rotate_ccw_coarse: <
+  unit_rotate_cw_coarse: '>'
   player_select_0: '0'
   player_select_1: '1'
   player_select_2: '2'
@@ -116,6 +126,7 @@ keybinds:
   tool_fill: P
   tool_elevation: E
   tool_set_level: L
+  tool_cliff: ''
   tool_ruler: R
   tool_place_unit: ''
   tool_convert: ''

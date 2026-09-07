@@ -104,13 +104,14 @@ def install(tmp_path, monkeypatch):
     def write(data: bytes, name: str = FILE_NAME) -> None:
         (graphics / f"{name}.sld").write_bytes(data)
 
-    def register(*, angle_count=4, frame_count=3, const=CONST, file_name=FILE_NAME) -> None:
-        monkeypatch.setattr(
-            unit_sprites, "graphic_map",
-            lambda: {const: {"graphic_id": 1, "file_name": file_name,
-                             "angle_count": angle_count, "mirroring_mode": 6,
-                             "frame_count": frame_count}},
-        )
+    def register(*, angle_count=4, frame_count=3, const=CONST, file_name=FILE_NAME,
+                 rotation_is_variant=False) -> None:
+        entry = {"graphic_id": 1, "file_name": file_name,
+                 "angle_count": angle_count, "mirroring_mode": 6,
+                 "frame_count": frame_count}
+        if rotation_is_variant:
+            entry["rotation_is_variant"] = True
+        monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {const: entry})
 
     def register_composite(const: int, pieces: list[dict]) -> None:
         """`pieces` is a list of unit_graphic_map.json-shaped piece dicts
@@ -295,12 +296,61 @@ def test_the_zero_offset_never_reaches_the_variant_path():
 def test_the_real_wall_consts_are_gated_onto_the_variant_path():
     """The gate itself, not variant_index(). 117 is the direct-decode case;
     the rest come from the plan's corpus profiling. Aqueduct (231) and Granary
-    (1089) are deliberately excluded -- too little corpus evidence -- and an
-    ordinary unit must stay on angle_index()."""
-    for const in (72, 117, 119, 155, 370, 788, 1062, 2678):
-        assert unit_sprites._rotation_is_variant(const), const
-    for const in (231, 1089, 4, 74):
-        assert not unit_sprites._rotation_is_variant(const), const
+    (1089) are generated-VARIANT too (2026-09-06 Tier B plan settled the TODO
+    item that had left them unresolved -- thin corpus evidence for either
+    reading on their own, but they share the same unit.type != 70 discriminator
+    as the confirmed wall family). 4 and 74 are ordinary creatable units and
+    must stay on angle_index()."""
+    for const in (72, 117, 119, 155, 370, 788, 1062, 2678, 231, 1089):
+        assert unit_sprites.rotation_is_variant(const), const
+    for const in (4, 74):
+        assert not unit_sprites.rotation_is_variant(const), const
+
+
+@pytest.mark.parametrize(
+    ("mask", "expected"),
+    [
+        (0, None),  # isolated -- no derivable answer, caller must fall through
+        (unit_sprites.WEST | unit_sprites.EAST, 0),
+        (unit_sprites.NORTH | unit_sprites.SOUTH, 1),
+        (unit_sprites.WEST, 2),
+        (unit_sprites.NORTH, 2),
+        (unit_sprites.WEST | unit_sprites.NORTH, 2),
+        (unit_sprites.WEST | unit_sprites.EAST | unit_sprites.NORTH, 2),
+        (unit_sprites.WEST | unit_sprites.EAST | unit_sprites.NORTH | unit_sprites.SOUTH, 2),
+    ],
+)
+def test_wall_variant_from_neighbours(mask, expected):
+    assert unit_sprites.wall_variant_from_neighbours(mask) == expected
+
+
+@pytest.mark.parametrize(
+    ("rotation", "angle_count", "expected"),
+    [
+        (0.0, 5, True),
+        (4.0, 5, True),
+        (3.9999999, 5, True),  # inside the 1e-6 window
+        (5.0, 5, False),  # an integer, but out of [0, angle_count)
+        (1.256637, 5, False),  # index 1's radian encoding
+        (2.513274, 5, False),  # the value closest to a DIFFERENT integer --
+        # variant_index()'s own hard case, checked here too since a wrong
+        # classification would misfile precondition 3.
+    ],
+)
+def test_is_literal_variant_index(rotation, angle_count, expected):
+    assert unit_sprites.is_literal_variant_index(rotation, angle_count) == expected
+
+
+def test_rotation_variant_eligible_requires_variant_const_and_five_angles(install):
+    """Preconditions 1-2 only -- rotation itself plays no part here."""
+    install.register(const=117, angle_count=5)
+    assert unit_sprites.rotation_variant_eligible(117)
+
+    install.register(const=117, angle_count=4)
+    assert not unit_sprites.rotation_variant_eligible(117), "angle_count != 5 must not transfer the mask table"
+
+    install.register(const=4, angle_count=5)
+    assert not unit_sprites.rotation_variant_eligible(4), "an ordinary (non-variant) const stays excluded"
 
 
 def test_a_gated_const_resolves_a_different_frame_than_an_ungated_one(install):
@@ -318,7 +368,7 @@ def test_a_gated_const_resolves_a_different_frame_than_an_ungated_one(install):
     mutation rather than assumed.
     """
     install.write(build_sld(15))
-    install.register(angle_count=5, frame_count=3, const=117)
+    install.register(angle_count=5, frame_count=3, const=117, rotation_is_variant=True)
 
     def colour(rotation):
         got = unit_sprites.sprite_for(117, rotation, 0, 32)
@@ -519,10 +569,42 @@ def test_anchor_tile_is_the_footprints_depth_latest(unit_span=None):
     max(x + y) would diverge, and the ID-plane pick oracle cannot catch that:
     picking still goes through the diamond path, untouched by sprites."""
     for x0, y0, sx, sy in [(3, 3, 1, 1), (3, 3, 2, 2), (10, 2, 4, 4), (0, 0, 4, 1)]:
-        got = unit_sprites.sprite_anchor_tile(x0, x0 + sx, y0, y0 + sy)
         tiles = [(tx, ty) for ty in range(y0, y0 + sy) for tx in range(x0, x0 + sx)]
+        got = unit_sprites.sprite_anchor_tile(tiles)
         expected = max(tiles, key=lambda t: (t[1] - t[0], t[0]))
         assert got == expected
+
+
+def test_anchor_tile_takes_the_occupied_set_not_the_bbox():
+    """A diagonal gate's sprite anchor must resolve from its real sparse
+    footprint, not its 4x4 bbox -- Part 2's reported wrong-depth-position
+    defect. The two real shapes (tools/gen_unit_render_data.py's
+    building_tiles docs; local offsets, own tile always at (2, 2)):
+
+       e gates                    n gates
+          #...                       ...#
+          .##.                       .##.
+          .##.                       .##.
+          ...#                       #...
+
+    For the "e" shape, the bbox's own depth-latest tile (local (0, 3), the
+    bbox corner opposite the own-tile pillar) is not in the occupied set at
+    all -- the sparse-aware anchor must land on a real pillar instead."""
+    x0, y0 = 10, 2
+    bbox_local = [(ox, oy) for ox in range(4) for oy in range(4)]
+    bbox_tiles = [(x0 + ox, y0 + oy) for ox, oy in bbox_local]
+    e_local = [(0, 0), (1, 1), (1, 2), (2, 1), (2, 2), (3, 3)]
+    n_local = [(0, 3), (1, 1), (1, 2), (2, 1), (2, 2), (3, 0)]
+
+    bbox_winner = unit_sprites.sprite_anchor_tile(bbox_tiles)
+    assert bbox_winner == (x0 + 0, y0 + 3)
+    assert (bbox_winner[0] - x0, bbox_winner[1] - y0) not in e_local
+
+    e_tiles = [(x0 + ox, y0 + oy) for ox, oy in e_local]
+    assert unit_sprites.sprite_anchor_tile(e_tiles) == (x0 + 1, y0 + 2)
+
+    n_tiles = [(x0 + ox, y0 + oy) for ox, oy in n_local]
+    assert unit_sprites.sprite_anchor_tile(n_tiles) == (x0 + 0, y0 + 3)
 
 
 def test_the_hotspot_scales_with_the_sprite(install):
@@ -736,3 +818,145 @@ def test_each_piece_dispatches_rotation_through_its_own_resolving_unit_id(instal
     got = unit_sprites.sprite_pieces_for(CONST, 4.0, 0, 32)[0]
     expected = unit_sprites._draw_for_entry(piece_const, entry, 4.0, 0, 32)
     assert np.array_equal(got.draw.rgba, expected.rgba)
+
+
+# --- icon_for (Flat's footprint-fitted icons, P3-g7) -------------------
+
+
+def _register_tall_composite(install):
+    """A composite whose assembly is deliberately NON-square: two 8x8 pieces
+    stacked 8px apart, so the union ink is 8 wide by 16 tall. Every other
+    fixture here is square, and a square ink cannot tell contain-fit apart
+    from stretch-to-fill."""
+    install.write(build_sld(1))
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1,
+         "frame_count": 1, "dx": 0, "dy": 0},
+        {"unit_id": 777, "file_name": FILE_NAME, "angle_count": 1,
+         "frame_count": 1, "dx": 0, "dy": 8},
+    ])
+
+
+def test_an_icon_contain_fits_rather_than_stretching(install):
+    """8x16 ink into a 32x32 footprint is 16x32, not 32x32. Stretch-to-fill
+    (the rejected alternative) would give the square, and a villager's real
+    15x39 ink stretched into a square cell is a 4.3x distortion that reads as
+    a blob rather than a unit."""
+    _register_tall_composite(install)
+    icon = unit_sprites.icon_for(CONST, 0.0, 0, 32, 32)
+    assert icon.rgba.shape[:2] == (32, 16)
+
+
+@pytest.mark.parametrize("fw,fh", [(16, 16), (17, 5), (5, 17), (1, 1), (128, 128), (64, 33)])
+def test_an_icon_never_exceeds_its_footprint(install, fw, fh):
+    """**The assertion P3-g7's whole no-widening argument rests on.** An icon
+    that stays inside its own footprint rect is what lets Flat keep its
+    existing per-tile edit rects and its exact canvas sizing, with none of the
+    dirty-bbox widening, canvas headroom or MAX_SPRITE_REACH_* machinery
+    Stepped and Sloped needed. One pixel of overhang and that is false.
+
+    Includes tile_px=16 (the smallest shipped mip) and a 1x1 cell, where the
+    max(1, ...) floor is what stops a zero-size array reaching _resize_rgba."""
+    _register_tall_composite(install)
+    icon = unit_sprites.icon_for(CONST, 0.0, 0, fw, fh)
+    ih, iw = icon.rgba.shape[:2]
+    assert 1 <= iw <= fw and 1 <= ih <= fh
+
+
+def test_an_icon_is_placed_by_its_rect_not_a_hotspot(install):
+    """A stale iso hotspot riding along on an icon is how it would silently
+    get blitted off its own footprint -- the caller centres the rect."""
+    install.write(build_sld(1))
+    install.register(angle_count=1, frame_count=1)
+    icon = unit_sprites.icon_for(CONST, 0.0, 0, 32, 32)
+    assert (icon.hotspot_x, icon.hotspot_y) == (0, 0)
+
+
+def test_a_composite_icon_is_the_whole_assembly_not_the_parent_piece(install):
+    """Resolving only the entry's own graphic would give the parent's square
+    8x8 ink (a 32x32 icon here) and drop the second piece entirely -- a town
+    centre reduced to one of its four parts."""
+    _register_tall_composite(install)
+    composite = unit_sprites.icon_for(CONST, 0.0, 0, 32, 32)
+
+    install.register(angle_count=1, frame_count=1)
+    unit_sprites.clear_caches()
+    parent_only = unit_sprites.icon_for(CONST, 0.0, 0, 32, 32)
+
+    assert parent_only.rgba.shape[:2] == (32, 32)
+    assert composite.rgba.shape[:2] != parent_only.rgba.shape[:2]
+
+
+def test_an_unresolvable_icon_falls_back_to_none(install):
+    install.register(angle_count=1, frame_count=1)  # no file written
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is None
+
+
+def test_an_unknown_const_has_no_icon(install):
+    install.register(angle_count=1, frame_count=1)
+    assert unit_sprites.icon_for(CONST + 1, 0.0, 0, 32, 32) is None
+
+
+def test_an_icon_is_cached_including_its_miss(install, monkeypatch):
+    """Same _MISS rationale as the sprite path: re-deriving "this resolves
+    nowhere" costs a whole SLDFile walk, and ~1% unresolvable units were most
+    of a real file's warm rebuild cost before negative caching existed."""
+    install.register(angle_count=1, frame_count=1)  # no file written
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is None
+
+    calls = []
+    real = unit_sprites._build_icon
+    monkeypatch.setattr(unit_sprites, "_build_icon", lambda *a: calls.append(a) or real(*a))
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is None
+    assert calls == []
+
+
+def test_the_icon_cache_is_keyed_on_the_footprint_size(install):
+    install.write(build_sld(1))
+    install.register(angle_count=1, frame_count=1)
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32).rgba.shape[:2] == (32, 32)
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 16, 16).rgba.shape[:2] == (16, 16)
+
+
+def test_clear_caches_drops_icons_too(install):
+    """Missing this is how a stale icon survives an install-path change --
+    the same first-time-configuration failure clear_caches() exists to stop
+    for sprites."""
+    install.register(angle_count=1, frame_count=1)
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is None
+    install.write(build_sld(1))
+    unit_sprites.clear_caches()
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is not None
+
+
+def test_the_icon_cache_evicts_by_bytes_not_by_entry_count(install, monkeypatch):
+    """An entry count cannot work here: a 1x1 unit at tile_px=16 is ~1KB and a
+    4x4 Town Centre at tile_px=128 is ~1MB, so any single count is either
+    wasteful at one end of that spread or thrashing at the other."""
+    install.write(build_sld(1))
+    install.register(angle_count=1, frame_count=1)
+    monkeypatch.setattr(unit_sprites, "_icon_cache", unit_sprites._ByteLRU(8 * 1024))
+    for size in (16, 17, 18, 19):  # ~1KB each, all four fit inside the budget
+        unit_sprites.icon_for(CONST, 0.0, 0, size, size)
+    assert len(unit_sprites._icon_cache) == 4
+    # One 6.25KB entry then evicts SEVERAL of them. An entry count would have
+    # held all five, which is the whole distinction being pinned here.
+    unit_sprites.icon_for(CONST, 0.0, 0, 40, 40)
+    assert len(unit_sprites._icon_cache) == 2
+
+
+def test_a_native_miss_is_shared_across_scales(install, monkeypatch):
+    """P3-g7 moved _MISS down from _scaled_cache (whose key carries a half_w)
+    into _native_cache (keyed file+index, scale-independent). An icon's key
+    carries a FOOTPRINT size instead of a half_w, so it could not have
+    inherited the scaled-level misses -- it would have re-walked every
+    unresolvable file once per footprint size per mip level."""
+    install.register(angle_count=1, frame_count=1)  # no file written
+    assert unit_sprites.sprite_for(CONST, 0.0, 0, 32) is None
+
+    def boom(*_a, **_k):
+        raise AssertionError("re-walked a file whose miss was already known")
+
+    monkeypatch.setattr(unit_sprites, "load_sld", boom)
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 64, 64) is None
+    assert unit_sprites.sprite_for(CONST, 0.0, 0, 16) is None

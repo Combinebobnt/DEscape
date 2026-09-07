@@ -194,6 +194,18 @@ def name_for(catalog: Sequence[CatalogEntry], id_: int) -> str:
     return found.name if found is not None else ""
 
 
+def object_name(id_: int) -> str:
+    """Display name for any object id, including ones the library-backed
+    `objects()` dataset omits -- e.g. cliffs (class 34), which
+    AoE2ScenarioParser's UnitInfo/BuildingInfo/HeroInfo/OtherInfo enums don't
+    cover at all but object_catalog.json still carries a .dat "code" for.
+    Goes through resolve_name()'s own install-name -> code -> UNKNOWN_<id>
+    fallback chain directly, skipping the library-name step objects() would
+    otherwise supply.
+    """
+    return resolve_name(id_, "", _dat_entry("objects", id_))
+
+
 # -- document-scoped references: TriggerId, VariableId -----------------------
 #
 # Neither dataset above covers these -- a trigger_id or variable_id only means

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Committed without the executable bit; packaging/build_appimage.sh sets it
+# when staging the AppDir. Do not set LD_LIBRARY_PATH here -- PyInstaller's
+# bootloader already sets up its own library search, and prepending the
+# bundle's libs globally is how a host libGL/libstdc++ mismatch turns into a
+# crash on someone else's machine.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/DEscape/DEscape" "$@"

@@ -14,15 +14,22 @@ str16 field silently drops a trailing NUL). None of that is a bug worth
 chasing upstream -- it's the general shape of "reserialize through an object
 model that wasn't written to be byte-for-byte."
 
-What works, confirmed byte-identical on all 12 example files for a zero-edit
-round trip: never touch the parsed object graph's serialization at all. Take
+What works, confirmed on the full example corpus, is two separate guarantees.
+The *decompressed content* is byte-identical for a zero-edit round trip on
+every file: never touch the parsed object graph's serialization at all. Take
 the *original* decompressed body (kept verbatim since load, see
 scenario_io.LoadedScenario), overwrite only the terrain struct array's bytes
 from the current (possibly edited) in-memory tile values, recompress with the
 same zlib call AoE2ScenarioParser itself uses, and concatenate after the
 verbatim original header. Everything else in the file -- every other Map
 retriever, Units, the never-parsed trigger tail -- passes through as pure
-untouched bytes.
+untouched bytes. The *raw compressed file* is byte-identical for a zero-edit
+round trip too, but not via recompression: re-deflating identical
+decompressed bytes does not reliably reproduce the original compressed
+stream (a different encoder/level/version upstream produces a
+semantically-identical but bit-different DEFLATE stream for the same input).
+Instead, when nothing patched anything, the write path reuses
+scenario.original_compressed_body verbatim instead of recompressing.
 
 Phase 4b extends that same shape one level down rather than replacing it.
 Triggers still splice verbatim by default; a document with actual trigger edits
@@ -57,8 +64,21 @@ the one place that concatenates the (possibly resized) Units section, the
 step, cut at original load-time offsets rather than offsets derived from each
 other.
 
-See tests/test_write_path.py, tests/test_trigger_write_path.py, and
-tests/test_units_write_path.py for the evidence.
+The civ/architecture maintainer plan's Step B adds a second resizing splice,
+_patch_player_data_1() (civilization/architecture_set on a scenario version
+1.56+ file, a length-prefixed str16 like a message field): DataHeader sits
+*before* Messages in the body, not after, so it needs the opposite ordering
+rule -- run everything above it while it is still at its original length,
+then apply Messages, then apply this one last of all. The general rule this
+generalizes to, for any future resizing step: fixed-offset patches run
+first, then resizing splices in *descending* offset order (Messages, the
+higher offset, before player_data_1, offset 0) -- each splice needs every
+offset used by an earlier step to still be valid, which only holds if
+nothing upstream of that step has shifted yet.
+
+See tests/test_write_path.py, tests/test_trigger_write_path.py,
+tests/test_units_write_path.py, and tests/test_player_write_path.py for the
+evidence.
 """
 
 from __future__ import annotations
@@ -82,6 +102,7 @@ from descape.options_model import (
     OptionsEditModel,
     diplomacy_write_supported,
     options_write_supported,
+    player_count_write_supported,
     players_write_supported,
 )
 from descape.trigger_model import TriggerEditModel
@@ -191,6 +212,10 @@ def _patch_options(body: bytes, scenario: LoadedScenario, options: OptionsEditMo
                 f"Options.number_of_triggers ({counter_start}..{scenario.options_section_end}), "
                 f"which the trigger splice writes."
             )
+        assert len(data) == end - offset, (
+            "a serialize_patches() entry changed length -- str16 fields must ride "
+            "serialize_resizes() instead, never this fixed-offset/fixed-length path"
+        )
         patched[offset:end] = data
     return bytes(patched)
 
@@ -253,13 +278,70 @@ def _assemble_body(
 
 def _patch_messages(body: bytes, scenario: LoadedScenario, messages: MessagesEditModel) -> bytes:
     """Returns `body` with the whole Messages section replaced by
-    messages.serialize(). The one length-changing step in this module --
-    see the module docstring -- so it must run *last*, against the fully
-    assembled body, after every fixed-width patch and the Units/Triggers
-    splice above: those all address offsets that stay valid exactly because
-    nothing before them has shifted yet at the point they run."""
+    messages.serialize(). A length-changing step -- see the module
+    docstring -- so it must run *after* every fixed-width patch and the
+    Units/Triggers splice above: those all address offsets that stay valid
+    exactly because nothing before them has shifted yet at the point they
+    run. No longer strictly last: _patch_player_data_1() (below) is a
+    second, later-inserted resizing step, ordered after this one for the
+    reason its own docstring gives."""
     start, end = messages.section_span()
     return body[:start] + messages.serialize() + body[end:]
+
+
+def _patch_player_data_1(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with DataHeader.player_data_1 spliced to reflect
+    every pending str16-coded Players mode edit (civilization/architecture
+    on a scenario version 1.56+ file) -- the civ/architecture maintainer
+    plan's Step B. A no-op (returns `body` unchanged) unless
+    options.serialize_resizes() has something to apply, so a save with no
+    such edit is byte-identical to one from before this step existed.
+
+    Must run *last*, after _patch_messages() -- the load-bearing ordering
+    decision. DataHeader sits at body offset 0, so a length change here
+    shifts every anchor downstream of it (messages_section_start/_end,
+    player_data_two_section_end, options_section_end, terrain_block_offset,
+    units_block_offset, units_section_end) and, within DataHeader itself,
+    per_player_lock_civilization/_personality, which sit after
+    player_data_1. Running this splice after everything else means every
+    other patch above ran against a buffer still at its original length,
+    so every offset it used was valid at the moment it ran; the general
+    rule (see the module docstring) is fixed-offset patches first, then
+    resizing splices in *descending* offset order -- Messages (higher
+    offset) before player_data_1 (offset 0).
+
+    Reads the *partially patched* body, not scenario.decompressed_body:
+    Number of Players patches eight `active` flags inside this very array
+    through _patch_options(), and rebuilding it from the original bytes
+    would silently discard a count edit made in the same save. Every offset
+    involved is a load-time one and still valid here, since both
+    length-changing steps that ran before this (the Units/Triggers assembly
+    and the Messages splice) sit after player_data_1 in the body.
+
+    Refuses (WriteBlockedError) a resize region reaching past
+    messages_section_start: this write path's own established boundary for
+    "definitely still inside DataHeader, not into territory a different
+    patch already owns" -- player_data_1_splice()'s own span check already
+    makes this unreachable in practice, but a locator bug landing on the
+    wrong side of that boundary must be refused, not silently written
+    somewhere real content wasn't.
+    """
+    resizes = options.serialize_resizes(body)
+    if not resizes:
+        return body
+    assert len(resizes) == 1, "OptionsEditModel.serialize_resizes() returns at most one region today"
+    start, end, replacement = resizes[0]
+    if not (0 <= start <= end <= scenario.messages_section_start):
+        raise WriteBlockedError(
+            f"A Players mode resize at {start}..{end} falls outside the DataHeader "
+            f"region this write path owns (must end at or before "
+            f"messages_section_start={scenario.messages_section_start})."
+        )
+    new_body = body[:start] + replacement + body[end:]
+    assert len(new_body) == len(body) + (len(replacement) - (end - start)), (
+        "player_data_1 splice length mismatch"
+    )
+    return new_body
 
 
 def _patch_header_instructions(header_bytes: bytes, messages: MessagesEditModel) -> bytes:
@@ -284,6 +366,33 @@ def _patch_header_trigger_count(header_bytes: bytes, count: int) -> bytes:
     outside the compressed body entirely, so it is patched separately."""
     header = bytearray(header_bytes)
     _TRIGGER_COUNT_STRUCT.pack_into(header, len(header) - 4, count)
+    return bytes(header)
+
+
+def _patch_header_player_count(header_bytes: bytes, options: OptionsEditModel) -> bytes:
+    """FileHeader.player_count, Number of Players' second buffer (the other
+    eight locations are `active` flags inside decompressed_body, patched by
+    _patch_options()). A no-op unless the count is actually pending.
+
+    Ordering, the load-bearing part: this runs *before*
+    _patch_header_instructions(), because player_count sits after
+    scenario_instructions in the header's on-disk order, so an instructions
+    splice that changed that field's length would invalidate the load-time
+    span this patch addresses. _patch_header_trigger_count() has no such
+    problem -- it addresses len(header) - 4, not a fixed offset -- which is
+    why it can stay where it is.
+    """
+    patch = options.header_patch()
+    if patch is None:
+        return header_bytes
+    start, end, payload = patch
+    if not (0 <= start <= end <= len(header_bytes)) or len(payload) != end - start:
+        raise WriteBlockedError(
+            f"A Number of Players header patch at {start}..{end} does not fit this "
+            f"file's {len(header_bytes)}-byte header."
+        )
+    header = bytearray(header_bytes)
+    header[start:end] = payload
     return bytes(header)
 
 
@@ -388,15 +497,12 @@ def write_scenario(
     patched_body = _patch_terrain_block(scenario)
     header_bytes = scenario.header_bytes
 
-    if messages is not None and messages.has_edits:
-        if not scenario.messages_write_supported:
-            raise WriteBlockedError(
-                "This file's Messages section failed its load-time verification -- "
-                "splicing would land at an offset that can't be trusted. Messages "
-                "mode should already be disabled for this file."
-            )
-        header_bytes = _patch_header_instructions(header_bytes, messages)
-
+    # Ahead of the Messages header splice below, not after it: Number of
+    # Players patches FileHeader.player_count at a load-time offset that
+    # sits *after* scenario_instructions, so an instructions splice must
+    # not run first -- see _patch_header_player_count(). Both blocks raise
+    # before anything is written either way, so moving this one earlier
+    # changes only which gate reports first when two are broken at once.
     if options is not None and options.has_edits:
         # Re-gated here rather than trusted from construction, the same shape
         # the trigger path uses: OptionsEditModel already refused to exist for a
@@ -417,7 +523,22 @@ def write_scenario(
                 "This file's Players mode fields no longer verify -- patching would "
                 "land at an offset that can't be trusted."
             )
+        if options.has_player_count_edit and not player_count_write_supported(scenario):
+            raise WriteBlockedError(
+                "This file's Number of Players write surface no longer verifies -- "
+                "patching would land at an offset that can't be trusted."
+            )
+        header_bytes = _patch_header_player_count(header_bytes, options)
         patched_body = _patch_options(patched_body, scenario, options)
+
+    if messages is not None and messages.has_edits:
+        if not scenario.messages_write_supported:
+            raise WriteBlockedError(
+                "This file's Messages section failed its load-time verification -- "
+                "splicing would land at an offset that can't be trusted. Messages "
+                "mode should already be disabled for this file."
+            )
+        header_bytes = _patch_header_instructions(header_bytes, messages)
 
     if units is not None and units.has_edits:
         # Re-gated here rather than trusted from construction, the same shape
@@ -446,7 +567,22 @@ def write_scenario(
     if messages is not None and messages.has_edits:
         patched_body = _patch_messages(patched_body, scenario, messages)
 
-    compressed = _compress_bytes(patched_body)
+    if options is not None:
+        # Runs unconditionally (not gated on options.has_edits the way
+        # _patch_options() above is): serialize_resizes() already no-ops
+        # cleanly for a model with no str16-coded pending edit, and this
+        # keeps the ordering rule -- Messages before player_data_1 -- in
+        # one place rather than duplicating the has_edits gate here.
+        patched_body = _patch_player_data_1(patched_body, scenario, options)
+
+    if header_bytes == scenario.header_bytes and patched_body == scenario.decompressed_body:
+        # Nothing patched anything -- reuse the original compressed bytes
+        # verbatim rather than recompressing, since re-deflating identical
+        # decompressed bytes does not reliably reproduce the original
+        # compressed stream (different encoder/level/version upstream).
+        compressed = scenario.original_compressed_body
+    else:
+        compressed = _compress_bytes(patched_body)
     final_bytes = header_bytes + compressed
 
     existed = out_path.exists()

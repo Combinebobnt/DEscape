@@ -31,6 +31,7 @@ from descape.unit_model import UnitEditModel
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
 _REF_WALL = 102
+_REF_ARCHER_P1 = 201
 _REF_VILLAGER_P1 = 203
 
 
@@ -74,6 +75,27 @@ def test_undo_restores_the_unit_content_itself() -> None:
 
     history.undo([], None, None, model)
     assert (villager.x, villager.y, villager.z) == original
+
+
+def test_undo_restores_rotation_on_the_live_unit_too(tmp_path: Path) -> None:
+    """Rotation is part of UnitState for this reason: without it the blob
+    comes back (so the FILE is right) while the live Unit object stays
+    rotated, and the inspector and render then disagree with what saving
+    would write. Both halves are asserted here."""
+    loaded, model, history = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    original = archer.rotation
+
+    model.begin_unit_edit([1])
+    model.set_rotation(archer, original + 1.25)
+    model.commit_unit_edit("Rotate unit", history)
+
+    history.undo([], None, None, model)
+
+    assert archer.rotation == original
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()
 
 
 def test_undo_returns_no_tile_indices() -> None:

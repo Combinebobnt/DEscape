@@ -1,0 +1,53 @@
+name: build
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-22.04, label: linux-x86_64,   upload: DEscape-linux-x86_64.tar.gz}
+          - {runner: macos-15,     label: macos-arm64,    upload: DEscape-macos-arm64.tar.gz}
+          - {runner: windows-2025, label: windows-x86_64, upload: dist/DEscape}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install Qt platform plugin system libs (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 xvfb
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+
+      - name: Build frozen bundle
+        run: python -m PyInstaller packaging/descape.spec --noconfirm
+
+      - name: Verify frozen bundle (self-check + smoke)
+        run: python tools/verify_frozen_build.py
+
+      - name: Smoke test (real xcb plugin, Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a env QT_QPA_PLATFORM=xcb dist/DEscape/DEscape --smoke
+
+      - name: Package for upload (posix)
+        if: runner.os != 'Windows'
+        run: tar -czf DEscape-${{ matrix.label }}.tar.gz -C dist DEscape
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DEscape-${{ matrix.label }}
+          path: ${{ matrix.upload }}
+          retention-days: 14

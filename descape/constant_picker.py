@@ -86,14 +86,20 @@ def _composite_pieces(pieces: list[unit_sprites.SpritePiece]) -> np.ndarray | No
     return canvas
 
 
-def _preview_pixmap(object_id: int) -> QPixmap | None:
+def preview_pixmap(object_id: int, rotation: float = _PREVIEW_ROTATION) -> QPixmap | None:
     """object_id's sprite as a QPixmap scaled to fit the preview box, or None
     if unit_sprites has nothing for it -- no install configured, no graphic
     mapped (every tech, some objects), or a decode failure.
     sprite_pieces_for() already turns every one of those into an empty list
-    rather than raising."""
+    rather than raising.
+
+    `rotation` defaults to the facing-neutral 0.0 every existing caller here
+    wants; the Cliff tool's own param-row preview (viewer.py) passes the
+    user's chosen frame instead, since rotation picks a cliff's SHAPE, not a
+    facing -- see unit_sprites.rotation_is_variant()'s own docstring.
+    """
     pieces = unit_sprites.sprite_pieces_for(
-        object_id, _PREVIEW_ROTATION, _PREVIEW_TEAM_INDEX, _PREVIEW_HALF_W
+        object_id, rotation, _PREVIEW_TEAM_INDEX, _PREVIEW_HALF_W
     )
     canvas = _composite_pieces(pieces)
     if canvas is None:
@@ -215,7 +221,7 @@ class CatalogBrowseDialog(QDialog):
         # unrelated unit's graphic for a tech id that coincidentally matches
         # one. Only ever preview a real object-catalog entry.
         found = object_catalog.entry(self._catalog, object_id) if isinstance(object_id, int) else None
-        pixmap = _preview_pixmap(object_id) if found is not None and found.category != "Techs" else None
+        pixmap = preview_pixmap(object_id) if found is not None and found.category != "Techs" else None
         self.preview.setPixmap(pixmap if pixmap is not None else QPixmap())
 
     def select(self, object_id: int) -> None:

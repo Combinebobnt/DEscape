@@ -21,5 +21,8 @@ native/iso_render/*.html
 # that script, not source
 build/
 
+# PyInstaller output (packaging/descape.spec) -- generated, not source
+dist/
+
 # Private maintainer-only planning docs, own git repo, not this one's
 /maintainer/

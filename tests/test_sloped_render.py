@@ -1,7 +1,6 @@
 """Verifies descape.render's Phase 6 (Sloped) compositor additions --
 _render_tile_sloped, render_terrain_sloped(_with_proj), composite_rect_sloped,
-and render_scenario()/save_png()'s style= widening -- docs/PLAN_V2_6.md's
-Track C2.
+and render_scenario()/save_png()'s style= widening -- Track C2.
 
 Checks:
   1. Flat-map byte identity: on a uniform-elevation map, render_terrain_sloped
@@ -17,7 +16,7 @@ Checks:
   4. render_scenario()/save_png()'s style="sloped" parameter dispatches to
      render_terrain_sloped, and style=None/isometric keep their existing
      Flat/Stepped behavior unchanged (the backward-compatibility bar
-     docs/PLAN_V2_6.md's must-keep-passing dump_scenario.py --iso needs).
+     the must-keep-passing dump_scenario.py --iso needs).
   5. _slope_shade alignment: the compositor gathers shading through
      sloped_quad_indices' uv_idx rather than slicing it to length. Since
      the resample made columns variable-length, slicing is a SILENT bug on

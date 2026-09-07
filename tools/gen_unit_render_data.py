@@ -5,7 +5,7 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Three tables, all keyed by unit_const:
+Five tables, all keyed by unit_const:
 
 - "buildings": [span_x, span_y] -- the footprint's real width and height in
   TILES, for every unit whose `building` field is populated (i.e. it's an
@@ -65,6 +65,55 @@ Three tables, all keyed by unit_const:
   outline, and must keep drawing as their sprite). Farm and the rest of
   its family are the only consts that end up with a foundation terrain
   AND no .sld today.
+- "building_tiles": unit_const -> [[ox, oy], ...] local tile offsets inside
+  the "buildings" bbox, present ONLY for the 36 class_ == 39 (gate) consts
+  whose real occupied footprint is smaller than their bbox -- a diagonal
+  (NE/SE/E/N) gate's true footprint is a 2x2 solid centre
+  (`collision_size`, doubled the same way clearance_size is) plus two 1x1
+  corner pillars (`building.annexes`' real misplacement slots), 6 tiles
+  inside the 4x4 bbox "buildings" gives it, not all 16. Axis-aligned gate
+  segments (bbox (4,1)/(1,4)) also carry a narrower collision_size than
+  clearance_size, but their real footprint genuinely IS the whole strip
+  (that mismatch means something else for them, not sparsity) -- gated to
+  span == (4, 4) so they never enter this table.
+
+  Offsets are in the same local frame `_span_start`-derived bbox tile 0 is
+  the origin of: the solid centre always occupies local (1,1)-(2,2)
+  inclusive (own tile at (2,2), the invariant `render.py`'s
+  `unit_tile_bounds` docstring already relies on), and each pillar is
+  `floor(span/2 + annex.misplacement)` per axis. Measured against the real
+  .dat: exactly 36 consts qualify, in exactly two 6-tile shapes (an 18/18
+  split), every annex misplacement is exactly (+-1.5, +-1.5), and the own
+  tile is inside the occupied set for all 36 -- see this script's
+  docstring commit and `tests/test_unit_footprints.py`.
+
+- "object_spans": [span_x, span_y] -- the same [span_x, span_y] shape as
+  "buildings", for the 96 `class_ == 34` (cliff) consts, which are NOT
+  buildings (`unit.building is None`, `type == 10`) and so get no
+  "buildings" entry at all. Without one they fell back to render.py's
+  NON_BUILDING_SPAN of (1, 1), and `_span_start`'s span-1 branch re-snapped
+  their already-exact coordinate to `int(x) + 0.5` -- half a tile off for
+  the 32% of corpus cliffs whose piece has an even span on some axis.
+
+  **Deliberately a separate key, not more "buildings" rows.** render.py's
+  `_unit_color` does `unit.unit_const in BUILDING_TILE_SPANS` as its
+  is-a-building test, so folding cliffs into that dict would recolour every
+  one of them as a building. terrain_palette merges the two into
+  UNIT_TILE_SPANS for the span lookups alone.
+
+  Sourced from `collision_size`, NOT `clearance_size`: every cliff const
+  reports a flat clearance of (1.5, 1.5), which is useless, while
+  collision_size varies per piece and matches the sub-tile coordinate parity
+  of all 18,232 corpus cliff placements exactly (a 3-wide axis sits on .5, a
+  2-wide axis on .0). Doubled and floored with the same
+  `max(1, round(2 * v))` rule "buildings" uses.
+
+  Scoped to class 34 rather than "every non-building whose collision_size
+  disagrees with its clearance_size": free-placed class-14 decorations
+  (grass, flowers, shrubs) carry arbitrary non-.5 coordinates and are
+  re-snapped by the same branch, but they are genuinely free-placed
+  eye-candy rather than a grid family, and the displacement is invisible on
+  a 1-tile sprite. Widening this gate would move them for no gain.
 
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install -- neither of which this repo depends on for normal use, only for
@@ -75,6 +124,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -92,6 +142,44 @@ def _load_palette(pal_path: Path) -> list[tuple[int, int, int]]:
 
 def _unwrap_signed_byte(value: int) -> int:
     return value & 0xFF
+
+
+_GATE_CLASS = 39
+# Cliffs. The whole class, all 96 consts -- ten full families of nine pieces
+# plus the six-const CLF01..CLF08 partial family (1339-1346) that shares the
+# Desert graphic. Taken from the .dat's own class_ rather than a hand-kept
+# const list precisely so that partial family can't be missed.
+_CLIFF_CLASS = 34
+
+
+def _gate_tile_offsets(unit, span_x: int, span_y: int) -> list[list[int]] | None:
+    """The 6 local tile offsets a diagonal gate (`unit_const` in class 39,
+    bbox 4x4) actually occupies, or None for every other class-39 building
+    (axis-aligned gate segments and standalone corner-pillar consts, whose
+    collision_size also differs from clearance_size but whose real footprint
+    is genuinely the full bbox -- see the module docstring's
+    "building_tiles" section)."""
+    if (span_x, span_y) != (4, 4):
+        return None
+    core_x = max(1, round(unit.collision_size_x * 2))
+    core_y = max(1, round(unit.collision_size_y * 2))
+    if (core_x, core_y) == (span_x, span_y):
+        return None
+    core_x0 = span_x // 2 - core_x // 2
+    core_y0 = span_y // 2 - core_y // 2
+    offsets = {(core_x0 + i, core_y0 + j) for i in range(core_x) for j in range(core_y)}
+    for annex in unit.building.annexes:
+        if annex.unit_id is None or annex.unit_id < 0:
+            continue
+        ox = math.floor(span_x / 2 + annex.misplacement_x)
+        oy = math.floor(span_y / 2 + annex.misplacement_y)
+        offsets.add((ox, oy))
+    own_tile = (span_x // 2, span_y // 2)
+    assert own_tile in offsets, (
+        f"own tile {own_tile} not in generated occupied set {sorted(offsets)} -- "
+        f"the unit_tile_bounds() own-tile invariant would break"
+    )
+    return [list(o) for o in sorted(offsets)]
 
 
 def main() -> None:
@@ -117,18 +205,30 @@ def main() -> None:
     units = data.civs[0].units
 
     buildings: dict[str, list[int]] = {}
+    building_tiles: dict[str, list[list[int]]] = {}
+    object_spans: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
     foundation_terrain: dict[str, int] = {}
 
     for unit_const, unit in enumerate(units):
         if unit is None:
             continue
+        if unit.class_ == _CLIFF_CLASS:
+            object_spans[str(unit_const)] = [
+                max(1, round(unit.collision_size_x * 2)),
+                max(1, round(unit.collision_size_y * 2)),
+            ]
         if unit.building is not None:
             cx, cy = unit.clearance_size
-            buildings[str(unit_const)] = [max(1, round(cx * 2)), max(1, round(cy * 2))]
+            span_x, span_y = max(1, round(cx * 2)), max(1, round(cy * 2))
+            buildings[str(unit_const)] = [span_x, span_y]
             terrain_id = unit.building.foundation_terrain_id
             if terrain_id is not None and terrain_id >= 0:
                 foundation_terrain[str(unit_const)] = terrain_id
+            if unit.class_ == _GATE_CLASS:
+                offsets = _gate_tile_offsets(unit, span_x, span_y)
+                if offsets is not None:
+                    building_tiles[str(unit_const)] = offsets
             continue  # buildings never get a resource_colors entry
         if unit.minimap_color:
             idx = _unwrap_signed_byte(unit.minimap_color)
@@ -141,6 +241,12 @@ def main() -> None:
             {
                 "_comment": "unit_const -> rendering hints -- see tools/gen_unit_render_data.py",
                 "buildings": dict(sorted(buildings.items(), key=lambda kv: int(kv[0]))),
+                "building_tiles": dict(
+                    sorted(building_tiles.items(), key=lambda kv: int(kv[0]))
+                ),
+                "object_spans": dict(
+                    sorted(object_spans.items(), key=lambda kv: int(kv[0]))
+                ),
                 "resource_colors": dict(
                     sorted(resource_colors.items(), key=lambda kv: int(kv[0]))
                 ),
@@ -154,6 +260,8 @@ def main() -> None:
     )
     print(
         f"Wrote {len(buildings)} building footprints, "
+        f"{len(building_tiles)} sparse building_tiles, "
+        f"{len(object_spans)} object_spans, "
         f"{len(resource_colors)} resource colors and "
         f"{len(foundation_terrain)} foundation terrains to {out_path}"
     )

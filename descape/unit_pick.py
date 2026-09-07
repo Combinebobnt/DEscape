@@ -225,6 +225,13 @@ def _pick_unit_stepped(
                     # is the single height its whole footprint is drawn at.
                     if int(elevations[entry.own_y, entry.own_x]) != e:
                         continue
+                    # index.by_tile is Flat's own full-rect bucketing, shared
+                    # here rather than duplicated (see build_index's
+                    # docstring); narrow to the real occupied set for the 36
+                    # sparse diagonal-gate consts, so a click on a bbox "gap"
+                    # tile a gate doesn't actually occupy correctly misses.
+                    if not render.unit_occupies_tile(entry.unit, x, y):
+                        continue
                     key = _stepped_key(order, x, y)
                     if best_key is None or key > best_key:
                         best, best_key = (entry, (x, y)), key
@@ -311,6 +318,11 @@ def _pick_unit_sloped(
                 rise = unit_rise_px_for(entry, corner_rise)
                 local_x, local_y = sx - origin_sx, sy - (row - rise)
                 if not bool(iso_geometry.diamond_membership(local_x, local_y, half_w, half_h)):
+                    continue
+                # See _pick_unit_stepped's matching comment: index.by_tile is
+                # Flat's full-rect bucketing, narrowed here to the real
+                # occupied set for the 36 sparse diagonal-gate consts.
+                if not render.unit_occupies_tile(entry.unit, x, y):
                     continue
                 key = _stepped_key(order, x, y)
                 if best_key is None or key > best_key:
@@ -462,10 +474,9 @@ def unit_polygons(
 
     half_w, half_h = proj.half_w, proj.half_h
     polygons = []
-    for ty in range(tile_y0, tile_y1):
-        for tx in range(tile_x0, tile_x1):
-            ox, oy = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
-            polygons.append(diamond_points(ox, oy - rise, half_w, half_h))
+    for tx, ty in render.unit_occupied_tiles(entry.unit, tile_w, tile_h):
+        ox, oy = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
+        polygons.append(diamond_points(ox, oy - rise, half_w, half_h))
     return polygons
 
 

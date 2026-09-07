@@ -189,8 +189,8 @@ def test_a_sprite_paints_once_not_once_per_footprint_tile(sprite_install, monkey
     assert total == 1, f"painted {total} times for a {span[0]}x{span[1]} footprint"
     # And at the footprint tile that comes LAST in depth_order, so every
     # footprint tile's terrain is already down when the sprite lands.
-    bounds = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
-    assert next(iter(sprites.by_anchor)) == unit_sprites.sprite_anchor_tile(*bounds)
+    tiles = render.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    assert next(iter(sprites.by_anchor)) == unit_sprites.sprite_anchor_tile(tiles)
 
 
 def test_a_sprite_bearing_units_mark_is_not_drawn_underneath(sprite_install):

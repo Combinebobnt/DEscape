@@ -272,8 +272,8 @@ def test_peek_does_not_move_the_cursor() -> None:
 
 
 def test_every_diffrecord_subclass_accepts_the_four_parameter_shape() -> None:
-    """Plan stage 4.4 (descape-units-write-path.md): threading `units` as a
-    fourth target through require_target/undo/redo means a missed subclass
+    """Threading `units` as a fourth target through
+    require_target/undo/redo means a missed subclass
     fails at runtime, not at import -- this is what actually catches it, and
     it survives a fifth record kind arriving later without another edit
     here."""

@@ -213,10 +213,11 @@ class TriggerDiffRecord(DiffRecord):
 
 @dataclass
 class OptionsDiffRecord(DiffRecord):
-    """One map-option scalar edit, as the raw before/after values of one field.
+    """One map-option scalar (or, for tribe_name, string) edit, as the raw
+    before/after values of one field.
 
     Values rather than a snapshot, unlike TriggerDiffRecord: an option field is
-    one fixed-width integer with no object graph behind it, and
+    one fixed-width value with no object graph behind it, and
     OptionsEditModel.set_value() is idempotent, so replaying the "before" value
     is a complete restore.
 
@@ -229,8 +230,8 @@ class OptionsDiffRecord(DiffRecord):
     """
 
     field_id: str
-    before: int
-    after: int
+    before: int | str
+    after: int | str
     kind: ClassVar[str] = "options"
 
     def require_target(

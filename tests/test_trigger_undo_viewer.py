@@ -188,7 +188,7 @@ def test_saving_with_no_trigger_model_is_byte_identical(tmp_path: Path) -> None:
 
 # -- 4. every 4b.6b operation survives its own undo (edit -> undo -> save) ----
 #
-# The shape descape-4b-headless-slice.md's Decision 3 exists for, and the only
+# The shape a single shared EditHistory exists for, and the only
 # test that proves the UI honours the whole model contract end to end. A record
 # that restores the section bytes but not the live object graph, or an operation
 # that dirties a blob without pushing a record, both pass everything else in the

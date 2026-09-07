@@ -111,21 +111,19 @@ def test_the_toggle_needs_a_map(sprite_install) -> None:
         conftest.close_window(window)
 
 
-def test_the_toggle_is_greyed_out_in_flat(sprite_install) -> None:
-    """Flat-only now (Track P3-g6): composite_rect_flat still takes no
-    sprite argument, so Flat is the one remaining unlanded piece (P3-g7).
-    Sloped had this same pin until g6 gave SlopedChunkCache a real sprite
-    path -- see test_the_checked_state_survives_a_terrain_style_round_trip
-    for its own (non-greyed) coverage. Greyed with a tooltip naming the
-    reason, rather than silently doing nothing."""
+def test_the_toggle_is_enabled_in_every_style(sprite_install) -> None:
+    """**The inverse of what this test pinned until P3-g7.** Flat was the last
+    style without a sprite compositor and was greyed with a "Stepped and
+    Sloped only" tooltip; icon_for()/FlatChunkCache._level_icons() closed
+    that, so there is no style gate left in _update_tool_enabled() at all --
+    only has_map and a configured install. Every style therefore carries the
+    same tooltip too."""
     window = conftest.blank_window()
     try:
-        assert window.show_sprites_action.isEnabled()
-        window.terrain_style_combo.setCurrentText("Flat")
-        assert not window.show_sprites_action.isEnabled()
-        assert "Stepped and Sloped only" in window.show_sprites_action.toolTip()
-        window.terrain_style_combo.setCurrentText("Stepped")
-        assert window.show_sprites_action.isEnabled()
+        for style in ("Stepped", "Flat", "Sloped", "Stepped"):
+            window.terrain_style_combo.setCurrentText(style)
+            assert window.show_sprites_action.isEnabled(), style
+            assert "real game sprites" in window.show_sprites_action.toolTip(), style
     finally:
         conftest.close_window(window)
 
@@ -214,22 +212,27 @@ def test_the_checked_state_survives_a_terrain_style_round_trip(sprite_install, s
     the way home. The same trap test_filter_survives_a_terrain_style_switch
     covers for the unit filter.
 
-    Checked in the middle too. Flat's cache still cannot draw sprites
-    (P3-g7, unlanded): the flag must be STORED there anyway (that is what
-    _ChunkCacheBase.set_sprites_enabled is for) even though nothing acts on
-    it, and the menu item must stay checked while greyed rather than being
-    silently unchecked. Sloped's cache, as of Track P3-g6, DOES act on it --
-    checked here via SlopedChunkCache.sprites actually being built, not
-    just the flag being stored.
+    Checked in the middle too, and on the REAL layer rather than the stored
+    flag: both styles now act on it (Sloped as of P3-g6, Flat as of P3-g7), so
+    asserting the flag alone would pass on a cache that stored it and drew
+    nothing -- which is exactly what Flat did before g7.
     """
     window = conftest.blank_window()
     try:
         window.show_sprites_action.setChecked(True)
+        # Unchecked BEFORE the style switch, while still in Stepped --
+        # iso_action defaults checked (MapView._isometric's own default), so
+        # Flat would otherwise render through the Flat+Isometric plan's real
+        # IsoChunkCache path instead of building the FlatChunkCache/icons
+        # this test means to check. Inert for the "Sloped" parametrization.
+        window.iso_action.setChecked(False)
         window.terrain_style_combo.setCurrentText(style)
-        assert window.show_sprites_action.isChecked(), "greying must not uncheck it"
+        assert window.show_sprites_action.isChecked()
         assert window._cache.sprites_enabled is True, "the flag must survive regardless of style"
         if style == "Sloped":
             assert window._cache.sprites is not None, "Sloped must actually build a sprite layer now (P3-g6)"
+        else:
+            assert window._cache._level_icons(0) is not None, "Flat must actually build icons now (P3-g7)"
 
         window.terrain_style_combo.setCurrentText("Stepped")
         assert window._cache.sprites_enabled is True

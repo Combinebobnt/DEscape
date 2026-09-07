@@ -30,6 +30,7 @@ from descape.options_model import (
     OptionsEditModel,
     diplomacy_write_supported,
     options_write_supported,
+    player_count_write_supported,
     players_write_supported,
 )
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
@@ -73,14 +74,15 @@ def test_player_fields_are_present_in_a_writable_model() -> None:
     )
 
 
-def test_tribe_name_is_absent_from_the_model_until_step_3d() -> None:
-    """c256 is a string codec; _original/_pending stay int-only until step
-    3d widens them, so tribe_name must not appear as a settable id yet even
-    though player_fields.write_targets() resolves it."""
+def test_tribe_name_is_settable_as_of_step_3d() -> None:
+    """c256 is a string codec; _original/_pending are int | str (step 3d),
+    so tribe_name rides the same additive player-field set as every other
+    Tier-1 spec."""
     model = OptionsEditModel(_loaded())
-    assert not any(key.startswith("player:tribe_name:") for key in model._player_targets)
-    with pytest.raises(KeyError):
-        model.set_value("player:tribe_name:1", 5)
+    assert any(key.startswith("player:tribe_name:") for key in model._player_targets)
+    assert isinstance(model.original_value("player:tribe_name:1"), str)
+    model.set_value("player:tribe_name:1", "Franks")
+    assert model.current_value("player:tribe_name:1") == "Franks"
 
 
 def test_player_fields_are_absent_when_the_player_gate_fails() -> None:
@@ -268,6 +270,132 @@ def test_a_player_field_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
     assert players_write_supported(reloaded)
 
 
+def test_a_tribe_name_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value("player:tribe_name:6", "Mongols")
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model)
+
+    reloaded = load_map_and_units(out)
+    spec = next(s for s in player_fields.specs_for(reloaded) if s.field_id == "tribe_name")
+    assert player_fields.current_value(reloaded, spec, 6) == "Mongols"
+    assert players_write_supported(reloaded)
+
+
+# -- civ/architecture Step B: the resizing splice, reparse round trip --------
+
+
+def _all_player_values(loaded) -> dict[tuple[str, int], int | str]:
+    """Every (field_id, player_id) -> current_value(), for asserting that a
+    resizing splice on player_data_1 leaves every *other* field on every
+    *other* player reading byte-identically to before -- not just that the
+    one edited field reads the new value."""
+    return {
+        (spec.field_id, player_id): player_fields.current_value(loaded, spec, player_id)
+        for spec in player_fields.specs_for(loaded)
+        for player_id in range(1, 9)
+    }
+
+
+@pytest.mark.parametrize(
+    "new_value",
+    [
+        pytest.param("HUN-CIV", id="shrink"),  # RANDOM-CIV (10) -> HUN-CIV (7)
+        pytest.param("MIRROR-RANDOM-CIV", id="grow"),  # RANDOM-CIV (10) -> 17
+        pytest.param("BRITON-CIV", id="same-length"),  # 10 -> 10, the delta-zero case
+    ],
+)
+def test_a_civilization_edit_reads_back_after_a_reload(new_value: str, tmp_path: Path) -> None:
+    """BLANK_TEMPLATE_PATH is 1.58 (str16), so this exercises Step B's
+    resizing splice, not Step A's plain byte patch. Confirms the edited
+    field's new value, that every other field on every player is
+    byte-for-byte unaffected, and that players_write_supported() still
+    holds post-reload -- the reparse round trip the maintainer plan's
+    verification section calls for, for a shrink, a grow, and the
+    delta-zero same-length case in one parametrization."""
+    loaded = _loaded()
+    before = _all_player_values(loaded)
+    assert before[("civilization", 1)] != new_value
+
+    model = OptionsEditModel(loaded)
+    model.set_value("player:civilization:1", new_value)
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model)
+
+    reloaded = load_map_and_units(out)
+    spec = next(s for s in player_fields.specs_for(reloaded) if s.field_id == "civilization")
+    assert player_fields.current_value(reloaded, spec, 1) == new_value
+    assert players_write_supported(reloaded)
+
+    after = _all_player_values(reloaded)
+    for key, value in before.items():
+        if key == ("civilization", 1):
+            continue
+        assert after[key] == value, f"{key} changed: {value!r} -> {after[key]!r}"
+
+
+def test_civilization_and_architecture_are_independent_in_one_save(tmp_path: Path) -> None:
+    """Editing P1's civilization must not touch P2's architecture, and vice
+    versa -- both fields share player_data_1_splice()'s single combined
+    region, so this is the test that would catch them clobbering each
+    other's span."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    civ_before = model.original_value("player:civilization:1")
+    arch_before = model.original_value("player:architecture:2")
+    model.set_value("player:civilization:1", "HUN-CIV")
+    model.set_value("player:architecture:2", "MIRROR-RANDOM-CIV")
+    assert civ_before != "HUN-CIV"
+    assert arch_before != "MIRROR-RANDOM-CIV"
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model)
+
+    reloaded = load_map_and_units(out)
+    specs = {s.field_id: s for s in player_fields.specs_for(reloaded)}
+    assert player_fields.current_value(reloaded, specs["civilization"], 1) == "HUN-CIV"
+    assert player_fields.current_value(reloaded, specs["architecture"], 2) == "MIRROR-RANDOM-CIV"
+    # P1's architecture and P2's civilization must be untouched.
+    assert player_fields.current_value(reloaded, specs["architecture"], 1) != "MIRROR-RANDOM-CIV"
+    assert player_fields.current_value(reloaded, specs["civilization"], 2) != "HUN-CIV"
+    assert players_write_supported(reloaded)
+
+
+def test_a_civilization_edit_combined_with_a_messages_and_a_map_options_edit(
+    tmp_path: Path,
+) -> None:
+    """The case _patch_player_data_1()'s ordering (after _patch_messages())
+    exists for: a civ resize plus a Messages edit plus a Map Options scalar
+    in one write_scenario() call. This is the one that would silently
+    corrupt if that ordering regressed -- Messages sits between
+    player_data_1 and everything _patch_options() addresses, so a wrong
+    order would shift one or the other's offsets."""
+    from descape.messages_model import MessagesEditModel
+
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value("player:civilization:1", "MIRROR-RANDOM-CIV")  # a grow
+    before_years = model.original_value("victory_years")
+    model.set_value("victory_years", before_years + 5)
+
+    messages = MessagesEditModel(loaded)
+    messages.set_value("instructions", "X" * 500)  # long enough to shift the body
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model, messages=messages)
+
+    reloaded = load_map_and_units(out)
+    specs = {s.field_id: s for s in player_fields.specs_for(reloaded)}
+    assert player_fields.current_value(reloaded, specs["civilization"], 1) == "MIRROR-RANDOM-CIV"
+    assert option_fields.current_value(
+        reloaded, next(s for s in option_fields.specs_for(reloaded) if s.field_id == "victory_years")
+    ) == before_years + 5
+    reloaded_messages = MessagesEditModel(reloaded)
+    assert reloaded_messages.current_value("instructions") == "X" * 500
+    assert players_write_supported(reloaded)
+
+
 # -- 5. the gates -------------------------------------------------------------
 
 
@@ -324,6 +452,16 @@ def test_set_value_refuses_a_food_value_that_is_not_f32_exact() -> None:
     model.set_value("player:food:1", 2**24)  # exact, must not raise
 
 
+def test_set_value_refuses_tribe_name_text_that_overflows_its_slot() -> None:
+    """tribe_name's DataHeader.tribe_names slot is a fixed 256-byte c256;
+    text longer than the slot can hold must raise rather than silently
+    overflowing into the next field."""
+    model = OptionsEditModel(_loaded())
+    with pytest.raises(ValueError):
+        model.set_value("player:tribe_name:1", "x" * 257)
+    model.set_value("player:tribe_name:1", "x" * 255)  # leaves room for the NUL, must not raise
+
+
 # -- 7. corpus ----------------------------------------------------------------
 
 
@@ -343,3 +481,187 @@ def test_a_browsed_player_model_saves_byte_identically_across_the_corpus(
     with_model = tmp_path / "with.aoe2scenario"
     write_scenario(loaded, with_model, options=model)
     assert with_model.read_bytes() == without.read_bytes()
+
+
+# -- Number of Players (step 3e) ----------------------------------------------
+#
+# The one edit in this model that reaches two buffers: eight `active` flags
+# in decompressed_body plus FileHeader.player_count in header_bytes. It has
+# its own gate (player_count_write_supported()) because those two halves can
+# fail independently of every per-player row.
+
+_STR16_CIV_PATH = Path(__file__).resolve().parent.parent / "examples" / "ring75_v0_scx_resaved.aoe2scenario"
+
+
+def _header_count(path: Path) -> int:
+    loaded = load_map_and_units(path)
+    start, end = loaded.header_player_count_span
+    return int.from_bytes(loaded.header_bytes[start:end], "little")
+
+
+def test_player_count_is_settable_and_normalises_back_out_of_pending() -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    original = model.original_value(player_fields.PLAYER_COUNT_FIELD_ID)
+    assert original == player_fields.defined_player_count(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+    assert model.has_player_count_edit and model.has_player_edits
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, original)
+    assert not model.has_player_count_edit and not model.has_edits
+
+
+def test_setting_an_out_of_range_player_count_raises() -> None:
+    model = OptionsEditModel(_loaded())
+    with pytest.raises(ValueError):
+        model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 9)
+    with pytest.raises(ValueError):
+        model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 0)
+
+
+def test_the_player_count_is_absent_when_its_own_gate_fails() -> None:
+    """Independent of players_write_supported(): breaking only the header
+    span leaves every per-player row settable and takes just this one
+    away."""
+    loaded = _loaded()
+    loaded.header_player_count_span = (-1, -1)
+    assert not player_count_write_supported(loaded)
+    assert players_write_supported(loaded)
+
+    model = OptionsEditModel(loaded)
+    with pytest.raises(KeyError):
+        model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+    model.set_value("player:food:1", 500)
+    assert model.has_player_edits
+
+
+def test_the_player_count_survives_a_per_player_gate_failure() -> None:
+    """The other direction: a PlayerDataTwo failure takes away the
+    per-player rows but not this one, since `active` lives in DataHeader
+    and the header count lives outside the body entirely."""
+    loaded = _loaded()
+    loaded.player_data_two_section_end += 4
+    assert not players_write_supported(loaded)
+    assert player_count_write_supported(loaded)
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+    assert model.has_player_count_edit
+
+
+def test_a_clean_model_emits_no_header_patch() -> None:
+    assert OptionsEditModel(_loaded()).header_patch() is None
+
+
+def test_the_header_patch_is_the_same_width_as_the_field_it_replaces() -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+    start, end, payload = model.header_patch()
+    assert (start, end) == loaded.header_player_count_span
+    assert len(payload) == end - start
+    assert int.from_bytes(payload, "little") == 5
+
+
+def test_one_count_edit_patches_exactly_the_eight_active_flags(tmp_path: Path) -> None:
+    """Locality, the same shape the mirrored-field tests above use: nothing
+    outside the eight `active` spans moves, and GAIA's own slot (index 8)
+    is left alone."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+
+    targets = player_fields.player_count_targets(loaded)
+    expected = {(t.offset, t.offset + t.length) for t in targets}
+    patches = model.serialize_patches()
+    assert {(o, o + len(d)) for o, d in patches} == expected
+
+    out = tmp_path / "count.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+    changed = set(_differing_ranges(loaded.decompressed_body, _written_body(out)))
+    # Only flags whose value actually changed differ, so this is a subset of
+    # the eight spans, never a superset.
+    assert changed
+    for start, end in changed:
+        assert any(lo <= start and end <= hi for lo, hi in expected), (start, end)
+
+    gaia = player_fields._player_data_1_variable_target(loaded, "active", 0).target
+    assert not any(
+        start < gaia.offset + gaia.length and gaia.offset < end for start, end in changed
+    )
+
+
+def test_a_count_edit_round_trips_through_both_buffers(tmp_path: Path) -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 6)
+    out = tmp_path / "count.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+
+    reloaded = load_map_and_units(out)
+    assert player_fields.defined_player_ids(reloaded) == [1, 2, 3, 4, 5, 6]
+    assert _header_count(out) == 6
+
+
+def test_lowering_the_count_deactivates_the_top_players(tmp_path: Path) -> None:
+    """Not just a same-or-growing check: the corpus's own counts run 2..8,
+    and a writer that only ever set flags to 1 would pass a grow-only
+    test."""
+    loaded = load_map_and_units(_STR16_CIV_PATH)
+    assert player_fields.defined_player_count(loaded) == 4
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 2)
+    out = tmp_path / "count.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+
+    reloaded = load_map_and_units(out)
+    assert player_fields.defined_player_ids(reloaded) == [1, 2]
+    assert _header_count(out) == 2
+
+
+def test_a_count_edit_and_a_str16_civ_edit_in_one_save_both_land(tmp_path: Path) -> None:
+    """The collision the civ/architecture plan's Step B ordering does NOT
+    give for free: player_data_1_splice() rebuilds the whole array, and
+    reading the *original* body there silently discards the `active` patch
+    made in the same save. Confirmed empirically -- with the splice reading
+    the original body, this file comes back with 4 players in the body and
+    2 in the header.
+    """
+    loaded = load_map_and_units(_STR16_CIV_PATH)
+    civ_key = player_fields.player_field_id("civilization", 3)
+    model = OptionsEditModel(loaded)
+    assert model._player_targets[civ_key][0].codec == "str16"
+    model.set_value(civ_key, "HUN-CIV")
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 2)
+    out = tmp_path / "both.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+
+    reloaded = load_map_and_units(out)
+    civ_spec = next(s for s in player_fields.specs_for(reloaded) if s.field_id == "civilization")
+    assert player_fields.current_value(reloaded, civ_spec, 3) == "HUN-CIV"
+    assert player_fields.defined_player_ids(reloaded) == [1, 2]
+    assert _header_count(out) == 2
+
+
+def test_a_count_edit_is_refused_when_its_gate_stops_verifying(tmp_path: Path) -> None:
+    """write_scenario()'s own re-gate, matching the Diplomacy/Players ones:
+    the model already refused to offer this on a bad file, so reaching here
+    means something changed under it."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+    loaded.header_player_count_span = (-1, -1)
+    with pytest.raises(WriteBlockedError, match="Number of Players"):
+        write_scenario(loaded, tmp_path / "refused.aoe2scenario", options=model, backup=False)
+
+
+def test_a_count_edit_leaves_the_rest_of_the_header_alone(tmp_path: Path) -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
+    out = tmp_path / "count.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+
+    written = load_map_and_units(out).header_bytes
+    start, end = loaded.header_player_count_span
+    assert len(written) == len(loaded.header_bytes)
+    assert written[:start] == loaded.header_bytes[:start]
+    assert written[end:] == loaded.header_bytes[end:]

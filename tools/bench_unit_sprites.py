@@ -7,7 +7,7 @@ real AoE2:DE install configured, since sprite pixels are read from it at
 runtime and nothing is bundled; with no install every unit falls back to a
 coloured mark and every number below is zero by construction.
 
-Four things get measured, because they fail in different ways:
+Five things get measured, because they fail in different ways:
 
 - **Distinct sprite keys per file.** Decode cost scales with distinct
   (graphic, frame, player) combinations actually used, NOT with the unit count
@@ -28,8 +28,12 @@ Four things get measured, because they fail in different ways:
 - **Composite cost per chunk, with and against without.** The sprite branch in
   _paint_tile_and_units_iso is the part that runs on every chunk fetch, so it
   is what a pan or a zoom pays.
+- **Flat's icon layer, per mip level** (P3-g7). Flat's own arm, because it adds
+  an axis Stepped does not have: an icon is FOOTPRINT-sized, so a level's whole
+  working set quadruples with each step up the ladder, and ICON_CACHE_BYTES has
+  to exceed the biggest level's or that level thrashes.
 
-Peak resident bytes of both caches are reported alongside, since the capacity
+Peak resident bytes of every cache are reported alongside, since the capacity
 decision is a memory/latency trade rather than a pure latency one.
 """
 
@@ -54,11 +58,14 @@ def _ms(seconds: float) -> str:
 
 
 def _cache_bytes() -> tuple[int, int]:
+    # _MISS entries are a sentinel, not an array, and carry no pixels. It lives
+    # in BOTH LRUs as of P3-g7 (it moved down into the native one, whose key is
+    # scale-independent) -- so both sums have to skip it, not just the scaled.
     native = sum(
         sum(a.nbytes for a in value[:2] if a is not None)
         for value in unit_sprites._native_cache.values()
+        if value is not unit_sprites._MISS
     )
-    # _MISS entries are a sentinel, not an array, and carry no pixels.
     scaled = sum(
         d.rgba.nbytes for d in unit_sprites._scaled_cache.values() if d is not unit_sprites._MISS
     )
@@ -155,6 +162,8 @@ def bench_file(path: Path) -> str:
     name, worst = _worst_frame_resolution(scenario, proj)
     lines.append(f"    worst single cold frame: {_ms(worst)} ({name})")
 
+    lines.extend(_bench_flat_icons(scenario, tile_px))
+
     unit_sprites.clear_caches()
     layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
     units_by_tile = render._units_by_tile(scenario)
@@ -179,6 +188,42 @@ def bench_file(path: Path) -> str:
         f"sprites {_ms(with_)} ({ratio:.2f}x) over {len(rects)} chunks"
     )
     return "\n".join(lines)
+
+
+def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
+    """Flat's icon-layer arm (P3-g7), per mip level.
+
+    Per LEVEL rather than once, because that is the axis Flat adds: an icon
+    entry is FOOTPRINT-sized, so its bytes quadruple with each step up the
+    ladder and a budget that fits one level can thrash on the next. The whole
+    point of ICON_CACHE_BYTES is to exceed the biggest level's working set --
+    a warm rebuild that matches its own cold one is the tell that it does not,
+    the same failure NATIVE_CACHE_SIZE/SCALED_CACHE_SIZE's comment records.
+
+    Flat multiplies the cold build by RESIDENT level count, which Stepped
+    already does too, so that is accepted by precedent rather than new -- but
+    it is worth a number rather than being left undiscussed.
+    """
+    unit_sprites.clear_caches()
+    unit_sprites._icon_cache.clear()
+    lines = ["    flat icons (P3-g7):"]
+    for level, px in sorted(iso_geometry.mip_tile_px_candidates(tile_px).items()):
+        cold = _time(lambda: render._flat_icon_layer(scenario, px))
+        warm = min(_time(lambda: render._flat_icon_layer(scenario, px)) for _ in range(3))
+        icons, rows = render._flat_icon_layer(scenario, px)
+        flag = "  <-- WARM MATCHES COLD, so the icon cache is thrashing" if warm > 0.5 * cold else ""
+        lines.append(
+            f"      mip {level:>2} tile_px {px:>3}: cold {_ms(cold)} | warm {_ms(warm)} | "
+            f"{len(icons)}/{rows} icons{flag}"
+        )
+    cache = unit_sprites._icon_cache
+    sizes = sorted(v.rgba.nbytes for v in cache.values() if isinstance(v, unit_sprites.SpriteDraw))
+    lines.append(
+        f"      icon cache: {cache._bytes / 1e6:.1f}MB in {len(cache)} entries "
+        f"(budget {cache.capacity_bytes / 1e6:.0f}MB)"
+        + (f" | entry bytes min {sizes[0]} median {sizes[len(sizes) // 2]} max {sizes[-1]}" if sizes else "")
+    )
+    return lines
 
 
 def _time(fn) -> float:
@@ -225,7 +270,8 @@ def main() -> None:
     print(f"Sprite bench -- install {asset_source.get_install_path()}")
     print(
         f"caches: native capacity {unit_sprites.NATIVE_CACHE_SIZE}, "
-        f"scaled capacity {unit_sprites.SCALED_CACHE_SIZE}"
+        f"scaled capacity {unit_sprites.SCALED_CACHE_SIZE}, "
+        f"icon budget {unit_sprites.ICON_CACHE_BYTES / 1e6:.0f}MB"
     )
     worsts = []
     for path in files:

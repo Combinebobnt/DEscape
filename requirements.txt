@@ -11,5 +11,5 @@ AoE2ScenarioParser==0.8.3
 numpy
 Pillow
 platformdirs  # per-OS user config directory -- deliberately preferred over hand-rolled sys.platform branches
-PyQt5
+PyQt5==5.15.11  # pinned -- a Qt bump changes bundle layout for packaging/descape.spec (see maintainer plan)
 PyYAML

@@ -45,6 +45,11 @@ def _window():
     window = ViewerWindow()
     window.load_scenario(FIXTURE_PATH)
     assert window.scenario is not None, "fixture failed to load"
+    # Unchecked BEFORE the style switch, while still in Stepped -- iso_action
+    # defaults checked (MapView._isometric's own default), so Flat would
+    # otherwise render through the Flat+Isometric plan's real-iso path
+    # instead of the plain top-down canvas this module means to exercise.
+    window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText("Flat")
     window.mode_combo.setCurrentText("Units")
     return window
@@ -578,5 +583,182 @@ def test_units_in_scene_rect_finds_units_under_the_marquee() -> None:
         rect = _rect_for_tile(window, int(entry.unit.x), int(entry.unit.y))
         keys = window.map_view._units_in_scene_rect(rect)
         assert (entry.player_id, entry.unit.reference_id) in keys
+    finally:
+        _close(window)
+
+
+# --- b3: rotate ---------------------------------------------------------------
+
+_REF_ARCHER_P1 = 201  # type 70, angle_count 16 -- rotation IS an angle
+_REF_VILLAGER_P1 = 203  # type 70, angle_count 16
+_REF_WALL = 102  # GAIA wall -- rotation is a shape-variant index
+_REF_HOUSE = 200  # angle_count 1 -- nothing to select, INERT
+
+
+def _select(window, *reference_ids):
+    """Selects the fixture units with these reference_ids, through the same
+    reconciliation point every real selection path uses."""
+    index = window.map_view._unit_index
+    entries = [e for e in index.entries if e.unit.reference_id in reference_ids]
+    assert len(entries) == len(reference_ids), "fixture unit missing from the index"
+    window._selection = [(e.player_id, e.unit.reference_id) for e in entries]
+    window._refresh_selection_view()
+    return entries
+
+
+def test_rotate_turns_the_selected_unit_by_one_stored_frame() -> None:
+    window = _window()
+    try:
+        from descape import unit_rotation
+
+        (entry,) = _select(window, _REF_ARCHER_P1)
+        key = (entry.player_id, entry.unit.reference_id)
+        before = entry.unit.rotation
+
+        window.on_unit_rotate(1)
+
+        after = window.map_view._unit_index.entry_for_key(key).unit.rotation
+        assert after == pytest.approx(unit_rotation.rotate_step(before, 16, 1))
+
+        window.undo()
+        assert window.map_view._unit_index.entry_for_key(key).unit.rotation == before
+    finally:
+        _close(window)
+
+
+def test_rotate_skips_a_wall_and_leaves_it_untouched() -> None:
+    """A marquee over a village will always catch walls and doodads. They are
+    skipped, not refused -- and the file must not change for them."""
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_WALL)
+        before = entry.unit.rotation
+
+        window.on_unit_rotate(1)
+
+        assert entry.unit.rotation == before
+        assert not window.edit_history.is_dirty, "a fully-skipped rotate must record nothing"
+        assert "not an angle" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_rotate_skips_an_inert_const_too() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_HOUSE)
+        before = entry.unit.rotation
+        window.on_unit_rotate(1)
+        assert entry.unit.rotation == before
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_a_mixed_selection_rotates_the_angle_units_and_reports_the_skips() -> None:
+    window = _window()
+    try:
+        entries = _select(window, _REF_ARCHER_P1, _REF_VILLAGER_P1, _REF_WALL)
+        wall = next(e for e in entries if e.unit.reference_id == _REF_WALL)
+        rotatables = [e for e in entries if e.unit.reference_id != _REF_WALL]
+        before = {e.unit.reference_id: e.unit.rotation for e in entries}
+
+        window.on_unit_rotate(1)
+
+        assert wall.unit.rotation == before[_REF_WALL]
+        for entry in rotatables:
+            assert entry.unit.rotation != before[entry.unit.reference_id]
+        assert "1 skipped" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_group_rotate_is_a_single_undo_record() -> None:
+    window = _window()
+    try:
+        entries = _select(window, _REF_ARCHER_P1, _REF_VILLAGER_P1)
+        before = [e.unit.rotation for e in entries]
+
+        window.on_unit_rotate(1)
+        assert [e.unit.rotation for e in entries] != before
+
+        window.undo()
+        assert [e.unit.rotation for e in entries] == before
+    finally:
+        _close(window)
+
+
+def test_a_coarse_rotate_turns_a_quarter_of_the_stored_frames() -> None:
+    """angle_count 16, so a quarter turn is 4 whole frames -- not an exact
+    90 degrees written raw."""
+    window = _window()
+    try:
+        from descape import unit_rotation
+
+        (entry,) = _select(window, _REF_ARCHER_P1)
+        before = entry.unit.rotation
+
+        window.on_unit_rotate_coarse(1)
+
+        assert entry.unit.rotation == pytest.approx(unit_rotation.rotate_step(before, 16, 4))
+    finally:
+        _close(window)
+
+
+def test_rotate_does_nothing_outside_units_mode() -> None:
+    """The keybind is a QAction shortcut, so it is live in every mode --
+    unlike the arrow-key nudge, which MapView only injects in Units mode."""
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_ARCHER_P1)
+        before = entry.unit.rotation
+        window.mode_combo.setCurrentText("Terrain")
+
+        window.on_unit_rotate(1)
+
+        assert entry.unit.rotation == before
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_the_rotate_actions_need_a_selection() -> None:
+    window = _window()
+    try:
+        assert all(not a.isEnabled() for a in window._rotate_actions)
+        _select(window, _REF_ARCHER_P1)
+        assert all(a.isEnabled() for a in window._rotate_actions)
+    finally:
+        _close(window)
+
+
+def test_the_inspector_shows_an_editor_only_for_an_angle_const() -> None:
+    window = _window()
+    try:
+        editor = window.unit_field_editors["rotation"]
+        label = window.unit_field_labels["rotation"]
+
+        _select(window, _REF_ARCHER_P1)
+        assert editor.isVisibleTo(window.unit_inspector_grid)
+        assert not label.isVisibleTo(window.unit_inspector_grid)
+
+        _select(window, _REF_WALL)
+        assert not editor.isVisibleTo(window.unit_inspector_grid)
+        assert label.isVisibleTo(window.unit_inspector_grid)
+    finally:
+        _close(window)
+
+
+def test_typing_a_rotation_into_the_inspector_records_one_undo_step() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_ARCHER_P1)
+        before = entry.unit.rotation
+
+        window.unit_field_editors["rotation"].setValue(1.5)
+
+        assert entry.unit.rotation == pytest.approx(1.5)
+        window.undo()
+        assert entry.unit.rotation == before
     finally:
         _close(window)

@@ -35,7 +35,7 @@ from testkit.fakes import (
 
 from descape import iso_geometry, render
 from descape.scenario_io import load_map_and_units
-from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
+from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
 from descape.unit_pick import build_index, pick_unit, unit_key, units_in_rect, unit_polygons
 
@@ -213,10 +213,8 @@ def _stepped_id_plane(scn, index, tile_px: int, elevations, proj, map_w=None, ma
 
     by_footprint_tile: dict[tuple[int, int], list] = {}
     for entry in index.entries:
-        tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, map_w, map_h)
-        for fy in range(ty0, ty1):
-            for fx in range(tx0, tx1):
-                by_footprint_tile.setdefault((fx, fy), []).append(entry)
+        for fx, fy in render.unit_occupied_tiles(entry.unit, map_w, map_h):
+            by_footprint_tile.setdefault((fx, fy), []).append(entry)
 
     def paint(base_x, base_y, value):
         yy, xx = base_y + dst_y, base_x + dst_x
@@ -298,10 +296,8 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
 
     by_footprint_tile: dict[tuple[int, int], list] = {}
     for entry in index.entries:
-        tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, map_w, map_h)
-        for fy in range(ty0, ty1):
-            for fx in range(tx0, tx1):
-                by_footprint_tile.setdefault((fx, fy), []).append(entry)
+        for fx, fy in render.unit_occupied_tiles(entry.unit, map_w, map_h):
+            by_footprint_tile.setdefault((fx, fy), []).append(entry)
 
     def paint(base_x, base_y, dy, dx, value):
         yy, xx = base_y + dy, base_x + dx
@@ -692,3 +688,124 @@ def test_units_in_rect_respects_the_filter() -> None:
     index = build_index(scn, UnitFilter(show_trees=False))
     found = units_in_rect(index, 3, 3, 5, 4)
     assert found == []
+
+
+# --- Part 2: diagonal gates' sparse footprint ---------------------------
+
+# The "e gate" shape (see tools/gen_unit_render_data.py's building_tiles
+# docs): local offsets #.../.##./.##./...# inside the 4x4 bbox.
+_GATE_CONST = next(
+    uid for uid, offs in BUILDING_TILE_OFFSETS.items() if offs == frozenset({(0, 0), (1, 1), (1, 2), (2, 1), (2, 2), (3, 3)})
+)
+# Own tile at integer coords, so bbox is exactly tiles 8..11 on both axes
+# (own-tile invariant: local offset (2, 2) always).
+_GATE_X = _GATE_Y = 10.0
+_GATE_BBOX0 = 8
+# Occupied local offset (3, 3) -> absolute (11, 11); (0, 3) is a real bbox
+# tile ("...#" row of the ASCII shape's LAST row) this gate does NOT occupy.
+_GATE_OCCUPIED_TILE = (11, 11)
+_GATE_GAP_TILE = (8, 11)
+
+
+def _gate_scenario() -> FakeScenario:
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_W) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [SyntheticUnit(x=_GATE_X, y=_GATE_Y, unit_const=_GATE_CONST, reference_id=1)]
+    return FakeScenario(MAP_W, MAP_W, tiles, units_by_player)
+
+
+def _tile_center(tx: int, ty: int, proj) -> tuple[int, int]:
+    ox, oy = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
+    return ox + proj.half_w, oy + proj.half_h
+
+
+def test_a_diagonal_gate_occupies_exactly_6_bbox_tiles() -> None:
+    scn = _gate_scenario()
+    gate = scn.unit_manager.units[1][0]
+    bounds = render.unit_tile_bounds(gate, MAP_W, MAP_W)
+    assert bounds == (_GATE_BBOX0, _GATE_BBOX0 + 4, _GATE_BBOX0, _GATE_BBOX0 + 4)
+    tiles = render.unit_occupied_tiles(gate, MAP_W, MAP_W)
+    assert len(tiles) == 6
+    assert _GATE_OCCUPIED_TILE in tiles
+    assert _GATE_GAP_TILE not in tiles
+
+
+def test_flat_pick_and_draw_still_treat_a_gate_as_its_full_rect() -> None:
+    """The Flat carve-out: bucketing, drawing, and picking all stay the
+    unmodified 4x4 rect for Flat, on purpose -- Part 2's sparsity is
+    Stepped/Sloped-only. A click on the "gap" tile (8, 11), which the gate
+    does NOT occupy per Part 2, must still hit it in Flat, matching
+    _draw_unit()'s still-unmodified full-rect paint."""
+    scn = _gate_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    gx, gy = _GATE_GAP_TILE
+    sx, sy = gx * tile_px + tile_px // 2, gy * tile_px + tile_px // 2
+    got = pick_unit(index, "flat", sx, sy, tile_px, MAP_W, MAP_W)
+    assert got is not None and got.unit.unit_const == _GATE_CONST
+
+
+def test_stepped_pick_hits_an_occupied_tile_and_misses_a_gap_tile() -> None:
+    scn = _gate_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+
+    ox, oy = _tile_center(*_GATE_OCCUPIED_TILE, proj)
+    hit = pick_unit(index, "stepped", ox, oy, tile_px, MAP_W, MAP_W, elevations, proj)
+    assert hit is not None and hit.unit.unit_const == _GATE_CONST
+
+    gx, gy = _tile_center(*_GATE_GAP_TILE, proj)
+    miss = pick_unit(index, "stepped", gx, gy, tile_px, MAP_W, MAP_W, elevations, proj)
+    assert miss is None
+
+
+def test_sloped_pick_hits_an_occupied_tile_and_misses_a_gap_tile() -> None:
+    scn = _gate_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+
+    ox, oy = _tile_center(*_GATE_OCCUPIED_TILE, proj)
+    hit = pick_unit(
+        index, "sloped", ox, oy, tile_px, MAP_W, MAP_W, None, proj, corner_rise=corner_rise
+    )
+    assert hit is not None and hit.unit.unit_const == _GATE_CONST
+
+    gx, gy = _tile_center(*_GATE_GAP_TILE, proj)
+    miss = pick_unit(
+        index, "sloped", gx, gy, tile_px, MAP_W, MAP_W, None, proj, corner_rise=corner_rise
+    )
+    assert miss is None
+
+
+def test_stepped_unit_polygons_only_covers_the_occupied_set() -> None:
+    scn = _gate_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    entry = index.entries[0]
+
+    polygons = unit_polygons(entry, "stepped", tile_px, MAP_W, MAP_W, elevations=elevations, proj=proj)
+    assert len(polygons) == 6
+
+    occupied = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
+    expected_centers = {_tile_center(tx, ty, proj) for tx, ty in occupied}
+    got_centers = set()
+    for poly in polygons:
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        got_centers.add((round(sum(xs) / 4), round(sum(ys) / 4)))
+    assert got_centers == expected_centers
+
+
+def test_flat_unit_polygons_still_covers_the_full_rect() -> None:
+    scn = _gate_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    entry = index.entries[0]
+    polygons = unit_polygons(entry, "flat", tile_px, MAP_W, MAP_W)
+    assert len(polygons) == 1  # one axis-aligned rect, not per-tile diamonds
+    x0, y0 = _GATE_BBOX0 * tile_px, _GATE_BBOX0 * tile_px
+    x1, y1 = (_GATE_BBOX0 + 4) * tile_px, (_GATE_BBOX0 + 4) * tile_px
+    assert polygons == [[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]]

@@ -47,13 +47,16 @@ def _close(window) -> None:
 
 
 def _shown_value(panel, spec):
-    from PyQt5.QtWidgets import QCheckBox, QComboBox, QLabel, QSpinBox
+    from PyQt5.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QSpinBox
 
     widget = panel.widget_for(spec.field_id)
     if isinstance(widget, QCheckBox):
         return int(widget.isChecked())
     if isinstance(widget, QComboBox):
         return widget.currentData()
+    if isinstance(widget, QLineEdit):
+        # tribe_name, editable -- the one TEXT spec that isn't a plain label.
+        return widget.text()
     if isinstance(widget, QLabel):
         # Either the TEXT branch or the out-of-range branch -- both render
         # as a plain label, read verbatim off its text.
@@ -63,14 +66,10 @@ def _shown_value(panel, spec):
 
 
 def _expected_display(spec, raw):
-    """What `_shown_value` should equal for `raw` -- civilization/
-    architecture are the one case where the widget shows a resolved name
-    rather than the stored value verbatim (see PlayersPanel._build_widget's
-    TEXT branch)."""
-    from descape.player_fields import resolve_civilization_name
-
-    if spec.field_id in ("civilization", "architecture"):
-        return resolve_civilization_name(raw)
+    """What `_shown_value` should equal for `raw`. civilization/architecture
+    are COMBO-kind as of Step A, so -- same as any other COMBO field
+    (starting_age, color, player_type) -- the widget's currentData() is the
+    stored value verbatim; no resolved-name translation happens here."""
     return raw
 
 
@@ -215,9 +214,9 @@ def test_groups_match_the_plan() -> None:
 
 def test_tier1_rows_are_enabled_when_both_gates_hold() -> None:
     """The blank fixture passes both options_write_supported() and
-    players_write_supported(), so every Tier-1 field except tribe_name
-    (deferred to step 3d) should be enabled -- Tier 2 and player_type stay
-    disabled regardless, as facts about the field, not the file."""
+    players_write_supported(), so every Tier-1 field -- including
+    tribe_name, as of step 3d -- should be enabled. Tier 2 and player_type
+    stay disabled regardless, as facts about the field, not the file."""
     from PyQt5.QtWidgets import QLabel
 
     window = _players_window()
@@ -225,8 +224,9 @@ def test_tier1_rows_are_enabled_when_both_gates_hold() -> None:
         panel = window.players_panel
         editable = window._editable_player_fields()
         assert editable, "no field is editable -- this would pass vacuously"
-        assert "tribe_name" not in editable
-        assert {"player_type", "civilization", "architecture", "personality"}.isdisjoint(editable)
+        assert "tribe_name" in editable
+        assert {"civilization", "architecture"} <= editable  # Step B: writable on every version
+        assert {"player_type", "personality"}.isdisjoint(editable)
         for spec in panel._specs:
             widget = panel.widget_for(spec.field_id)
             if isinstance(widget, QLabel):
@@ -237,12 +237,68 @@ def test_tier1_rows_are_enabled_when_both_gates_hold() -> None:
         _close(window)
 
 
-def test_player_type_and_tribe_name_carry_their_own_reason() -> None:
+def test_civilization_is_a_combo_that_selects_the_stored_str_value() -> None:
+    """BLANK_FIXTURE is 1.58 (str16), so the stored value is a Civilization
+    string like 'RANDOM-CIV' -- confirm findData()/setCurrentIndex() with a
+    Python str actually selects that row rather than silently falling back
+    to index 0 (the first civ alphabetically), which would look identical
+    to a passing test unless currentData() is checked against the raw
+    value, not just widget type. Step B: also confirm this row is
+    editable, unlike the read-only "unwritable in Step A" state this test
+    used to pin."""
+    from PyQt5.QtWidgets import QComboBox
+
+    from descape.player_fields import current_value
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        spec = next(s for s in panel._specs if s.field_id == "civilization")
+        widget = panel.widget_for("civilization")
+        assert isinstance(widget, QComboBox)
+        raw = current_value(window.scenario, spec, 1)
+        assert isinstance(raw, str)
+        assert widget.currentData() == raw
+        assert widget.isEnabled()
+    finally:
+        _close(window)
+
+
+def test_civilization_choices_exclude_gaia() -> None:
+    from PyQt5.QtWidgets import QComboBox
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        widget = panel.widget_for("civilization")
+        assert isinstance(widget, QComboBox)
+        all_data = {widget.itemData(i) for i in range(widget.count())}
+        assert "GAIA" not in all_data
+    finally:
+        _close(window)
+
+
+def test_player_type_carries_its_own_reason() -> None:
     window = _players_window()
     try:
         panel = window.players_panel
         assert "unconfirmed" in panel.widget_for("player_type").toolTip().lower()
-        assert "widget kind" in panel.widget_for("tribe_name").toolTip()
+    finally:
+        _close(window)
+
+
+def test_tribe_name_is_a_line_edit_once_both_gates_hold() -> None:
+    """tribe_name is the one TEXT spec that becomes a QLineEdit rather than
+    a read-only QLabel once the write path verifies -- see
+    PlayersPanel._build_widget's TEXT branch."""
+    from PyQt5.QtWidgets import QLineEdit
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        widget = panel.widget_for("tribe_name")
+        assert isinstance(widget, QLineEdit)
+        assert widget.isEnabled()
     finally:
         _close(window)
 
@@ -354,10 +410,7 @@ def _editable_panel(loaded):
     panel = PlayersPanel(
         on_player_field=lambda spec, player_id, value: reported.append((spec.field_id, player_id, value))
     )
-    panel.show_scenario(
-        loaded,
-        editable_fields=[s.field_id for s in specs_for(loaded) if s.field_id != "tribe_name"],
-    )
+    panel.show_scenario(loaded, editable_fields=[s.field_id for s in specs_for(loaded)])
     return panel, reported
 
 
@@ -373,6 +426,46 @@ def test_an_editable_panel_reports_a_real_change_once() -> None:
         assert reported == [("base_priority", 1, before + 1)]
         widget.setValue(before + 1)  # same value again -- a no-op
         assert reported == [("base_priority", 1, before + 1)]
+    finally:
+        panel.deleteLater()
+
+
+def test_tribe_name_commits_on_editing_finished_not_on_every_keystroke() -> None:
+    """QLineEdit.editingFinished, not textChanged -- one undo record per
+    edit rather than one per keystroke (step 3d)."""
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    panel, reported = _editable_panel(loaded)
+    try:
+        widget = panel.widget_for("tribe_name")
+        widget.setText("Franks")  # textChanged alone must report nothing
+        assert reported == []
+        widget.editingFinished.emit()
+        assert reported == [("tribe_name", 1, "Franks")]
+    finally:
+        panel.deleteLater()
+
+
+def test_tribe_name_validator_rejects_text_past_the_encoded_byte_budget() -> None:
+    """The slot is 256 bytes with one reserved for the NUL terminator --
+    255 encoded bytes is the real ceiling, not 255 characters, since
+    MAIN_CHARSET (utf-8) is multi-byte for non-ASCII input."""
+    from PyQt5.QtGui import QValidator
+
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    panel, _reported = _editable_panel(loaded)
+    try:
+        widget = panel.widget_for("tribe_name")
+        validator = widget.validator()
+        assert validator.validate("x" * 255, 255)[0] == QValidator.Acceptable
+        assert validator.validate("x" * 256, 256)[0] == QValidator.Invalid
+        # "é" is two bytes in utf-8, so 128 of them is 256 encoded bytes --
+        # already past the 255-byte budget despite being half as many
+        # characters as the all-ASCII case above.
+        assert validator.validate("é" * 128, 128)[0] == QValidator.Invalid
     finally:
         panel.deleteLater()
 
@@ -446,6 +539,37 @@ def test_an_edit_round_trips_through_the_window_with_undo_redo() -> None:
 
         window.redo()
         assert panel.current_values()["base_priority"] == before + 1
+    finally:
+        _close(window)
+
+
+def test_a_civilization_edit_round_trips_through_the_window_with_undo_redo() -> None:
+    """Step B: civilization is editable on BLANK_FIXTURE (1.58, str16),
+    same undo/redo shape as any other Players mode field despite riding
+    OptionsEditModel.serialize_resizes() rather than serialize_patches()
+    at save time -- that split is invisible above the model layer."""
+    from PyQt5.QtWidgets import QComboBox
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        widget = panel.widget_for("civilization")
+        assert isinstance(widget, QComboBox)
+        before = panel.current_values()["civilization"]
+        target_index = next(i for i in range(widget.count()) if widget.itemData(i) != before)
+        after = widget.itemData(target_index)
+
+        widget.setCurrentIndex(target_index)
+        assert window.edit_history.is_dirty
+        assert window.option_edits is not None
+        assert window.option_edits.current_value("player:civilization:1") == after
+
+        window.undo()
+        assert panel.current_values()["civilization"] == before
+        assert not window.edit_history.is_dirty
+
+        window.redo()
+        assert panel.current_values()["civilization"] == after
     finally:
         _close(window)
 
@@ -539,5 +663,197 @@ def test_browsing_players_leaves_the_document_clean(scenario_path, tmp_path) -> 
             window.scenario, browsed, triggers=window.trigger_edits, options=window.option_edits
         )
         assert browsed.read_bytes() == baseline.read_bytes(), scenario_path.name
+    finally:
+        _close(window)
+
+
+# --- Number of Players (step 3e) ---------------------------------------
+#
+# The one row on this panel that is neither a PlayerFieldSpec nor
+# per-player: a spinbox above the player selector, with its own gate. The
+# byte-level half of these claims lives in
+# tests/test_player_options_write_path.py; this covers the panel/window
+# wiring.
+
+
+def _count_panel(loaded, editable: bool = True):
+    """A standalone panel with only Number of Players editable, recording
+    what it reports -- same isolation _editable_panel() gives, scoped to
+    the one row that has no spec behind it."""
+    from descape.player_fields import PLAYER_COUNT_FIELD_ID
+    from descape.players_panel import PlayersPanel
+
+    conftest.ensure_qapp()
+    reported = []
+    panel = PlayersPanel(on_player_count=reported.append)
+    panel.show_scenario(
+        loaded,
+        editable_fields=[PLAYER_COUNT_FIELD_ID] if editable else [],
+        read_only_reasons={PLAYER_COUNT_FIELD_ID: "gate failed"},
+    )
+    return panel, reported
+
+
+def test_the_count_spinbox_sits_above_the_player_selector() -> None:
+    """Placement is the point, not decoration: inside a group box it would
+    read as a setting of whichever player is selected."""
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        layout = panel.layout()
+        # The spinbox lives in a nested QHBoxLayout with its label, so find
+        # which of the panel's own rows contains it.
+        rows = [
+            i
+            for i in range(layout.count())
+            if layout.itemAt(i).layout() is not None
+            and layout.itemAt(i).layout().indexOf(panel.player_count_spin) >= 0
+        ]
+        assert rows, "the count row is not in the panel's own layout"
+        assert rows[0] < layout.indexOf(panel.player_combo)
+    finally:
+        _close(window)
+
+
+def test_the_count_shows_what_the_file_stores() -> None:
+    window = _players_window()
+    try:
+        from descape.player_fields import defined_player_count
+
+        panel = window.players_panel
+        assert panel.current_player_count() == defined_player_count(window.scenario)
+        assert panel.player_count_spin.value() == panel.current_player_count()
+    finally:
+        _close(window)
+
+
+def test_the_count_is_editable_when_its_gate_holds() -> None:
+    window = _players_window()
+    try:
+        from descape.player_fields import PLAYER_COUNT_FIELD_ID
+
+        assert PLAYER_COUNT_FIELD_ID in window._editable_player_fields()
+        assert window.players_panel.player_count_spin.isEnabled()
+    finally:
+        _close(window)
+
+
+def test_a_read_only_count_is_disabled_and_carries_its_gate_reason() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    panel, reported = _count_panel(loaded, editable=False)
+    try:
+        assert not panel.player_count_spin.isEnabled()
+        assert panel.player_count_spin.toolTip() == "gate failed"
+        panel.player_count_spin.setValue(panel.current_player_count() + 1)
+        assert reported == []
+    finally:
+        panel.deleteLater()
+
+
+def test_the_count_reports_a_real_change_once() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    panel, reported = _count_panel(loaded)
+    try:
+        before = panel.current_player_count()
+        panel.player_count_spin.setValue(before + 1)
+        assert reported == [before + 1]
+        panel.player_count_spin.setValue(before + 1)  # same value again -- a no-op
+        assert reported == [before + 1]
+    finally:
+        panel.deleteLater()
+
+
+def test_populating_the_count_reports_nothing() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    from descape.player_fields import PLAYER_COUNT_FIELD_ID
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    panel, reported = _count_panel(loaded)
+    try:
+        panel.show_scenario(
+            loaded, editable_fields=[PLAYER_COUNT_FIELD_ID], player_count=7
+        )
+        assert panel.current_player_count() == 7
+        assert reported == []
+    finally:
+        panel.deleteLater()
+
+
+def test_a_count_edit_round_trips_through_the_window_with_undo_redo() -> None:
+    window = _players_window()
+    try:
+        from descape.player_fields import PLAYER_COUNT_FIELD_ID
+
+        panel = window.players_panel
+        before = panel.current_player_count()
+
+        panel.player_count_spin.setValue(before + 1)
+        assert window.edit_history.is_dirty
+        assert window.option_edits is not None
+        assert window.option_edits.current_value(PLAYER_COUNT_FIELD_ID) == before + 1
+
+        window.undo()
+        assert panel.current_player_count() == before
+        assert panel.player_count_spin.value() == before
+        assert not window.edit_history.is_dirty
+
+        window.redo()
+        assert panel.current_player_count() == before + 1
+        assert panel.player_count_spin.value() == before + 1
+    finally:
+        _close(window)
+
+
+def test_a_count_edit_resizes_the_diplomacy_grid() -> None:
+    """Diplomacy mode's grid was built on the premise that nothing ever
+    edits the active-player set. That ends here, so the grid has to react
+    to a pending count in the same session, not only after a save and
+    reload."""
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        before = panel.current_player_count()
+        panel.player_count_spin.setValue(before + 2)
+
+        window.mode_combo.setCurrentText("Diplomacy")
+        assert window.diplomacy_panel._active_players == list(range(1, before + 3))
+        assert window.diplomacy_panel.player_combo.count() == before + 2
+    finally:
+        _close(window)
+
+
+def test_browsing_the_count_leaves_the_document_clean() -> None:
+    """Same acceptance gate every other row here has: focusing and reading
+    the spinbox must never dirty the document."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _players_window()
+    try:
+        window.players_panel.player_count_spin.setFocus()
+        QApplication.processEvents()
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_the_status_line_does_not_count_the_count_row_as_a_setting() -> None:
+    """Regression, caught by looking at an offscreen render rather than by
+    an assertion: the editable set carries PLAYER_COUNT_FIELD_ID, which has
+    no PlayerFieldSpec, so `total - len(editable_fields)` undercounted the
+    read-only rows by one (and reported a negative count on a synthetic set
+    where every spec was editable)."""
+    from descape.player_fields import _NEVER_WRITABLE
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        expected = sum(1 for s in panel._specs if s.field_id not in panel._editable_fields)
+        assert expected == len(_NEVER_WRITABLE)
+        assert f", {expected} read-only." in panel.status.text(), panel.status.text()
     finally:
         _close(window)

@@ -132,6 +132,10 @@ class LoadedScenario:
     # -- v2 write-path state, all needed by descape/scenario_write.py --
     header_bytes: bytes  # FileHeader, verbatim, uncompressed, written back as-is
     decompressed_body: bytes  # the *original* full decompressed body (Map..tail)
+    original_compressed_body: bytes  # the exact compressed bytes the file shipped
+    # with (or was constructed with, for load_map_and_units_from_bytes), reused
+    # verbatim by scenario_write.py when nothing changed -- recompressing the
+    # same decompressed bytes does not reliably reproduce them byte-for-byte.
     terrain_block_offset: int  # byte offset of the terrain struct array, within
     # decompressed_body, at load time. Patching TERRAIN_STRUCT_SIZE * i bytes
     # starting here for each tile index i is the entire write path -- see
@@ -209,6 +213,10 @@ class LoadedScenario:
     # (structure.json's declaration order, not the alphabetical order
     # pprint()ing the dict suggests). (-1, -1) if that walk doesn't reconcile
     # to exactly len(header_bytes).
+    header_player_count_span: tuple[int, int]  # (start, end) of
+    # FileHeader.player_count within header_bytes, from the same walk, and
+    # (-1, -1) on the same failure -- Number of Players' second buffer, see
+    # descape/player_fields.py's player_count_targets().
     messages_write_supported: bool  # False disables Messages mode's write
     # path for this file without refusing to open it read-only -- set by
     # _verify_messages_block() below, the same fail-closed shape as
@@ -354,15 +362,19 @@ def _verify_messages_block(decompressed: bytes, start: int, end: int, retriever_
     return pos == end
 
 
-def _header_instructions_span(header_bytes: bytes, retriever_map: dict) -> tuple[int, int]:
-    """Forward walk of every FileHeader retriever, reconciling to exactly
-    len(header_bytes) -- the load-time trust check for
-    header_instructions_span. Returns scenario_instructions' payload span
-    (excluding its own 4-byte length prefix), or (-1, -1) if the walk
-    doesn't reconcile (e.g. an older structure version with an extra field
-    this walk doesn't know about -- header instructions editing degrades
-    gracefully rather than trusting a wrong offset; the Messages copy is
-    still editable).
+def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, tuple[int, int]]:
+    """(start, end) within header_bytes of every FileHeader retriever, from
+    one forward walk in true on-disk order -- the shared derivation behind
+    both header_instructions_span and header_player_count_span. Empty if
+    the walk doesn't reconcile to exactly len(header_bytes) (e.g. an older
+    structure version with an extra field this walk doesn't know about --
+    every header-editing feature degrades gracefully rather than trusting a
+    wrong offset). Measured: the walk fails this way on one real corpus
+    file (a scenario version 1.37 one), so the reconcile check is
+    load-bearing rather than a rubber stamp.
+
+    A str32 field's span excludes its own 4-byte length prefix (the payload
+    is what a caller splices); every other field's span is the whole field.
 
     The two str32 fields read their length straight off the raw bytes'
     4-byte prefix rather than via retriever_length()/get_data_as_bytes():
@@ -376,19 +388,35 @@ def _header_instructions_span(header_bytes: bytes, retriever_map: dict) -> tuple
     don't need distinguishing here.
     """
     pos = 0
-    span = (-1, -1)
+    spans: dict[str, tuple[int, int]] = {}
     for name in _HEADER_WALK_ORDER:
         if name in _HEADER_STR32_FIELDS:
             (payload_len,) = _STR32_LENGTH_PREFIX_STRUCT.unpack_from(header_bytes, pos)
             length = _STR32_PREFIX_SIZE + payload_len
+            spans[name] = (pos + _STR32_PREFIX_SIZE, pos + length)
         else:
             length = retriever_length(retriever_map[name])
-        if name == "scenario_instructions":
-            span = (pos + _STR32_PREFIX_SIZE, pos + length)
+            spans[name] = (pos, pos + length)
         pos += length
-    if pos != len(header_bytes) or span == (-1, -1):
-        return (-1, -1)
-    return span
+    if pos != len(header_bytes):
+        return {}
+    return spans
+
+
+def _header_instructions_span(header_bytes: bytes, retriever_map: dict) -> tuple[int, int]:
+    """scenario_instructions' payload span, or (-1, -1) if the header walk
+    doesn't reconcile -- see _header_field_spans()."""
+    return _header_field_spans(header_bytes, retriever_map).get("scenario_instructions", (-1, -1))
+
+
+def _header_player_count_span(header_bytes: bytes, retriever_map: dict) -> tuple[int, int]:
+    """FileHeader.player_count's own span, or (-1, -1) if the header walk
+    doesn't reconcile -- see _header_field_spans(). This is the second of
+    the two buffers Number of Players writes (the other is
+    DataHeader.player_data_1[i].active, in decompressed_body); the two are
+    coupled (player_count == count of active flags among players 1..8,
+    measured on every corpus file) and are written from one value."""
+    return _header_field_spans(header_bytes, retriever_map).get("player_count", (-1, -1))
 
 
 def load_map_and_units(path: str | Path) -> LoadedScenario:
@@ -427,7 +455,8 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     # bytes -- no need to re-read them separately.
     header_bytes = igen.file_content[: igen.progress]
 
-    decompressed = _decompress_bytes(igen.get_remaining_bytes())
+    original_compressed_body = igen.get_remaining_bytes()
+    decompressed = _decompress_bytes(original_compressed_body)
     data_igen = IncrementalGenerator(name="Scenario Data", file_content=decompressed)
     scenario._decompressed_file_data = decompressed
 
@@ -514,9 +543,9 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     messages_write_supported = _verify_messages_block(
         decompressed, messages_section_start, messages_section_end, messages_retriever_map
     )
-    header_instructions_span = _header_instructions_span(
-        header_bytes, scenario.sections["FileHeader"].retriever_map
-    )
+    header_retriever_map = scenario.sections["FileHeader"].retriever_map
+    header_instructions_span = _header_instructions_span(header_bytes, header_retriever_map)
+    header_player_count_span = _header_player_count_span(header_bytes, header_retriever_map)
 
     return LoadedScenario(
         path=path,
@@ -526,6 +555,7 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         trigger_tail=trigger_tail,
         header_bytes=header_bytes,
         decompressed_body=decompressed,
+        original_compressed_body=original_compressed_body,
         terrain_block_offset=terrain_block_offset,
         terrain_write_supported=terrain_write_supported,
         units_block_offset=units_block_offset,
@@ -539,6 +569,7 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         messages_section_start=messages_section_start,
         messages_section_end=messages_section_end,
         header_instructions_span=header_instructions_span,
+        header_player_count_span=header_player_count_span,
         messages_write_supported=messages_write_supported,
         trigger_version=_read_trigger_version(trigger_tail),
         triggers_section_end=-1,

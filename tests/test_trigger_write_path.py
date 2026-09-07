@@ -827,8 +827,8 @@ def test_display_order_survives_an_unrelated_trigger_save_across_the_corpus(
     through it -- not a bare passthrough save, which proves nothing about
     whether an edit disturbs display order.
 
-    Baseline this rests on: descape-map-options.md's finding 1 established
-    zero-edit serialize() is byte-verbatim on all six non-identity corpus
+    Baseline this rests on: zero-edit serialize() is byte-verbatim on all
+    six non-identity corpus
     files, so display order was never at risk from an *unedited* model. The
     risk is a *trigger* edit rewriting it as an unintended side effect.
     """

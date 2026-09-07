@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DEscape
+GenericName=AoE2 Scenario Editor
+Comment=View and edit Age of Empires 2: Definitive Edition scenario files
+Exec=DEscape %f
+Icon=DEscape
+Categories=Graphics;
+Terminal=false
+StartupWMClass=DEscape

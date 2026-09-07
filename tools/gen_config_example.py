@@ -86,6 +86,12 @@ zoom_centered_on_cursor: true
 # Dark app-chrome theme, Settings > Appearance. Default: false.
 dark_mode: false
 
+# After a file opens, warm the neighbouring zoom levels' unit sprites in
+# idle time so the first zoom doesn't stutter, Settings > Appearance.
+# Costs a few seconds of background work per open and some memory; never
+# blocks the window. Default: true.
+preload_zoom_levels: true
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false

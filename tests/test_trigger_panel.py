@@ -1243,7 +1243,7 @@ def test_move_buttons_are_disabled_off_display_order_or_while_filtered() -> None
 
 
 def test_a_raising_move_shows_the_rolled_back_order_not_a_phantom_success(monkeypatch) -> None:
-    """The invariant TODO.md states for exactly this shape of failure: "a UI
+    """The invariant this project holds for exactly this shape of failure: "a UI
     that catches such an error should say so rather than presenting the edit
     as a clean no-op" -- and presenting it as a clean *success* is worse.
     move_row() patches two rows blindly, without reading the model, purely
@@ -1668,7 +1668,7 @@ def test_execution_order_readout_covers_the_no_stored_byte_case(scenario_path) -
     """The third readout state -- "not stored" -- needs a real file to reach:
     F7_3_York is scenario 1.55 but its trigger version is below 4.5, so the
     exec-order byte consumes zero bytes despite the version implying
-    otherwise (descape-map-options.md's finding 2). Not hardcoded to that
+    otherwise. Not hardcoded to that
     filename -- any corpus file with the same shape exercises this the same
     way, and the corpus tier's own summary already reports skip counts, so a
     corpus with no such file reads as 100% skipped rather than silently

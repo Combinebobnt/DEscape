@@ -15,6 +15,14 @@ resolves to a named graphic:
       "angle_count":   int,  -- angles the graphic is authored for
       "mirroring_mode": int, -- how many of those angles are actually stored
       "frame_count":   int,  -- frames per angle
+      "rotation_is_variant": true,  -- OPTIONAL, omitted when false. The .dat's
+                              -- unit.type != 70 (non-creatable) and the
+                              -- resolved graphic's angle_count > 1, with the
+                              -- trebuchet consts forced false (see
+                              -- _EXTRA_ANGLE_CONSTS) -- descape.unit_sprites.
+                              -- rotation_is_variant() reads this instead of
+                              -- its own hand-kept frozensets (2026-09-06 Tier
+                              -- B plan).
       "pieces": [            -- OPTIONAL. Present only for a multi-graphic
                               -- composite building (town centres, pastures);
                               -- absent means "one graphic", same as today.
@@ -110,11 +118,32 @@ at their real, uncancelled offsets.
 
 `_COMPOSITE_SCOPE` is a hand-verified allowlist, not "every building whose
 annexes resolve" -- gate consts also resolve their corner-pillar annexes
-through this exact mechanism (confirmed 2026-08-29), which is a separate,
-not-yet-built follow-on, and three pasture-named consts (1893, 1897, 2078)
-never reach the pieces walk at all because their OWN standing_graphic is an
+through this exact mechanism (confirmed 2026-08-29), but are built by a
+separate function (`_resolve_gate_pieces`, see "Gates" below), not folded
+into this allowlist. Three pasture-named consts (1893, 1897, 2078) never
+reach the pieces walk at all because their OWN standing_graphic is an
 unresolvable Farm-family legacy shell -- they get no base entry, same as
 before this feature.
+
+**Gates.** A gate (`class_ == 39`) is a 2-5 piece composite: a middle span
+plus, on a real gate rather than a bare corner pillar, two corner towers and
+two flags. Unlike a town centre, a gate's pieces are not one modern delta
+per annex -- a corner pillar's OWN standing_graphic is itself a legacy shell
+whose deltas point at BOTH its corner-tower graphic and its flag graphic,
+so the first-match walk `_resolve_modern_graphic` uses everywhere else
+silently drops the flag. `_resolve_all_modern_deltas` is the class-39-only
+counterpart: it emits every modern delta descendant of a graphic, not just
+the first, whether that graphic is a gate's own root (an X-state composite
+gate encodes all 5 pieces as direct deltas of one legacy shell, no annexes
+involved) or an annex's (a bare directional gate's own root is already
+modern -- just the middle -- and its two corner-pillar annexes each
+resolve to 2 pieces this way). Measured over all 97 class-39 consts, and
+matching the generator's own "gate composite entries" report exactly: 96
+resolve (24 at 2 pieces -- bare corner pillars and the four sea-gate consts,
+both resolved via their own root; 72 at 5 pieces -- directional/composite
+gates), the same single holdout as any other scoping (const 1192, a legacy
+duplicate with no filename, already excluded above). A gate's pieces carry
+no per-piece depth slot, unlike a town centre's.
 """
 
 from __future__ import annotations
@@ -172,6 +201,107 @@ def _resolve_modern_graphic(graphics: list, graphic_id: int, seen: set[int] | No
         if resolved is not None:
             return resolved
     return None
+
+
+def _resolve_all_modern_deltas(graphics: list, graphic_id: int) -> list[tuple[object, int, int]]:
+    """Class-39-only counterpart to `_resolve_modern_graphic`: every modern
+    delta descendant of graphic_id, each paired with its own delta offset --
+    `[(graphic, 0, 0)]` alone if graphic_id already looks modern. See the
+    module docstring's "Gates" section for why first-match is wrong here (it
+    drops a corner pillar's flag). A single level of deltas is enough --
+    measured zero deltas anywhere in class 39 point at a non-modern target,
+    so this deliberately does not recurse the way `_resolve_modern_graphic`
+    does."""
+    if graphic_id is None or graphic_id < 0 or graphic_id >= len(graphics):
+        return []
+    graphic = graphics[graphic_id]
+    if graphic is None:
+        return []
+    if _looks_modern(graphic.file_name):
+        return [(graphic, 0, 0)]
+    result = []
+    for delta in graphic.deltas:
+        dg_id = delta.graphic_id
+        if dg_id is None or not (0 <= dg_id < len(graphics)):
+            continue
+        dg = graphics[dg_id]
+        if dg is not None and _looks_modern(dg.file_name):
+            result.append((dg, delta.offset_x, delta.offset_y))
+    return result
+
+
+def _resolve_gate_pieces(
+    units: list, graphics: list, unit_const: int, unit
+) -> list[tuple[int, object, int, int]] | None:
+    """The composite pieces for a class-39 (gate-family) unit_const, as
+    `(unit_id, graphic, dx, dy)` tuples in draw order, or None if nothing
+    resolves. `dx, dy` are native-pixel offsets from the parent's own anchor,
+    same convention as `_piece_screen_offset` below.
+
+    Two sources, concatenated: the root's own `_resolve_all_modern_deltas`
+    (a bare directional gate's already-modern middle graphic resolves to
+    itself alone here; an X-state composite gate's legacy shell resolves to
+    its full direct-delta piece list -- towers, middle, flags -- with no
+    annexes involved at all), then each real building annex's own
+    `_resolve_all_modern_deltas`, offset by `iso_screen(misplacement) + that
+    delta's own offset` -- the same positioning rule
+    `_piece_screen_offset` uses, generalized from "first delta" to "every
+    delta". A corner-pillar const (e.g. 81) is not itself a gate but is
+    class 39 and reached this same way when it is the unit being resolved
+    directly, not just as an annex target.
+
+    Deduped to at most one piece per distinct (dx, dy) offset, first-in-list
+    wins -- the only class this affects is the four sea-gate consts, whose
+    root deltas to "sides" and "...underwater" land on the same offset;
+    "sides" is listed first and wins, "underwater" (which has no
+    PLAYERCOLOR layer and is the submerged base, not a second real piece)
+    drops."""
+    standing = unit.standing_graphic
+    root_graphic_id = standing[0] if standing else -1
+    raw: list[tuple[int, object, int, int]] = [
+        (unit_const, g, dx, dy)
+        for g, dx, dy in _resolve_all_modern_deltas(graphics, root_graphic_id)
+    ]
+
+    building = unit.building
+    if building is not None:
+        for annex in building.annexes:
+            if not (0 <= annex.unit_id < len(units)):
+                continue
+            annex_unit = units[annex.unit_id]
+            if annex_unit is None:
+                continue
+            a_standing = annex_unit.standing_graphic
+            a_graphic_id = a_standing[0] if a_standing else -1
+            iso_dx = (annex.misplacement_x + annex.misplacement_y) * _NATIVE_HALF_W
+            iso_dy = (annex.misplacement_y - annex.misplacement_x) * _NATIVE_HALF_H
+            for g, ddx, ddy in _resolve_all_modern_deltas(graphics, a_graphic_id):
+                raw.append((annex.unit_id, g, round(iso_dx + ddx), round(iso_dy + ddy)))
+
+    seen_offsets: set[tuple[int, int]] = set()
+    deduped: list[tuple[int, object, int, int]] = []
+    for uid, g, dx, dy in raw:
+        offset = (dx, dy)
+        if offset in seen_offsets:
+            continue
+        seen_offsets.add(offset)
+        deduped.append((uid, g, dx, dy))
+    return deduped or None
+
+
+# The .dat's own unit.type value for a creatable (trainable/buildable) unit --
+# re-literalised here per this module's own "standalone genieutils script"
+# convention rather than imported; descape/unit_rotation.py is the emitted
+# field's authority and consumer.
+_CREATABLE_TYPE = 70
+
+# Trebuchet, packed and unpacked: mobile units the .dat types as buildings
+# (type 80, not creatable) whose rotation is nonetheless a facing, not a
+# shape variant. Mirrors unit_rotation._EXTRA_ANGLE_CONSTS exactly; kept as a
+# literal copy for the same standalone-script reason as _CREATABLE_TYPE above.
+_EXTRA_ANGLE_CONSTS: frozenset[int] = frozenset({42, 331, 1690, 1691})
+
+_GATE_CLASS = 39
 
 
 # HAND-VERIFIED against the real .dat (2026-08-29), per the module docstring's
@@ -297,8 +427,8 @@ def _resolve_pieces(
 # sufficient and auditable.
 #
 # The flag is genuinely part of a palisade wall and is LOST by this retarget.
-# Recovering it needs the multi-piece delta compositing planned in
-# descape-gate-composite.md; filed as a follow-up there, not solved here.
+# Recovering it needs multi-piece delta compositing, a planned follow-up
+# not solved here.
 _BODY_GRAPHIC_OVERRIDES: dict[int, int] = {
     72: 587,    # Palisade Wall        -> b_dark_wall_palisade_x1
     119: 605,   # Fortified Palisade   -> b_scen_wall_palisade_fortified_x1
@@ -335,6 +465,7 @@ def main() -> None:
     secondary = Counter()
     skipped = Counter()
     composited: set[int] = set()
+    gate_composited: set[int] = set()
 
     for unit_const, unit in enumerate(units):
         if unit is None:
@@ -343,6 +474,43 @@ def main() -> None:
         standing = unit.standing_graphic
         graphic_id = standing[0] if standing else -1
         secondary["set" if len(standing) > 1 and standing[1] >= 0 else "unset"] += 1
+
+        if unit.class_ == _GATE_CLASS:
+            gate_pieces = _resolve_gate_pieces(units, graphics, unit_const, unit)
+            if gate_pieces is None:
+                skipped["gate_no_modern_replacement"] += 1
+                continue
+            for _, piece_graphic, _, _ in gate_pieces:
+                if piece_graphic.angle_count != 1:
+                    raise SystemExit(
+                        f"class-39 piece {piece_graphic.file_name!r} (unit_const "
+                        f"{unit_const}) has angle_count {piece_graphic.angle_count}, "
+                        f"not 1 -- gate pieces are assumed non-rotating; re-verify "
+                        f"tools/gen_unit_graphic_map.py's gate section against the "
+                        f".dat before shipping this"
+                    )
+            _, primary, _, _ = gate_pieces[0]
+            entries[str(unit_const)] = {
+                "graphic_id": primary.id,
+                "file_name": primary.file_name,
+                "angle_count": primary.angle_count,
+                "mirroring_mode": primary.mirroring_mode,
+                "frame_count": primary.frame_count,
+                "pieces": [
+                    {
+                        "unit_id": uid,
+                        "file_name": g.file_name,
+                        "angle_count": g.angle_count,
+                        "frame_count": g.frame_count,
+                        "dx": dx,
+                        "dy": dy,
+                    }
+                    for uid, g, dx, dy in gate_pieces
+                ],
+            }
+            gate_composited.add(unit_const)
+            continue
+
         if graphic_id is None or graphic_id < 0 or graphic_id >= len(graphics):
             skipped["no_standing_graphic"] += 1
             continue
@@ -382,6 +550,10 @@ def main() -> None:
             "mirroring_mode": graphic.mirroring_mode,
             "frame_count": graphic.frame_count,
         }
+        if unit_const not in _EXTRA_ANGLE_CONSTS and (
+            unit.type != _CREATABLE_TYPE and graphic.angle_count > 1
+        ):
+            entry["rotation_is_variant"] = True
         pieces = _resolve_pieces(units, graphics, unit_const, graphic)
         if pieces is not None:
             entry["pieces"] = pieces
@@ -412,6 +584,9 @@ def main() -> None:
     not_composited = sorted(_COMPOSITE_SCOPE - composited)
     if not_composited:
         print(f"    in scope but no entry (expected -- legacy shell): {not_composited}")
+    gate_piece_counts = Counter(len(entries[str(c)]["pieces"]) for c in gate_composited)
+    print(f"  gate (class {_GATE_CLASS}) composite entries: {len(gate_composited)}")
+    print(f"    piece-count histogram: {dict(sorted(gate_piece_counts.items()))}")
 
     if args.scan_sld:
         graphics_dir = args.aoe2de_root / "resources/_common/drs/graphics"

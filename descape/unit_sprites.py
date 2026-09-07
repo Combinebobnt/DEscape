@@ -79,10 +79,19 @@ NATIVE_TILE_W = 96
 # per direction so a re-scan after a game patch either reproduces the number or
 # says which graphic grew. UP dominates by a wide margin -- wonders and
 # cathedrals out-reach every horizontal case by 50%.
+#
+# DOWN grew from 200 to 316 with the class-39 gate composite (2026-09-02):
+# a bare directional city gate's own
+# flag POSITION is its corner-pillar annex's misplacement, but the flag
+# GRAPHIC's own delta offset (dy=-240, roughly double the west-stone gate
+# family's -120) is a property of that piece alone -- composited pieces can
+# out-reach every plain single-graphic unit measured before them, which is
+# exactly why scan_sprite_reach.py scans pieces at their own offset rather
+# than the parent's.
 MAX_SPRITE_REACH_LEFT = 404   # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_RIGHT = 424  # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_UP = 650     # b_west_wonder_britons_x1
-MAX_SPRITE_REACH_DOWN = 200   # b_scen_colosseum_x1
+MAX_SPRITE_REACH_DOWN = 316   # b_scen_gate_city_flag_x1 (piece, dx=0 dy=-312)
 
 # How far the stored angle set is rotated from the scenario's own `rotation`
 # field, in degrees, and which way the index walks as rotation increases.
@@ -154,6 +163,25 @@ TEAM_COLORS = (
 NATIVE_CACHE_SIZE = 256
 SCALED_CACHE_SIZE = 2048
 
+# Flat's icon cache (P3-g7), a BYTE budget rather than an entry count -- see
+# _ByteLRU for why an entry count cannot work here.
+#
+# **Measured, and the first try was too small in exactly the way P3-g4 warns
+# about.** The distinct-key count is consts x frames x teams x footprint
+# sizes, and the footprint-size axis is the new one: one entry per mip level
+# per span, and an entry is footprint-sized, so a level's whole working set
+# quadruples with each step up the ladder. On the worst real example file
+# (old-allies-final-v2, 240x240, 13,099 units) the four enumerated levels want
+# 1.3 / 5.2 / 20.9 / 83.7MB for 899 entries each, 111.2MB in total. At a
+# first-pass 64MB the tile_px=128 level alone did not fit, and its WARM
+# rebuild ran in 4181ms against a 4023ms cold one -- every entry evicted
+# before reuse, the cache costing memory and buying nothing, which is the same
+# failure NATIVE_CACHE_SIZE/SCALED_CACHE_SIZE's own comment records. 128MB
+# clears that file's whole ladder; in practice only resident levels are ever
+# built (see FlatChunkCache._level_icons' laziness), so one or two of those
+# four is the normal steady state.
+ICON_CACHE_BYTES = 128 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class SpriteDraw:
@@ -203,10 +231,66 @@ class _LRU(OrderedDict):
             self.popitem(last=False)
 
 
+class _ByteLRU(OrderedDict):
+    """An LRU capped by the total BYTES its values hold, not by entry count.
+
+    _LRU's entry cap works for _scaled_cache because cropping to the ink bbox
+    made entries small and uniform (~19KB measured). An icon entry is
+    FOOTPRINT-sized instead -- a 1x1 unit at tile_px=16 is ~1KB and a 4x4 Town
+    Centre at tile_px=128 is ~1MB -- so any single entry count is either
+    wasteful at one end of that spread or thrashing at the other.
+    """
+
+    def __init__(self, capacity_bytes: int):
+        super().__init__()
+        self.capacity_bytes = capacity_bytes
+        self._bytes = 0
+
+    @staticmethod
+    def _size(value) -> int:
+        # A _MISS costs nothing to hold and (see below) a great deal to
+        # re-derive, so it is charged a nominal byte rather than 0 -- at 0 an
+        # unbounded number of them could accumulate.
+        return value.rgba.nbytes if isinstance(value, SpriteDraw) else 1
+
+    def get_or_none(self, key):
+        if key in self:
+            self.move_to_end(key)
+            return self[key]
+        return None
+
+    def put(self, key, value):
+        if key in self:
+            self._bytes -= self._size(self[key])
+        self[key] = value
+        self._bytes += self._size(value)
+        self.move_to_end(key)
+        # len() > 1 so a single entry larger than the whole budget is still
+        # served rather than evicted the instant it is stored.
+        while self._bytes > self.capacity_bytes and len(self) > 1:
+            _key, evicted = self.popitem(last=False)
+            self._bytes -= self._size(evicted)
+
+    def clear(self) -> None:
+        super().clear()
+        self._bytes = 0
+
+
 _native_cache = _LRU(NATIVE_CACHE_SIZE)
 _scaled_cache = _LRU(SCALED_CACHE_SIZE)
+_icon_cache = _ByteLRU(ICON_CACHE_BYTES)
 
 # Cached in place of a sprite when a key resolves to nothing.
+#
+# **It lives in _native_cache**, keyed (file_name, frame_index), which is
+# scale-independent -- so every scale, every mip level and every consumer
+# (Stepped, Sloped, Flat's icons) share one negative answer. P3-g7 moved it
+# down here from _scaled_cache, whose key carries a half_w: an icon's key
+# carries a footprint size instead, so it could not have inherited the
+# scaled-level misses and would have re-walked every unresolvable file once
+# per footprint size per mip level. _scaled_cache still puts its own _MISS
+# too; that is now redundant rather than wrong, and removing it is a separate
+# cleanup.
 #
 # **Caching the negative result is not an optimization, it is the difference
 # between a working cache and a broken one.** A unit that resolves nowhere --
@@ -220,10 +304,14 @@ _MISS = object()
 
 
 def clear_caches() -> None:
-    """Drops both LRUs. For tests, and for a settings change that repoints the
-    install path -- a cached array outlives the file it came from otherwise."""
+    """Drops every LRU. For tests, and for a settings change that repoints the
+    install path -- a cached array outlives the file it came from otherwise,
+    and every one of these remembers MISSES too, so a first-time install
+    configuration would keep serving "no sprite" without this."""
     _native_cache.clear()
     _scaled_cache.clear()
+    _icon_cache.clear()
+    sld_frame_count.cache_clear()
 
 
 @lru_cache(maxsize=1)
@@ -271,7 +359,7 @@ def angle_index(rotation: float, angle_count: int) -> int:
     # every facing to a neighbour and moved walls a full 72-degree frame
     # (reported from a live window 2026-08-24, the same session the offset was
     # added for units). Walls no longer reach this function at all -- their
-    # frames are shape variants rather than facings, so _rotation_is_variant()
+    # frames are shape variants rather than facings, so rotation_is_variant()
     # diverts them to variant_index() -- but the skip above is general and
     # stays.
     offset_steps = ANGLE_ZERO_OFFSET_DEG / 360.0 * angle_count
@@ -306,24 +394,161 @@ def angle_index(rotation: float, angle_count: int) -> int:
 # hand-typed spread angle_index()'s own docstring measures for genuine facing
 # graphics. Weaker evidence than a direct decode, but still real data.
 #
-# HAND-VERIFIED INTERIM SET, not generated. The plan's Tier B replaces it with
-# a generated "rotation_is_variant" field in unit_graphic_map.json, sourced
-# from the .dat's own unit.class_ the way tools/gen_tree_unit_ids.py sources
-# TREE_CLASS. Aqueduct (231) and Granary (1089) are deliberately absent: 10 and
-# 0 corpus placements respectively is too thin to conclude either way.
+# No longer rotation_is_variant()'s data source (2026-09-06 Tier B plan --
+# that reads unit_graphic_map.json's generated field now, sourced from the
+# .dat's own unit.type != 70, not unit.class_ as originally proposed: class_
+# == 27 also catches 28 non-wall consts like "Sheep annex1" and "Empty
+# building"). This set's remaining job is WALL_CONNECTOR_CONSTS and
+# rotation_variant_eligible() below, where "exactly today's 8 walls" is
+# deliberately still hand-kept -- widening it further would let a water lily
+# or an Aqueduct get its stored index rederived from a wall-calibrated
+# neighbour mask.
 _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
     72, 117, 119, 155, 370, 788, 1062, 2678,
 })
 
 
-def _rotation_is_variant(unit_const: int) -> bool:
-    # Tier A (interim): see _ROTATION_VARIANT_CONSTS above. Swap this body for
-    # `graphic_map()[unit_const].get("rotation_is_variant", False)` once Tier B
-    # lands.
-    return unit_const in _ROTATION_VARIANT_CONSTS
+# Cliffs (2026-09-05 cliffs plan, Track A2). Every `class_ == 34` const in the
+# .dat: ten full families of nine pieces, plus the six-const CLF01..CLF08
+# partial family at 1339-1346 that shares the Desert graphic (the plan's own
+# const ranges missed that one -- it was found by re-measuring the class from
+# the .dat rather than transcribing the ranges).
+#
+# A family's ~24 stored frames are SHAPES (runs, corners, ends) selected by
+# `rotation`, the same convention as the wall set above, and the corpus
+# evidence is stronger than for any wall const: 18,232 of 18,232 cliff records
+# store an exact integer in [0, 24] and `rotation == initial_animation_frame`
+# in every one. Zero radian encodings.
+#
+# **Kept separate from _ROTATION_VARIANT_CONSTS on purpose.** Both used to
+# feed rotation_is_variant() directly; since the 2026-09-06 Tier B plan that
+# predicate reads unit_graphic_map.json's generated field instead (which
+# independently agrees this set is variant-indexed), but this frozenset stays
+# because cliff_consts() still backs cliff_catalog.py/cliff_chain.py's
+# family/piece grouping, and folding it into _ROTATION_VARIANT_CONSTS would
+# make every cliff count as a wall neighbour and reshape real walls through
+# wall_variant_rotation_overrides(). Cliffs connect to cliffs, not to walls.
+#
+# Pinned against the .dat by tests/test_unit_footprints.py, which asserts this
+# equals terrain_palette.OBJECT_TILE_SPANS' key set -- generated from the same
+# class_ == 34 gate -- rather than trusting the ranges written here.
+_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
+    list(range(264, 273))
+    + [1339, 1340, 1341, 1342, 1344, 1346]
+    + list(range(1849, 1867))
+    + list(range(2069, 2078))
+    + list(range(2178, 2187))
+    + list(range(2190, 2226))
+    + list(range(2651, 2660))
+)
 
 
-def variant_index(rotation: float, angle_count: int) -> int:
+def rotation_is_variant(unit_const: int) -> bool:
+    """Whether unit_const's `rotation` field selects a shape variant
+    (variant_index()) rather than a facing (angle_index()) -- Tier B
+    (2026-09-06 plan): reads unit_graphic_map.json's generated field, sourced
+    from the .dat's own unit.type != 70 (non-creatable) with the trebuchet
+    consts forced false, in preference to the two hand-kept frozensets above
+    (which stay, for their own other callers -- see their comments)."""
+    return bool(graphic_map().get(unit_const, {}).get("rotation_is_variant", False))
+
+
+def cliff_consts() -> frozenset[int]:
+    """The public read of `_CLIFF_VARIANT_CONSTS`, for cliff_catalog.py's
+    family/piece grouping -- kept a function, not a re-exported name, so
+    every caller goes through one place if Tier B ever replaces the set."""
+    return _CLIFF_VARIANT_CONSTS
+
+
+# HAND-VERIFIED against examples/ (2026-09-02 counterexamples plan), same
+# provenance discipline as _ROTATION_VARIANT_CONSTS above: 64/88/95/659/667/
+# 793/797 are the gate consts that plan's corpus scan found placed alongside
+# the confirmed wall family. Gates are load-bearing for connectivity, not
+# incidental -- walls-only connectivity measured 93.5% mask->index agreement
+# on the integer corpus, walls+gates measured 98.7%. class_ == 39 is WIDER
+# than "gates" (it also catches corner-pillar consts like 81), and including
+# the wider set was measured and rejected (96.9%), so this stays a hand-kept
+# list rather than "every class-39 const" until a generated replacement
+# derives and validates this from the .dat's own unit.class_ field instead.
+WALL_CONNECTOR_CONSTS: frozenset[int] = _ROTATION_VARIANT_CONSTS | frozenset({
+    64, 88, 95, 659, 667, 793, 797,
+})
+
+
+WEST, EAST, NORTH, SOUTH = 1, 2, 4, 8
+
+
+def wall_variant_from_neighbours(mask: int) -> int | None:
+    """Derives a wall/gate's shape from which orthogonal neighbours are also
+    connectors, calibrated against the integer-encoded corpus (2026-09-02
+    counterexamples plan): mask bits are WEST=1, EAST=2, NORTH=4, SOUTH=8.
+
+    - exactly {WEST, EAST}  -> 0 (run along x)   -- 98.9% agreement, n=1835
+    - exactly {NORTH, SOUTH} -> 1 (run along y)  -- 99.1% agreement, n=1882
+    - any other non-zero mask -> 2 (tower/corner/junction) -- 96-100%, n=1323
+    - no neighbours (mask 0) -> None: an isolated piece's shape is
+      author-chosen, not derivable, and must fall through to the caller's
+      existing (stored-value) resolution rather than being guessed.
+    """
+    if mask == 0:
+        return None
+    if mask == WEST | EAST:
+        return 0
+    if mask == NORTH | SOUTH:
+        return 1
+    return 2
+
+
+def rotation_variant_eligible(unit_const: int) -> bool:
+    """Preconditions 1-2 of the connectivity override (2026-09-03 execute
+    plan): the const is a variant-index graphic, and its angle_count is 5 --
+    the 3-case mask table above does not transfer to another frame count.
+
+    Gates on `_ROTATION_VARIANT_CONSTS` rather than `rotation_is_variant()`
+    (2026-09-06 Tier B plan): that predicate widened from 8 consts to every
+    unit.type != 70 graphic, which would also make Aqueduct, Granary, a water
+    lily and a dozen other non-wall consts eligible for the wall-connectivity
+    override -- a water lily between two walls would have its stored index
+    rederived from a wall-calibrated neighbour mask, which is wrong. The
+    wall-family basis stays deliberately hand-kept here: `class_ == 39` was
+    measured and rejected for WALL_CONNECTOR_CONSTS' own gate set, and a
+    generated `wall_family` flag is a future replacement, not this pass's job.
+    `WALL_CONNECTOR_CONSTS` (the *neighbour tile* set) is unchanged either way.
+
+    Preconditions 3 (not a literal integer index) and 4 (non-zero neighbour
+    mask) are NOT checked here. Measured (tools/scan_wall_rotation.py): of the
+    literal-0.0-rotation walls in the 7 corpus files that also carry
+    radian-encoded wall rotations, 45.6% (241/529) sit on a non-zero mask
+    whose derived index isn't 0 -- far more than "a handful", so condition 3
+    cannot be a per-unit literal-value check. Inside a file that uses the
+    radian convention at all, a literal-looking 0.0 carries no more shape
+    information than any other radian value does (both stored conventions
+    agree only at index 0), so the literal-vs-radian classification has to be
+    made per SCENARIO FILE, not per unit -- and that requires seeing every
+    wall's rotation at once, which this leaf module's per-unit signature
+    can't do. render.wall_variant_rotation_overrides() does that
+    classification and folds precondition 3 in; this predicate is preconditions
+    1-2 only.
+
+    Deliberately looks angle_count up via graphic_map() itself rather than
+    taking it as a parameter, so render.py never has to reach into this
+    module's data table directly."""
+    if unit_const not in _ROTATION_VARIANT_CONSTS:
+        return False
+    entry = graphic_map().get(unit_const)
+    return entry is not None and int(entry["angle_count"]) == 5
+
+
+def is_literal_variant_index(rotation: float, angle_count: int) -> bool:
+    """True when `rotation` is already a literal stored index rather than a
+    radian encoding of one -- the same closeness test variant_index() applies,
+    exposed standalone so render.py's per-file radian/integer classification
+    doesn't duplicate the 1e-6 window."""
+    nearest = round(rotation)
+    return abs(rotation - nearest) < 1e-6 and 0 <= nearest < angle_count
+
+
+def variant_index(rotation: float, angle_count: int, variant_count: int | None = None) -> int:
     """Which stored frame a rotation selects when the graphic's frames are
     shape variants rather than facings -- walls, confirmed by direct frame
     decode (see below).
@@ -362,12 +587,36 @@ def variant_index(rotation: float, angle_count: int) -> int:
     camera-relative facing; a variant-index graphic has no facing to correct,
     so applying it would be wrong even for a future wall-like graphic whose
     angle_count did happen to be a multiple of 8.
+
+    **`variant_count` is how many frames the file really holds; `angle_count`
+    stays the radian encoding's own divisor.** They are the same number for
+    walls but not for cliffs, and conflating them is a silent wrong answer
+    rather than an error: the Short Cliff families declare angle_count 23 over
+    a 24-frame file, so a literal stored 23 failed `nearest < angle_count`,
+    fell through to the radian branch, and returned a plausible-looking wrong
+    frame. The Marble family fails the other way (25 declared, 23 real), where
+    the tighter bound keeps a literal 23/24 from resolving to a frame
+    _native_frame() would then reject outright. Defaults to angle_count, which
+    is the pre-existing behaviour for every caller that doesn't know better.
+
+    **An exact integer at or past `variant_count` wraps, rather than falling
+    through to the radian branch** (Tier B plan, 2026-09-06): 36.0 is not
+    `k*2*pi/36` for any k, so treating an out-of-range literal as a radian
+    encoding is definitionally wrong for it, not just imprecise. Measured
+    against the corpus: mangrove (36..47 on a 36-frame file), forage bush
+    (4.0/5.0 on 4 frames), skeleton (15.0 on 15) and mole (7.0 on 3) all store
+    an exact integer past their own frame count and all drew frame 0 before
+    this wrap existed.
     """
     if angle_count <= 1:
         return 0
+    if variant_count is None:
+        variant_count = angle_count
     nearest = round(rotation)
-    if abs(rotation - nearest) < 1e-6 and 0 <= nearest < angle_count:
-        return int(nearest)
+    if abs(rotation - nearest) < 1e-6:
+        if 0 <= nearest < variant_count:
+            return int(nearest)
+        return int(nearest) % variant_count
     steps = rotation / (2 * math.pi) * angle_count
     # floor(x + 0.5) rather than round(), for the same banker's-rounding reason
     # angle_index() spells out.
@@ -377,6 +626,28 @@ def variant_index(rotation: float, angle_count: int) -> int:
 def _graphics_dir() -> Path | None:
     root = asset_source.get_install_path()
     return None if root is None else root / GRAPHICS_SUBPATH
+
+
+@lru_cache(maxsize=512)
+def sld_frame_count(file_name: str) -> int | None:
+    """How many frames the .sld file actually holds, or None when it can't be
+    read (no install configured, or the file is missing on this install).
+
+    The .dat's `angle_count` is NOT this number and disagrees in BOTH
+    directions -- measured on the cliff families: Marble declares 25 angles
+    over a 23-frame file, while the Short families declare 23 over a 24-frame
+    one. _native_frame() has always trusted the file over the arithmetic; this
+    exposes the same count to the *dispatch* so variant_index() can range-check
+    against it instead of against angle_count.
+
+    Cheap enough to be a plain lru_cache: load_sld() parses the header and
+    frame table, never a frame's pixels. Cleared by clear_caches() with the
+    rest, since an install-path change invalidates it."""
+    directory = _graphics_dir()
+    if directory is None:
+        return None
+    sld = load_sld(directory / f"{file_name}.sld")
+    return None if sld is None else int(sld.frame_count)
 
 
 def _native_frame(file_name: str, frame_index: int):
@@ -389,29 +660,38 @@ def _native_frame(file_name: str, frame_index: int):
     key = (file_name, frame_index)
     hit = _native_cache.get_or_none(key)
     if hit is not None:
-        return hit
+        return None if hit is _MISS else hit
 
     directory = _graphics_dir()
     if directory is None:
+        # The ONLY failure below that isn't negative-cached, and deliberately:
+        # it is global install-path state, not a property of this
+        # (file_name, frame_index). Costs nothing to re-derive either --
+        # get_install_path() is itself lru_cached.
         return None
     sld = load_sld(directory / f"{file_name}.sld")
     if sld is None:
+        _native_cache.put(key, _MISS)
         return None
     # The .dat's angle_count * frame_count overruns the real frame count on a
     # small minority of graphics, so trust the file, not the arithmetic.
     if not (0 <= frame_index < sld.frame_count):
+        _native_cache.put(key, _MISS)
         return None
     try:
         frame = sld.decode_frame(frame_index)
     except SLDError as exc:
         debug_log.log(f"sprite: {file_name} frame {frame_index} failed to decode: {exc}")
+        _native_cache.put(key, _MISS)
         return None
     if frame.main is None:
+        _native_cache.put(key, _MISS)
         return None
     # DAMAGE is deliberately not composited: it is a packed mask that BC1
     # happens to carry, not colour. SHADOW and OUTLINE are likewise skipped.
     value = _cropped_to_ink(frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y)
     if value is None:
+        _native_cache.put(key, _MISS)
         return None
     _native_cache.put(key, value)
     return value
@@ -479,6 +759,40 @@ def sprite_scale(half_w: int) -> float:
     return 2 * half_w / NATIVE_TILE_W
 
 
+def _frame_for(unit_const: int, entry: dict, rotation: float) -> int:
+    """Which stored frame index `entry`'s graphic resolves to at `rotation`:
+    the variant_index/angle_index dispatch, times frame_count.
+
+    **The single frame-dispatch seam every drawing path goes through** --
+    _draw_for_entry() for Stepped/Sloped, icon_for() for Flat. Extracted
+    (P3-g7) rather than left inline so a future connectivity-derived wall
+    frame has exactly one place to change instead of two that can drift.
+
+    `unit_const` is the piece's OWN resolving unit_id, not necessarily the
+    unit standing on the map -- see _draw_for_entry()'s own note on that."""
+    angle_count = max(1, int(entry["angle_count"]))
+    frame_count = max(1, int(entry["frame_count"]))
+    if not rotation_is_variant(unit_const):
+        return angle_index(rotation, angle_count) * frame_count
+    # The file's real frame count, not the .dat's angle_count, bounds a literal
+    # stored index -- see variant_index()'s own note on the two cliff families
+    # where they disagree. Divided by frame_count to get the real VARIANT slot
+    # count rather than the file's total frame count (Tier B plan, 2026-09-06):
+    # every wall/cliff const this bound was designed against has frame_count
+    # 1, where the two numbers coincide, but Tier B's widening reaches
+    # animated variant graphics too (e.g. a decay/death animation, frame_count
+    # 30, angle_count 16, 481 real frames -- one shared terminal frame past
+    # 16*30) where they do not; passing the raw file total there would let an
+    # out-of-angle-range literal (legal under the old angle_index() wrap)
+    # resolve past this graphic's real per-variant frame run undetected. None
+    # (no install, or the .sld missing here) falls back to angle_count, which
+    # is what every caller did before this existed; there is no sprite to draw
+    # on that path anyway.
+    real_frames = sld_frame_count(str(entry["file_name"]))
+    variant_count = None if real_frames is None else max(1, real_frames // frame_count)
+    return variant_index(rotation, angle_count, variant_count) * frame_count
+
+
 def _draw_for_entry(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int
 ) -> SpriteDraw | None:
@@ -496,14 +810,7 @@ def _draw_for_entry(
     player on any tint, so the caller resolves player_id -> team_index
     itself (see scenario_io.LoadedScenario.team_indices) before calling
     here."""
-    angle_count = max(1, int(entry["angle_count"]))
-    frame_count = max(1, int(entry["frame_count"]))
-    frame = (
-        variant_index(rotation, angle_count)
-        if _rotation_is_variant(unit_const)
-        else angle_index(rotation, angle_count)
-    )
-    index = frame * frame_count
+    index = _frame_for(unit_const, entry, rotation)
 
     scale = sprite_scale(half_w)
     team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
@@ -600,6 +907,175 @@ def sprite_pieces_for(
     return result
 
 
+def _source_over(dst: np.ndarray, base_y: int, base_x: int, src: np.ndarray) -> None:
+    """Non-premultiplied source-over of an (h, w, 4) block onto an RGBA canvas,
+    in place. No clipping: icon_for()'s canvas is the pieces' own union bbox.
+
+    Deliberately not render._clipped_paint_rgba, which blends into an OPAQUE
+    3-channel destination. Over a still-transparent canvas that would blend a
+    piece's antialiased edge toward the canvas's zeroed RGB (black) and leave
+    a dark halo once the finished icon is finally composited over terrain.
+    Here the destination's alpha is part of the result, which is what keeps a
+    soft edge soft."""
+    h, w = src.shape[:2]
+    view = dst[base_y : base_y + h, base_x : base_x + w]
+    sa = src[..., 3:4].astype(np.float32) / 255.0
+    da = view[..., 3:4].astype(np.float32) / 255.0
+    out_a = sa + da * (1.0 - sa)
+    rgb = src[..., :3].astype(np.float32) * sa + view[..., :3].astype(np.float32) * da * (1.0 - sa)
+    # Guarded divide: a pixel transparent in both operands has out_a == 0 and
+    # no colour to recover, so any divisor works -- 1.0 keeps it at zero.
+    view[..., :3] = np.clip(rgb / np.where(out_a > 0, out_a, 1.0), 0, 255).astype(np.uint8)
+    view[..., 3:4] = np.clip(out_a * 255.0, 0, 255).astype(np.uint8)
+
+
+def _native_piece(unit_const: int, entry: dict, rotation: float, team) -> SpriteDraw | None:
+    """One piece resolved and tinted at NATIVE scale -- _draw_for_entry()'s
+    body with the scaling and the _scaled_cache put both left out."""
+    native = _native_frame(entry["file_name"], _frame_for(unit_const, entry, rotation))
+    if native is None:
+        return None
+    main, playercolor, hx, hy = native
+    return SpriteDraw(rgba=_tinted(main, playercolor, team), hotspot_x=hx, hotspot_y=hy)
+
+
+def _native_pieces_for(unit_const: int, entry: dict, rotation: float, team) -> list[SpritePiece]:
+    """sprite_pieces_for()'s walk at native scale: same parent-by-identity
+    rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
+
+    **Why not sprite_pieces_for(..., half_w=NATIVE_TILE_W // 2)**, which is
+    sprite_scale() == 1.0 exactly and would be less code: _draw_for_entry()
+    unconditionally puts its result into _scaled_cache, so every icon build
+    would deposit a tinted NATIVE-size frame (a Wonder is ~500x400) into an
+    LRU whose capacity P3-g4 sized for decimated tile-scale sprites --
+    evicting Stepped's and Sloped's live entries to hold intermediates thrown
+    away one line later. That is exactly the regression P3-g4's "sprites were
+    cached uncropped" finding fixed (7.27x -> 1.14x composite, ~8x memory)."""
+    pieces_data = entry.get("pieces")
+    if not pieces_data:
+        draw = _native_piece(unit_const, entry, rotation, team)
+        return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
+
+    result: list[SpritePiece] = []
+    for piece in pieces_data:
+        draw = _native_piece(piece["unit_id"], piece, rotation, team)
+        if draw is None:
+            # Parent identified by identity, not list position -- see
+            # sprite_pieces_for()'s own note on why.
+            if piece["unit_id"] == unit_const:
+                return []
+            continue
+        result.append(SpritePiece(draw=draw, dx=int(piece["dx"]), dy=int(piece["dy"])))
+    return result
+
+
+def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
+    """The pieces flattened into one RGBA array at their native offsets, in
+    list order (which sprite_pieces_for() already establishes as depth order).
+
+    A single piece IS the assembly -- returned as-is rather than copied
+    through a composite, which is the overwhelmingly common case (every
+    non-composite unit_const) and the one worth not paying for."""
+    if not pieces:
+        return None
+    if len(pieces) == 1:
+        return pieces[0].draw.rgba
+
+    rects = []
+    for piece in pieces:
+        h, w = piece.draw.rgba.shape[:2]
+        x0 = piece.dx - piece.draw.hotspot_x
+        y0 = piece.dy - piece.draw.hotspot_y
+        rects.append((x0, y0, x0 + w, y0 + h))
+    ox = min(r[0] for r in rects)
+    oy = min(r[1] for r in rects)
+    out = np.zeros((max(r[3] for r in rects) - oy, max(r[2] for r in rects) - ox, 4), dtype=np.uint8)
+    for piece, (x0, y0, _x1, _y1) in zip(pieces, rects):
+        _source_over(out, y0 - oy, x0 - ox, piece.draw.rgba)
+    return out
+
+
+def _frame_key(unit_const: int, entry: dict, rotation: float) -> tuple[int, ...]:
+    """icon_for()'s cache key's frame component: every piece's own _frame_for()
+    result, length 1 for a non-composite const.
+
+    Keying on the raw `rotation` instead would blow the LRU on arbitrary float
+    rotations (measured: 34 distinct values across the corpus, plus off-grid
+    outliers). Keying on the PARENT's frame alone would collide whenever a
+    piece carries a different angle_count from its parent, which
+    sprite_pieces_for()'s own docstring explicitly allows."""
+    pieces_data = entry.get("pieces")
+    if not pieces_data:
+        return (_frame_for(unit_const, entry, rotation),)
+    return tuple(_frame_for(piece["unit_id"], piece, rotation) for piece in pieces_data)
+
+
+def icon_for(
+    unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int
+) -> SpriteDraw | None:
+    """This unit's sprite fitted into a footprint_w x footprint_h pixel rect --
+    Flat mode's counterpart to sprite_for() (P3-g7). None to fall back to the
+    coloured rect, on every failure sprite_for()'s docstring lists.
+
+    **Aspect-preserving contain-fit, and the "never leaves the footprint"
+    property is load-bearing, not cosmetic.** Flat is a top-down square grid,
+    not an isometric one, so a 2:1 iso sprite has no natural placement there;
+    an icon that fits inside its own footprint rect is what lets Flat's
+    existing per-tile edit rects and exact canvas sizing stay sufficient, with
+    none of the dirty-bbox widening, canvas headroom or MAX_SPRITE_REACH_*
+    machinery Stepped and Sloped need. Stretch-to-fill was the alternative and
+    was rejected: a villager's native ink is 15x39, so filling a 64x64 cell is
+    a 4.3x horizontal distortion that reads as a blob.
+
+    hotspot_x/y are 0: an icon is placed by its own rect, not by a hotspot,
+    and carrying a stale iso hotspot on it is how it would silently get
+    blitted off its footprint.
+
+    footprint_w/h come from the CLAMPED unit_tile_bounds() rect, so a building
+    hanging off a map edge fits the rect actually painted."""
+    if footprint_w <= 0 or footprint_h <= 0:
+        return None
+    entry = graphic_map().get(unit_const)
+    if entry is None:
+        return None
+
+    team_slot = team_index % len(TEAM_COLORS)
+    key = (unit_const, _frame_key(unit_const, entry, rotation), team_slot, footprint_w, footprint_h)
+    hit = _icon_cache.get_or_none(key)
+    if hit is not None:
+        return None if hit is _MISS else hit
+
+    draw = _build_icon(unit_const, entry, rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h)
+    _icon_cache.put(key, _MISS if draw is None else draw)  # see _MISS
+    return draw
+
+
+def _build_icon(
+    unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int
+) -> SpriteDraw | None:
+    """icon_for()'s uncached body."""
+    assembly = _assembled_native(_native_pieces_for(unit_const, entry, rotation, team))
+    if assembly is None:
+        return None
+    cropped = _cropped_to_ink(assembly, None, 0, 0)
+    if cropped is None:
+        return None
+    ink = cropped[0]
+    ink_h, ink_w = ink.shape[:2]
+    scale = min(fw / ink_w, fh / ink_h)
+    # The min(fw/fh, ...) clamp is a guard, not a live correction, and that was
+    # MEASURED rather than assumed: with the scale above, ink_w * scale <= fw
+    # holds and float error is nowhere near the 0.5 a round() would need to
+    # cross the boundary, so dropping the clamp leaves the whole suite green.
+    # It is kept because it is what still holds when the SCALE regresses --
+    # tests/test_flat_sprites.py's mutation arm drops the vertical constraint
+    # (scale = fw / ink_w) and this clamp is the only thing then keeping the
+    # icon inside its footprint at all.
+    iw = min(fw, max(1, round(ink_w * scale)))
+    ih = min(fh, max(1, round(ink_h * scale)))
+    return SpriteDraw(rgba=_resize_rgba(ink, iw, ih), hotspot_x=0, hotspot_y=0)
+
+
 def anchor_tile_coords(
     tile_x0: int, tile_y0: int, span_x: int, span_y: int
 ) -> tuple[float, float]:
@@ -614,10 +1090,13 @@ def anchor_tile_coords(
     return tile_x0 + span_x / 2, tile_y0 + span_y / 2
 
 
-def sprite_anchor_tile(
-    tile_x0: int, tile_x1: int, tile_y0: int, tile_y1: int
-) -> tuple[int, int]:
-    """Which footprint tile's moment in the depth walk paints the sprite.
+def sprite_anchor_tile(tiles: list[tuple[int, int]]) -> tuple[int, int]:
+    """Which footprint tile's moment in the depth walk paints the sprite, out
+    of `tiles` -- the unit's real occupied set (render.unit_occupied_tiles()):
+    its whole bbox for an ordinary building, the sparse 6-tile set for a
+    diagonal gate. Taking the occupied set rather than a rect here is what
+    fixes a diagonal gate's sprite anchoring on a tile its footprint doesn't
+    actually cover (Part 2's reported wrong-depth-position defect).
 
     A sprite is ONE image over the whole footprint, so it must paint once --
     unlike the diamond path, where _units_by_tile buckets a building into every
@@ -635,9 +1114,8 @@ def sprite_anchor_tile(
     sprite, exactly as it does for diamonds today.
     """
     best = None
-    for ty in range(tile_y0, tile_y1):
-        for tx in range(tile_x0, tile_x1):
-            key = (ty - tx, tx)
-            if best is None or key > best[0]:
-                best = (key, (tx, ty))
+    for tx, ty in tiles:
+        key = (ty - tx, tx)
+        if best is None or key > best[0]:
+            best = (key, (tx, ty))
     return best[1]

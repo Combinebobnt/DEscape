@@ -68,6 +68,11 @@ def _shown_flat(window) -> None:
     test_lazy_viewport.py's own _show_and_settle() documents."""
     from PyQt5.QtWidgets import QApplication
 
+    # Unchecked BEFORE the style switch, while still in Stepped -- iso_action
+    # defaults checked (MapView._isometric's own default), so Flat would
+    # otherwise render through the Flat+Isometric plan's real-iso path
+    # instead of the plain int-division canvas this module means to exercise.
+    window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText("Flat")
     window.show()
     QApplication.processEvents()

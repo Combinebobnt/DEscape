@@ -344,3 +344,65 @@ def test_civilization_is_int_below_1_56_and_str_from_1_56(scenario_path) -> None
         assert isinstance(value, str), scenario_path.name
     else:
         assert isinstance(value, int), scenario_path.name
+
+
+# -- civilization_choices() (civ/architecture editing plan, Step A) ---------
+
+
+def _civ_stub_loaded(codec: str, sample):
+    """A LoadedScenario stand-in exposing only DataHeader.player_data_1's
+    civilization field -- civilization_choices()/_player_data_1_field_codec()
+    touch nothing else. `codec` is "u32" (below 1.56) or "str16" (1.56+),
+    matching the exact strings AoE2ScenarioParser's own retriever.datatype.var
+    uses (confirmed against a real 1.41 and a real 1.58 corpus file).
+    player_data_1 itself needs a struct-shaped `datatype`/`byte_length` too
+    -- specs_for()'s _retriever_present() calls retriever_length() on the
+    outer retriever before civilization_choices() ever looks at the inner
+    struct field's own codec."""
+    field_retriever = SimpleNamespace(datatype=SimpleNamespace(var=codec), data=sample)
+    entry = SimpleNamespace(retriever_map={"civilization": field_retriever}, byte_length=4)
+    retriever = SimpleNamespace(datatype=SimpleNamespace(type="struct"), data=[entry])
+    section = SimpleNamespace(retriever_map={"player_data_1": retriever})
+    return SimpleNamespace(_scenario=SimpleNamespace(sections={"DataHeader": section}))
+
+
+def test_civilization_choices_is_civilization_old_int_below_1_56() -> None:
+    from AoE2ScenarioParser.datasets.object_support import CivilizationOld
+
+    loaded = _civ_stub_loaded("u32", sample=14)
+    choices = player_fields.civilization_choices(loaded)
+    assert choices, "no choices returned"
+    values, labels = zip(*choices)
+    assert all(isinstance(v, int) for v in values)
+    assert set(values) == {m.value for m in CivilizationOld if m.name != "GAIA"}
+    assert list(labels) == sorted(labels), "choices must be sorted by label"
+
+
+def test_civilization_choices_is_civilization_str_from_1_56() -> None:
+    from AoE2ScenarioParser.datasets.object_support import Civilization
+
+    loaded = _civ_stub_loaded("str16", sample="HUN-CIV")
+    choices = player_fields.civilization_choices(loaded)
+    assert choices, "no choices returned"
+    values, labels = zip(*choices)
+    assert all(isinstance(v, str) for v in values)
+    assert set(values) == {m.value for m in Civilization if m.name != "GAIA"}
+    assert "GAIA" not in values
+    assert list(labels) == sorted(labels), "choices must be sorted by label"
+
+
+@pytest.mark.corpus
+def test_civilization_choices_value_type_matches_the_corpus_codec(scenario_path) -> None:
+    """The type-level twin of test_civilization_is_int_below_1_56_and_str_from_1_56,
+    plus the GAIA carve-out: every real corpus file's civilization combo
+    would offer the right vocabulary and never a selectable GAIA row."""
+    loaded = scenario_io.load_map_and_units(scenario_path)
+    if "civilization" not in {s.field_id for s in specs_for(loaded)}:
+        pytest.skip(f"{scenario_path.name}: civilization not present")
+    choices = player_fields.civilization_choices(loaded)
+    values = [v for v, _ in choices]
+    assert "GAIA" not in values and 0 not in values
+    if float(loaded.scenario_version) >= 1.56:
+        assert all(isinstance(v, str) for v in values), scenario_path.name
+    else:
+        assert all(isinstance(v, int) for v in values), scenario_path.name

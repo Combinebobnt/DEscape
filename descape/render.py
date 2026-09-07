@@ -7,6 +7,7 @@ PyQt5 viewer's canvas.
 from __future__ import annotations
 
 import math
+from collections.abc import Generator
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -15,6 +16,7 @@ import numpy as np
 from descape import asset_source, iso_geometry, settings, unit_sprites
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
+    BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
     FOUNDATION_TERRAIN,
     PLAYER_COLORS,
@@ -22,10 +24,26 @@ from descape.terrain_palette import (
     TREE_COLOR,
     TREE_UNIT_IDS,
     color_for_terrain_id,
+    tile_span,
 )
 from descape.unit_filter import UnitFilter
 
 NON_BUILDING_SPAN = (1, 1)
+
+
+def _drain(gen):
+    """Runs a resumable walk (sprite_draws_by_anchor_sliced/_flat_icon_layer_
+    sliced) to completion in one go and returns its StopIteration value --
+    what makes each sliced generator's public wrapper a thin drain rather than
+    a second copy of the walk.
+
+    `except StopIteration` rather than a bare `for _ in gen: pass` because the
+    payload rides the generator's RETURN value, which a for loop discards."""
+    while True:
+        try:
+            next(gen)
+        except StopIteration as done:
+            return done.value
 
 
 def _sprite_reach_px(proj: iso_geometry.IsoProjection) -> tuple[int, int, int, int]:
@@ -242,7 +260,7 @@ CONTACT_SHADE = 0.65
 # tile_px, and independent of the elevation delta that produced the band.
 #
 # Not a cosmetic knob: shading the band's WHOLE exposed sliver (this is
-# where PLAN_CONTACT_SHADOW.md's decision 1 landed) makes shadow length
+# where that design decision landed) makes shadow length
 # inversely proportional to step height, since a taller step hides more of
 # its neighbor. Rendered, a 1-level step then darkens 51.6% of the neighbor
 # tile at elev_step_pct=50 and 82.0% at 10, and every up-screen tile reads
@@ -374,7 +392,7 @@ def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     factor 1.0, so the tail of a long sliver is a genuine no-op rather
     than a slow fade the caller pays for and nobody can see. The band
     GEOMETRY is unchanged by any of this -- it is still exactly the
-    exposed sliver (PLAN_CONTACT_SHADOW.md's decision 1), which is what
+    exposed sliver (a deliberate choice), which is what
     keeps this a render.py policy change with no geometry, test-oracle or
     swept-bbox consequences.
 
@@ -592,14 +610,25 @@ def _render_tile_iso(
         top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
     off_x, off_y = offset
-    base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, tile.elevation, proj)
+    # elevations[tile.y, tile.x], NOT tile.elevation, for every read below --
+    # identical in every other mode (Risk #6's whole point is keeping them in
+    # sync), but Flat + Isometric View (Flat+Isometric plan) deliberately
+    # forces this array to 0 while leaving the scenario's real tile.elevation
+    # untouched. Reading the tile attribute directly bypassed that: it both
+    # positioned every terrain diamond at its real height AND mixed a real
+    # own-elevation against a forced-zero neighbor in every delta below
+    # (tile.elevation - elevations[neighbour]), producing exactly the
+    # Stepped-looking grid of skirts/shadows/seams the flattening was
+    # supposed to remove.
+    own_elev = int(elevations[tile.y, tile.x])
+    base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, own_elev, proj)
     base_x -= off_x
     base_y -= off_y
 
     for side, nx, ny in (("left", tile.x - 1, tile.y), ("right", tile.x, tile.y + 1)):
         if not (0 <= nx < map_w and 0 <= ny < map_h):
             continue  # map edge -- no neighbor to drop toward, so no skirt
-        delta = tile.elevation - int(elevations[ny, nx])
+        delta = own_elev - int(elevations[ny, nx])
         if delta <= 0:
             continue  # this tile isn't higher than that neighbor -- no visible drop
         drop_px = delta * proj.elev_step
@@ -627,7 +656,7 @@ def _render_tile_iso(
     for side, nx, ny in (("up_left", tile.x, tile.y - 1), ("up_right", tile.x + 1, tile.y)):
         if not (0 <= nx < map_w and 0 <= ny < map_h):
             continue  # map edge -- nothing behind this edge to contour against
-        if tile.elevation - int(elevations[ny, nx]) <= 0:
+        if own_elev - int(elevations[ny, nx]) <= 0:
             continue  # no height discontinuity here -- a seam would be a grid outline on flat ground
         seam_qualified = True
         seam_dst_y, seam_dst_x = iso_geometry.seam_edge_indices(tile_px, side)
@@ -657,7 +686,7 @@ def _render_tile_iso(
     for side, nx, ny in (("up_left", tile.x, tile.y - 1), ("up_right", tile.x + 1, tile.y)):
         if not (0 <= nx < map_w and 0 <= ny < map_h):
             continue  # map edge -- no back neighbor to shadow onto
-        delta = tile.elevation - int(elevations[ny, nx])
+        delta = own_elev - int(elevations[ny, nx])
         if delta <= 0:
             continue  # this tile isn't higher than that back neighbor -- no shadow to cast
         rise_px = delta * proj.elev_step
@@ -691,7 +720,7 @@ def _render_tile_iso(
     # mark with no band on either side of it to bridge.
     nx, ny = tile.x + 1, tile.y - 1
     if seam_qualified and 0 <= nx < map_w and 0 <= ny < map_h:
-        delta = tile.elevation - int(elevations[ny, nx])
+        delta = own_elev - int(elevations[ny, nx])
         if delta > 0:
             rise_px = delta * proj.elev_step
             a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_px)
@@ -871,12 +900,13 @@ def _building_bboxes_iso(
                 # Reached through a footprint tile that isn't this unit's own;
                 # it gets its bbox computed once, at its own tile's key.
                 continue
-            span_x, span_y = BUILDING_TILE_SPANS.get(unit.unit_const, NON_BUILDING_SPAN)
+            span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
             if span_x <= 1 and span_y <= 1:
                 # Single-tile objects only ever paint their own tile, so they
                 # can't make a neighbour a bystander. Written as a span test
                 # rather than a sentinel comparison so it stays true by
-                # construction: the same 140 consts either way (clearance <= 0.5).
+                # construction -- which is what let cliffs join the multi-tile
+                # side of it just by gaining an OBJECT_TILE_SPANS entry.
                 continue
             bbox = _unit_screen_bbox_iso(unit, w, h, proj, elevations, extra_top_px)
             if bbox is None:
@@ -906,6 +936,7 @@ def _dirty_screen_bbox(
     sprite_band_radius: int = 0,
     unit_band_radius: int = 0,
     elevation_changed: set | None = None,
+    flatten_elevations: bool = False,
 ) -> tuple[int, int, int, int] | None:
     """Shared body of dirty_screen_bbox_iso()/dirty_screen_bbox_sloped() --
     see the former's docstring for the full contract, which is this
@@ -954,7 +985,18 @@ def _dirty_screen_bbox(
     the post-edit one (mm.get_tile), before the loop below overwrites the
     array. A terrain-paint-only edit leaves this empty; callers use it to
     decide whether any elevation-dependent cache state needs a refresh at
-    all, which the dirty set itself (terrain edits included) can't answer."""
+    all, which the dirty set itself (terrain edits included) can't answer.
+
+    flatten_elevations (Flat+Isometric plan, F2): Flat+Iso forces every
+    tile's elevation to 0 so terrain reads as a real iso projection at
+    elevation 0, not the scenario's real heights. Without this, an edited
+    tile would silently re-raise itself to its real elevation on the next
+    write below while every other tile stayed flat -- the array (shared,
+    per Risk #6, with MapView and the pick plane) would corrupt out from
+    under the mode rather than fail loudly. When set, the write loop below
+    stores 0 instead of the tile's real elevation, which also means no
+    tile's elevation ever "changes" here, so elevation_changed_local stays
+    empty and the caller's cache-refresh gen bump is correctly skipped."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -968,12 +1010,13 @@ def _dirty_screen_bbox(
     # to the caller's set when given, rather than copied, so this is still
     # the only bookkeeping either use needs.
     elevation_changed_local = set() if elevation_changed is None else elevation_changed
-    for x, y in dirty_xy:
-        if int(elevations[y, x]) != mm.get_tile(x, y).elevation:
-            elevation_changed_local.add((x, y))
+    if not flatten_elevations:
+        for x, y in dirty_xy:
+            if int(elevations[y, x]) != mm.get_tile(x, y).elevation:
+                elevation_changed_local.add((x, y))
 
     for x, y in dirty_xy:
-        elevations[y, x] = mm.get_tile(x, y).elevation
+        elevations[y, x] = 0 if flatten_elevations else mm.get_tile(x, y).elevation
 
     if any(not (proj.min_elev <= int(elevations[y, x]) <= proj.max_elev) for x, y in dirty_xy):
         return None
@@ -1156,6 +1199,7 @@ def dirty_screen_bbox_iso(
     with_units: bool = True,
     with_sprites: bool = False,
     elevation_changed: set | None = None,
+    flatten_elevations: bool = False,
 ) -> tuple[int, int, int, int] | None:
     """The (x0, y0, x1, y1) canvas-pixel bbox a just-applied edit could have
     invalidated -- refresh_region_iso()'s original "half 1" (dirty tiles ->
@@ -1193,7 +1237,10 @@ def dirty_screen_bbox_iso(
     in place with the subset of edited tiles whose elevation actually moved
     -- see _dirty_screen_bbox()'s own docstring for why this is the only
     point that can answer that question. None (the default) skips the
-    bookkeeping; only IsoChunkCache.patch()'s caller needs it."""
+    bookkeeping; only IsoChunkCache.patch()'s caller needs it.
+
+    flatten_elevations (Flat+Isometric plan, F2): see _dirty_screen_bbox()'s
+    own docstring. Only ViewerWindow's Flat+Iso render path passes True."""
     # with_sprites is a PARAMETER as of P3-g's toggle, not a module global read
     # at call time: sprites are per-cache now, so this function cannot look the
     # answer up itself. The caller's obligation is therefore load-bearing --
@@ -1210,6 +1257,7 @@ def dirty_screen_bbox_iso(
     return _dirty_screen_bbox(
         scenario, dirty_indices, elevations, proj, _canvas_pixel_dims(proj), with_units,
         with_sprites=with_units and with_sprites, elevation_changed=elevation_changed,
+        flatten_elevations=flatten_elevations,
     )
 
 
@@ -1404,7 +1452,7 @@ SLOPE_CORNER_RULE = "max"
 # tiles share corner heights by construction -- see corner_rise_px's own
 # docstring -- so there is no vertical face left for either to draw): a
 # directional (Lambert-style) shade is the user's explicit replacement
-# depth cue (docs/PLAN_V2_6.md's Track C decisions), NOT the
+# depth cue (a deliberate design choice), NOT the
 # direction-independent "slope magnitude only" CONTACT_SHADE's own comment
 # argues for elsewhere in this module -- that argument doesn't carry over
 # here because Sloped has no other depth cue left to fall back on, so this
@@ -2019,6 +2067,81 @@ def _flat_unit_draws(
     return np.array(bboxes, dtype=np.int32), np.array(colors, dtype=np.uint8)
 
 
+def _flat_icon_layer(
+    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter()
+) -> tuple[dict[int, unit_sprites.SpriteDraw], int]:
+    """Flat's real .sld icons (P3-g7), keyed by ROW INDEX into the bboxes
+    array _flat_unit_draws() returns for the same arguments, plus that walk's
+    own ROW COUNT. A unit that resolves nowhere is simply absent from the
+    dict, and its coloured rect stays -- so this layer is strictly additive,
+    exactly as the iso SpriteLayer is.
+
+    **This walk and _flat_unit_draws()' are REQUIRED to stay in lockstep** --
+    same per-player loop, same unit_filter gate, same unit_tile_bounds() is
+    None drop -- or every row index past the first divergence keys an icon
+    onto the wrong unit. The row count is returned for exactly that reason:
+    FlatChunkCache._level_icons() asserts it EQUALS the draws' row count,
+    which catches the likely divergence (a new `continue` that skips a unit
+    without advancing `row`, shifting every later icon onto its neighbour
+    while staying in range) and not merely an index past the end. The repo
+    already treats this row index as a stable unit identity (unit_pick.py
+    builds its own index in "EXACTLY _flat_unit_draws()'s order").
+
+    Not a widening of _flat_unit_draws()' (bboxes, colors) tuple, deliberately:
+    a third column would break four unpack sites in tests for no gain, and a
+    side table keeps composite_rect_flat()'s icons=None path byte-identical to
+    the pre-sprite one by construction rather than by measurement.
+
+    Footprint size comes from the CLAMPED bounds, matching the rect
+    _flat_unit_draws() actually paints, so a building hanging off a map edge
+    fits what is on screen rather than what it would be inland."""
+    return _drain(_flat_icon_layer_sliced(scenario, tile_px, unit_filter))
+
+
+def _flat_icon_layer_sliced(
+    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter()
+) -> Generator[None, None, tuple[dict[int, unit_sprites.SpriteDraw], int]]:
+    """_flat_icon_layer() as a resumable generator -- Flat's counterpart to
+    sprite_draws_by_anchor_sliced(), same shape and same reasons (see that
+    one's docstring). Returns _flat_icon_layer()'s whole (icons, row) tuple,
+    row count included: that count is what FlatChunkCache._level_icons()
+    asserts against the draws' own, so dropping it here would quietly disarm
+    the row-desync guard on the warm path only."""
+    mm = scenario.map_manager
+    tile_w, tile_h = mm.map_width, mm.map_height
+    overrides = wall_variant_rotation_overrides(scenario)
+    icons: dict[int, unit_sprites.SpriteDraw] = {}
+    row = 0
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        team_index = scenario.team_indices[player_id]
+        for i, unit in enumerate(units):
+            yield
+            if not unit_filter.matches(player_id, unit):
+                continue
+            bounds = unit_tile_bounds(unit, tile_w, tile_h)
+            if bounds is None:
+                continue
+            tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+            rotation = stored_rotation(player_id, unit)
+            # A wall/gate's shape isn't always recoverable from its own
+            # stored rotation -- see wall_variant_rotation_overrides()'s
+            # docstring. `i` is the unit's position in the PLAYER'S full unit
+            # list (this loop's own enumerate), not `row`, which only
+            # advances past units unit_filter keeps.
+            rotation = overrides.get((player_id, i), rotation)
+            draw = unit_sprites.icon_for(
+                unit.unit_const,
+                rotation,
+                team_index,
+                (tile_x1 - tile_x0) * tile_px,
+                (tile_y1 - tile_y0) * tile_px,
+            )
+            if draw is not None:
+                icons[row] = draw
+            row += 1
+    return icons, row
+
+
 def composite_rect_flat(
     scenario: LoadedScenario,
     x0: int,
@@ -2028,6 +2151,7 @@ def composite_rect_flat(
     tile_px: int,
     unit_draws: tuple[np.ndarray, np.ndarray] | None = None,
     with_units: bool = True,
+    icons: dict[int, unit_sprites.SpriteDraw] | None = None,
 ) -> np.ndarray:
     """Composites the half-open canvas rect [x0, x1) x [y0, y1) for Flat
     mode in isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8
@@ -2038,12 +2162,22 @@ def composite_rect_flat(
 
     Correctness argument (why this needs none of refresh_units_over()'s
     fixed-point dirty-tile expansion): overlay_units() is a sequence of
-    opaque axis-aligned rect overwrites onto a fully-painted terrain
+    axis-aligned rect draws onto a fully-painted terrain
     canvas, so restricting the OUTPUT RECT commutes with that draw
     sequence -- a unit whose bbox misses [x0,x1)x[y0,y1) contributes zero
     pixels inside it, so omitting it from the sum below cannot change the
     result at any pixel that IS in range, regardless of where that unit
-    sits in the draw order. refresh_units_over()'s fixed-point expansion
+    sits in the draw order.
+
+    **Alpha does not weaken that argument, which is what P3-g7 rests on.**
+    An icon's pixels are a function of the unit's own FOOTPRINT bbox alone,
+    never of the requested rect: it is painted at its full footprint
+    position through _clipped_paint_rgba() and the rect does the clipping,
+    so it lands exactly where a full render would put it. What alpha does
+    change is that overlapping units no longer fully occlude one another,
+    making draw ORDER observable where opaque rects hid it -- and that order
+    is already preserved, since np.nonzero returns ascending row indices,
+    which is overlay_units()' own order. refresh_units_over()'s fixed-point expansion
     (and the "building erases a tree" bug its own docstring records) is
     the fix for a *units-subsetting* problem -- redrawing a chosen subset
     of units onto an ALREADY-PAINTED persistent canvas, where a skipped
@@ -2059,6 +2193,17 @@ def composite_rect_flat(
     unit_draws, if given, must be _flat_unit_draws(scenario, tile_px)'s own
     return value, precomputed once by the caller (FlatChunkCache) and
     reused across many calls -- see that function's own docstring for why.
+
+    icons, if given, must be _flat_icon_layer()'s return value for those SAME
+    arguments (P3-g7): a row index into unit_draws' bboxes -> that unit's
+    footprint-fitted .sld icon, which REPLACES its coloured rect rather than
+    overlaying it (a mark left under a mostly-transparent icon shows as a
+    fringe -- the same reason the iso path has SpriteLayer.skip_ids). Rows
+    with no entry keep the rect, so an unresolvable unit, a missing install
+    and an undecodable frame all degrade to today's render. With icons=None
+    the painted code path below is unchanged bytes, which is what makes
+    "sprites off is byte-identical" a structural property rather than a
+    measured one.
 
     Do NOT re-express render_terrain()/overlay_units() in terms of this
     function -- same reason Track B gives for composite_rect_iso(): the
@@ -2086,9 +2231,25 @@ def composite_rect_flat(
             )[0]
             for i in hits:
                 bx0, by0, bx1, by1 = (int(v) for v in bboxes[i])
-                ix0, iy0 = max(bx0, x0) - x0, max(by0, y0) - y0
-                ix1, iy1 = min(bx1, x1) - x0, min(by1, y1) - y0
-                out[iy0:iy1, ix0:ix1] = colors[i]
+                draw = None if icons is None else icons.get(int(i))
+                if draw is None:
+                    ix0, iy0 = max(bx0, x0) - x0, max(by0, y0) - y0
+                    ix1, iy1 = min(bx1, x1) - x0, min(by1, y1) - y0
+                    out[iy0:iy1, ix0:ix1] = colors[i]
+                else:
+                    # Centred on the WHOLE footprint (bx*/by*), never on its
+                    # intersection with this rect -- centring on the clipped
+                    # rect would recentre the icon per chunk and produce a
+                    # seam-dependent image. _clipped_paint_rgba does the
+                    # clipping; tests/test_flat_sprites.py's stitched-chunk
+                    # check is what catches getting this wrong.
+                    ih, iw = draw.rgba.shape[:2]
+                    _clipped_paint_rgba(
+                        out,
+                        by0 + (by1 - by0 - ih) // 2 - y0,
+                        bx0 + (bx1 - bx0 - iw) // 2 - x0,
+                        draw.rgba,
+                    )
     return out
 
 
@@ -2178,6 +2339,21 @@ def _span_start(coord: float, span: int) -> int:
     return (round(coord * 2) - span + 1) // 2
 
 
+def span_anchor(tile_x: int, tile_y: int, span_x: int, span_y: int) -> tuple[float, float]:
+    """The (x, y) that anchors a `(span_x, span_y)` footprint on `(tile_x,
+    tile_y)` -- the inverse of `_span_start` per axis, used by the Cliff tool
+    (Track B Stage 1) to place a new object under the clicked tile without
+    re-deriving A4's per-suffix parity table by hand (that table has a
+    counterexample: Short Marble Cliff 1 is 3x2, not every family's 3x3).
+
+    `tile + span/2` solves `_span_start(coord, span) == tile` for every span,
+    including span == 1 (`_span_start`'s own other branch): a half-integer
+    result for an odd span, a whole one for an even span -- exactly the
+    sub-tile parity every corpus cliff placement already carries.
+    """
+    return tile_x + span_x / 2, tile_y + span_y / 2
+
+
 def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int] | None:
     """(tile_x0, tile_x1, tile_y0, tile_y1) -- the tile-space bounding box
     _draw_unit() would paint for this unit, half-open like Python ranges.
@@ -2185,13 +2361,19 @@ def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int
     refresh_units_over() can cheaply test overlap with a dirty-tile set
     without touching img.
 
-    **Size comes from clearance alone, never from position.** The engine and
+    **Size comes from the .dat alone, never from position.** The engine and
     the in-game editor both allow a building to sit on the coordinate parity
     its size does not "expect" (46 of 158 Mills and 32 of 254 Castles in the
     example corpus do), so deriving the span from where a unit sits would
     render every off-grid House 3x3 -- exactly the bug this replaced. Position
     only picks the anchor; an off-grid building is drawn at its true size,
     quantized to the nearer tile.
+
+    Which .dat field, though, is per-table: a building's span comes from its
+    `clearance_size`, a cliff's from its `collision_size` (every cliff const
+    reports the same useless flat clearance) -- see
+    tools/gen_unit_render_data.py's "object_spans" docs. tile_span() is
+    the merged lookup; the distinction lives in the generator, not here.
 
     **Invariant, relied on downstream: (int(unit.x), int(unit.y)) is always
     inside the returned bounds.** _unit_iso_footprint reads elevations[py, px]
@@ -2202,11 +2384,182 @@ def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int
     px, py = int(unit.x), int(unit.y)
     if not (0 <= px < tile_w and 0 <= py < tile_h):
         return None
-    span_x, span_y = BUILDING_TILE_SPANS.get(unit.unit_const, NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
     x0, y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
     tile_x0, tile_x1 = max(0, x0), min(tile_w, x0 + span_x)
     tile_y0, tile_y1 = max(0, y0), min(tile_h, y0 + span_y)
     return tile_x0, tile_x1, tile_y0, tile_y1
+
+
+def unit_occupied_tiles(unit, tile_w: int, tile_h: int) -> list[tuple[int, int]] | None:
+    """Every on-map tile this unit's footprint actually paints, as absolute
+    (tx, ty) pairs -- the plan-of-record Part 2 replacement for enumerating
+    unit_tile_bounds()'s rect wholesale. Ordinary units/buildings get exactly
+    that rect's tiles, in the same (ty outer, tx inner) order the old inline
+    double loops used; the 36 BUILDING_TILE_OFFSETS consts (diagonal gates)
+    get their real sparse 6-tile set instead. None if off-map, same contract
+    as unit_tile_bounds().
+
+    Stepped/Sloped-only by convention of most of its callers (_units_by_tile,
+    sprite_draws_by_anchor, unit_pick.unit_polygons' non-flat branch) --
+    Flat's _draw_unit()/_flat_unit_draws() and unit_pick.build_index() keep
+    reading unit_tile_bounds()'s rect directly, by design (a deliberate
+    Flat carve-out). wall_variant_rotation_overrides() is the one exception:
+    it builds the connector tile set that all three sprite-rendering paths
+    share, Flat included, because a wall's real shape can't depend on which
+    render mode is drawing it."""
+    bounds = unit_tile_bounds(unit, tile_w, tile_h)
+    if bounds is None:
+        return None
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    offsets = BUILDING_TILE_OFFSETS.get(unit.unit_const)
+    if offsets is None:
+        return [(tx, ty) for ty in range(tile_y0, tile_y1) for tx in range(tile_x0, tile_x1)]
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    x0, y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
+    return [
+        (x0 + ox, y0 + oy)
+        for ox, oy in offsets
+        if 0 <= x0 + ox < tile_w and 0 <= y0 + oy < tile_h
+    ]
+
+
+def unit_occupies_tile(unit, tx: int, ty: int) -> bool:
+    """True unless (tx, ty) is a bbox tile a diagonal gate's real (sparse)
+    footprint excludes -- the predicate form of unit_occupied_tiles(), for a
+    caller that already has a candidate tile from a shared, still-full-rect
+    structure (unit_pick's by_tile) and only needs to narrow it further.
+    Only the 36 BUILDING_TILE_OFFSETS consts can ever answer False; every
+    other unit occupies its whole unit_tile_bounds() rect."""
+    offsets = BUILDING_TILE_OFFSETS.get(unit.unit_const)
+    if offsets is None:
+        return True
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    x0, y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
+    return (tx - x0, ty - y0) in offsets
+
+
+def stored_rotation(player_id: int, unit) -> float:
+    """The rotation value a unit's sprite lookup should start from -- the
+    single place the GAIA rule lives, for all four independent per-unit walks
+    (_flat_icon_layer_sliced, sprite_draws_by_anchor_sliced,
+    _flat_icon_for_unit, and wall_variant_rotation_overrides' own candidate
+    scan). Any connectivity-derived override is applied by the caller, on top
+    of this.
+
+    **GAIA's `rotation` is not an angle** -- AGENTS.md's hard rule: for ~65% of
+    GAIA objects it is a graphic-VARIANT index (trees, doodads, cliffs), with
+    integer values well outside [0, 2*pi). Feeding one to angle_index() gets a
+    scrambled frame or an out-of-file index, so GAIA resolved at 0.0
+    unconditionally until this function existed.
+
+    The narrowing (2026-09-05 cliffs plan, Track A1; widened by the 2026-09-06
+    Tier B plan): a GAIA const whose graphic is KNOWN to be variant-indexed
+    keeps its stored value, because for those consts the field is meaningful
+    and rotation_is_variant() routes it to variant_index() rather than
+    angle_index(). Tier B made that known-set generated (unit_graphic_map.json's
+    `rotation_is_variant` field, from the .dat's own unit.type != 70) rather
+    than the two hand-kept frozensets Track A2 shipped with, which is what
+    fixed trees drawing variant 0 in every map. Everything GAIA owns that is
+    still creatable (unit.type == 70) keeps zeroing, since for those the field
+    is a real angle a GAIA placement has no camera-relative facing to apply.
+    Zeroing is the safe default precisely because it is the "we don't know
+    what this integer means" answer.
+
+    A1 and A2 are one change, not two: un-zeroing a cliff without cliffs in the
+    variant set sends rotation 6.0 through angle_index() to index 24, past the
+    24-frame file, and 246 corpus placements degrade to coloured marks."""
+    if player_id == 0 and not unit_sprites.rotation_is_variant(unit.unit_const):
+        return 0.0
+    return float(unit.rotation)
+
+
+def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:
+    """Per-(player_id, index-in-that-player's-unit-list) derived rotation for
+    a wall/gate whose real shape isn't recoverable from its own stored
+    `rotation` -- see tools/scan_wall_rotation.py, which measures this
+    function against examples/ as the regression guard.
+
+    Built over ALL units, ignoring unit_filter -- a wall's real shape does not
+    depend on which players are currently shown, and hiding player 2 must not
+    reshape player 1's wall. That also makes this a pure function of scenario
+    unit data, which is what lets sprite_draws_by_anchor_sliced(),
+    _flat_icon_layer_sliced() and _flat_icon_for_unit() share one
+    implementation despite each keeping its own independent per-unit walk.
+
+    Keyed by (player_id, i) where i is the unit's own position in
+    scenario.unit_manager.units[player_id] -- NOT _flat_icon_layer_sliced()'s
+    `row` counter, which only advances past units unit_filter keeps. Keying on
+    `row` would silently misassign every wall past the first filtered-out
+    unit whenever a filter is active.
+
+    **Precondition 3 (real index vs. radian-encoded) is decided per FILE, not
+    per unit.** unit_sprites.rotation_variant_eligible() only covers
+    preconditions 1-2 (variant graphic, angle_count == 5); a literal-looking
+    0.0 rotation is otherwise ambiguous (index 0 under both stored
+    conventions), and measured on examples/ (tools/scan_wall_rotation.py),
+    45.6% (241/529) of the 0.0-rotation walls in a file that also carries a
+    real radian-encoded wall sit on a shape-changing neighbour mask -- far
+    from a rounding error. So a literal integer is only trusted verbatim in a
+    file that never uses the radian convention at all; inside one that does,
+    every wall/gate's rotation goes through the override just like a radian
+    value would. Precondition 4 (non-zero neighbour mask) still applies
+    either way -- an isolated piece's shape is author-chosen, not derivable,
+    regardless of which file it's in."""
+    mm = scenario.map_manager
+    tile_w, tile_h = mm.map_width, mm.map_height
+
+    connector_tiles: set[tuple[int, int]] = set()
+    for units in scenario.unit_manager.units:
+        for unit in units:
+            if unit.unit_const in unit_sprites.WALL_CONNECTOR_CONSTS:
+                occupied = unit_occupied_tiles(unit, tile_w, tile_h)
+                if occupied is not None:
+                    connector_tiles.update(occupied)
+
+    candidates: list[tuple[int, int, object, float]] = []
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        for i, unit in enumerate(units):
+            if not unit_sprites.rotation_variant_eligible(unit.unit_const):
+                continue
+            # Same seam the three drawing walks use, so the per-file
+            # radian/integer classification below sees exactly the values they
+            # would resolve. Every eligible const is variant-indexed by
+            # definition, so a GAIA-owned wall now contributes its real stored
+            # index here instead of a blanket 0.0 -- which is the point: it was
+            # the zeroing, not the wall itself, that made it look literal.
+            rotation = stored_rotation(player_id, unit)
+            candidates.append((player_id, i, unit, rotation))
+
+    # rotation_variant_eligible() guarantees angle_count == 5 for every
+    # candidate, so 5 is safe to hardcode here rather than re-deriving it from
+    # graphic_map() -- this module has no other reason to reach into that
+    # table directly.
+    file_is_radian = any(
+        not unit_sprites.is_literal_variant_index(rotation, 5) for *_, rotation in candidates
+    )
+
+    overrides: dict[tuple[int, int], float] = {}
+    for player_id, i, unit, rotation in candidates:
+        if unit_sprites.is_literal_variant_index(rotation, 5) and not file_is_radian:
+            continue
+        bounds = unit_tile_bounds(unit, tile_w, tile_h)
+        if bounds is None:
+            continue
+        tx, ty = bounds[0], bounds[2]
+        mask = 0
+        if (tx - 1, ty) in connector_tiles:
+            mask |= unit_sprites.WEST
+        if (tx + 1, ty) in connector_tiles:
+            mask |= unit_sprites.EAST
+        if (tx, ty - 1) in connector_tiles:
+            mask |= unit_sprites.NORTH
+        if (tx, ty + 1) in connector_tiles:
+            mask |= unit_sprites.SOUTH
+        derived = unit_sprites.wall_variant_from_neighbours(mask)
+        if derived is not None:
+            overrides[(player_id, i)] = float(derived)
+    return overrides
 
 
 def _unit_color(unit, player_color: tuple[int, int, int]) -> tuple[int, int, int]:
@@ -2224,12 +2577,24 @@ def _unit_color(unit, player_color: tuple[int, int, int]) -> tuple[int, int, int
     return player_color
 
 
-def _draw_unit(img: np.ndarray, unit, player_color, tile_w: int, tile_h: int, tile_px: int) -> None:
+def _draw_unit(
+    img: np.ndarray,
+    unit,
+    player_color,
+    tile_w: int,
+    tile_h: int,
+    tile_px: int,
+    icon: unit_sprites.SpriteDraw | None = None,
+) -> None:
     """Draws one unit's mark into img, in place -- a colored dot, sized to
     its real footprint and colored per _unit_color(), a 1-tile dot for
     everything else. Shared by overlay_units() (every unit, full map) and
     refresh_units_over() (only units overlapping a dirty-tile set, after an
-    edit) so the two paths can never draw a unit differently."""
+    edit) so the two paths can never draw a unit differently.
+
+    icon (P3-g7), if given, REPLACES that mark with a footprint-fitted .sld
+    icon centred in the same rect -- see composite_rect_flat()'s docstring for
+    why replace rather than overlay."""
     bounds = unit_tile_bounds(unit, tile_w, tile_h)
     if bounds is None:
         return
@@ -2244,7 +2609,11 @@ def _draw_unit(img: np.ndarray, unit, player_color, tile_w: int, tile_h: int, ti
     # (unchanging) dimensions.
     y0, y1 = tile_y0 * tile_px, tile_y1 * tile_px
     x0, x1 = tile_x0 * tile_px, tile_x1 * tile_px
-    img[y0:y1, x0:x1] = color
+    if icon is None:
+        img[y0:y1, x0:x1] = color
+        return
+    ih, iw = icon.rgba.shape[:2]
+    _clipped_paint_rgba(img, y0 + (y1 - y0 - ih) // 2, x0 + (x1 - x0 - iw) // 2, icon.rgba)
 
 
 def _unit_iso_footprint(
@@ -2400,14 +2769,12 @@ def _units_by_tile(
         for unit in units:
             if not unit_filter.matches(player_id, unit):
                 continue
-            bounds = unit_tile_bounds(unit, tile_w, tile_h)
-            if bounds is None:
+            tiles = unit_occupied_tiles(unit, tile_w, tile_h)
+            if tiles is None:
                 continue
-            tile_x0, tile_x1, tile_y0, tile_y1 = bounds
             entry = (unit, _unit_color(unit, player_color))
-            for ty in range(tile_y0, tile_y1):
-                for tx in range(tile_x0, tile_x1):
-                    buckets.setdefault((tx, ty), []).append(entry)
+            for tx, ty in tiles:
+                buckets.setdefault((tx, ty), []).append(entry)
     return buckets
 
 
@@ -2517,9 +2884,36 @@ def sprite_draws_by_anchor(
     without a paint-time skip making them invisible. See
     _paint_tile_and_units_sloped's own farm handling for the other half of
     that deferral."""
+    return _drain(sprite_draws_by_anchor_sliced(scenario, proj, elevations, unit_filter, corner_rise, with_farms))
+
+
+def sprite_draws_by_anchor_sliced(
+    scenario: LoadedScenario,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    unit_filter: UnitFilter = UnitFilter(),
+    corner_rise: np.ndarray | None = None,
+    with_farms: bool = True,
+) -> Generator[None, None, SpriteLayer]:
+    """sprite_draws_by_anchor() as a resumable generator -- one yield per
+    unit, so level_warm.LevelWarmer can advance it a few milliseconds at a
+    time and resume on the next event-loop tick. See that function for what
+    the result actually is; this is a pure control-flow extraction of its
+    body, and it is the ONLY copy of that walk (the public function above is
+    a thin drain of this one), so the two can't drift.
+
+    The SpriteLayer is the generator's RETURN value (StopIteration.value),
+    never a yielded one: a partially-built layer must never be observable,
+    since installing one would leave units silently missing from the level.
+
+    The yield sits at the TOP of the per-unit body, before the filter and
+    bounds `continue`s, so granularity is one yield per unit even for a walk
+    that skips most of them -- a filtered-out unit costs a resume, not a
+    whole unbounded run."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     half_w, half_h = proj.half_w, proj.half_h
+    overrides = wall_variant_rotation_overrides(scenario)
     by_anchor: dict[tuple[int, int], list] = {}
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     skip_ids: set[int] = set()
@@ -2527,13 +2921,17 @@ def sprite_draws_by_anchor(
 
     for player_id, units in enumerate(scenario.unit_manager.units):
         player_color = scenario.player_colors[player_id]
-        for unit in units:
+        for i, unit in enumerate(units):
+            yield
             if not unit_filter.matches(player_id, unit):
                 continue
             bounds = unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
-            rotation = 0.0 if player_id == 0 else float(unit.rotation)
+            rotation = stored_rotation(player_id, unit)
+            # See wall_variant_rotation_overrides()'s docstring: `i` is this
+            # loop's own per-player position, not a filtered/skipped counter.
+            rotation = overrides.get((player_id, i), rotation)
             team_index = scenario.team_indices[player_id]
             pieces = unit_sprites.sprite_pieces_for(unit.unit_const, rotation, team_index, half_w)
             if not pieces:
@@ -2560,7 +2958,7 @@ def sprite_draws_by_anchor(
                     skip_ids.add(id(unit))
                 continue
 
-            span_x, span_y = BUILDING_TILE_SPANS.get(unit.unit_const, NON_BUILDING_SPAN)
+            span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
             # The UNCLAMPED footprint start, so a building hanging off a map
             # edge still anchors on its true centre rather than on the centre
             # of whatever survived clamping.
@@ -2610,7 +3008,7 @@ def sprite_draws_by_anchor(
             # front and back pieces) is unplanned follow-up work. This still
             # closes the reported bug in full; it only loses cross-piece
             # unit sandwiching.
-            anchor = unit_sprites.sprite_anchor_tile(*bounds)
+            anchor = unit_sprites.sprite_anchor_tile(unit_occupied_tiles(unit, tile_w, tile_h))
             slot = by_anchor.setdefault(anchor, [])
             bbox = bboxes.get(anchor)
             for piece in pieces:
@@ -2714,7 +3112,10 @@ def _paint_tile_and_units_iso(
     if farm is not None:
         _, outline_color, edge_mask = farm
         off_x, off_y = offset
-        base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, tile.elevation, proj)
+        # elevations[tile.y, tile.x], not tile.elevation -- must match
+        # _render_tile_iso's own base position above (see its comment), or
+        # this outline stops lining up with the diamond it's meant to trace.
+        base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, int(elevations[tile.y, tile.x]), proj)
         base_x -= off_x
         base_y -= off_y
         color_arr = np.array(outline_color, dtype=np.uint8)
@@ -2743,7 +3144,10 @@ def _paint_tile_and_units_iso(
 
 
 def overlay_units(
-    img: np.ndarray, scenario: LoadedScenario, unit_filter: UnitFilter = UnitFilter()
+    img: np.ndarray,
+    scenario: LoadedScenario,
+    unit_filter: UnitFilter = UnitFilter(),
+    with_sprites: bool = False,
 ) -> np.ndarray:
     """Draws a colored dot per unit -- see _draw_unit() for the per-unit
     rules. Mutates and returns img.
@@ -2753,7 +3157,14 @@ def overlay_units(
     composite_rect_flat()'s precomputed unit_draws, never through this
     function. refresh_units_over() deliberately does NOT gain the parameter
     -- it has no live callers at all today, and adding one to dead code
-    would just be noise."""
+    would just be noise.
+
+    with_sprites (P3-g7) resolves each unit's icon INLINE from this loop,
+    deliberately NOT by calling _flat_icon_layer(). This function and
+    composite_rect_flat() are two independent implementations on purpose --
+    see that function's own docstring on why sharing one would make the
+    byte-identity check a tautology -- so the icon logic lands twice, and this
+    is the half that serves as the oracle."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(tile_w, tile_h)
@@ -2763,14 +3174,57 @@ def overlay_units(
         f"it rendered by render_terrain() for a different scenario?"
     )
     out = img.copy()
+    # Computed once here, not inside _flat_icon_for_unit -- that helper is
+    # deliberately a second, independent implementation of the icon logic
+    # (see this function's own docstring), but the connectivity table itself
+    # is a pure function of scenario unit data and is meant to be shared
+    # across all three rendering paths; see wall_variant_rotation_overrides().
+    overrides = wall_variant_rotation_overrides(scenario) if with_sprites else {}
 
     for player_id, units in enumerate(scenario.unit_manager.units):
         player_color = scenario.player_colors[player_id]
-        for unit in units:
+        for i, unit in enumerate(units):
             if not unit_filter.matches(player_id, unit):
                 continue
-            _draw_unit(out, unit, player_color, tile_w, tile_h, tile_px)
+            icon = None
+            if with_sprites:
+                # team_indices is read INSIDE this branch on purpose: the
+                # default sprite-free path must not start touching an
+                # attribute the older duck-type test fixtures may not carry.
+                icon = _flat_icon_for_unit(
+                    scenario, unit, player_id, scenario.team_indices[player_id], tile_w, tile_h, tile_px,
+                    overrides.get((player_id, i)),
+                )
+            _draw_unit(out, unit, player_color, tile_w, tile_h, tile_px, icon)
     return out
+
+
+def _flat_icon_for_unit(
+    scenario: LoadedScenario, unit, player_id: int, team_index: int, tile_w: int, tile_h: int, tile_px: int,
+    rotation_override: float | None = None,
+) -> unit_sprites.SpriteDraw | None:
+    """One unit's Flat icon, for overlay_units()' inline oracle path. Kept out
+    of the loop body only for readability -- it deliberately does NOT share a
+    walk with _flat_icon_layer(), whose whole value is being a second,
+    independent implementation. rotation_override, when not None, is this
+    unit's connectivity-derived wall/gate shape from
+    wall_variant_rotation_overrides() -- computed once by the caller, shared
+    with the other two rendering paths despite the walk itself staying
+    independent; see overlay_units()'s docstring."""
+    bounds = unit_tile_bounds(unit, tile_w, tile_h)
+    if bounds is None:
+        return None
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    rotation = stored_rotation(player_id, unit)
+    if rotation_override is not None:
+        rotation = rotation_override
+    return unit_sprites.icon_for(
+        unit.unit_const,
+        rotation,
+        team_index,
+        (tile_x1 - tile_x0) * tile_px,
+        (tile_y1 - tile_y0) * tile_px,
+    )
 
 
 def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, tile_px: int) -> None:

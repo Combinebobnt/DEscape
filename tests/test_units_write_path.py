@@ -230,10 +230,14 @@ def test_a_patch_landing_inside_the_units_region_is_refused_not_dropped(tmp_path
         has_edits = True
         has_diplomacy_edits = False
         has_player_edits = False
+        has_player_count_edit = False
         specs = model.specs
 
         def serialize_patches(self):
             return model.serialize_patches()
+
+        def header_patch(self):
+            return None
 
     with pytest.raises(WriteBlockedError):
         write_scenario(loaded, tmp_path / "out.aoe2scenario", options=_DirtyOptions())

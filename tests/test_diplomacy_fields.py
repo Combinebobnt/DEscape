@@ -21,7 +21,6 @@ from descape.diplomacy_fields import (
     NUM_PLAYERS,
     allied_victory_cell_id,
     allied_victory_offsets,
-    defined_player_count,
     parse_cell_id,
     stance_cell_id,
     stance_offsets,
@@ -127,11 +126,9 @@ def test_an_unavailable_anchor_fails_the_gate_closed() -> None:
     assert not verify_diplomacy_block(loaded)
 
 
-# -- defined_player_count() -------------------------------------------------
-
-
-def test_defined_player_count_matches_the_known_blank_template_default() -> None:
-    assert defined_player_count(_loaded()) == 2
+# defined_player_count()/defined_player_ids() moved to
+# descape/player_fields.py in step 3e -- their tests moved to
+# tests/test_player_fields.py with them.
 
 
 # -- against the corpus -----------------------------------------------------
@@ -141,20 +138,6 @@ def test_defined_player_count_matches_the_known_blank_template_default() -> None
 def test_verify_diplomacy_block_true_across_the_corpus(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     assert verify_diplomacy_block(loaded), scenario_path.name
-
-
-@pytest.mark.corpus
-def test_defined_player_count_is_between_2_and_8_across_the_corpus(corpus_files) -> None:
-    """Not-vacuous guard: the count must actually vary, not just always
-    land on 8 -- the same trap the default-diagonal files caught for the
-    stance grid, below."""
-    counts = set()
-    for path in corpus_files:
-        loaded = scenario_io.load_map_and_units(str(path))
-        count = defined_player_count(loaded)
-        assert 2 <= count <= 8, path.name
-        counts.add(count)
-    assert len(counts) > 1, f"every corpus file resolved to the same count: {counts}"
 
 
 @pytest.mark.corpus

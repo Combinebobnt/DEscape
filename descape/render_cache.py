@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from descape import iso_geometry, render, settings
+from descape import iso_geometry, render, settings, unit_sprites
 from descape.scenario_io import LoadedScenario
 from descape.unit_filter import UnitFilter
 
@@ -35,6 +35,25 @@ from descape.unit_filter import UnitFilter
 # much coarser invalidation granularity for a moving viewport; 256 loses on
 # both cold assembly (~6s) and warm single-tile patch cost (~44ms vs ~28ms).
 DEFAULT_CHUNK_PX = 512
+
+
+@dataclass
+class LevelWarmJob:
+    """One mip level's warm, handed to level_warm.LevelWarmer: a resumable
+    walk plus the closure that installs its result on THIS cache.
+
+    The split is what keeps Qt out of this module. The driver owns pacing
+    (a QTimer and a wall-clock budget) and knows nothing about what a level
+    is; the cache owns the walk and the install semantics -- including the
+    validity predicate, which differs per style and is the whole correctness
+    argument for installing a layer built across several event-loop turns.
+
+    install() returns True if it landed, False if the job was revalidated
+    away (the source mutated under the warm, or a real paint already built
+    the level). A False is a normal outcome, not an error."""
+
+    gen: object
+    install: object
 
 
 class _ChunkCacheBase:
@@ -64,8 +83,8 @@ class _ChunkCacheBase:
         the wrong terrain style at construction time, rather than only once
         an edit exposes the mismatch later.
 
-    Coordinate-space convention (Phase B-D-a; PLAN_MIPS.md never states
-    this explicitly): render_rect()/get_chunk()/canvas_dims() all take
+    Coordinate-space convention (Phase B-D-a, not stated explicitly
+    elsewhere): render_rect()/get_chunk()/canvas_dims() all take
     LEVEL pixels/indices -- a caller past this class (Phase B-D-c's paint())
     is expected to already know which level it's asking for. patch()/
     invalidate_region() instead take REFERENCE canvas pixels, because their
@@ -237,6 +256,69 @@ class _ChunkCacheBase:
         this base version doesn't have to do.
         """
         self._refresh_source_caches()
+
+    def level_warm_job(self, mip: int) -> LevelWarmJob | None:
+        """This level's sprite layer as a resumable warm, or None if there is
+        nothing worth warming -- the entry point level_warm.LevelWarmer
+        drives (2026-09-04 plan, Step 2).
+
+        The base implementation returns None, which is SlopedChunkCache's
+        real answer rather than a stub: Sloped enumerates exactly one mip
+        level (_init_mip_levels({0: tile_px})), so it can never hit a
+        not-yet-visited one -- there is no first-zoom stall there to remove.
+        IsoChunkCache and FlatChunkCache override this."""
+        return None
+
+    def is_level_resident(self, mip: int) -> bool:
+        """Whether mip's sprite/icon layer is already built -- the
+        precondition margin_warm.MarginWarmer (2026-09-07 plan, Step A3.3)
+        must check before ever calling get_chunk() on a level: get_chunk()
+        on a not-yet-visited level synchronously builds the WHOLE level
+        inside that call -- 0.6-4.3s (level_warm.py's own docstring), the
+        exact freeze this whole subsystem exists to remove, now inside a
+        margin-warm timer callback with no user action to blame it on.
+
+        True is SlopedChunkCache's real answer, not a permissive base-class
+        default -- checked, not assumed: _refresh_source_caches() there
+        builds units_by_tile, corner_rise, building_bboxes and sprites
+        eagerly, at construction and on every refresh ("no generation-
+        counter laziness ... this cache has only one (mip 0) level" -- see
+        that method's own docstring), so _composite_rect() has nothing
+        lazy left to trigger. IsoChunkCache and FlatChunkCache override
+        this with their own real staleness predicates."""
+        return True
+
+    def has_chunk(self, mip: int, cx: int, cy: int) -> bool:
+        """Whether chunk (mip, cx, cy) is already cached -- a plain
+        membership read, no LRU touch (unlike get_chunk()'s move_to_end()).
+        margin_warm.ring_chunks() uses this to drop already-resident chunks
+        from a margin ring before it's ever queued, so
+        MarginWarmer.is_active stays honest about remaining work instead of
+        counting a chunk that needs no warming at all."""
+        return (mip, cx, cy) in self._cache
+
+    def chunk_index_range(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple[int, int, int, int]:
+        """(cx0, cy0, cx1, cy1) -- the inclusive chunk-grid index range that
+        LEVEL `mip` pixel rect [x0, x1) x [y0, y1) covers, at this cache's
+        chunk_px. `mip` is accepted (unused here) purely so a call site that
+        already has a level's mip alongside its rect can pass both without a
+        second lookup -- chunk_px is the same at every level, so mip plays
+        no part in the arithmetic.
+
+        Written three times already, inline, as this same `x0 // chunk_px` /
+        `(x1 - 1) // chunk_px` pair: render_rect(), patch(), and
+        invalidate_region(). New code (2026-09-07 plan's A2/A3) calls this
+        instead of a fourth copy. Those three existing sites are
+        deliberately NOT rewired to it: render_rect() is the hottest
+        byte-identity-guarded path in this cache, and patch()/
+        invalidate_region() interleave this arithmetic with a
+        reference-to-level conversion this function doesn't do -- rewiring
+        either buys nothing here at a real risk of regressing code this
+        module's own byte-identity tests already cover. The duplication is
+        noted, not chased."""
+        cx0, cy0 = x0 // self.chunk_px, y0 // self.chunk_px
+        cx1, cy1 = (x1 - 1) // self.chunk_px, (y1 - 1) // self.chunk_px
+        return cx0, cy0, cx1, cy1
 
     def _evict(self) -> None:
         """Evicts least-recently-used chunks while EITHER configured bound
@@ -460,17 +542,16 @@ class _ChunkCacheBase:
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Stores whether this cache composites real .sld sprites -- P3-g's
-        toggle. The base implementation ONLY stores the value; SlopedChunkCache
-        overrides it to actually rebuild and evict (Track P3-g6). Flat still
-        has no sprite compositor at all (composite_rect_flat takes no sprite
-        argument, its own item is P3-g7), so this base no-op is still correct
-        there. Storing the value here regardless is what lets ViewerWindow
-        carry the toggle's state across an Elevation View switch without
-        special-casing which style is live.
+        toggle. The base implementation ONLY stores the value; every concrete
+        subclass now overrides it to actually rebuild and evict (IsoChunkCache
+        for Stepped, SlopedChunkCache from P3-g6, FlatChunkCache from P3-g7),
+        so this body is reached only by a subclass that has yet to grow a
+        sprite path. Storing the value here regardless is what lets
+        ViewerWindow carry the toggle's state across an Elevation View switch
+        without special-casing which style is live.
 
-        This is deliberately on the BASE class, not on IsoChunkCache: it is
-        the hook Sloped and (eventually) Flat's sprite paths fill in by
-        overriding, the same way IsoChunkCache already does below."""
+        Deliberately on the BASE class rather than on IsoChunkCache: it is the
+        hook each style's sprite path fills in by overriding."""
         self.sprites_enabled = enabled
 
 
@@ -673,27 +754,88 @@ class IsoChunkCache(_ChunkCacheBase):
         count."""
         lvl = self._levels[mip]
         if lvl.gen != self._source_gen:
-            mm = self.scenario.map_manager
-            bboxes = (
-                render._building_bboxes_iso(self.units_by_tile, mm.map_width, mm.map_height, lvl.proj, self.elevations)
-                if self.with_units
-                else {}
-            )
             # P3-g3: resolving and decoding sprites is far too expensive to do
             # per chunk, so it rides this same per-level lazy rebuild.
-            # merge_sprite_bboxes is what makes composite_rect_iso pull a
-            # sprite's anchor tile in as a bystander -- without it a sprite
-            # clips at its owning chunk's edge.
-            lvl.sprites = (
+            sprites = (
                 render.sprite_draws_by_anchor(self.scenario, lvl.proj, self.elevations, self.unit_filter)
                 if self.with_units and self.sprites_enabled
                 else None
             )
-            if lvl.sprites is not None:
-                bboxes = render.merge_sprite_bboxes(bboxes, lvl.sprites)
-            lvl.building_bboxes = bboxes
-            lvl.gen = self._source_gen
+            self._install_level(mip, sprites, self._source_gen)
         return lvl
+
+    def _install_level(self, mip: int, sprites: render.SpriteLayer | None, gen: int) -> None:
+        """Assembles and installs a level from an already-built sprite layer
+        -- everything _level() does EXCEPT building that layer.
+
+        Shared with level_warm_job()'s install closure deliberately: the warm
+        path and the paint path assembling a level two different ways is
+        exactly the divergence class Flat's row-count assert exists to catch,
+        and Stepped has no equivalent tripwire, so the fix here is to have
+        only one copy of the assembly at all.
+
+        merge_sprite_bboxes is what makes composite_rect_iso pull a sprite's
+        anchor tile in as a bystander -- without it a sprite clips at its
+        owning chunk's edge."""
+        lvl = self._levels[mip]
+        mm = self.scenario.map_manager
+        bboxes = (
+            render._building_bboxes_iso(self.units_by_tile, mm.map_width, mm.map_height, lvl.proj, self.elevations)
+            if self.with_units
+            else {}
+        )
+        if sprites is not None:
+            bboxes = render.merge_sprite_bboxes(bboxes, sprites)
+        lvl.sprites = sprites
+        lvl.building_bboxes = bboxes
+        lvl.gen = gen
+
+    def level_warm_job(self, mip: int) -> LevelWarmJob | None:
+        """Stepped's resumable warm for one level -- see _ChunkCacheBase's
+        own docstring for the shape.
+
+        None when there is nothing expensive left to warm: with sprites (or
+        units) off, a level costs only _building_bboxes_iso, measured at
+        3.9ms against sprite_draws_by_anchor's 676ms, so ticking for it would
+        be pure overhead. None too when the level is already current, which
+        is the common case for the level the opening paint just built.
+
+        **The install predicate is three checks, and `lvl.gen ==
+        self._source_gen` is the one that isn't obvious.** The first two are
+        staleness (the source moved under a warm that started before it, so
+        the layer describes a scenario that no longer exists). The third is
+        the opposite case: a real paint got there first and built an
+        equivalent level, and overwriting it would throw away a layer already
+        wired into the chunk cache to install a fresh copy of the same
+        thing."""
+        if not (self.with_units and self.sprites_enabled):
+            return None
+        lvl = self._levels[mip]
+        start_gen = self._source_gen
+        if lvl.gen == start_gen:
+            return None
+        gen = render.sprite_draws_by_anchor_sliced(self.scenario, lvl.proj, self.elevations, self.unit_filter)
+
+        def install(sprites: render.SpriteLayer) -> bool:
+            if self._source_gen != start_gen or lvl.gen == self._source_gen:
+                return False
+            self._install_level(mip, sprites, start_gen)
+            return True
+
+        return LevelWarmJob(gen=gen, install=install)
+
+    def is_level_resident(self, mip: int) -> bool:
+        """Mirrors level_warm_job()'s own staleness check (`lvl.gen ==
+        self._source_gen`) rather than level_warm_job()'s None-or-not
+        answer: the two predicates ask different questions (this one is a
+        pure "is get_chunk() safe to call right now", level_warm_job() also
+        factors in "is there anything worth WARMING" -- with sprites off a
+        level can be resident yet still return a level_warm_job() of None,
+        since a cheap _building_bboxes_iso-only rebuild isn't worth
+        ticking for). tests/test_margin_warm.py pins the two together after
+        a completed warm so a future change to one can't silently diverge
+        from the other."""
+        return self._levels[mip].gen == self._source_gen
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Turns real .sld sprites on or off on a LIVE cache -- P3-g's toggle.
@@ -795,7 +937,13 @@ class FlatChunkCache(_ChunkCacheBase):
     invalidate_units() is the explicit way to force a rebuild -- don't
     "fix" this no-op into an unconditional rebuild instead, since that
     would silently reintroduce the per-edit cost this class exists to
-    avoid paying for edits that were never about units at all."""
+    avoid paying for edits that were never about units at all. The same
+    argument covers P3-g7's per-level icon layers, which derive from the same
+    unit data and so go stale through the same funnel.
+
+    Real .sld icons as of P3-g7 (`sprites=`/set_sprites_enabled()), replacing
+    the coloured rect per unit -- see _level_icons() and
+    render.composite_rect_flat()."""
 
     style = "flat"
 
@@ -807,11 +955,15 @@ class FlatChunkCache(_ChunkCacheBase):
         max_chunks: int | None = None,
         with_units: bool = True,
         unit_filter: UnitFilter = UnitFilter(),
+        sprites: bool = SPRITES_ENABLED,
     ):
         self.scenario = scenario
         self.tile_px = tile_px
         self.with_units = with_units
         self.unit_filter = unit_filter
+        # Must be set before _refresh_source_caches() below, the same ordering
+        # trap IsoChunkCache.__init__ and SlopedChunkCache.__init__ document.
+        self.sprites_enabled = sprites
         # Phase B-D-b: the real candidate ladder, UNFILTERED -- "unfiltered"
         # here means the MIP ladder, nothing to do with unit_filter. Flat has no
         # projection (canvas_dims() is a bare multiply, exact at every
@@ -821,11 +973,26 @@ class FlatChunkCache(_ChunkCacheBase):
         # exactness check. Must precede _init_max_chunks(), which reads
         # canvas_dims().
         self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px))
-        # Per-level unit_draws (Phase B-D, PLAN_MIPS.md's own "Flat's real
+        # Per-level unit_draws (Phase B-D: "Flat's real
         # per-level work is unit_draws"). Level 0's draws live in
         # self.unit_draws (unchanged attribute, still read directly by
         # tests/test_flat_chunks.py); other levels are built lazily here.
         self._level_draws: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
+        # P3-g7's per-level icon layers. Level 0 lives in here TOO, unlike
+        # _level_draws -- see _level_icons().
+        self._level_icon_layers: dict[int, dict[int, unit_sprites.SpriteDraw] | None] = {}
+        # Bumped by invalidate_units(), read only by level_warm_job(). Flat
+        # needs a counter where the rest of this class does not, and the
+        # reason is specific to the warm: every OTHER reader of the icon
+        # layers goes through _level_icons(), which finds an absent dict entry
+        # and rebuilds -- "absent" is a complete staleness test for a
+        # synchronous caller. A warm spans event-loop turns, so it has to
+        # distinguish "absent because nobody built it yet" from "absent
+        # because invalidate_units() cleared it WHILE I was walking", and
+        # those two states are byte-identical. The row-count assert doesn't
+        # cover the gap either: a unit MOVED (not added or removed) leaves the
+        # count intact while shifting the icons' meaning.
+        self._unit_gen = 0
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -850,6 +1017,14 @@ class FlatChunkCache(_ChunkCacheBase):
         if hasattr(self, "unit_draws"):
             del self.unit_draws
         self._level_draws.clear()
+        # In the same statement group as the draws, not a step later: icons are
+        # keyed by ROW INDEX into the draws, so a unit mutation or filter change
+        # that dropped one without the other would leave a stale icon painting
+        # on a shifted row -- i.e. on the wrong unit.
+        self._level_icon_layers.clear()
+        # In the same group for the same reason: an in-flight warm's icons are
+        # keyed to the row order this call just invalidated.
+        self._unit_gen += 1
         self._refresh_source_caches()
 
     def _refresh_unit_sources(self) -> None:
@@ -883,7 +1058,107 @@ class FlatChunkCache(_ChunkCacheBase):
             self._level_draws[mip] = draws
         return draws
 
+    def _level_icons(self, mip: int) -> dict[int, unit_sprites.SpriteDraw] | None:
+        """Per-level _flat_icon_layer() -- P3-g7's counterpart to
+        _level_unit_draws() above, built lazily for the same reason and going
+        stale through the same invalidate_units() funnel. None when this cache
+        is not drawing sprites at all.
+
+        **Level 0 is stored in the dict like every other level**, deliberately
+        NOT mirroring _level_unit_draws()' `mip == 0` special case. That case
+        exists only because self.unit_draws is a public attribute read
+        externally (tests/test_flat_chunks.py); icons have no such reader, so a
+        self.icons twin would buy nothing and add a second lifetime to keep in
+        lockstep with unit_draws -- precisely the row-index desync this layer's
+        whole keying scheme depends on avoiding. One dict, one lifetime.
+
+        The row-count assert is the other half of that: _flat_icon_layer() and
+        _flat_unit_draws() are two separate walks that MUST agree row for row,
+        and this turns a future divergence into a build-time failure instead of
+        icons silently painting on the wrong units. It compares WALK LENGTHS,
+        not the maximum key -- a skipped unit that failed to advance `row`
+        shifts every later icon onto its neighbour while staying in range, and
+        a max-key check would sail past exactly that."""
+        if not (self.with_units and self.sprites_enabled):
+            return None
+        if mip not in self._level_icon_layers:
+            self._install_icon_layer(mip, render._flat_icon_layer(self.scenario, self._mip_tile_px[mip], self.unit_filter))
+        return self._level_icon_layers[mip]
+
+    def _install_icon_layer(self, mip: int, icons_and_rows: tuple[dict[int, unit_sprites.SpriteDraw], int]) -> None:
+        """Installs an already-built (icons, row_count) pair, row-count assert
+        included -- the shared tail of _level_icons() above and
+        level_warm_job()'s install closure, so the warm path can't grow its
+        own copy of the assert-then-store step (or quietly skip the assert)."""
+        icons, rows = icons_and_rows
+        draws = self._level_unit_draws(mip)
+        assert rows == (0 if draws is None else len(draws[0])), (
+            f"icon layer at mip {mip} walked {rows} units but _flat_unit_draws() "
+            f"produced {0 if draws is None else len(draws[0])} rows -- the two walks have diverged"
+        )
+        self._level_icon_layers[mip] = icons
+
+    def level_warm_job(self, mip: int) -> LevelWarmJob | None:
+        """Flat's resumable warm for one level -- IsoChunkCache.
+        level_warm_job()'s counterpart, same shape, different validity
+        predicate (see self._unit_gen's own comment in __init__ for why
+        "absent from _level_icon_layers" cannot be the whole test here).
+
+        _flat_unit_draws (measured 14.1ms) is not sliced and runs whole
+        inside the install, same as Stepped's _building_bboxes_iso: only the
+        icon walk (~727ms cold) is worth resuming."""
+        if not (self.with_units and self.sprites_enabled):
+            return None
+        if mip in self._level_icon_layers:
+            return None
+        start_gen = self._unit_gen
+        gen = render._flat_icon_layer_sliced(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+
+        def install(icons_and_rows: tuple[dict[int, unit_sprites.SpriteDraw], int]) -> bool:
+            if self._unit_gen != start_gen or mip in self._level_icon_layers:
+                return False
+            self._install_icon_layer(mip, icons_and_rows)
+            return True
+
+        return LevelWarmJob(gen=gen, install=install)
+
+    def is_level_resident(self, mip: int) -> bool:
+        """Flat's own predicate -- "absent from _level_icon_layers" IS a
+        complete staleness test here (unlike level_warm_job(), which needs
+        self._unit_gen to distinguish "never built" from "invalidated mid-
+        warm", see __init__'s own comment on that counter): a chunk warm
+        only ever calls this synchronously, with no warm in flight to have
+        invalidated anything between the check and the get_chunk() call it
+        gates."""
+        return mip in self._level_icon_layers
+
+    def set_sprites_enabled(self, enabled: bool) -> None:
+        """Turns real .sld icons on or off on a LIVE cache (P3-g7).
+
+        IsoChunkCache.set_sprites_enabled()'s shape, mip loop included --
+        Flat has a real ladder, so that class is the precedent here rather
+        than g6's single-level SlopedChunkCache, despite it being the more
+        recent one. See it for why each step is load-bearing: the resident
+        set must be captured BEFORE invalidate_region() empties the cache,
+        and the resident levels are warmed eagerly so the 0.5-4.1s cold .sld
+        decode happens under the caller's wait cursor rather than inside the
+        next Qt paint with a normal cursor."""
+        if enabled == self.sprites_enabled:
+            return
+        self.sprites_enabled = enabled
+        resident = sorted({key[0] for key in self._cache}) or [0]
+        self._refresh_unit_sources()
+        for mip in resident:
+            self._level_icons(mip)
+        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
+        """Unchanged by P3-g7, and worth saying so rather than leaving the
+        next reader to check: an icon is contain-fitted into its own footprint
+        rect and so can never leave it, while Flat's canvas is exact by
+        construction. g6's canvas_dims()-widening fix for Sloped, and its
+        MapView/MapCanvasItem.refresh_canvas_dims() follow-up, have no
+        analogue here."""
         mm = self.scenario.map_manager
         tile_px = self._mip_tile_px[mip]
         return mm.map_width * tile_px, mm.map_height * tile_px
@@ -898,6 +1173,7 @@ class FlatChunkCache(_ChunkCacheBase):
             self._mip_tile_px[mip],
             unit_draws=self._level_unit_draws(mip),
             with_units=self.with_units,
+            icons=self._level_icons(mip),
         )
 
 
@@ -912,8 +1188,8 @@ capped -- negligible against the colour cache's whole-canvas budget."""
 
 
 class SlopedChunkCache(_ChunkCacheBase):
-    """Qt-free LRU cache of composited Sloped-mode canvas chunks -- Phase 6
-    (docs/PLAN_V2_6.md)'s Track C3 counterpart to IsoChunkCache/
+    """Qt-free LRU cache of composited Sloped-mode canvas chunks -- Phase 6's
+    Track C3 counterpart to IsoChunkCache/
     FlatChunkCache. Same grid/LRU mechanics (_ChunkCacheBase), composited
     via composite_rect_sloped() instead of composite_rect_iso()/
     composite_rect_flat() -- a chunk's pixels never depend on which OTHER

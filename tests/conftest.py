@@ -29,8 +29,7 @@ PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
 def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     """Maximal [start, end) spans where two equal-length buffers differ.
 
-    Promoted here (plan verification item 6, descape-units-write-path.md)
-    rather than copied a fifth time -- test_trigger_write_path.py,
+    Promoted here rather than copied a fifth time -- test_trigger_write_path.py,
     test_options_write_path.py, test_diplomacy_write_path.py, and
     test_player_options_write_path.py each already hold their own private
     copy; new locality tests should import this one instead."""
@@ -321,6 +320,7 @@ _SETTINGS_MEMOIZED_GLOBALS = (
     "_zoom_centered_on_cursor",
     "_graphics_quality",
     "_dark_mode",
+    "_preload_zoom_levels",
     "_elev_step_pct",
     "_window_size",
     "_split_sizes",

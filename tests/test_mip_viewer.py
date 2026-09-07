@@ -1,5 +1,5 @@
 """Phases B-D-c and B-D-d: LOD selection, the scaled blit, and the zoom-out
-floor (maintainer plan docs/PLAN_MIPS.md).
+floor.
 
 Phases a and b were headless -- they built the level set and the per-level
 cache plumbing without any of it ever being selected. This file covers the

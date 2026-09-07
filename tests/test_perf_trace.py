@@ -18,6 +18,7 @@ def setup_function():
     perf_trace._phase_sums = {}
     perf_trace._phase_order = []
     perf_trace._repaint_durations = []
+    perf_trace._armed_label = None
 
 
 def test_disabled_by_default():
@@ -102,3 +103,49 @@ def test_disabling_mid_drag_does_not_crash_and_flush_stays_a_no_op():
     perf_trace.step()  # no-op while disabled, previous step's data untouched
     perf_trace.flush("paint-terrain")
     assert debug_log.get_log_text() == "(empty)"
+
+
+def test_arm_and_first_paint_done_flush_a_repaint_only_line():
+    """The load path's hook: no drag ever ran (no step() call at all), just
+    a repaint recorded under an armed label."""
+    perf_trace.enable(True)
+    perf_trace.arm("load")
+    with perf_trace.phase("repaint"):
+        pass
+    perf_trace.first_paint_done()
+
+    text = debug_log.get_log_text()
+    assert "perf load: repaint: 1 calls" in text
+    assert perf_trace._armed_label is None
+    assert perf_trace._repaint_durations == []
+
+
+def test_first_paint_done_without_arm_is_a_no_op():
+    perf_trace.enable(True)
+    with perf_trace.phase("repaint"):
+        pass
+    perf_trace.first_paint_done()
+    assert debug_log.get_log_text() == "(empty)"
+    # The unflushed repaint duration is still sitting there for a later
+    # drag's flush() to pick up -- first_paint_done() only acts when armed.
+    assert len(perf_trace._repaint_durations) == 1
+
+
+def test_arm_is_a_no_op_while_disabled():
+    perf_trace.arm("load")
+    assert perf_trace._armed_label is None
+
+
+def test_flush_emits_repaint_only_line_with_no_steps_recorded():
+    """flush()'s own no-steps-is-a-no-op guard (test_flush_with_no_steps_is_
+    a_no_op above) must not swallow a repaint-only flush -- the gap step 4
+    of the honest-render-timing plan closes."""
+    perf_trace.enable(True)
+    with perf_trace.phase("repaint"):
+        pass
+    perf_trace.flush("load")
+
+    text = debug_log.get_log_text()
+    assert text.count("\n[") == 0
+    assert "perf load: repaint: 1 calls" in text
+    assert perf_trace._repaint_durations == []

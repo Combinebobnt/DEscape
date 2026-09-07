@@ -1,5 +1,4 @@
-"""Track C3's descape/viewer.py wiring (docs/PLAN_V2_6.md's Track C, spec'd
-in the maintainer plan's own "## Progress" section) -- the Qt-registry half
+"""Track C3's descape/viewer.py wiring -- the Qt-registry half
 that tests/test_sloped_chunks.py/test_sloped_geometry.py/test_sloped_render.py
 can't reach: switching Elevation View to Sloped actually builds a
 SlopedChunkCache and pushes it through MapView.set_source, and the toolbar

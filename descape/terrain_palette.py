@@ -89,6 +89,41 @@ _UNIT_RENDER_DATA = json.loads(
 BUILDING_TILE_SPANS: dict[int, tuple[int, int]] = {
     int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA["buildings"].items()
 }
+
+# unit_const -> the sparse set of local (ox, oy) tile offsets a diagonal gate
+# ACTUALLY occupies inside its BUILDING_TILE_SPANS bbox -- present only for
+# the 36 class_ == 39 consts whose real footprint is smaller than their bbox
+# (see tools/gen_unit_render_data.py's "building_tiles" docs). Absent for
+# every other unit_const, including every other building, which occupies its
+# whole bbox.
+BUILDING_TILE_OFFSETS: dict[int, frozenset[tuple[int, int]]] = {
+    int(uid): frozenset((ox, oy) for ox, oy in offsets)
+    for uid, offsets in _UNIT_RENDER_DATA.get("building_tiles", {}).items()
+}
+# unit_const -> (span_x, span_y) for the 96 cliff consts, which are not
+# buildings and so have no BUILDING_TILE_SPANS entry -- see
+# tools/gen_unit_render_data.py's "object_spans" docs for why they need one
+# anyway and why they must stay out of BUILDING_TILE_SPANS.
+OBJECT_TILE_SPANS: dict[int, tuple[int, int]] = {
+    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("object_spans", {}).items()
+}
+
+def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
+    """The footprint span every render path should ask for. BUILDING_TILE_SPANS
+    stays the is-a-building MEMBERSHIP test (render._unit_color reads it that
+    way); this answers how big something is, over both tables. Their keys are
+    disjoint by construction -- a cliff's `building` field is None, which is
+    exactly why it needed a second table.
+
+    **A function rather than a merged dict**, so it reads both tables live. A
+    pre-merged snapshot would silently ignore a runtime `monkeypatch.setitem`
+    into BUILDING_TILE_SPANS -- which several tests do to inject a synthetic
+    const -- and, worse, would keep passing while doing it."""
+    span = BUILDING_TILE_SPANS.get(unit_const)
+    if span is not None:
+        return span
+    return OBJECT_TILE_SPANS.get(unit_const, default)
+
 RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {
     int(uid): tuple(rgb) for uid, rgb in _UNIT_RENDER_DATA["resource_colors"].items()
 }

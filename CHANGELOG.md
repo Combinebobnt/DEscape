@@ -22,6 +22,122 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [0.4] - 2026-09-07
+
+### Added
+
+- **A Cliff tool in Terrain mode.** Click to place one cliff of the family,
+  piece and frame you picked, with a live sprite preview. Drag to lay a
+  connected run: pieces step along their own footprint, and each one's shape
+  is chosen from its neighbours, so runs and corners join up instead of
+  needing to be assembled by hand. The whole drag is a single undo step. All
+  ten cliff families are available, including the ones the in-game editor
+  hides.
+- **Crash reports.** An unhandled exception (or a hard crash) now writes a
+  dump with the traceback, app/OS version, and recent debug-log lines to a
+  file next to your config, and shows it in a dialog with buttons to copy
+  it, open its folder, or save your work to a new file. If the app dies too
+  hard to show that dialog, it's surfaced the next time you launch instead.
+- **The first zoom into a new map no longer stutters.** After a file opens,
+  DEscape resolves the neighbouring zoom levels' unit sprites in idle time, a
+  few milliseconds at a time, so the window stays fully interactive
+  throughout. On by default; turn it off under `Settings > Appearance >
+  Preload neighbouring zoom levels`.
+- **Panning into never-visited territory stutters less.** DEscape now warms a
+  ring of chunks just outside the current viewport in idle time as you pan,
+  re-targeted continuously and prioritizing the direction you're heading, so
+  scrolling past the edge of what's already on screen has less to composite
+  on demand. Same `Preload neighbouring zoom levels` setting as above.
+- **Units can now be rotated**, via `Edit > Rotate Selection`, the two
+  toolbar buttons, or the `,` / `.` keys (`<` / `>` for a quarter turn). The
+  whole selection turns in one undo step, each unit about its own centre.
+  Only units whose rotation is a real facing turn: for walls, gates and most
+  GAIA objects that field stores a graphic-variant index instead, and those
+  are skipped rather than corrupted. The inspector's Rotation field is
+  editable on the same units, in raw radians. The toolbar buttons are hidden
+  outside Units mode instead of sitting permanently greyed out.
+- **Packaged Linux, macOS and Windows builds.** DEscape now ships as a
+  self-contained PyInstaller build, no separate Python or `.venv` setup
+  needed, with a Linux AppImage on top of it. CI builds and smoke-tests all
+  three platforms on every change.
+- **`View > Isometric View` in Flat mode is now a real isometric render**,
+  not a view rotation applied on top of the flat canvas. Terrain paints as
+  real iso diamond tiles and units as upright, ground-anchored sprites (the
+  same look Stepped mode draws), all at elevation 0 regardless of the
+  scenario's real terrain heights. The checkbox ships checked, so opening
+  Flat shows this by default; untick it for the plain top-down grid with
+  footprint-fitted icons instead.
+- **`View > Show sprites` now works in Flat mode too**, so it is no longer
+  greyed out in any terrain style. Flat is a square top-down grid rather
+  than an isometric one, so each unit gets its real sprite fitted into its
+  own footprint square (aspect preserved, centred) instead of the isometric
+  sprite Stepped and Sloped draw.
+- **Tribe name is now editable in Players mode**, the one Identity field
+  0.3's Players mode shipped read-only (it needed a text widget the panel
+  hadn't built yet). Undo/redo alongside every other Players mode edit.
+- **Civilization and Architecture are now editable in Players mode, on
+  every scenario version.** Below version 1.56 both are a fixed-width
+  field; from 1.56 on they're stored as variable-length text, which now
+  resizes correctly when a shorter or longer civilization/architecture
+  name is chosen.
+- **Number of players is now editable in Players mode**, from a spinbox
+  above the player selector. Raising it activates the next players in
+  order, lowering it deactivates the highest-numbered ones; either way the
+  Diplomacy tab's stance grid resizes to match straight away. A handful of
+  older files store their header in a layout DEscape can't resolve, and
+  show this one setting read-only while everything else stays editable.
+
+### Changed
+
+- **New app icon**: a green D on a gray background, replacing the placeholder
+  icon.
+
+### Fixed
+
+- **The Keybinds tab's Default button no longer silently clears another
+  action's binding** when the default it would restore collides with one you
+  set deliberately elsewhere. It now leaves your binding alone and shows an
+  inline warning explaining why.
+- **A genuine zero-edit save (open, touch nothing, Ctrl+S) now writes back
+  byte-for-byte identical to the file on disk**, for every corpus file, not
+  just files whose original compression happened to match Python's zlib
+  output. The write path now reuses the original compressed bytes verbatim
+  when nothing changed, instead of always recompressing the decompressed
+  body (which doesn't reliably reproduce the original compressed stream).
+  Previously, a habitual save on an unaffected file silently rewrote it and
+  churned its `.bak`/`.orig` backups even with no edits made.
+- **Gates now render as whole buildings** with sprites on, instead of just
+  their middle span (a 4-tile gate used to read as a floating portcullis
+  arch with no corner towers or flags).
+- **Diagonal gates now claim their real 6-tile footprint, not their full 4x4
+  bounding box.** Fixes wrong tile-claiming/selection-depth in Stepped and
+  Sloped (a diagonal gate's sprite/pick could land on a tile it doesn't
+  actually occupy); Flat mode is unaffected by design. In-app selection,
+  right-click convert, and picking near a diagonal gate's bbox corners now
+  correctly miss the four "gap" tiles that were never really part of it.
+- **The "in X.XXs" status/log messages after a load or render used to
+  understate real time**, since they only ever covered synchronous prep with
+  the deferred compositing pass (and, for a file open, the parse itself)
+  excluded from the number entirely. A load's message now reports total
+  synchronous time with a parse/prepare breakdown; every re-render message
+  that still only times prep now says "prepared in" rather than "in"; Paint
+  Can and the sprite toggle say "applied in", matching what they actually
+  time. The deferred composite cost itself is exposed separately, under
+  Help > Perf Trace, once a load's first paint completes.
+- **Wall and gate rotation now reads correctly on scenario files whose
+  rotation values carry no shape information at all** (radian-encoded
+  files such as El Cid and the June Event scenario, reported 2026-08-29):
+  a run/corner/junction's shape is now derived from which of its
+  neighbours are also walls or gates, in every render mode. A wall piece
+  with no wall/gate neighbour, and gates themselves, are known remaining
+  exceptions.
+- **Trees, and every other non-creatable object with more than one stored
+  shape (Aqueduct, Granary, statues, decorative doodads, ...), now draw
+  their real variant instead of always the first one.** Oak, with 42
+  possible crowns, used to draw the same one everywhere; a forest now shows
+  real variety. Fixes an out-of-range stored index (mangrove and a few
+  others) landing on the wrong frame instead of wrapping back into range.
+
 ## [0.3] - 2026-09-01
 
 ### Added

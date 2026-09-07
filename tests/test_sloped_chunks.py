@@ -1,5 +1,5 @@
 """Verifies descape.render_cache.SlopedChunkCache -- Phase 6 (Sloped)'s
-counterpart to IsoChunkCache/FlatChunkCache, docs/PLAN_V2_6.md's Track C3.
+counterpart to IsoChunkCache/FlatChunkCache, Track C3.
 Mirrors tests/test_flat_chunks.py's load-bearing checks for the Sloped
 compositor: composite_rect_sloped() must be provably indistinguishable,
 pixel-for-pixel, from render_terrain_sloped() regardless of chunk request

@@ -19,7 +19,7 @@ coarse-mip sweep below always uses.
 
 A second sweep covers tile_px 8 and 16 explicitly across the same pct
 values -- the coarse mips are where the apex gap was visible and where
-nothing has ever been eyeballed (see PLAN_SEAM_APEX.md's Context section).
+nothing has ever been eyeballed.
 Always off-engine, never through a live zoomed viewer: 8 sits below
 settings.GRAPHICS_QUALITY_MIN's own floor of 16 on this map size (a 120x120
 map only ever reaches tile_px 16 via graphics_quality=1, "Potatest"), and
@@ -27,8 +27,7 @@ driving Qt zoom to land on a specific mip level is exactly the fragile
 dance tests/test_mip_viewer.py exists to pin down precisely -- not worth
 reproducing here when composite_rect_iso() is, byte-identically, the exact
 function IsoChunkCache.render_rect() calls per mip chunk (confirmed while
-root-causing the map-extent-outline bug during commit 2, see
-PLAN_SEAM_APEX.md's own commit-2 status writeup).
+root-causing the map-extent-outline bug during commit 2).
 
 Writes build/seam_eyeball/, gitignored. No test reads it. No golden images
 anywhere -- there is no baseline to compare against, only the seam-on vs
@@ -186,8 +185,8 @@ def _stepped_window(elev_step_pct: int, graphics_quality: int):
     settings.set_elev_step_pct()/set_graphics_quality() -- unlike a pytest
     run there is no autouse fixture redirecting CONFIG_PATH here, so the
     real setters would write straight through to this developer's own
-    config.yaml (see PLAN_SEAM_APEX.md's own "local-state mistake"
-    writeup for exactly this happening to an ad-hoc debug snippet)."""
+    config.yaml (this happened once already, to an ad-hoc debug
+    snippet)."""
     _ensure_qapp()
     import descape.settings as settings_module
     from descape.viewer import ViewerWindow
@@ -300,7 +299,7 @@ def generate(out_dir: Path, with_viewer: bool) -> list[Path]:
 
 def check() -> None:
     """--check: Qt-free correctness pass, no PyQt5/ViewerWindow at all.
-    PLAN_SEAM_APEX.md's commit-2 status leaves only ~7s of this plan's
+    Commit 2 left only ~7s of this plan's
     <=20s default-tier budget for commit 3, and tests/test_seam_viewer.py
     already covers the through-viewer path byte-identically -- so this
     renders one small triptych off-engine and asserts the seam actually

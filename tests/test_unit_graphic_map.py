@@ -104,7 +104,7 @@ PIECE_FIELDS = {
 # against reintroducing per-civ/age retargeting -- Incas' own back piece is
 # Andean-style, but the game composites it with the SAME Dark Age
 # main/center/front graphics as every other town centre const, not with
-# Andean-suffixed siblings (see descape-annex-composite.md finding 6).
+# Andean-suffixed siblings.
 KNOWN_PIECES = {
     109: [
         "b_dark_town_center_age1_main_x1",
@@ -117,6 +117,31 @@ KNOWN_PIECES = {
         "b_west_town_center_age2_back_x1",
         "b_dark_town_center_age1_center_x1",
         "b_dark_town_center_age1_front_x1",
+    ],
+}
+
+# unit_const -> (file_name, dx, dy) depth-ordered piece list, read off the
+# real .dat (2026-09-02) via tools/gen_unit_graphic_map.py's class-39
+# "every modern delta" rule -- see that module's "Gates" docstring section.
+# 64/78 are bare directional (NE) gates, whose 4 non-middle pieces come from
+# their two corner-pillar (const 81) annexes; 487 is the X-state composite
+# gate, which carries the same 5 pieces as direct deltas of its own legacy
+# shell, no annexes involved -- cross-checked against 64/78 below since the
+# plan's whole correction rests on these two independent paths agreeing.
+KNOWN_GATE_PIECES = {
+    64: [
+        ("b_west_gate_stone_ne_closed_x1", 0, 0),
+        ("b_west_gate_stone_corner_x1", -72, 36),
+        ("b_west_gate_stone_flag_x1", -72, -84),
+        ("b_west_gate_stone_corner_x1", 72, -36),
+        ("b_west_gate_stone_flag_x1", 72, -156),
+    ],
+    78: [
+        ("b_west_gate_stone_ne_open_x1", 0, 0),
+        ("b_west_gate_stone_corner_x1", -72, 36),
+        ("b_west_gate_stone_flag_x1", -72, -84),
+        ("b_west_gate_stone_corner_x1", 72, -36),
+        ("b_west_gate_stone_flag_x1", 72, -156),
     ],
 }
 
@@ -183,10 +208,15 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
     assert graphics, "table is empty"
     for key, entry in graphics.items():
         assert key.isdigit(), f"key {key!r} is not a unit_const"
-        fields = set(entry) - {"pieces"}
+        fields = set(entry) - {"pieces", "rotation_is_variant"}
         assert fields == set(FIELDS), f"unit_const {key} has fields {sorted(entry)}"
         for field, kind in FIELDS.items():
             assert isinstance(entry[field], kind), f"unit_const {key}.{field}"
+        if "rotation_is_variant" in entry:
+            assert entry["rotation_is_variant"] is True, (
+                f"unit_const {key}: rotation_is_variant is omitted when false, "
+                f"never written as false"
+            )
         if "pieces" in entry:
             assert isinstance(entry["pieces"], list) and len(entry["pieces"]) >= 2, (
                 f"unit_const {key}: pieces must be the whole composite, parent included"
@@ -249,3 +279,68 @@ def test_counts_are_positive(graphics):
         assert entry["graphic_id"] >= 0, f"unit_const {key}"
         assert entry["angle_count"] >= 1, f"unit_const {key}"
         assert entry["frame_count"] >= 1, f"unit_const {key}"
+
+
+def test_bare_directional_gates_agree_with_the_x_state_composites_own_deltas(graphics):
+    """64/78's annex-derived pieces (two corner-pillar annexes, each resolved
+    through its own multi-delta walk) reproduce const 487's direct-delta
+    piece list exactly -- the plan's central correction, that a bare gate's
+    annexes and an X-state gate's direct deltas are two paths to the SAME
+    real pieces, not two different mechanisms. See
+    gen_unit_graphic_map.py's "Gates" docstring section."""
+    x_state_non_middle = {
+        (p["file_name"], p["dx"], p["dy"])
+        for p in graphics["487"]["pieces"]
+        if p["file_name"] != "b_west_gate_stone_ne_closed_x1"
+    }
+    for unit_const, expected in KNOWN_GATE_PIECES.items():
+        entry = graphics[str(unit_const)]
+        got = [(p["file_name"], p["dx"], p["dy"]) for p in entry["pieces"]]
+        assert got == expected, f"unit_const {unit_const}: {got}"
+        non_middle = {t for t in got if t[0] != entry["file_name"]}
+        assert non_middle == x_state_non_middle, (
+            f"unit_const {unit_const} disagrees with const 487's own direct deltas"
+        )
+
+
+def test_bare_corner_pillar_carries_its_own_flag(graphics):
+    """A standalone corner-pillar const (95, 81, ...) is not itself a gate
+    but is class 39, and its own legacy shell has the same first-match-drops-
+    the-flag problem a bare gate's annex does -- see the "Gates" docstring
+    section's `_resolve_all_modern_deltas` rationale."""
+    entry = graphics["95"]
+    got = [(p["file_name"], p["dx"], p["dy"]) for p in entry["pieces"]]
+    assert got == [
+        ("b_west_gate_stone_corner_x1", 0, 0),
+        ("b_west_gate_stone_flag_x1", 0, -120),
+    ]
+
+
+def test_sea_gate_drops_the_underwater_duplicate_offset(graphics):
+    """1381/1385/1389/1393's root deltas to "sides" and "...underwater" share
+    one offset; the dedupe rule keeps "sides" (first in the delta list, and
+    the one with a real PLAYERCOLOR layer) and drops "underwater"."""
+    for unit_const in (1381, 1385, 1389, 1393):
+        entry = graphics[str(unit_const)]
+        got = [(p["file_name"], p["dx"], p["dy"]) for p in entry["pieces"]]
+        assert got == [
+            ("b_scen_gate_sea_sides_x1", 0, 0),
+            ("b_scen_gate_sea_flag_x1", -3, -85),
+        ], unit_const
+
+
+def test_gate_pieces_are_all_non_rotating(graphics):
+    """Mirrors the generator's own SystemExit guard (every emitted class-39
+    piece must have angle_count == 1) so a regression is caught here too,
+    without needing a real .dat to re-run the generator."""
+    for unit_const in (64, 78, 487, 95, 81, 1381, 1385, 1389, 1393):
+        for piece in graphics[str(unit_const)]["pieces"]:
+            assert piece["angle_count"] == 1, (unit_const, piece["file_name"])
+
+
+def test_non_gate_composite_scope_is_unaffected_by_the_gate_rule(graphics):
+    """Regression guard on the Dock shell path (and every other ordinary
+    legacy-shell resolution): the class-39 "every modern delta" rule must
+    stay scoped to class 39 and never leak a "pieces" key onto an unrelated
+    single-graphic entry."""
+    assert "pieces" not in graphics["45"]  # Dock, resolved via its own shell delta

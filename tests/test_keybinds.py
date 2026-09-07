@@ -59,9 +59,9 @@ def test_redo_default_keybind_is_ctrl_y() -> None:
 
 
 def test_assigning_a_taken_keybind_auto_clears_the_conflict_and_warns() -> None:
-    """Pins the mitigation decided 2026-08-28 (TODO.md's keybind-collision
-    item): retargeting one action onto a sequence another action already
-    owns auto-clears the other action rather than leaving both dead. Also
+    """Pins the mitigation decided 2026-08-28: retargeting one action onto
+    a sequence another action already owns auto-clears the other action
+    rather than leaving both dead. Also
     pins the underlying Qt behaviour the mitigation exists to prevent -- two
     QActions sharing a sequence fire NEITHER on press -- not just that the
     settings dict ends up collision-free: a dict-only assertion would pass
@@ -115,12 +115,74 @@ def test_assigning_a_taken_keybind_auto_clears_the_conflict_and_warns() -> None:
         QApplication.processEvents()
         # Only mode_view's (now "Ctrl+E") shortcut should fire -- mode_terrain's
         # was auto-cleared, not left to collide silently. Had the collision
-        # gone unhandled, both actions would still share "T" and Qt's
+        # gone unhandled, both actions would still share "Ctrl+E" and Qt's
         # ambiguous-shortcut-overload behaviour would fire NEITHER, which
         # would read here as {"view": 0, "terrain": 0} -- indistinguishable
         # from a broken test setup, not a false pass, since that is not the
         # asserted value.
         assert fired == {"view": 1, "terrain": 0}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_default_button_refuses_to_clear_another_actions_custom_binding() -> None:
+    """2026-09-02 decision: clicking Default is a much weaker statement than
+    typing a sequence, and must not outrank a binding the user chose on
+    purpose. mode_terrain defaults to "Ctrl+E"; custom-binding mode_view onto
+    it first (auto-clearing mode_terrain, which is the existing, correct
+    behaviour covered above) sets up the collision this test targets."""
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            dialog._keybind_edits["mode_view"].setKeySequence(QKeySequence("Ctrl+E"))
+            assert settings.get_keybind("mode_view") == "Ctrl+E"
+            assert settings.get_keybind("mode_terrain") == ""
+            terrain_sequence_before = dialog._keybind_edits["mode_terrain"].keySequence()
+
+            dialog._reset_keybind("mode_terrain")
+
+            assert settings.get_keybind("mode_view") == "Ctrl+E"
+            assert settings.get_keybind("mode_terrain") == ""
+            assert dialog._keybind_edits["mode_terrain"].keySequence() == terrain_sequence_before
+            assert dialog._keybind_warning_label.text() == (
+                "'Ctrl+E' is assigned to View Mode -- Terrain Mode's default was not restored."
+            )
+        finally:
+            dialog.close()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_default_button_still_restores_an_uncontested_default() -> None:
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            assert settings.get_keybind("mode_terrain") == "Ctrl+E"
+            dialog._keybind_edits["mode_terrain"].setKeySequence(QKeySequence("Ctrl+F9"))
+            assert settings.get_keybind("mode_terrain") == "Ctrl+F9"
+
+            dialog._reset_keybind("mode_terrain")
+
+            assert settings.get_keybind("mode_terrain") == "Ctrl+E"
+            assert dialog._keybind_edits["mode_terrain"].keySequence() == QKeySequence("Ctrl+E")
+        finally:
+            dialog.close()
     finally:
         window.edit_history.mark_saved()
         window.close()

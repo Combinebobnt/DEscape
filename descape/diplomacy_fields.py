@@ -230,31 +230,8 @@ def verify_diplomacy_block(loaded: LoadedScenario) -> bool:
     return True
 
 
-def defined_player_ids(loaded: LoadedScenario) -> list[int]:
-    """Player numbers (1..NUM_PLAYERS) this file marks active, in ascending
-    order, read from DataHeader.player_data_1[0:NUM_PLAYERS].active
-    directly rather than through FileHeader.player_count, which lives in
-    header_bytes -- a buffer this app writes back verbatim and cannot derive
-    a count from independently. Verified working on every examples/ file, including
-    pre-1.53 versions where DataHeader.gaia_player_index does not yet exist,
-    since this reader does not depend on it.
-
-    Not assumed to be a contiguous prefix of 1..8: every examples/ file
-    measured happens to be one, but this reads each slot's own flag rather
-    than leaning on that pattern holding for every file DEscape might open.
-
-    Consolidate into descape/player_fields.py once TODO.md's "Player
-    options write path" item lands and owns editing this count, rather than
-    leaving this reader duplicated between the two feature areas.
-    """
-    player_data_1 = loaded._scenario.sections["DataHeader"].retriever_map["player_data_1"].data
-    return [
-        i + 1 for i, entry in enumerate(player_data_1[:NUM_PLAYERS]) if entry.retriever_map["active"].data
-    ]
-
-
-def defined_player_count(loaded: LoadedScenario) -> int:
-    """Number of players this file defines (2..8) -- see
-    defined_player_ids() for the read path and why DataHeader rather than
-    FileHeader.player_count."""
-    return len(defined_player_ids(loaded))
+# defined_player_ids()/defined_player_count() used to live here. They moved
+# to descape/player_fields.py in step 3e, as that step's plan called for:
+# Number of Players is now editable, and the reader belongs beside the write
+# path that changes it, with a `pending` argument this module had no way to
+# express. Import them from there.

@@ -47,3 +47,9 @@ genieutils-py
 # tools/bench_iso_backend.py. Not a runtime dependency: the actual decision
 # was to build Phase 1 onward in pure numpy, not on top of this extension.
 cython
+
+# PyInstaller builds the frozen onedir bundle (packaging/descape.spec). Not a
+# runtime dependency of anything a normal user (or `python3 map_editor.py`)
+# runs from source. Pin lives in packaging/requirements-build.txt so CI can
+# install the build set without the rest of this dev set.
+-r packaging/requirements-build.txt

@@ -1,0 +1,9 @@
+# Build-only dependency for packaging/descape.spec. Not needed to run the
+# viewer from source, and deliberately kept separate from requirements-dev.txt
+# so CI can install just this without pulling in cython/genieutils-py, which
+# would red a packaging job for reasons unrelated to packaging.
+#
+# Pinned to the version packaging/descape.spec was verified against locally
+# (Stage 1, 2026-09-03) -- a PyInstaller minor bump changes bundle layout and
+# hook behavior.
+pyinstaller==6.22.2
