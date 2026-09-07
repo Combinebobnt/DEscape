@@ -38,7 +38,15 @@ jobs:
 
       - name: Install Qt platform plugin system libs (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 xvfb
+        # The xcb plugin dlopens several of these at runtime and fails with
+        # "even though it was found" (not a missing-file error) if any are
+        # absent -- the hosted ubuntu-22.04 image doesn't ship them all.
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libegl1 libgl1 libxkbcommon-x11-0 xvfb
+          libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+          libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+          libxcb-xkb1
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r packaging/requirements-build.txt
