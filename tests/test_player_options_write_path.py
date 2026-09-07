@@ -601,6 +601,7 @@ def test_a_count_edit_round_trips_through_both_buffers(tmp_path: Path) -> None:
     assert _header_count(out) == 6
 
 
+@pytest.mark.corpus
 def test_lowering_the_count_deactivates_the_top_players(tmp_path: Path) -> None:
     """Not just a same-or-growing check: the corpus's own counts run 2..8,
     and a writer that only ever set flags to 1 would pass a grow-only
@@ -617,6 +618,7 @@ def test_lowering_the_count_deactivates_the_top_players(tmp_path: Path) -> None:
     assert _header_count(out) == 2
 
 
+@pytest.mark.corpus
 def test_a_count_edit_and_a_str16_civ_edit_in_one_save_both_land(tmp_path: Path) -> None:
     """The collision the civ/architecture plan's Step B ordering does NOT
     give for free: player_data_1_splice() rebuilds the whole array, and

@@ -47,6 +47,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python -m pip install pytest pytest-qt ruff==0.16.3
+          # tests/test_lint.py hardcodes .venv/bin/ruff (the local dev
+          # layout); the runner has no .venv, so point that path at the
+          # ruff pip just installed instead of building a whole venv.
+          mkdir -p .venv/bin
+          ln -s "$(command -v ruff)" .venv/bin/ruff
           xvfb-run -a python -m pytest
 
       - name: Build frozen bundle
