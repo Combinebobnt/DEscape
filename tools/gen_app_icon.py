@@ -22,7 +22,7 @@ OUT_PATH = ROOT / "descape" / "app_icon.png"
 SIZE = 256
 
 _BG = (90, 90, 90, 255)
-_FG = (40, 160, 70, 255)
+_FG = (60, 255, 100, 255)
 
 
 def render() -> Image.Image:
