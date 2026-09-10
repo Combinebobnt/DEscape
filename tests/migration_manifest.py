@@ -328,12 +328,18 @@ MANIFEST: list[ManifestEntry] = [
     ),
     ManifestEntry(
         "verify_copy_paste", "check_file", "path", ("corpus", "gui"), "",
-        "Drives a real ViewerWindow headlessly: Copy/Paste disabled on Pan; terrain copy/paste "
-        "round trip with layer reset; elevation copy/paste with FORCED neighbor propagation "
-        "(source set far enough from the destination's neighbor to trigger "
-        "MapManager._elevation_tile_recursion); both undoable; paste disabled/no-op on a "
-        "clipboard-kind/tool mismatch. The one script whose CLI deliberately has no examples/ "
-        "default -- carried forward by this suite's --scenario-dir option.",
+        "Rewritten for phase 2.8's region Select/Copy/Paste. Drives a real ViewerWindow "
+        "headlessly: Copy/Paste disabled with no region/clipboard regardless of the active tool; "
+        "terrain region round trip with layer reset; elevation region round trip with FORCED "
+        "neighbor propagation (source set far enough from the destination's neighbor to trigger "
+        "MapManager._elevation_tile_recursion); units region round trip (rotation passed through "
+        "verbatim, multi-owner undo); one undo step for a terrain+elevation+units paste "
+        "(CompositeDiffRecord); the Elevation paste checkbox honoured on a non-square map. Skips "
+        "(not fails) the units checks on a pre-1.55 file -- UnitEditModel.add() unconditionally "
+        "assigns caption_string_id/caption_string in Unit.__init__, which the installed library "
+        "raises UnsupportedAttributeError for on any older version; a pre-existing bug (Place Unit "
+        "has it too), not a phase 2.8 regression. The one script whose CLI deliberately has no "
+        "examples/ default -- carried forward by this suite's --scenario-dir option.",
     ),
 ]
 

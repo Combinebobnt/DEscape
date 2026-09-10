@@ -16,8 +16,10 @@ cover for Stepped:
      fixture (a flat one exercises no resample code -- see
      tests/test_sloped_pick.py's own delegation-guard trap).
   3. Mark / sprite / pick agree on one unit's height on non-flat ground.
-  4. Farms keep their plain mark in Sloped even with sprites on
-     (with_farms=False's suppression, not a paint-time skip).
+  4. Farms drape as real terrain in Sloped when sprites are on (Track C6,
+     matching Stepped), and fall back to their plain mark when sprites are
+     off (the recorded residual, still exercised via an explicit
+     with_farms=False call).
   5. F2's one-ring dilation: an edit on a NEIGHBOUR of a sprite's own tile
      must still widen the dirty bbox to cover it, since a Sloped anchor
      reads its own tile's four corners rather than its centre tile alone.
@@ -47,6 +49,7 @@ from descape.render import (
 )
 from descape.render_cache import SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.fakes import FakeScenario, SyntheticTile
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 
@@ -156,18 +159,31 @@ def _make_cache(scenario, **kwargs) -> SlopedChunkCache:
 
 
 def test_flat_map_byte_identical_with_sprites(sprite_install):
-    """Only exact for a map with no FARM units: Sloped's own call always
-    passes with_farms=False (the deferral), Stepped's default is True, so a
-    farm unit would resolve differently on each side and this comparison
-    would fail for a reason unrelated to the anchor-height rewrite this test
-    exists to catch. CONST here is never a farm const, so this fixture is
-    unaffected -- see test_farms_stay_marks_in_sloped for that behaviour."""
+    """CONST here is never a farm const, so with_farms's default (True on
+    both sides as of Track C6) never enters into it either way."""
     scenario = _flat_scenario_with_unit(elevation=2, ux=50.5, uy=50.5)
     sloped, _e, _c, sloped_proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
     stepped, _e2, stepped_proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
     assert sloped_proj.canvas_w == stepped_proj.canvas_w
     assert sloped.shape == stepped.shape
     assert not np.array_equal(sloped, np.zeros_like(sloped)), "fixture painted nothing -- the sprite never resolved"
+    assert np.array_equal(sloped, stepped)
+
+
+def test_flat_map_byte_identical_with_a_farm(sprite_install):
+    """Track C6's own flat-map byte-identity oracle: with with_farms now
+    defaulting True on both sides, a FARM unit -- previously carved out of
+    the check above precisely because Sloped forced with_farms=False -- must
+    render identically too. On a flat map every corner of every tile is
+    equal, so sloped_quad_indices/sloped_tile_edge_indices degenerate to
+    diamond_indices/tile_edge_indices exactly (their own delegation
+    contract), which is what makes this an EXACT match, not merely close."""
+    scenario = _flat_scenario_with_unit(elevation=2, ux=50.5, uy=50.5, unit_const=FARM_CONST)
+    sloped, _e, _c, sloped_proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    stepped, _e2, stepped_proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
+    assert sloped_proj.canvas_w == stepped_proj.canvas_w
+    assert sloped.shape == stepped.shape
+    assert not np.array_equal(sloped, np.zeros_like(sloped)), "fixture painted nothing -- the farm never resolved"
     assert np.array_equal(sloped, stepped)
 
 
@@ -214,28 +230,100 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
     assert implied_rise == mark_rise
 
 
-def test_farms_stay_marks_in_sloped():
-    """Sloped has no warped-outline path for a farm foundation yet
-    (_render_tile_sloped has no terrain_override at all), so
-    sprite_draws_by_anchor() must be called with with_farms=False here --
-    a paint-time skip alone would make a farm invisible instead of
-    deferred, since _paint_tile_and_units_sloped's skip_ids gate has no
-    farm-terrain-override branch to fall into (unlike Stepped's
-    _paint_tile_and_units_iso)."""
+def test_farms_drape_as_terrain_in_sloped():
+    """Track C6's replacement for the deferral this test used to pin
+    (test_farms_stay_marks_in_sloped, retired -- Sloped now has a
+    warped-outline path, sprite_draws_by_anchor's with_farms default flipped
+    to True at every Sloped call site, and this goes red if that ever
+    reverts). With sprites on, a farm must resolve into farm_by_tile (so
+    render._paint_tile_and_units_sloped's drape branch actually runs) and
+    into skip_ids (so it never also falls through to the plain-diamond mark
+    path)."""
     scenario = _flat_scenario_with_unit(elevation=0, ux=30.5, uy=30.5, unit_const=FARM_CONST)
     elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
 
-    # with_farms=True (Stepped's own default) DOES resolve this fixture as a
-    # farm -- proves the fixture itself is non-vacuous before trusting the
-    # False arm below.
-    with_farms_true = render.sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
-    assert with_farms_true.farm_by_tile, "fixture is vacuous -- FARM_CONST never resolves a foundation terrain"
+    sprites = render.sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
+    assert sprites.farm_by_tile, "fixture is vacuous -- FARM_CONST never resolves a foundation terrain"
+    assert sprites.skip_ids, "a draped farm must be skipped by the plain-mark path, not double-drawn"
 
-    sprites = render.sprite_draws_by_anchor(
+    # The sprites-off residual: with_farms=False (still an explicit opt-out,
+    # matching _paint_tile_and_units_sloped's own sprites-off fallback to
+    # the plain mark) must never populate farm_by_tile.
+    sprites_off = render.sprite_draws_by_anchor(
         scenario, proj, elevations, corner_rise=corner_rise, with_farms=False
     )
-    assert sprites.farm_by_tile == {}, "with_farms=False must never populate farm_by_tile"
-    assert not sprites.skip_ids, "a farm's unit must not be skipped when it has no sprite path to replace its mark"
+    assert sprites_off.farm_by_tile == {}, "with_farms=False must never populate farm_by_tile"
+    assert not sprites_off.skip_ids, "a farm's unit must not be skipped when it has no sprite path to replace its mark"
+
+
+def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_spot(sprite_install):
+    """Regression for the farm-drape plan's own named silent-failure trap:
+    the perimeter stroke must use _render_tile_sloped's placement
+    convention (elevation 0, corner_rise, -d_min folded into base_y), NOT
+    _render_tile_iso's elevation-based one -- a copy-paste of the Stepped
+    version would compile, run, and land the outline in the wrong place
+    with no error.
+
+    A one-tile-deep ISOLATED pit is the fixture, not an ordinary ramp: a
+    farm corner tile sitting one level below its own uniformly-higher
+    surroundings (legal under the +-1-neighbour invariant) is the one shape
+    where `d_min` (the min of a tile's 4 corners, which every corner is
+    pulled up towards by a taller neighbour under SLOPE_CORNER_RULE="max")
+    provably exceeds that tile's OWN elevation -- an ordinary multi-tile
+    ramp never produces this for any of a farm's OWN perimeter tiles, since
+    a solid contiguous footprint always has at least one corner shared with
+    another same-elevation tile in the block, which keeps d_min == the
+    tile's own elevation there and made an earlier draft of this test pass
+    under the WRONG placement by coincidence.
+
+    Confirmed sensitive by hand against exactly this fixture: swapping the
+    oracle's placement to `tile_screen_origin(tx, ty, elevations[ty, tx],
+    proj)` (`_render_tile_iso`'s own elevation-based convention) shifts the
+    checked pixels by 8px (one elev_step) and the assertion below goes red;
+    an ordinary ramp fixture does NOT reproduce that, which is exactly why
+    this fixture replaced one."""
+    mm_w = mm_h = 20
+    tiles = []
+    for y in range(mm_h):
+        for x in range(mm_w):
+            tiles.append(SyntheticTile(x=x, y=y, elevation=0 if (x, y) == (9, 9) else 1))
+    scenario = FakeScenario(mm_w, mm_h, tiles, [[]] * 1 + [[Unit(10.5, 10.5, FARM_CONST)]] + [[]] * 7)
+    elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
+    tile_px = tile_pixels_for_map(mm_w, mm_h)
+    tx, ty = 9, 9  # the pit tile itself: the farm's own NW corner tile
+
+    sprites = render.sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
+    assert (tx, ty) in sprites.farm_by_tile, "fixture painted nothing at the pit tile -- the farm never resolved there"
+    _terrain_id, outline_color, edge_mask = sprites.farm_by_tile[(tx, ty)]
+    assert edge_mask, "the pit tile must be on the farm's own perimeter (a nonzero edge_mask) or this proves nothing"
+
+    d_nw = int(corner_rise[ty, tx])
+    d_ne = int(corner_rise[ty, tx + 1])
+    d_sw = int(corner_rise[ty + 1, tx])
+    d_se = int(corner_rise[ty + 1, tx + 1])
+    own_elev_px = int(elevations[ty, tx]) * proj.elev_step
+    assert min(d_nw, d_ne, d_sw, d_se) > own_elev_px, (
+        "fixture is not a genuine isolated pit -- d_min must exceed the tile's own elevation, "
+        "or the elevation-based mutation would coincidentally land in the same place"
+    )
+
+    img, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    base_x, base_y, _dy, _dx, _sy, _sx, _uv = render._sloped_tile_quad(
+        tx, ty, tile_px, proj, d_nw, d_ne, d_sw, d_se
+    )
+
+    checked = 0
+    for bit, side in render._FARM_EDGE_BITS:
+        if not (edge_mask & bit):
+            continue
+        edge_y, edge_x = ig.sloped_tile_edge_indices(tile_px, side, d_nw, d_ne, d_sw, d_se)
+        rows, cols = base_y + edge_y, base_x + edge_x
+        assert np.all(np.all(img[rows, cols] == outline_color, axis=1)), (
+            f"tile ({tx}, {ty}) side={side} does not show the outline colour at its own "
+            "warped placement -- the stroke landed somewhere else"
+        )
+        checked += 1
+    assert checked > 0, "the pit tile's edge_mask had no set bits -- the check would be vacuous"
 
 
 def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):

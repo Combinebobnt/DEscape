@@ -38,10 +38,18 @@ what each check actually covers is recorded rather than hoped for:
   nowhere near the 0.5 `round()` would need to cross the boundary, so the clamp
   is an unreachable guard rather than a pinned behaviour. Kept anyway, for the
   case the mutation above demonstrates.
+- Revert `icon_for()` to the iso facing zero point (drop its
+  `FLAT_ANGLE_ZERO_OFFSET_DEG` arguments and let the default stand): RED, 4 of
+  4, via the facing check at the bottom of this file. Recorded 2026-09-08, and
+  it is the arm that matters for that change: every constant-level property in
+  tests/test_unit_sprites.py stays green under it, because they exercise
+  `angle_index`/`_frame_for` directly and never ask whether anything calls them
+  with the flat value.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -60,6 +68,18 @@ CHUNK = 128
 # centred on its clipped rect instead of on its whole footprint.
 BIG_CONST = CONST + 1
 BIG_SPAN = (3, 3)
+
+# A third const for the facing-offset wiring check, and its angle_count is the
+# whole point of it being separate. The two above store 4 angles, where 45
+# degrees is half a step, so angle_index() discards the iso offset and Flat and
+# Stepped resolve the SAME frame. A wiring check on either would be green
+# with icon_for() still passing the iso default. 16 is where they diverge, and
+# is also the angle_count that dominates the real install (1,163 graphics).
+# Non-composite on purpose: _assembled_native() then returns the single piece
+# as-is, so the icon's pixels are that one frame's, uncomposited.
+ANGLE_CONST = CONST + 2
+ANGLE_FILE = "t_facing_x1"
+ANGLE_COUNT = 16
 
 
 @dataclass
@@ -123,6 +143,11 @@ def sprite_install(tmp_path, monkeypatch):
     (graphics / f"{FILE_NAME}.sld").write_bytes(
         build_sld(4, canvas=unit_sprites.NATIVE_TILE_W)
     )
+    # build_sld() varies each frame's colour by its own index, so which angle a
+    # rotation selects is readable straight off the icon's pixels.
+    (graphics / f"{ANGLE_FILE}.sld").write_bytes(
+        build_sld(ANGLE_COUNT, canvas=unit_sprites.NATIVE_TILE_W)
+    )
 
     def entry(const):
         piece = {"unit_id": const, "file_name": FILE_NAME, "angle_count": 4,
@@ -131,8 +156,11 @@ def sprite_install(tmp_path, monkeypatch):
         return {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 4,
                 "mirroring_mode": 6, "frame_count": 1, "pieces": [piece, below]}
 
+    facing = {"graphic_id": 2, "file_name": ANGLE_FILE, "angle_count": ANGLE_COUNT,
+              "mirroring_mode": 6, "frame_count": 1}
     monkeypatch.setattr(
-        unit_sprites, "graphic_map", lambda: {CONST: entry(CONST), BIG_CONST: entry(BIG_CONST)}
+        unit_sprites, "graphic_map",
+        lambda: {CONST: entry(CONST), BIG_CONST: entry(BIG_CONST), ANGLE_CONST: facing},
     )
     monkeypatch.setitem(render.BUILDING_TILE_SPANS, BIG_CONST, BIG_SPAN)
     asset_source.set_install_path_override(tmp_path)
@@ -361,3 +389,54 @@ def test_turning_sprites_on_live_matches_a_cache_built_with_them(sprite_install)
     built_on = render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     assert np.array_equal(_stitched(cache), _stitched(built_on))
     assert not np.array_equal(_stitched(cache), _full(scn, with_sprites=False))
+
+
+# --- Flat's own facing zero point -------------------------------------
+
+
+def _frame_colour(frame_index: int) -> tuple[int, int, int]:
+    """The solid RGB build_sld() gives that frame. Read through
+    _native_frame(), i.e. the real decode, so a frame the file does not
+    actually hold shows up as a crash rather than as a plausible expectation."""
+    main = unit_sprites._native_frame(ANGLE_FILE, frame_index)[0]
+    return tuple(int(v) for v in main[0, 0, :3])
+
+
+@pytest.mark.parametrize("rotation", [0.0, math.pi / 2, math.pi, 3 * math.pi / 2])
+def test_a_flat_icon_draws_the_frame_the_flat_zero_point_selects(sprite_install, rotation):
+    """**The wiring check for FLAT_ANGLE_ZERO_OFFSET_DEG, and the only test
+    that goes red if icon_for() stops passing it.** Everything in
+    tests/test_unit_sprites.py exercises angle_index()/_frame_for() directly
+    with the constant handed in, so all of it stays green while Flat still
+    renders at the isometric zero point, which is exactly the bug this
+    change fixes.
+
+    The expectation is DERIVED from the constant rather than hardcoded or
+    monkeypatched, so re-measuring the offset against the game moves this test
+    with it and no clear_caches() dance is needed. team_index 0 is GAIA, whose
+    tint is an identity multiply, so the icon's pixels are the decoded frame's
+    own colour with no tint arithmetic in between.
+
+    All four cardinals, because the shift is a rotation of the whole angle set:
+    a mutation that happened to agree at one of them is not a fix.
+    """
+    iso_frame = unit_sprites.angle_index(rotation, ANGLE_COUNT)
+    flat_frame = unit_sprites.angle_index(
+        rotation, ANGLE_COUNT, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG
+    )
+    assert iso_frame != flat_frame, (
+        f"the two zero points pick the same frame at rotation {rotation}, so this "
+        f"cannot tell them apart"
+    )
+    assert _frame_colour(flat_frame) != _frame_colour(iso_frame), (
+        "the fixture's two frames are the same colour, so the pixels below prove nothing"
+    )
+
+    icon = unit_sprites.icon_for(ANGLE_CONST, rotation, 0, 32, 32)
+    assert icon is not None, "the icon resolved to nothing, so this proves nothing"
+    got = tuple(int(v) for v in icon.rgba[0, 0, :3])
+    assert got == _frame_colour(flat_frame), (
+        f"rotation {rotation} drew frame colour {got}; the flat zero point selects frame "
+        f"{flat_frame} ({_frame_colour(flat_frame)}) and the isometric one frame "
+        f"{iso_frame} ({_frame_colour(iso_frame)})"
+    )

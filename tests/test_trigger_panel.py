@@ -1200,6 +1200,33 @@ def test_execution_order_readout_states() -> None:
         window.close()
 
 
+def test_a_pending_exec_order_flip_updates_the_triggers_readout() -> None:
+    """The mirror image of what _pending_option_values() already solves for
+    Map Options: flipping the flag there and switching to Triggers mode must
+    show the *pending* mode, not the file's stored byte -- otherwise the
+    status line asserts the old execution mode as fact."""
+    window = _window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Map Options")
+        widget = window.map_options_panel.widget_for("legacy_exec_order")
+        before = window.map_options_panel.current_values()["legacy_exec_order"]
+        widget.setCurrentIndex(widget.findData(1 - before))
+        assert window.trigger_edits is not None, "fixture assumption: the flip built a model"
+
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        expected = (
+            "Executes in trigger-ID order (legacy) - unsaved change."
+            if (1 - before)
+            else "Executes in display order - unsaved change."
+        )
+        assert expected in panel.status.text(), panel.status.text()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_move_buttons_are_disabled_at_the_ends_of_display_order() -> None:
     window = _triggers_window()
     try:

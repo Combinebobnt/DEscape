@@ -127,6 +127,41 @@ MAX_SPRITE_REACH_DOWN = 316   # b_scen_gate_city_flag_x1 (piece, dx=0 dy=-312)
 ANGLE_ZERO_OFFSET_DEG = -45.0
 ANGLE_DIRECTION = 1
 
+# Flat's non-isometric counterpart, and it is a MEASURED zero rather than the
+# absence of a correction. Named, and threaded as a parameter with two values,
+# rather than written as "Flat just skips the offset": the test that pins it
+# derives its expectation from this value, and a flag would leave nothing to
+# re-measure against.
+#
+# **Geometric derivation.** iso_geometry.tile_screen_origin() is
+# sx = origin_x + (x+y)*half_w, sy = origin_y + (y-x)*half_h, so world +x
+# projects to screen up-right and +y to down-right: unsquashed, the iso screen
+# is the world rotated -45 degrees. Flat's top-down grid instead puts +x at 0
+# degrees and +y at +90, so Flat is iso plus 45 degrees of apparent facing, and
+# since the index walks clockwise as rotation grows (ANGLE_DIRECTION == 1) that
+# is +45 in the same units as the offset: -45 + 45 = 0.
+#
+# **Empirical**, decoded from the real install (u_shp_war_galley_x1, const 21,
+# angle_count 16, frame_count 1, so frame index == angle index). Per-frame
+# principal-axis angle of the alpha mask, clockwise from screen-right, y down,
+# mod 180: index 0 measures 179.42 and index 4 measures 89.85. So at offset 0.0
+# a rotation of 0 reads screen-horizontal (flat +x) and pi/2 reads
+# screen-vertical (flat +y), both exact. The -90.0 candidate is ruled out by
+# the same table: it would stand the boat upright at rotation 0.
+#
+# **The sign is pinned to mod 360, not just mod 180**, which matters because a
+# principal axis is direction-blind. Closed separately by decoding
+# u_cav_knight_idleC_x1: angle 0's horse faces screen-RIGHT and angle 8 faces
+# LEFT. That is the check worth having done, because ANGLE_ZERO_OFFSET_DEG's
+# own comment above records a confident first derivation of exactly this sign
+# being wrong and costing a round trip to a human with the game open.
+#
+# The residual is the iso camera's own 2:1 vertical squash, which no frame
+# choice removes: exact at the four cardinals, off by at most 18.43 degrees at
+# the diagonals (measured 28.01 against 45 at rotation pi/4).
+# tools/verify_flat_facing.py re-measures all of the above against an install.
+FLAT_ANGLE_ZERO_OFFSET_DEG = 0.0
+
 # resources/_common/palettes/spritecolors.json's TeamColors block, as RGB.
 # Index is the scenario's own player id: 0 is GAIA, 1..8 the real players.
 # GAIA's (255, 255, 255) multiplies to identity, so a GAIA unit needs no
@@ -322,7 +357,9 @@ def graphic_map() -> dict[int, dict]:
     return {int(k): v for k, v in data.items()}
 
 
-def angle_index(rotation: float, angle_count: int) -> int:
+def angle_index(
+    rotation: float, angle_count: int, offset_deg: float = ANGLE_ZERO_OFFSET_DEG
+) -> int:
     """Which stored angle a rotation (radians) selects.
 
     Real rotations are NOT quantized -- across the example corpus 20,122
@@ -331,6 +368,17 @@ def angle_index(rotation: float, angle_count: int) -> int:
     entirely (7.0 appears 574 times). So this rounds and wraps rather than
     looking anything up.
 
+    `offset_deg` defaults to the isometric zero point, so every caller that
+    predates it is byte-identical. Flat's non-isometric render passes
+    FLAT_ANGLE_ZERO_OFFSET_DEG instead, and icon_for() is its only entry point.
+
+    **The two offsets agree for any angle_count that is not a multiple of 8,
+    and that agreement is a coincidence of their values, not an invariant.**
+    The whole-step guard below skips a fractional iso offset, and Flat's offset
+    is genuinely zero, so both resolve the same index there for different
+    reasons. Re-measure FLAT_ANGLE_ZERO_OFFSET_DEG to something non-zero and
+    the two diverge on exactly those angle_counts.
+
     GAIA is the caller's problem, not this function's: a GAIA object's
     `rotation` is a doodad graphic-variant index, not an angle (see AGENTS.md's
     hard rule), so it must never be passed here.
@@ -338,14 +386,14 @@ def angle_index(rotation: float, angle_count: int) -> int:
     if angle_count <= 1:
         return 0
     steps = rotation / (2 * math.pi) * angle_count
-    # ANGLE_ZERO_OFFSET_DEG is converted into THIS graphic's own step size --
-    # see its comment for why a fixed index offset cannot do this job. Kept
-    # outside the ANGLE_DIRECTION product deliberately: direction is how the
-    # index walks as rotation grows, the offset is a fixed rotation of the
-    # whole set, and multiplying the two would silently flip the correction if
-    # the direction were ever changed.
-    # The offset applies ONLY when it lands on a whole stored step -- i.e. when
-    # angle_count is a multiple of 8, since the offset is 45 degrees. That is
+    # The offset is converted into THIS graphic's own step size. See
+    # ANGLE_ZERO_OFFSET_DEG's comment for why a fixed index offset cannot do
+    # this job. Kept outside the ANGLE_DIRECTION product deliberately:
+    # direction is how the index walks as rotation grows, the offset is a
+    # fixed rotation of the whole set, and multiplying the two would silently
+    # flip the correction if the direction were ever changed.
+    # The offset applies ONLY when it lands on a whole stored step, which for
+    # the iso -45 means an angle_count that is a multiple of 8. That is
     # what the offset MEANS, not a special case for any one graphic: a
     # zero-point correction rotates which stored angle a rotation selects, so
     # if it does not map stored angles onto stored angles then the graphic's
@@ -362,7 +410,7 @@ def angle_index(rotation: float, angle_count: int) -> int:
     # frames are shape variants rather than facings, so rotation_is_variant()
     # diverts them to variant_index() -- but the skip above is general and
     # stays.
-    offset_steps = ANGLE_ZERO_OFFSET_DEG / 360.0 * angle_count
+    offset_steps = offset_deg / 360.0 * angle_count
     if offset_steps != int(offset_steps):
         offset_steps = 0.0
     # Rounds the SUM, not each term: the offset is exact only when angle_count
@@ -470,6 +518,15 @@ def cliff_consts() -> frozenset[int]:
 # the wider set was measured and rejected (96.9%), so this stays a hand-kept
 # list rather than "every class-39 const" until a generated replacement
 # derives and validates this from the .dat's own unit.class_ field instead.
+#
+# **Known consequence, accepted rather than fixed** (2026-09-08 gate
+# orientation cycling): this set is family-INCOMPLETE, so cycling a gate's
+# orientation can change whether its neighbouring walls draw a connector.
+# Stone closed (64/659/88/667) is fully in, but palisade closed (789/797/793/
+# 801) has only two members and stone's 1x1 corner group has 95 in with 81/
+# 663/671 out. Widening it to whole families is exactly what the 96.9%
+# measurement above rejected, so the fix is the generated replacement, not a
+# wider hand-kept list.
 WALL_CONNECTOR_CONSTS: frozenset[int] = _ROTATION_VARIANT_CONSTS | frozenset({
     64, 88, 95, 659, 667, 793, 797,
 })
@@ -759,7 +816,10 @@ def sprite_scale(half_w: int) -> float:
     return 2 * half_w / NATIVE_TILE_W
 
 
-def _frame_for(unit_const: int, entry: dict, rotation: float) -> int:
+def _frame_for(
+    unit_const: int, entry: dict, rotation: float,
+    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+) -> int:
     """Which stored frame index `entry`'s graphic resolves to at `rotation`:
     the variant_index/angle_index dispatch, times frame_count.
 
@@ -768,12 +828,19 @@ def _frame_for(unit_const: int, entry: dict, rotation: float) -> int:
     (P3-g7) rather than left inline so a future connectivity-derived wall
     frame has exactly one place to change instead of two that can drift.
 
+    `angle_offset_deg` is the projection's own facing zero point, defaulting to
+    the isometric one. The VARIANT branch ignores it entirely, by construction:
+    a variant index is a shape, not a facing, so there is no camera angle to
+    correct and `rotation` reaches variant_index() unmodified whatever the
+    caller passes. That is why the offset is a parameter here rather than a
+    pre-rotation applied at icon_for()'s door.
+
     `unit_const` is the piece's OWN resolving unit_id, not necessarily the
     unit standing on the map -- see _draw_for_entry()'s own note on that."""
     angle_count = max(1, int(entry["angle_count"]))
     frame_count = max(1, int(entry["frame_count"]))
     if not rotation_is_variant(unit_const):
-        return angle_index(rotation, angle_count) * frame_count
+        return angle_index(rotation, angle_count, angle_offset_deg) * frame_count
     # The file's real frame count, not the .dat's angle_count, bounds a literal
     # stored index -- see variant_index()'s own note on the two cliff families
     # where they disagree. Divided by frame_count to get the real VARIANT slot
@@ -929,19 +996,31 @@ def _source_over(dst: np.ndarray, base_y: int, base_x: int, src: np.ndarray) -> 
     view[..., 3:4] = np.clip(out_a * 255.0, 0, 255).astype(np.uint8)
 
 
-def _native_piece(unit_const: int, entry: dict, rotation: float, team) -> SpriteDraw | None:
+def _native_piece(
+    unit_const: int, entry: dict, rotation: float, team,
+    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+) -> SpriteDraw | None:
     """One piece resolved and tinted at NATIVE scale -- _draw_for_entry()'s
     body with the scaling and the _scaled_cache put both left out."""
-    native = _native_frame(entry["file_name"], _frame_for(unit_const, entry, rotation))
+    native = _native_frame(
+        entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg)
+    )
     if native is None:
         return None
     main, playercolor, hx, hy = native
     return SpriteDraw(rgba=_tinted(main, playercolor, team), hotspot_x=hx, hotspot_y=hy)
 
 
-def _native_pieces_for(unit_const: int, entry: dict, rotation: float, team) -> list[SpritePiece]:
+def _native_pieces_for(
+    unit_const: int, entry: dict, rotation: float, team,
+    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+) -> list[SpritePiece]:
     """sprite_pieces_for()'s walk at native scale: same parent-by-identity
     rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
+
+    `angle_offset_deg` reaches each piece's own _frame_for() rather than being
+    resolved once for the parent: a piece can carry a different angle_count,
+    and a different variant-ness, from its parent.
 
     **Why not sprite_pieces_for(..., half_w=NATIVE_TILE_W // 2)**, which is
     sprite_scale() == 1.0 exactly and would be less code: _draw_for_entry()
@@ -953,12 +1032,12 @@ def _native_pieces_for(unit_const: int, entry: dict, rotation: float, team) -> l
     cached uncropped" finding fixed (7.27x -> 1.14x composite, ~8x memory)."""
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        draw = _native_piece(unit_const, entry, rotation, team)
+        draw = _native_piece(unit_const, entry, rotation, team, angle_offset_deg)
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
 
     result: list[SpritePiece] = []
     for piece in pieces_data:
-        draw = _native_piece(piece["unit_id"], piece, rotation, team)
+        draw = _native_piece(piece["unit_id"], piece, rotation, team, angle_offset_deg)
         if draw is None:
             # Parent identified by identity, not list position -- see
             # sprite_pieces_for()'s own note on why.
@@ -995,7 +1074,10 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     return out
 
 
-def _frame_key(unit_const: int, entry: dict, rotation: float) -> tuple[int, ...]:
+def _frame_key(
+    unit_const: int, entry: dict, rotation: float,
+    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+) -> tuple[int, ...]:
     """icon_for()'s cache key's frame component: every piece's own _frame_for()
     result, length 1 for a non-composite const.
 
@@ -1003,11 +1085,19 @@ def _frame_key(unit_const: int, entry: dict, rotation: float) -> tuple[int, ...]
     rotations (measured: 34 distinct values across the corpus, plus off-grid
     outliers). Keying on the PARENT's frame alone would collide whenever a
     piece carries a different angle_count from its parent, which
-    sprite_pieces_for()'s own docstring explicitly allows."""
+    sprite_pieces_for()'s own docstring explicitly allows.
+
+    `angle_offset_deg` has to match whatever _build_icon() is about to be
+    handed: these are RESOLVED frame indices, so two offsets that select
+    different frames already produce different keys, and no separate cache-key
+    component for the offset is needed."""
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        return (_frame_for(unit_const, entry, rotation),)
-    return tuple(_frame_for(piece["unit_id"], piece, rotation) for piece in pieces_data)
+        return (_frame_for(unit_const, entry, rotation, angle_offset_deg),)
+    return tuple(
+        _frame_for(piece["unit_id"], piece, rotation, angle_offset_deg)
+        for piece in pieces_data
+    )
 
 
 def icon_for(
@@ -1032,7 +1122,20 @@ def icon_for(
     blitted off its footprint.
 
     footprint_w/h come from the CLAMPED unit_tile_bounds() rect, so a building
-    hanging off a map edge fits the rect actually painted."""
+    hanging off a map edge fits the rect actually painted.
+
+    **Facings resolve at FLAT_ANGLE_ZERO_OFFSET_DEG, not the isometric zero
+    point.** ANGLE_ZERO_OFFSET_DEG's -45 is a camera-relative correction for
+    the iso projection; Flat's non-isometric render is the same world axes
+    without the iso grid rotation, so carrying it here drew every icon an
+    eighth of a turn out. This is Flat non-iso's only entry point, so the
+    constant is pinned rather than exposed as a parameter. Flat WITH
+    `View > Isometric View` reuses Stepped's sprite draw, never icons.
+
+    No cache-key change comes with it: the key below already contains
+    _frame_key()'s RESOLVED indices, _scaled_cache is iso-only and unreached
+    from here, and _native_cache is keyed on (file_name, frame_index) and so is
+    correct for both projections at once."""
     if footprint_w <= 0 or footprint_h <= 0:
         return None
     entry = graphic_map().get(unit_const)
@@ -1040,21 +1143,31 @@ def icon_for(
         return None
 
     team_slot = team_index % len(TEAM_COLORS)
-    key = (unit_const, _frame_key(unit_const, entry, rotation), team_slot, footprint_w, footprint_h)
+    key = (
+        unit_const,
+        _frame_key(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG),
+        team_slot, footprint_w, footprint_h,
+    )
     hit = _icon_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
 
-    draw = _build_icon(unit_const, entry, rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h)
+    draw = _build_icon(
+        unit_const, entry, rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h,
+        FLAT_ANGLE_ZERO_OFFSET_DEG,
+    )
     _icon_cache.put(key, _MISS if draw is None else draw)  # see _MISS
     return draw
 
 
 def _build_icon(
-    unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int
+    unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int,
+    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
 ) -> SpriteDraw | None:
     """icon_for()'s uncached body."""
-    assembly = _assembled_native(_native_pieces_for(unit_const, entry, rotation, team))
+    assembly = _assembled_native(
+        _native_pieces_for(unit_const, entry, rotation, team, angle_offset_deg)
+    )
     if assembly is None:
         return None
     cropped = _cropped_to_ink(assembly, None, 0, 0)

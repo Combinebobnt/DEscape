@@ -87,7 +87,10 @@ keybinds:
   edit_redo: Ctrl+Y
   edit_copy: Ctrl+C
   edit_paste: Ctrl+V
+  edit_select_all: Ctrl+A
+  edit_deselect: Ctrl+Shift+A
   edit_settings: ''
+  map_mirror: ''
   view_isometric: Ctrl+Shift+I
   view_distance_ticks: ''
   view_show_sprites: ''
@@ -127,8 +130,38 @@ keybinds:
   tool_elevation: E
   tool_set_level: L
   tool_cliff: ''
+  tool_eyedropper: I
+  tool_select: S
   tool_ruler: R
   tool_place_unit: ''
   tool_convert: ''
   adjust_increment: ']'
   adjust_decrement: '['
+
+# Pixel size of the Ruler's on-map measurement label, Settings > Appearance.
+# Only 8-32 are legal; anything else falls back to the default.
+# Default: 18.
+ruler_label_font_px: 18
+
+# Pixel size of the map-edge distance ruler's major-tick numbers, Settings >
+# Appearance. Only 8-24 are legal; anything else falls back to the default.
+# Default: 12.
+distance_tick_font_px: 12
+
+# Every tool overlay color (Settings > Appearance), shown here at its
+# default -- see settings.OVERLAY_COLORS for the full id/label/default list.
+# RGB only, as "#rrggbb"; omit an entry to leave that element at its default.
+overlay_colors:
+  highlight_outline: '#ffd700'
+  highlight_fill: '#ffd700'
+  pan_highlight: '#000000'
+  unit_hover: '#ffffff'
+  unit_select: '#50aaff'
+  unit_select_fill: '#50aaff'
+  ruler_line: '#ff8228'
+  ruler_label: '#ffbe6e'
+  ruler_label_outline: '#000000'
+  region_fill: '#3ce6c8'
+  region_outline: '#141414'
+  region_ants: '#3ce6c8'
+  mirror_overlay: '#50dcff'

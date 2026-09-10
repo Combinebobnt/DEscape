@@ -8,6 +8,7 @@ from __future__ import annotations
 
 
 import math
+from collections.abc import Callable
 
 import numpy as np
 from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt, QTimer
@@ -36,6 +37,7 @@ from descape import (
     brush,
     iso_geometry,
     perf_trace,
+    region_clipboard,
     ruler,
     settings,
     unit_pick,
@@ -47,7 +49,7 @@ from descape.render_cache import (
     SlopedChunkCache,
 )
 from descape.viewer_canvas import EdgeTickItem, MapCanvasItem, _max_axis_scale, level_rect_for
-from descape.viewer_common import CLICK_TOOLS, EDIT_TOOLS, TOOL_RULER
+from descape.viewer_common import CLICK_TOOLS, EDIT_TOOLS, TOOL_EYEDROPPER, TOOL_RULER, TOOL_SELECT
 
 # The two non-Flat terrain styles, which share a projected pick plane and a
 # diamond ground outline. Deliberately local: the same pair appears in
@@ -107,33 +109,30 @@ class MapView(QGraphicsView):
     VIEWPORT_POLL_MS = 150
 
     # Hover-highlight convention for every brush-style tool (Terrain,
-    # Elevate, Set Elevation): an outline plus a translucent gold
-    # fill that pulses steadily, so it reads as a live cursor following the
+    # Elevate, Set Elevation): an outline plus a translucent fill (default
+    # gold) that pulses steadily, so it reads as a live cursor following the
     # mouse rather than a static "you clicked here" marker. Follows on hover,
-    # not just on click.
-    HIGHLIGHT_OUTLINE_PEN = QPen(QColor(255, 215, 0), 0)
-    HIGHLIGHT_FILL_COLOR = QColor(255, 215, 0)
+    # not just on click. Colors are user-settable (Settings > Appearance,
+    # settings.OVERLAY_COLORS) and live in self._highlight_outline_pen/
+    # self._highlight_fill_color, rebuilt by _rebuild_overlay_ink() -- these
+    # are just the pulse behaviour, which isn't a color and stays fixed.
     HIGHLIGHT_PULSE_MIN_ALPHA = 0.25
     HIGHLIGHT_PULSE_MAX_ALPHA = 0.55
     HIGHLIGHT_PULSE_PERIOD_MS = 500
     HIGHLIGHT_PULSE_TICK_MS = 40
 
-    # Pan mode's own hover cue -- deliberately much quieter than the edit
-    # highlight above (a static thin black outline, no fill, no pulse): Pan
-    # isn't about to mutate anything, so it shouldn't compete visually with
-    # the "this is live and about to paint" signal edit tools need. Cosmetic
-    # pen width 0 keeps it a true 1-device-pixel line regardless of zoom,
-    # same convention HIGHLIGHT_OUTLINE_PEN already uses.
-    PAN_HIGHLIGHT_PEN = QPen(QColor(0, 0, 0), 0)
-
     # Units mode's two cues, phase 3's P3-d. Deliberately NOT the pulsing
-    # gold HIGHLIGHT_OUTLINE_PEN reserves for "live and about to paint":
-    # phase 3 mutates nothing, so it must not claim that signal. Hover is
-    # thin and quiet like PAN_HIGHLIGHT_PEN; selection is solid plus a
-    # translucent fill, in a blue distinct from gold. Neither pulses.
-    UNIT_HOVER_PEN = QPen(QColor(255, 255, 255), 0)
-    UNIT_SELECT_PEN = QPen(QColor(80, 170, 255), 2)
-    UNIT_SELECT_FILL_COLOR = QColor(80, 170, 255, 70)
+    # highlight above reserves for "live and about to paint": phase 3
+    # mutates nothing, so it must not claim that signal. Hover defaults thin
+    # and quiet like Pan's; selection is solid plus a translucent fill, in a
+    # color distinct from the edit highlight by default. Neither pulses.
+    # Colors live in self._unit_hover_pen/self._unit_select_pen/
+    # self._unit_select_fill_color; UNIT_SELECT_FILL_ALPHA is the one part of
+    # the fill that ISN'T user-settable (see settings.OVERLAY_COLORS's own
+    # comment on RGB-only scope), and UNIT_SELECT_PEN_WIDTH is this
+    # codebase's only non-cosmetic pen width, deliberately not 0.
+    UNIT_SELECT_FILL_ALPHA = 70
+    UNIT_SELECT_PEN_WIDTH = 2
 
     # The codebase's FIRST setZValue use -- everything else stacks by scene
     # INSERTION order, and the existing highlight items only land on top
@@ -150,23 +149,56 @@ class MapView(QGraphicsView):
     # all" test would misfire on ordinary clicks.
     UNIT_DRAG_THRESHOLD_PX = 4
 
-    # The Ruler's line, its two endpoint outlines and its label. Cosmetic
-    # pen for the same zoom-invariance reason PAN_HIGHLIGHT_PEN gives, and
-    # a fixed colour rather than a themed one: MapView paints its scene
-    # background unconditionally to OUTSIDE_MAP_COLOR, so apply_theme never
-    # reaches any of this. Orange is unclaimed here; gold, blue, white and
-    # black already mean edit, selection, unit hover and pan.
-    RULER_PEN = QPen(QColor(255, 130, 40), 0)
-    RULER_LABEL_COLOR = QColor(255, 190, 110)
-    # A dark cosmetic outline around the glyphs, so the label survives
-    # both the near-black void and bright terrain without a backing rect.
-    RULER_LABEL_OUTLINE = QColor(0, 0, 0, 230)
-    RULER_LABEL_FONT_PX = 18
+    # The Ruler's line, its two endpoint outlines and its label. A fixed
+    # (user-settable) colour rather than a themed one: MapView paints its
+    # scene background unconditionally to OUTSIDE_MAP_COLOR, so apply_theme
+    # never reaches any of this. Colors live in self._ruler_pen/
+    # self._ruler_label_color/self._ruler_label_outline;
+    # RULER_LABEL_OUTLINE_ALPHA is the one part of the outline that isn't
+    # user-settable, so the label keeps surviving both the near-black void
+    # and bright terrain without a backing rect regardless of the chosen hue.
+    RULER_LABEL_OUTLINE_ALPHA = 230
     RULER_LABEL_GAP_PX = 6.0
     # Above UNIT_SELECT_Z: a measurement is a deliberate act, and should
     # not be occluded by the hover cue it was drawn on top of.
     RULER_Z = 12.0
     RULER_LABEL_Z = 13.0
+
+    # Phase 2.8's Select tool. Teal by default, distinct from the unit
+    # marquee's default blue or the edit highlight's default gold -- this
+    # needs to read unambiguously as a third, distinct thing: "this region is
+    # selected", though a user override can collapse that distinction
+    # deliberately. Marching ants (a dark solid pass plus a lighter dashed
+    # pass, both cosmetic so the dashes stay the same device-pixel size at
+    # every zoom) are what makes it read as a selection rather than a static
+    # highlight -- see _advance_region_ants(). Colors live in
+    # self._region_fill_color/self._region_outline_pen/self._region_ants_pen;
+    # REGION_SELECT_FILL_ALPHA is the one part of the fill that isn't
+    # user-settable, and REGION_SELECT_PEN_WIDTH/REGION_SELECT_ANT_DASH are
+    # not colors at all, so both stay fixed literals reapplied by
+    # _rebuild_overlay_ink() on every rebuild.
+    REGION_SELECT_FILL_ALPHA = 50
+    REGION_SELECT_PEN_WIDTH = 2
+    REGION_SELECT_ANT_DASH = [4.0, 4.0]  # device pixels, since cosmetic
+    REGION_SELECT_ANT_STEP_PX = 1.0
+    REGION_SELECT_ANT_TICK_MS = 80
+    # Above UNIT_SELECT_Z (a region can carry units, so its outline must read
+    # on top of the units inside it), below RULER_Z (a measurement is a
+    # deliberate act and should never be occluded).
+    REGION_SELECT_Z = 11.5
+
+    # Map mirroring's (Stage 1) live preview overlay in MirrorDialog: the
+    # shaded source slice and, in Flat mode only, the mode's own symmetry
+    # axis line(s). Above every other overlay here -- a deliberate,
+    # momentary dialog-driven state that should read as on top of
+    # everything while showing, the same reasoning RULER_Z sits above
+    # UNIT_SELECT_Z for. Colors (default cyan) are user-settable like every
+    # other overlay above (settings.OVERLAY_COLORS's "mirror_overlay" row)
+    # and live in self._mirror_overlay_outline_pen/_fill_color/_axis_pen,
+    # rebuilt by _rebuild_overlay_ink(); MIRROR_OVERLAY_FILL_ALPHA is the one
+    # part of the fill that isn't user-settable, matching REGION_SELECT_FILL_ALPHA.
+    MIRROR_OVERLAY_FILL_ALPHA = 60
+    MIRROR_OVERLAY_Z = 14.0
 
     def __init__(
         self,
@@ -181,6 +213,7 @@ class MapView(QGraphicsView):
         on_unit_nudge,
         on_unit_delete,
         on_marquee_select,
+        on_region_selected,
         on_ruler_measured,
         on_ruler_changed,
         on_zoom_changed,
@@ -191,6 +224,10 @@ class MapView(QGraphicsView):
         self.scene().setBackgroundBrush(self.OUTSIDE_MAP_COLOR)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
+        # Populates every self._*_pen/self._*_color attribute _update_highlight
+        # et al. read below -- must run before anything else in __init__ could
+        # plausibly touch them. apply_overlay_colors() re-runs this later.
+        self._rebuild_overlay_ink()
         # Holds the QGraphicsItem itself, not the chunk cache directly
         # (ViewerWindow keeps that reference; this class only ever needs to
         # forward paint-invalidation to the item -- see invalidate_region()).
@@ -297,6 +334,34 @@ class MapView(QGraphicsView):
         # mousePressEvent makes unconditionally at press time (see that
         # method's own comment on why the click fires regardless).
         self._on_marquee_select = on_marquee_select
+        # Phase 2.8's Select tool, the twelfth injected callable.
+        # on_region_selected(region | None) fires at the two moments a
+        # COMMITTED region changes from user input MapView itself sees: a
+        # completed drag, and an Escape that clears an existing region with
+        # no drag in progress. ViewerWindow's Select All/Deselect actions
+        # change the same committed value from the other direction and reach
+        # this same handler directly rather than through a callback -- see
+        # set_region()'s own docstring for the split.
+        self._on_region_selected = on_region_selected
+        # The anchor tile from mousePressEvent, and the last tile a move
+        # resolved to (frozen, like the Ruler's endpoint, if the drag runs
+        # off-map) -- both None outside an in-progress drag. The COMMITTED
+        # region lives in self._region below, mirroring the anchor/committed
+        # split ruler.RulerSession keeps internally.
+        self._select_anchor: tuple[int, int] | None = None
+        self._select_current: tuple[int, int] | None = None
+        # The committed region, half-open tile-space (tx0, ty0, tx1, ty1).
+        # Set by set_region() -- MapView's own drag-release/Escape-clear
+        # paths, and ViewerWindow's Select All/Deselect, both funnel through
+        # it, so there is exactly one place that rebuilds the overlay.
+        self._region: tuple[int, int, int, int] | None = None
+        self._region_fill_item: QGraphicsPathItem | None = None
+        self._region_outline_item: QGraphicsPathItem | None = None
+        self._region_ants_item: QGraphicsPathItem | None = None
+        self._region_ant_offset = 0.0
+        self._region_ant_timer = QTimer(self)
+        self._region_ant_timer.setInterval(self.REGION_SELECT_ANT_TICK_MS)
+        self._region_ant_timer.timeout.connect(self._advance_region_ants)
         # MapView has historically known only about TOOLS, never modes. Units
         # mode needs a top-level branch in mousePressEvent/mouseMoveEvent, so
         # the mode has to be mirrored here, set by ViewerWindow.on_mode_
@@ -401,10 +466,16 @@ class MapView(QGraphicsView):
         # needs no change.
         self._highlight_outline_item: QGraphicsPathItem | None = None
         self._highlight_fill_item: QGraphicsPathItem | None = None
-        # Pan mode's own quieter highlight -- see PAN_HIGHLIGHT_PEN above.
-        # Always exactly one tile (Pan has no brush), so this stays a plain
-        # QGraphicsPolygonItem.
+        # Pan mode's own quieter highlight -- see self._pan_highlight_pen,
+        # built by _rebuild_overlay_ink(). Always exactly one tile (Pan has
+        # no brush), so this stays a plain QGraphicsPolygonItem.
         self._pan_highlight_item: QGraphicsPolygonItem | None = None
+        # MirrorDialog's live preview overlay -- see show_mirror_overlay()/
+        # clear_mirror_overlay(). Same QPainterPath-of-tile-polygons shape as
+        # the edit highlight above, plus optional straight axis line items.
+        self._mirror_overlay_outline_item: QGraphicsPathItem | None = None
+        self._mirror_overlay_fill_item: QGraphicsPathItem | None = None
+        self._mirror_axis_items: list[QGraphicsLineItem] = []
         # Which button started the active stroke (Qt.LeftButton raises
         # elevation, Qt.RightButton lowers it -- see _touch_tile). None
         # when no stroke is active.
@@ -423,6 +494,121 @@ class MapView(QGraphicsView):
         self._max_linear_scale: float | None = None
         self.set_zoom_anchor_mode(settings.get_zoom_centered_on_cursor())
         self.setMouseTracking(True)
+
+    def _rebuild_overlay_ink(self) -> None:
+        """Builds every tool-overlay pen/color from settings.get_overlay_color,
+        replacing what used to be class constants of the same name. Pen
+        widths, cosmetic flags and the region ants' dash pattern are NOT
+        settings (see settings.OVERLAY_COLORS's own RGB-only-scope comment),
+        so they're reapplied here from the same literals the old class
+        constants held -- miss one and it silently reverts to Qt's defaults
+        (e.g. a non-cosmetic region outline that scales with zoom)."""
+
+        def _pen(color_id: str, width: int, *, cosmetic: bool = False, dash=None) -> QPen:
+            pen = QPen(QColor(settings.get_overlay_color(color_id)), width)
+            if cosmetic:
+                pen.setCosmetic(True)
+            if dash is not None:
+                pen.setDashPattern(dash)
+            return pen
+
+        self._highlight_outline_pen = _pen("highlight_outline", 0)
+        self._highlight_fill_color = QColor(settings.get_overlay_color("highlight_fill"))
+        self._pan_highlight_pen = _pen("pan_highlight", 0)
+        self._unit_hover_pen = _pen("unit_hover", 0)
+        # Deliberately NOT cosmetic -- see UNIT_SELECT_PEN_WIDTH's own comment.
+        self._unit_select_pen = _pen("unit_select", self.UNIT_SELECT_PEN_WIDTH)
+        self._unit_select_fill_color = QColor(settings.get_overlay_color("unit_select_fill"))
+        self._unit_select_fill_color.setAlpha(self.UNIT_SELECT_FILL_ALPHA)
+        self._ruler_pen = _pen("ruler_line", 0)
+        self._ruler_label_color = QColor(settings.get_overlay_color("ruler_label"))
+        self._ruler_label_outline = QColor(settings.get_overlay_color("ruler_label_outline"))
+        self._ruler_label_outline.setAlpha(self.RULER_LABEL_OUTLINE_ALPHA)
+        self._region_fill_color = QColor(settings.get_overlay_color("region_fill"))
+        self._region_fill_color.setAlpha(self.REGION_SELECT_FILL_ALPHA)
+        self._region_outline_pen = _pen("region_outline", self.REGION_SELECT_PEN_WIDTH, cosmetic=True)
+        self._region_ants_pen = _pen(
+            "region_ants", self.REGION_SELECT_PEN_WIDTH, cosmetic=True, dash=self.REGION_SELECT_ANT_DASH
+        )
+        self._mirror_overlay_outline_pen = _pen("mirror_overlay", 0)
+        self._mirror_overlay_fill_color = QColor(settings.get_overlay_color("mirror_overlay"))
+        self._mirror_overlay_fill_color.setAlpha(self.MIRROR_OVERLAY_FILL_ALPHA)
+        self._mirror_axis_pen = _pen("mirror_overlay", 0)
+
+    def apply_overlay_colors(self) -> None:
+        """Settings > Appearance's re-entry point for a color change: persist
+        then push, mirroring set_edge_tick_interval's shape. Every push below
+        is guarded on self.scene() AND the relevant item(s) being alive --
+        the Settings dialog is reachable with no map open, and scene().clear()
+        (File > Close) destroys every scene item while leaving these Python
+        refs pointing at the dangling C++ object (the same hazard
+        _forget_ruler_items exists for). Checking one representative item per
+        atomically-created/-cleared group is enough: every group here is
+        created and forgotten together, the same invariant _clear_highlight's
+        own single-item check already relies on."""
+        self._rebuild_overlay_ink()
+        if self.scene() is None:
+            return
+        if self._pan_highlight_item is not None:
+            self._pan_highlight_item.setPen(self._pan_highlight_pen)
+        if self._unit_hover_item is not None:
+            self._unit_hover_item.setPen(self._unit_hover_pen)
+        if self._unit_select_item is not None:
+            self._unit_select_item.setPen(self._unit_select_pen)
+            self._unit_select_fill_item.setBrush(QBrush(self._unit_select_fill_color))
+        if self._marquee_item is not None:
+            self._marquee_item.setPen(self._unit_select_pen)
+            self._marquee_item.setBrush(QBrush(self._unit_select_fill_color))
+        if self._ruler_line_item is not None:
+            self._ruler_line_item.setPen(self._ruler_pen)
+            for item in self._ruler_end_items:
+                item.setPen(self._ruler_pen)
+            self._ruler_label_item.setBrush(QBrush(self._ruler_label_color))
+            self._ruler_label_item.setPen(QPen(self._ruler_label_outline, 0))
+        if self._region_fill_item is not None:
+            self._region_fill_item.setBrush(QBrush(self._region_fill_color))
+            self._region_outline_item.setPen(self._region_outline_pen)
+            # Carries the ants' current phase forward -- a rebuilt pen would
+            # otherwise reset dashOffset to 0 and visibly restart the crawl.
+            ants_pen = QPen(self._region_ants_pen)
+            ants_pen.setDashOffset(self._region_ants_item.pen().dashOffset())
+            self._region_ants_item.setPen(ants_pen)
+        if self._mirror_overlay_outline_item is not None:
+            self._mirror_overlay_outline_item.setPen(self._mirror_overlay_outline_pen)
+            self._mirror_overlay_fill_item.setBrush(QBrush(self._mirror_overlay_fill_color))
+            for item in self._mirror_axis_items:
+                item.setPen(self._mirror_axis_pen)
+        # The edit highlight has no in-place update path worth writing (it
+        # rebuilds on every hover move anyway) -- clearing it here just forces
+        # that rebuild to happen with the new ink instead of leaving a stale
+        # color showing until the mouse next moves.
+        self._clear_highlight()
+
+    def apply_ruler_label_font(self) -> None:
+        """Settings > Appearance's re-entry point for the ruler label
+        font-size spinbox -- apply_overlay_colors()'s sibling, same
+        deleted-item guard (the Settings dialog is reachable with no map
+        open). No-op with no live label: _create_ruler_items() already reads
+        settings.get_ruler_label_font_px() directly, so the next measurement
+        picks up the new size with no extra plumbing needed."""
+        if self.scene() is None or self._ruler_label_item is None:
+            return
+        font = self._ruler_label_item.font()
+        font.setPixelSize(settings.get_ruler_label_font_px())
+        self._ruler_label_item.setFont(font)
+        self._update_ruler()
+
+    def apply_distance_tick_font(self) -> None:
+        """Settings > Appearance's re-entry point for the distance-tick
+        label font-size spinbox -- set_edge_tick_interval's persist-then-push
+        shape. Unlike apply_ruler_label_font, the pad also has to be
+        recomputed (edge_ticks.scene_pad depends on font_px), so this
+        re-runs _repad_edge_ticks() rather than duplicating its
+        floor/current-scale min() here."""
+        if self._edge_tick_item is None:
+            return
+        self._edge_tick_item.set_label_font_px(settings.get_distance_tick_font_px())
+        self._repad_edge_ticks()
 
     def set_zoom_anchor_mode(self, centered_on_cursor: bool) -> None:
         # QGraphicsView.scale() zooms around whatever transformationAnchor is
@@ -496,7 +682,12 @@ class MapView(QGraphicsView):
         # named explicitly because it is NOT in EDIT_TOOLS: left-dragging is
         # how a measurement is made, so leaving ScrollHandDrag on would pan
         # the view instead and the tool would never work at all.
-        if self._mode == "units" or self._tool in EDIT_TOOLS or self._tool == TOOL_RULER:
+        if (
+            self._mode == "units"
+            or self._tool in EDIT_TOOLS
+            or self._tool == TOOL_RULER
+            or self._tool == TOOL_EYEDROPPER
+        ):
             self.setDragMode(QGraphicsView.NoDrag)
         else:
             self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -519,6 +710,7 @@ class MapView(QGraphicsView):
             self._iso_elevations,
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
+            farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
         )
         if not polygons:
             return None
@@ -542,7 +734,7 @@ class MapView(QGraphicsView):
             self._clear_unit_hover()
             return
         if self._unit_hover_item is None:
-            self._unit_hover_item = self.scene().addPath(path, self.UNIT_HOVER_PEN)
+            self._unit_hover_item = self.scene().addPath(path, self._unit_hover_pen)
             self._unit_hover_item.setZValue(self.UNIT_HOVER_Z)
         else:
             self._unit_hover_item.setPath(path)
@@ -583,9 +775,9 @@ class MapView(QGraphicsView):
             return
         if self._unit_select_item is None:
             self._unit_select_fill_item = self.scene().addPath(
-                path, QPen(Qt.NoPen), QBrush(self.UNIT_SELECT_FILL_COLOR)
+                path, QPen(Qt.NoPen), QBrush(self._unit_select_fill_color)
             )
-            self._unit_select_item = self.scene().addPath(path, self.UNIT_SELECT_PEN)
+            self._unit_select_item = self.scene().addPath(path, self._unit_select_pen)
             self._unit_select_fill_item.setZValue(self.UNIT_SELECT_Z)
             self._unit_select_item.setZValue(self.UNIT_SELECT_Z)
         else:
@@ -636,7 +828,7 @@ class MapView(QGraphicsView):
         rect = QRectF(self.mapToScene(start_pos), self.mapToScene(current_pos)).normalized()
         if self._marquee_item is None:
             self._marquee_item = self.scene().addRect(
-                rect, self.UNIT_SELECT_PEN, QBrush(self.UNIT_SELECT_FILL_COLOR)
+                rect, self._unit_select_pen, QBrush(self._unit_select_fill_color)
             )
             self._marquee_item.setZValue(self.UNIT_SELECT_Z)
         else:
@@ -732,6 +924,7 @@ class MapView(QGraphicsView):
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
             terrain_tile=None if cache is None else self._pick_tile(pos),
+            farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
         )
 
     def set_tool(self, tool: str) -> None:
@@ -753,6 +946,15 @@ class MapView(QGraphicsView):
         # screen explains.
         if tool != TOOL_RULER:
             self._clear_ruler()
+        # An in-progress select drag belongs to the Select tool the same way
+        # a measurement belongs to the Ruler -- but the COMMITTED region does
+        # not: it must survive a tool switch (Copy/Paste act on it
+        # regardless of which tool is active), so only the anchor is
+        # cancelled here, not self._region.
+        if tool != TOOL_SELECT and self._select_anchor is not None:
+            self._select_anchor = None
+            self._select_current = None
+            self._update_region_overlay()
         if tool in EDIT_TOOLS:
             self._pulse_timer.start(self.HIGHLIGHT_PULSE_TICK_MS)
         else:
@@ -768,7 +970,7 @@ class MapView(QGraphicsView):
         # Above the mode check, unlike every other tool: Units mode's
         # pointing hand otherwise wins and the Ruler loses its aiming cursor
         # in the one mode where precision matters most.
-        if self._tool == TOOL_RULER:
+        if self._tool in (TOOL_RULER, TOOL_EYEDROPPER, TOOL_SELECT):
             self.setCursor(Qt.CrossCursor)
         elif self._mode == "units":
             self.setCursor(Qt.PointingHandCursor)
@@ -886,6 +1088,20 @@ class MapView(QGraphicsView):
                     self._update_ruler()
                     self._report_ruler(previous)
             return
+        # The Select tool, is_edit_tool=False like the Ruler above and given
+        # the same early, mode-independent priority (it only ever applies in
+        # Terrain mode in practice, via ToolDef.modes, but nothing here
+        # depends on that). Left button only: a rectangle drag has no
+        # meaningful right-button inverse.
+        if self._tool == TOOL_SELECT:
+            if event.button() == Qt.LeftButton:
+                pos = self.mapToScene(event.pos())
+                if self._pos_on_map(pos):
+                    tile = self._pick_tile(pos)
+                    self._select_anchor = tile
+                    self._select_current = tile
+                    self._update_region_overlay()
+            return
         # Units mode's selection click, deliberately ABOVE the CLICK_TOOLS/
         # EDIT_TOOLS checks and independent of whatever tool is active (the
         # Ruler is handled above; Pan and Place Unit are the only other tools
@@ -990,6 +1206,23 @@ class MapView(QGraphicsView):
                 self._ruler.release()
                 self._report_ruler(previous)
             return
+        # The Select tool's matching release: commits self._select_anchor/
+        # self._select_current (the latter frozen at its last on-map value if
+        # the release itself is off-map, same "hold the last valid tile"
+        # convention as the Ruler's endpoint) into a real region via
+        # set_region(), then announces it -- the one path
+        # ViewerWindow.on_region_selected() shares with Select All/Deselect.
+        if self._tool == TOOL_SELECT:
+            if event.button() == Qt.LeftButton and self._select_anchor is not None:
+                anchor, current = self._select_anchor, self._select_current
+                self._select_anchor = None
+                self._select_current = None
+                region = region_clipboard.normalize_region(
+                    anchor, current, self._map_width or 0, self._map_height or 0
+                )
+                self.set_region(region)
+                self._on_region_selected(region)
+            return
         # b1.5's move-by-drag: the matching half of the press-time bookkeeping
         # above. Cleared unconditionally either way -- a drag is decided once,
         # here, never left pending for a later event.
@@ -1064,6 +1297,20 @@ class MapView(QGraphicsView):
         if event.key() == Qt.Key_Escape and self._ruler.state != ruler.STATE_IDLE:
             self._clear_ruler()
             return
+        # Select tool's Escape: cancel an in-progress drag first, only clear
+        # a committed region when there is no drag -- same ordering rule
+        # daubED's canvas_widget.py follows, so releasing Escape mid-drag
+        # can never destroy a PREVIOUSLY committed region the drag hadn't
+        # replaced yet.
+        if event.key() == Qt.Key_Escape and self._select_anchor is not None:
+            self._select_anchor = None
+            self._select_current = None
+            self._update_region_overlay()
+            return
+        if event.key() == Qt.Key_Escape and self._region is not None:
+            self.set_region(None)
+            self._on_region_selected(None)
+            return
         if self._mode == "units":
             if event.key() in self._UNIT_NUDGE_KEYS:
                 dx, dy = self._UNIT_NUDGE_KEYS[event.key()]
@@ -1098,8 +1345,16 @@ class MapView(QGraphicsView):
         if self._marquee_start_pos is not None:
             self._marquee_start_pos = None
             self._clear_marquee()
+        # Defensive, same reasoning as the marquee above: cancelled outright,
+        # not committed -- there is no natural release position to resolve
+        # against. The committed region (if any) is untouched, exactly like
+        # an Escape-cancel.
+        if self._select_anchor is not None:
+            self._select_anchor = None
+            self._select_current = None
+            self._update_region_overlay()
 
-    def _tile_polygon(self, tile_x: int, tile_y: int) -> QPolygonF | None:
+    def _tile_polygon(self, tile_x: int, tile_y: int, *, coarse: bool = False) -> QPolygonF | None:
         """The on-screen footprint of tile (tile_x, tile_y) as a polygon --
         a plain axis-aligned square in Flat mode, the tile's real projected,
         elevation-displaced diamond in Stepped mode, its warped per-column
@@ -1107,7 +1362,13 @@ class MapView(QGraphicsView):
         Pan mode's static outline below, so the two can never disagree about
         where a tile actually is on screen. None in Stepped/Sloped mode
         before a projection snapshot (and, for Sloped, a cache) exists
-        (shouldn't happen once an image is loaded -- defensive only)."""
+        (shouldn't happen once an image is loaded -- defensive only).
+
+        coarse (draw-perf plan item 3): Sloped only, and only for
+        _update_highlight's brush footprint -- selects sloped_tile_outline_
+        coarse() instead of the exact staircase. Every other caller
+        (Pan's static outline, ruler, region select) leaves this False and
+        must keep getting the pixel-exact outline."""
         if self._terrain_style == "stepped":
             if self._iso_elevations is None or self._iso_proj is None:
                 return None
@@ -1138,7 +1399,10 @@ class MapView(QGraphicsView):
             d_se = int(corner_rise[tile_y + 1, tile_x + 1])
             ox, oy = iso_geometry.tile_screen_origin(tile_x, tile_y, 0, self._iso_proj)
             oy -= min(d_nw, d_ne, d_sw, d_se)
-            points = iso_geometry.sloped_tile_outline(self._tile_pixels, d_nw, d_ne, d_sw, d_se)
+            outline_fn = (
+                iso_geometry.sloped_tile_outline_coarse if coarse else iso_geometry.sloped_tile_outline
+            )
+            points = outline_fn(self._tile_pixels, d_nw, d_ne, d_sw, d_se)
             return QPolygonF([QPointF(ox + px, oy + py) for px, py in points])
         tp = self._tile_pixels
         x0, y0 = tile_x * tp, tile_y * tp
@@ -1154,7 +1418,14 @@ class MapView(QGraphicsView):
         QPainterPath, deliberately not .simplified(): a bounding outline
         would misrepresent a circle brush's actual footprint). Memoized on
         (tile_x, tile_y, size, shape) since this runs on every pixel of
-        mouseMoveEvent -- see _highlight_key's own comment in __init__."""
+        mouseMoveEvent -- see _highlight_key's own comment in __init__.
+
+        Passes coarse=True to _tile_polygon (draw-perf plan item 3): in
+        Sloped this brush footprint was measured at 5.6ms at brush size 9,
+        almost entirely _tile_polygon's per-column exact staircase times up
+        to 81 tiles. The approximate outline is fine here since this path
+        only ever feeds display, never a pick -- unlike _update_pan_
+        highlight below, which stays exact."""
         key = (tile_x, tile_y, self._brush_size, self._brush_shape)
         if key == self._highlight_key:
             return
@@ -1167,16 +1438,16 @@ class MapView(QGraphicsView):
             )
         path = QPainterPath()
         for tx, ty in tiles:
-            polygon = self._tile_polygon(tx, ty)
+            polygon = self._tile_polygon(tx, ty, coarse=True)
             if polygon is not None:
                 path.addPolygon(polygon)
         if path.isEmpty():
             self._clear_highlight()
             return
         if self._highlight_outline_item is None:
-            self._highlight_outline_item = self.scene().addPath(path, self.HIGHLIGHT_OUTLINE_PEN)
+            self._highlight_outline_item = self.scene().addPath(path, self._highlight_outline_pen)
             self._highlight_fill_item = self.scene().addPath(
-                path, QPen(Qt.NoPen), QBrush(self.HIGHLIGHT_FILL_COLOR)
+                path, QPen(Qt.NoPen), QBrush(self._highlight_fill_color)
             )
         else:
             self._highlight_outline_item.setPath(path)
@@ -1196,16 +1467,16 @@ class MapView(QGraphicsView):
             self._highlight_fill_item = None
 
     def _update_pan_highlight(self, tile_x: int, tile_y: int) -> None:
-        """Pan mode's own hover cue -- a thin static black outline, no fill,
-        no pulse (see PAN_HIGHLIGHT_PEN). Deliberately much quieter than
-        _update_highlight()'s edit-mode gold glow: Pan can't mutate
+        """Pan mode's own hover cue -- a thin static outline (default black),
+        no fill, no pulse (see self._pan_highlight_pen). Deliberately much
+        quieter than _update_highlight()'s edit-mode glow: Pan can't mutate
         anything, so it shouldn't compete for attention the way a live
         "this is about to paint" cursor needs to."""
         polygon = self._tile_polygon(tile_x, tile_y)
         if polygon is None:
             return
         if self._pan_highlight_item is None:
-            self._pan_highlight_item = self.scene().addPolygon(polygon, self.PAN_HIGHLIGHT_PEN)
+            self._pan_highlight_item = self.scene().addPolygon(polygon, self._pan_highlight_pen)
         else:
             self._pan_highlight_item.setPolygon(polygon)
 
@@ -1213,6 +1484,152 @@ class MapView(QGraphicsView):
         if self._pan_highlight_item is not None:
             self.scene().removeItem(self._pan_highlight_item)
             self._pan_highlight_item = None
+
+    def set_region(self, region: tuple[int, int, int, int] | None) -> None:
+        """The one mutator for the committed region -- called from MapView's
+        own drag-release/Escape-clear paths, and by ViewerWindow directly for
+        Select All/Deselect, so there is exactly one place that rebuilds the
+        overlay from a new value. Idempotent: setting the same region twice
+        just rebuilds the same path again."""
+        self._region = region
+        self._update_region_overlay()
+
+    def _region_boundary_tiles(self, tx0: int, ty0: int, tx1: int, ty1: int) -> list[tuple[int, int]]:
+        """The perimeter ring of the half-open rectangle, one tile deep --
+        NOT every tile in it. A Select region can span the whole map, unlike
+        a brush footprint, so _update_region_overlay() below only ever walks
+        O(perimeter) tiles, never O(area)."""
+        tiles = [(x, ty0) for x in range(tx0, tx1)]
+        if ty1 - ty0 > 1:
+            tiles.extend((x, ty1 - 1) for x in range(tx0, tx1))
+        for y in range(ty0 + 1, ty1 - 1):
+            tiles.append((tx0, y))
+            if tx1 - tx0 > 1:
+                tiles.append((tx1 - 1, y))
+        return tiles
+
+    def _region_render_rect(self) -> tuple[int, int, int, int] | None:
+        """What the overlay should show right now: the live anchor-to-current
+        preview during a drag, else the committed region -- so starting a new
+        drag previews without disturbing self._region until the drag actually
+        commits (Escape-cancel then just re-renders the untouched committed
+        value)."""
+        if self._select_anchor is not None and self._select_current is not None:
+            return region_clipboard.normalize_region(
+                self._select_anchor, self._select_current, self._map_width or 0, self._map_height or 0
+            )
+        return self._region
+
+    def _update_region_overlay(self) -> None:
+        """Rebuilds the region's outline/ants/fill from _region_render_rect().
+        Outline and ants share one QPainterPath built from _tile_polygon()
+        per BOUNDARY tile (see _region_boundary_tiles()) -- the way
+        _update_highlight() assembles the brush cursor, restricted to the
+        perimeter so the outline conforms to Stepped columns and Sloped
+        warping without costing O(area) on a region the size of the whole
+        map. The fill is a separate O(area) path over every tile in the
+        rect -- TODO(descape#region-select-perf): revisit if this lags on a
+        whole-map Select All."""
+        rect = self._region_render_rect()
+        boundary_path = QPainterPath()
+        fill_path = QPainterPath()
+        if rect is not None:
+            for tx, ty in self._region_boundary_tiles(*rect):
+                polygon = self._tile_polygon(tx, ty)
+                if polygon is not None:
+                    boundary_path.addPolygon(polygon)
+            tx0, ty0, tx1, ty1 = rect
+            for ty in range(ty0, ty1):
+                for tx in range(tx0, tx1):
+                    polygon = self._tile_polygon(tx, ty)
+                    if polygon is not None:
+                        fill_path.addPolygon(polygon)
+        if boundary_path.isEmpty():
+            self._clear_region_overlay()
+            return
+        if self._region_fill_item is None:
+            scene = self.scene()
+            self._region_fill_item = scene.addPath(fill_path, QPen(Qt.NoPen), QBrush(self._region_fill_color))
+            self._region_outline_item = scene.addPath(boundary_path, self._region_outline_pen)
+            self._region_ants_item = scene.addPath(boundary_path, self._region_ants_pen)
+            for item in (self._region_fill_item, self._region_outline_item, self._region_ants_item):
+                item.setZValue(self.REGION_SELECT_Z)
+        else:
+            self._region_fill_item.setPath(fill_path)
+            self._region_outline_item.setPath(boundary_path)
+            self._region_ants_item.setPath(boundary_path)
+        self._sync_region_ant_timer()
+
+    def _clear_region_overlay(self) -> None:
+        if self._region_fill_item is not None:
+            scene = self.scene()
+            scene.removeItem(self._region_fill_item)
+            scene.removeItem(self._region_outline_item)
+            scene.removeItem(self._region_ants_item)
+            self._region_fill_item = None
+            self._region_outline_item = None
+            self._region_ants_item = None
+        self._region_ant_timer.stop()
+
+    def _sync_region_ant_timer(self) -> None:
+        """The ants only cost anything while a region is actually shown --
+        gated the same way _pulse_timer is gated on an edit tool being
+        active."""
+        if self._region_ants_item is not None:
+            if not self._region_ant_timer.isActive():
+                self._region_ant_timer.start()
+        else:
+            self._region_ant_timer.stop()
+
+    def _advance_region_ants(self) -> None:
+        total = sum(self.REGION_SELECT_ANT_DASH)
+        self._region_ant_offset = (self._region_ant_offset + self.REGION_SELECT_ANT_STEP_PX) % total
+        if self._region_ants_item is not None:
+            pen = self._region_ants_item.pen()
+            pen.setDashOffset(self._region_ant_offset)
+            self._region_ants_item.setPen(pen)
+
+    def show_mirror_overlay(
+        self, tiles: list[tuple[int, int]], axes: list[tuple[QPointF, QPointF]]
+    ) -> None:
+        """MirrorDialog's live preview: shades `tiles` (the exact source
+        slice -- MirrorPlan.source_indices, not an approximation) via
+        _tile_polygon, same one-QPainterPath-per-call shape as
+        _update_highlight(), plus zero or more straight `axes` line items
+        (Flat style only -- see MirrorDialog._axis_lines' docstring for why
+        Stepped/Sloped skip the line and rely on the shading alone).
+        Rebuilt wholesale on every call rather than diffed in place, since
+        MirrorDialog calls this on every option change and a whole-dialog
+        rebuild is cheap next to plan_mirror() itself."""
+        self.clear_mirror_overlay()
+        path = QPainterPath()
+        for tx, ty in tiles:
+            polygon = self._tile_polygon(tx, ty)
+            if polygon is not None:
+                path.addPolygon(polygon)
+        if not path.isEmpty():
+            self._mirror_overlay_outline_item = self.scene().addPath(
+                path, self._mirror_overlay_outline_pen
+            )
+            self._mirror_overlay_fill_item = self.scene().addPath(
+                path, QPen(Qt.NoPen), QBrush(self._mirror_overlay_fill_color)
+            )
+            self._mirror_overlay_outline_item.setZValue(self.MIRROR_OVERLAY_Z)
+            self._mirror_overlay_fill_item.setZValue(self.MIRROR_OVERLAY_Z)
+        for a, b in axes:
+            item = self.scene().addLine(a.x(), a.y(), b.x(), b.y(), self._mirror_axis_pen)
+            item.setZValue(self.MIRROR_OVERLAY_Z)
+            self._mirror_axis_items.append(item)
+
+    def clear_mirror_overlay(self) -> None:
+        if self._mirror_overlay_outline_item is not None:
+            self.scene().removeItem(self._mirror_overlay_outline_item)
+            self.scene().removeItem(self._mirror_overlay_fill_item)
+            self._mirror_overlay_outline_item = None
+            self._mirror_overlay_fill_item = None
+        for item in self._mirror_axis_items:
+            self.scene().removeItem(item)
+        self._mirror_axis_items = []
 
     def _ruler_anchor(self, tile: tuple[int, int]) -> QPointF | None:
         """The point a Ruler endpoint pins to: the centre of that tile's real
@@ -1239,20 +1656,20 @@ class MapView(QGraphicsView):
         at a constant size, where scene-space text would be sheared and
         sub-pixel at fit-to-view."""
         scene = self.scene()
-        self._ruler_line_item = scene.addLine(QLineF(), self.RULER_PEN)
+        self._ruler_line_item = scene.addLine(QLineF(), self._ruler_pen)
         self._ruler_line_item.setZValue(self.RULER_Z)
         self._ruler_end_items = []
         for _ in range(2):
-            item = scene.addPolygon(QPolygonF(), self.RULER_PEN)
+            item = scene.addPolygon(QPolygonF(), self._ruler_pen)
             item.setZValue(self.RULER_Z)
             self._ruler_end_items.append(item)
         label = scene.addSimpleText("")
         font = label.font()
-        font.setPixelSize(self.RULER_LABEL_FONT_PX)
+        font.setPixelSize(settings.get_ruler_label_font_px())
         font.setBold(True)
         label.setFont(font)
-        label.setBrush(QBrush(self.RULER_LABEL_COLOR))
-        label.setPen(QPen(self.RULER_LABEL_OUTLINE, 0))
+        label.setBrush(QBrush(self._ruler_label_color))
+        label.setPen(QPen(self._ruler_label_outline, 0))
         label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         label.setZValue(self.RULER_LABEL_Z)
         self._ruler_label_item = label
@@ -1354,6 +1771,12 @@ class MapView(QGraphicsView):
         self._highlight_fill_item = None
         self._pan_highlight_item = None
         self._highlight_key = None
+        # scene().clear() destroyed these too -- see show_mirror_overlay()'s
+        # own docstring for why MirrorDialog must re-create rather than
+        # reuse after any re-render.
+        self._mirror_overlay_outline_item = None
+        self._mirror_overlay_fill_item = None
+        self._mirror_axis_items = []
         # Mandatory, not tidiness: scene().clear() destroys the C++ object,
         # and resizeEvent still reaches _capture_zoom_baseline with no map
         # loaded. File > Close then a resize would call a method on a deleted
@@ -1388,6 +1811,16 @@ class MapView(QGraphicsView):
         self._marquee_item = None
         self._marquee_start_pos = None
         self._unit_index = None
+        # scene().clear() destroyed these too. Dropped outright, unlike
+        # set_source()'s own region handling below: File > Close leaves no
+        # map for a region to refer to, so there is no "survives" case here.
+        self._select_anchor = None
+        self._select_current = None
+        self._region = None
+        self._region_fill_item = None
+        self._region_outline_item = None
+        self._region_ants_item = None
+        self._region_ant_timer.stop()
         self._stroke_active = False
         self._stroke_touched = set()
 
@@ -1409,6 +1842,16 @@ class MapView(QGraphicsView):
         if self._canvas_item is None:
             return
         self._canvas_item.invalidate_region(bbox)
+
+    def set_paint_timed_callback(self, callback) -> None:
+        """Installs or (with None) removes the current canvas item's paint
+        stopwatch. See set_source()'s on_paint_timed. Silently no-ops with
+        no canvas item, matching invalidate_region() above: File > Close
+        drops the item, and a caller clearing a callback it installed
+        shouldn't have to care whether the document is still open."""
+        if self._canvas_item is None:
+            return
+        self._canvas_item._on_paint_timed = callback
 
     def refresh_canvas_dims(self) -> None:
         """Re-syncs the canvas item's boundingRect AND this view's own scene
@@ -1469,8 +1912,8 @@ class MapView(QGraphicsView):
         scale = _max_axis_scale(device_transform) * self.devicePixelRatioF()
         cache = item._cache
         mip = cache.mip_for_scale(scale)
-        scene_rect = self.mapToScene(self.viewport().rect()).boundingRect().intersected(item.boundingRect())
-        if scene_rect.isEmpty():
+        scene_rect = self._current_scene_rect()
+        if scene_rect is None:
             return None
         level_rect = level_rect_for(cache, mip, scene_rect)
         if level_rect is None:
@@ -1478,6 +1921,68 @@ class MapView(QGraphicsView):
         x0, y0, x1, y1 = level_rect
         cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, x0, y0, x1, y1)
         return mip, cx0, cy0, cx1, cy1
+
+    def _current_scene_rect(self) -> QRectF | None:
+        """The scene-space rect the viewport currently covers, intersected
+        with the canvas item's own boundingRect() -- the mip-independent
+        half of viewport_chunk_target()'s projection, shared with
+        viewport_chunk_target_at() below (2026-09-07 plan's load-time
+        margin warm, Step 1) so there is only one copy of this
+        mapToScene(...).boundingRect().intersected(...) line. None with no
+        canvas item or a degenerate (empty) viewport."""
+        item = self._canvas_item
+        if item is None:
+            return None
+        rect = self.mapToScene(self.viewport().rect()).boundingRect().intersected(item.boundingRect())
+        return None if rect.isEmpty() else rect
+
+    def viewport_chunk_target_at(self, mip: int) -> tuple[int, int, int, int] | None:
+        """(cx0, cy0, cx1, cy1) -- the chunk range level `mip` would show if
+        the viewport were looking at it right now, projecting the SAME
+        on-screen scene rect viewport_chunk_target() uses for the live mip
+        (2026-09-07 plan's load-time margin warm, Step 1). Unlike that
+        method, this never reads the device transform or picks a mip
+        itself -- `mip` is the caller's, so this is safe to call for a
+        level the viewport isn't actually showing (a neighbour level
+        that hasn't been visited yet).
+
+        None with no canvas item or a degenerate/empty projection at that
+        mip. `mip` itself must be one this cache's ladder actually
+        enumerates (mip_scale()/canvas_dims() raise KeyError otherwise) --
+        every real caller gets `mip` from level_warm.neighbour_mips(),
+        which already clamps to the enumerated ladder, so this is never
+        asked about a mip outside it."""
+        item = self._canvas_item
+        if item is None:
+            return None
+        cache = item._cache
+        scene_rect = self._current_scene_rect()
+        if scene_rect is None:
+            return None
+        level_rect = level_rect_for(cache, mip, scene_rect)
+        if level_rect is None:
+            return None
+        x0, y0, x1, y1 = level_rect
+        return cache.chunk_index_range(mip, x0, y0, x1, y1)
+
+    def viewport_chunk_span(self, cache, mip: int) -> tuple[int, int]:
+        """(chunks_wide, chunks_tall) -- how many chunks a REAL viewport at
+        `mip` would cover, sized from THIS view's own on-screen dimensions
+        (device pixels) rather than from whatever scene-space rect happens
+        to be visible right now. At least 1x1.
+
+        This is deliberately independent of the live zoom/mip:
+        viewport_chunk_target_at()'s raw projection reuses the CURRENT
+        scene rect verbatim, which at a fit-to-view zoom (every
+        load_scenario() open) is the whole map -- margin_warm.
+        bounded_chunk_range() is what turns that raw projection plus this
+        span into an actual viewport-sized patch; see its own docstring
+        for why the two are split rather than done in one method here."""
+        dpr = self.devicePixelRatioF()
+        rect = self.viewport().rect()
+        chunks_w = max(1, math.ceil(rect.width() * dpr / cache.chunk_px))
+        chunks_h = max(1, math.ceil(rect.height() * dpr / cache.chunk_px))
+        return chunks_w, chunks_h
 
     def _note_viewport_changed(self) -> None:
         """Starts the viewport-changed poll if it isn't already running --
@@ -1520,6 +2025,7 @@ class MapView(QGraphicsView):
         proj: "iso_geometry.IsoProjection | None" = None,
         unit_index=None,
         reset_view: bool = True,
+        on_paint_timed: Callable[[float, int], None] | None = None,
     ) -> None:
         """Phase B-C rename/generalization of the old set_image(); Phase B-E
         drops that method's img parameter entirely -- both styles now paint
@@ -1546,6 +2052,12 @@ class MapView(QGraphicsView):
         an approximation of the same map area (same zoom-relative-to-fit,
         same fractional position in the new map_rect), not pixel-exact.
 
+        on_paint_timed (default None, i.e. untimed) is handed straight to the
+        new MapCanvasItem, which then calls it with (elapsed_seconds, mip) on
+        every paint until it is cleared again via
+        set_paint_timed_callback(None). ViewerWindow uses it to report the
+        deferred first-paint composite a load's own timings can't see.
+
         Kept as one method (dispatching on terrain_style), not two, matching
         this class's existing internal-dispatch convention (_pick_tile,
         _pos_on_map, set_isometric already branch on self._terrain_style
@@ -1571,6 +2083,9 @@ class MapView(QGraphicsView):
         self._highlight_fill_item = None
         self._pan_highlight_item = None
         self._highlight_key = None
+        self._mirror_overlay_outline_item = None
+        self._mirror_overlay_fill_item = None
+        self._mirror_axis_items = []
         # The Ruler's items went with scene().clear(). The measurement is
         # dropped rather than re-anchored for the same reason the selection
         # below is: set_source() means a new scenario or a style switch, and
@@ -1590,8 +2105,26 @@ class MapView(QGraphicsView):
         self._marquee_item = None
         self._marquee_start_pos = None
         self._unit_index = unit_index
+        # scene().clear() destroyed the region's items too, but -- unlike the
+        # ruler/unit selection above -- the region ITSELF is only dropped on
+        # reset_view=True ("a different document is now on screen"; the old
+        # tile rect may not even be on the new map). A same-document style
+        # switch keeps it: the map's own tile grid hasn't changed, so a
+        # previously selected rectangle is still exactly as meaningful,
+        # just re-projected. Rebuilt (not merely kept) at the end of this
+        # method, once _map_width/_map_height/_iso_elevations/_iso_proj all
+        # match the new render.
+        self._select_anchor = None
+        self._select_current = None
+        if reset_view:
+            self._region = None
+        self._region_fill_item = None
+        self._region_outline_item = None
+        self._region_ants_item = None
+        self._region_ant_timer.stop()
 
         self._canvas_item = MapCanvasItem(cache)
+        self._canvas_item._on_paint_timed = on_paint_timed
         self.scene().addItem(self._canvas_item)
         w, h = cache.canvas_dims()
 
@@ -1629,6 +2162,12 @@ class MapView(QGraphicsView):
             tile_px=tile_pixels,
         )
         self._edge_tick_item.setVisible(self._edge_ticks_enabled)
+        # Not read at construction time by EdgeTickItem itself (it defaults
+        # to edge_ticks.LABEL_FONT_PX), so a persisted non-default setting
+        # needs this explicit push -- otherwise it would only take effect
+        # after the user next touched the Appearance spinbox in the same
+        # session, not on the next map open.
+        self._edge_tick_item.set_label_font_px(settings.get_distance_tick_font_px())
         self.scene().addItem(self._edge_tick_item)
 
         # Ends with set_isometric(), which funnels into
@@ -1639,6 +2178,11 @@ class MapView(QGraphicsView):
         # its own no-argument fit-to-view behavior.
         self._pending_view_restore = view_restore
         self.set_isometric(self._isometric)
+        # Rebuild (not merely keep) the region overlay now that the new
+        # canvas item/projection exist -- see this method's own region
+        # comment above for why self._region itself survives a style switch
+        # while its scene items do not.
+        self._update_region_overlay()
         # Forces the next poll fire to notify regardless of what it finds:
         # without this, a cache swap whose new viewport_chunk_target()
         # happens to equal the OLD document's last-recorded one (same mip,
@@ -2057,6 +2601,17 @@ class MapView(QGraphicsView):
                 # readable across a Stepped skirt face (_pick_tile returns
                 # None there, a documented residual).
                 self._clear_pan_highlight()
+            return
+        if self._tool == TOOL_SELECT:
+            self._clear_highlight()
+            self._clear_pan_highlight()
+            self._clear_unit_hover()
+            if self._select_anchor is not None and tile is not None:
+                # Same "hold the last valid tile" convention as the Ruler
+                # above: an off-map move mid-drag must not collapse the
+                # preview, since the drag legitimately runs off the edge.
+                self._select_current = tile
+                self._update_region_overlay()
             return
         # Gated on MODE, not tool, so a unit pick costs nothing per pixel in
         # View/Terrain/Triggers. Both TILE highlights are cleared here: Units

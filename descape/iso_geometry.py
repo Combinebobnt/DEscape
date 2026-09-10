@@ -1405,6 +1405,100 @@ def sloped_quad_indices(
     return dst_y, dst_x, dia_src_y[uv_idx], dia_src_x[uv_idx], uv_idx
 
 
+@lru_cache(maxsize=4096)
+def sloped_tile_edge_indices(
+    tile_px: int, side: str, d_nw: int, d_ne: int, d_sw: int, d_se: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """tile_edge_indices()'s warped counterpart -- Track C6's farm-drape
+    perimeter stroke, the Sloped analogue of Stepped's farm outline
+    (render.py's SpriteLayer.farm_by_tile / _FARM_EDGE_BITS).
+
+    Same `side` vocabulary, same "left"/"right" from the column's BOTTOM
+    edge (run_start + run_len - 1, inclusive) and "up_left"/"up_right" from
+    its TOP edge (run_start) -- NOT sloped_tile_outline's exclusive
+    `y0 + run_len`, which emits a polygon boundary rather than a pixel row;
+    copying that expression here would paint one row below the quad and
+    silently break identity with the equal-corner case below.
+
+    Delegates to tile_edge_indices(tile_px, side) verbatim on the
+    normalized-equal-corner case, exactly as sloped_quad_indices delegates
+    to diamond_indices -- measured exact match on both edges at every
+    shipped tile_px (tests/test_sloped_geometry.py). Otherwise reuses
+    _sloped_column_runs' own `cols` (already the "has pixels" list
+    _diamond_column_edges' `used` mask picks out, so no separate filter is
+    needed) and tile_edge_indices' own `in_side` split, so a caller keeps
+    the same four (side, nx, ny) tuples it already has for Stepped.
+
+    Returns (dst_y, dst_x) in the frame sloped_quad_indices' dst_y/dst_x
+    use, -d_min normalization included -- the caller places it at the same
+    base_x/base_y it paints that tile's terrain at.
+
+    Disjoint across adjacent tiles by inheritance, not by a fresh proof:
+    these edges are a strict subset of sloped_quad_indices' own pixels, and
+    test_sloped_geometry.py::test_adjacent_tiles_abut_exactly already
+    proves adjacent quads don't overlap.
+
+    maxsize=4096, not sloped_quad_indices' 1024: the payload here is two
+    short int arrays (at most 2*half_w entries each, ~1 KB), negligible
+    next to that function's 61-246 KB 5-tuple, so a larger cache costs
+    nothing to cover this function's own working set (that function's
+    measured 855 entries, times 4 sides)."""
+    if side not in ("left", "right", "up_left", "up_right"):
+        raise ValueError(f"side must be one of left/right/up_left/up_right, got {side!r}")
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+    nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    if nw == 0 and ne == 0 and sw == 0 and se == 0:
+        return tile_edge_indices(tile_px, side)
+    half_w, _half_h = half_dims(tile_px)
+    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
+    in_side = (cols <= half_w) if side in ("left", "up_left") else (cols >= half_w)
+    edge_x = cols[in_side]
+    if side in ("left", "right"):
+        edge_y = run_start[edge_x] + run_len[edge_x] - 1
+    else:
+        edge_y = run_start[edge_x]
+    return edge_y.astype(np.int64), edge_x.astype(np.int64)
+
+
+@lru_cache(maxsize=8192)
+def index_extent(producer, *key) -> tuple[int, int, int, int] | None:
+    """(y_lo, y_hi, x_lo, x_hi), INCLUSIVE, of the destination index arrays
+    `producer(*key)` returns, or None when that set is empty. Keyed on the
+    producer object plus its own key, so it rides the very arrays that
+    producer's own lru_cache already holds rather than rebuilding them.
+
+    ONE memo serves all nine index producers above (diamond_indices,
+    skirt_quad_indices, shadow_quad_indices, shadow_apex_indices,
+    seam_edge_indices, seam_apex_indices, tile_edge_indices,
+    sloped_quad_indices, sloped_tile_edge_indices), which is legal because
+    every one of them returns dst_y as element 0 and dst_x as element 1,
+    whatever else trails behind. A tenth tuple element on each producer
+    would have been the alternative, but every unpack site in render.py is
+    positional and would break.
+
+    Computed with min()/max(), NEVER read off [0]/[-1]: no producer's dst
+    arrays are globally sorted. skirt, shadow and sloped all emit
+    column-major, and shadow's dst_y descends within a column.
+
+    maxsize 8192 covers the sum of the producers' own caches (8 + 256*5 +
+    1024 + 4096 = 6664), so an extent can never outlive its arrays' cache
+    slot by more than the eviction order.
+
+    sloped_quad_indices' equal-corner branch hands back diamond_indices'
+    own arrays, and sloped_tile_edge_indices' equal-corner branch aliases
+    tile_edge_indices'; both key shapes therefore memoize to the same
+    values here, which is correct, just duplicated.
+
+    The bounds are in the producer's own unoffset frame. Every caller folds
+    its offsets (`offset`, `rise_px`, `d_min`) into the scalar base_y/base_x
+    it passes alongside the dst arrays, and none of them translates a dst
+    array itself, so the unoffset extent plus those same scalars is exact."""
+    dst_y, dst_x = producer(*key)[:2]
+    if dst_y.size == 0:
+        return None
+    return int(dst_y.min()), int(dst_y.max()), int(dst_x.min()), int(dst_x.max())
+
+
 @lru_cache(maxsize=256)
 def sloped_tile_outline(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
@@ -1444,6 +1538,34 @@ def sloped_tile_outline(
     # Reversed so the bottom is walked right-to-left, closing the ring: the
     # top ends at the rightmost column's right edge and the reversed bottom
     # starts there, leaving one vertical edge at each end of the tile.
+    return tuple(top + bottom[::-1])
+
+
+def sloped_tile_outline_coarse(
+    tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
+) -> tuple[tuple[int, int], ...]:
+    """A cheaper approximation of sloped_tile_outline() for the edit-mode
+    brush highlight only (draw-perf plan item 3): one point per column per
+    edge instead of that function's two (c, y0), (c+1, y0) pair, halving
+    the ring to roughly 2 points/column against its ~4. This drops the
+    vertical step between adjacent columns, so it is NOT pixel-exact --
+    fine for a hover cue that only needs to look right, wrong for anything
+    that must agree with the pick plane. Every real caller other than
+    MapView._update_highlight's brush footprint must keep calling
+    sloped_tile_outline() itself; see that function's own docstring and
+    tests/test_sloped_pick.py::test_tile_outline_spans_exactly_the_painted_pixels,
+    which pins the exact form and must never be loosened to match this
+    one."""
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+    nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
+
+    cols_list = cols.tolist()
+    top = [(c, int(run_start[c])) for c in cols_list]
+    bottom = [(c, int(run_start[c]) + int(run_len[c])) for c in cols_list]
+    last = cols_list[-1] + 1
+    top.append((last, int(run_start[cols_list[-1]])))
+    bottom.append((last, int(run_start[cols_list[-1]]) + int(run_len[cols_list[-1]])))
     return tuple(top + bottom[::-1])
 
 

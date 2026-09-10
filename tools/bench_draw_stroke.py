@@ -28,13 +28,13 @@ a cause instead of guessed at:
                     Stepped only -- folded into refresh_sources for Sloped,
                     always 0 for Flat (no building_bboxes concept there).
   bystander_scan   composite_rect_iso()/composite_rect_sloped()'s own
-                    candidates-vs-building_bboxes walk. Not a separate
-                    function in descape/render.py, so this bench replicates
-                    that exact block (see _bystander_scan_ms below) purely
-                    to attribute its cost -- it is not on any real code
-                    path, just timed the same way. Always 0 for Flat.
+                    candidates-vs-building_bboxes merge, timed by calling
+                    render._bystander_candidates(), the real shared helper,
+                    with the real chunk-bucketed grid, so this figure tracks
+                    whatever that helper actually costs rather than a copy
+                    of it that can drift. Always 0 for Flat.
   composite        the residual: the real _composite_rect() call's own
-                    time, minus the bystander replicate above.
+                    time, minus the bystander figure above.
 
 ms/step is felt latency, the number to optimize. ms/dirty-tile divides by
 the count that matters for the cost model: stroke_dirty_indices dedupes the
@@ -54,7 +54,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import iso_geometry
+from descape import iso_geometry, render
 from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
 from descape.edit_history import EditHistory, tile_state
 from descape.render import (
@@ -81,19 +81,19 @@ def _ms(seconds: float) -> float:
     return seconds * 1000
 
 
-def _bystander_scan_ms(candidates, building_bboxes, x0, y0, x1, y1) -> float:
-    """Replicates composite_rect_iso()/composite_rect_sloped()'s own
-    bystander block for timing only -- see this module's docstring. Not a
-    real call site; both functions inline this identically rather than
-    sharing a helper, so this bench does the same duplication they do."""
+def _bystander_scan_ms(candidates, building_bboxes, grid, x0, y0, x1, y1, w) -> float:
+    """Times render._bystander_candidates() itself: the real helper both
+    composites call, with the real chunk-bucketed grid, not a replicate.
+
+    It used to inline a copy of the block, back when the two composites
+    duplicated it and there was nothing to call. A copy is now wrong rather
+    than merely redundant: the real path's cost went to near zero with the
+    grid while a copy still walks every entry, so the composite column below
+    (this figure subtracted from the real _composite_rect time) would
+    under-report by whatever the copy cost."""
     t0 = time.perf_counter()
     if building_bboxes:
-        seen = {(int(cx), int(cy)) for cx, cy in candidates}
-        _bystanders = [
-            (px, py)
-            for (px, py), (ux0, uy0, ux1, uy1) in building_bboxes.items()
-            if (px, py) not in seen and ux0 < x1 and ux1 > x0 and uy0 < y1 and uy1 > y0
-        ]
+        render._bystander_candidates(candidates, building_bboxes, grid, x0, y0, x1, y1, w)
     return _ms(time.perf_counter() - t0)
 
 
@@ -161,18 +161,21 @@ def _patch_phased(cache, style: str, bbox, elevation_changed: set | None = None)
                     t0 = time.perf_counter()
                     lvl = cache._level(mip)
                     phases["level_rebuild"] += _ms(time.perf_counter() - t0)
-                    proj, building_bboxes = lvl.proj, lvl.building_bboxes
+                    proj, building_bboxes, grid = lvl.proj, lvl.building_bboxes, lvl.bystander_grid
                 elif style == "sloped":
-                    proj, building_bboxes = cache.proj, cache.building_bboxes
+                    proj, building_bboxes, grid = cache.proj, cache.building_bboxes, cache.bystander_grid
                 else:
-                    proj = building_bboxes = None
+                    proj = building_bboxes = grid = None
 
                 if proj is not None:
+                    map_w = cache.scenario.map_manager.map_width
                     candidates = iso_geometry.tiles_in_screen_rect(
-                        ix0, iy0, ix1, iy1, cache.scenario.map_manager.map_width,
+                        ix0, iy0, ix1, iy1, map_w,
                         cache.scenario.map_manager.map_height, proj,
                     )
-                    phases["bystander_scan"] += _bystander_scan_ms(candidates, building_bboxes, ix0, iy0, ix1, iy1)
+                    phases["bystander_scan"] += _bystander_scan_ms(
+                        candidates, building_bboxes, grid, ix0, iy0, ix1, iy1, map_w
+                    )
 
                 t0 = time.perf_counter()
                 patched = cache._composite_rect(mip, ix0, iy0, ix1, iy1)

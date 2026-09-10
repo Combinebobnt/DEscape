@@ -35,8 +35,17 @@ pytestmark = [
 # throughout, where either action stays both hidden AND disabled, which
 # would fail a param- or brush-visibility assertion for a reason that has
 # nothing to do with what this file tests. See tests/test_unit_edit_viewer.py
-# for Units-mode tools' own coverage.
-_TERRAIN_MODE_TOOLS = [t for t in settings.TOOLS if t.modes != ("units",)]
+# for Units-mode tools' own coverage. Eyedropper is also excluded: it has
+# param_widget == "" like Elevate, but deliberately shows BOTH single-valued
+# params rather than neither -- see test_eyedropper.py's own visibility test,
+# and _update_tool_enabled()'s eyedropper special-case comment. Select is
+# excluded for the same reason: param_widget == "" like Elevate, but shows
+# its own param group (the three paste-filter checkboxes, gated on
+# _current_tool == "select" rather than on ToolDef.param_widget) -- see
+# tests/test_region_select.py's own visibility test.
+_TERRAIN_MODE_TOOLS = [
+    t for t in settings.TOOLS if t.modes != ("units",) and t.tool_id not in ("eyedropper", "select")
+]
 
 # Which of the two single-valued params (if either) is expected to be
 # visible for each tool once a square map is loaded and Terrain mode is active.

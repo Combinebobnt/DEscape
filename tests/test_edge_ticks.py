@@ -9,13 +9,18 @@ than assumed:
    four grid extremes, exactly, in integers. That function is used as the
    ORACLE, never a hand-typed expected list. The two must not be able to
    drift apart silently.
-2. scene_pad(s) * s >= sqrt(2) * DEVICE_REACH_PX, and DEVICE_REACH_PX
-   dominates everything the item actually draws. The sqrt(2) matters: the
-   obvious form of this check (>= DEVICE_REACH_PX, no factor) still passes
-   with PAD_SAFETY cut to 1.0, which breaks containment under Flat's
-   scale(1, 0.5) + rotate(-45) where the smallest singular value is
-   sqrt(0.5) of the scale the caller measures.
+2. scene_pad(s, font_px) * s >= sqrt(2) * device_reach_px(font_px), and
+   device_reach_px(font_px) dominates everything the item actually draws,
+   at every legal font_px. The sqrt(2) matters: the obvious form of this
+   check (>= device_reach_px, no factor) still passes with PAD_SAFETY cut
+   to 1.0, which breaks containment under Flat's scale(1, 0.5) +
+   rotate(-45) where the smallest singular value is sqrt(0.5) of the scale
+   the caller measures.
 3. The LOD ladder drops labels strictly before minors, and the edge last.
+4. label_box_px/label_center_px/device_reach_px reproduce today's literal
+   constants exactly at font_px=12, and stay exact (not merely close) at
+   every other legal font_px, since they're multiply-before-divide rather
+   than a ratio constant.
 """
 
 from __future__ import annotations
@@ -190,13 +195,20 @@ def test_a_480_at_the_default_interval_is_388_ticks() -> None:
 _FLAT_ISO_MIN_SINGULAR_RATIO = math.sqrt(0.5)
 
 
+_FONT_PX_RANGE = tuple(range(8, 25))  # settings.DISTANCE_TICK_FONT_PX_MIN..MAX inclusive
+
+
 @pytest.mark.parametrize("scale", [1e-4, 0.001, 0.04, 0.5, 1.0, 7.5, 400.0])
-def test_the_pad_contains_the_device_reach_under_flats_worst_axis(scale: float) -> None:
+@pytest.mark.parametrize("font_px", _FONT_PX_RANGE)
+def test_the_pad_contains_the_device_reach_under_flats_worst_axis(scale: float, font_px: int) -> None:
     """The discriminating form. Dropping the ratio (asserting only
-    >= DEVICE_REACH_PX) passes even with PAD_SAFETY cut to 1.0, which is
-    exactly the regression this guards."""
-    pad = edge_ticks.scene_pad(scale)
-    assert pad * scale * _FLAT_ISO_MIN_SINGULAR_RATIO >= edge_ticks.DEVICE_REACH_PX
+    >= device_reach_px(font_px)) passes even with PAD_SAFETY cut to 1.0,
+    which is exactly the regression this guards. Parametrized over every
+    legal font_px: the sqrt(2)/PAD_SAFETY containment argument is
+    font-independent in its derivation but not proven so unless it's
+    actually checked across the range."""
+    pad = edge_ticks.scene_pad(scale, font_px)
+    assert pad * scale * _FLAT_ISO_MIN_SINGULAR_RATIO >= edge_ticks.device_reach_px(font_px)
 
 
 def test_pad_safety_clears_the_flat_isometric_floor() -> None:
@@ -205,27 +217,53 @@ def test_pad_safety_clears_the_flat_isometric_floor() -> None:
 
 @pytest.mark.parametrize("scale", [0.0, -1.0])
 def test_a_non_positive_scale_yields_no_pad_rather_than_dividing(scale: float) -> None:
-    assert edge_ticks.scene_pad(scale) == 0.0
+    assert edge_ticks.scene_pad(scale, edge_ticks.LABEL_FONT_PX) == 0.0
 
 
 def test_the_pad_grows_as_the_view_zooms_out() -> None:
-    assert edge_ticks.scene_pad(0.01) > edge_ticks.scene_pad(1.0) > edge_ticks.scene_pad(100.0)
+    font_px = edge_ticks.LABEL_FONT_PX
+    assert edge_ticks.scene_pad(0.01, font_px) > edge_ticks.scene_pad(1.0, font_px) > edge_ticks.scene_pad(
+        100.0, font_px
+    )
 
 
-def test_device_reach_dominates_every_mark_the_item_draws() -> None:
+@pytest.mark.parametrize("font_px", _FONT_PX_RANGE)
+def test_device_reach_dominates_every_mark_the_item_draws(font_px: int) -> None:
     """Each drawn element's furthest device-space distance from its anchor,
-    re-derived here rather than copied from the constant's own expression."""
-    label_far_corner = edge_ticks.LABEL_CENTER_PX + math.hypot(
-        edge_ticks.LABEL_BOX_W_PX, edge_ticks.LABEL_BOX_H_PX
-    ) / 2.0
-    assert edge_ticks.DEVICE_REACH_PX >= edge_ticks.MINOR_TICK_PX
-    assert edge_ticks.DEVICE_REACH_PX >= edge_ticks.MAJOR_TICK_PX
-    assert edge_ticks.DEVICE_REACH_PX >= label_far_corner
+    re-derived here rather than copied from the function's own expression."""
+    box_w, box_h = edge_ticks.label_box_px(font_px)
+    label_center = edge_ticks.label_center_px(font_px)
+    label_far_corner = label_center + math.hypot(box_w, box_h) / 2.0
+    reach = edge_ticks.device_reach_px(font_px)
+    assert reach >= edge_ticks.MINOR_TICK_PX
+    assert reach >= edge_ticks.MAJOR_TICK_PX
+    assert reach >= label_far_corner
     assert edge_ticks.MAJOR_TICK_PX > edge_ticks.MINOR_TICK_PX
     # The gap is a real gap: the label box's NEAR edge clears the major tick.
-    assert edge_ticks.LABEL_CENTER_PX - edge_ticks.LABEL_BOX_H_PX / 2.0 == (
-        edge_ticks.MAJOR_TICK_PX + edge_ticks.LABEL_GAP_PX
-    )
+    # approx, not ==: label_center and box_h are each their own independent
+    # float computation, and their difference can land a ULP off the direct
+    # sum even though both derive from the same multiply-before-divide value.
+    assert label_center - box_h / 2.0 == pytest.approx(edge_ticks.MAJOR_TICK_PX + edge_ticks.LABEL_GAP_PX)
+
+
+def test_label_box_and_derived_geometry_are_exact_at_every_font_px_no_drift() -> None:
+    """Multiply-before-divide (font_px * 40 / 12), not a ratio constant
+    ((40 / 12) * font_px): the former is exact by construction at every
+    integer font_px in [8, 24] since 12 divides 480 and 192 evenly, while
+    the latter disagrees by a ULP at 10, 14 and 20. Checked by `==`, not
+    pytest.approx, since the whole point is no drift -- this is the test
+    that would catch a naive ratio-constant implementation red."""
+    for font_px in _FONT_PX_RANGE:
+        box_w, box_h = edge_ticks.label_box_px(font_px)
+        assert box_w == font_px * 40.0 / 12.0
+        assert box_h == font_px * 16.0 / 12.0
+
+    # At the default (12), every function reproduces today's literals
+    # exactly -- a config with no distance_tick_font_px key must be
+    # byte-identical to current behaviour.
+    assert edge_ticks.label_box_px(12) == (40.0, 16.0)
+    assert edge_ticks.label_center_px(12) == 23.0
+    assert edge_ticks.device_reach_px(12) == 23.0 + math.hypot(40.0, 16.0) / 2.0
 
 
 # --- obligation 3: the LOD ladder ------------------------------------------

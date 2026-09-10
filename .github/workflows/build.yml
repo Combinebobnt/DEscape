@@ -80,6 +80,14 @@ jobs:
         # tracked as executable in git, and CI shouldn't depend on that.
         run: bash packaging/build_appimage.sh
 
+      - name: Move AppImage to artifact root (Linux)
+        # actions/download-artifact --merge-multiple preserves each
+        # artifact's internal layout, so a nested dist/*.AppImage would land
+        # one level deeper than the other platforms' flat uploads and miss
+        # the release job's artifacts/* glob. Flatten it here instead.
+        if: runner.os == 'Linux'
+        run: mv dist/DEscape-*.AppImage .
+
       - name: Stage licenses into the bundle
         run: |
           python tools/collect_licenses.py --strict --out dist/DEscape/licenses/third-party
@@ -100,7 +108,7 @@ jobs:
           path: |
             DEscape-${{ env.VERSION }}-${{ matrix.label }}.tar.gz
             DEscape-${{ env.VERSION }}-${{ matrix.label }}.zip
-            dist/DEscape-*.AppImage
+            DEscape-*.AppImage
           retention-days: 14
 
   release:

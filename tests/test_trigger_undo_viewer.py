@@ -14,7 +14,7 @@ reach, all of them behaviour changes to already-shipped code:
    caller updates the title itself, which is what makes the move safe; nothing
    pinned that before this file.
 2. **The empty-history no-op still reports itself**, matching the convention
-   paste_tile() and the fill tool spell out: silently doing nothing reads as a
+   paste_region() and the fill tool spell out: silently doing nothing reads as a
    broken keybind.
 3. **trigger_edits is dropped with the document**, or a model would splice one
    file's trigger bytes into the next.
@@ -104,7 +104,7 @@ def test_undo_and_redo_keep_the_edit_actions_in_step() -> None:
 
 def test_undo_with_nothing_to_undo_still_reports_itself() -> None:
     """Silently doing nothing reads as a broken keybind, which is why
-    paste_tile() and the fill tool log their no-ops too."""
+    paste_region() and the fill tool log their no-ops too."""
     window = conftest.shown_window()
     try:
         window.load_scenario(BLANK_FIXTURE)

@@ -9,6 +9,7 @@ once and written straight through to disk on change.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import yaml
@@ -140,6 +141,48 @@ def set_preload_zoom_levels(enabled: bool) -> None:
     _save_config(config)
 
 
+# Draw/Paint Can's Trees and Eye candy toolbar checkboxes -- whether painting
+# a forest terrain auto-places its matching GAIA tree/doodad units, mirroring
+# the in-game editor's own Eye Candy option (descape/terrain_units.py).
+# Persisted, unlike brush size/shape: these change what gets written to the
+# file, so they should survive a restart the way the user left them. Trees
+# defaults on (matches the in-game editor's own default); Eye candy defaults
+# off (it also scatters non-tree doodads on non-forest grass, a bigger visual
+# change a first-time user hasn't asked for).
+_paint_trees: bool | None = None
+_paint_eye_candy: bool | None = None
+
+
+def get_paint_trees() -> bool:
+    global _paint_trees
+    if _paint_trees is None:
+        _paint_trees = bool(_load_config().get("paint_trees", True))
+    return _paint_trees
+
+
+def set_paint_trees(enabled: bool) -> None:
+    global _paint_trees
+    _paint_trees = enabled
+    config = _load_config()
+    config["paint_trees"] = enabled
+    _save_config(config)
+
+
+def get_paint_eye_candy() -> bool:
+    global _paint_eye_candy
+    if _paint_eye_candy is None:
+        _paint_eye_candy = bool(_load_config().get("paint_eye_candy", False))
+    return _paint_eye_candy
+
+
+def set_paint_eye_candy(enabled: bool) -> None:
+    global _paint_eye_candy
+    _paint_eye_candy = enabled
+    config = _load_config()
+    config["paint_eye_candy"] = enabled
+    _save_config(config)
+
+
 # View > Distance Ticks: the ruler strip of tick marks drawn in the void
 # just outside the map's own border, with two persisted halves (whether it
 # is drawn at all, and how many tiles apart the minor ticks sit). Unlike
@@ -264,6 +307,159 @@ def set_elev_step_pct(value: int) -> None:
     config = _load_config()
     config["elev_step_pct"] = value
     config.pop("elev_step_divisor", None)  # fully migrated once set through the new control
+    _save_config(config)
+
+
+# Settings > Appearance's per-element tool overlay colors -- the edit
+# highlight, Pan, Units, Ruler and Select-tool cues that used to be hardcoded
+# MapView class constants (map_view.py). RGB only: unit_select_fill/
+# region_fill's alpha, ruler_label_outline's alpha, and the edit highlight's
+# pulse opacity are tuned legibility/pulse behaviour, not theme, so they stay
+# hardcoded beside the configurable RGB below. Stored as "#rrggbb" strings --
+# this module is Qt-free, and STATUS_OK_COLOR (viewer.py) is already a
+# hex-string precedent. One row per named constant even where two rows share
+# a default (unit_select/unit_select_fill, region_fill/region_ants): each is
+# a genuinely separate paint call and must stay independently overridable.
+OVERLAY_COLORS: list[tuple[str, str, str]] = [
+    ("highlight_outline", "Brush outline", "#ffd700"),
+    ("highlight_fill", "Brush fill", "#ffd700"),
+    ("pan_highlight", "Pan hover outline", "#000000"),
+    ("unit_hover", "Unit hover outline", "#ffffff"),
+    ("unit_select", "Selection outline", "#50aaff"),
+    ("unit_select_fill", "Selection fill", "#50aaff"),
+    ("ruler_line", "Line and endpoints", "#ff8228"),
+    ("ruler_label", "Label text", "#ffbe6e"),
+    ("ruler_label_outline", "Label outline", "#000000"),
+    ("region_fill", "Fill", "#3ce6c8"),
+    ("region_outline", "Outline", "#141414"),
+    ("region_ants", "Marching ants", "#3ce6c8"),
+    ("mirror_overlay", "Map mirroring preview", "#50dcff"),
+]
+_DEFAULT_OVERLAY_COLORS: dict[str, str] = {cid: default for cid, _label, default in OVERLAY_COLORS}
+_OVERLAY_COLOR_LABELS: dict[str, str] = {cid: label for cid, label, _default in OVERLAY_COLORS}
+_overlay_colors: dict[str, str] | None = None
+
+
+def get_overlay_color_label(color_id: str) -> str:
+    return _OVERLAY_COLOR_LABELS.get(color_id, color_id)
+
+
+def _normalize_hex(value: str) -> str:
+    """Lowercased "#rrggbb", accepted case-insensitively. Raises ValueError on
+    anything else -- the membership-gated idiom set_distance_tick_interval
+    uses, generalized from a fixed set of legal values to a fixed shape."""
+    if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        return value.lower()
+    raise ValueError(f"overlay color must be '#rrggbb', got {value!r}")
+
+
+def _load_overlay_colors() -> dict[str, str]:
+    global _overlay_colors
+    if _overlay_colors is None:
+        persisted = _load_config().get("overlay_colors", {})
+        _overlay_colors = dict(_DEFAULT_OVERLAY_COLORS)
+        for color_id, value in persisted.items():
+            if color_id not in _DEFAULT_OVERLAY_COLORS:
+                continue
+            try:
+                _overlay_colors[color_id] = _normalize_hex(value)
+            except ValueError:
+                pass  # malformed -- this id keeps its default, others unaffected
+    return _overlay_colors
+
+
+def get_overlay_color(color_id: str) -> str:
+    return _load_overlay_colors().get(color_id, _DEFAULT_OVERLAY_COLORS.get(color_id, "#000000"))
+
+
+def get_default_overlay_color(color_id: str) -> str:
+    return _DEFAULT_OVERLAY_COLORS.get(color_id, "#000000")
+
+
+def set_overlay_color(color_id: str, value: str) -> None:
+    """Raises ValueError (writing nothing) on a malformed value -- validated
+    before _load_config() so a bad call never touches the file."""
+    normalized = _normalize_hex(value)
+    colors = _load_overlay_colors()
+    colors[color_id] = normalized
+    config = _load_config()
+    config["overlay_colors"] = colors
+    _save_config(config)
+
+
+# The Ruler's on-map measurement label, Settings > Appearance -- previously
+# MapView.RULER_LABEL_FONT_PX, a hardcoded constant hand-bumped once already
+# after in-app feedback (2026-08-26) and likely to be re-litigated again.
+RULER_LABEL_FONT_PX_DEFAULT = 18
+RULER_LABEL_FONT_PX_MIN = 8
+RULER_LABEL_FONT_PX_MAX = 32
+
+_ruler_label_font_px: int | None = None
+
+
+def get_ruler_label_font_px() -> int:
+    """Pixel size of the Ruler's on-map label. Falls back to
+    RULER_LABEL_FONT_PX_DEFAULT if never set or out of range -- the same
+    membership-gated shape get_distance_tick_interval uses, generalized from
+    a fixed set of legal values to a range."""
+    global _ruler_label_font_px
+    if _ruler_label_font_px is None:
+        raw = _load_config().get("ruler_label_font_px")
+        if isinstance(raw, int) and RULER_LABEL_FONT_PX_MIN <= raw <= RULER_LABEL_FONT_PX_MAX:
+            _ruler_label_font_px = raw
+        else:
+            _ruler_label_font_px = RULER_LABEL_FONT_PX_DEFAULT
+    return _ruler_label_font_px
+
+
+def set_ruler_label_font_px(value: int) -> None:
+    if not RULER_LABEL_FONT_PX_MIN <= value <= RULER_LABEL_FONT_PX_MAX:
+        raise ValueError(
+            f"ruler_label_font_px must be {RULER_LABEL_FONT_PX_MIN}-{RULER_LABEL_FONT_PX_MAX}, got {value!r}"
+        )
+    global _ruler_label_font_px
+    _ruler_label_font_px = value
+    config = _load_config()
+    config["ruler_label_font_px"] = value
+    _save_config(config)
+
+
+# The map-edge distance ruler's major-tick numbers, Settings > Appearance --
+# previously edge_ticks.LABEL_FONT_PX, a hardcoded constant. MIN/MAX are
+# 8-24, narrower than the Ruler label's 8-32: edge_ticks.label_box_px's
+# multiply-before-divide exactness is only verified across 8-24, and the
+# label box is sized "with room to spare" for a fixed 3-digit label rather
+# than free-floating text, which leaves less slack than the Ruler's.
+DISTANCE_TICK_FONT_PX_DEFAULT = 12
+DISTANCE_TICK_FONT_PX_MIN = 8
+DISTANCE_TICK_FONT_PX_MAX = 24
+
+_distance_tick_font_px: int | None = None
+
+
+def get_distance_tick_font_px() -> int:
+    """Pixel size of the distance ruler's major-tick numbers. Falls back to
+    DISTANCE_TICK_FONT_PX_DEFAULT if never set or out of range -- same shape
+    as get_ruler_label_font_px."""
+    global _distance_tick_font_px
+    if _distance_tick_font_px is None:
+        raw = _load_config().get("distance_tick_font_px")
+        if isinstance(raw, int) and DISTANCE_TICK_FONT_PX_MIN <= raw <= DISTANCE_TICK_FONT_PX_MAX:
+            _distance_tick_font_px = raw
+        else:
+            _distance_tick_font_px = DISTANCE_TICK_FONT_PX_DEFAULT
+    return _distance_tick_font_px
+
+
+def set_distance_tick_font_px(value: int) -> None:
+    if not DISTANCE_TICK_FONT_PX_MIN <= value <= DISTANCE_TICK_FONT_PX_MAX:
+        raise ValueError(
+            f"distance_tick_font_px must be {DISTANCE_TICK_FONT_PX_MIN}-{DISTANCE_TICK_FONT_PX_MAX}, got {value!r}"
+        )
+    global _distance_tick_font_px
+    _distance_tick_font_px = value
+    config = _load_config()
+    config["distance_tick_font_px"] = value
     _save_config(config)
 
 
@@ -453,6 +649,23 @@ TOOLS: list[ToolDef] = [
         "cliff", "Cliff", stroke_label="Place cliff", default_key="",
         param_widget="cliff", modes=("terrain",),
     ),
+    # Pick a tile's terrain + elevation into the toolbar params instead of
+    # hunting the Terrain type combo. Reads only -- is_edit_tool=False, no
+    # undo record -- and click_only since a drag has no meaning for a pick.
+    # Terrain-mode only: the unit half is gated on a unit-placement tool
+    # existing first (there is no "current unit type" state to write into).
+    ToolDef(
+        "eyedropper", "Eyedropper", is_edit_tool=False, default_key="I",
+        click_only=True, modes=("terrain",),
+    ),
+    # Phase 2.8's region select: drags a tile rectangle for Copy/Paste Region
+    # to act on. is_edit_tool=False like Eyedropper/Ruler -- the gesture is
+    # neither a stroke nor a click, so it gets its own mousePressEvent branch
+    # in map_view.py instead of riding EDIT_TOOLS/CLICK_TOOLS. Terrain-mode
+    # only even though a region carries units too -- see the phase's own plan
+    # for why (units still copy/paste; they render in every mode regardless
+    # of which mode the rectangle itself is drawn in).
+    ToolDef("select", "Select", is_edit_tool=False, default_key="S", modes=("terrain",)),
     # Measures, never mutates, so is_edit_tool=False puts it alongside Pan
     # rather than the edit tools. It took "R" from Elevate, which moved to the
     # "E" freed by the old mode_edit -> mode_terrain rename; see
@@ -513,9 +726,19 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # this module is deliberately Qt-free, and a first-run macOS user seeing
     # "Ctrl+N" instead of "Cmd+N" as the displayed (not matched) default is
     # an accepted tradeoff.
-    ("edit_copy", "Copy Tile", "Ctrl+C"),
-    ("edit_paste", "Paste Tile", "Ctrl+V"),
+    ("edit_copy", "Copy Region", "Ctrl+C"),
+    ("edit_paste", "Paste Region", "Ctrl+V"),
+    # Phase 2.8: the Select tool's whole-map-select / clear-selection pair.
+    # Not Ctrl+D -- mode_diplomacy already owns it (see that entry below) --
+    # and the collision would fail test_settings.py's default-tier check.
+    ("edit_select_all", "Select All", "Ctrl+A"),
+    ("edit_deselect", "Deselect", "Ctrl+Shift+A"),
     ("edit_settings", "Settings…", ""),
+    # Map mirroring (Stage 1: terrain + elevation). Unbound like
+    # view_distance_ticks below -- no default suggested, just user-bindable.
+    # Kept here (between Edit and View) to match the menu bar's own
+    # File -> Edit -> Map -> View order.
+    ("map_mirror", "Mirror Map…", ""),
     # Moved off Ctrl+I when mode_view claimed it below -- see that entry.
     ("view_isometric", "Isometric View", "Ctrl+Shift+I"),
     # Ships unbound, which needs no collision audit (a duplicate binding

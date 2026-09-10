@@ -820,9 +820,8 @@ def test_display_order_survives_an_unrelated_trigger_save_across_the_corpus(
     scenario_path: Path, tmp_path: Path
 ) -> None:
     """Mirrors test_options_write_path.py's
-    test_exec_order_survives_an_unrelated_option_save_across_the_corpus for
-    the other axis this reorder work touches, and specifically does what that
-    test's name promises but its body does not: constructs a real
+    test_exec_order_survives_an_unrelated_trigger_edit_across_the_corpus for
+    the other axis this reorder work touches: constructs a real
     TriggerEditModel, makes a genuinely unrelated field edit, and saves
     through it -- not a bare passthrough save, which proves nothing about
     whether an edit disturbs display order.

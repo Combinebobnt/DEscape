@@ -44,6 +44,13 @@ def render() -> str:
     )
     keybinds_block = "\n".join(f"  {line}" for line in keybinds_yaml.splitlines())
 
+    overlay_colors_yaml = yaml.safe_dump(
+        {color_id: default for color_id, _label, default in settings.OVERLAY_COLORS},
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    overlay_colors_block = "\n".join(f"  {line}" for line in overlay_colors_yaml.splitlines())
+
     return f"""\
 # Example config.yaml -- copy this file to config.yaml in your OS's
 # DEscape config directory and edit (Linux: $XDG_CONFIG_HOME/DEscape/ or
@@ -124,6 +131,22 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # Omit an entry to leave that action at its default; "" means unbound.
 keybinds:
 {keybinds_block}
+
+# Pixel size of the Ruler's on-map measurement label, Settings > Appearance.
+# Only {settings.RULER_LABEL_FONT_PX_MIN}-{settings.RULER_LABEL_FONT_PX_MAX} are legal; anything else falls back to the default.
+# Default: {settings.RULER_LABEL_FONT_PX_DEFAULT}.
+ruler_label_font_px: {settings.RULER_LABEL_FONT_PX_DEFAULT}
+
+# Pixel size of the map-edge distance ruler's major-tick numbers, Settings >
+# Appearance. Only {settings.DISTANCE_TICK_FONT_PX_MIN}-{settings.DISTANCE_TICK_FONT_PX_MAX} are legal; anything else falls back to the default.
+# Default: {settings.DISTANCE_TICK_FONT_PX_DEFAULT}.
+distance_tick_font_px: {settings.DISTANCE_TICK_FONT_PX_DEFAULT}
+
+# Every tool overlay color (Settings > Appearance), shown here at its
+# default -- see settings.OVERLAY_COLORS for the full id/label/default list.
+# RGB only, as "#rrggbb"; omit an entry to leave that element at its default.
+overlay_colors:
+{overlay_colors_block}
 """
 
 

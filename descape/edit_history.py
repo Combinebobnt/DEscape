@@ -78,6 +78,15 @@ class DiffRecord:
     label: str
     kind: ClassVar[str] = "base"
 
+    def kinds(self) -> frozenset[str]:
+        """Every domain this record touches -- a single-domain record just
+        wraps its own `kind`; CompositeDiffRecord unions its children's. Lets
+        viewer.py branch with `"unit" in record.kinds()` instead of
+        `record.kind == "unit"`, so a composite record (phase 2.8's one-undo-
+        step paste) triggers the same post-move refreshes a plain record of
+        that domain would."""
+        return frozenset({self.kind})
+
     def touched_indices(self) -> list[int]:
         """Tile indices this record changed. Empty for domains that touch no
         tiles -- viewer.py's _apply_dirty() no-ops on an empty list."""
@@ -378,6 +387,68 @@ class MessagesDiffRecord(DiffRecord):
         return []
 
 
+@dataclass
+class CompositeDiffRecord(DiffRecord):
+    """Several records committed by one user gesture, undone/redone as one --
+    phase 2.8's region paste, which can touch terrain+elevation (one
+    TileDiffRecord) and units (one UnitDiffRecord) in a single Ctrl+V and
+    must not cost two Ctrl+Z presses for it.
+
+    require_target() delegates to every child before undo()/redo() moves
+    anything, so a composite with (say) a unit child and no UnitEditModel
+    raises with the cursor untouched rather than partially undoing.
+    """
+
+    children: list[DiffRecord]
+    kind: ClassVar[str] = "composite"
+
+    def kinds(self) -> frozenset[str]:
+        return frozenset().union(*(c.kinds() for c in self.children))
+
+    def touched_indices(self) -> list[int]:
+        indices: list[int] = []
+        for c in self.children:
+            indices.extend(c.touched_indices())
+        return indices
+
+    def require_target(
+        self,
+        tiles: Sequence,
+        triggers: TriggerEditModel | None,
+        options: OptionsEditModel | None = None,
+        units: UnitEditModel | None = None,
+        messages: MessagesEditModel | None = None,
+    ) -> None:
+        for c in self.children:
+            c.require_target(tiles, triggers, options, units, messages)
+
+    def undo(
+        self,
+        tiles: Sequence,
+        triggers: TriggerEditModel | None,
+        options: OptionsEditModel | None = None,
+        units: UnitEditModel | None = None,
+        messages: MessagesEditModel | None = None,
+    ) -> list[int]:
+        indices: list[int] = []
+        for c in reversed(self.children):
+            indices.extend(c.undo(tiles, triggers, options, units, messages))
+        return indices
+
+    def redo(
+        self,
+        tiles: Sequence,
+        triggers: TriggerEditModel | None,
+        options: OptionsEditModel | None = None,
+        units: UnitEditModel | None = None,
+        messages: MessagesEditModel | None = None,
+    ) -> list[int]:
+        indices: list[int] = []
+        for c in self.children:
+            indices.extend(c.redo(tiles, triggers, options, units, messages))
+        return indices
+
+
 class EditHistory:
     """A cursor into a list of DiffRecords, not a pop-stack -- undo/redo move
     the cursor rather than destroying data, which is what keeps "jump to
@@ -450,6 +521,31 @@ class EditHistory:
         bail out of an in-progress stroke if a future caller needs to."""
         self._stroke_before = None
 
+    def build_stroke_record(self, label: str, tiles: Sequence) -> TileDiffRecord | None:
+        """Diffs current tile state against begin_stroke()'s snapshot and
+        returns the TileDiffRecord covering everything that changed, ending
+        the in-progress stroke -- None if nothing actually changed (no
+        phantom record for a stroke that repaints a tile with the terrain it
+        already has).
+
+        Split out of commit_stroke() (which is build_stroke_record() +
+        _push()) so a caller building a CompositeDiffRecord from more than one
+        domain -- phase 2.8's region paste -- can get the built record
+        without it landing on the history stack on its own.
+        """
+        if self._stroke_before is None:
+            raise RuntimeError("build_stroke_record() called with no stroke in progress")
+        before = self._stroke_before
+        self._stroke_before = None
+
+        changes: list[tuple[int, TileState, TileState]] = []
+        for i, t in enumerate(tiles):
+            new = tile_state(t)
+            if new != before[i]:
+                changes.append((i, before[i], new))
+
+        return TileDiffRecord(label, changes) if changes else None
+
     def commit_stroke(self, label: str, tiles: Sequence) -> list[int]:
         """Diffs current tile state against begin_stroke()'s snapshot and
         pushes one DiffRecord covering everything that changed, ending the
@@ -465,22 +561,11 @@ class EditHistory:
         redo invalidation, easy to forget, produces a corrupt timeline if
         missed.
         """
-        if self._stroke_before is None:
-            raise RuntimeError("commit_stroke() called with no stroke in progress")
-        before = self._stroke_before
-        self._stroke_before = None
-
-        changes: list[tuple[int, TileState, TileState]] = []
-        for i, t in enumerate(tiles):
-            new = tile_state(t)
-            if new != before[i]:
-                changes.append((i, before[i], new))
-
-        if not changes:
+        record = self.build_stroke_record(label, tiles)
+        if record is None:
             return []
-
-        self._push(TileDiffRecord(label, changes))
-        return [i for i, _old, _new in changes]
+        self._push(record)
+        return record.touched_indices()
 
     def _push(self, record: DiffRecord) -> None:
         """Redo truncation, append, cursor advance, and overflow bookkeeping --
@@ -524,10 +609,31 @@ class EditHistory:
         captures the "before" side before the mutation runs)."""
         self._push(record)
 
+    def push_tile_record(self, record: TileDiffRecord) -> None:
+        """A TileDiffRecord already built by build_stroke_record() and NOT
+        yet on the stack -- phase 2.8's region paste, when exactly one paste
+        category was checked and the record is pushed directly rather than
+        wrapped in a one-element CompositeDiffRecord (see paste_region()'s
+        own comment). A plain push: the record was already diffed."""
+        self._push(record)
+
     def push_messages_record(self, record: MessagesDiffRecord) -> None:
         """The Messages side's way in. A plain push, same reason as the
         map-options side's: the caller already knows both values, so there
         is nothing to snapshot or diff."""
+        self._push(record)
+
+    def push_composite_record(self, record: CompositeDiffRecord) -> None:
+        """One user gesture spanning more than one domain -- phase 2.8's
+        region paste. A plain push: every child record was already built
+        (build_stroke_record()/commit_unit_edit(..., push=False)) without
+        landing on the stack, so there is nothing left to diff here.
+
+        A composite with an empty children list must never reach here --
+        the same no-phantom-record rule commit_stroke() already enforces for
+        a no-op stroke."""
+        if not record.children:
+            raise ValueError("push_composite_record() called with no children -- push nothing instead")
         self._push(record)
 
     def apply(self, label: str, tiles: Sequence, mutate_fn: Callable[[], None]) -> list[int]:

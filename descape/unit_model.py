@@ -66,7 +66,7 @@ from typing import Sequence
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
-from descape import unit_rotation
+from descape import gate_orientation, render, terrain_palette, unit_rotation
 from descape.edit_history import EditHistory, UnitDiffRecord
 from descape.scenario_io import LoadedScenario
 
@@ -209,6 +209,20 @@ def _player_units_link(manager: UnitManager):
     return next(link for link in manager._link_list if getattr(link, "name", None) == _PLAYER_UNITS_LINK_NAME)
 
 
+def span_low_corner(unit: Unit) -> tuple[int, int]:
+    """The (tile_x, tile_y) low corner of `unit`'s footprint, the anchor
+    set_unit_const() preserves across a swap.
+
+    Deliberately render._span_start() per axis and never unit_tile_bounds(),
+    which clamps to the map: a clamped corner would re-anchor a map-edge gate
+    onto a different tile than it started on. Public because the viewer's
+    map-edge fit check has to measure the same corner the model re-anchors
+    from, rather than re-deriving the parity rule on its own side.
+    """
+    span_x, span_y = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    return render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
+
+
 # The only fields any in-place operation mutates -- add/remove/reassign move
 # whole Unit objects between/within lists rather than editing fields, so
 # PlayerListSnapshot's `units` list (membership + order, by identity) already
@@ -216,15 +230,16 @@ def _player_units_link(manager: UnitManager):
 # plain value tuple restored by field assignment is enough -- no deepcopy
 # budget to worry about the way TriggerSnapshot's `states` has.
 #
-# `rotation` is in here because set_rotation() edits it in place. Leaving it
-# out would make undo restore the BYTES (the blob comes back) while the live
-# Unit object stayed rotated, so the inspector and the render would disagree
-# with what saving would actually write.
-UnitState = tuple[float, float, float, float]
+# `rotation` is in here because set_rotation() edits it in place, and
+# `unit_const` because set_unit_const() does. Leaving either out would make
+# undo restore the BYTES (the blob comes back) while the live Unit object
+# stayed rotated or stayed cycled, so the inspector and the render would
+# disagree with what saving would actually write.
+UnitState = tuple[float, float, float, float, int]
 
 
 def unit_state(unit: Unit) -> UnitState:
-    return (unit.x, unit.y, unit.z, unit.rotation)
+    return (unit.x, unit.y, unit.z, unit.rotation, unit.unit_const)
 
 
 @dataclass
@@ -236,7 +251,7 @@ class PlayerListSnapshot:
     than merely its original owner (the insertion-position rule -- see
     UnitEditModel.reassign's docstring), and unlike triggers there is no
     O(bytes) cost to worry about capturing more than strictly needed, since
-    a UnitState is three floats.
+    a UnitState is four floats and a const.
     """
 
     units: list = field(default_factory=list)
@@ -389,6 +404,44 @@ class UnitEditModel:
         self._blobs[player][index] = None
         self._dirty = True
 
+    def set_unit_const(self, unit: Unit, new_const: int) -> None:
+        """Swaps a gate's `unit_const` for one of its orientation siblings and
+        re-anchors x/y so the footprint keeps the low corner it had.
+
+        The only code anywhere that may change a placed unit's const, and the
+        guard below is what keeps AGENTS.md's gate rule enforced rather than
+        merely documented: a const that is not one of
+        gate_orientation.orientation_siblings()' four is refused loudly, the
+        same contract set_rotation() has for a non-ANGLE const.
+
+        **Re-anchoring is not optional.** A gate's four orientations have four
+        different spans ((4, 1), (1, 4) and two 4x4 diagonals), and every
+        corpus placement sits at `tile + span/2` per axis, so passing x/y
+        through verbatim would leave the gate half a footprint off its own
+        tiles. span_low_corner() forward and render.span_anchor() back is that
+        rule and its exact inverse, which is what makes four steps land on the
+        original coordinates rather than drifting.
+
+        `rotation` and `z` pass through verbatim. A gate's stored rotation is
+        0.0 or the junk sentinel 7.0 and every sibling has angle_count == 1,
+        so normalizing it here would be exactly the violation the hard rule
+        names.
+        """
+        siblings = gate_orientation.orientation_siblings(unit.unit_const)
+        if siblings is None or new_const not in siblings:
+            raise ValueError(
+                f"unit_const {unit.unit_const} cannot become {new_const}: a placed unit's const "
+                f"may only change among a gate's own orientation siblings "
+                f"({siblings if siblings is not None else 'this const is not a gate'})"
+            )
+        player, index = self._locate(unit)
+        low_x, low_y = span_low_corner(unit)
+        new_span = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
+        unit.unit_const = new_const
+        unit.x, unit.y = render.span_anchor(low_x, low_y, *new_span)
+        self._blobs[player][index] = None
+        self._dirty = True
+
     def reassign(self, unit: Unit, new_player: int) -> None:
         """Moves `unit` to `new_player`'s list. Zero re-serialization: the
         unit's blob moves with it and stays non-None, since UnitStruct
@@ -480,6 +533,88 @@ class UnitEditModel:
         self._has_added_units = True
         return unit
 
+    def add_many(self, player: int, specs: Sequence) -> list[Unit]:
+        """Batch counterpart to add(): resolves _reserve_reference_id()'s
+        cost (a walk of all nine player lists) once for the whole batch
+        instead of once per unit. Used only by descape/terrain_units.py's
+        bulk tree/doodad placement, where a large Paint Can fill can add
+        thousands of units in one gesture.
+
+        Each spec supplies exactly the fields terrain_units.UnitAddSpec
+        carries (x, y, unit_const, rotation, initial_animation_frame); every
+        other Unit field takes add()'s own default (z=0.0, status=2,
+        garrisoned_in_id=-1, no caption) since nothing in this feature needs
+        them to vary.
+        """
+        if not 0 <= player <= 8:
+            raise ValueError(f"player must be 0 (GAIA)..8, got {player}")
+        next_id = max(self._next_unit_id, _highest_reference_id(self.loaded.unit_manager) + 1)
+        units = []
+        for spec in specs:
+            units.append(
+                Unit(
+                    player=player,
+                    x=spec.x,
+                    y=spec.y,
+                    z=0.0,
+                    reference_id=next_id,
+                    unit_const=spec.unit_const,
+                    status=2,
+                    rotation=spec.rotation,
+                    initial_animation_frame=spec.initial_animation_frame,
+                    garrisoned_in_id=-1,
+                    caption_string_id=-1,
+                    caption_string="",
+                    uuid=self.loaded._scenario.uuid,
+                )
+            )
+            next_id += 1
+        self.loaded.unit_manager.units[player].extend(units)
+        self._blobs[player].extend([None] * len(units))
+        self._tracked[player].extend(units)
+        self._next_unit_id = next_id
+        self._dirty = True
+        self._has_added_units = True
+        return units
+
+    def remove_many(self, units: Sequence[Unit]) -> None:
+        """Batch counterpart to remove(): builds the whole batch's garrison-
+        reference set once and rebuilds each touched player's three parallel
+        lists in a single filtering pass, instead of remove()'s n x
+        (_locate() scan + referencing() scan + del-with-tail-shift).
+
+        Raises the same UnitEditsUnavailableError as remove() if ANY unit in
+        the batch is referenced by another unit's garrisoned_in_id, checked
+        for the whole batch before anything is removed so a refusal never
+        leaves it partially applied.
+        """
+        if not units:
+            return
+        to_remove = {id(u) for u in units}
+        reference_ids = {u.reference_id for u in units}
+        referencing = [
+            u
+            for player_units in self.loaded.unit_manager.units
+            for u in player_units
+            if id(u) not in to_remove and u.garrisoned_in_id in reference_ids
+        ]
+        if referencing:
+            raise UnitEditsUnavailableError(
+                f"{len(units)} unit(s) in this batch are referenced by garrisoned_in_id on "
+                f"{len(referencing)} other unit(s) -- refusing to remove any of them"
+            )
+
+        for player, tracked in enumerate(self._tracked):
+            keep = [i for i, u in enumerate(tracked) if id(u) not in to_remove]
+            if len(keep) == len(tracked):
+                continue
+            manager_units = self.loaded.unit_manager.units[player]
+            blobs = self._blobs[player]
+            manager_units[:] = [manager_units[i] for i in keep]
+            blobs[:] = [blobs[i] for i in keep]
+            tracked[:] = [tracked[i] for i in keep]
+        self._dirty = True
+
     def referencing(self, unit: Unit) -> list[Unit]:
         """Every OTHER unit whose garrisoned_in_id points at `unit`'s
         reference_id -- the dangling-reference guard remove() enforces,
@@ -537,7 +672,7 @@ class UnitEditModel:
             manager.units[player][:] = list(pls.units)
             self._blobs[player][:] = list(pls.blobs)
             for unit, state in zip(pls.units, pls.states):
-                unit.x, unit.y, unit.z, unit.rotation = state
+                unit.x, unit.y, unit.z, unit.rotation, unit.unit_const = state
             self._tracked[player][:] = list(pls.units)
         # Trap 1 (plan): restore _player by direct assignment or
         # update_unit_player_values(), never the banned `player` property.
@@ -548,9 +683,9 @@ class UnitEditModel:
     def begin_unit_edit(self, players: Sequence[int]) -> None:
         """Snapshot before mutating. `players` is the caller's declaration of
         which player list(s) the upcoming edit will touch: one of
-        set_position/set_rotation/add/remove, or both of reassign's source and
-        destination. Pairs with exactly one commit_unit_edit() or
-        abort_unit_edit().
+        set_position/set_rotation/set_unit_const/add/remove, or both of
+        reassign's source and destination. Pairs with exactly one
+        commit_unit_edit() or abort_unit_edit().
 
         Must be called *before* the mutation -- there is no way to recover
         the "before" state afterwards.
@@ -564,12 +699,19 @@ class UnitEditModel:
         the document back -- call restore() for that."""
         self._pending = None
 
-    def commit_unit_edit(self, label: str, history: EditHistory) -> UnitDiffRecord:
-        """Closes the pair opened by begin_unit_edit() and pushes one record
-        onto `history`. Takes the history rather than returning the record
-        for the caller to push, so the single-history contract (any mutation
-        that sets model dirtiness must push a record) cannot be forgotten at
-        a call site.
+    def commit_unit_edit(self, label: str, history: EditHistory, push: bool = True) -> UnitDiffRecord:
+        """Closes the pair opened by begin_unit_edit() and, by default,
+        pushes one record onto `history`. Takes the history rather than
+        returning the record for the caller to push, so the single-history
+        contract (any mutation that sets model dirtiness must push a record)
+        cannot be forgotten at a call site.
+
+        `push=False` is for exactly one caller: phase 2.8's region paste,
+        which folds this record into a CompositeDiffRecord alongside a tile
+        record so one Ctrl+V is one Ctrl+Z. That caller must push the
+        composite itself (via push_composite_record()) -- passing push=False
+        and then never pushing anything is the single-history contract's
+        hole reopened.
         """
         if self._pending is None:
             raise RuntimeError("commit_unit_edit() called with no edit in progress")
@@ -577,7 +719,8 @@ class UnitEditModel:
         self._pending = None
         after = self._capture(list(before.players))
         record = UnitDiffRecord(label, before, after)
-        history.push_unit_record(record)
+        if push:
+            history.push_unit_record(record)
         return record
 
     # -- serialization -------------------------------------------------------

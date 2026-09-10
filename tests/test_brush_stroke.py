@@ -37,6 +37,11 @@ def _edit_window(tool: str = "draw"):
     window.mode_combo.setCurrentText("Terrain")
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_TERRAIN))
+    # This file tests brush/stroke mechanics, not descape/terrain_units.py --
+    # Trees defaults on and would otherwise pop an unpatched large-fill
+    # confirm QMessageBox for the whole-map fills below, hanging offscreen.
+    window.paint_trees_check.setChecked(False)
+    window.paint_eye_candy_check.setChecked(False)
     return window
 
 

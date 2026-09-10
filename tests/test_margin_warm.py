@@ -23,7 +23,7 @@ import math
 import pytest
 
 import conftest
-from descape import margin_warm
+from descape import level_warm, margin_warm
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from test_level_warm import Unit, _flat_cache, _iso_cache, _scenario, _warm
 from test_unit_sprites import CONST
@@ -221,6 +221,99 @@ def test_margin_warmer_logs_and_continues_past_a_bad_chunk(monkeypatch) -> None:
 
     assert logged, "the failing chunk was never logged -- vacuous"
     assert cache.get_chunk_calls == [(0, 1, 1), (0, 3, 3)]
+
+
+def test_margin_warmer_on_drained_fires_once_the_queue_empties() -> None:
+    """2026-09-07 plan's load-time margin warm, Step 3: on_drained is the
+    hook _pump_load_warm() chains the next neighbour mip's chunks off of."""
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    drained = []
+    warmer.start(cache, 0, [(1, 1), (2, 2)], on_drained=lambda: drained.append(True))
+    warmer.tick()
+    assert drained == [], "must not fire before the queue actually empties"
+    warmer.tick()
+    assert drained == [True]
+
+
+def test_margin_warmer_on_drained_does_not_fire_on_a_refused_or_empty_start() -> None:
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips=set())
+    warmer = margin_warm.MarginWarmer()
+    drained = []
+    warmer.start(cache, 0, [(1, 1)], on_drained=lambda: drained.append(True))
+    assert drained == [], "a refused start has nothing to wait for"
+
+    resident_cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer.start(resident_cache, 0, [], on_drained=lambda: drained.append(True))
+    assert drained == [], "an empty chunk list has nothing to wait for either"
+
+
+def test_margin_warmer_on_drained_does_not_fire_on_cancel() -> None:
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    drained = []
+    warmer.start(cache, 0, [(1, 1), (2, 2)], on_drained=lambda: drained.append(True))
+    warmer.tick()
+    warmer.cancel()
+    assert drained == [], "a cancelled queue never drained -- the callback must not fire"
+
+
+# --- load_warm_chunks: centre range unioned with one ring -------------------
+
+
+def test_load_warm_chunks_is_centre_range_then_ring() -> None:
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    cx0, cy0, cx1, cy1 = 2, 5, 4, 6
+    chunks = margin_warm.load_warm_chunks(cache, 0, cx0, cy0, cx1, cy1)
+
+    expected_centre = [(cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1)]
+    expected_ring = margin_warm.ring_chunks(cache, 0, cx0, cy0, cx1, cy1, lead=(0, 0))
+    assert chunks == expected_centre + expected_ring
+    assert len(expected_centre) == 6, "a 3x2 viewport should have 6 centre chunks -- vacuous otherwise"
+
+
+def test_load_warm_chunks_drops_already_resident_centre_chunks() -> None:
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    cache._cache.add((0, 2, 5))
+    chunks = margin_warm.load_warm_chunks(cache, 0, 2, 5, 4, 6)
+    assert (2, 5) not in chunks
+
+
+# --- bounded_chunk_range: the fit-to-view guard -----------------------------
+
+
+def test_bounded_chunk_range_shrinks_a_fit_to_view_range_to_the_span() -> None:
+    """The regression guard for the bug the load-time warm's raw projection
+    hits at every real call site: load_scenario() always fires
+    _start_level_warm() right after a fit-to-view render, so
+    viewport_chunk_target_at()'s raw range covers the WHOLE neighbour-mip
+    grid, not a viewport's worth. bounded_chunk_range() must cut that down
+    to span_w x span_h, centred, not just clamp the edges."""
+    cx0, cy0, cx1, cy1 = margin_warm.bounded_chunk_range(0, 0, 19, 19, span_w=3, span_h=2)
+    assert (cx1 - cx0 + 1, cy1 - cy0 + 1) == (3, 2)
+    # Centred on the input range's own midpoint (9, 9).
+    assert cx0 <= 9 <= cx1
+    assert cy0 <= 9 <= cy1
+
+
+def test_bounded_chunk_range_slides_to_fit_near_an_edge_without_shrinking() -> None:
+    """A span centred near the input range's own edge must slide to fit,
+    not shrink -- an even-width input range's midpoint floors DOWN (Python
+    integer division), which without the final clamp-to-input-range step
+    would push the span outside the input range entirely; see the
+    function's own docstring for the [5, 6]/span=2 example this guards."""
+    cx0, cy0, cx1, cy1 = margin_warm.bounded_chunk_range(2, 5, 4, 6, span_w=3, span_h=2)
+    assert (cx1 - cx0 + 1, cy1 - cy0 + 1) == (3, 2), "must not shrink just because it's near an edge"
+    assert 2 <= cx0 and cx1 <= 4
+    assert 5 <= cy0 and cy1 <= 6
+
+
+def test_bounded_chunk_range_never_exceeds_the_input_range() -> None:
+    """A span_w/span_h bigger than what viewport_chunk_target_at() actually
+    projected has nothing extra to clamp to -- must not request chunks
+    outside the range it was handed."""
+    cx0, cy0, cx1, cy1 = margin_warm.bounded_chunk_range(2, 5, 4, 6, span_w=99, span_h=99)
+    assert (cx0, cy0, cx1, cy1) == (2, 5, 4, 6)
 
 
 # --- level_rect_for: hand-computed sanity check -----------------------------
@@ -475,5 +568,85 @@ def test_on_viewport_changed_warms_a_ring_that_bounds_residency() -> None:
             assert not cache.has_chunk(mip, cx, cy), (
                 f"chunk {(cx, cy)} two rings out from the viewport was warmed -- the ring isn't bounded"
             )
+    finally:
+        conftest.close_window(window)
+
+
+# --- viewport_chunk_target_at / the load-time warm --------------------------
+
+
+@pytest.mark.gui
+def test_viewport_chunk_target_at_matches_viewport_chunk_target_at_the_live_mip() -> None:
+    """viewport_chunk_target_at(mip) reuses viewport_chunk_target()'s own
+    scene-rect projection (2026-09-07 plan's load-time margin warm, Step
+    1) -- calling it with the mip a real paint already selected must agree
+    with viewport_chunk_target() exactly, not just approximately."""
+    window = _zoomed_window()
+    try:
+        target = window.map_view.viewport_chunk_target()
+        assert target is not None
+        mip, cx0, cy0, cx1, cy1 = target
+
+        at_live_mip = window.map_view.viewport_chunk_target_at(mip)
+        assert at_live_mip == (cx0, cy0, cx1, cy1)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_viewport_chunk_target_at_none_with_no_canvas_item() -> None:
+    from descape.map_view import MapView
+
+    window = conftest.shown_window()
+    try:
+        view = window.map_view
+        assert isinstance(view, MapView)
+        assert view._canvas_item is None, "a freshly-shown window with no document -- vacuous otherwise"
+        assert view.viewport_chunk_target_at(0) is None
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_load_scenario_warms_both_neighbour_mips_chunks_with_no_pan_or_zoom() -> None:
+    """The actual claim this feature makes: opening a file alone -- no
+    simulated pan/zoom at all -- ends with a neighbour mip's own
+    viewport-sized centre-plus-ring already resident, once the level and
+    load warmers are both drained."""
+    window = conftest.stepped_window(FIXTURE_PATH)
+    try:
+        assert window._cache is not None
+        fit = window.map_view._fit_baseline_scale()
+        mips = level_warm.neighbour_mips(window._cache, fit * window.map_view.devicePixelRatioF())
+        assert mips, "the opening level has no neighbours on this fixture -- vacuous"
+
+        window._level_warmer.run_to_completion()
+        for _ in range(len(mips) + 1):
+            if not window._load_warmer.is_active and not window._load_warm_queue:
+                break
+            window._load_warmer.run_to_completion()
+
+        assert not window._load_warmer.is_active
+        assert not window._load_warm_queue
+
+        for mip in mips:
+            assert window._cache.is_level_resident(mip), f"mip {mip}'s sprite layer never warmed -- vacuous"
+            target = window.map_view.viewport_chunk_target_at(mip)
+            assert target is not None
+            span_w, span_h = window.map_view.viewport_chunk_span(window._cache, mip)
+            cx0, cy0, cx1, cy1 = margin_warm.bounded_chunk_range(*target, span_w, span_h)
+
+            gw, gh = window._cache.canvas_dims(mip)
+            total = math.ceil(gw / window._cache.chunk_px) * math.ceil(gh / window._cache.chunk_px)
+            queued = (cx1 - cx0 + 1) * (cy1 - cy0 + 1)
+            assert queued < total, (
+                f"mip {mip}'s queued range covers the whole grid ({queued}/{total}) -- the load-time warm "
+                "must never frontload a whole finer level, only a viewport-sized patch"
+            )
+
+            for cx, cy in margin_warm.load_warm_chunks(window._cache, mip, cx0, cy0, cx1, cy1):
+                assert window._cache.has_chunk(mip, cx, cy), (
+                    f"chunk {(cx, cy)} at mip {mip} was never warmed by the load-time warm"
+                )
     finally:
         conftest.close_window(window)

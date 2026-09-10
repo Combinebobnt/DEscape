@@ -221,6 +221,100 @@ def test_the_zero_offset_is_the_same_ANGLE_whatever_angle_count_is(angle_count):
     )
 
 
+# --- Flat's own zero point (FLAT_ANGLE_ZERO_OFFSET_DEG) ---------------
+
+
+def _angle_entry(angle_count: int) -> dict:
+    """A graphic_map()-shaped record for a plain facing graphic. CONST is not
+    in the committed unit_graphic_map.json, so rotation_is_variant() reads
+    False for it and _frame_for() takes the angle branch."""
+    return {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": angle_count,
+            "mirroring_mode": 6, "frame_count": 1}
+
+
+def test_the_flat_offset_is_the_iso_offset_plus_the_grid_rotation():
+    """Not a hardcoded 0.0. iso_geometry projects world +x to screen up-right
+    and +y to down-right, so the iso screen is the world rotated -45 degrees
+    while Flat's top-down grid puts +x at 0 and +y at +90. Flat is therefore
+    iso plus a 45-degree apparent facing, which is the ONE relationship worth
+    pinning: re-measure either constant against the game and this says whether
+    the pair still describes the same two projections."""
+    delta = (unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG - unit_sprites.ANGLE_ZERO_OFFSET_DEG) % 360.0
+    assert delta == 45.0, (
+        f"the two zero points differ by {delta} degrees, not the 45 the iso grid "
+        f"rotation accounts for"
+    )
+
+
+@pytest.mark.parametrize("angle_count", [8, 16, 32, 72])
+def test_the_flat_offset_moves_the_frame_by_an_eighth_of_a_turn(angle_count):
+    """45 degrees expressed in THIS graphic's own steps, which is the property
+    an index-space constant could not carry (see the iso sibling above). Only
+    angle_counts that are multiples of 8 land the offset on a whole stored
+    step, so only these can show the shift at all."""
+    entry = _angle_entry(angle_count)
+    assert not unit_sprites.rotation_is_variant(CONST), "this must take the angle branch"
+    iso = unit_sprites._frame_for(CONST, entry, 0.0)
+    flat = unit_sprites._frame_for(CONST, entry, 0.0, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG)
+    assert (flat - iso) % angle_count == angle_count // 8, (
+        f"angle_count={angle_count}: iso resolves frame {iso} and flat frame {flat}, "
+        f"a shift of {(flat - iso) % angle_count} steps rather than the "
+        f"{angle_count // 8} that 45 degrees is here"
+    )
+
+
+@pytest.mark.parametrize("angle_count", [3, 5, 25])
+def test_the_two_offsets_agree_where_neither_lands_on_a_stored_step(angle_count):
+    """And the agreement is a COINCIDENCE of the two values, not an invariant.
+    angle_index() skips an offset that does not land on a whole stored step,
+    so the iso -45 is discarded here; Flat's offset is genuinely zero and so
+    changes nothing. Two different reasons reaching the same index. Re-measure
+    FLAT_ANGLE_ZERO_OFFSET_DEG to something non-zero and this stops holding,
+    which is why the failure message says why rather than just what."""
+    entry = _angle_entry(angle_count)
+    iso = unit_sprites._frame_for(CONST, entry, 1.0)
+    flat = unit_sprites._frame_for(CONST, entry, 1.0, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG)
+    assert iso == flat, (
+        f"angle_count={angle_count} is not a multiple of 8, so angle_index() drops the "
+        f"iso offset entirely and Flat's own offset is "
+        f"{unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG}. They agree only while that is 0.0; "
+        f"a re-measured flat offset belongs in this test's expectation, not in a skip"
+    )
+
+
+@pytest.mark.parametrize("unit_const", [117, 264])
+def test_the_flat_offset_never_reaches_the_variant_path(unit_const):
+    """A real wall const and a real cliff const. By construction, not by luck:
+    a variant index is a SHAPE, not a facing, so no camera zero point applies
+    to it, and threading the offset as a parameter is what keeps that true.
+    Pre-rotating `rotation` at icon_for()'s door instead would land a mutated
+    value in variant_index(), which AGENTS.md's hard rules forbid.
+
+    A third, deliberately absurd offset of exactly one stored step is probed
+    alongside the two real ones, and that is what keeps this non-vacuous:
+    both real offsets happen to agree on the angle branch too at these
+    angle_counts (5 and 25, neither a multiple of 8), so comparing only those
+    would pass without the variant branch ignoring anything.
+    """
+    entry = unit_sprites.graphic_map()[unit_const]
+    angle_count = int(entry["angle_count"])
+    assert unit_sprites.rotation_is_variant(unit_const), "this must take the variant branch"
+
+    one_step = 360.0 / angle_count
+    assert unit_sprites.angle_index(0.0, angle_count, one_step) != unit_sprites.angle_index(
+        0.0, angle_count
+    ), "the probe offset must move the ANGLE branch, or this proves nothing"
+
+    for rotation in (0.0, 1.0, 2.0, 3.0, 4.0, 7.0):
+        iso = unit_sprites._frame_for(unit_const, entry, rotation)
+        for offset in (unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG, one_step):
+            got = unit_sprites._frame_for(unit_const, entry, rotation, offset)
+            assert got == iso, (
+                f"const {unit_const} rotation {rotation}: offset {offset} moved the "
+                f"variant frame from {iso} to {got}"
+            )
+
+
 # --- variant resolution: walls, whose frames are shapes not facings ----
 
 

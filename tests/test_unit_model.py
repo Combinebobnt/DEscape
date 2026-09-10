@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.terrain_units import UnitAddSpec
 from descape.unit_model import UnitEditModel, UnitEditsUnavailableError, _serialize_unit
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
@@ -154,6 +155,104 @@ def test_set_rotation_refuses_a_non_angle_const(reference_id, unit_const) -> Non
     assert model.serialize() == before
 
 
+# -- set_unit_const: the gate orientation cycle ------------------------------
+#
+# A stone closed gate's four siblings, in cycle order, with the span each one
+# occupies: 64 ne (4, 1), 659 e (4, 4 sparse), 88 se (1, 4), 667 n (4, 4
+# sparse). Anchored on low corner (8, 5) throughout, which is the low corner
+# of a gate placed at (10.0, 5.5): a span-4 axis anchors two tiles below the
+# unit's own tile, not at int(x).
+_GATE_NE, _GATE_E, _GATE_SE, _GATE_N = 64, 659, 88, 667
+_GATE_ANCHORS = {
+    _GATE_NE: (10.0, 5.5),
+    _GATE_E: (10.0, 7.0),
+    _GATE_SE: (8.5, 7.0),
+    _GATE_N: (10.0, 7.0),
+}
+
+
+def _gate(loaded, unit_const: int = _GATE_NE) -> object:
+    """A stone gate, made by re-pointing the fixture's wall at a gate const
+    and its own anchor. Same trick as test_set_rotation_refuses_a_non_angle
+    _const's gate case, since the fixture holds no gate and every guard here
+    reads the live unit's fields."""
+    unit = _unit(loaded, _REF_WALL)
+    unit.unit_const = unit_const
+    unit.x, unit.y = _GATE_ANCHORS[unit_const]
+    unit.z, unit.rotation = 3.0, 7.0
+    return unit
+
+
+def test_set_unit_const_re_anchors_the_gate_onto_its_preserved_low_corner() -> None:
+    """The measured parity table: ne sits at fractional (0.0, 0.5), se at
+    (0.5, 0.0), and both diagonals at (0.0, 0.0). Preserving the low corner is
+    what produces all three; passing x/y through verbatim would leave the
+    gate half a footprint off its own tiles."""
+    loaded, model = _open()
+    gate = _gate(loaded)
+    model.set_unit_const(gate, _GATE_E)
+    assert (gate.x, gate.y) == (10.0, 7.0)
+    model.set_unit_const(gate, _GATE_SE)
+    assert (gate.x, gate.y) == (8.5, 7.0)
+    assert model.has_edits
+
+
+def test_four_cycle_steps_return_the_exact_original_const_and_position() -> None:
+    loaded, model = _open()
+    gate = _gate(loaded)
+    original = (gate.unit_const, gate.x, gate.y)
+    for const in (_GATE_E, _GATE_SE, _GATE_N, _GATE_NE):
+        model.set_unit_const(gate, const)
+    assert (gate.unit_const, gate.x, gate.y) == original
+
+
+def test_a_cycle_passes_rotation_and_z_through_verbatim() -> None:
+    """A gate's stored rotation is 0.0 or the junk sentinel 7.0, and every
+    sibling has angle_count == 1, so normalizing it here would be AGENTS.md's
+    verbatim violation, not a tidy-up."""
+    loaded, model = _open()
+    gate = _gate(loaded)
+    model.set_unit_const(gate, _GATE_E)
+    assert gate.rotation == 7.0
+    assert gate.z == 3.0
+
+
+def test_set_unit_const_dirties_only_the_cycled_unit() -> None:
+    loaded, model = _open()
+    gate = _gate(loaded)
+    model.set_unit_const(gate, _GATE_E)
+    dirty = [blob is None for blobs in model._blobs for blob in blobs]
+    assert sum(dirty) == 1
+
+
+@pytest.mark.parametrize(
+    "new_const",
+    [
+        789,  # a palisade gate: right orientation, wrong family
+        4,  # not a gate at all
+        1192,  # the class-39 const whose code collides, deliberately grouped nowhere
+    ],
+)
+def test_set_unit_const_refuses_anything_but_an_orientation_sibling(new_const) -> None:
+    loaded, model = _open()
+    before = model.serialize()
+    gate = _gate(loaded)
+    with pytest.raises(ValueError):
+        model.set_unit_const(gate, new_const)
+    assert not model.has_edits
+    assert model.serialize() == before
+
+
+def test_set_unit_const_refuses_a_unit_that_is_not_a_gate() -> None:
+    """The guard is what enforces AGENTS.md's rule that a placed unit's const
+    is otherwise never changed, so a wall must raise rather than no-op."""
+    loaded, model = _open()
+    wall = _unit(loaded, _REF_WALL)
+    with pytest.raises(ValueError):
+        model.set_unit_const(wall, _GATE_NE)
+    assert not model.has_edits
+
+
 def test_reassign_moves_the_unit_and_marks_no_blob_dirty() -> None:
     """finding 7: player is positional, so reassignment is a pure blob-list
     move with zero re-serialization -- plan verification item 7."""
@@ -235,6 +334,102 @@ def test_add_rejects_an_out_of_range_player() -> None:
     loaded, model = _open()
     with pytest.raises(ValueError):
         model.add(player=9, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
+
+
+# -- batch operations (descape/terrain_units.py's own callers) --------------
+
+
+def test_add_many_places_units_with_contiguous_reference_ids() -> None:
+    loaded, model = _open()
+    before_next = model.next_unit_id
+    specs = [
+        UnitAddSpec(x=1.5, y=1.5, unit_const=349, rotation=3.0, initial_animation_frame=3),
+        UnitAddSpec(x=2.5, y=2.5, unit_const=350, rotation=5.0, initial_animation_frame=5),
+    ]
+    units = model.add_many(player=0, specs=specs)
+
+    assert [u.reference_id for u in units] == [before_next, before_next + 1]
+    for unit in units:
+        assert unit in loaded.unit_manager.units[0]
+    assert model.has_added_units
+    assert model.next_unit_id == before_next + 2
+    assert model.has_edits
+
+
+def test_add_many_rotation_and_frame_pass_through_verbatim() -> None:
+    """Same hard rule as add()'s own verbatim-pass-through test: rotation is
+    a variant index here, never validated or normalized."""
+    loaded, model = _open()
+    spec = UnitAddSpec(x=1.5, y=1.5, unit_const=349, rotation=41.0, initial_animation_frame=41)
+    unit = model.add_many(player=0, specs=[spec])[0]
+    assert unit.rotation == 41.0
+    assert unit.initial_animation_frame == 41
+
+
+def test_add_many_matches_add_for_equivalent_placements() -> None:
+    """The batch path must place the same shape of unit add() does -- this
+    guards against add_many() drifting onto a different set of Unit
+    defaults (z, status, garrisoned_in_id, caption) than add()'s own."""
+    loaded_a, model_a = _open()
+    single = model_a.add(player=1, unit_const=349, x=3.5, y=3.5, z=0.0, rotation=2.0, initial_animation_frame=2)
+
+    loaded_b, model_b = _open()
+    spec = UnitAddSpec(x=3.5, y=3.5, unit_const=349, rotation=2.0, initial_animation_frame=2)
+    batched = model_b.add_many(player=1, specs=[spec])[0]
+
+    assert (batched.x, batched.y, batched.z) == (single.x, single.y, single.z)
+    assert (batched.unit_const, batched.status) == (single.unit_const, single.status)
+    assert (batched.rotation, batched.initial_animation_frame) == (single.rotation, single.initial_animation_frame)
+    assert batched.garrisoned_in_id == single.garrisoned_in_id
+
+
+def test_add_many_rejects_an_out_of_range_player() -> None:
+    loaded, model = _open()
+    spec = UnitAddSpec(x=1.5, y=1.5, unit_const=83, rotation=0.0, initial_animation_frame=0)
+    with pytest.raises(ValueError):
+        model.add_many(player=9, specs=[spec])
+
+
+def test_remove_many_deletes_every_unit() -> None:
+    loaded, model = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    villager = _unit(loaded, _REF_VILLAGER_P2)
+    model.remove_many([archer, villager])
+    assert archer not in loaded.unit_manager.units[1]
+    assert villager not in loaded.unit_manager.units[2]
+    assert model.has_edits
+
+
+def test_remove_many_of_an_empty_list_is_a_no_op() -> None:
+    loaded, model = _open()
+    model.remove_many([])
+    assert not model.has_edits
+
+
+def test_remove_many_refuses_the_whole_batch_if_any_unit_is_referenced() -> None:
+    """Same dangling-reference guard as remove(), checked for the whole
+    batch up front -- a refusal must leave every unit in the batch alone,
+    including the ones that were individually fine to remove."""
+    loaded, model = _open()
+    house = _unit(loaded, _REF_HOUSE)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    with pytest.raises(UnitEditsUnavailableError):
+        model.remove_many([archer, house])
+    assert archer in loaded.unit_manager.units[1]
+    assert house in loaded.unit_manager.units[1]
+
+
+def test_remove_many_matches_remove_for_the_same_units() -> None:
+    loaded_a, model_a = _open()
+    tree_a = _unit(loaded_a, _REF_TREE_OAK)
+    model_a.remove(tree_a)
+
+    loaded_b, model_b = _open()
+    tree_b = _unit(loaded_b, _REF_TREE_OAK)
+    model_b.remove_many([tree_b])
+
+    assert tree_a not in loaded_a.unit_manager.units[0]
+    assert tree_b not in loaded_b.unit_manager.units[0]
 
 
 def test_remove_deletes_the_unit() -> None:

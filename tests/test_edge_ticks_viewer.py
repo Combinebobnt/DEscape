@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 
 import conftest
-from descape import edge_ticks
+from descape import edge_ticks, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 
 pytestmark = [
@@ -46,7 +46,11 @@ _ANCHOR = (60, 60)
 MAP_W, MAP_H, TILE_PX = 20, 16, 8
 
 
-def _bare_scene(interval: int = edge_ticks.TICK_INTERVAL_DEFAULT, scale: float = 1.0):
+def _bare_scene(
+    interval: int = edge_ticks.TICK_INTERVAL_DEFAULT,
+    scale: float = 1.0,
+    font_px: int = edge_ticks.LABEL_FONT_PX,
+):
     """A scene holding nothing but one flat-mode EdgeTickItem."""
     conftest.ensure_qapp()
     from PyQt5.QtCore import QRectF
@@ -56,6 +60,9 @@ def _bare_scene(interval: int = edge_ticks.TICK_INTERVAL_DEFAULT, scale: float =
 
     map_rect = QRectF(0, 0, MAP_W * TILE_PX, MAP_H * TILE_PX)
     item = EdgeTickItem(MAP_W, MAP_H, interval, map_rect, tile_px=TILE_PX)
+    # Font set BEFORE the scale, since set_min_view_scale's pad computation
+    # reads self._font.pixelSize() at call time.
+    item.set_label_font_px(font_px)
     item.set_min_view_scale(scale)
     scene = QGraphicsScene()
     scene.addItem(item)
@@ -245,8 +252,9 @@ def test_setting_the_same_interval_rebuilds_nothing() -> None:
 # --- the bounding-rect pad -------------------------------------------------
 
 
-def test_the_pad_contains_the_device_reach_at_the_minimum_scale() -> None:
-    _scene, item = _bare_scene(scale=0.01)
+@pytest.mark.parametrize("font_px", range(8, 25))  # settings.DISTANCE_TICK_FONT_PX_MIN..MAX
+def test_the_pad_contains_the_device_reach_at_the_minimum_scale(font_px: int) -> None:
+    _scene, item = _bare_scene(scale=0.01, font_px=font_px)
     rect = item.boundingRect()
     overhang = min(
         rect.right() - MAP_W * TILE_PX,
@@ -254,7 +262,7 @@ def test_the_pad_contains_the_device_reach_at_the_minimum_scale() -> None:
         -rect.left(),
         -rect.top(),
     )
-    assert overhang * 0.01 >= math.sqrt(2) * edge_ticks.DEVICE_REACH_PX
+    assert overhang * 0.01 >= math.sqrt(2) * edge_ticks.device_reach_px(font_px)
 
 
 def test_the_bounding_rect_covers_every_anchor_even_below_the_canvas() -> None:
@@ -293,14 +301,23 @@ def _window():
     return window
 
 
-def test_a_resize_while_zoomed_out_keeps_the_bounding_rect_valid() -> None:
+@pytest.mark.parametrize("font_px", [8, edge_ticks.LABEL_FONT_PX, 24])
+def test_a_resize_while_zoomed_out_keeps_the_bounding_rect_valid(font_px: int) -> None:
     """The case min(_min_linear_scale, current) exists for. resizeEvent
     re-runs _capture_zoom_baseline, and a larger viewport RAISES
     _min_linear_scale without rescaling the transform, so the current scale
     ends up below the new floor. Padding from the floor alone passes every
-    static test in this file and under-pads exactly here."""
+    static test in this file and under-pads exactly here.
+
+    Parametrized over the font range's endpoints and the default rather than
+    every legal value -- this drives a real ViewerWindow, and the pure
+    per-font-px geometry is already exhaustively checked by the bare-scene
+    and Qt-free tests above/in test_edge_ticks.py; this one only needs to
+    confirm the min()-of-floor-and-current path still holds with a
+    non-default font in the mix."""
     from PyQt5.QtWidgets import QApplication
 
+    settings.set_distance_tick_font_px(font_px)
     window = _window()
     try:
         view = window.map_view
@@ -317,7 +334,7 @@ def test_a_resize_while_zoomed_out_keeps_the_bounding_rect_valid() -> None:
         assert current < view._min_linear_scale, "the resize did not raise the floor"
         rect = item.boundingRect()
         overhang = min(-rect.left(), -rect.top())
-        assert overhang * current >= math.sqrt(2) * edge_ticks.DEVICE_REACH_PX
+        assert overhang * current >= math.sqrt(2) * edge_ticks.device_reach_px(font_px)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -382,6 +399,47 @@ def test_the_interval_reaches_the_live_item() -> None:
         other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
         window.map_view.set_edge_tick_interval(other)
         assert window.map_view._edge_tick_item._interval == other
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_font_change_repaints_and_repads_live_with_no_item_churn() -> None:
+    """apply_distance_tick_font()'s live-apply path -- test_overlay_colors_
+    viewer.py's test_live_apply_repaints_without_replacing_the_item's shape:
+    same item identity, new font actually applied, and the bounding rect
+    grows with it since scene_pad depends on font_px too."""
+    window = _window()
+    try:
+        map_view = window.map_view
+        item = map_view._edge_tick_item
+        item_id_before = id(item)
+        rect_before = item.boundingRect()
+
+        bigger = edge_ticks.LABEL_FONT_PX + 8
+        settings.set_distance_tick_font_px(bigger)
+        map_view.apply_distance_tick_font()
+
+        assert id(map_view._edge_tick_item) == item_id_before
+        assert item._font.pixelSize() == bigger
+        rect_after = item.boundingRect()
+        assert rect_after.width() > rect_before.width()
+        assert rect_after.height() > rect_before.height()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_apply_distance_tick_font_with_no_live_item_is_a_noop() -> None:
+    """The deleted-item guard: File > Close nulls _edge_tick_item (same path
+    _repad_edge_ticks and set_edge_tick_interval already guard), so the
+    Appearance spinbox reaching this with no map open must not raise."""
+    window = _window()
+    try:
+        window.map_view.clear_image()
+        assert window.map_view._edge_tick_item is None
+        settings.set_distance_tick_font_px(edge_ticks.LABEL_FONT_PX + 4)
+        window.map_view.apply_distance_tick_font()  # must not raise
     finally:
         window.edit_history.mark_saved()
         window.close()

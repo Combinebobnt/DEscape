@@ -9,6 +9,8 @@ from __future__ import annotations
 
 
 import math
+import time
+from collections.abc import Callable
 
 import numpy as np
 from PyQt5.QtCore import QPointF, QRectF, Qt
@@ -189,6 +191,9 @@ class MapCanvasItem(QGraphicsItem):
         # exactly "first paint of the current canvas item" with no
         # plumbing back to the load path that constructed it.
         self._first_paint_pending = True
+        # Optional (elapsed_seconds, mip) callback, called on EVERY paint
+        # while installed. Plain attribute: a QGraphicsItem is not a QObject.
+        self._on_paint_timed: Callable[[float, int], None] | None = None
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
 
     def _select_mip(self, painter: QPainter) -> int:
@@ -230,6 +235,10 @@ class MapCanvasItem(QGraphicsItem):
     def paint(self, painter: QPainter, option, widget=None) -> None:
         first_paint = self._first_paint_pending
         self._first_paint_pending = False
+        # Read once into a local: the viewer drops the callback as soon as it
+        # reports, and the finally below must see what this paint started with.
+        on_paint_timed = self._on_paint_timed
+        paint_t0 = time.perf_counter() if on_paint_timed is not None else 0.0
         try:
             with perf_trace.phase("repaint"):
                 rect = option.exposedRect.intersected(self._bounding_rect)
@@ -292,6 +301,10 @@ class MapCanvasItem(QGraphicsItem):
                                 QRectF(0, 0, w, h),
                             )
         finally:
+            # Every paint, not just the first, and including the two early
+            # returns above: whoever installed the callback is summing them.
+            if on_paint_timed is not None:
+                on_paint_timed(time.perf_counter() - paint_t0, self._last_mip)
             if first_paint:
                 perf_trace.first_paint_done()
 
@@ -386,7 +399,8 @@ class EdgeTickItem(QGraphicsItem):
     Colours deliberately ignore settings.get_dark_mode: MapView paints its
     scene background unconditionally to OUTSIDE_MAP_COLOR, so there is no
     light variant of the surface these sit on. Gold is not used either, since
-    HIGHLIGHT_OUTLINE_PEN reserves it for "live and about to paint"."""
+    that's the edit highlight's default color ("live and about to paint"),
+    now user-settable via settings.OVERLAY_COLORS."""
 
     # Majors match the existing map-extent outline; minors are dimmer so the
     # two ranks read apart by brightness as well as by length.
@@ -450,6 +464,18 @@ class EdgeTickItem(QGraphicsItem):
         self._rebuild()
         self.update()
 
+    def set_label_font_px(self, font_px: int) -> None:
+        """Rebuilds the label font. Does NOT recompute the pad itself --
+        the pad depends on both font_px and the view's min scale, and
+        MapView.apply_distance_tick_font() already knows the latter via
+        _repad_edge_ticks(), so it calls that right after this rather than
+        this item duplicating that floor/current-scale min() logic."""
+        if font_px == self._font.pixelSize():
+            return
+        self._font = QFont()
+        self._font.setPixelSize(font_px)
+        self.update()
+
     def set_min_view_scale(self, scale: float | None) -> None:
         """Re-pads the bounding rect for the SMALLEST scale the view can
         reach. A constant device tick length means the scene-unit overhang
@@ -458,7 +484,7 @@ class EdgeTickItem(QGraphicsItem):
         the real overhang exceeds MapView.OVERSCROLL_FRACTION outright."""
         if scale is None or scale <= 0:
             return
-        pad = edge_ticks.scene_pad(scale)
+        pad = edge_ticks.scene_pad(scale, self._font.pixelSize())
         if pad == self._pad:
             return
         self._pad = pad
@@ -524,13 +550,16 @@ class EdgeTickItem(QGraphicsItem):
                 stats.minor_len_px = length
             if not (major and lod.draw_labels):
                 continue
-            center_x = point.x() + unit_x * edge_ticks.LABEL_CENTER_PX
-            center_y = point.y() + unit_y * edge_ticks.LABEL_CENTER_PX
+            font_px = self._font.pixelSize()
+            label_center = edge_ticks.label_center_px(font_px)
+            box_w, box_h = edge_ticks.label_box_px(font_px)
+            center_x = point.x() + unit_x * label_center
+            center_y = point.y() + unit_y * label_center
             box = QRectF(
-                center_x - edge_ticks.LABEL_BOX_W_PX / 2.0,
-                center_y - edge_ticks.LABEL_BOX_H_PX / 2.0,
-                edge_ticks.LABEL_BOX_W_PX,
-                edge_ticks.LABEL_BOX_H_PX,
+                center_x - box_w / 2.0,
+                center_y - box_h / 2.0,
+                box_w,
+                box_h,
             )
             painter.setPen(self.LABEL_COLOR)
             painter.drawText(box, Qt.AlignCenter, str(run.tiles[index]))

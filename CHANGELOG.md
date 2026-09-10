@@ -22,6 +22,77 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [0.5] - 2026-09-09
+
+### Added
+
+- **Draw and Paint Can can auto-place trees and eye candy.** Two new toolbar
+  checkboxes, Trees (on by default) and Eye candy (off), mirror the in-game
+  editor's own option: painting a forest terrain scatters its matching GAIA
+  tree per tile, with a varied graphic, instead of leaving a bare texture.
+  Painting a different terrain over a tile removes what was there. One undo
+  step covers both the terrain and the trees/eye candy it triggers.
+- **Rotate now turns gates.** A gate stores its orientation in its object
+  type rather than in the rotation field, so Rotate cycles a selected gate
+  through its four orientations (45 degrees a press, 90 for the quarter-turn
+  action) and re-anchors it so the new footprint keeps the tiles it stood on.
+  Gates and ordinary units can be rotated together in one undo step; a gate
+  with no room for its new footprint at the map edge is skipped and reported.
+- **Settings > Appearance: distance-tick label size.** The map-edge distance
+  ruler's major-tick numbers had a fixed 12px font; it's now a spinbox next
+  to the Ruler label size one, 8-24px.
+- **A Select tool in Terrain mode (bound to `S`).** Drag a tile rectangle to
+  select a region; `Ctrl+A` selects the whole map, `Ctrl+Shift+A` or Escape
+  clears it. Copy Region/Paste Region (`Ctrl+C`/`Ctrl+V`) now capture and
+  stamp back a whole region's terrain, elevation and units together, with a
+  checkbox per category deciding what a paste actually writes -- replacing
+  the old single-tile, tool-scoped copy/paste. A paste with more than one
+  category checked is a single undo step.
+- **Settings > Appearance: tool overlay colors and Ruler label size.** Every
+  overlay DEscape draws on the map -- the edit-tool highlight, Pan's hover
+  outline, Units mode's hover/selection cues, the Ruler's line/label and the
+  Select tool's marching ants -- was a hardcoded color; each is now its own
+  picker, grouped by tool. The Ruler's on-map label font size is now a
+  spinbox next to them instead of a fixed 18px.
+
+### Changed
+
+- **Terrain painting is roughly twice as fast in Sloped mode.** The
+  per-tile compositing kernel was reworked (cached slope shading, a
+  skirt-shade lookup table, direct terrain indexing, a scalar bounds
+  pre-check, and a bucketed scan for buildings overlapping the repainted
+  area). A size-9 brush stroke with sprites on drops from about 125 ms to
+  62 ms a step on a large map, and Stepped mode from about 57 ms to 37 ms.
+  Rendering output is unchanged, pixel for pixel.
+
+- **The load/New status line now reports the deferred first-paint
+  composite.** A second line, `First paint composited in X.XXs (total
+  X.XXs, mip M)`, follows `Loaded ...`/`Created ...` once the map has
+  actually drawn - previously that cost was visible only under Help > Perf
+  Trace, and on a big map it is around a third of the real wait.
+
+- Copy/Paste no longer depend on which edit tool is active -- they act on
+  the Select tool's own region and clipboard instead, the same way Rotate
+  acts on the unit selection regardless of tool.
+
+### Fixed
+
+- **Unit sprites face the right way in Flat mode.** With `View > Isometric
+  View` unticked, every unit icon was drawn an eighth of a turn out: the
+  isometric camera's own 45-degree facing correction was still being applied
+  to a top-down grid that has no such rotation. A unit at rotation 0 now
+  reads as facing screen-right. Stepped, Sloped and Flat with Isometric View
+  ticked are unchanged, as are walls, cliffs, gates and trees, whose stored
+  frames are shapes rather than facings.
+- **Sloped terrain: unit and farm markers no longer spill off a ramped
+  tile.** A unit or farm on a slope used to paint a flat, unwarped mark
+  that could leave part of its own tile bare or bleed past its edge. A
+  single-tile unit's marker now conforms exactly to its tile's warped
+  footprint, and a farm drapes as real terrain (matching Stepped) with a
+  warped perimeter outline whenever `View > Show sprites` is on; with
+  sprites off, a farm keeps its previous plain mark. Multi-tile buildings
+  are unaffected.
+
 ## [0.4] - 2026-09-07
 
 ### Added
@@ -33,6 +104,10 @@ content, link the doc instead of summarizing it.
   needing to be assembled by hand. The whole drag is a single undo step. All
   ten cliff families are available, including the ones the in-game editor
   hides.
+- **An Eyedropper tool in Terrain mode.** Click a tile to load its terrain
+  and elevation straight into the toolbar (bound to `I`), instead of hunting
+  the Terrain type combo's 131 entries. One pick feeds both Draw/Paint Can
+  and Set Elevation.
 - **Crash reports.** An unhandled exception (or a hard crash) now writes a
   dump with the traceback, app/OS version, and recent debug-log lines to a
   file next to your config, and shows it in a dialog with buttons to copy
@@ -86,6 +161,13 @@ content, link the doc instead of summarizing it.
   Diplomacy tab's stance grid resizes to match straight away. A handful of
   older files store their header in a layout DEscape can't resolve, and
   show this one setting read-only while everything else stays editable.
+
+- **Map mirroring** (`Map > Mirror Map…`, terrain and elevation only). Pick
+  one of nine symmetries (mirror, 180°/90° rotation, 4-way or 8-way) and
+  which half/quadrant/octant is authoritative, and DEscape rewrites the rest
+  of the map to match in one undo step, with a live preview of both the
+  source slice and the resulting map before you commit. Units are not
+  mirrored yet.
 
 ### Changed
 

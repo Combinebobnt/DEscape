@@ -516,24 +516,43 @@ def test_a_browsed_options_model_saves_byte_identically_across_the_corpus(
 
 
 @pytest.mark.corpus
-def test_exec_order_survives_an_unrelated_option_save_across_the_corpus(
+def test_exec_order_survives_an_unrelated_trigger_edit_across_the_corpus(
     scenario_path, tmp_path: Path
 ) -> None:
     """The round-trip check the trigger-reordering item asked for before
     anything started writing this flag: six corpus files ship with it set to 1,
-    and a save that never touches it must leave it there."""
+    and a save whose only edit is to an unrelated field must leave it there.
+
+    Mirrors test_trigger_write_path.py's
+    test_display_order_survives_an_unrelated_trigger_save_across_the_corpus for
+    the other axis, and for the same reason that test exists: a bare
+    passthrough save with no model proves only that browsing doesn't disturb
+    the byte, not that an actual trigger edit leaves it alone. A prior version
+    of this test asserted the weaker, name-mismatched claim.
+    """
     loaded = load_map_and_units(scenario_path)
-    parse_triggers(loaded)
-    if not loaded.terrain_write_supported:
-        pytest.skip("terrain block failed verification, so no save path at all")
-    section = loaded._scenario.sections.get("Triggers")
-    if section is None or "legacy_exec_order" not in section.retriever_map:
+    manager = parse_triggers(loaded)
+    if manager is None or not loaded.trigger_write_supported:
+        pytest.skip(f"{scenario_path.name}: triggers are not editable")
+    if not manager.triggers:
+        pytest.skip(f"{scenario_path.name}: no triggers to edit")
+    before = exec_order_value(loaded)
+    if before is None:
         pytest.skip("this file stores no trigger execution-order flag")
-    before = section.retriever_map["legacy_exec_order"].data
+
+    model = TriggerEditModel(loaded)
+    trigger = model.manager().triggers[0]
+    with_edit = trigger.name + " (edited)"
+    trigger.name = with_edit
+    model.mark_dirty(0)
 
     out = tmp_path / "out.aoe2scenario"
-    write_scenario(loaded, out)
+    write_scenario(loaded, out, triggers=model)
+
     reloaded = load_map_and_units(out)
-    parse_triggers(reloaded)
-    after = reloaded._scenario.sections["Triggers"].retriever_map["legacy_exec_order"].data
-    assert after == before, scenario_path.name
+    reloaded_manager = parse_triggers(reloaded)
+    assert reloaded_manager is not None
+    assert reloaded_manager.triggers[0].name == with_edit, (
+        f"{scenario_path.name}: the edit itself was lost"
+    )
+    assert exec_order_value(reloaded) == before, scenario_path.name

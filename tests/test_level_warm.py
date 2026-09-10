@@ -380,6 +380,45 @@ def test_neighbour_mips_excludes_the_opening_level(sprite_install, mixed_scenari
     assert all(levels[0] <= mip <= levels[-1] for mip in mips)
 
 
+def test_on_job_done_fires_once_per_queued_mip_in_order(sprite_install, mixed_scenario) -> None:
+    """2026-09-07 plan's load-time margin warm, Step 2: on_job_done is the
+    hook the load-time chunk warm chains off of. Jobs run strictly one at a
+    time (_start_next_job pops the queue), so the callback must fire in the
+    same order the mips were queued, once each."""
+    cache = _iso_cache(mixed_scenario)
+    warmer = level_warm.LevelWarmer()
+    done = []
+    warmer.start(cache, [-1, 1], on_job_done=done.append)
+    warmer.run_to_completion()
+    assert done == [-1, 1]
+
+
+def test_on_job_done_does_not_fire_for_a_mip_with_nothing_to_warm(mixed_scenario) -> None:
+    """With sprites off, level_warm_job() returns None for every mip -- no
+    job is ever queued for it, so on_job_done must never fire either. A
+    caller that also needs those mips covered checks is_level_resident()
+    itself; see _queue_load_warm's own docstring."""
+    cache = _iso_cache(mixed_scenario)
+    cache.set_sprites_enabled(False)
+    warmer = level_warm.LevelWarmer()
+    done = []
+    warmer.start(cache, [1], on_job_done=done.append)
+    assert not warmer.is_active
+    warmer.run_to_completion()
+    assert done == []
+
+
+def test_on_job_done_does_not_fire_for_a_cancelled_job(sprite_install, mixed_scenario) -> None:
+    cache = _iso_cache(mixed_scenario)
+    warmer = level_warm.LevelWarmer()
+    done = []
+    warmer.start(cache, [1], on_job_done=done.append)
+    warmer.tick()
+    warmer.cancel()
+    warmer.run_to_completion()
+    assert done == []
+
+
 # --- Step 3/5: the viewer hook and the setting that gates it ---------------
 
 

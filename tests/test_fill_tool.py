@@ -56,6 +56,11 @@ def _edit_window(tool: str = "fill"):
     window.mode_combo.setCurrentText("Terrain")
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
+    # This file tests Paint Can's own mechanics, not descape/terrain_units.py
+    # -- Trees defaults on and would otherwise pop an unpatched large-fill
+    # confirm QMessageBox for the whole-map fills below, hanging offscreen.
+    window.paint_trees_check.setChecked(False)
+    window.paint_eye_candy_check.setChecked(False)
     return window
 
 
@@ -303,39 +308,41 @@ def test_mid_drag_tool_switch_to_fill_does_not_wedge_history() -> None:
         window.close()
 
 
-def test_copy_paste_gating_treats_fill_as_terrain_kind() -> None:
+def test_copy_paste_no_longer_depends_on_active_tool() -> None:
+    """Phase 2.8 retired the tool-scoped clipboard kind gating this test used
+    to cover: Copy/Paste Region are enabled purely off self._region/
+    self._region_clipboard now, regardless of which tool (Paint Can here) is
+    active -- see _update_tool_enabled()'s own comment."""
     window = _edit_window("fill")
     try:
-        window.on_hover((0, 0))
+        window.on_region_selected((0, 0, 2, 2))
         assert window.copy_action.isEnabled()
 
-        window.copy_tile()
-        assert window._clipboard["kind"] == "terrain"
+        window.copy_region()
+        assert window._region_clipboard is not None
+        assert len(window._region_clipboard.terrain_ids) == 4
         assert window.paste_action.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
 
 
-def test_copy_terrain_selects_it_for_drawing() -> None:
-    """copy_tile()'s terrain branch must load the picked terrain into
-    terrain_combo, not just the clipboard -- Draw/Fill both paint from
-    terrain_combo.currentData() (on_edit_stroke_tile/on_fill), never from
-    the clipboard, so a Copy that only fills the clipboard leaves a
-    subsequent drag-painted stroke using whatever terrain_combo already
-    showed. _edit_window() starts terrain_combo on _FILL_TERRAIN; this sets
-    the hovered tile to the other value directly (no stroke needed) so
-    Copy's effect on the combo is observable."""
+def test_copy_region_does_not_touch_terrain_combo() -> None:
+    """The old tool-scoped copy_tile()'s terrain branch doubled as an
+    eyedropper, loading the picked terrain into terrain_combo -- retired in
+    favour of the real Eyedropper tool (pick_tile_value()), which covers the
+    same case for Draw/Fill AND Elevate/Set Elevation. Copy Region must not
+    revive that side effect."""
     window = _edit_window("draw")
     try:
         mm = window.scenario.map_manager
         mm.get_tile(0, 0).terrain_id = _OTHER_TERRAIN
         assert window.terrain_combo.currentData() == _FILL_TERRAIN  # sanity: still the starting selection
 
-        window.on_hover((0, 0))
-        window.copy_tile()
-        assert window.terrain_combo.currentData() == _OTHER_TERRAIN
-        assert window._clipboard == {"kind": "terrain", "terrain_id": _OTHER_TERRAIN, "layer": -1}
+        window.on_region_selected((0, 0, 1, 1))
+        window.copy_region()
+        assert window.terrain_combo.currentData() == _FILL_TERRAIN  # unchanged
+        assert window._region_clipboard.terrain_ids == (_OTHER_TERRAIN,)
     finally:
         window.edit_history.mark_saved()
         window.close()

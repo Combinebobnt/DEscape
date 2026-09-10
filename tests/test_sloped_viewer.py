@@ -160,31 +160,38 @@ def test_sloped_enables_edit_tools_the_same_way_stepped_does(tool: str) -> None:
         window.close()
 
 
-def test_sloped_enables_copy_paste() -> None:
-    """Copy/Paste have no dedicated Sloped gate of their own -- copy_ok
-    derives from draw_action/fill_action/elevation_action/set_level_action.
-    isEnabled(), so it followed the four tools out of the gate at Step 4 the
-    same way it followed them in. Pinned explicitly anyway, same reason the
-    old disabled-side version was: a future edit to _update_tool_enabled's
-    copy/paste block could silently break that chain without any test here
+def test_sloped_enables_select_and_copy_paste_round_trip() -> None:
+    """Select has no dedicated Sloped gate of its own -- the same has_map/
+    write_ok gate as Eyedropper, so it followed the four terrain tools out
+    of the Step 4 gate the same way Eyedropper did. Pinned explicitly
+    anyway, same reason the old version was: a future edit to
+    _update_tool_enabled could silently break that chain with no test here
     catching it.
 
-    Paste stays disabled throughout -- the clipboard is empty and its kind
-    gate is what refuses it, which is exactly what makes Copy the load-
-    bearing half of this check."""
+    Phase 2.8 retired the old tool-scoped clipboard (gated on whichever
+    edit tool was active) in favour of one gated on self._region/
+    self._region_clipboard alone, so this now exercises a full
+    select -> copy -> paste round trip in Sloped instead of pinning a
+    tool-enabled chain that no longer exists."""
     window = conftest.terrain_edit_window()
     try:
-        window.draw_action.setChecked(True)
         window.terrain_style_combo.setCurrentText("Stepped")
-        assert window.copy_action.isEnabled(), "baseline: Copy should be enabled in Stepped"
+        assert window.select_action.isEnabled(), "baseline: Select should be enabled in Stepped"
 
         window.terrain_style_combo.setCurrentText("Sloped")
-        assert window.copy_action.isEnabled()
+        assert window.select_action.isEnabled()
 
-        window.on_hover((10, 10))  # copy_tile() reads _hover_tile, not a click
-        window.copy_tile()
-        assert window._clipboard is not None, "Copy in Sloped produced no clipboard entry"
-        assert window.paste_action.isEnabled(), "Paste must follow a matching-kind Copy in Sloped"
+        mm = window.scenario.map_manager
+        mm.get_tile(10, 10).terrain_id = 2  # BEACH, distinct from the blank template's default
+
+        window.on_region_selected((10, 10, 11, 11))
+        window.copy_region()
+        assert window._region_clipboard is not None, "Copy in Sloped produced no clipboard entry"
+        assert window.paste_action.isEnabled()
+
+        window.on_hover((20, 20))
+        window.paste_region()
+        assert mm.get_tile(20, 20).terrain_id == 2, "Paste in Sloped must still write real terrain"
     finally:
         window.edit_history.mark_saved()
         window.close()

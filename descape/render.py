@@ -305,6 +305,22 @@ CONTACT_RAMP_DIVISOR = 4
 SEAM_SHADE = 0.60
 
 
+@lru_cache(maxsize=2)
+def _skirt_lut(side: str) -> np.ndarray:
+    """256-entry uint8 lookup table for one skirt side's SKIRT_SHADE
+    darkening, indexed directly by a raw top-texture byte. Built by the
+    same clip-and-truncate expression the per-pixel form used, which is
+    what makes it byte-identical rather than merely close (both SKIRT_SHADE
+    factors are below 1, so neither clip bound can fire on uint8 input).
+
+    Cached, so a test that patches SKIRT_SHADE has to call
+    _skirt_lut.cache_clear() afterwards, the same way _seam_factors below
+    documents for SEAM_SHADE. The table itself is only ever read; indexing
+    it returns a fresh array, so callers keep the fresh-array contract
+    _clipped_paint's `values` argument had before."""
+    return np.clip(np.arange(256, dtype=np.float32) * SKIRT_SHADE[side], 0, 255).astype(np.uint8)
+
+
 @lru_cache(maxsize=256)
 def _seam_factors(tile_px: int, side: str) -> np.ndarray:
     """float32 darkening factors aligned 1:1 with the seam indices for
@@ -426,7 +442,9 @@ def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     return (1 - (1 - CONTACT_SHADE) * (1 - t)).astype(np.float32)
 
 
-def _clipped_darken(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, factors: np.ndarray) -> None:
+def _clipped_darken(
+    img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, factors: np.ndarray, *, extent=None
+) -> None:
     """img[base_y+dst_y, base_x+dst_x] *= factors, in place, dropping any
     destination pixel outside img's own bounds -- the multiplicative,
     darkening-only counterpart to _clipped_paint (see that function's own
@@ -451,7 +469,22 @@ def _clipped_darken(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, fac
     identity invariant -- see composite_rect_iso's docstring), and a
     factor that could reach exactly 0 would turn an already-painted pixel
     into a false "unpainted" gap for verify_iso_render.check_full_coverage,
-    whose oracle uses "black <=> unpainted" as its own stand-in."""
+    whose oracle uses "black <=> unpainted" as its own stand-in.
+
+    extent is _clipped_paint's own scalar pre-check, same contract and same
+    two branches; see that function's docstring. The fast path here is the
+    identical gather/multiply/cast/scatter chain below with only the mask
+    skipped, so it is byte-identical rather than merely equivalent."""
+    if extent is not None:
+        y_lo, y_hi, x_lo, x_hi = extent
+        h, w = img.shape[0], img.shape[1]
+        if base_y + y_lo >= 0 and base_y + y_hi < h and base_x + x_lo >= 0 and base_x + x_hi < w:
+            ay = base_y + dst_y
+            ax = base_x + dst_x
+            img[ay, ax] = (img[ay, ax] * factors[:, None]).astype(np.uint8)
+            return
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
     ay = base_y + dst_y
     ax = base_x + dst_x
     in_bounds = (ay >= 0) & (ay < img.shape[0]) & (ax >= 0) & (ax < img.shape[1])
@@ -478,7 +511,9 @@ def _terrain_grid_and_elevations(scenario: LoadedScenario) -> tuple[list, np.nda
     return tile_grid, elevations
 
 
-def _clipped_paint(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, values: np.ndarray) -> None:
+def _clipped_paint(
+    img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, values: np.ndarray, *, extent=None
+) -> None:
     """img[base_y+dst_y, base_x+dst_x] = values, dropping any destination
     pixel that falls outside img's own bounds instead of letting it wrap
     (a numpy fancy-index with a negative or over-large coordinate doesn't
@@ -496,7 +531,30 @@ def _clipped_paint(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, valu
     canvas call site. Same for _clipped_darken() below (the contact-shadow
     compositor): its band is confined to the back neighbor's own diamond,
     so it too only ever drops pixels at the scratch-canvas call site -- see
-    that function's own docstring."""
+    that function's own docstring.
+
+    extent, when given, is iso_geometry.index_extent(producer, *key) for
+    the very producer call that made dst_y/dst_x: the INCLUSIVE
+    (y_lo, y_hi, x_lo, x_hi) box they occupy in their own unoffset frame.
+    It buys a scalar pre-check that skips the per-pixel mask entirely on
+    the two decidable cases, wholly inside (scatter straight in) and wholly
+    outside (return, matching the existing path's compaction to empty
+    arrays, which is a no-op). Anything straddling an edge falls through to
+    the mask below, so the accepted top-edge pixel drop SlopedChunkCache.
+    canvas_dims documents still happens exactly where it did.
+
+    KEYWORD-ONLY on purpose: no positional caller can bind it by accident,
+    and extent=None is today's path byte-for-byte. Passing None from an
+    empty index set is correct and expected, since that inert path already
+    costs nothing."""
+    if extent is not None:
+        y_lo, y_hi, x_lo, x_hi = extent
+        h, w = img.shape[0], img.shape[1]
+        if base_y + y_lo >= 0 and base_y + y_hi < h and base_x + x_lo >= 0 and base_x + x_hi < w:
+            img[base_y + dst_y, base_x + dst_x] = values
+            return
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
     ay = base_y + dst_y
     ax = base_x + dst_x
     in_bounds = (ay >= 0) & (ay < img.shape[0]) & (ax >= 0) & (ax < img.shape[1])
@@ -633,11 +691,15 @@ def _render_tile_iso(
             continue  # this tile isn't higher than that neighbor -- no visible drop
         drop_px = delta * proj.elev_step
         dst_y, dst_x, src_y, src_x = iso_geometry.skirt_quad_indices(tile_px, drop_px, side)
-        skirt = np.clip(top_block[src_y, src_x].astype(np.float32) * SKIRT_SHADE[side], 0, 255).astype(np.uint8)
-        _clipped_paint(img, base_y, base_x, dst_y, dst_x, skirt)
+        skirt = _skirt_lut(side)[top_block[src_y, src_x]]
+        # Same producer, same key: the extent memo rides the very arrays
+        # the line above just fetched. See iso_geometry.index_extent.
+        extent = iso_geometry.index_extent(iso_geometry.skirt_quad_indices, tile_px, drop_px, side)
+        _clipped_paint(img, base_y, base_x, dst_y, dst_x, skirt, extent=extent)
 
     dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(tile_px)
-    _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x])
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
 
     # Seam line: a 1px contour along this tile's OWN two up-screen diamond
     # edges wherever the neighbor behind that edge is lower -- this tile's
@@ -660,7 +722,8 @@ def _render_tile_iso(
             continue  # no height discontinuity here -- a seam would be a grid outline on flat ground
         seam_qualified = True
         seam_dst_y, seam_dst_x = iso_geometry.seam_edge_indices(tile_px, side)
-        _clipped_darken(img, base_y, base_x, seam_dst_y, seam_dst_x, _seam_factors(tile_px, side))
+        extent = iso_geometry.index_extent(iso_geometry.seam_edge_indices, tile_px, side)
+        _clipped_darken(img, base_y, base_x, seam_dst_y, seam_dst_x, _seam_factors(tile_px, side), extent=extent)
 
     # The two apex columns, once, if EITHER side qualified -- they belong
     # to neither side's range (see iso_geometry.seam_apex_indices): the old
@@ -671,7 +734,8 @@ def _render_tile_iso(
     # on the tile's most visible column when both neighbors are lower.
     if seam_qualified:
         apex_dst_y, apex_dst_x = iso_geometry.seam_apex_indices(tile_px)
-        _clipped_darken(img, base_y, base_x, apex_dst_y, apex_dst_x, _seam_factors(tile_px, "apex"))
+        extent = iso_geometry.index_extent(iso_geometry.seam_apex_indices, tile_px)
+        _clipped_darken(img, base_y, base_x, apex_dst_y, apex_dst_x, _seam_factors(tile_px, "apex"), extent=extent)
 
     # Contact shadow: darkens whatever's ALREADY painted behind this tile
     # (a smaller-d, earlier-painted tile in depth_order) when this tile is
@@ -698,7 +762,12 @@ def _render_tile_iso(
             # empty, and without this a 480x480 map pays ~460k pointless
             # cache lookups per full render.
             continue
-        _clipped_darken(img, base_y, base_x, s_dst_y, s_dst_x, _shadow_factors(tile_px, rise_px, side))
+        # Never None here: the .size guard just above already returned on
+        # the only empty case, and index_extent returns None only for that.
+        extent = iso_geometry.index_extent(iso_geometry.shadow_quad_indices, tile_px, rise_px, side)
+        _clipped_darken(
+            img, base_y, base_x, s_dst_y, s_dst_x, _shadow_factors(tile_px, rise_px, side), extent=extent
+        )
 
     # The band's two apex columns, once, onto the DIAGONAL back neighbor
     # (x+1, y-1). Neither side of the loop above can reach them: each
@@ -725,8 +794,10 @@ def _render_tile_iso(
             rise_px = delta * proj.elev_step
             a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_px)
             if a_dst_y.size:
+                # Non-None for the same reason the band's own extent is.
+                extent = iso_geometry.index_extent(iso_geometry.shadow_apex_indices, tile_px, rise_px)
                 _clipped_darken(
-                    img, base_y, base_x, a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_px, "apex")
+                    img, base_y, base_x, a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_px, "apex"), extent=extent
                 )
 
 
@@ -1050,9 +1121,8 @@ def _dirty_screen_bbox(
     # runs, matching the with_sprites own-tile-scan block below.
     #
     # Dilates the (small) TRIGGER set, not a per-anchor ring scan over every
-    # unit -- same inversion the with_sprites block below could take too
-    # (its own comment flags the O(units) cost of the opposite direction on
-    # an 11k-unit map).
+    # unit. The with_sprites block below now dilates dirty_xy the same way
+    # for its own band (Batch A6).
     if with_units and elevation_changed_local:
         triggered = set(elevation_changed_local)
         for x, y in elevation_changed_local:
@@ -1152,19 +1222,16 @@ def _dirty_screen_bbox(
         # (Stepped, radius=0: only the anchor tile itself; Sloped, radius=1:
         # its 3x3 neighbourhood, since a Sloped anchor reads its tile's four
         # shared corners).
-        if sprite_band_radius:
-            band_tiles = set()
-            for ax, ay in anchor_tiles:
-                for dx in range(-sprite_band_radius, sprite_band_radius + 1):
-                    for dy in range(-sprite_band_radius, sprite_band_radius + 1):
-                        if (ax + dx, ay + dy) in dirty_xy:
-                            band_tiles.add((ax, ay))
-                            break
-                    else:
-                        continue
-                    break
-        else:
-            band_tiles = dirty_xy & anchor_tiles
+        # Batch A6: dilate the small dirty set once and intersect rather than
+        # ringing every anchor. radius 0 gives dilated == dirty_xy (Stepped).
+        r = sprite_band_radius
+        dilated = {
+            (tx + dx, ty + dy)
+            for tx, ty in dirty_xy
+            for dx in range(-r, r + 1)
+            for dy in range(-r, r + 1)
+        }
+        band_tiles = dilated & anchor_tiles
         # Unit MOVES (not applicable here): this function only ever sees
         # terrain/elevation edits (dirty_indices comes from the terrain
         # array), and neither can move a unit -- so there is no "old anchor
@@ -1330,6 +1397,128 @@ def dirty_screen_bbox_sloped(
     )
 
 
+@dataclass(frozen=True)
+class BystanderGrid:
+    """building_bboxes bucketed into a uniform cell_px grid over LEVEL pixels,
+    origin (0, 0). This is the index composite_rect_iso()/
+    composite_rect_sloped()'s bystander scan reads instead of walking every
+    entry per rect.
+
+    cells maps (gx, gy) -> that cell's ((px, py), bbox) entries. An entry is
+    inserted into EVERY cell its bbox overlaps, so a bbox spanning several
+    cells is stored several times and a read covering more than one cell can
+    yield the same (px, py) twice. See _bystander_candidates() for why the
+    dedupe there is load-bearing rather than tidy."""
+
+    cell_px: int
+    cells: dict[tuple[int, int], tuple[tuple[tuple[int, int], tuple[int, int, int, int]], ...]]
+
+
+def build_bystander_grid(
+    building_bboxes: dict[tuple[int, int], tuple[int, int, int, int]], cell_px: int
+) -> BystanderGrid:
+    """building_bboxes indexed by cell_px cell, for _bystander_candidates().
+
+    Built once per building_bboxes build (a chunk cache's own per-level or
+    per-refresh step), never per rect. That ratio is the whole point, since
+    the rect reaching a compositor is either a whole chunk or an edit bbox
+    clipped to one chunk, so a cache that uses its own chunk_px as cell_px
+    turns the scan into a single dict hit.
+
+    Cell (gx, gy) covers pixels [gx*c, (gx+1)*c) x [gy*c, (gy+1)*c), so a
+    half-open bbox [ux0, ux1) spans cells ux0//c .. (ux1-1)//c inclusive.
+    That is the same conversion _bystander_candidates() applies to its rect,
+    which keeps the pair exactly as strict as the predicate it replaces. Python
+    floor division is correct for the negative coordinates real bboxes carry
+    (a building hanging off the top-left map edge, or Sloped's extra_top_px
+    headroom lifting sy0 above the canvas).
+
+    The assert is load-bearing, not decorative. A degenerate ux1 <= ux0 entry
+    lands in no cell here, but the predicate it replaces still accepts one for
+    any rect that strictly contains [ux1, ux0], so a degenerate entry would
+    make the grid path differ from the walk. Both producers rule it out by
+    construction (_unit_screen_bbox_iso's x extent is sx1 - sx0 + 2*half_w
+    with sx1 >= sx0 and half_w >= 2, its y extent likewise; a sprite piece's
+    is _draw_for_entry's max(1, ...) width/height; merge_sprite_bboxes only
+    ever grows a bbox), so this pins that argument rather than guarding a
+    case that happens."""
+    cells: dict[tuple[int, int], list] = {}
+    for key, bbox in building_bboxes.items():
+        ux0, uy0, ux1, uy1 = bbox
+        assert ux1 > ux0 and uy1 > uy0, f"degenerate building bbox at {key}: {bbox}"
+        entry = (key, bbox)
+        for gy in range(uy0 // cell_px, (uy1 - 1) // cell_px + 1):
+            for gx in range(ux0 // cell_px, (ux1 - 1) // cell_px + 1):
+                cells.setdefault((gx, gy), []).append(entry)
+    return BystanderGrid(cell_px=cell_px, cells={k: tuple(v) for k, v in cells.items()})
+
+
+def _bystander_candidates(
+    candidates: np.ndarray,
+    building_bboxes: dict,
+    grid: BystanderGrid | None,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    w: int,
+) -> np.ndarray:
+    """candidates merged with this rect's "bystander" buildings and re-sorted
+    into depth order: composite_rect_iso()/composite_rect_sloped()'s shared
+    bystander step (see composite_rect_iso()'s docstring for what a bystander
+    is and why the merge exists).
+
+    grid=None walks building_bboxes in full, which is the original shape and
+    what refresh_region_iso(), the tools and the tests still take. A grid
+    narrows the walk to the cells the rect touches; the predicate is then
+    re-applied to every entry it yields, because two boxes sharing a cell need
+    not overlap each other. The grid is a filter, never the test.
+
+    Completeness: a bbox overlapping the rect shares at least one pixel with
+    it, and the cell holding that pixel holds the bbox and is visited. So the
+    grid path can only ever narrow the walk, never the result.
+
+    The dedupe is the hazard the grid introduces. A bbox spanning several
+    cells sits in each, so a multi-cell read can yield one (px, py) twice; a
+    duplicated tile paints twice and _clipped_darken is MULTIPLICATIVE, so a
+    doubled contact-shadow band is a visible pixel change, not a no-op.
+    Adding each accepted key to `seen` handles that with the same mechanism
+    that already excludes terrain candidates, so the 1x1 and multi-cell cases
+    need no separate branch.
+
+    seen packs (px, py) as py * w + px: injective because
+    tiles_in_screen_rect() clamps candidates to [0, w) x [0, h) and
+    building_bboxes' keys come from unit_occupied_tiles(), likewise clamped.
+    .tolist() unboxes in C rather than N per-element int() calls."""
+    seen = set((candidates[:, 1] * w + candidates[:, 0]).tolist())
+    bystanders = []
+    if grid is not None and x1 > x0 and y1 > y0:
+        # An empty rect (x1 <= x0) has no cell range but still satisfies the
+        # predicate for any bbox strictly containing it, so it takes the walk.
+        c = grid.cell_px
+        for gy in range(y0 // c, (y1 - 1) // c + 1):
+            for gx in range(x0 // c, (x1 - 1) // c + 1):
+                for (px, py), (ux0, uy0, ux1, uy1) in grid.cells.get((gx, gy), ()):
+                    if ux0 < x1 and ux1 > x0 and uy0 < y1 and uy1 > y0:
+                        key = py * w + px
+                        if key not in seen:
+                            seen.add(key)
+                            bystanders.append((px, py))
+    else:
+        for (px, py), (ux0, uy0, ux1, uy1) in building_bboxes.items():
+            if py * w + px not in seen and ux0 < x1 and ux1 > x0 and uy0 < y1 and uy1 > y0:
+                bystanders.append((px, py))
+    if not bystanders:
+        return candidates
+    extra = np.array(bystanders, dtype=np.int64)
+    combined = np.concatenate([candidates, extra], axis=0)
+    xs, ys = combined[:, 0], combined[:, 1]
+    order = np.lexsort((xs, ys - xs))  # primary key is the LAST arg: d=y-x, then x, matching depth_order()
+    # (d, x) determines a tile uniquely, so no two entries tie and the sort is
+    # a total order, which is what makes grid iteration order irrelevant.
+    return combined[order]
+
+
 def composite_rect_iso(
     scenario: LoadedScenario,
     x0: int,
@@ -1343,6 +1532,7 @@ def composite_rect_iso(
     building_bboxes: dict,
     with_units: bool = True,
     sprites: SpriteLayer | None = None,
+    bystander_grid: BystanderGrid | None = None,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -1377,6 +1567,11 @@ def composite_rect_iso(
     depth_order(w, h) array would have produced -- just without ever
     building that full array.
 
+    bystander_grid is an optional build_bystander_grid() index over that same
+    building_bboxes dict, narrowing that merge from a full walk to the cells
+    this rect touches. None (the default) keeps the full walk, which is what
+    refresh_region_iso(), the tools and the tests use.
+
     Never mutates elevations -- only dirty_screen_bbox_iso() does that (see
     its own docstring for why that separation matters for chunk-order
     independence)."""
@@ -1386,18 +1581,7 @@ def composite_rect_iso(
     candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
 
     if with_units and building_bboxes:
-        seen = {(int(cx), int(cy)) for cx, cy in candidates}
-        bystanders = [
-            (px, py)
-            for (px, py), (ux0, uy0, ux1, uy1) in building_bboxes.items()
-            if (px, py) not in seen and ux0 < x1 and ux1 > x0 and uy0 < y1 and uy1 > y0
-        ]
-        if bystanders:
-            extra = np.array(bystanders, dtype=np.int64)
-            combined = np.concatenate([candidates, extra], axis=0)
-            xs, ys = combined[:, 0], combined[:, 1]
-            order = np.lexsort((xs, ys - xs))  # primary key is the LAST arg: d=y-x, then x -- matches depth_order()
-            candidates = combined[order]
+        candidates = _bystander_candidates(candidates, building_bboxes, bystander_grid, x0, y0, x1, y1, w)
 
     # Scratch canvas local to the rect, not the full map -- composited tiles
     # write into it via _render_tile_iso's offset/clip support (a candidate
@@ -1419,8 +1603,10 @@ def composite_rect_iso(
     # check_full_coverage) would have painted there, units included.
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
-    for cx, cy in candidates:
-        tile = mm.get_tile(int(cx), int(cy))
+    # .tolist() unboxes in C, and every candidate is already clamped on-map
+    # (tiles_in_screen_rect + unit_occupied_tiles), so get_tile's checks can't fire.
+    for cx, cy in candidates.tolist():
+        tile = mm.terrain[cy * w + cx]
         _paint_tile_and_units_iso(
             scratch, tile, units_by_tile, tile_px, proj, elevations, w, h,
             offset=(x0, y0), sprites=sprite_layer,
@@ -1506,6 +1692,7 @@ SLOPE_SHADE_MIN = 0.50
 SLOPE_SHADE_MAX = 1.35
 
 
+@lru_cache(maxsize=1024)
 def _slope_shade(tile_px: int, nw: int, ne: int, sw: int, se: int, elev_step: int) -> np.ndarray:
     """Per-pixel shading factor over one tile's DIAMOND footprint, in
     tile_uv_fractions(tile_px) order (equivalently diamond_indices' own) --
@@ -1565,6 +1752,7 @@ def _render_tile_sloped(
     proj: iso_geometry.IsoProjection,
     corner_rise: np.ndarray,
     offset: tuple[int, int] = (0, 0),
+    terrain_override: int | None = None,
 ) -> None:
     """Sloped mode's counterpart to _render_tile_iso -- same texture-crop
     and offset/clip contract, but no skirt loop and no contact-shadow loop
@@ -1584,13 +1772,20 @@ def _render_tile_sloped(
     double-count it. base_y is further shifted by -d_min, matching
     sloped_quad_indices' own normalization contract (see that function's
     docstring for why the caller, not that function, owns folding d_min
-    back in)."""
-    texture = asset_source.get_terrain_texture_array(tile.terrain_id)
+    back in).
+
+    terrain_override (Track C6), when given, replaces tile.terrain_id for
+    the texture lookup only -- mirrors _render_tile_iso's own parameter
+    exactly (see that function's docstring): shading, corners, d_min and
+    placement are all unaffected, and tile.terrain_id itself, and
+    everything the caller derives from the tile object, stays untouched."""
+    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
+    texture = asset_source.get_terrain_texture_array(terrain_id)
     if texture is not None:
         ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
         top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
     else:
-        r, g, b = color_for_terrain_id(tile.terrain_id)
+        r, g, b = color_for_terrain_id(terrain_id)
         top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
     d_nw = int(corner_rise[tile.y, tile.x])
@@ -1599,16 +1794,43 @@ def _render_tile_sloped(
     d_se = int(corner_rise[tile.y + 1, tile.x + 1])
     d_min = min(d_nw, d_ne, d_sw, d_se)
 
-    off_x, off_y = offset
-    base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, 0, proj)
-    base_x -= off_x
-    base_y -= off_y + d_min
-
-    dst_y, dst_x, src_y, src_x, uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx = _sloped_tile_quad(
+        tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset
+    )
     top = top_block[src_y, src_x]
     shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
     shaded = np.clip(top.astype(np.float32) * shade[uv_idx][:, None], 0, 255).astype(np.uint8)
-    _clipped_paint(img, base_y, base_x, dst_y, dst_x, shaded)
+    # RAW d_nw..d_se, not the d_min-normalized ones: that is the tuple
+    # _sloped_tile_quad passed sloped_quad_indices to get dst_y/dst_x.
+    extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, d_nw, d_ne, d_sw, d_se)
+    _clipped_paint(img, base_y, base_x, dst_y, dst_x, shaded, extent=extent)
+
+
+def _sloped_tile_quad(
+    tx: int,
+    ty: int,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    d_nw: int,
+    d_ne: int,
+    d_sw: int,
+    d_se: int,
+    offset: tuple[int, int] = (0, 0),
+) -> tuple[int, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx) -- the placement
+    and warp-index computation _render_tile_sloped paints a tile's own
+    pixels through, factored out so a conforming 1x1 unit marker
+    (_draw_unit_sloped) can paint through the exact same call rather than a
+    parallel copy. Inheriting this is the whole point: it is what makes the
+    marker structurally unable to drift from the tile it stands on, the
+    same way _render_tile_sloped_ids inherits agreement with the colour pass
+    by copying its inputs rather than re-deriving them."""
+    off_x, off_y = offset
+    base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
+    base_x -= off_x
+    base_y -= off_y + min(d_nw, d_ne, d_sw, d_se)
+    dst_y, dst_x, src_y, src_x, uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    return base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx
 
 
 PICK_ID_NONE = -1
@@ -1670,7 +1892,8 @@ def _render_tile_sloped_ids(
 
     dst_y, dst_x, _src_y, _src_x, _uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
     values = np.full(dst_y.shape[0], tile.y * map_w + tile.x, dtype=np.int32)
-    _clipped_paint(plane, base_y, base_x, dst_y, dst_x, values)
+    extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, d_nw, d_ne, d_sw, d_se)
+    _clipped_paint(plane, base_y, base_x, dst_y, dst_x, values, extent=extent)
 
 
 def _draw_unit_sloped(
@@ -1682,10 +1905,11 @@ def _draw_unit_sloped(
     tile_px: int,
     proj: iso_geometry.IsoProjection,
     rise_px: int,
+    corners: tuple[int, int, int, int] | None = None,
     offset: tuple[int, int] = (0, 0),
 ) -> None:
-    """Sloped's counterpart to _draw_unit_iso -- same one-diamond-per-call
-    paint (see that function for why a multi-tile unit arrives here once per
+    """Sloped's counterpart to _draw_unit_iso -- same one-mark-per-call paint
+    (see that function for why a multi-tile unit arrives here once per
     footprint tile), but takes a precomputed SCALAR PIXEL RISE (already
     derived from the UNIT'S OWN tile's 4 corners and its own sub-tile
     position by _paint_tile_and_units_sloped, see that function) instead of
@@ -1694,6 +1918,18 @@ def _draw_unit_sloped(
     just to satisfy _draw_unit_iso's existing signature would cost
     O(map_h * map_w) per UNIT, not per render, so this takes the scalar
     directly.
+
+    **corners, not None, is a second mode, not an extra option on the same
+    one.** When the caller's unit_tile_bounds() gives this unit a (1, 1)
+    span, its own tile IS its whole footprint, so a conforming marker paints
+    exactly that tile's own warped pixel set -- via _sloped_tile_quad(), the
+    same call _render_tile_sloped() paints the tile itself through, so the
+    marker cannot drift from the tile it stands on. `rise_px` is ignored in
+    that mode: the tile's own base_y already encodes the surface, and adding
+    a rise on top would double-count it (see the plan's `d_min` trap). Every
+    multi-tile footprint keeps the plain diamond at `rise_px`, unchanged --
+    a real building is a flat pad, and conforming per footprint tile would
+    silently undo that (see _paint_tile_and_units_sloped's docstring).
 
     Pixels, not an elevation LEVEL, since Track C5: corner_rise is already
     in canvas pixels, so placing at tile_screen_origin(tx, ty, 0, proj) and
@@ -1706,15 +1942,27 @@ def _draw_unit_sloped(
     **No sprite path here, still.** A unit whose sprite paints via
     sprite_draws_by_anchor()/sprites.by_anchor (Track P3-g6) is skipped
     before it ever reaches this function -- see
-    _paint_tile_and_units_sloped()'s skip_ids gate. This function only ever
-    draws the plain coloured mark: for a unit with no resolved sprite, and
-    always for a farm (Sloped's sprite_draws_by_anchor() call passes
-    with_farms=False, so no farm ever enters skip_ids here)."""
+    _paint_tile_and_units_sloped()'s skip_ids gate. This function draws the
+    plain coloured mark for a unit with no resolved sprite, and for a farm
+    only when sprites are off (Track C6): a farm with sprites on drapes as
+    terrain instead, resolved in _paint_tile_and_units_sloped before this
+    function is ever called for it (see that function's own farm case)."""
+    if corners is not None:
+        base_x, base_y, dst_y, dst_x, _src_y, _src_x, _uv_idx = _sloped_tile_quad(
+            tx, ty, tile_px, proj, *corners, offset
+        )
+        values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
+        # *corners is the raw (d_nw, d_ne, d_sw, d_se) _sloped_tile_quad
+        # just keyed sloped_quad_indices on, byte for byte.
+        extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, *corners)
+        _clipped_paint(img, base_y, base_x, dst_y, dst_x, values, extent=extent)
+        return
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
     values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
     off_x, off_y = offset
     base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
-    _clipped_paint(img, base_y - off_y - rise_px, base_x - off_x, dst_y, dst_x, values)
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _clipped_paint(img, base_y - off_y - rise_px, base_x - off_x, dst_y, dst_x, values, extent=extent)
 
 
 def _paint_tile_and_units_sloped(
@@ -1734,7 +1982,18 @@ def _paint_tile_and_units_sloped(
     (see that function's own docstring for why interleaving is load-
     bearing, not a style choice).
 
-    Units are drawn via _draw_unit_sloped() at the PIXEL RISE
+    A 1x1 unit -- everything but a multi-tile building or a farm -- instead
+    conforms to its own tile's warped footprint exactly, via
+    _draw_unit_sloped()'s `corners` mode (Track C6): its own tile IS its
+    whole footprint, so there is no separate rise term and no risk of the
+    marker spilling past the tile's painted pixels the way a plain diamond
+    did on a ramp. Multi-tile buildings are unaffected and still paint via
+    the PIXEL RISE below; a farm is multi-tile too, but drapes as real
+    terrain instead of painting via _draw_unit_sloped() at all whenever
+    sprites are on -- see this function's own farm case, below the
+    _render_tile_sloped() call.
+
+    Multi-tile units are drawn via _draw_unit_sloped() at the PIXEL RISE
     iso_geometry.unit_rise_px() reports for the unit's own sub-tile
     position inside its OWN tile -- i.e. on the surface this same function
     just painted, evaluated at the point the unit stands on (Track C5's
@@ -1750,7 +2009,9 @@ def _paint_tile_and_units_sloped(
     Since _units_by_tile() buckets a unit into every footprint tile, `tile`
     here is usually a FOOTPRINT tile rather than the unit's own one, and
     interpolating its corners would make the slab conform to the slope
-    tile-by-tile -- silently undoing the flat pad described above. The own
+    tile-by-tile -- silently undoing the flat pad described above (this is
+    exactly what the 1x1 path above is allowed to do, since there a footprint
+    tile and the own tile are the same tile by construction). The own
     tile's corners are always in bounds: unit_tile_bounds() only admitted
     this unit because its own tile is on-map, and corner_rise is
     (map_h + 1, map_w + 1).
@@ -1762,16 +2023,53 @@ def _paint_tile_and_units_sloped(
 
     sprites (Track P3-g6): a unit in sprites.skip_ids draws as a real sprite
     at its anchor tile instead of a mark here -- same skip/blit shape
-    _paint_tile_and_units_iso() uses, minus the farm-terrain-override case
-    (sprite_draws_by_anchor() is always called with with_farms=False for
-    Sloped, so sprites.farm_by_tile is always empty here; farms keep their
-    plain mark unconditionally, see this repo's plan for why a paint-time
-    skip alone would make them invisible instead of deferred)."""
-    _render_tile_sloped(img, tile, tile_px, proj, corner_rise, offset=offset)
+    _paint_tile_and_units_iso() uses. A farm-terrain tile
+    (sprites.farm_by_tile) is a THIRD case alongside the diamond and the
+    sprite, resolved right here rather than in a separate pass (Track C6,
+    mirroring _paint_tile_and_units_iso's own farm handling): it changes
+    what _render_tile_sloped paints as this tile's own terrain, not
+    something composited on top of it, so the override has to reach that
+    call before it runs. The perimeter stroke that follows uses
+    sloped_tile_edge_indices at this same tile's own base_x/base_y (the
+    _sloped_tile_quad placement _render_tile_sloped itself paints through),
+    not _render_tile_iso's elevation-based one -- copying that placement
+    convention here would silently land the outline in the wrong place
+    (this function's own `d_min` trap, a second time)."""
+    d_nw = int(corner_rise[tile.y, tile.x])
+    d_ne = int(corner_rise[tile.y, tile.x + 1])
+    d_sw = int(corner_rise[tile.y + 1, tile.x])
+    d_se = int(corner_rise[tile.y + 1, tile.x + 1])
+    farm = sprites.farm_by_tile.get((tile.x, tile.y)) if sprites is not None else None
+    terrain_override = farm[0] if farm is not None else None
+    _render_tile_sloped(img, tile, tile_px, proj, corner_rise, offset=offset, terrain_override=terrain_override)
+    if farm is not None:
+        _, outline_color, edge_mask = farm
+        base_x, base_y, _dst_y, _dst_x, _sy, _sx, _uv = _sloped_tile_quad(
+            tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset
+        )
+        color_arr = np.array(outline_color, dtype=np.uint8)
+        for bit, side in _FARM_EDGE_BITS:
+            if not (edge_mask & bit):
+                continue
+            edge_dst_y, edge_dst_x = iso_geometry.sloped_tile_edge_indices(tile_px, side, d_nw, d_ne, d_sw, d_se)
+            values = np.broadcast_to(color_arr, (edge_dst_y.size, 3))
+            extent = iso_geometry.index_extent(
+                iso_geometry.sloped_tile_edge_indices, tile_px, side, d_nw, d_ne, d_sw, d_se
+            )
+            _clipped_paint(img, base_y, base_x, edge_dst_y, edge_dst_x, values, extent=extent)
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
             continue  # its sprite paints instead, once, at its anchor tile
+        span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+        if span_x <= 1 and span_y <= 1:
+            # This unit's own tile IS its whole footprint (see
+            # unit_tile_bounds' invariant), and units_by_tile only ever
+            # buckets it there -- so `tile` here already IS that tile, and
+            # its corners are the ones _render_tile_sloped just painted.
+            corners = (d_nw, d_ne, d_sw, d_se)
+            _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, 0, corners=corners, offset=offset)
+            continue
         ux, uy = int(unit.x), int(unit.y)
         rise_px = iso_geometry.unit_rise_px(corner_rise, ux, uy, unit.x - ux, unit.y - uy)
         _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset)
@@ -1858,8 +2156,9 @@ def render_terrain_sloped_with_proj(
     identical to what it has always rendered" reasoning as
     render_terrain_iso_with_proj()'s own parameter, and what gives the
     stitched-chunk check a full-render ground truth to compare against.
-    with_farms=False always, matching SlopedChunkCache's own call -- see
-    sprite_draws_by_anchor()'s docstring for why."""
+    Farms drape (Track C6, with_farms's own default) whenever with_sprites
+    is True, matching SlopedChunkCache's own call and Stepped parity -- see
+    sprite_draws_by_anchor()'s docstring."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
@@ -1881,7 +2180,7 @@ def render_terrain_sloped_with_proj(
 
     units_by_tile = _units_by_tile(scenario) if with_units else {}
     sprites = (
-        sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise, with_farms=False)
+        sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
         if (with_units and with_sprites)
         else None
     )
@@ -1915,6 +2214,7 @@ def composite_rect_sloped(
     building_bboxes: dict,
     with_units: bool = True,
     sprites: SpriteLayer | None = None,
+    bystander_grid: BystanderGrid | None = None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -1933,30 +2233,23 @@ def composite_rect_sloped(
 
     sprites (Track P3-g6): same null-when-units-off rule composite_rect_iso()
     applies, so a sprite layer built for a with_units=True render is never
-    consulted once units are toggled off."""
+    consulted once units are toggled off.
+
+    bystander_grid: same optional index composite_rect_iso() takes, same
+    None-keeps-the-full-walk default."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
     candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
 
     if with_units and building_bboxes:
-        seen = {(int(cx), int(cy)) for cx, cy in candidates}
-        bystanders = [
-            (px, py)
-            for (px, py), (ux0, uy0, ux1, uy1) in building_bboxes.items()
-            if (px, py) not in seen and ux0 < x1 and ux1 > x0 and uy0 < y1 and uy1 > y0
-        ]
-        if bystanders:
-            extra = np.array(bystanders, dtype=np.int64)
-            combined = np.concatenate([candidates, extra], axis=0)
-            xs, ys = combined[:, 0], combined[:, 1]
-            order = np.lexsort((xs, ys - xs))
-            candidates = combined[order]
+        candidates = _bystander_candidates(candidates, building_bboxes, bystander_grid, x0, y0, x1, y1, w)
 
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
-    for cx, cy in candidates:
-        tile = mm.get_tile(int(cx), int(cy))
+    # Same direct terrain index as composite_rect_iso, same clamping argument.
+    for cx, cy in candidates.tolist():
+        tile = mm.terrain[cy * w + cx]
         _paint_tile_and_units_sloped(
             scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h,
             offset=(x0, y0), sprites=sprite_layer,
@@ -2675,7 +2968,8 @@ def _draw_unit_iso(
     values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
     off_x, off_y = offset
     base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, elevation, proj)
-    _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values)
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values, extent=extent)
 
 
 def _unit_screen_bbox_iso(
@@ -3124,7 +3418,8 @@ def _paint_tile_and_units_iso(
                 continue
             dst_y, dst_x = iso_geometry.tile_edge_indices(tile_px, side)
             values = np.broadcast_to(color_arr, (dst_y.size, 3))
-            _clipped_paint(img, base_y, base_x, dst_y, dst_x, values)
+            extent = iso_geometry.index_extent(iso_geometry.tile_edge_indices, tile_px, side)
+            _clipped_paint(img, base_y, base_x, dst_y, dst_x, values, extent=extent)
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:

@@ -588,6 +588,9 @@ class _IsoLevel:
     tile_px: int
     proj: iso_geometry.IsoProjection
     building_bboxes: dict | None = None
+    # A5: building_bboxes' own chunk-bucketed index, built beside it in
+    # _install_level so the two can never disagree about which dict they mean.
+    bystander_grid: render.BystanderGrid | None = None
     gen: int = -1
     # P3-g3. Per-level for the same reason building_bboxes is: a sprite is
     # scaled by 2*half_w/NATIVE_TILE_W, so it is projection-dependent, and it
@@ -788,6 +791,9 @@ class IsoChunkCache(_ChunkCacheBase):
             bboxes = render.merge_sprite_bboxes(bboxes, sprites)
         lvl.sprites = sprites
         lvl.building_bboxes = bboxes
+        # Built from the MERGED dict, and here rather than in _level(), because
+        # this is the one assembly point the warm install also routes through.
+        lvl.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
         lvl.gen = gen
 
     def level_warm_job(self, mip: int) -> LevelWarmJob | None:
@@ -905,6 +911,7 @@ class IsoChunkCache(_ChunkCacheBase):
             lvl.building_bboxes,
             self.with_units,
             sprites=lvl.sprites,
+            bystander_grid=lvl.bystander_grid,
         )
 
 
@@ -1246,6 +1253,9 @@ class SlopedChunkCache(_ChunkCacheBase):
         self.sprites_enabled = sprites
         self._pick_planes: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
         self._init_mip_levels({0: tile_px})
+        # Set here, not left to _init_max_chunks below: _set_building_bboxes()
+        # reads it and _refresh_source_caches() runs first.
+        self.chunk_px = chunk_px
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -1311,9 +1321,10 @@ class SlopedChunkCache(_ChunkCacheBase):
         elevations could have changed" cadence as corner_rise itself, since
         a sprite's anchor depends on corner_rise via unit_rise_px() -- an
         edit that leaves this stale would repaint sprites at their pre-edit
-        height. with_farms=False always: Sloped has no warped-outline path
-        for a farm foundation yet (see this repo's plan for why), so farms
-        stay on the plain mark regardless of the sprite toggle.
+        height. with_farms defaults True (Track C6): a farm now drapes over
+        its own footprint tiles' warped terrain, matching Stepped, whenever
+        sprites are on; the sprites-off case still falls back to the plain
+        mark (see render.py's own farm handling for that residual).
         merge_sprite_bboxes() runs AFTER the headroom-widened building
         bboxes above, never replacing them -- both operations only ever
         grow a bbox (F3), so the order between them doesn't affect the
@@ -1360,12 +1371,12 @@ class SlopedChunkCache(_ChunkCacheBase):
             self.sprites = (
                 render.sprite_draws_by_anchor(
                     self.scenario, self.proj, self.elevations, self.unit_filter,
-                    corner_rise=self.corner_rise, with_farms=False,
+                    corner_rise=self.corner_rise,
                 )
                 if self.with_units and self.sprites_enabled
                 else None
             )
-            self.building_bboxes = (
+            self._set_building_bboxes(
                 render.merge_sprite_bboxes(building_bboxes, self.sprites)
                 if self.sprites is not None
                 else building_bboxes
@@ -1391,11 +1402,21 @@ class SlopedChunkCache(_ChunkCacheBase):
             if self.with_units and self.sprites_enabled
             else None
         )
-        self.building_bboxes = (
+        self._set_building_bboxes(
             render.merge_sprite_bboxes(building_bboxes, self.sprites)
             if self.sprites is not None
             else building_bboxes
         )
+
+    def _set_building_bboxes(self, bboxes: dict) -> None:
+        """The only place this class assigns building_bboxes, so its chunk-
+        bucketed index can never be left describing an older dict. Both
+        _refresh_source_caches() branches route through here.
+
+        Assigns the dict itself rather than a copy, since the patch-unit-
+        sources test uses id(cache.building_bboxes) as its staleness proxy."""
+        self.building_bboxes = bboxes
+        self.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
 
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
         """(width, height) in canvas pixels -- proj.canvas_w/canvas_h alone,
@@ -1444,6 +1465,7 @@ class SlopedChunkCache(_ChunkCacheBase):
             self.building_bboxes,
             self.with_units,
             sprites=self.sprites,
+            bystander_grid=self.bystander_grid,
         )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:
@@ -1515,7 +1537,22 @@ class SlopedChunkCache(_ChunkCacheBase):
     def patch(
         self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None
     ) -> None:
-        self._pick_planes.clear()
+        """Drops only the pick-plane chunks bbox overlaps, not the whole
+        memo (draw-perf plan item 1): a drag's mouseMoveEvent calls
+        pick_tile() after every patch(), so a wholesale clear() forces the
+        very next move to rebuild a plane even when the cursor's own chunk
+        was untouched -- measured at 13.5ms, the single biggest lever in
+        that plan. invalidate_region()/set_unit_filter() keep the wholesale
+        clear: neither fires per patched tile, so there's nothing to save
+        by narrowing them, and unlike patch() their bbox/call is not on the
+        hot per-move path."""
+        px0, py0, px1, py1 = bbox
+        if px1 > px0 and py1 > py0:
+            cx0, cy0 = px0 // self.chunk_px, py0 // self.chunk_px
+            cx1, cy1 = (px1 - 1) // self.chunk_px, (py1 - 1) // self.chunk_px
+            for cy in range(cy0, cy1 + 1):
+                for cx in range(cx0, cx1 + 1):
+                    self._pick_planes.pop((cx, cy), None)
         super().patch(bbox, elevation_changed)
 
     def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:

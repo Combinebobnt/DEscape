@@ -81,7 +81,8 @@ def test_undo_restores_rotation_on_the_live_unit_too(tmp_path: Path) -> None:
     """Rotation is part of UnitState for this reason: without it the blob
     comes back (so the FILE is right) while the live Unit object stays
     rotated, and the inspector and render then disagree with what saving
-    would write. Both halves are asserted here."""
+    would write. Both halves are asserted here. `unit_const` is in UnitState
+    for the same reason; see the gate cycle test below."""
     loaded, model, history = _open()
     archer = _unit(loaded, _REF_ARCHER_P1)
     original = archer.rotation
@@ -93,6 +94,34 @@ def test_undo_restores_rotation_on_the_live_unit_too(tmp_path: Path) -> None:
     history.undo([], None, None, model)
 
     assert archer.rotation == original
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()
+
+
+def test_undo_restores_a_cycled_gates_const_and_anchor_on_the_live_unit(tmp_path: Path) -> None:
+    """The other half of the UnitState widening. A gate cycle changes the
+    const AND the coordinates (each orientation has its own span), so an undo
+    that restored only the bytes would leave a live unit whose footprint no
+    longer matches the file. The fixture holds no gate, so the wall is
+    re-pointed at one first. That is a plain field edit, invisible to the
+    bytes until a commit (finding 4), which is why the byte round-trip holds.
+    """
+    loaded, model, history = _open()
+    gate = _unit(loaded, _REF_WALL)
+    wall_fields = (gate.unit_const, gate.x, gate.y)
+    gate.unit_const, gate.x, gate.y = 64, 10.0, 5.5
+    original = (gate.unit_const, gate.x, gate.y)
+
+    model.begin_unit_edit([0])
+    model.set_unit_const(gate, 659)
+    model.commit_unit_edit("Rotate unit", history)
+    assert (gate.unit_const, gate.x, gate.y) == (659, 10.0, 7.0)
+
+    history.undo([], None, None, model)
+
+    assert (gate.unit_const, gate.x, gate.y) == original
+    gate.unit_const, gate.x, gate.y = wall_fields
     out = tmp_path / "undone.aoe2scenario"
     write_scenario(loaded, out, units=model)
     assert out.read_bytes() == FIXTURE_PATH.read_bytes()

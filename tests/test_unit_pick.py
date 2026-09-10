@@ -37,7 +37,7 @@ from descape import iso_geometry, render
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
-from descape.unit_pick import build_index, pick_unit, unit_key, units_in_rect, unit_polygons
+from descape.unit_pick import build_index, pick_unit, unit_key, unit_rise_px_for, units_in_rect, unit_polygons
 
 RNG_SEED = 20260819
 SAMPLE_PIXELS = 4000
@@ -278,12 +278,17 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
     """_stepped_id_plane()'s Sloped twin: re-runs
     _paint_tile_and_units_sloped()'s own loop, painting order+1.
 
-    Two differences from the Stepped oracle, both load-bearing. Terrain
+    Three differences from the Stepped oracle, all load-bearing. Terrain
     clears its WARPED quad (sloped_quad_indices, based at
     tile_screen_origin(x, y, 0) - d_min, the placement convention
-    _render_tile_sloped documents), not a uniform diamond. And a unit's
-    diamond sits at its own PIXEL rise -- one height for the whole
-    footprint, painted at each covering tile's own screen position.
+    _render_tile_sloped documents), not a uniform diamond. A 1x1 unit's
+    marker is painted through that SAME warped-quad call, at its own
+    tile's corners (Track C6) -- so the split is encoded here too, not
+    just in the real renderer, which is what makes this an oracle for the
+    conforming-marker fix rather than a restatement of the pre-C6 shape. A
+    multi-tile unit's diamond still sits at its own PIXEL rise -- one
+    height for the whole footprint, painted at each covering tile's own
+    screen position.
 
     No skirts to leave out, unlike the Stepped oracle: Sloped paints none,
     so this plane has no pixel where the pick is allowed to disagree.
@@ -316,7 +321,11 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
         s_dst_y, s_dst_x, _ssy, _ssx, _uv = iso_geometry.sloped_quad_indices(tile_px, *corners)
         paint(bx, by - min(corners), s_dst_y, s_dst_x, 0)
         for entry in by_footprint_tile.get((x, y), ()):
-            paint(bx, by - _unit_rise(entry, corner_rise), d_dst_y, d_dst_x, entry.order + 1)
+            span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
+            if span_x <= 1 and span_y <= 1:
+                paint(bx, by - min(corners), s_dst_y, s_dst_x, entry.order + 1)
+            else:
+                paint(bx, by - _unit_rise(entry, corner_rise), d_dst_y, d_dst_x, entry.order + 1)
     return plane
 
 
@@ -481,6 +490,194 @@ def test_sloped_pick_agrees_with_the_id_plane(kwargs) -> None:
             f"got {0 if got is None else got.order + 1}"
         )
     assert hits > 0, "sampled no unit pixels at all -- the oracle would be vacuous"
+
+
+def test_sloped_pick_covers_every_pixel_of_a_1x1_units_own_tile_and_no_other() -> None:
+    """Track C6's pick-vs-paint agreement check for the conforming 1x1
+    marker: since a 1x1 unit's pixel set IS its own tile's warped pixel set
+    (render._draw_unit_sloped's `corners` mode), pick_unit must return it at
+    every one of those pixels, and at none outside them -- the unit-side
+    analogue of test_sloped_geometry.py's tile-vs-tile agreement checks.
+
+    Scoped to a local window around the tile rather than the whole canvas:
+    that is where a spill would show up, and scanning the whole canvas
+    pixel-by-pixel in pure Python would be far too slow for the default
+    tier.
+    """
+    scn = _scenario(ramped=True)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
+
+    # player 4's is the only _PLAIN_CONST alone on its own tile (player 2's
+    # pair of _PLAIN_CONST units share one tile, which is a tie-break case
+    # for a DIFFERENT test, not this one).
+    entry = next(e for e in index.entries if e.unit.unit_const == _PLAIN_CONST and e.player_id == 4)
+    own_x, own_y = entry.own_x, entry.own_y
+    own_id = own_y * MAP_W + own_x
+    half_w, half_h = proj.half_w, proj.half_h
+
+    base_x, base_y = iso_geometry.tile_screen_origin(own_x, own_y, 0, proj)
+    d_nw = int(corner_rise[own_y, own_x])
+    d_ne = int(corner_rise[own_y, own_x + 1])
+    d_sw = int(corner_rise[own_y + 1, own_x])
+    d_se = int(corner_rise[own_y + 1, own_x + 1])
+    margin = max(d_nw, d_ne, d_sw, d_se) - min(d_nw, d_ne, d_sw, d_se) + half_h
+    y0 = max(0, base_y - margin)
+    y1 = min(terrain.shape[0], base_y + 2 * half_h + margin)
+    x0 = max(0, base_x - margin)
+    x1 = min(terrain.shape[1], base_x + 2 * half_w + margin)
+    assert y1 > y0 and x1 > x0, "the own tile's own window fell entirely off-canvas"
+
+    hits = 0
+    for sy in range(y0, y1):
+        for sx in range(x0, x1):
+            tile_id = int(terrain[sy, sx])
+            tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+            got = pick_unit(
+                index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
+                corner_rise=corner_rise, terrain_tile=tile,
+            )
+            is_this_unit = got is not None and got.order == entry.order
+            if tile_id == own_id:
+                hits += 1
+                assert is_this_unit, (
+                    f"({sx}, {sy}) is inside the unit's own tile's painted footprint but "
+                    f"pick_unit did not return it"
+                )
+            else:
+                assert not is_this_unit, (
+                    f"({sx}, {sy}) is OUTSIDE the unit's own tile (terrain tile id {tile_id}) "
+                    "but pick_unit returned this unit anyway -- the marker spilled"
+                )
+    assert hits > 0, "sampled no pixels of the unit's own tile -- the check would be vacuous"
+
+
+# AoE2 Farm: has a FOUNDATION_TERRAIN entry and no .sld, so it is the
+# multi-tile const that drapes (Track C6) -- see test_sloped_sprites.py's
+# own FARM_CONST for the same fact, re-derived here rather than imported so
+# this file doesn't gain a cross-test-module dependency for one integer.
+_FARM_CONST = 50
+
+
+def test_sloped_pick_covers_every_pixel_of_a_farms_own_footprint_and_no_other() -> None:
+    """The multi-tile twin of the 1x1 check above: a draped farm's pixel
+    set is its own 9 footprint tiles' warped pixel set (render.py's farm
+    case in _paint_tile_and_units_sloped), so pick_unit must agree at every
+    one of those pixels, and at none outside them.
+
+    farms_draped=True throughout: this is the sprites-on case, where the
+    farm actually IS drawn draped. See the sprites-off test below for the
+    other half of the contract.
+    """
+    tiles = [
+        SyntheticTile(x=x, y=y, elevation=max(0, min(4, x - 8)))
+        for y in range(MAP_H)
+        for x in range(MAP_W)
+    ]
+    units = [[] for _ in range(9)]
+    units[1] = [SyntheticUnit(x=10.5, y=10.5, unit_const=_FARM_CONST, reference_id=1)]
+    scn = FakeScenario(MAP_W, MAP_H, tiles, units)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
+
+    entry = index.entries[0]
+    own_tiles = render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
+    assert len(own_tiles) == 9, "fixture must be a real 3x3 farm or this proves nothing"
+    own_ids = {ty * MAP_W + tx for tx, ty in own_tiles}
+    half_w, half_h = proj.half_w, proj.half_h
+
+    xs = [tx for tx, _ty in own_tiles]
+    ys = [ty for _tx, ty in own_tiles]
+    x0t, x1t, y0t, y1t = min(xs), max(xs) + 1, min(ys), max(ys) + 1
+    base_x0, base_y0 = iso_geometry.tile_screen_origin(x0t, y0t, 0, proj)
+    base_x1, base_y1 = iso_geometry.tile_screen_origin(x1t - 1, y1t - 1, 0, proj)
+    margin = 2 * half_h
+    y0 = max(0, base_y0 - margin)
+    y1 = min(terrain.shape[0], base_y1 + 2 * half_h + margin)
+    x0 = max(0, base_x0 - margin)
+    x1 = min(terrain.shape[1], base_x1 + 2 * half_w + margin)
+    assert y1 > y0 and x1 > x0, "the farm's own window fell entirely off-canvas"
+
+    hits = 0
+    for sy in range(y0, y1):
+        for sx in range(x0, x1):
+            tile_id = int(terrain[sy, sx])
+            tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+            got = pick_unit(
+                index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
+                corner_rise=corner_rise, terrain_tile=tile, farms_draped=True,
+            )
+            is_this_unit = got is not None and got.order == entry.order
+            if tile_id in own_ids:
+                hits += 1
+                assert is_this_unit, f"({sx}, {sy}) is on the farm's own footprint but pick_unit missed it"
+            else:
+                assert not is_this_unit, (
+                    f"({sx}, {sy}) is OFF the farm's footprint (terrain tile id {tile_id}) but "
+                    "pick_unit returned it anyway -- the drape spilled"
+                )
+    assert hits > 0, "sampled no pixels of the farm's own footprint -- the check would be vacuous"
+
+
+def test_sloped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() -> None:
+    """The sprites-off half of the farms_draped contract: when a farm is
+    NOT currently drawn draped (farms_draped=False, its default), pick_unit
+    and unit_polygons must agree with the plain-diamond mark
+    _paint_tile_and_units_sloped still paints in that case -- not silently
+    keep testing "is this pixel on the farm's terrain tile", which is a
+    DIFFERENT shape and would disagree with what render.py paints whenever
+    sprites are off. Regression for exactly the gap this parameter closes.
+    """
+    tiles = [
+        SyntheticTile(x=x, y=y, elevation=max(0, min(4, x - 8)))
+        for y in range(MAP_H)
+        for x in range(MAP_W)
+    ]
+    units = [[] for _ in range(9)]
+    units[1] = [SyntheticUnit(x=10.5, y=10.5, unit_const=_FARM_CONST, reference_id=1)]
+    scn = FakeScenario(MAP_W, MAP_H, tiles, units)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    entry = index.entries[0]
+
+    # Oracle: the plain diamond _draw_unit_sloped's non-corners branch paints
+    # for this farm's OWN tile at its own rise -- same expression
+    # unit_rise_px_for()/diamond_membership() below must agree with.
+    rise = unit_rise_px_for(entry, corner_rise)
+    origin_sx = proj.origin_x + (entry.own_x + entry.own_y) * proj.half_w
+    origin_row = proj.origin_y + (entry.own_y - entry.own_x) * proj.half_h - rise
+    sx, sy = origin_sx + proj.half_w, origin_row + proj.half_h  # the diamond's own centre pixel
+    assert iso_geometry.diamond_membership(sx - origin_sx, sy - origin_row, proj.half_w, proj.half_h)
+
+    terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
+    tile_id = int(terrain[sy, sx])
+    tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+    got = pick_unit(
+        index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
+        corner_rise=corner_rise, terrain_tile=tile, farms_draped=False,
+    )
+    assert got is not None and got.order == entry.order, (
+        "the farm's own diamond centre pixel must still pick as the farm when farms_draped=False"
+    )
+
+    polygons = unit_polygons(
+        entry, "sloped", tile_px, MAP_W, MAP_H, None, proj, corner_rise=corner_rise, farms_draped=False,
+    )
+    assert len(polygons) == 9, "a non-draped farm's highlight must still be one diamond per footprint tile"
+    for tx, ty in render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H):
+        ox, oy = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
+        expected = [
+            (ox + proj.half_w, oy - rise),
+            (ox + 2 * proj.half_w, oy - rise + proj.half_h),
+            (ox + proj.half_w, oy - rise + 2 * proj.half_h),
+            (ox, oy - rise + proj.half_h),
+        ]
+        assert expected in polygons, f"missing the plain diamond for footprint tile ({tx}, {ty})"
 
 
 @pytest.mark.parametrize("pct", [25, 50, 100, 200])
@@ -697,20 +894,39 @@ def test_units_in_rect_respects_the_filter() -> None:
 _GATE_CONST = next(
     uid for uid, offs in BUILDING_TILE_OFFSETS.items() if offs == frozenset({(0, 0), (1, 1), (1, 2), (2, 1), (2, 2), (3, 3)})
 )
+# The other of the two sparse shapes (tests/test_unit_footprints.py's
+# _N_GATE_SHAPE) -- no pick test touched this one before the 2026-09-08
+# automation pass; every gap-tile check below runs it alongside _GATE_CONST.
+_N_GATE_CONST = next(
+    uid for uid, offs in BUILDING_TILE_OFFSETS.items() if offs == frozenset({(0, 3), (1, 1), (1, 2), (2, 1), (2, 2), (3, 0)})
+)
 # Own tile at integer coords, so bbox is exactly tiles 8..11 on both axes
 # (own-tile invariant: local offset (2, 2) always).
 _GATE_X = _GATE_Y = 10.0
 _GATE_BBOX0 = 8
-# Occupied local offset (3, 3) -> absolute (11, 11); (0, 3) is a real bbox
-# tile ("...#" row of the ASCII shape's LAST row) this gate does NOT occupy.
-_GATE_OCCUPIED_TILE = (11, 11)
-_GATE_GAP_TILE = (8, 11)
+# Local offset (2, 2) -> absolute (10, 10): the one occupied tile common to
+# BOTH sparse shapes, so a single hit-check tile covers either const.
+_GATE_OCCUPIED_TILE = (10, 10)
+# (0, 3) -> absolute (8, 11): a real bbox tile the E shape does NOT occupy,
+# kept as its own constant for the two non-parametrized tests below that only
+# need one representative gap tile.
+_GATE_GAP_TILE = (_GATE_BBOX0, _GATE_BBOX0 + 3)
+# Every one of the 4x4 bbox's 10 gap tiles (16 - the 6-tile shape), derived
+# rather than hardcoded -- the gate-orientation-cycling checklist's own step
+# 7 text said "two", which was wrong.
+_GATE_GAP_CASES = [
+    (const, (_GATE_BBOX0 + i, _GATE_BBOX0 + j))
+    for const in (_GATE_CONST, _N_GATE_CONST)
+    for i in range(4)
+    for j in range(4)
+    if (i, j) not in BUILDING_TILE_OFFSETS[const]
+]
 
 
-def _gate_scenario() -> FakeScenario:
+def _gate_scenario(unit_const: int = _GATE_CONST) -> FakeScenario:
     tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_W) for x in range(MAP_W)]
     units_by_player = [[] for _ in range(9)]
-    units_by_player[1] = [SyntheticUnit(x=_GATE_X, y=_GATE_Y, unit_const=_GATE_CONST, reference_id=1)]
+    units_by_player[1] = [SyntheticUnit(x=_GATE_X, y=_GATE_Y, unit_const=unit_const, reference_id=1)]
     return FakeScenario(MAP_W, MAP_W, tiles, units_by_player)
 
 
@@ -745,23 +961,32 @@ def test_flat_pick_and_draw_still_treat_a_gate_as_its_full_rect() -> None:
     assert got is not None and got.unit.unit_const == _GATE_CONST
 
 
-def test_stepped_pick_hits_an_occupied_tile_and_misses_a_gap_tile() -> None:
-    scn = _gate_scenario()
+def test_exactly_ten_gap_tiles_per_shape() -> None:
+    """The 4x4 bbox minus the 6-tile shape is 10 tiles, not the "two" the
+    gate-orientation-cycling checklist's own step 7 used to say."""
+    assert sum(1 for const, _ in _GATE_GAP_CASES if const == _GATE_CONST) == 10
+    assert sum(1 for const, _ in _GATE_GAP_CASES if const == _N_GATE_CONST) == 10
+
+
+@pytest.mark.parametrize("unit_const, gap_tile", _GATE_GAP_CASES)
+def test_stepped_pick_hits_an_occupied_tile_and_misses_a_gap_tile(unit_const, gap_tile) -> None:
+    scn = _gate_scenario(unit_const)
     index = build_index(scn)
     tile_px = _tile_px()
     elevations, proj = render.elevations_and_proj(scn)
 
     ox, oy = _tile_center(*_GATE_OCCUPIED_TILE, proj)
     hit = pick_unit(index, "stepped", ox, oy, tile_px, MAP_W, MAP_W, elevations, proj)
-    assert hit is not None and hit.unit.unit_const == _GATE_CONST
+    assert hit is not None and hit.unit.unit_const == unit_const
 
-    gx, gy = _tile_center(*_GATE_GAP_TILE, proj)
+    gx, gy = _tile_center(*gap_tile, proj)
     miss = pick_unit(index, "stepped", gx, gy, tile_px, MAP_W, MAP_W, elevations, proj)
-    assert miss is None
+    assert miss is None, (unit_const, gap_tile)
 
 
-def test_sloped_pick_hits_an_occupied_tile_and_misses_a_gap_tile() -> None:
-    scn = _gate_scenario()
+@pytest.mark.parametrize("unit_const, gap_tile", _GATE_GAP_CASES)
+def test_sloped_pick_hits_an_occupied_tile_and_misses_a_gap_tile(unit_const, gap_tile) -> None:
+    scn = _gate_scenario(unit_const)
     index = build_index(scn)
     tile_px = _tile_px()
     _elevations, corner_rise, proj = _sloped_geometry(scn)
@@ -770,13 +995,13 @@ def test_sloped_pick_hits_an_occupied_tile_and_misses_a_gap_tile() -> None:
     hit = pick_unit(
         index, "sloped", ox, oy, tile_px, MAP_W, MAP_W, None, proj, corner_rise=corner_rise
     )
-    assert hit is not None and hit.unit.unit_const == _GATE_CONST
+    assert hit is not None and hit.unit.unit_const == unit_const
 
-    gx, gy = _tile_center(*_GATE_GAP_TILE, proj)
+    gx, gy = _tile_center(*gap_tile, proj)
     miss = pick_unit(
         index, "sloped", gx, gy, tile_px, MAP_W, MAP_W, None, proj, corner_rise=corner_rise
     )
-    assert miss is None
+    assert miss is None, (unit_const, gap_tile)
 
 
 def test_stepped_unit_polygons_only_covers_the_occupied_set() -> None:

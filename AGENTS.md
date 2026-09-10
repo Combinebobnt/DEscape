@@ -30,7 +30,19 @@ commands, and architecture.
   `unit_const`. The graphic file names are `..._ne_closed_x1` / `_se_` / `_e_`
   / `_n_`, one const per orientation (stone: 64/88/659/667). "Rotating" a gate
   therefore means swapping the const among its four siblings, which changes the
-  footprint; it is not a rotation and is not implemented.
+  footprint.
+- **The one exception to "a placed unit's `unit_const` never changes", and its
+  exact scope.** `UnitEditModel.set_unit_const()` is the only code anywhere
+  that may change an existing unit's `unit_const`, and only to one of the four
+  orientation siblings `descape/gate_orientation.py` derives for it; anything
+  else raises rather than silently no-op'ing, and that guard is what keeps this
+  rule enforced rather than merely documented. It must re-anchor `x`/`y` by
+  preserving the footprint's low corner (`span_low_corner()` forward,
+  `render.span_anchor()` back), because the four orientations have four
+  different spans and every corpus placement sits at `tile + span/2` per axis.
+  `rotation` and `z` pass through verbatim as above: a gate's stored rotation
+  is `0.0` or the junk sentinel `7.0`, and every sibling has
+  `angle_count == 1`, so there is nothing there to normalize.
 - The same is true of walls, for a different reason, and it is confirmed
   in-game: a wall graphic's five stored frames are SHAPES (two diagonal runs, a
   tower, a flatter run, a narrow column), not five facings, so `rotation`

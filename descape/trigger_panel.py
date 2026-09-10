@@ -654,7 +654,9 @@ class TriggerPanel(QWidget):
             self._populating = False
         self._update_buttons()
 
-    def show_scenario(self, loaded: LoadedScenario | None) -> None:
+    def show_scenario(
+        self, loaded: LoadedScenario | None, pending_exec_order: int | None = None
+    ) -> None:
         """Populate from `loaded`, parsing its Triggers section on first use.
 
         Calls parse_triggers() every time rather than caching a manager: the
@@ -662,6 +664,10 @@ class TriggerPanel(QWidget):
         obtained before another file was opened is only safe to read after a
         re-parse. The call is memoized, so this costs a depoison(), not a
         re-parse. See scenario_io.parse_triggers().
+
+        `pending_exec_order` is the caller-resolved value of an in-progress
+        Map Options edit, not yet written to any retriever -- see
+        _exec_order_readout().
         """
         same_document = loaded is not None and loaded is self._loaded
         keep = self._selection_state() if same_document else None
@@ -703,7 +709,8 @@ class TriggerPanel(QWidget):
             self.status.setText(
                 f"{len(triggers)} trigger{'s' if len(triggers) != 1 else ''} — "
                 f"scenario {loaded.scenario_version}, trigger format "
-                f"{loaded.trigger_version:g}{note}. {self._exec_order_readout(loaded)}"
+                f"{loaded.trigger_version:g}{note}. "
+                f"{self._exec_order_readout(loaded, pending_exec_order)}"
             )
             # Display order by default -- the in-game order, and what raw
             # list order already disagrees with on 6 of 14 parseable corpus
@@ -910,16 +917,25 @@ class TriggerPanel(QWidget):
         name = (self._read(trigger, "name") or "").strip() or "(unnamed)"
         return name if self._read(trigger, "enabled") else f"{name}  (disabled)"
 
-    def _exec_order_readout(self, loaded: LoadedScenario) -> str:
+    def _exec_order_readout(
+        self, loaded: LoadedScenario, pending_exec_order: int | None
+    ) -> str:
         """Read-only: which axis actually governs execution. Changing it is a
-        Map Options edit, not a trigger edit, so this never builds a
-        TriggerEditModel -- see exec_order_value()'s docstring."""
+        Map Options edit, not a trigger edit, so this never touches
+        `self.trigger_edits` (there is none -- the panel doesn't own one) or
+        builds a TriggerEditModel -- see exec_order_value()'s docstring.
+        `pending_exec_order` is the caller-resolved value of an in-progress
+        edit, passed in rather than read through a model here for that same
+        reason.
+        """
         value = exec_order_value(loaded)
         if value is None:
             return "Execution order is not stored in this file."
-        if value:
-            return "Executes in trigger-ID order (legacy)."
-        return "Executes in display order."
+        shown = value if pending_exec_order is None else pending_exec_order
+        unsaved = " - unsaved change." if shown != value else "."
+        if shown:
+            return f"Executes in trigger-ID order (legacy){unsaved}"
+        return f"Executes in display order{unsaved}"
 
     def current_trigger_index(self) -> int | None:
         """The trigger's stable list index, not its row -- these diverge under

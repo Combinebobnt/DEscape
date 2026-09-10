@@ -40,21 +40,37 @@ MAJORS_PER_MINOR = 4
 MINOR_TICK_PX = 6.0
 MAJOR_TICK_PX = 12.0
 LABEL_GAP_PX = 3.0
+# The Settings > Appearance default; the live value is settings.
+# get_distance_tick_font_px(). Every constant below that used to be sized
+# off this one directly is now a function of an arbitrary font_px instead,
+# so a config with no distance_tick_font_px key reproduces these exactly.
 LABEL_FONT_PX = 12
-# The box a major's number is centered in and drawn into. Sized for the
-# widest label any real map produces (3 digits, 480 being the largest of
-# STANDARD_MAP_SIZES) at LABEL_FONT_PX, with room to spare.
-LABEL_BOX_W_PX = 40.0
-LABEL_BOX_H_PX = 16.0
-# How far out along the outward ray that box's CENTER sits: clear of the
-# major tick, plus the gap, plus half the box so its near edge is the thing
-# the gap actually measures from.
-LABEL_CENTER_PX = MAJOR_TICK_PX + LABEL_GAP_PX + LABEL_BOX_H_PX / 2.0
 
-# The furthest any drawn pixel can land from its anchor: the label box's own
-# far corner. Every other mark is strictly nearer, which is what makes this
-# the single number scene_pad() has to cover.
-DEVICE_REACH_PX = LABEL_CENTER_PX + math.hypot(LABEL_BOX_W_PX, LABEL_BOX_H_PX) / 2.0
+
+def label_box_px(font_px: int) -> tuple[float, float]:
+    """The box a major's number is centered in and drawn into, sized for
+    the widest label any real map produces (3 digits, 480 being the largest
+    of STANDARD_MAP_SIZES) at font_px, with room to spare.
+
+    Multiply-before-divide, not a ratio constant: font_px * 40 / 12 computes
+    480 / 12, and 12 divides 480 and 192 evenly, so this is exact at every
+    integer font_px in [8, 24] (settings.DISTANCE_TICK_FONT_PX_MIN/_MAX) --
+    (40 / 12) * font_px disagrees by a ULP at 10, 14 and 20."""
+    return font_px * 40.0 / 12.0, font_px * 16.0 / 12.0
+
+
+def label_center_px(font_px: int) -> float:
+    """How far out along the outward ray a major's label box CENTER sits:
+    clear of the major tick, plus the gap, plus half the box so its near
+    edge is the thing the gap actually measures from."""
+    return MAJOR_TICK_PX + LABEL_GAP_PX + label_box_px(font_px)[1] / 2.0
+
+
+def device_reach_px(font_px: int) -> float:
+    """The furthest any drawn pixel can land from its anchor: the label
+    box's own far corner. Every other mark is strictly nearer, which is
+    what makes this the single number scene_pad() has to cover."""
+    return label_center_px(font_px) + math.hypot(*label_box_px(font_px)) / 2.0
 
 # Multiplier on the scene-space pad, and NOT a round-number fudge. Under
 # Flat's scale(1, 0.5) then rotate(-45) the transform's smallest singular
@@ -99,9 +115,10 @@ def tick_lod(minor_spacing_px: float) -> TickLod:
     )
 
 
-def scene_pad(scale: float) -> float:
+def scene_pad(scale: float, font_px: int) -> float:
     """Scene units the overlay's bounding rect must extend past the map on
-    every side, for a view whose sqrt-determinant scale is `scale`.
+    every side, for a view whose sqrt-determinant scale is `scale` and a
+    label font of `font_px`.
 
     Constant device length means the scene-unit overhang grows without bound
     as the view zooms out, so this cannot be a fixed fraction of the map:
@@ -113,7 +130,7 @@ def scene_pad(scale: float) -> float:
     dividing by it, and the caller keeps whatever pad it already had."""
     if scale <= 0:
         return 0.0
-    return PAD_SAFETY * DEVICE_REACH_PX / scale
+    return PAD_SAFETY * device_reach_px(font_px) / scale
 
 
 @dataclass(frozen=True)

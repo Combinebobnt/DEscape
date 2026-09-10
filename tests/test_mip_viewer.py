@@ -387,7 +387,7 @@ def _bare_map_view():
 
     conftest.ensure_qapp()
     noop = lambda *a, **k: None  # noqa: E731
-    return MapView(noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop)
+    return MapView(noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop)
 
 
 @pytest.mark.gui

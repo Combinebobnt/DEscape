@@ -19,7 +19,14 @@ import inspect
 
 import pytest
 
-from descape.edit_history import DiffRecord, EditHistory, TriggerDiffRecord, UnitDiffRecord
+from descape.edit_history import (
+    CompositeDiffRecord,
+    DiffRecord,
+    EditHistory,
+    TileDiffRecord,
+    TriggerDiffRecord,
+    UnitDiffRecord,
+)
 
 
 class FakeTile:
@@ -269,6 +276,70 @@ def test_peek_does_not_move_the_cursor() -> None:
     assert hist.peek_undo() is None
     assert hist.peek_redo().label == "paint"
     assert hist.cursor == 0
+
+
+# -- CompositeDiffRecord (phase 2.8's one-undo-step region paste) -----------
+#
+# FakeUnitModel mirrors FakeTriggerModel above: only the one method
+# UnitDiffRecord.undo()/redo() actually calls, so this stays duck-typed and
+# free of AoE2ScenarioParser like the rest of this file.
+
+
+class FakeUnitModel:
+    def __init__(self):
+        self.restored: list[str] = []
+
+    def restore(self, snapshot) -> None:
+        self.restored.append(snapshot)
+
+
+def _unit_record(label: str = "unit edit") -> UnitDiffRecord:
+    return UnitDiffRecord(label, before=f"{label}:before", after=f"{label}:after")
+
+
+def test_composite_kinds_unions_its_children() -> None:
+    composite = CompositeDiffRecord("paste", children=[_tile_record(), _unit_record()])
+    assert composite.kinds() == frozenset({"tile", "unit"})
+
+
+def test_composite_require_target_checks_every_child_before_any_undo() -> None:
+    tiles = [FakeTile(terrain_id=5)]
+    composite = CompositeDiffRecord("paste", children=[_tile_record(), _unit_record()])
+    with pytest.raises(RuntimeError, match="no UnitEditModel"):
+        composite.require_target(tiles, None, None, None)
+    assert tiles[0].terrain_id == 5, "a refused require_target must not have run any child's undo"
+
+
+def test_composite_undo_reverses_children_redo_replays_forward() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    model = FakeUnitModel()
+    hist.begin_stroke(tiles)
+    tiles[0].terrain_id = 7
+    tile_record = hist.build_stroke_record("paste", tiles)
+    unit_record = _unit_record()
+    composite = CompositeDiffRecord("paste", children=[tile_record, unit_record])
+    hist.push_composite_record(composite)
+
+    assert hist.peek_undo().kind == "composite"
+    assert hist.undo(tiles, None, None, model) == [0]
+    assert tiles[0].terrain_id == 0
+    assert model.restored == ["unit edit:before"]
+
+    assert hist.redo(tiles, None, None, model) == [0]
+    assert tiles[0].terrain_id == 7
+    assert model.restored == ["unit edit:before", "unit edit:after"]
+
+
+def test_pushing_an_empty_composite_raises() -> None:
+    hist = EditHistory()
+    with pytest.raises(ValueError, match="no children"):
+        hist.push_composite_record(CompositeDiffRecord("paste", children=[]))
+    assert hist.records == []
+
+
+def _tile_record() -> TileDiffRecord:
+    return TileDiffRecord("paint", changes=[(0, (0, 0, -1), (5, 0, -1))])
 
 
 def test_every_diffrecord_subclass_accepts_the_four_parameter_shape() -> None:

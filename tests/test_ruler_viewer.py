@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 import conftest
-from descape import ruler
+from descape import ruler, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 
 pytestmark = [
@@ -23,9 +23,12 @@ pytestmark = [
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
 
-# The label's fill, straight off MapView.RULER_LABEL_COLOR. Distinct from the
+# The label's fill, read from the actual default rather than a hand-copied
+# literal -- settings.get_default_overlay_color("ruler_label") is the source
+# of truth since overlay colors became user-settable. Distinct from the
 # line/outline pen so an ink measurement can isolate the text.
-_LABEL_RGB = (255, 190, 110)
+_LABEL_HEX = settings.get_default_overlay_color("ruler_label")
+_LABEL_RGB = tuple(int(_LABEL_HEX[i : i + 2], 16) for i in (1, 3, 5))
 
 
 def _ruler_window(style: str = "Flat"):
@@ -231,7 +234,8 @@ def test_label_is_unsheared_under_flat_isometric() -> None:
         # Within a couple pixels, not exactly equal: the label's scene-space
         # anchor lands on a different subpixel phase in the two transforms,
         # so antialiasing alone moves the ink bbox slightly, a bit more at
-        # RULER_LABEL_FONT_PX's larger sizes (measured 2px at 18). That
+        # get_ruler_label_font_px()'s larger sizes (measured 2px at the
+        # default 18, which this test doesn't override). That
         # tolerance is nowhere near enough to admit a sheared label, which
         # rotate(-45) plus scale(1, 0.5) would leave a fraction of this width.
         assert abs(upright[0] - rotated[0]) <= 2, f"width changed: {upright} vs {rotated}"
@@ -385,6 +389,11 @@ def test_close_then_resize_does_not_touch_deleted_items() -> None:
         assert window.ruler_status_label.text() == ""
         window.resize(820, 620)
         map_view.set_isometric(True)
+        # The Settings dialog is reachable with no map open -- a color or
+        # font-size change here must not crash reaching for the now-deleted
+        # ruler/highlight/unit/region items these two would otherwise touch.
+        map_view.apply_overlay_colors()
+        map_view.apply_ruler_label_font()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -407,17 +416,22 @@ def test_opening_a_new_map_over_an_active_measurement_clears_the_status_bar() ->
         window.close()
 
 
-def test_copy_and_paste_stay_disabled_while_the_ruler_is_active() -> None:
-    """Falls out of _update_tool_enabled's current_tool_action dict having no
-    entry for a non-edit tool, exactly as it already does for Pan. Asserted
-    rather than assumed, since nothing else would notice if that dict grew a
-    ruler row by accident."""
+def test_copy_and_paste_gate_on_region_not_the_ruler_being_active() -> None:
+    """Phase 2.8: Copy/Paste Region gate on self._region/
+    self._region_clipboard alone, never the active tool -- so a region
+    selected before switching to the Ruler stays copyable/pasteable right
+    through it, exactly like Rotate stays enabled off self._selection
+    regardless of which tool is active."""
     window = _ruler_window()
     try:
         window.mode_combo.setCurrentText("Terrain")
         window._on_tool_selected("ruler")
-        assert not window.copy_action.isEnabled()
-        assert not window.paste_action.isEnabled()
+        assert not window.copy_action.isEnabled()  # nothing selected yet
+
+        window.on_region_selected((0, 0, 2, 2))
+        assert window.copy_action.isEnabled()
+        window.copy_region()
+        assert window.paste_action.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()

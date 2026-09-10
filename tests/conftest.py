@@ -328,6 +328,11 @@ _SETTINGS_MEMOIZED_GLOBALS = (
     "_distance_ticks",
     "_distance_tick_interval",
     "_keybinds",
+    "_overlay_colors",
+    "_ruler_label_font_px",
+    "_distance_tick_font_px",
+    "_paint_trees",
+    "_paint_eye_candy",
 )
 
 

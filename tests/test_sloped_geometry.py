@@ -61,6 +61,22 @@ def test_sloped_quad_indices_delegates_at_equal_corners():
         assert got[4] is ig._identity_uv_idx(tile_px), "the fifth must be the cached no-op gather"
 
 
+def test_sloped_tile_edge_indices_delegates_at_equal_corners():
+    """sloped_tile_edge_indices' own equal-corner delegation (Track C6's
+    farm perimeter stroke), mirroring test_sloped_quad_indices_delegates_at_
+    equal_corners above: on a flat tile it must hand back tile_edge_indices'
+    own arrays verbatim, for every side, which is what keeps a flat-map farm
+    render byte-identical to Stepped's outline rather than merely close."""
+    tile_px = 32
+    for side in ("left", "right", "up_left", "up_right"):
+        base = ig.tile_edge_indices(tile_px, side)
+        for value in (0, 5, -3, 17):
+            got = ig.sloped_tile_edge_indices(tile_px, side, value, value, value, value)
+            assert len(got) == 2
+            for a, b in zip(got, base):
+                assert np.array_equal(a, b)
+
+
 @pytest.mark.parametrize("touching", [1, 2, 3, 4])
 def test_corner_rise_average_exact_on_flat_map(touching):
     # A flat map (uniform elevation e) must yield corner_rise == e *
@@ -303,6 +319,29 @@ def test_sloped_quad_indices_columns_stay_contiguous(tile_px, corners):
     gaps, duplicates = _column_shapes(tile_px, corners)
     assert gaps == 0, f"{gaps} unwritten row(s) inside a column at tile_px={tile_px}, corners={corners}"
     assert duplicates == 0, f"{duplicates} doubly-written row(s) at tile_px={tile_px}, corners={corners}"
+
+
+@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 64, ig.MIP_MAX_TILE_PIXELS])
+@pytest.mark.parametrize("corners", _CORNER_SHAPES)
+def test_sloped_tile_edge_indices_are_a_subset_of_the_quads_own_pixels(tile_px, corners):
+    """Disjointness between a farm tile's stroked perimeter and its
+    neighbours is INHERITED, not proven fresh here -- the edges checked
+    below are a strict subset of sloped_quad_indices' own destination
+    pixels, and test_adjacent_tiles_abut_exactly already proves adjacent
+    tiles' quads don't overlap. So the property this pins is the
+    subset relationship itself: a bug that strokes a row the quad never
+    painted would slip through the delegation check above (equal corners
+    only) but not this one."""
+    quad_dst_y, quad_dst_x, _sy, _sx, _uv = ig.sloped_quad_indices(tile_px, *corners)
+    quad_pixels = set(zip(quad_dst_y.tolist(), quad_dst_x.tolist()))
+    for side in ("left", "right", "up_left", "up_right"):
+        edge_dst_y, edge_dst_x = ig.sloped_tile_edge_indices(tile_px, side, *corners)
+        edge_pixels = set(zip(edge_dst_y.tolist(), edge_dst_x.tolist()))
+        assert edge_pixels, f"side={side} produced no pixels at all at tile_px={tile_px}, corners={corners}"
+        assert edge_pixels <= quad_pixels, (
+            f"side={side} strokes a pixel the tile's own quad never painted "
+            f"at tile_px={tile_px}, corners={corners}"
+        )
 
 
 def test_diamond_column_runs_slices_match_diamond_indices():

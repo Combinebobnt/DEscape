@@ -46,9 +46,12 @@ _TOOL_PARAM = {t.tool_id: t.param_widget for t in settings.TOOLS}
 # Tools whose stroke applies across a brush footprint (size + shape) rather
 # than always exactly one tile -- see ToolDef.supports_brush's own comment.
 BRUSH_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_brush)
-# The Ruler is the only tool that is neither an edit tool nor Pan, so it
-# can't be recognised by set membership the way the four sets above are.
+# The Ruler and Eyedropper are the only tools that are neither an edit tool
+# nor Pan, so they can't be recognised by set membership the way the four
+# sets above are.
 TOOL_RULER = "ruler"
+TOOL_EYEDROPPER = "eyedropper"
+TOOL_SELECT = "select"
 
 # Which mode(s) each tool's toolbar button shows in -- see
 # settings.ToolDef.modes.

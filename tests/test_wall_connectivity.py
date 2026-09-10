@@ -19,6 +19,13 @@ pixels. This project has already shipped a shared bug that passed a shared
 pixel assertion for the wrong reason (P3-g3's sprite-anchor half-tile float),
 so asserting on the argument the production code is caught reading is the
 more direct check, not a weaker one.
+
+**Mutation arm for the real-gate case, run by hand and confirmed 2026-09-08,
+not asserted**: widening `unit_sprites.WALL_CONNECTOR_CONSTS` to also include
+789 (i.e. "fixing" the documented asymmetry) turns the third stage of
+`test_a_real_gate_orientation_swap_changes_a_neighbouring_walls_connector_membership`
+red, since the probe wall would then keep its derived override instead of
+falling back to its own stored rotation.
 """
 
 from __future__ import annotations
@@ -254,6 +261,88 @@ def test_all_three_paths_resolve_the_same_unit_to_the_same_derived_rotation(wall
         # shape (any single-neighbour mask -> index 2), just a different one
         # than the middle unit's.
         assert set(matching) <= {0.0, 2.0}, matching
+
+
+@pytest.fixture
+def real_gate_wall_install(monkeypatch):
+    """Registers WALL_CONST as a variant-index, angle_count=5 connector
+    ALONGSIDE the real gate consts already in WALL_CONNECTOR_CONSTS --
+    unlike wall_install above, this does NOT replace that set: the whole
+    point of the test below is exercising real gate membership (797/793 in,
+    789 out), which a wholesale replacement would erase."""
+    monkeypatch.setattr(
+        unit_sprites, "_ROTATION_VARIANT_CONSTS",
+        unit_sprites._ROTATION_VARIANT_CONSTS | frozenset({WALL_CONST}),
+    )
+    monkeypatch.setattr(
+        unit_sprites, "graphic_map",
+        lambda: {WALL_CONST: {"graphic_id": 1, "file_name": "wall_synth_x1",
+                              "angle_count": 5, "mirroring_mode": 6, "frame_count": 1}},
+    )
+    unit_sprites.clear_caches()
+    yield
+    unit_sprites.clear_caches()
+
+
+def test_a_real_gate_orientation_swap_changes_a_neighbouring_walls_connector_membership(
+    real_gate_wall_install, rotation_spy
+):
+    """Retires the gate-orientation-cycling checklist's manual step 6: "cycle
+    a gate that sits in a wall run and check the neighbouring wall pieces.
+    This is the known WALL_CONNECTOR_CONSTS asymmetry; a palisade gate is the
+    case to try."
+
+    The first case in this file to use REAL gate consts rather than the
+    synthetic WALL_CONST=9001 -- deliberately does NOT reuse the wall_install
+    fixture above, which REPLACES WALL_CONNECTOR_CONSTS wholesale; this needs
+    the real set's own asymmetry intact (AGENTS.md's hard rule: palisade
+    closed's `("P", "A")` group is (789 ne, 797 e, 793 se, 801 n) in cycle
+    order -- 797 and 793 are members of WALL_CONNECTOR_CONSTS, 789 and 801
+    are not).
+
+    span_low_corner()'s own invariant (descape/unit_model.py) is what makes
+    this test possible without going through UnitEditModel.set_unit_const()
+    at all: a gate's low-corner tile stays fixed across every orientation
+    swap, and (measured directly) tile (4, 4) happens to be occupied by all
+    three of 797/793/789's real footprints -- so the probe wall's own
+    WEST/EAST neighbour tile never moves while only the gate's connector
+    membership changes. That is the confounder any gate-cycling connector
+    test has to watch for -- a cycle normally moves the gate's occupied tile
+    set and its footprint together -- solved here by picking a tile all
+    three orientations happen to share, not by re-deriving the geometry."""
+    gate_e, gate_se, gate_ne = 797, 793, 789
+    probe = Unit(3.0, 4.0, WALL_CONST, _RADIAN[3])
+    gate = Unit(6.0, 6.0, gate_e)
+    scn = _scenario([[], [probe, gate]])
+
+    def _probe_rotations() -> set[float]:
+        _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+        render.sprite_draws_by_anchor(scn, proj, elevations)
+        render._flat_icon_layer(scn, tile_px=16)
+        img = render.render_terrain(scn)
+        render.overlay_units(img, scn, with_sprites=True)
+        return {
+            rotation
+            for calls in rotation_spy.values()
+            for const, rotation in calls
+            if const == WALL_CONST
+        }
+
+    connector_rotations = _probe_rotations()
+    assert connector_rotations == {2.0}, connector_rotations  # single EAST-only neighbour -> tower/corner
+
+    for calls in rotation_spy.values():
+        calls.clear()
+    gate.unit_const, gate.x, gate.y = gate_se, 4.5, 6.0  # span_anchor() at the same low corner (4, 4)
+    assert _probe_rotations() == connector_rotations, "797 -> 793 must not change connector membership"
+
+    for calls in rotation_spy.values():
+        calls.clear()
+    gate.unit_const, gate.x, gate.y = gate_ne, 6.0, 4.5  # span_anchor() at the same low corner (4, 4)
+    assert _RADIAN[3] in _probe_rotations(), (
+        "793 -> 789 must drop the derived override (789 is outside WALL_CONNECTOR_CONSTS), "
+        "falling back to the probe wall's own stored (radian) rotation -- the accepted asymmetry"
+    )
 
 
 def test_the_override_key_is_position_not_the_filtered_row_count(wall_install, rotation_spy):

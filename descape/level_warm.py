@@ -135,12 +135,14 @@ class LevelWarmer(_IdleTimerDriver):
         self._cache = None
         self._queue: list = []
         self._job = None
+        self._job_mip: int | None = None
+        self._on_job_done = None
 
     @property
     def is_active(self) -> bool:
         return self._job is not None or bool(self._queue)
 
-    def start(self, cache, mips) -> None:
+    def start(self, cache, mips, *, on_job_done=None) -> None:
         """Queues `mips` on `cache`, replacing any warm already in flight.
 
         A level with nothing worth warming is not queued at all -- the
@@ -149,13 +151,23 @@ class LevelWarmer(_IdleTimerDriver):
         time, so an all-no-op start leaves is_active False and schedules no
         timer at all. That also fixes each job's revalidation baseline at
         warm start, which is the window the plan's predicates are stated
-        over; building the generator itself runs none of the walk."""
+        over; building the generator itself runs none of the walk.
+
+        `on_job_done`, if given, is called with a mip once THAT mip's job
+        finishes (2026-09-07 plan's load-time margin warm, Step 2) --
+        whether it installed cleanly or was dropped mid-walk (see tick()),
+        since either way there is nothing left to wait for on that mip. It
+        does NOT fire for a mip that never got a job queued at all (nothing
+        worth warming, or already current): a caller that also needs those
+        covered checks cache.is_level_resident(mip) itself right after
+        start() returns, rather than this method inferring which is which."""
         self.cancel()
-        jobs = [job for job in (cache.level_warm_job(mip) for mip in mips) if job is not None]
+        jobs = [(mip, job) for mip, job in ((mip, cache.level_warm_job(mip)) for mip in mips) if job is not None]
         if not jobs:
             return
         self._cache = cache
         self._queue = jobs
+        self._on_job_done = on_job_done
         self._schedule()
 
     def cancel(self) -> None:
@@ -166,10 +178,14 @@ class LevelWarmer(_IdleTimerDriver):
 
         Dropping a half-built layer costs only the ticks already spent: it is
         never installed, and never was installable (the walk's payload rides
-        StopIteration, so there is no partial value to observe)."""
+        StopIteration, so there is no partial value to observe). Drops
+        on_job_done too -- a cancelled job's mip never finishes, so the
+        callback must never fire for it."""
         self._job = None
+        self._job_mip = None
         self._queue = []
         self._cache = None
+        self._on_job_done = None
         self._stop_timer()
 
     def tick(self) -> bool:
@@ -194,6 +210,7 @@ class LevelWarmer(_IdleTimerDriver):
                 # anything, with every cancel test still green.
                 self._job = None
                 self._install(job, done.value)
+                self._notify_job_done()
             except Exception as exc:  # noqa: BLE001
                 # Belt and braces for an un-enumerated future mutation path:
                 # drop this level rather than let an exception reach the Qt
@@ -201,13 +218,18 @@ class LevelWarmer(_IdleTimerDriver):
                 # worth a dialog.
                 self._job = None
                 debug_log.log(f"level warm: dropped a level mid-walk ({exc!r})")
+                self._notify_job_done()
             if time.perf_counter() >= deadline:
                 return True
+
+    def _notify_job_done(self) -> None:
+        if self._on_job_done is not None:
+            self._on_job_done(self._job_mip)
 
     def _start_next_job(self) -> bool:
         if not self._queue:
             return False
-        self._job = self._queue.pop(0)
+        self._job_mip, self._job = self._queue.pop(0)
         return True
 
     def _install(self, job, payload) -> None:

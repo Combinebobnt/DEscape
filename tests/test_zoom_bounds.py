@@ -110,7 +110,7 @@ def test_a_bare_view_with_no_source_still_gets_its_bounds_set() -> None:
 
     conftest.ensure_qapp()
     noop = lambda *a, **k: None  # noqa: E731
-    view = MapView(noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop)
+    view = MapView(noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop)
     assert view._map_rect is None
     assert view._fit_baseline_scale() is None
     view._capture_zoom_baseline()

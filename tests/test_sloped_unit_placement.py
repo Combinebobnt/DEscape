@@ -74,12 +74,18 @@ def _diamond_pixel_nearest(tile_px: int, fx: float, fy: float) -> int:
 
 @pytest.mark.parametrize("want_fx, want_fy", [(0.5, 0.5), (0.25, 0.75), (0.8, 0.6), (0.15, 0.2)])
 def test_a_sloped_unit_lands_on_the_terrain_pixels_actually_painted(want_fx, want_fy) -> None:
+    """Track C6 supersedes this test's original premise for a 1x1 unit: it
+    no longer sits at a sub-tile-dependent PIXEL RISE at all -- its marker
+    paints through the exact same call as its own tile's terrain
+    (render._sloped_tile_quad), so there is no separate placement to drift
+    from the terrain's. want_fx/want_fy are kept as parameters (rather than
+    dropped) precisely to pin that this is now true regardless of where on
+    the tile the unit sits -- the old test's whole point, restated for the
+    model that replaced it.
+    """
     tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
     ux, uy = 9, 8
 
-    # Place the unit at a real painted pixel's own (fx, fy), so "the terrain
-    # pixel at the unit's sub-tile point" is a single, exactly-identified
-    # pixel rather than an interpolation between two.
     i = _diamond_pixel_nearest(tile_px, want_fx, want_fy)
     fp, fq = ig.tile_uv_fractions(tile_px)
     fx, fy = float(1 - fq[i]), float(fp[i])
@@ -96,31 +102,14 @@ def test_a_sloped_unit_lands_on_the_terrain_pixels_actually_painted(want_fx, wan
     assert d_min > 0, "fixture sits at rise 0 -- the d_min convention could be dropped and still pass"
     assert len({d_nw, d_ne, d_sw, d_se}) > 1, "fixture tile is planar -- the (fx, fy) term proves nothing"
 
-    # --- terrain side: the pixel sloped_quad_indices actually produced ----
-    s_dst_y, _s_dst_x, _sy, _sx, uv_idx = ig.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
-    j = int(np.flatnonzero(uv_idx == i)[0])
+    # The unit's own tile's WHOLE warped footprint -- not a diamond, and not
+    # scoped to (fx, fy) -- must now show the unit's colour, unconditionally.
+    s_dst_y, s_dst_x, _sy, _sx, _uv = ig.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
     base_x_t, base_y_t = ig.tile_screen_origin(ux, uy, 0, proj)
-    terrain_row = base_y_t - d_min + int(s_dst_y[j])
-
-    # --- unit side: measured off the rendered image, not re-derived -------
-    d_dst_y, d_dst_x, _dsy, _dsx = ig.diamond_indices(tile_px)
-    col = int(d_dst_x[i])
-    sx = base_x_t + col
-    in_col = d_dst_x == col
-    col_top = int(d_dst_y[in_col].min())
-    col_len = int(in_col.sum())
-
-    painted = np.flatnonzero(np.all(img[:, sx] == color, axis=1))
-    assert painted.size == col_len, (
-        f"the unit's diamond column at sx={sx} shows {painted.size} pixels, expected {col_len} -- "
-        "something occluded it, so the measurement below would be reading the wrong run"
-    )
-    unit_row = int(painted.min()) - col_top + int(d_dst_y[i])
-
-    assert abs(unit_row - terrain_row) <= 1, (
-        f"unit at sub-tile ({fx:.3f}, {fy:.3f}) painted at canvas row {unit_row}, but the terrain "
-        f"pixel the compositor drew at that same point is at row {terrain_row} "
-        f"(d_min={d_min}) -- the unit is not standing on the ground that was painted"
+    rows, cols = base_y_t - d_min + s_dst_y, base_x_t + s_dst_x
+    assert np.all(np.all(img[rows, cols] == color, axis=1)), (
+        f"unit at sub-tile ({fx:.3f}, {fy:.3f}) did not paint every one of its own tile's "
+        "warped terrain pixels its own colour -- the marker has drifted from the tile"
     )
 
 

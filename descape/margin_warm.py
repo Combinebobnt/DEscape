@@ -31,6 +31,61 @@ from descape import debug_log
 from descape.level_warm import _IdleTimerDriver
 
 
+def _grid_max_chunk_index(cache, mip: int) -> tuple[int, int]:
+    """(max_cx, max_cy) -- the last valid chunk index in each axis of
+    `mip`'s own grid. Shared by ring_chunks() and bounded_chunk_range()
+    rather than each computing it separately."""
+    grid_w, grid_h = cache.canvas_dims(mip)
+    chunk_px = cache.chunk_px
+    return -(-grid_w // chunk_px) - 1, -(-grid_h // chunk_px) - 1
+
+
+def bounded_chunk_range(
+    cx0: int,
+    cy0: int,
+    cx1: int,
+    cy1: int,
+    span_w: int,
+    span_h: int,
+) -> tuple[int, int, int, int]:
+    """Centers a `span_w` x `span_h` window inside [cx0, cx1] x [cy0, cy1]
+    -- the bound the load-time margin warm applies to viewport_chunk_
+    target_at()'s raw projection before it ever reaches load_warm_chunks()
+    (2026-09-07 plan's load-time margin warm).
+
+    **Why the raw projection needs bounding at all, when viewport_chunk_
+    target() itself never does.** viewport_chunk_target_at() reuses the
+    CURRENT on-screen scene rect verbatim (by design -- see its own
+    docstring); load_scenario() always calls _start_level_warm() right
+    after a fit-to-view render, so that scene rect is the WHOLE map, not a
+    normal viewport's worth. Projected onto a neighbour mip finer than the
+    opening one, the raw range covers that mip's entire grid -- exactly
+    the "frontload a whole finer level's chunk grid" cost the parent
+    frontload plan measured and rejected (5.9-97.3s), not the ~20-chunk
+    patch the Design section's own sizing arithmetic assumes. `span_w`/
+    `span_h` (MapView.viewport_chunk_span()) are sized from the viewport's
+    own on-screen dimensions, independent of whatever scale happens to be
+    selected right now, which is what keeps this patch viewport-sized
+    regardless of whether the caller is at a real zoom or fit-to-view.
+
+    Never wider/taller than the input range itself, and never outside it
+    either -- clamped to [cx0, cx1]/[cy0, cy1] directly rather than to the
+    level's own grid bounds: the input range is already grid-valid (it
+    came from viewport_chunk_target_at(), itself clamped to canvas_dims()),
+    so anchoring the clamp there is both sufficient and exact -- a
+    midpoint-based centre can otherwise round outside an EVEN-width input
+    range (e.g. [5, 6]'s midpoint floors to 5, and a span of 2 centred
+    there would reach down to 4, one chunk below cy0) if it weren't
+    clamped back against the input range's own edges afterward."""
+    span_w = min(span_w, cx1 - cx0 + 1)
+    span_h = min(span_h, cy1 - cy0 + 1)
+    mid_x, mid_y = (cx0 + cx1) // 2, (cy0 + cy1) // 2
+
+    nx0 = max(cx0, min(mid_x - span_w // 2, cx1 - span_w + 1))
+    ny0 = max(cy0, min(mid_y - span_h // 2, cy1 - span_h + 1))
+    return nx0, ny0, nx0 + span_w - 1, ny0 + span_h - 1
+
+
 def ring_chunks(
     cache,
     mip: int,
@@ -70,10 +125,7 @@ def ring_chunks(
     branch needed: the parent plan's premise that the opening level has
     nothing left to preload falls out of this geometry rather than being
     asserted separately."""
-    grid_w, grid_h = cache.canvas_dims(mip)
-    chunk_px = cache.chunk_px
-    max_cx = -(-grid_w // chunk_px) - 1
-    max_cy = -(-grid_h // chunk_px) - 1
+    max_cx, max_cy = _grid_max_chunk_index(cache, mip)
     lead_x, lead_y = lead
 
     ranked: list[tuple[int, int, int]] = []
@@ -101,6 +153,40 @@ def ring_chunks(
     return [(cx, cy) for _priority, cx, cy in ranked if not cache.has_chunk(mip, cx, cy)]
 
 
+def load_warm_chunks(
+    cache,
+    mip: int,
+    cx0: int,
+    cy0: int,
+    cx1: int,
+    cy1: int,
+) -> list[tuple[int, int]]:
+    """The queue for the load-time margin warm (2026-09-07 plan's load-time
+    margin warm, Design section): the viewport's own chunk range at `mip`
+    -- centre chunks, not just its margin -- unioned with one depth-1
+    ring_chunks() ring around it.
+
+    Unlike a real pan, nothing has painted `mip` yet, so its centre chunks
+    are exactly as cold as its margin (ring_chunks() itself excludes the
+    viewport's own chunks precisely because a real pan's paint already
+    built those). `lead=(0, 0)` for the ring half -- no direction to favour
+    for a level nobody has navigated to yet, the same case ring_chunks'
+    own docstring says that argument already covers correctly.
+
+    Centre chunks first (already-resident ones dropped, same as
+    ring_chunks), then the ring -- both cheap wins over "no queue at
+    all," ordered by their claim to be the more useful of the two rather
+    than by any measured cost difference."""
+    centre = [
+        (cx, cy)
+        for cx in range(cx0, cx1 + 1)
+        for cy in range(cy0, cy1 + 1)
+        if not cache.has_chunk(mip, cx, cy)
+    ]
+    ring = ring_chunks(cache, mip, cx0, cy0, cx1, cy1, lead=(0, 0))
+    return centre + ring
+
+
 class MarginWarmer(_IdleTimerDriver):
     """Drives one cache's margin-ring warm, one get_chunk() per idle tick --
     see this module's own docstring for why that's a single chunk with no
@@ -117,12 +203,13 @@ class MarginWarmer(_IdleTimerDriver):
         self._cache = None
         self._mip: int | None = None
         self._queue: list[tuple[int, int]] = []
+        self._on_drained = None
 
     @property
     def is_active(self) -> bool:
         return bool(self._queue)
 
-    def start(self, cache, mip: int, chunks: list[tuple[int, int]]) -> None:
+    def start(self, cache, mip: int, chunks: list[tuple[int, int]], *, on_drained=None) -> None:
         """Queues `chunks` (mip-level chunk indices) on `cache`, replacing
         any margin warm already in flight -- LevelWarmer.start()'s shape,
         including "an empty/refused start leaves is_active False and
@@ -132,13 +219,22 @@ class MarginWarmer(_IdleTimerDriver):
         (cache.is_level_resident(mip) is False): see that method's own
         docstring for the freeze this precondition exists to prevent --
         get_chunk() on a not-yet-visited level would build the WHOLE level
-        synchronously inside a tick, with no user action to blame it on."""
+        synchronously inside a tick, with no user action to blame it on.
+
+        `on_drained`, if given, is called with no arguments once this
+        queue empties (2026-09-07 plan's load-time margin warm, Step 3) --
+        NOT on a refused/empty start (there's nothing to wait for then,
+        and firing it would let a caller's chain-the-next-mip logic run
+        one instance ahead of where it queued anything), and not on
+        cancel() either, which drops it unfired for the same reason
+        LevelWarmer.cancel() does."""
         self.cancel()
         if not chunks or not cache.is_level_resident(mip):
             return
         self._cache = cache
         self._mip = mip
         self._queue = list(chunks)
+        self._on_drained = on_drained
         self._schedule()
 
     def cancel(self) -> None:
@@ -149,11 +245,16 @@ class MarginWarmer(_IdleTimerDriver):
         self._cache = None
         self._mip = None
         self._queue = []
+        self._on_drained = None
         self._stop_timer()
 
     def tick(self) -> bool:
-        """Warms exactly one chunk, then returns. True while chunks remain,
-        False (with the timer stopped) once the queue is drained.
+        """Warms exactly one chunk, then returns. True while chunks remain
+        queued afterward; False once THIS queue drains -- on_drained, if
+        given, runs before returning, and may itself start a fresh queue
+        (2026-09-07 plan's load-time margin warm chains the next neighbour
+        mip this way), so a False return means "this call's own queue is
+        empty", not "the timer is idle" -- check is_active for that.
 
         No StopIteration/install split the way LevelWarmer.tick() has:
         get_chunk() populates the cache itself, so there is nothing built-
@@ -161,8 +262,7 @@ class MarginWarmer(_IdleTimerDriver):
         single most delicate ordering hazard rather than reproducing it
         here."""
         if not self._queue:
-            self._stop_timer()
-            return False
+            return self._drained()
         cx, cy = self._queue.pop(0)
         try:
             self._cache.get_chunk(self._mip, cx, cy)
@@ -173,5 +273,11 @@ class MarginWarmer(_IdleTimerDriver):
             debug_log.log(f"margin warm: dropped a chunk ({exc!r})")
         if self._queue:
             return True
+        return self._drained()
+
+    def _drained(self) -> bool:
         self._stop_timer()
+        callback, self._on_drained = self._on_drained, None
+        if callback is not None:
+            callback()
         return False

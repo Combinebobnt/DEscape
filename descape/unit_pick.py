@@ -244,6 +244,8 @@ def _pick_unit_sloped(
     sy: int,
     corner_rise: np.ndarray,
     proj: iso_geometry.IsoProjection,
+    terrain_tile: tuple[int, int] | None,
+    farms_draped: bool,
 ) -> tuple[UnitEntry, tuple[int, int]] | None:
     """_pick_unit_stepped()'s shape, keyed on the SCREEN LATTICE instead of
     on integer elevation levels -- Track C5's Step 3.
@@ -283,7 +285,28 @@ def _pick_unit_sloped(
     No ID plane and no new cache, deliberately: Track C4's pick plane stays
     terrain-only (render.composite_ids_rect_sloped's own note), which is
     what keeps this branch clear of that plane's cost re-measurement.
-    """
+
+    **A 1x1 unit's membership test collapses onto `terrain_tile` (Track
+    C6), instead of diamond_membership().** Since render._draw_unit_sloped()
+    now paints a 1x1 unit's marker through the exact same call that paints
+    its own tile's terrain, "is (sx, sy) inside this unit's marker" and "is
+    (sx, sy) inside this tile's own painted footprint" are the same
+    question -- and the caller has already answered the second one, via
+    SlopedChunkCache.pick_tile(), to resolve terrain occlusion below. This
+    is occlusion-correct by construction: _render_tile_sloped_ids() paints
+    in the same order as the colour pass, so pick_tile() == (x, y) holds
+    exactly where (x, y)'s pixels are the ones actually visible on screen,
+    including where a nearer tile's own warped quad has painted over part
+    of this one. A farm (multi-tile, but draped like terrain -- Track C6's
+    other half) collapses onto `terrain_tile` the same way, one footprint
+    tile at a time, guarded on the same `_terrain_overlay_for(...) is not
+    None` test the render path uses so pick and paint cannot disagree about
+    which units are farms -- AND on `farms_draped`, since the render path
+    only actually drapes a farm when sprites are on; with sprites off a
+    farm is still a plain diamond (Scope's own residual), and this branch
+    must not disagree with THAT too. Every other multi-tile footprint still uses
+    diamond_membership() at its own rise, unchanged -- its marker is still
+    a plain diamond."""
     h1, w1 = corner_rise.shape
     w, h = w1 - 1, h1 - 1
     half_w, half_h = proj.half_w, proj.half_h
@@ -311,14 +334,32 @@ def _pick_unit_sloped(
             row = proj.origin_y + (y - x) * half_h
             for order in orders:
                 entry = index.entries[order]
-                # Per unit, not per tile: the whole footprint sits at ONE
-                # height (the flat pad _paint_tile_and_units_sloped paints),
-                # but two units covering this same tile can sit at two
-                # different heights, so membership cannot be hoisted out.
-                rise = unit_rise_px_for(entry, corner_rise)
-                local_x, local_y = sx - origin_sx, sy - (row - rise)
-                if not bool(iso_geometry.diamond_membership(local_x, local_y, half_w, half_h)):
-                    continue
+                span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
+                if span_x <= 1 and span_y <= 1:
+                    if (x, y) != terrain_tile:
+                        continue
+                elif farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None:
+                    # A farm actually drawn draped (Track C6): draped over
+                    # its own footprint tiles' terrain, so "on this farm" is
+                    # "on one of its own tiles" -- the multi-tile extension
+                    # of the 1x1 case above, guarded on the SAME predicate
+                    # the render path uses to decide a unit is a farm, PLUS
+                    # farms_draped, so pick cannot disagree with paint about
+                    # which units are farms NOR about whether farms are
+                    # currently drawn draped at all (sprites off keeps every
+                    # farm on the plain-diamond path below, see pick_unit's
+                    # own farms_draped parameter).
+                    if (x, y) != terrain_tile:
+                        continue
+                else:
+                    # Per unit, not per tile: the whole footprint sits at ONE
+                    # height (the flat pad _paint_tile_and_units_sloped paints),
+                    # but two units covering this same tile can sit at two
+                    # different heights, so membership cannot be hoisted out.
+                    rise = unit_rise_px_for(entry, corner_rise)
+                    local_x, local_y = sx - origin_sx, sy - (row - rise)
+                    if not bool(iso_geometry.diamond_membership(local_x, local_y, half_w, half_h)):
+                        continue
                 # See _pick_unit_stepped's matching comment: index.by_tile is
                 # Flat's full-rect bucketing, narrowed here to the real
                 # occupied set for the 36 sparse diagonal-gate consts.
@@ -357,6 +398,7 @@ def pick_unit(
     proj: iso_geometry.IsoProjection | None = None,
     corner_rise: np.ndarray | None = None,
     terrain_tile: tuple[int, int] | None = None,
+    farms_draped: bool = False,
 ) -> UnitEntry | None:
     """The topmost VISIBLE unit at canvas pixel (sx, sy), or None.
 
@@ -368,6 +410,17 @@ def pick_unit(
     reference. That keeps unit_pick Qt-free and cache-free, as it has always
     been. Pass None for it exactly as Stepped's screen_to_tile() returning
     None means "no terrain here", i.e. the unit is unoccluded.
+
+    farms_draped (Track C6, Sloped only): whether a farm is CURRENTLY drawn
+    draped over its own footprint tiles rather than as a plain diamond --
+    i.e. the caller's own sprites-enabled state, since
+    _paint_tile_and_units_sloped only drapes a farm when sprites are on.
+    Defaults False (the conservative "don't know, assume plain diamond"
+    answer) rather than True, so a caller that forgets to pass it degrades
+    to the old shape rather than silently disagreeing with an off-by-default
+    render. A real caller passes its live sprites-enabled flag (e.g.
+    SlopedChunkCache.sprites_enabled) so pick can never assume a drape the
+    render isn't actually painting, or vice versa.
 
     Terrain occlusion, in this order (the ordering is the spec, not an
     implementation detail):
@@ -395,7 +448,7 @@ def pick_unit(
     if style == "sloped":
         if corner_rise is None or proj is None:
             return None
-        found = _pick_unit_sloped(index, sx, sy, corner_rise, proj)
+        found = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain_tile, farms_draped)
         terrain = terrain_tile
     elif style == "stepped":
         if elevations is None or proj is None:
@@ -426,6 +479,7 @@ def unit_polygons(
     elevations: np.ndarray | None = None,
     proj: iso_geometry.IsoProjection | None = None,
     corner_rise: np.ndarray | None = None,
+    farms_draped: bool = False,
 ) -> list[list[tuple[float, float]]] | None:
     """The unit's on-screen highlight, as a list of polygons, each a list of
     (x, y) points. Plain tuples rather than QPolygonF so this module stays
@@ -436,18 +490,28 @@ def unit_polygons(
       elevation, matching render._draw_unit_iso(). This is asymmetry 2 --
       using each footprint tile's own terrain elevation here would look
       right on flat ground and drift apart on a slope.
-    - Sloped: the same body with the height expression swapped for
-      unit_rise_px_for() -- one diamond per footprint tile, all at the
-      unit's own PIXEL rise, matching render._draw_unit_sloped(). Needs
-      corner_rise; returns None without it.
-
-    Sloped's diamonds are plain diamond_points(), NOT the warped quad its
-    terrain tile paints, because the MARKER is a plain diamond too (see
-    render._draw_unit_sloped). The highlight therefore matches what is
-    drawn, which is this function's contract -- that the marker itself does
-    not conform to the warped tile footprint is a separate, logged shape
-    defect, and fixing it here would make the outline disagree with the
-    pixels.
+    - Sloped, 1x1 span: not a diamond at all -- the tile's own
+      sloped_tile_outline(), placed exactly where map_view._tile_polygon()
+      places the terrain highlight for that same tile (Track C6). This
+      matches render._draw_unit_sloped()'s `corners` mode, which paints
+      this unit's marker through the tile's own warped pixel set rather
+      than a diamond; the highlight tracks the marker, so it must trace
+      the same shape.
+    - Sloped, farm (multi-tile) with farms_draped=True: the same
+      tile-outline shape as the 1x1 case above, one sloped_tile_outline()
+      per footprint tile at that tile's OWN corners -- not the unit's rise,
+      since a drape has no single rise (each footprint tile sits on its own
+      surface). Guarded on the same `_terrain_overlay_for(...) is not None`
+      test the render and pick paths use, PLUS farms_draped, so the
+      highlight cannot disagree with either about which units are farms
+      NOR about whether farms are currently drawn draped at all -- pass the
+      caller's live sprites-enabled state, same as pick_unit's own
+      parameter of the same name; the default False means a farm keeps its
+      plain-diamond highlight (the next bullet) whenever that isn't known.
+    - Sloped, other multi-tile spans (and a farm when farms_draped=False):
+      one diamond per footprint tile, all at the unit's own PIXEL rise
+      (unit_rise_px_for()), matching render._draw_unit_sloped()'s
+      plain-diamond mode. Needs corner_rise; returns None without it.
     """
     bounds = render.unit_tile_bounds(entry.unit, tile_w, tile_h)
     if bounds is None:
@@ -462,6 +526,19 @@ def unit_polygons(
     if style == "sloped":
         if corner_rise is None or proj is None:
             return None
+        is_draped_farm = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+        if (tile_x1 - tile_x0 == 1 and tile_y1 - tile_y0 == 1) or is_draped_farm:
+            polygons = []
+            for tx, ty in render.unit_occupied_tiles(entry.unit, tile_w, tile_h):
+                d_nw = int(corner_rise[ty, tx])
+                d_ne = int(corner_rise[ty, tx + 1])
+                d_sw = int(corner_rise[ty + 1, tx])
+                d_se = int(corner_rise[ty + 1, tx + 1])
+                ox, oy = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
+                oy -= min(d_nw, d_ne, d_sw, d_se)
+                points = iso_geometry.sloped_tile_outline(tile_px, d_nw, d_ne, d_sw, d_se)
+                polygons.append([(ox + px, oy + py) for px, py in points])
+            return polygons
         rise = unit_rise_px_for(entry, corner_rise)
         elevation = 0
     elif style == "stepped":

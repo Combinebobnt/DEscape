@@ -732,6 +732,101 @@ def test_the_rotate_actions_need_a_selection() -> None:
         _close(window)
 
 
+# --- b3: gate orientation cycling --------------------------------------------
+#
+# The fixture holds no gate, so each of these re-points the GAIA wall at a
+# stone gate const and its own anchor first. Every path under test reads the
+# live unit's fields, and _after_unit_mutation() is the same index rebuild a
+# real edit already runs, so the index agrees with the swapped const.
+_GATE_NE, _GATE_E, _GATE_SE = 64, 659, 88
+
+
+def _make_gate(window, x: float = 10.0, y: float = 5.5):
+    (entry,) = _select(window, _REF_WALL)
+    entry.unit.unit_const, entry.unit.x, entry.unit.y = _GATE_NE, x, y
+    window._after_unit_mutation()
+    return _select(window, _REF_WALL)[0]
+
+
+def _occupied(window, unit):
+    from descape import render
+
+    mm = window.scenario.map_manager
+    return render.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
+
+
+def test_rotate_cycles_a_selected_gate_to_its_next_orientation() -> None:
+    """A gate's orientation lives in its const, so "rotating" one swaps the
+    const and re-anchors. The footprint really changes: (4, 1) along x becomes
+    the sparse 6-tile diagonal, which is asserted on tiles rather than pixels.
+    """
+    window = _window()
+    try:
+        entry = _make_gate(window)
+        before = _occupied(window, entry.unit)
+
+        window.on_unit_rotate(1)
+
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == (_GATE_E, 10.0, 7.0)
+        after = _occupied(window, entry.unit)
+        assert len(before) == 4 and len(after) == 6
+        assert before != after
+    finally:
+        _close(window)
+
+
+def test_a_coarse_rotate_cycles_a_gate_by_two_orientations() -> None:
+    """One gate step is 45 degrees, so a quarter turn is two of them: ne
+    lands on se, not on the diagonal in between."""
+    window = _window()
+    try:
+        entry = _make_gate(window)
+
+        window.on_unit_rotate_coarse(1)
+
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == (_GATE_SE, 8.5, 7.0)
+    finally:
+        _close(window)
+
+
+def test_a_gate_and_an_archer_rotate_together_in_one_undo_record() -> None:
+    window = _window()
+    try:
+        _make_gate(window)
+        entries = _select(window, _REF_WALL, _REF_ARCHER_P1)
+        gate = next(e for e in entries if e.unit.reference_id == _REF_WALL)
+        archer = next(e for e in entries if e.unit.reference_id == _REF_ARCHER_P1)
+        before = (gate.unit.unit_const, archer.unit.rotation)
+
+        window.on_unit_rotate(1)
+        assert gate.unit.unit_const == _GATE_E
+        assert archer.unit.rotation != before[1]
+
+        window.undo()
+        assert (gate.unit.unit_const, archer.unit.rotation) == before
+        assert (gate.unit.x, gate.unit.y) == (10.0, 5.5)
+    finally:
+        _close(window)
+
+
+def test_a_gate_with_no_room_at_the_map_edge_refuses_and_says_so() -> None:
+    """Cycling ne to the diagonal grows the footprint three tiles down the y
+    axis. Against the map's far edge that would write a hanging footprint, so
+    the viewer, the layer that knows the map's size, skips it."""
+    window = _window()
+    try:
+        entry = _make_gate(window, x=10.0, y=117.5)
+        before = (entry.unit.unit_const, entry.unit.x, entry.unit.y)
+
+        window.on_unit_rotate(1)
+
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == before
+        assert not window.edit_history.is_dirty
+        assert "map edge" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
 def test_the_inspector_shows_an_editor_only_for_an_angle_const() -> None:
     window = _window()
     try:
