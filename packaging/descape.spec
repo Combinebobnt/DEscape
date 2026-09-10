@@ -8,7 +8,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).parent
 
-# The five JSON files descape/ actually reads at runtime (not
+# The six JSON files descape/ actually reads at runtime (not
 # descape/versions/DE/v1.21/structure.json -- nothing constructs a path to
 # it; it's a schema reference cited only in comments and a CLI tool arg).
 DESCAPE_DATA_JSON = [
@@ -17,6 +17,7 @@ DESCAPE_DATA_JSON = [
     "unit_render_data.json",
     "terrain_texture_map.json",
     "tree_unit_ids.json",
+    "terrain_unit_map.json",
 ]
 
 datas = [(str(ROOT / "descape" / name), "descape") for name in DESCAPE_DATA_JSON]
