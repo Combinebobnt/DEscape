@@ -50,6 +50,7 @@ from descape.render import (
 from descape.render_cache import SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit.fakes import FakeScenario, SyntheticTile
+from test_sloped_pick import _edit_and_bbox
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 
@@ -324,6 +325,69 @@ def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_
         )
         checked += 1
     assert checked > 0, "the pit tile's edge_mask had no set bits -- the check would be vacuous"
+
+
+def test_cache_construction_drapes_a_farm_on_a_ramp(sprite_install):
+    """SlopedChunkCache._refresh_source_caches's wholesale branch (construction,
+    set_sprites_enabled, set_unit_filter) used to hardcode with_farms=False,
+    unlike its patch-branch sibling which already defaulted True -- so a
+    freshly-opened scenario rendered farms as plain marks until the first
+    elevation-changed patch() flipped them. Regression for that missed call
+    site: the cache's own stitched render must already match a direct
+    render_terrain_sloped_with_proj(with_sprites=True) call at construction,
+    with no edit in between."""
+    scenario = _ramped_scenario_with_unit(ux=20.5, uy=20.5, unit_const=FARM_CONST)
+    cache = _make_cache(scenario, sprites=True)
+    assert cache.sprites is not None and cache.sprites.farm_by_tile, (
+        "fixture painted nothing -- the farm never resolved"
+    )
+    canvas_w, canvas_h = cache.canvas_dims()
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
+    full, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+def test_sprites_toggle_drapes_a_farm_on_a_ramp(sprite_install):
+    """The path a user actually hits from the menu: open with sprites off,
+    then View > Show sprites. set_sprites_enabled() routes through the same
+    wholesale branch as construction, so this is a distinct route to the
+    construction bug above, not a duplicate of it."""
+    scenario = _ramped_scenario_with_unit(ux=20.5, uy=20.5, unit_const=FARM_CONST)
+    cache = _make_cache(scenario, sprites=False)
+    cache.set_sprites_enabled(True)
+    assert cache.sprites is not None and cache.sprites.farm_by_tile, (
+        "fixture painted nothing -- the farm never resolved"
+    )
+    canvas_w, canvas_h = cache.canvas_dims()
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
+    full, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+def test_patch_after_a_distant_edit_still_drapes_the_farm(sprite_install):
+    """The bug's other half: a construction-path farm that starts undraped
+    would "suddenly drape" the moment any elevation edit landed a non-empty
+    elevation_changed on the ALREADY-correct patch branch. Pins the two
+    branches agreeing: an edit far from the farm's own tiles (so its
+    corner_rise is untouched) must not change how the farm looks, before or
+    after."""
+    scenario = _ramped_scenario_with_unit(ux=5.5, uy=5.5, unit_const=FARM_CONST)
+    mm = scenario.map_manager
+    cache = _make_cache(scenario, sprites=True)
+    canvas_w, canvas_h = cache.canvas_dims()
+    before = cache.render_rect(0, 0, canvas_w, canvas_h)
+    full_before, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    assert np.array_equal(before, full_before[:canvas_h, :canvas_w])
+
+    elevations, _corner_rise, proj = sloped_elevations_and_proj(scenario)
+    cache.elevations = elevations
+    ex, ey = mm.map_width - 3, mm.map_height - 3  # far east plateau, well clear of the farm at (5, 5)
+    bbox, elevation_changed = _edit_and_bbox(scenario, elevations, proj, ex, ey, 1)
+    cache.patch(bbox, elevation_changed=elevation_changed)
+
+    after = cache.render_rect(0, 0, canvas_w, canvas_h)
+    full_after, _e2, _c2, _proj2 = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    assert np.array_equal(after, full_after[:canvas_h, :canvas_w])
 
 
 def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):

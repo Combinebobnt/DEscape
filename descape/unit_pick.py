@@ -43,12 +43,16 @@ Both are load-bearing, and both make the obvious reuse wrong:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from descape import iso_geometry, render
 from descape.unit_filter import UnitFilter
+
+# pick_unit()'s "the caller did not resolve a tile" default, distinct from an
+# explicit None (which means "no terrain under this pixel"); see its docstring.
+UNRESOLVED_TILE = object()
 
 
 @dataclass(frozen=True)
@@ -125,20 +129,103 @@ def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
             bounds = render.unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
-            tile_x0, tile_x1, tile_y0, tile_y1 = bounds
-            entry = UnitEntry(
-                player_id=player_id,
-                unit=unit,
-                own_x=int(unit.x),
-                own_y=int(unit.y),
-                order=len(index.entries),
-            )
-            index.entries.append(entry)
-            index.by_key[unit_key(player_id, unit)] = entry
-            for ty in range(tile_y0, tile_y1):
-                for tx in range(tile_x0, tile_x1):
-                    index.by_tile.setdefault((tx, ty), []).append(entry.order)
+            _append_entry(index, player_id, unit, bounds)
     return index
+
+
+def _append_entry(index: UnitIndex, player_id: int, unit, bounds: tuple[int, int, int, int]) -> UnitEntry:
+    """The shared tail of build_index()'s per-unit loop and
+    patch_index_for_add() (Batch D's D4) -- appends one new entry at
+    `order = len(index.entries)` and registers it in by_key/by_tile, so a
+    single Place can't drift from what a full rebuild would produce for
+    that same unit."""
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    entry = UnitEntry(
+        player_id=player_id,
+        unit=unit,
+        own_x=int(unit.x),
+        own_y=int(unit.y),
+        order=len(index.entries),
+    )
+    index.entries.append(entry)
+    index.by_key[unit_key(player_id, unit)] = entry
+    for ty in range(tile_y0, tile_y1):
+        for tx in range(tile_x0, tile_x1):
+            index.by_tile.setdefault((tx, ty), []).append(entry.order)
+    return entry
+
+
+def patch_index_for_add(
+    scenario, index: UnitIndex, player_id: int, unit, unit_filter: UnitFilter = UnitFilter()
+) -> None:
+    """Append-only UnitIndex update for a single Place (Batch D's D4): one
+    new entry at the end, so every existing entry's `order` -- a dense rank
+    over build order, not a stable address, see build_index()'s own
+    docstring -- stays valid. A no-op if the filter hides the new unit or it
+    landed off-map, matching build_index()'s own two drop conditions."""
+    if not unit_filter.matches(player_id, unit):
+        return
+    mm = scenario.map_manager
+    bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+    if bounds is None:
+        return
+    _append_entry(index, player_id, unit, bounds)
+
+
+def patch_index_for_move(
+    scenario, index: UnitIndex, player_id: int, unit, old_bounds: tuple[int, int, int, int]
+) -> None:
+    """Move-only UnitIndex update (Batch D's D4): a move never adds, removes
+    or reorders entries, so `order` -- and every OTHER entry's `by_tile`
+    membership -- stays untouched; only the moved entry's own_x/own_y and
+    its own by_tile membership need to change.
+
+    `unit` must already hold its POST-edit x/y (this is called after the
+    model mutation, mirroring render_cache.UnitSplice's own convention) --
+    `old_bounds` is the caller's (D5's) own pre-edit
+    render.unit_tile_bounds() result, since this function has no other way
+    to recover the unit's old footprint once its coordinates have already
+    moved. Uses unit_tile_bounds()'s RECT throughout, exactly as
+    build_index() does -- not unit_occupied_tiles()'s sparse footprint --
+    so by_tile membership matches what a full rebuild would produce.
+
+    Scoped to a plain position change: a span-changing edit (gate
+    orientation's set_unit_const) needs its OLD and NEW rects individually,
+    which this function's single `old_bounds` parameter doesn't carry, and
+    is out of scope here the same way it is for
+    render_cache._splice_eligible()'s wall/connector guard -- a caller
+    should route that case through a full build_index() instead.
+
+    A no-op if `unit` has no entry (filtered out, or never in the index to
+    begin with) -- the caller's job to fall back to a full rebuild for those
+    cases, mirroring UnitEntry's own by_key contract."""
+    entry = index.by_key.get(unit_key(player_id, unit))
+    if entry is None:
+        return
+    old_x0, old_x1, old_y0, old_y1 = old_bounds
+    for ty in range(old_y0, old_y1):
+        for tx in range(old_x0, old_x1):
+            orders = index.by_tile.get((tx, ty))
+            if not orders:
+                continue
+            remaining = [o for o in orders if o != entry.order]
+            if remaining:
+                index.by_tile[(tx, ty)] = remaining
+            else:
+                del index.by_tile[(tx, ty)]
+
+    new_entry = replace(entry, own_x=int(unit.x), own_y=int(unit.y))
+    index.entries[entry.order] = new_entry
+    index.by_key[unit_key(player_id, unit)] = new_entry
+
+    mm = scenario.map_manager
+    new_bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+    if new_bounds is None:
+        return
+    new_x0, new_x1, new_y0, new_y1 = new_bounds
+    for ty in range(new_y0, new_y1):
+        for tx in range(new_x0, new_x1):
+            index.by_tile.setdefault((tx, ty), []).append(entry.order)
 
 
 def _flat_key(entry: UnitEntry) -> int:
@@ -397,7 +484,7 @@ def pick_unit(
     elevations: np.ndarray | None = None,
     proj: iso_geometry.IsoProjection | None = None,
     corner_rise: np.ndarray | None = None,
-    terrain_tile: tuple[int, int] | None = None,
+    terrain_tile: tuple[int, int] | None = UNRESOLVED_TILE,
     farms_draped: bool = False,
 ) -> UnitEntry | None:
     """The topmost VISIBLE unit at canvas pixel (sx, sy), or None.
@@ -408,8 +495,16 @@ def pick_unit(
     inverse, so it is looked up through render_cache.SlopedChunkCache.pick_tile()
     by the caller and passed in, rather than handing this module a cache
     reference. That keeps unit_pick Qt-free and cache-free, as it has always
-    been. Pass None for it exactly as Stepped's screen_to_tile() returning
-    None means "no terrain here", i.e. the unit is unoccluded.
+    been.
+
+    Its three states are distinct. An explicit None means "no terrain under
+    this pixel", i.e. the unit is unoccluded, exactly as Stepped's own
+    screen_to_tile() returning None does. A tuple is that resolved tile, and
+    is used verbatim. The UNRESOLVED_TILE default means the caller resolved
+    nothing: Stepped then runs screen_to_tile() itself and Sloped, which
+    cannot, falls back to the unoccluded answer. A caller that has already
+    resolved the tile for its own use (MapView.pick_unit_at) passes it in so
+    the same pixel is not unprojected twice per mouse move.
 
     farms_draped (Track C6, Sloped only): whether a farm is CURRENTLY drawn
     draped over its own footprint tiles rather than as a plain diamond --
@@ -448,13 +543,19 @@ def pick_unit(
     if style == "sloped":
         if corner_rise is None or proj is None:
             return None
-        found = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain_tile, farms_draped)
-        terrain = terrain_tile
+        terrain = None if terrain_tile is UNRESOLVED_TILE else terrain_tile
+        found = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain, farms_draped)
     elif style == "stepped":
         if elevations is None or proj is None:
             return None
         found = _pick_unit_stepped(index, sx, sy, elevations, proj)
-        terrain = iso_geometry.screen_to_tile(sx, sy, elevations, proj)
+        # Only when the caller resolved nothing: MapView.pick_unit_at has
+        # already unprojected this pixel and hands the tile straight in.
+        terrain = (
+            iso_geometry.screen_to_tile(sx, sy, elevations, proj)
+            if terrain_tile is UNRESOLVED_TILE
+            else terrain_tile
+        )
     else:
         raise ValueError(f"unknown terrain style {style!r}")
 

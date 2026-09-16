@@ -227,7 +227,7 @@ def test_select_player_in_units_mode_sets_owner_combo_only() -> None:
 
         window._select_player(3)
 
-        assert window.place_owner_combo.currentData() == 3
+        assert window.units_panel.owner_id() == 3
         assert window.players_panel.player_combo.currentIndex() == players_index_before
         assert window.diplomacy_panel.player_combo.currentIndex() == diplomacy_index_before
     finally:
@@ -288,6 +288,45 @@ def test_select_player_in_terrain_mode_is_a_noop() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_tool_shortcut_fires_while_overflowed_into_more_tools() -> None:
+    """Stage 3 of the tool-overflow plan: a tool action moved into the More
+    Tools menu (toolbar.removeAction()) must still fire its shortcut --
+    self.addAction() in _build_toolbar() gives every tool action a second,
+    permanent host independent of toolbar membership. Cliff has no default
+    key, so it's rebound here rather than relying on one.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    import conftest
+    from descape import settings
+
+    window = conftest.shown_terrain_window(width=settings.MIN_WINDOW_WIDTH)
+    try:
+        assert window.cliff_action in window.more_tools_menu.actions(), (
+            "test assumes Cliff overflows at MIN_WINDOW_WIDTH -- see "
+            "test_toolbar_overflow.py's own suffix-order test for why"
+        )
+        settings.set_keybind("tool_cliff", "Ctrl+F11")
+        window.apply_keybind("tool_cliff")
+        assert window.cliff_action.shortcut() == QKeySequence("Ctrl+F11")
+
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+
+        fired = {"count": 0}
+        window.cliff_action.triggered.connect(lambda: fired.__setitem__("count", fired["count"] + 1))
+        QTest.keyClick(window, Qt.Key_F11, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert fired["count"] == 1
+    finally:
+        conftest.close_window(window)
 
 
 def test_keybinds_tab_renders_menu_section_headers() -> None:

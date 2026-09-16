@@ -12,6 +12,12 @@ see elevation_targets()'s own docstring.
 
 from __future__ import annotations
 
+import pytest
+
+from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
+from AoE2ScenarioParser.objects.data_objects.unit import Unit
+
+from descape import library_compat
 from descape.elevation_tools import set_tiles_elevation
 from descape.region_clipboard import (
     copy_region,
@@ -127,6 +133,59 @@ def test_copy_region_collects_units_by_direct_walk() -> None:
     u = block.units[0]
     assert u.player == 1
     assert u.dx == 2.5 and u.dy == 2.5
+
+
+def _construct_unit_while_poisoned(uuid) -> Unit:
+    """Reproduces UnitManager.construct()'s own path while Unit is poisoned:
+    caption_string_id/caption_string are passed as None, which the real
+    disabled setter silently swallows rather than raising (only a non-None
+    value raises), leaving the instance with no such attribute at all --
+    unlike UnitEditModel.add(), which always passes -1/"" and so always hits
+    the raise. depoison() afterward removes the class-level property, so the
+    later read falls through to a missing instance attribute: plain
+    AttributeError, not UnsupportedAttributeError."""
+
+    def _raise(self_, val=None):
+        if val is not None:
+            raise UnsupportedAttributeError("synthetic poisoning for a test")
+
+    Unit.caption_string_id = property(_raise, _raise)
+    Unit.caption_string = property(_raise, _raise)
+    return Unit(
+        player=1,
+        x=12.5,
+        y=12.5,
+        z=0.0,
+        reference_id=99999,
+        unit_const=83,
+        status=2,
+        rotation=0.0,
+        initial_animation_frame=0,
+        garrisoned_in_id=-1,
+        caption_string_id=None,
+        caption_string=None,
+        uuid=uuid,
+    )
+
+
+def test_copy_region_survives_a_unit_parsed_while_poisoned() -> None:
+    """The second live gap the 2026-09-12 plan recorded, reachable today via
+    parse_triggers()'s own depoison(): copy_region()'s defensive read must
+    catch AttributeError as well as UnsupportedAttributeError."""
+    loaded = _load()
+    unit = _construct_unit_while_poisoned(loaded._scenario.uuid)
+    loaded.unit_manager.units[1].append(unit)
+    try:
+        library_compat.depoison()
+        with pytest.raises(AttributeError):
+            _ = unit.caption_string
+
+        block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 15, 15)
+        assert len(block.units) == 1
+        assert block.units[0].caption_string == ""
+        assert block.units[0].caption_string_id == -1
+    finally:
+        library_compat.depoison()
 
 
 def test_unit_paste_targets_translates_and_drops_off_map() -> None:

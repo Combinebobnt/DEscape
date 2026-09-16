@@ -123,6 +123,20 @@ def combined_object_name(object_const: int) -> str:
     return _combined_object_names().get(object_const, "")
 
 
+def display_name(unit_const: int) -> str:
+    """Mirrors terrain_palette.name_for_terrain_id's shape, UNKNOWN_<id>
+    fallback included: a scenario can legitimately reference a unit_const no
+    dataset covers, and that must read as a known gap rather than a crash.
+
+    combined_object_name() supplies the four-dataset merge (~1,355 members
+    total, first dataset wins on an ID collision); the title-casing and
+    UNKNOWN_<id> fallback are this call site's own display convention, not
+    shared with trigger_fields.resolve_reference's ALL CAPS one.
+    """
+    name = combined_object_name(unit_const)
+    return name.title() if name else f"UNKNOWN_{unit_const}"
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     """One pickable row of an id-dataset catalog.

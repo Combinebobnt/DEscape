@@ -53,7 +53,7 @@ from pathlib import Path
 
 import numpy as np
 
-from descape import asset_source, debug_log
+from descape import asset_source, debug_log, gate_orientation
 from descape.sld_decoder import SLDError, load_sld
 
 GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
@@ -178,11 +178,11 @@ TEAM_COLORS = (
     (255, 146, 5),
 )
 
-# Sized by tools/bench_unit_sprites.py (P3-g4), not guessed. Both matter
-# because sld_decoder holds no cache of its own and a delta chain can be 313
-# links deep, so one wanted frame can pay for hundreds of predecessor decodes.
+# Sized by tools/bench_unit_sprites.py (P3-g4), not guessed. Matters because
+# sld_decoder holds no cache of its own and a delta chain can be 313 links
+# deep, so one wanted frame can pay for hundreds of predecessor decodes.
 #
-# **The failure mode these avoid is a cache that silently does nothing.** At
+# **The failure mode this avoids is a cache that silently does nothing.** At
 # the first-pass 256, the worst real file (old-allies-final-v2, 652 distinct
 # (file, frame) pairs before the per-player and per-mip-level multiplier) ran
 # a WARM layer rebuild in 4562ms against a 4768ms cold one -- every entry was
@@ -190,13 +190,33 @@ TEAM_COLORS = (
 # nothing. It is not enough for a capacity to be "big"; it has to exceed a
 # real file's distinct-key count, or it is worse than no cache at all.
 #
-# Entry counts rather than a byte budget, because cropping to the ink bbox
-# made entries small and predictable: measured across the three biggest
-# example files, a scaled entry averages ~19KB and a native one ~200KB. So
-# these caps are roughly 40MB scaled and 50MB native at worst, and typically a
-# small fraction of that.
+# Entry count, not a byte budget: cropping to the ink bbox makes a native
+# entry small and roughly uniform (~200KB measured), unlike the scaled cache
+# below.
 NATIVE_CACHE_SIZE = 256
-SCALED_CACHE_SIZE = 2048
+
+# A BYTE budget, like ICON_CACHE_BYTES below -- see _ByteLRU for why an entry
+# cap cannot work here. This used to be an _LRU entry cap (SCALED_CACHE_SIZE =
+# 2048) on the premise that a scaled entry is a uniform ~19KB; that premise is
+# false. Entries are not uniform -- their bytes quadruple per zoom step (mip
+# level), the same axis ICON_CACHE_BYTES's own comment measures for icons.
+#
+# Measured 2026-09-10 on the three biggest corpus files with a throwaway probe
+# (build a level, build its neighbour, rebuild the first -- a rebuild near the
+# first build's cost means the neighbour evicted it):
+# - old-allies-final-v2: 1346 sprite keys per level, so two resident levels
+#   need 2692 against the old 2048-entry cap. Rebuild after a neighbour was
+#   0.99-1.04x of cold (about 4.8s) on every adjacent pair: thrashing.
+# - F7_2_Dos Pilas (896 keys/level) rebuilt at 0.07-0.12x of cold and
+#   0_June_Event (418) at 0.08-0.10x: neither thrashes even at the old cap.
+# - Level working sets, coarsest to finest mip: old-allies 2.1 / 8.4 / 33.5 /
+#   134.2MB, Dos Pilas 1.8 / 7.3 / 29.2 / 117.0MB, June 0.7 / 2.7 / 10.6 /
+#   42.4MB. Largest single entry 3.4MB.
+#
+# 256MB: the level warm targets the current level +/-1, and three adjacent
+# levels peak at 176MB on the measured corpus (old-allies mips -1 to 1). The
+# margin over that is headroom for a map larger than anything in examples/.
+SCALED_CACHE_BYTES = 256 * 1024 * 1024
 
 # Flat's icon cache (P3-g7), a BYTE budget rather than an entry count -- see
 # _ByteLRU for why an entry count cannot work here.
@@ -211,7 +231,7 @@ SCALED_CACHE_SIZE = 2048
 # first-pass 64MB the tile_px=128 level alone did not fit, and its WARM
 # rebuild ran in 4181ms against a 4023ms cold one -- every entry evicted
 # before reuse, the cache costing memory and buying nothing, which is the same
-# failure NATIVE_CACHE_SIZE/SCALED_CACHE_SIZE's own comment records. 128MB
+# failure NATIVE_CACHE_SIZE/SCALED_CACHE_BYTES's own comment records. 128MB
 # clears that file's whole ladder; in practice only resident levels are ever
 # built (see FlatChunkCache._level_icons' laziness), so one or two of those
 # four is the normal steady state.
@@ -269,11 +289,12 @@ class _LRU(OrderedDict):
 class _ByteLRU(OrderedDict):
     """An LRU capped by the total BYTES its values hold, not by entry count.
 
-    _LRU's entry cap works for _scaled_cache because cropping to the ink bbox
-    made entries small and uniform (~19KB measured). An icon entry is
-    FOOTPRINT-sized instead -- a 1x1 unit at tile_px=16 is ~1KB and a 4x4 Town
-    Centre at tile_px=128 is ~1MB -- so any single entry count is either
-    wasteful at one end of that spread or thrashing at the other.
+    _LRU's entry cap cannot work for _scaled_cache or _icon_cache: a scaled
+    entry's bytes quadruple per zoom step (mip level), and an icon entry is
+    FOOTPRINT-sized on top of that -- a 1x1 unit at tile_px=16 is ~1KB and a
+    4x4 Town Centre at tile_px=128 is ~1MB -- so any single entry count is
+    either wasteful at one end of that spread or thrashing at the other. See
+    SCALED_CACHE_BYTES and ICON_CACHE_BYTES for the two measured budgets.
     """
 
     def __init__(self, capacity_bytes: int):
@@ -312,7 +333,7 @@ class _ByteLRU(OrderedDict):
 
 
 _native_cache = _LRU(NATIVE_CACHE_SIZE)
-_scaled_cache = _LRU(SCALED_CACHE_SIZE)
+_scaled_cache = _ByteLRU(SCALED_CACHE_BYTES)
 _icon_cache = _ByteLRU(ICON_CACHE_BYTES)
 
 # Cached in place of a sprite when a key resolves to nothing.
@@ -347,6 +368,7 @@ def clear_caches() -> None:
     _scaled_cache.clear()
     _icon_cache.clear()
     sld_frame_count.cache_clear()
+    wall_connector_consts.cache_clear()
 
 
 @lru_cache(maxsize=1)
@@ -446,11 +468,11 @@ def angle_index(
 # that reads unit_graphic_map.json's generated field now, sourced from the
 # .dat's own unit.type != 70, not unit.class_ as originally proposed: class_
 # == 27 also catches 28 non-wall consts like "Sheep annex1" and "Empty
-# building"). This set's remaining job is WALL_CONNECTOR_CONSTS and
+# building"). This set's remaining job is wall_connector_consts() and
 # rotation_variant_eligible() below, where "exactly today's 8 walls" is
-# deliberately still hand-kept -- widening it further would let a water lily
-# or an Aqueduct get its stored index rederived from a wall-calibrated
-# neighbour mask.
+# deliberately still hand-kept -- widening it to include Aqueduct is a
+# separate, open decision (2026-09-12 plan's [NEEDS DECISION] entry), not
+# settled here.
 _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
     72, 117, 119, 155, 370, 788, 1062, 2678,
 })
@@ -508,28 +530,36 @@ def cliff_consts() -> frozenset[int]:
     return _CLIFF_VARIANT_CONSTS
 
 
-# HAND-VERIFIED against examples/ (2026-09-02 counterexamples plan), same
-# provenance discipline as _ROTATION_VARIANT_CONSTS above: 64/88/95/659/667/
-# 793/797 are the gate consts that plan's corpus scan found placed alongside
-# the confirmed wall family. Gates are load-bearing for connectivity, not
-# incidental -- walls-only connectivity measured 93.5% mask->index agreement
-# on the integer corpus, walls+gates measured 98.7%. class_ == 39 is WIDER
-# than "gates" (it also catches corner-pillar consts like 81), and including
-# the wider set was measured and rejected (96.9%), so this stays a hand-kept
-# list rather than "every class-39 const" until a generated replacement
-# derives and validates this from the .dat's own unit.class_ field instead.
+# Generated, not hand-kept (2026-09-12 plan): the gate half is every const in
+# gate_orientation.groups(), which derives all 96 class-39 gate consts (24
+# complete families of 4) from the .dat's own unit.class_ field via that
+# module's code-regex derivation; the wall half stays _ROTATION_VARIANT_CONSTS
+# above (Aqueduct is a separate, still-open [NEEDS DECISION] item, not settled
+# here).
 #
-# **Known consequence, accepted rather than fixed** (2026-09-08 gate
-# orientation cycling): this set is family-INCOMPLETE, so cycling a gate's
-# orientation can change whether its neighbouring walls draw a connector.
-# Stone closed (64/659/88/667) is fully in, but palisade closed (789/797/793/
-# 801) has only two members and stone's 1x1 corner group has 95 in with 81/
-# 663/671 out. Widening it to whole families is exactly what the 96.9%
-# measurement above rejected, so the fix is the generated replacement, not a
-# wider hand-kept list.
-WALL_CONNECTOR_CONSTS: frozenset[int] = _ROTATION_VARIANT_CONSTS | frozenset({
-    64, 88, 95, 659, 667, 793, 797,
-})
+# Measured against examples/'s integer-only files (the metric is defined in
+# tools/scan_wall_rotation.py's docstring): this set scores 99.00%
+# mask->stored-index agreement (n=5219), against 98.25% (n=5204) for the old
+# hand-kept 15-const set (8 walls, 7 gates picked by a 2026-09-02 corpus
+# scan). The old 98.7%/96.9% figures on record are not re-derivable -- the
+# script behind them was never committed -- and the 96.9% "class == 39
+# rejected" claim was actually a *towers* measurement, never a class-39 one.
+# The corpus rendering delta of this change is exactly 0 override rows across
+# all 21 parsed files (control: walls-only against the old hand set gives 76
+# rows), because render.py skips integer-only files outright -- so this fixes
+# live editing (e.g. cycling a palisade gate's orientation no longer reshapes
+# its neighbouring walls, where cycling a stone gate already didn't), not
+# anything visible in the corpus.
+@lru_cache(maxsize=1)
+def wall_connector_consts() -> frozenset[int]:
+    """The set of consts whose tiles count as a "wall neighbour" for
+    render.wall_variant_rotation_overrides(). A function, not a module
+    constant, because the gate half reads two JSON tables via
+    gate_orientation.groups(), and an import-time read is a cost this module
+    does not otherwise pay."""
+    return _ROTATION_VARIANT_CONSTS | frozenset(
+        const for group in gate_orientation.groups().values() for const in group
+    )
 
 
 WEST, EAST, NORTH, SOUTH = 1, 2, 4, 8
@@ -567,10 +597,13 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     lily and a dozen other non-wall consts eligible for the wall-connectivity
     override -- a water lily between two walls would have its stored index
     rederived from a wall-calibrated neighbour mask, which is wrong. The
-    wall-family basis stays deliberately hand-kept here: `class_ == 39` was
-    measured and rejected for WALL_CONNECTOR_CONSTS' own gate set, and a
-    generated `wall_family` flag is a future replacement, not this pass's job.
-    `WALL_CONNECTOR_CONSTS` (the *neighbour tile* set) is unchanged either way.
+    wall-family basis stays deliberately hand-kept at today's 8 walls
+    (2026-09-12 plan): the tempting generalisation, `class_ == 27` with
+    `angle_count == 5`, adds only Aqueduct, and Aqueduct's own
+    connector-membership question is a separate, open [NEEDS DECISION] item,
+    not settled here. `wall_connector_consts()` (the *neighbour tile* set,
+    which now also includes every generated gate family) is unaffected either
+    way.
 
     Preconditions 3 (not a literal integer index) and 4 (non-zero neighbour
     mask) are NOT checked here. Measured (tools/scan_wall_rotation.py): of the

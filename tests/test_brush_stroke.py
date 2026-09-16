@@ -201,6 +201,75 @@ def test_brush_size_1_matches_pre_brush_single_tile_behavior() -> None:
         window.close()
 
 
+def test_multi_step_stroke_hands_each_change_to_apply_dirty_exactly_once() -> None:
+    """The incremental dirty-set bookkeeping in on_edit_stroke_tile, pinned
+    as a contract rather than as an implementation shape, so a rewrite of it
+    (the two passes over the cumulative dirty set became one) has to keep
+    behaving identically.
+
+    Set Elevation propagates, so a single tile is re-changed several times
+    over an 8-step drag; the non-vacuity assertion below fails if the
+    fixture ever stops reproducing that. The three real assertions: nothing
+    changed goes unreported, nothing is reported at a state it was already
+    shown at, and every index's LAST report carries its final state (the
+    drift _stroke_seen_state exists to prevent; see
+    tests/test_stroke_elevation_sync.py for what that drift looked like).
+    """
+    from collections import Counter
+
+    from descape.edit_history import tile_state
+
+    window = _edit_window("set_level")
+    try:
+        window.brush_size_spin.setValue(5)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_CIRCLE))
+        window.elevation_level_spin.setValue(6)
+        mm = window.scenario.map_manager
+        start = [tile_state(t) for t in mm.terrain]
+
+        # Snapshotted AT CALL TIME: the terrain keeps mutating for the rest
+        # of the drag, so the indices alone say nothing about what was shown.
+        reports: list[dict[int, tuple[int, int, int]]] = []
+        original = window._apply_dirty
+
+        def recording(dirty_indices) -> None:
+            reports.append({i: tile_state(mm.terrain[i]) for i in dirty_indices})
+            original(dirty_indices)
+
+        window._apply_dirty = recording
+        try:
+            window.on_edit_stroke_start()
+            for step in range(8):
+                window.on_edit_stroke_tile(40 + step, 40, 0)
+            window.on_edit_stroke_end()
+        finally:
+            del window._apply_dirty
+
+        final = [tile_state(t) for t in mm.terrain]
+        changed = {i for i, state in enumerate(final) if state != start[i]}
+        assert changed, "the drag changed nothing"
+
+        counts = Counter(i for report in reports for i in report)
+        assert any(c > 1 for c in counts.values()), (
+            "no tile was reported twice, so the fixture no longer reproduces mid-drag "
+            "propagation and the dedupe assertions below are vacuous"
+        )
+
+        assert changed <= set(counts), "a tile changed by the stroke was never handed to _apply_dirty"
+
+        last_state: dict[int, tuple[int, int, int]] = {}
+        for report in reports:
+            for i, state in report.items():
+                assert state != start[i], f"index {i} reported dirty at its stroke-start state"
+                assert state != last_state.get(i), f"index {i} reported again at a state already shown"
+                last_state[i] = state
+        for i in changed:
+            assert last_state[i] == final[i], f"index {i} was last shown at {last_state[i]}, ended at {final[i]}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_paint_can_ignores_brush_size() -> None:
     window = _edit_window("fill")
     try:
@@ -294,3 +363,81 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
     finally:
         fresh.edit_history.mark_saved()
         fresh.close()
+
+
+# -- the highlight pulse's stroke gate (perf batch B, step B3) ---------------
+
+
+def _viewport_pos(map_view, tile_x: int, tile_y: int):
+    from PyQt5.QtCore import QPointF
+
+    polygon = map_view._tile_polygon(tile_x, tile_y)
+    assert polygon is not None, f"no footprint for ({tile_x}, {tile_y})"
+    return QPointF(map_view.mapFromScene(polygon.boundingRect().center()))
+
+
+def _press(map_view, tile: tuple[int, int]) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    map_view.mousePressEvent(
+        _mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, *tile), Qt.LeftButton, Qt.LeftButton)
+    )
+
+
+def _release(map_view, tile: tuple[int, int]) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    map_view.mouseReleaseEvent(
+        _mouse_event(QEvent.MouseButtonRelease, _viewport_pos(map_view, *tile), Qt.LeftButton, Qt.NoButton)
+    )
+
+
+def test_the_pulse_pauses_for_the_stroke_and_resumes_on_release() -> None:
+    """Its 40ms tick dirties the highlight's scene rect, which re-enters the
+    canvas repaint. That is pure competition with the edit work while a
+    stroke is running, and the cursor isn't resting there to be found."""
+    window = _edit_window("draw")
+    try:
+        _shown_flat(window)
+        map_view = window.map_view
+        assert map_view._pulse_timer.isActive(), "an edit tool alone should pulse"
+
+        _press(map_view, (40, 40))
+        assert map_view._stroke_active
+        assert not map_view._pulse_timer.isActive(), "the stroke should pause the pulse"
+
+        _release(map_view, (40, 40))
+        assert not map_view._stroke_active
+        assert map_view._pulse_timer.isActive(), "the release should resume it"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_highlight_rebuilt_mid_stroke_is_not_left_fully_opaque() -> None:
+    """The pause's own blind spot: _update_highlight() creates a fresh fill
+    item at Qt's default opacity of 1.0, and with the pulse stopped nothing
+    would bring it back down until the stroke ended. Reached in the app by
+    the cursor crossing off-map mid-drag, which clears the highlight."""
+    window = _edit_window("draw")
+    try:
+        _shown_flat(window)
+        map_view = window.map_view
+        map_view._update_highlight(40, 40)
+
+        _press(map_view, (40, 40))
+        map_view._clear_highlight()
+        map_view._update_highlight(41, 41)
+
+        opacity = map_view._highlight_fill_item.opacity()
+        assert map_view.HIGHLIGHT_PULSE_MIN_ALPHA <= opacity <= map_view.HIGHLIGHT_PULSE_MAX_ALPHA, opacity
+
+        # And the resumed pulse still drives it, rather than the paused
+        # value being latched in.
+        _release(map_view, (41, 41))
+        map_view._pulse_phase_ms = map_view.HIGHLIGHT_PULSE_PERIOD_MS // 4
+        map_view._on_pulse_tick()
+        assert map_view._highlight_fill_item.opacity() != opacity
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

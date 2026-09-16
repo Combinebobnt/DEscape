@@ -22,6 +22,54 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [0.6] - 2026-09-16
+
+### Added
+
+- **File > Open Recent**, listing the 10 most-recently-opened scenarios (by
+  filename, full path on hover), plus a Clear Recent Files entry. Updated on
+  every successful open; an entry whose file has since disappeared is hidden
+  rather than pruned, so it reappears if the file comes back (e.g. a
+  removable drive reconnected).
+- **The Units mode inspector shows a selected unit's base stats**: hit
+  points, attack, melee and pierce armour, and range, read from the game's
+  own unit table. Values are base only, with no civ bonuses, tech upgrades
+  or trigger effects applied, and the whole block hides for a unit with no
+  combat stats (a tree, say).
+- **The Units mode catalog and owner selector now live in the Units panel
+  itself**, in a resizable vertical split above the inspector, replacing the
+  separate toolbar pair.
+- **A "More Tools" button** replaces Qt's anonymous `>>` chevron for tool
+  buttons that don't fit the toolbar at the current window width, naming
+  the active tool when it's one of the overflowed ones.
+
+### Changed
+
+- **Terrain painting is another 20-30% faster in Stepped and Sloped modes.**
+  Tiles that end up drawing nothing in the repainted area are now skipped
+  before any texture work. A size-9 brush stroke with sprites on drops from
+  about 62 ms to 51 ms a step in Sloped and 40 ms to 31 ms in Stepped on a
+  large map. Rendering output is unchanged, pixel for pixel.
+
+### Fixed
+
+- **Place Unit, Paint Can fill, and Save no longer crash on a scenario older
+  than version 1.55, or on any scenario opened after an older one earlier in
+  the same session.** A caption-field compatibility shim could leave the
+  `Unit` class "poisoned" against captions in a way that made these paths
+  raise instead of just omitting the unsupported field.
+- **Farms in Sloped mode no longer render as a plain coloured mark on open.**
+  A freshly-opened scenario, or toggling `View > Show sprites` on, skipped
+  the real terrain drape and fell back to the plain mark until the next
+  elevation edit; now both routes drape immediately.
+
+- **Cycling a gate's orientation no longer reshapes its neighbouring walls
+  inconsistently.** The wall/gate connector set used to be a hand-kept
+  15-const list that only covered some gate families; a palisade gate's
+  cycle could flip whether an adjacent wall drew a connector while a stone
+  gate's cycle didn't. It's now generated from every gate family, so the
+  behaviour is consistent across gate types.
+
 ## [0.5] - 2026-09-09
 
 ### Added

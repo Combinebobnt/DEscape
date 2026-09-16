@@ -107,11 +107,11 @@ def test_every_cliff_family_is_variant_indexed(unit_const):
 
 def test_cliffs_are_not_wall_connectors():
     """_CLIFF_VARIANT_CONSTS is deliberately a second set rather than more
-    entries in _ROTATION_VARIANT_CONSTS: WALL_CONNECTOR_CONSTS is built from
+    entries in _ROTATION_VARIANT_CONSTS: wall_connector_consts() is built from
     that one, so folding cliffs in would make every cliff count as a wall
     neighbour and reshape real walls through
     render.wall_variant_rotation_overrides()."""
-    assert not (unit_sprites._CLIFF_VARIANT_CONSTS & unit_sprites.WALL_CONNECTOR_CONSTS)
+    assert not (unit_sprites._CLIFF_VARIANT_CONSTS & unit_sprites.wall_connector_consts())
 
 
 # -- 3. the range check --------------------------------------------------

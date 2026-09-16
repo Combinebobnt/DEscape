@@ -53,9 +53,12 @@ def _drag(scenario, elevations, proj, level, steps, *, state_keyed):
         set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
         all_dirty = history.stroke_dirty_indices(mm.terrain)
         if state_keyed:
-            new_dirty = {i2 for i2 in all_dirty if tile_state(mm.terrain[i2]) != seen_state.get(i2)}
+            new_dirty = set()
             for i2 in all_dirty:
-                seen_state[i2] = tile_state(mm.terrain[i2])
+                state = tile_state(mm.terrain[i2])
+                if state != seen_state.get(i2):
+                    seen_state[i2] = state
+                    new_dirty.add(i2)
         else:
             new_dirty = set(all_dirty) - seen_indices
             seen_indices = set(all_dirty)

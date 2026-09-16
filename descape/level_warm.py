@@ -97,10 +97,13 @@ class _IdleTimerDriver:
 
     def _schedule(self) -> None:
         """Starts a 0ms QTimer, which Qt fires on event-loop idle -- so a
-        warm makes no progress at all while the user is panning
-        continuously, by design: the point is to use the idle time after a
-        file opens (or, for MarginWarmer, between poll fires), not to
-        compete with input.
+        warm makes no progress at all while the user is panning with the
+        keyboard or wheel, by design: the point is to use the idle time
+        after a file opens (or, for MarginWarmer, between poll fires), not
+        to compete with input. A mouse-held pan is different: move events
+        are discrete, so the 0ms timer still fires in the gaps between them
+        unless the subclass itself backs off (MarginWarmer.tick() does, via
+        _set_interval()).
 
         Created here rather than in __init__ so a driver can be constructed
         and driven (run_to_completion) with no QApplication at all. With no
@@ -120,6 +123,14 @@ class _IdleTimerDriver:
     def _stop_timer(self) -> None:
         if self._timer is not None:
             self._timer.stop()
+
+    def _set_interval(self, ms: int) -> None:
+        """Retargets the already-started timer's fire interval without
+        stopping it -- MarginWarmer's mouse-held backoff uses this rather
+        than a fresh _schedule() call, which would also (re)start a timer
+        that may not be running yet at __init__ time."""
+        if self._timer is not None:
+            self._timer.setInterval(ms)
 
 
 class LevelWarmer(_IdleTimerDriver):

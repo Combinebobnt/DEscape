@@ -152,19 +152,22 @@ def test_select_reveals_and_selects_the_matching_row() -> None:
     assert dialog.tree.currentItem().data(0, Qt.UserRole) == 109
 
 
-def test_double_clicking_a_row_accepts_it() -> None:
+def test_activating_a_row_accepts_it() -> None:
+    """value_picker.ValuePickerView listens for itemActivated (double-click
+    AND Enter), not the older itemDoubleClicked -- see value_picker.py's own
+    module docstring."""
     dialog = _dialog()
     dialog.select(109)
-    dialog.tree.itemDoubleClicked.emit(dialog.tree.currentItem(), 0)
+    dialog.tree.itemActivated.emit(dialog.tree.currentItem(), 0)
     assert dialog.result() == dialog.Accepted
     assert dialog.selected_id() == 109
 
 
-def test_double_clicking_a_group_heading_does_not_accept() -> None:
+def test_activating_a_group_heading_does_not_accept() -> None:
     dialog = _dialog()
     group = dialog.tree.topLevelItem(0)
     dialog.tree.setCurrentItem(group)
-    dialog.tree.itemDoubleClicked.emit(group, 0)
+    dialog.tree.itemActivated.emit(group, 0)
     assert dialog.result() != dialog.Accepted
     assert dialog.selected_id() is None
 
@@ -181,6 +184,19 @@ def test_filter_hides_non_matching_rows_and_empty_groups() -> None:
     group = shown_groups[0]
     visible_children = [group.child(c).text(0) for c in range(group.childCount()) if not group.child(c).isHidden()]
     assert visible_children == ["BROWN BEAR"]
+
+
+def test_filter_matches_by_id_too() -> None:
+    """Deliberate behaviour change (S2 of the units-sidebar-catalog plan):
+    filtering now runs over CatalogEntry.search_text ("name id"), not just
+    the rendered label, so a digit in the filter matches ids as well as
+    names -- strictly more rows than the old rendered-label filter matched.
+    109 is TOWN CENTER's id."""
+    dialog = _dialog()
+    dialog.filter_edit.setText("109")
+    shown = _child_for(dialog, 109)
+    assert shown is not None
+    assert not shown.isHidden()
 
 
 def test_clearing_the_filter_reshows_everything() -> None:

@@ -105,23 +105,8 @@ def check_file(path: Path) -> tuple[bool | None, str]:
             if not scenario.map_is_square
             else _check_elevation_round_trip(window, mm, problems)
         )
-        # UnitEditModel.add() unconditionally assigns caption_string_id/
-        # caption_string in Unit.__init__ (confirmed against the installed
-        # library: neither omitting the kwarg nor passing its own default
-        # avoids the assignment), which raises UnsupportedAttributeError on
-        # any scenario version below caption_string's own Support(since=1.55)
-        # -- a pre-existing bug in add() itself (Place Unit already has it
-        # too), not something introduced by region paste. Units checks are
-        # skipped below rather than reported as a phase 2.8 regression;
-        # flagged in this script's output so it doesn't go unnoticed.
-        if float(scenario.scenario_version) < 1.55:
-            print(
-                f"  (units checks skipped for {path.name}: pre-existing "
-                f"UnitEditModel.add() bug on scenario_version < 1.55)"
-            )
-        else:
-            _check_units_round_trip(window, mm, problems)
-            _check_one_undo_step_for_a_mixed_paste(window, mm, problems)
+        _check_units_round_trip(window, mm, problems)
+        _check_one_undo_step_for_a_mixed_paste(window, mm, problems)
         if not scenario.map_is_square:
             _check_elevation_checkbox_honoured_on_non_square(window, mm, problems)
 

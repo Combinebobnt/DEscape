@@ -45,7 +45,7 @@ if TYPE_CHECKING:  # keeps this module library-free at runtime -- see docstring
     from descape.messages_model import MessagesEditModel
     from descape.options_model import OptionsEditModel
     from descape.trigger_model import TriggerEditModel, TriggerSnapshot
-    from descape.unit_model import UnitEditModel, UnitSnapshot
+    from descape.unit_model import UnitEditModel, UnitFieldSnapshot, UnitSnapshot
 
 # Proportional to tiles actually changed, not map size, so ordinary edits stay
 # small -- but MapManager.set_elevation's propagation can touch a large region
@@ -288,9 +288,27 @@ class UnitDiffRecord(DiffRecord):
     reason: a byte-snapshot record cannot restore the live object graph the
     model reads from or the blob dirty state a save branches on."""
 
-    before: UnitSnapshot
-    after: UnitSnapshot
+    before: UnitSnapshot | UnitFieldSnapshot
+    after: UnitSnapshot | UnitFieldSnapshot
     kind: ClassVar[str] = "unit"
+
+    @property
+    def unit_field_entries(self) -> list[tuple[int, int, object]] | None:
+        """(player, index, unit) for every unit a fields_only record touched
+        (Batch D's D6), in capture order -- None for a whole-list record.
+        player/index are stable across `before` and `after` alike, since a
+        fields_only edit never reorders any list, so either snapshot answers
+        this the same way.
+
+        Duck-typed on `.entries` rather than an isinstance check against
+        UnitFieldSnapshot, keeping this module's own "no library/model type
+        named at runtime" invariant (see module docstring) intact -- the
+        type only needs naming under TYPE_CHECKING, for the signature above.
+        """
+        entries = getattr(self.before, "entries", None)
+        if entries is None:
+            return None
+        return [(e.player, e.index, e.unit) for e in entries.values()]
 
     def require_target(
         self,

@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 
 import numpy as np
-from PyQt5.QtCore import QPointF, QRectF, Qt
+from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt
 from PyQt5.QtGui import (
     QColor,
     QFont,
@@ -389,7 +389,9 @@ class EdgeTickItem(QGraphicsItem):
     bounding rect spans the viewport, so Qt treats this item as exposed on
     essentially every repaint, including every invalidate_region during a
     drag-paint stroke, and a 480x480 at interval 4 is 484 ticks. Do not
-    "simplify" the rebuild back into paint().
+    "simplify" the rebuild back into paint(). paint() culls that fixed run
+    list against option.exposedRect and batches the survivors per pen, which
+    is what keeps a small repaint cheap.
 
     Marks are drawn in DEVICE space, under a reset transform, so a tick is a
     fixed pixel length and a label stays upright and readable at any zoom.
@@ -407,6 +409,10 @@ class EdgeTickItem(QGraphicsItem):
     MAJOR_PEN = QPen(QColor(200, 200, 200), 0)
     MINOR_PEN = QPen(QColor(140, 140, 140), 0)
     LABEL_COLOR = QColor(200, 200, 200)
+
+    # Device-pixel slack added on top of edge_ticks.device_reach_px() before
+    # culling: cosmetic pen width plus antialiasing spill.
+    CULL_MARGIN_PX = 2.0
 
     def __init__(
         self,
@@ -431,6 +437,9 @@ class EdgeTickItem(QGraphicsItem):
         self._font = QFont()
         self._font.setPixelSize(edge_ticks.LABEL_FONT_PX)
         self.stats = TickPaintStats()
+        # Same flag, same reason as MapCanvasItem: without it Qt reports the
+        # whole boundingRect as exposed and paint()'s cull can never fire.
+        self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -505,6 +514,7 @@ class EdgeTickItem(QGraphicsItem):
             world = painter.worldTransform()
             stats = TickPaintStats()
             self.stats = stats
+            exposed = self._exposed_device_rect(world, option)
 
             painter.save()
             try:
@@ -523,7 +533,7 @@ class EdgeTickItem(QGraphicsItem):
                     stats.lod[run.edge] = lod
                     if not lod.draw_edge:
                         continue
-                    self._paint_run(painter, world, run, lod, unit_x, unit_y, stats)
+                    self._paint_run(painter, world, run, lod, unit_x, unit_y, stats, exposed)
             finally:
                 # Restored even on an exception: a leaked identity transform
                 # would corrupt whatever paints after this item, and the symptom
@@ -531,17 +541,42 @@ class EdgeTickItem(QGraphicsItem):
                 # bug above.
                 painter.restore()
 
-    def _paint_run(self, painter, world, run, lod, unit_x, unit_y, stats) -> None:
+    def _exposed_device_rect(self, world, option) -> "QRectF | None":
+        """`option`'s exposed area in DEVICE space, grown by the furthest any
+        mark can land from its anchor, or None for "cull nothing".
+
+        None covers both a caller that passes no option at all (the tests'
+        direct paint() calls) and an empty exposed rect. Grown by
+        edge_ticks.device_reach_px, which is that module's own bound on the
+        outermost drawn pixel and so covers a label as well as its tick:
+        an anchor outside this rect cannot paint inside the exposed one.
+        world.mapRect gives the bounding rect of the mapped quad, which under
+        Flat's rotate-and-squash is a superset. Over-covering is free."""
+        rect = getattr(option, "exposedRect", None)
+        if rect is None or rect.isEmpty():
+            return None
+        margin = edge_ticks.device_reach_px(self._font.pixelSize()) + self.CULL_MARGIN_PX
+        return world.mapRect(QRectF(rect)).adjusted(-margin, -margin, margin, margin)
+
+    def _paint_run(self, painter, world, run, lod, unit_x, unit_y, stats, exposed=None) -> None:
+        minors: list[QLineF] = []
+        majors: list[QLineF] = []
+        labels: list[tuple[QRectF, str]] = []
         for index, (anchor_x, anchor_y) in enumerate(run.anchors):
             major = run.majors[index]
             if not major and not lod.draw_minors:
                 continue
             point = world.map(QPointF(anchor_x, anchor_y))
+            if exposed is not None and not exposed.contains(point):
+                continue
             length = edge_ticks.MAJOR_TICK_PX if major else edge_ticks.MINOR_TICK_PX
-            painter.setPen(self.MAJOR_PEN if major else self.MINOR_PEN)
-            painter.drawLine(
-                QPointF(point.x(), point.y()),
-                QPointF(point.x() + unit_x * length, point.y() + unit_y * length),
+            (majors if major else minors).append(
+                QLineF(
+                    point.x(),
+                    point.y(),
+                    point.x() + unit_x * length,
+                    point.y() + unit_y * length,
+                )
             )
             stats.ticks_drawn += 1
             if major:
@@ -561,6 +596,17 @@ class EdgeTickItem(QGraphicsItem):
                 box_w,
                 box_h,
             )
-            painter.setPen(self.LABEL_COLOR)
-            painter.drawText(box, Qt.AlignCenter, str(run.tiles[index]))
+            labels.append((box, str(run.tiles[index])))
             stats.labels_drawn += 1
+        # One drawLines per pen instead of one drawLine per tick. Adjacent
+        # ticks are >= 4 device px apart, so grouping cannot share a pixel.
+        if minors:
+            painter.setPen(self.MINOR_PEN)
+            painter.drawLines(minors)
+        if majors:
+            painter.setPen(self.MAJOR_PEN)
+            painter.drawLines(majors)
+        if labels:
+            painter.setPen(self.LABEL_COLOR)
+            for box, text in labels:
+                painter.drawText(box, Qt.AlignCenter, text)

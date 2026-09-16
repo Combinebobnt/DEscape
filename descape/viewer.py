@@ -43,7 +43,6 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -98,7 +97,7 @@ from descape import (
     unit_pick,
     unit_rotation,
 )
-from descape.constant_picker import CatalogLineEdit, preview_pixmap
+from descape.constant_picker import preview_pixmap
 from descape.diplomacy_panel import DiplomacyPanel
 from descape.edit_history import (
     CompositeDiffRecord,
@@ -127,11 +126,14 @@ from descape.render import (
     elevations_and_proj,
     sloped_elevations_and_proj,
     tile_pixels_for_map,
+    unit_occupied_tiles,
+    unit_tile_bounds,
 )
 from descape.render_cache import (
     FlatChunkCache,
     IsoChunkCache,
     SlopedChunkCache,
+    UnitSplice,
 )
 from descape.scenario_io import (
     BLANK_TEMPLATE_TILES,
@@ -161,6 +163,7 @@ from descape.options_model import (
 )
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.terrain_palette import name_for_terrain_id, tile_span
+from descape.toolbar_overflow import partition
 from descape.trigger_model import (
     TriggerEditModel,
     TriggerEditsUnavailableError,
@@ -169,8 +172,9 @@ from descape.trigger_model import (
     moved_display_order,
 )
 from descape.trigger_panel import TriggerPanel
-from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
+from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID, UnitFilter
 from descape.unit_model import UnitEditModel, UnitEditsUnavailableError, span_low_corner
+from descape.units_panel import UnitsPanel
 from descape.viewer_common import (
     BRUSH_TOOLS,
     _STROKE_LABELS,
@@ -180,20 +184,10 @@ from descape.viewer_common import (
 )
 from descape.viewer_dialogs import CrashReportDialog, DebugLogDialog, apply_theme
 
-# GAIA plus 8 real players -- scenario_io.LoadedScenario's
-# number_of_unit_sections. The Filters menu offers a checkbox per real
-# player; GAIA gets its own separate entry (see UnitFilter.matches).
-MAX_PLAYER_ID = 8
-
 # D2's arrow-key nudge amounts, in tiles: a fine nudge, and Shift's whole-tile
 # step (matching the tile-centre grid a click/place snaps to).
 _UNIT_NUDGE_STEP = 0.1
 _UNIT_NUDGE_STEP_SHIFT = 1.0
-
-# unit_fields.UnitFieldSpec.conditional -> the rule it names. The specs stay
-# Qt-free and data-only by naming a rule as a string; this is the one place
-# that resolves it, so the rule itself stays independently testable.
-_FIELD_CONDITIONALS = {"rotation_is_angle": unit_rotation.rotation_is_angle}
 
 # Which left-panel page each mode shows. The panel swaps rather than growing
 # a third column -- the mode already says which one is relevant, so a dock
@@ -279,19 +273,10 @@ def _message_field_label(field_id: str) -> str:
     return _MESSAGE_FIELD_LABELS.get(field_id, field_id)
 
 
-def _unit_name(unit_const: int) -> str:
-    """Mirrors terrain_palette.name_for_terrain_id's shape, UNKNOWN_<id>
-    fallback included: a scenario can legitimately reference a unit_const no
-    dataset covers, and that must read as a known gap rather than a crash.
-
-    object_catalog.combined_object_name() supplies the four-dataset merge
-    (~1,355 members total, first dataset wins on an ID collision); the
-    title-casing and UNKNOWN_<id> fallback are this call site's own display
-    convention, not shared with trigger_fields.resolve_reference's ALL CAPS
-    one.
-    """
-    name = object_catalog.combined_object_name(unit_const)
-    return name.title() if name else f"UNKNOWN_{unit_const}"
+# Lives at object_catalog.display_name: units_panel.py needs the same
+# display convention, and importing viewer.py from there would invert the
+# dependency. Aliased here so this file's own 10 call sites stay untouched.
+_unit_name = object_catalog.display_name
 
 # Sourced from iso_geometry, not redefined here, so Set Elevation's spinbox
 # range and Stepped mode's canvas sizing (descape.render.elevations_and_proj)
@@ -1079,6 +1064,17 @@ class MirrorDialog(QDialog):
 class ViewerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        # Tool-overflow state (Stage 3 of the tool-overflow plan). Set
+        # before the resize() call below: that call fires resizeEvent(),
+        # which calls _apply_toolbar_overflow(), before _build_toolbar()
+        # has run -- _tool_overflow_measured=False makes that call a no-op
+        # until showEvent() has cached real (post-realization) widths.
+        self._tool_overflow_measured = False
+        self._tool_button_widths: dict[str, int] = {}
+        self._pinned_toolbar_width = 0
+        self._toolbar_overflow_updating = False
+
         width, height = settings.get_window_size()
         self.resize(width, height)
         self.setMinimumSize(settings.MIN_WINDOW_WIDTH, settings.MIN_WINDOW_HEIGHT)
@@ -1225,12 +1221,6 @@ class ViewerWindow(QMainWindow):
         # see on_click_select() for why. Holds (player_id, reference_id)
         # keys, never entries or list positions.
         self._selection: list[tuple[int, int]] = []
-        # Guards the inspector's in-place editors (D5) against recording a
-        # phantom undo step while _update_unit_inspector() programmatically
-        # sets their values -- players_panel._changed()'s own _populating
-        # guard, borrowed here since the inspector stays inline rather than
-        # becoming a panel class.
-        self._unit_inspector_populating = False
         self._update_title()
 
         left = QVBoxLayout()
@@ -1267,10 +1257,14 @@ class ViewerWindow(QMainWindow):
             on_diplomacy_field=self.set_diplomacy_field, on_option_field=self.set_option_field
         )
         self.messages_panel = MessagesPanel(on_message_field=self.set_message_field)
+        self.units_panel = UnitsPanel(
+            on_unit_field=self._on_unit_field_changed,
+            on_place_requested=self._on_units_panel_place_requested,
+        )
         self.left_stack = QStackedWidget()
         self.left_stack.addWidget(info_widget)
         self.left_stack.addWidget(self.trigger_panel)
-        self.left_stack.addWidget(self._build_unit_inspector())
+        self.left_stack.addWidget(self.units_panel)
         self.left_stack.addWidget(self.map_options_panel)
         self.left_stack.addWidget(self.players_panel)
         self.left_stack.addWidget(self.diplomacy_panel)
@@ -1432,6 +1426,8 @@ class ViewerWindow(QMainWindow):
         self.open_action = QAction("&Open .aoe2scenario…", self)
         self.open_action.triggered.connect(self.open_file)
         file_menu.addAction(self.open_action)
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        self._rebuild_recent_files_menu()
         self.close_action = QAction("&Close Map", self)
         self.close_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.close_action.triggered.connect(self.close_scenario)
@@ -1638,168 +1634,21 @@ class ViewerWindow(QMainWindow):
         self.perf_trace_action.toggled.connect(perf_trace.enable)
         help_menu.addAction(self.perf_trace_action)
 
-    def _build_unit_inspector(self) -> QWidget:
-        """The Units-mode left page -- phase 3's P3-e laid this out
-        read-only "so phase 3.5 swaps each value label for an editor IN
-        PLACE"; this is that swap.
-        unit_fields.FIELDS is the single source of which rows are editable
-        and what kind of editor they get.
-        """
-        page = QWidget()
-        layout = QVBoxLayout(page)
-
-        self.unit_inspector_empty = QLabel("No unit selected")
-        self.unit_inspector_empty.setWordWrap(True)
-        layout.addWidget(self.unit_inspector_empty)
-
-        self.unit_inspector_grid = QWidget()
-        grid = QGridLayout(self.unit_inspector_grid)
-        grid.setContentsMargins(0, 0, 0, 0)
-        self.unit_field_labels: dict[str, QLabel] = {}
-        self.unit_field_editors: dict[str, QWidget] = {}
-        for row, spec in enumerate(unit_fields.FIELDS):
-            grid.addWidget(QLabel(f"{spec.label}:"), row, 0)
-            # A conditional field gets BOTH widgets, in the same cell: the
-            # editor for consts its rule admits, and the plain read-only label
-            # every other const keeps. _apply_conditional_fields() shows one
-            # and hides the other per selection, and a hidden widget takes no
-            # layout space, so the row never doubles in height.
-            if not spec.editable or spec.conditional:
-                value = QLabel("")
-                value.setWordWrap(True)
-                value.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                grid.addWidget(value, row, 1)
-                self.unit_field_labels[spec.field_id] = value
-            if not spec.editable:
-                continue
-            if spec.kind == unit_fields.PLAYER:
-                combo = QComboBox()
-                combo.addItem("GAIA", GAIA_PLAYER_ID)
-                for player_id in range(1, MAX_PLAYER_ID + 1):
-                    combo.addItem(f"Player {player_id}", player_id)
-                combo.currentIndexChanged.connect(
-                    lambda _, s=spec, w=combo: self._on_unit_field_changed(s, w.currentData())
-                )
-                grid.addWidget(combo, row, 1)
-                self.unit_field_editors[spec.field_id] = combo
-            else:  # FLOAT
-                spin = QDoubleSpinBox()
-                spin.setDecimals(spec.decimals)
-                spin.setRange(spec.minimum, spec.maximum)
-                # setKeyboardTracking(False) is load-bearing the same way
-                # viewer_common._make_spinbox's own comment explains: without
-                # it, typing a multi-digit value over an old one fires
-                # valueChanged once per digit, recording one undo step per
-                # keystroke instead of one per commit (trap 3).
-                spin.setKeyboardTracking(False)
-                spin.valueChanged.connect(
-                    lambda value, s=spec: self._on_unit_field_changed(s, value)
-                )
-                grid.addWidget(spin, row, 1)
-                self.unit_field_editors[spec.field_id] = spin
-        layout.addWidget(self.unit_inspector_grid)
-
-        # A top-level AGENTS.md hard rule, and this panel is the first place
-        # it becomes user-visible: for ~65% of GAIA objects `rotation` is a
-        # tree/doodad graphic-variant index (values like 7..53), not an
-        # angle. Shown raw (radians, never degree-formatted) rather than
-        # converted, which would be a confident lie most of the time -- and
-        # editable only where it genuinely is an angle.
-        self.unit_rotation_note = QLabel(
-            "Rotation is shown raw, in radians. It is editable only for units "
-            "whose rotation is a real facing -- for most GAIA objects, walls "
-            "and gates it is a graphic-variant index, not an angle."
-        )
-        self.unit_rotation_note.setWordWrap(True)
-        layout.addWidget(self.unit_rotation_note)
-
-        layout.addStretch(1)
-        self._show_inspector_fields(False)
-        return page
-
-    def _show_inspector_fields(self, visible: bool) -> None:
-        self.unit_inspector_grid.setVisible(visible)
-        self.unit_rotation_note.setVisible(visible)
-        self.unit_inspector_empty.setVisible(not visible)
-
-    def _update_unit_inspector(self, entry) -> None:
-        if entry is None:
-            self._show_inspector_fields(False)
-            for label in self.unit_field_labels.values():
-                label.setText("")
-            return
-        unit = entry.unit
-        texts = {
-            "name": _unit_name(unit.unit_const),
-            "unit_const": str(unit.unit_const),
-            "rotation": f"{unit.rotation:g}",
-            "reference_id": str(unit.reference_id),
-            "garrisoned_in_id": str(getattr(unit, "garrisoned_in_id", -1)),
-        }
-        for field, text in texts.items():
-            self.unit_field_labels[field].setText(text)
-        # Guards the editors below against _on_unit_field_changed recording a
-        # phantom undo step from this programmatic populate -- the same
-        # _populating guard players_panel._changed() uses.
-        self._unit_inspector_populating = True
-        try:
-            self.unit_field_editors["player"].setCurrentIndex(
-                max(self.unit_field_editors["player"].findData(entry.player_id), 0)
-            )
-            self.unit_field_editors["x"].setValue(unit.x)
-            self.unit_field_editors["y"].setValue(unit.y)
-            self.unit_field_editors["z"].setValue(getattr(unit, "z", 0.0))
-            self._apply_conditional_fields(unit)
-        finally:
-            self._unit_inspector_populating = False
-        self._show_inspector_fields(True)
-
-    def _apply_conditional_fields(self, unit) -> None:
-        """Swaps each conditional field between its editor and its read-only
-        label for THIS unit's const -- today only Rotation, whose rule is
-        unit_rotation.rotation_is_angle.
-
-        Only ever called with the populating guard already held: it sets an
-        editor's value, and the resulting valueChanged must not record a
-        phantom undo step.
-
-        The value is normalized through rotate_step(..., 0) on the way in
-        rather than handed to setValue raw. An angle const can still carry a
-        stored value outside [0, 2*pi) (7.0 appears 574 times in the corpus),
-        and the spinbox would silently CLAMP that to its own maximum -- i.e.
-        display a number the file does not contain.
-        """
-        for spec in unit_fields.FIELDS:
-            if not spec.conditional:
-                continue
-            allowed = _FIELD_CONDITIONALS[spec.conditional](unit.unit_const)
-            editor = self.unit_field_editors[spec.field_id]
-            editor.setVisible(allowed)
-            self.unit_field_labels[spec.field_id].setVisible(not allowed)
-            if allowed and spec.field_id == "rotation":
-                editor.setValue(
-                    unit_rotation.rotate_step(
-                        unit.rotation, unit_rotation.angle_count_for(unit.unit_const), 0
-                    )
-                )
-
     def _on_unit_field_changed(self, spec: unit_fields.UnitFieldSpec, value) -> None:
         """The single funnel every unit inspector editor reports through --
         mirrors set_trigger_field()'s role for the trigger form.
 
-        The unchanged-value early return matters here for a second reason
-        beyond avoiding a phantom undo step: _update_unit_inspector()
-        populates every editor via setValue()/setCurrentIndex(), and Qt
-        fires the change signal even for a programmatic set that lands on
-        the same value as a prior one when _unit_inspector_populating is
-        already guarding it -- but a genuinely no-op edit (typing the same
-        X back) must not record either.
+        UnitsPanel itself suppresses this during a programmatic populate (its
+        own `_populating` guard, mirroring PlayersPanel._changed()'s), so
+        this only ever fires for a genuine user edit -- but a genuinely
+        no-op edit (typing the same X back) must still not record one,
+        hence the per-field equality checks below.
         """
         # len != 1, not just falsy: the inspector's fields are hidden
         # whenever 2+ units are selected (_refresh_selection_view), so this
         # is defensive against a signal somehow firing from a hidden editor
         # rather than an expected path.
-        if self._unit_inspector_populating or len(self._selection) != 1:
+        if len(self._selection) != 1:
             return
         model = self._ensure_unit_edits()
         if model is None:
@@ -1835,8 +1684,18 @@ class ViewerWindow(QMainWindow):
             )
             if rotation == unit.rotation:
                 return
-            with self._unit_edit(model, "Set unit Rotation", [entry.player_id]):
+            # Splice-eligible (Batch D's D5): rotation never moves the
+            # footprint, so old/new own_tile and old/new tiles are identical
+            # -- the splice still exists so the cache re-resolves this
+            # unit's now-different sprite frame, and the pick index is left
+            # untouched (nothing pickable moved).
+            old_own, old_tiles = self._unit_footprint(unit)
+            idx = self._unit_list_index(entry.player_id, unit)
+            splices: list[UnitSplice] = []
+            with self._unit_edit(model, "Set unit Rotation", [entry.player_id], splices, fields_only=True):
                 model.set_rotation(unit, rotation)
+                new_own, new_tiles = self._unit_footprint(unit)
+                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
             return
 
         current = getattr(unit, spec.field_id)
@@ -1849,8 +1708,16 @@ class ViewerWindow(QMainWindow):
             y = value
         elif spec.field_id == "z":
             z = value
-        with self._unit_edit(model, f"Set unit {spec.label}", [entry.player_id]):
+        mm = self.scenario.map_manager
+        old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
+        old_own, old_tiles = self._unit_footprint(unit)
+        idx = self._unit_list_index(entry.player_id, unit)
+        splices = []
+        with self._unit_edit(model, f"Set unit {spec.label}", [entry.player_id], splices, fields_only=True):
             model.set_position(unit, x, y, z)
+            new_own, new_tiles = self._unit_footprint(unit)
+            splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+            self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
 
     def _update_unit_inspector_from_selection(self) -> None:
         """Puts the inspector back in step with the model after an edit that
@@ -1894,10 +1761,9 @@ class ViewerWindow(QMainWindow):
         # comment) but never comes back through here or _after_unit_mutation.
         self._update_tool_enabled()
         if len(entries) == 1:
-            self._update_unit_inspector(entries[0])
+            self.units_panel.show_unit(entries[0])
             return
-        self._update_unit_inspector(None)
-        self.unit_inspector_empty.setText(f"{len(entries)} units selected" if entries else "No unit selected")
+        self.units_panel.show_selection_count(len(entries))
 
     def _build_filters_button(self, toolbar) -> None:
         """The Filters popup -- phase 3's P3-b.
@@ -2089,23 +1955,50 @@ class ViewerWindow(QMainWindow):
         tile = self.map_view._pick_tile(pos)
         if tile is None:
             return
-        object_id = self.place_object_edit.value()
+        object_id = self.units_panel.selected_object_const()
         if object_id is None:
             self._log_status("Place Unit: choose an object first")
             return
-        player = self.place_owner_combo.currentData()
+        player = self.units_panel.owner_id()
         model = self._ensure_unit_edits()
         if model is None:
             return
         x, y = tile[0] + 0.5, tile[1] + 0.5
-        with self._unit_edit(model, "Place unit", [player]):
+        splices: list[UnitSplice] = []
+        with self._unit_edit(model, "Place unit", [player], splices):
             unit = model.add(player, object_id, x, y)
             # Placed units become the selection (same reasoning as
             # reassign's own key update): the id just chosen is the one worth
             # showing in the inspector next, not whatever was selected before.
             self._selection = [unit_pick.unit_key(player, unit)]
+            new_own, new_tiles = self._unit_footprint(unit)
+            idx = self._unit_list_index(player, unit)
+            splices.append(UnitSplice(player, idx, unit, None, new_own, (), new_tiles))
+            index = self.map_view._unit_index
+            if index is not None:
+                unit_pick.patch_index_for_add(self.scenario, index, player, unit, self._unit_filter)
         owner_text = "GAIA" if player == GAIA_PLAYER_ID else f"Player {player}"
         self._log_status(f"Placed {_unit_name(object_id)} for {owner_text} at ({x:g}, {y:g})")
+
+    def _on_units_panel_place_requested(self, object_id: int) -> None:
+        """UnitsPanel's double-click/Enter path -- this replaces "accept the
+        dialog" from the old modal CatalogBrowseDialog. Guarding on
+        isEnabled() rather than unconditionally checking the action matters:
+        on a DISABLED action, setChecked(True) would still flip its checked
+        state (QActionGroup does not itself block that), and the next
+        _update_tool_enabled() pass would then force it back to Pan with a
+        spurious status line -- see that method's own forced-back-to-Pan
+        comment.
+        """
+        if not self.place_unit_action.isEnabled():
+            self._log_status("Place Unit is unavailable here")
+            return
+        self.place_unit_action.setChecked(True)
+        # The common flow -- pick an object, place it, then nudge it -- needs
+        # focus back on the map, or arrow keys move the tree's current row
+        # instead of the just-placed unit (unit_pick's own on_unit_nudge is
+        # a MapView.keyPressEvent handler, so it only fires with map focus).
+        self.map_view.setFocus()
 
     def _populate_cliff_families(self) -> None:
         """One-time (construction-time) fill of the Family combo -- cliff
@@ -2270,8 +2163,16 @@ class ViewerWindow(QMainWindow):
         unit = entry.unit
         if (x, y) == (unit.x, unit.y):
             return
-        with self._unit_edit(model, "Move unit", [entry.player_id]):
+        mm = self.scenario.map_manager
+        old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
+        old_own, old_tiles = self._unit_footprint(unit)
+        idx = self._unit_list_index(entry.player_id, unit)
+        splices: list[UnitSplice] = []
+        with self._unit_edit(model, "Move unit", [entry.player_id], splices, fields_only=True):
             model.set_position(unit, x, y, unit.z)
+            new_own, new_tiles = self._unit_footprint(unit)
+            splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+            self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
         self._log_status(f"Moved {_unit_name(unit.unit_const)} to ({x:g}, {y:g})")
 
     def on_unit_nudge(self, dx: int, dy: int, modifiers) -> None:
@@ -2298,10 +2199,18 @@ class ViewerWindow(QMainWindow):
         step = _UNIT_NUDGE_STEP_SHIFT if modifiers & Qt.ShiftModifier else _UNIT_NUDGE_STEP
         players = sorted({e.player_id for e in entries})
         label = "Nudge unit" if len(entries) == 1 else f"Nudge {len(entries)} units"
-        with self._unit_edit(model, label, players):
+        mm = self.scenario.map_manager
+        splices: list[UnitSplice] = []
+        with self._unit_edit(model, label, players, splices, fields_only=True):
             for entry in entries:
                 unit = entry.unit
+                old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
+                old_own, old_tiles = self._unit_footprint(unit)
+                idx = self._unit_list_index(entry.player_id, unit)
                 model.set_position(unit, unit.x + dx * step, unit.y + dy * step, unit.z)
+                new_own, new_tiles = self._unit_footprint(unit)
+                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+                self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
         if len(entries) == 1:
             unit = entries[0].unit
             self._log_status(f"Moved {_unit_name(unit.unit_const)} to ({unit.x:g}, {unit.y:g})")
@@ -2370,14 +2279,30 @@ class ViewerWindow(QMainWindow):
             return
         touched = rotatable + cyclable
         label = "Rotate unit" if len(touched) == 1 else f"Rotate {len(touched)} units"
-        with self._unit_edit(model, label, sorted({e.player_id for e in touched})):
+        splices: list[UnitSplice] = []
+        with self._unit_edit(model, label, sorted({e.player_id for e in touched}), splices, fields_only=True):
             for entry in rotatable:
                 unit = entry.unit
+                old_own, old_tiles = self._unit_footprint(unit)
+                idx = self._unit_list_index(entry.player_id, unit)
                 angle_count = unit_rotation.angle_count_for(unit.unit_const)
                 model.set_rotation(unit, unit_rotation.rotate_step(unit.rotation, angle_count, steps))
+                new_own, new_tiles = self._unit_footprint(unit)
+                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+            # cyclable's set_unit_const() changes span, which
+            # unit_pick.patch_index_for_move() is explicitly not scoped to
+            # (see its own docstring) -- one full rebuild covers the whole
+            # batch, including the rotatable half above, which never needed
+            # one on its own.
             for entry in cyclable:
                 unit = entry.unit
+                old_own, old_tiles = self._unit_footprint(unit)
+                idx = self._unit_list_index(entry.player_id, unit)
                 model.set_unit_const(unit, gate_orientation.cycle_const(unit.unit_const, gate_steps))
+                new_own, new_tiles = self._unit_footprint(unit)
+                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+            if cyclable:
+                self._rebuild_unit_index()
         self._log_status(self._rotate_status(rotatable, cyclable, blocked, skipped))
 
     def _gate_cycle_fits(self, unit, gate_steps: int) -> bool:
@@ -2526,6 +2451,9 @@ class ViewerWindow(QMainWindow):
         model = self._ensure_unit_edits()
         if model is None:
             return
+        # One garrison reverse-map walk for the whole pre-flight, instead of
+        # leaving the first referencing() call to find it cold.
+        model.warm_garrison_map()
         removable = [e for e in entries if not model.referencing(e.unit)]
         blocked = len(entries) - len(removable)
         if not removable:
@@ -2538,9 +2466,28 @@ class ViewerWindow(QMainWindow):
             return
         players = sorted({e.player_id for e in removable})
         label = "Delete unit" if len(removable) == 1 else f"Delete {len(removable)} units"
-        with self._unit_edit(model, label, players):
-            for entry in removable:
-                model.remove(entry.unit)
+        if len(removable) == 1:
+            # Splice-eligible (Batch D's D5's "single Delete"): a batch of
+            # 2+ removals keeps the wholesale path below instead, since each
+            # unit's own list index (render_cache.UnitSplice.index, needed
+            # for wall_variant_rotation_overrides' key) shifts under a
+            # LATER removal from the same player's list -- see UnitSplice's
+            # own docstring.
+            entry = removable[0]
+            unit = entry.unit
+            old_own, old_tiles = self._unit_footprint(unit)
+            idx = self._unit_list_index(entry.player_id, unit)
+            splices: list[UnitSplice] = []
+            with self._unit_edit(model, label, players, splices):
+                model.remove(unit)
+                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, None, old_tiles, ()))
+                # No patch_index_for_remove() exists (see unit_pick.py's own
+                # D4 note) -- a full rebuild is the only path for a removal.
+                self._rebuild_unit_index()
+        else:
+            with self._unit_edit(model, label, players):
+                for entry in removable:
+                    model.remove(entry.unit)
         if blocked:
             self._log_status(f"Deleted {len(removable)}; {blocked} refused (garrison reference)")
             QMessageBox.warning(
@@ -2695,9 +2642,126 @@ class ViewerWindow(QMainWindow):
             parts.append(f"players {shown}" if shown else "no players")
         return ", ".join(parts)
 
+    def _build_tool_overflow_button(self, toolbar) -> None:
+        """A labelled "More Tools" dropdown for whichever tool buttons don't
+        fit row 1 at the current window width, replacing Qt's own anonymous
+        `>>` chevron.
+
+        Same QToolButton + QMenu shape as _build_filters_button, for the
+        same reason (keyboard navigation and testability for free). Starts
+        hidden: partition()'s own two-pass contract is "if everything fits,
+        no button and no overflow", and _apply_toolbar_overflow() is what
+        shows it once something actually needs it.
+        """
+        self.more_tools_button = QToolButton()
+        self.more_tools_button.setText("More Tools ▾")
+        self.more_tools_button.setPopupMode(QToolButton.InstantPopup)
+        self.more_tools_button.setToolTip(
+            "Tools that don't fit in the toolbar at the current window width"
+        )
+        self.more_tools_menu = QMenu(self.more_tools_button)
+        self.more_tools_button.setMenu(self.more_tools_menu)
+        self.more_tools_action = toolbar.addWidget(self.more_tools_button)
+        self.more_tools_action.setVisible(False)
+
+    def _cache_tool_button_widths(self) -> None:
+        """One-time measurement, called from showEvent() -- pre-show()
+        sizeHint()s are unreliable, so this must run after realization, not
+        inside _build_toolbar(). Reads widgetForAction() while every tool
+        action is still a toolbar member (Stage 3 hasn't moved anything into
+        the overflow menu yet), so partition() never has to re-measure a
+        tool currently sitting in the dropdown -- widgetForAction() returns
+        None once an action has been removed from a toolbar.
+
+        A hidden (mode-inapplicable, see ToolDef.modes) action's widget
+        still reports its real sizeHint() -- confirmed empirically -- so
+        this doesn't need to visit every mode first.
+        """
+        for tool in settings.TOOLS:
+            action = getattr(self, f"{tool.tool_id}_action")
+            widget = self.main_toolbar.widgetForAction(action)
+            self._tool_button_widths[tool.tool_id] = widget.sizeHint().width() if widget else 0
+
+        # The pinned prefix's width (Mode/Elevation View/Filters and their
+        # labels/separators) isn't measured directly -- it's whatever the
+        # toolbar's own sizeHint doesn't account for in currently-visible
+        # tool buttons. More Tools starts hidden (see
+        # _build_tool_overflow_button), so it contributes nothing here.
+        visible_tool_width = sum(
+            self._tool_button_widths[t.tool_id]
+            for t in settings.TOOLS
+            if getattr(self, f"{t.tool_id}_action").isVisible()
+        )
+        self._pinned_toolbar_width = self.main_toolbar.sizeHint().width() - visible_tool_width
+
+    def _apply_toolbar_overflow(self) -> None:
+        """Stage 3's one apply function -- computes bar-membership and
+        menu-membership together from (active mode, measured widths), and
+        is the only place either is ever touched. Called from
+        _update_tool_enabled() (mode/tool changes) and resizeEvent()
+        (width changes); both routes converge here so there is exactly one
+        place that decides where a tool action currently lives.
+
+        No-ops until _cache_tool_button_widths() has run at least once
+        (see _tool_overflow_measured), and guards its own re-entrancy since
+        removeAction()/insertAction() trigger a relayout that re-fires
+        resizeEvent().
+        """
+        if not self._tool_overflow_measured or self._toolbar_overflow_updating:
+            return
+        self._toolbar_overflow_updating = True
+        try:
+            applicable_ids = [
+                t.tool_id for t in settings.TOOLS if tool_applicable(t.tool_id, self.mode)
+            ]
+            applicable = set(applicable_ids)
+
+            # Mode-inapplicable tools are never overflow candidates -- they
+            # stay (invisible, via _update_tool_enabled's own setVisible
+            # loop) on the main toolbar, exactly as before Stage 3 existed.
+            # This also reclaims a tool that was sitting in the menu from a
+            # previous mode and has since become inapplicable.
+            for tool in settings.TOOLS:
+                if tool.tool_id in applicable:
+                    continue
+                action = getattr(self, f"{tool.tool_id}_action")
+                if action not in self.main_toolbar.actions():
+                    self.main_toolbar.insertAction(self.more_tools_action, action)
+
+            item_widths = [(t, self._tool_button_widths.get(t, 0)) for t in applicable_ids]
+            available_px = self.width() - self._pinned_toolbar_width
+            more_button_px = self.more_tools_button.sizeHint().width()
+            on_bar_ids, overflow_ids = partition(available_px, item_widths, more_button_px)
+            overflow_set = set(overflow_ids)
+
+            for tool_id in overflow_ids:
+                action = getattr(self, f"{tool_id}_action")
+                if action in self.main_toolbar.actions():
+                    self.main_toolbar.removeAction(action)
+            for tool_id in on_bar_ids:
+                action = getattr(self, f"{tool_id}_action")
+                if action not in self.main_toolbar.actions():
+                    self.main_toolbar.insertAction(self.more_tools_action, action)
+
+            self.more_tools_menu.clear()
+            for tool_id in overflow_ids:
+                self.more_tools_menu.addAction(getattr(self, f"{tool_id}_action"))
+
+            self.more_tools_action.setVisible(bool(overflow_ids))
+            if self._current_tool in overflow_set:
+                label = _TOOL_LABELS.get(self._current_tool, self._current_tool)
+                self.more_tools_button.setText(f"{label} ▾")
+            else:
+                self.more_tools_button.setText("More Tools ▾")
+        finally:
+            self._toolbar_overflow_updating = False
+
     def _build_toolbar(self) -> None:
         toolbar = self.addToolBar("Main")
         toolbar.setMovable(False)
+        # Kept for the Stage 3 overflow logic (_apply_toolbar_overflow),
+        # which needs to add/remove tool actions on this specific toolbar.
+        self.main_toolbar = toolbar
 
         toolbar.addWidget(QLabel(" Mode: "))
         self.mode_combo = QComboBox()
@@ -2873,6 +2937,17 @@ class ViewerWindow(QMainWindow):
         tool_group.addAction(self.convert_action)
         toolbar.addAction(self.convert_action)
 
+        # Every tool action's only host has been this toolbar up to now.
+        # Stage 3's overflow button moves some of these into a QMenu instead
+        # (toolbar.removeAction()), and a QAction with no host at all can't
+        # fire its shortcut -- so give every tool action a second, permanent
+        # home on the window itself, independent of toolbar membership. Same
+        # precedent as the mode_* actions in _build_keybind_actions().
+        for _tool in settings.TOOLS:
+            self.addAction(getattr(self, f"{_tool.tool_id}_action"))
+
+        self._build_tool_overflow_button(toolbar)
+
         # The two fine Rotate actions again, as their own toolbar-only
         # QActions (not self.rotate_ccw_action/rotate_cw_action -- those stay
         # menu-only). A QAction's visibility isn't per-widget, so sharing one
@@ -2995,29 +3070,14 @@ class ViewerWindow(QMainWindow):
 
         self._populate_cliff_families()
 
-        # Place Unit's own param pair -- D1 (reuse the trigger form's own
-        # catalog picker rather than building a new one) and the b1.4
-        # decision to give placement its own owner combo (later reused as
-        # the Convert brush's destination, b2.5) since Filters' per-player
-        # checkboxes are visibility toggles, not a "current player".
-        self.place_object_label_action = param_toolbar.addWidget(QLabel(" Object: "))
-        self.place_object_edit = CatalogLineEdit(object_catalog.objects(), default_category="Units")
-        self.place_object_edit.setEnabled(False)  # re-gated by _update_tool_enabled()
-        self.place_object_param_action = param_toolbar.addWidget(self.place_object_edit)
-
-        self.place_owner_label_action = param_toolbar.addWidget(QLabel(" Owner: "))
-        self.place_owner_combo = QComboBox()
-        self.place_owner_combo.addItem("GAIA", GAIA_PLAYER_ID)
-        for player_id in range(1, MAX_PLAYER_ID + 1):
-            self.place_owner_combo.addItem(f"Player {player_id}", player_id)
-        self.place_owner_combo.setCurrentIndex(1)  # Player 1, per b1.4's own default
-        self.place_owner_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
-        self.place_owner_param_action = param_toolbar.addWidget(self.place_owner_combo)
+        # Place Unit's own param pair (the object catalog and the owner
+        # combo) moved into the Units-mode sidebar (UnitsPanel) -- both are
+        # now always visible/live there rather than gated behind this
+        # toolbar and the active tool. See units_panel.py.
 
         # Convert's own extra param (D3/b2.5) -- which owners' units a drag
-        # reassigns. Destination reuses place_owner_combo above rather than
-        # a second combo (the comment on that combo's own construction
-        # already names this reuse); brush size/shape below is generic to
+        # reassigns. Destination reads units_panel.owner_id() (the same combo
+        # Place Unit uses); brush size/shape below is generic to
         # every ToolDef.supports_brush tool and needs no Convert-specific
         # wiring at all.
         self.convert_sources_button = QToolButton()
@@ -3285,11 +3345,11 @@ class ViewerWindow(QMainWindow):
     def _select_player(self, player_id: int) -> None:
         """Backs the player_select_0..8 shortcuts. There is no global
         "current player" (Filters' per-player checkboxes are visibility
-        toggles, not one -- see place_owner_combo's own construction
-        comment), so this dispatches to whichever mode-local selector is
-        active and never syncs the other two."""
+        toggles, not one -- see units_panel.py's own Owner combo), so this
+        dispatches to whichever mode-local selector is active and never
+        syncs the other two."""
         if self.mode == "units":
-            self.place_owner_combo.setCurrentIndex(self.place_owner_combo.findData(player_id))
+            self.units_panel.select_owner(player_id)
             owner_text = "GAIA" if player_id == GAIA_PLAYER_ID else f"Player {player_id}"
             self._log_status(f"Place/Convert owner: {owner_text}")
         elif self.mode == "players":
@@ -3342,8 +3402,9 @@ class ViewerWindow(QMainWindow):
         self._selection = []
         self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
         if self.mode == "units":
+            self._widen_left_column(UnitsPanel.MIN_USEFUL_WIDTH)
             self._rebuild_unit_index()
-            self._update_unit_inspector(None)
+            self.units_panel.clear()
         if self.mode == "triggers":
             self._widen_left_column(TriggerPanel.MIN_USEFUL_WIDTH)
             # Parsed on demand, not at load: the largest corpus file's Triggers
@@ -3612,13 +3673,28 @@ class ViewerWindow(QMainWindow):
         is, and for the same reason: a browse-only session must save
         byte-identically, and the construction gate below scans every unit in
         the file (up to 10,871 on the largest corpus file).
+
+        That one-time scan is a multi-hundred-ms freeze on a large file, so
+        it gets a wait cursor. Only the first call reaches it; the cached
+        returns above are free and push no cursor. No processEvents() to go
+        with it, unlike every other wait-cursor site here: this runs from
+        mid-stroke (_apply_terrain_unit_plan) and from inside other busy
+        wraps (paste, fill), where a real event-loop turn would be a
+        reentrancy hole, and the setEnabled(False)/_busy pair those sites
+        use to close it cannot nest.
         """
         if self.unit_edits is not None:
             return self.unit_edits
         if self.scenario is None:
             return None
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self.unit_edits = UnitEditModel(self.scenario)
+            # Restored before the warning box below, not after it: a modal
+            # dialog under a wait cursor reads as a still-frozen window.
+            try:
+                self.unit_edits = UnitEditModel(self.scenario)
+            finally:
+                QApplication.restoreOverrideCursor()
         except UnitEditsUnavailableError as e:
             self._log_status(f"Units are read-only for this file: {e}")
             QMessageBox.warning(self, "Units are read-only", str(e))
@@ -4094,7 +4170,7 @@ class ViewerWindow(QMainWindow):
         self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
         self._selection = []
         self.map_view.set_unit_selection(None)
-        self._update_unit_inspector(None)
+        self.units_panel.clear()
         self.pan_action.setChecked(True)
         self._log_status(f"Mode forced to {mode_text} -- Sloped has no unit selection yet")
 
@@ -4293,7 +4369,6 @@ class ViewerWindow(QMainWindow):
         else:
             terrain_param_ok = param == "terrain" and (self.draw_action.isEnabled() or self.fill_action.isEnabled())
             level_param_ok = param == "level" and self.set_level_action.isEnabled()
-        object_param_ok = param == "object" and self.place_unit_action.isEnabled()
         convert_param_ok = param == "convert" and self.convert_action.isEnabled()
         cliff_param_ok = param == "cliff" and self.cliff_action.isEnabled()
         # Brush size/shape -- reuses current_action (computed above for the
@@ -4316,15 +4391,6 @@ class ViewerWindow(QMainWindow):
         self.level_param_label_action.setVisible(level_param_ok)
         self.level_param_spin_action.setVisible(level_param_ok)
         self.elevation_level_spin.setEnabled(level_param_ok)
-        self.place_object_label_action.setVisible(object_param_ok)
-        self.place_object_param_action.setVisible(object_param_ok)
-        self.place_object_edit.setEnabled(object_param_ok)
-        # Owner combo: shown for Place (its own "owner to place as") AND
-        # Convert (its destination player, D3/b2.5's own reuse decision --
-        # see this widget's construction comment).
-        self.place_owner_label_action.setVisible(object_param_ok or convert_param_ok)
-        self.place_owner_param_action.setVisible(object_param_ok or convert_param_ok)
-        self.place_owner_combo.setEnabled(object_param_ok or convert_param_ok)
         self.convert_sources_param_action.setVisible(convert_param_ok)
         self.convert_sources_button.setEnabled(convert_param_ok)
         self.brush_param_label_action.setVisible(brush_ok)
@@ -4370,9 +4436,15 @@ class ViewerWindow(QMainWindow):
         self.paste_units_param_action.setVisible(select_param_ok)
         self.paste_units_check.setEnabled(select_param_ok)
         self.tool_param_separator_action.setVisible(
-            terrain_param_ok or level_param_ok or object_param_ok or convert_param_ok
+            terrain_param_ok or level_param_ok or convert_param_ok
             or cliff_param_ok or brush_ok or select_param_ok
         )
+
+        # Stage 3: mode may have just changed which tools are applicable,
+        # and the active tool may have just changed which one the More
+        # Tools button's own label should track -- both are this function's
+        # business already, so recompute overflow membership here too.
+        self._apply_toolbar_overflow()
 
     def _sync_map_view_brush(self) -> None:
         """Pushes the toolbar's current brush size/shape into MapView's
@@ -4627,9 +4699,14 @@ class ViewerWindow(QMainWindow):
         # shadow deltas as tile.elevation - elevations[neighbour].
         with perf_trace.phase("stroke_scan"):
             all_dirty = self.edit_history.stroke_dirty_indices(mm.terrain)
-        new_dirty = {i for i in all_dirty if tile_state(mm.terrain[i]) != self._stroke_seen_state.get(i)}
+        # One tile_state() per cumulative dirty index, not two passes over it:
+        # _stroke_seen_state only moves where the state actually changed.
+        new_dirty = set()
         for i in all_dirty:
-            self._stroke_seen_state[i] = tile_state(mm.terrain[i])
+            state = tile_state(mm.terrain[i])
+            if state != self._stroke_seen_state.get(i):
+                self._stroke_seen_state[i] = state
+                new_dirty.add(i)
         self._apply_dirty(new_dirty)
 
     def on_edit_stroke_end(self) -> None:
@@ -4750,7 +4827,7 @@ class ViewerWindow(QMainWindow):
         # touched tile: the combo can't actually change while the mouse is
         # captured, and holding it fixed keeps every reassignment in one
         # drag consistent even if that ever stopped being true.
-        self._convert_destination = self.place_owner_combo.currentData()
+        self._convert_destination = self.units_panel.owner_id()
 
     def _convert_stroke_tile(self, x: int, y: int) -> None:
         if self.scenario is None:
@@ -5202,9 +5279,28 @@ class ViewerWindow(QMainWindow):
         refresh_units_over() fixed-point dirty-tile expansion unnecessary).
         Patches per-tile rects, not one union bbox -- a union over a
         scattered undo set could span the whole map, turning patch() into a
-        full recomposite."""
+        full recomposite.
+
+        Re-arms the level warm at its tail (Batch B step B1). Every branch
+        below cancels the warms first, and _start_level_warm() had exactly one
+        caller (load_scenario), so before this the first stroke, paste or undo
+        of a session left the neighbour mips cold for the rest of it, and the
+        next zoom to one paid its 0.6-4.3s level build inside paint(). The
+        body lives in _apply_dirty_render() so the re-arm covers its early
+        returns too (both full-rerender thresholds, both out-of-range bbox
+        fallbacks, the no-cache guards), not just the patch path. An exception
+        propagates past the re-arm, so no warm ever starts against a
+        half-patched cache."""
         if not dirty_indices or self.scenario is None:
             return
+        self._apply_dirty_render(dirty_indices)
+        # Re-arms what the body's _cancel_warms() dropped. Kept below the
+        # guard above, whose early return cancelled nothing to re-arm.
+        self._start_level_warm()
+
+    def _apply_dirty_render(self, dirty_indices) -> None:
+        """_apply_dirty's body, split out so that every early return below
+        still reaches that method's tail re-arm of the level warm."""
         # Before any of the elevation-array mutation below (and before
         # patch(), which rebuilds source caches off it) -- see
         # _cancel_warms's docstring. One call here covers every stroke,
@@ -5719,7 +5815,14 @@ class ViewerWindow(QMainWindow):
     # is correct.
 
     @contextmanager
-    def _unit_edit(self, model: UnitEditModel, label: str, players: Sequence[int]):
+    def _unit_edit(
+        self,
+        model: UnitEditModel,
+        label: str,
+        players: Sequence[int],
+        splices: list | None = None,
+        fields_only: bool = False,
+    ):
         """Open one recorded unit edit, and close it whatever happens.
 
         `players` is the caller's declaration of which player list(s) the
@@ -5729,20 +5832,77 @@ class ViewerWindow(QMainWindow):
         confirmed (e.g. the new value differs from the current one): unlike
         _trigger_edit, there is no failure mode here that still needs a
         record, so a spurious enter would record a genuine phantom undo step.
-        """
-        model.begin_unit_edit(players)
+
+        splices (Batch D's D5): None (the default) keeps this method's exact
+        pre-D5 behaviour -- a wholesale _after_unit_mutation(None). A caller
+        doing a single-unit splice-eligible edit (Move/Nudge/Rotate/Set
+        field/gate orientation/Place/single Delete) instead passes an
+        initially-empty list and appends one render_cache.UnitSplice to it
+        per touched unit from INSIDE the `with` block, after that unit's own
+        model.set_*()/add()/remove() call -- a splice needs the unit's
+        post-edit state, which doesn't exist before then. This method only
+        reads `splices` back once the block has exited normally, so every
+        append must already have happened by that point (asserted below:
+        entering with a non-None `splices` and leaving it empty means the
+        caller forgot to record the very edit it declared, which would
+        silently skip the cache/index refresh this whole mechanism exists to
+        do).
+
+        fields_only (Batch D's D6): passed straight through to
+        UnitEditModel.begin_unit_edit(). True for every splice-eligible
+        caller above except Place and single Delete -- add()/remove() are
+        membership mutators UnitEditModel refuses to run inside a
+        fields_only edit, so only the pure set_position/set_rotation/
+        set_unit_const callers (Move/Nudge/Rotate/Set field/gate
+        orientation) may pass it."""
+        model.begin_unit_edit(players, fields_only=fields_only)
         try:
             yield model
         except Exception:
             model.abort_unit_edit()
             raise
         model.commit_unit_edit(label, self.edit_history)
-        self._after_unit_mutation()
+        if splices is not None:
+            assert splices, "a splice-tracking _unit_edit exited with no UnitSplice recorded"
+        self._after_unit_mutation(splices)
         self._update_title()
         self._update_edit_actions()
         self._log_status(label)
 
-    def _after_unit_mutation(self) -> None:
+    def _unit_footprint(self, unit) -> tuple[tuple[int, int], tuple[tuple[int, int], ...]]:
+        """(own_tile, occupied_tiles) for `unit` at its CURRENT x/y/unit_const
+        -- the snapshot a render_cache.UnitSplice needs on each side of a
+        single-unit edit (Batch D's D5), taken by calling this once before
+        and once after the model mutation."""
+        mm = self.scenario.map_manager
+        own_tile = (int(unit.x), int(unit.y))
+        tiles = tuple(unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ())
+        return own_tile, tiles
+
+    def _unit_list_index(self, player_id: int, unit) -> int:
+        """`unit`'s position in scenario.unit_manager.units[player_id] --
+        render._resolve_unit_sprite()'s own `i`, which a render_cache.
+        UnitSplice built outside UnitEditModel (Batch D's D5) has no other
+        way to learn. A linear scan by identity: Unit isn't hashable and
+        UnitEditModel._locate() is that model's own private lookup, not
+        exposed for a caller building a splice from outside it. Safe only
+        for a splice-eligible op, which never reorders the list before this
+        runs -- see render_cache.UnitSplice's own docstring."""
+        for index, candidate in enumerate(self.scenario.unit_manager.units[player_id]):
+            if candidate is unit:
+                return index
+        raise ValueError("unit not found in its own player's list")
+
+    def _patch_unit_index_for_move(self, player_id: int, unit, old_bounds) -> None:
+        """Batch D's D5: the unit-pick index counterpart of a splice-eligible
+        Move/Nudge/Set-field edit. A no-op if the index doesn't exist yet
+        (not in Units mode) -- the same guard _rebuild_unit_index()'s own
+        callers rely on, since there is nothing here to keep in step with."""
+        index = self.map_view._unit_index
+        if index is not None:
+            unit_pick.patch_index_for_move(self.scenario, index, player_id, unit, old_bounds)
+
+    def _after_unit_mutation(self, changed: list[UnitSplice] | None = None) -> None:
         """Shared invalidation tail for every unit mutation, whether driven
         by a tool (_unit_edit's own commit, above) or by undo/redo
         (_move_history's "unit" branch).
@@ -5768,19 +5928,103 @@ class ViewerWindow(QMainWindow):
         made place/move/delete/reassign change the model correctly while the
         map kept showing the pre-edit unit -- caught after the fact, not by
         any of this slice's own tests, none of which asserted on pixels.
+
+        changed (Batch D's D5): None (the default, and every pre-D5 caller's
+        exact behaviour) means "unknown" and takes the wholesale branch
+        below. A single-unit splice-eligible edit instead passes a non-empty
+        list of render_cache.UnitSplice -- see that class's own docstring --
+        and _patch_unit_edit_cache() below scopes both the source splice
+        (D4's invalidate_units(changed)) and the actual repaint to the bbox
+        that edit's old/new footprints could have touched, instead of the
+        whole canvas.
+
+        The unit-pick index is deliberately NOT touched here when `changed`
+        is given: patch_index_for_move()/patch_index_for_add() each need
+        that specific op's own pre-edit bounds/filter state, which only the
+        call site still has by the time this method runs -- so every
+        `changed`-passing caller has already patched (Move/Nudge/Set field/
+        Place) or fully rebuilt (gate orientation's span change, single
+        Delete) self.map_view._unit_index itself, before ever reaching here.
         """
         # A third invalidation, on the same terms as the two below: an
         # in-flight warm is walking the unit list this edit just changed.
+        # Re-armed below, once the cache is invalidated (Batch B step B1).
         self._cancel_warms()
         if self._cache is not None:
-            self._cache.invalidate_units()
+            if changed is not None:
+                self._patch_unit_edit_cache(changed)
+            else:
+                self._cache.invalidate_units()
+                canvas_w, canvas_h = self._cache.canvas_dims(0)
+                self._cache.invalidate_region((0, 0, canvas_w, canvas_h))
+                self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
+        # Above the mode gate, not at the literal tail: undo is global, so a
+        # unit edit reverted from Terrain mode must re-arm the warm too.
+        self._start_level_warm()
+        if self.mode != "units":
+            return
+        if changed is None:
+            self._rebuild_unit_index()
+        self._refresh_selection_view()
+
+    def _patch_unit_edit_cache(self, changed: list[UnitSplice]) -> None:
+        """The scoped branch of _after_unit_mutation() (Batch D's D5):
+        splices self._cache's unit-derived sources (D4's own invalidate_
+        units(changed)) and repaints only the bbox `changed`'s old/new
+        footprints could have touched, rather than invalidating the whole
+        canvas the way the wholesale branch does.
+
+        invalidate_units(changed) may still fall back to a full source
+        rebuild internally for one or more entries (a wall/connector const,
+        or a tile shared with another unit -- see render_cache.
+        _splice_eligible()) -- that only changes how the SOURCE data got
+        refreshed, never how much of the canvas needs recompositing: the
+        bbox below is sized from `changed`'s own footprints regardless,
+        which is always a safe (over-)approximation of what a full source
+        refresh could have moved on screen, since nothing but this edit's
+        own unit(s) actually changed.
+
+        Flat has no elevation term and no dirty_screen_bbox_* counterpart --
+        mirrors _apply_dirty_render's own Flat branch, patching one rect per
+        touched tile rather than a union bbox."""
+        self._cache.invalidate_units(changed)
+        old_tiles = {t for s in changed for t in s.old_tiles}
+        new_tiles = {t for s in changed for t in s.new_tiles}
+        touched = old_tiles | new_tiles
+        if not touched:
+            return
+        mm = self.scenario.map_manager
+        if self._render_style == "flat":
+            tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+            rects = [(x * tile_px, y * tile_px, (x + 1) * tile_px, (y + 1) * tile_px) for x, y in touched]
+            self._cache.patch_rects(rects)
+            for rect in rects:
+                self.map_view.invalidate_region(rect)
+            return
+        dirty_indices = [y * mm.map_width + x for x, y in touched]
+        elevation_changed: set = set()
+        if self._render_style == "stepped":
+            bbox = dirty_screen_bbox_iso(
+                self.scenario, dirty_indices, self._iso_elevations, self._iso_proj, with_units=True,
+                with_sprites=self._cache.sprites_enabled, elevation_changed=elevation_changed,
+                flatten_elevations=(self._terrain_style == "flat"), extra_anchor_tiles=old_tiles,
+            )
+        else:
+            bbox = dirty_screen_bbox_sloped(
+                self.scenario, dirty_indices, self._iso_elevations, self._iso_proj, with_units=True,
+                with_sprites=self._cache.sprites_enabled, elevation_changed=elevation_changed,
+                extra_anchor_tiles=old_tiles,
+            )
+        if bbox is None:
+            # Defensive, not expected (see dirty_screen_bbox_iso's own
+            # docstring): a unit edit never moves a tile's elevation, so this
+            # only fires if the terrain was already out of range beforehand.
             canvas_w, canvas_h = self._cache.canvas_dims(0)
             self._cache.invalidate_region((0, 0, canvas_w, canvas_h))
             self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
-        if self.mode != "units":
             return
-        self._rebuild_unit_index()
-        self._refresh_selection_view()
+        self._cache.patch(bbox, elevation_changed=elevation_changed)
+        self.map_view.invalidate_region(bbox)
 
     def _update_edit_actions(self) -> None:
         can_undo = self.scenario is not None and self.edit_history.can_undo
@@ -5812,6 +6056,17 @@ class ViewerWindow(QMainWindow):
         dirty tiles, the window's "*" marker would otherwise never update on
         one. Every other _apply_dirty() caller already updates the title
         itself.
+
+        Batch D's D6: a plain UnitDiffRecord for a fields_only edit (Move/
+        Nudge/Rotate/Set field/gate orientation) exposes unit_field_entries,
+        which lets the unit branch below build one render_cache.UnitSplice
+        per touched unit -- the same scoped _after_unit_mutation() path
+        _unit_edit() itself takes -- instead of the wholesale invalidation
+        every other unit record (place/delete/reassign/paste, or a
+        CompositeDiffRecord, neither of which carries that attribute) still
+        gets. The pre-mutation footprint has to be read before `move()` runs
+        below: by the time the unit branch is reached the model has already
+        been put back to the record's other side.
         """
         if record is None:
             # Still logs, exactly as paste_region() and fill do on a genuine
@@ -5820,6 +6075,12 @@ class ViewerWindow(QMainWindow):
             self._update_edit_actions()
             self._log_status(f"Nothing to {action.lower()}")
             return
+        field_entries = getattr(record, "unit_field_entries", None)
+        old_footprints = (
+            [(player_id, index, unit, *self._unit_footprint(unit)) for player_id, index, unit in field_entries]
+            if field_entries
+            else None
+        )
         dirty = move(
             self.scenario.map_manager.terrain,
             self.trigger_edits,
@@ -5834,7 +6095,25 @@ class ViewerWindow(QMainWindow):
         # record of that domain would get.
         kinds = record.kinds()
         if "unit" in kinds:
-            self._after_unit_mutation()
+            if old_footprints is not None:
+                splices = []
+                for player_id, index, unit, old_own, old_tiles in old_footprints:
+                    new_own, new_tiles = self._unit_footprint(unit)
+                    splices.append(UnitSplice(player_id, index, unit, old_own, new_own, old_tiles, new_tiles))
+                # _after_unit_mutation() deliberately leaves the pick index
+                # alone whenever `changed` is given (its own docstring),
+                # trusting the call site to have handled it already -- here
+                # that's this method, standing in for whichever tool call
+                # site originally built the record. A full rebuild rather
+                # than a move/add-shaped patch: this path is undo/redo, not
+                # the interactive drag D6 exists to make cheap, and it is
+                # the exact rebuild the pre-D6 wholesale branch always paid
+                # for anyway.
+                if self.mode == "units":
+                    self._rebuild_unit_index()
+                self._after_unit_mutation(splices)
+            else:
+                self._after_unit_mutation()
         if "trigger" in kinds and self.mode == "triggers":
             # Rebuilt wholesale rather than patched: the panel is a read-only
             # view over the parsed manager, and an undo can change trigger
@@ -5971,6 +6250,23 @@ class ViewerWindow(QMainWindow):
             names = ", ".join(p.name for p in result.backups)
             suffix = f" (backed up {names})" if names else ""
             self._log_status(f"Saved to {path}{suffix}")
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # First-ever show: cache real (post-realization) tool button widths
+        # before anything has been moved into the overflow menu, then run
+        # the first overflow pass now that _apply_toolbar_overflow() has
+        # something real to measure against. See _cache_tool_button_widths's
+        # own docstring for why this can't happen earlier, in
+        # _build_toolbar().
+        if not self._tool_overflow_measured:
+            self._cache_tool_button_widths()
+            self._tool_overflow_measured = True
+        self._apply_toolbar_overflow()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_toolbar_overflow()
 
     def closeEvent(self, event) -> None:
         if not self._confirm_discard_changes():
@@ -6112,6 +6408,14 @@ class ViewerWindow(QMainWindow):
         it: _render_current is also the re-render path for every terrain-
         style/quality/slider change, and those already cancel a warm rather
         than starting one.
+
+        Also called at the tail of _apply_dirty() and _after_unit_mutation()
+        (Batch B step B1), the deliberate exception to that: an edit cancels
+        the warm and then re-arms it, so the neighbour mips do not stay cold
+        for the rest of the session once the first edit lands. A stroke
+        therefore pays a start/cancel pair per step, which the plan accepts
+        pending a Perf Trace pass. The style/quality re-render paths reached
+        through _render_current still only cancel.
 
         Silent no-op with no map, no viewport (every headless test, and a
         window not yet shown) or a single-level ladder -- _fit_baseline_scale
@@ -6447,6 +6751,46 @@ class ViewerWindow(QMainWindow):
             return
         self.load_scenario(Path(path))
 
+    def _rebuild_recent_files_menu(self) -> None:
+        """Repopulates File > Open Recent from settings.get_recent_files().
+        Called at menu-bar build time and again after every successful open
+        -- QMenu keeps no live binding to the underlying list, so this is
+        the one place the widget is kept in sync with it. Filters out
+        entries whose file no longer exists rather than pruning them from
+        the persisted list, so a file on a removable drive reappears once
+        it's back."""
+        self.recent_menu.clear()
+        paths = [p for p in settings.get_recent_files() if Path(p).is_file()]
+        if not paths:
+            empty_action = QAction("(No recent files)", self)
+            empty_action.setEnabled(False)
+            self.recent_menu.addAction(empty_action)
+            return
+        for path_str in paths:
+            action = QAction(Path(path_str).name, self)
+            action.setToolTip(path_str)
+            # Marks this as a real file entry, distinct from the "Clear
+            # Recent Files" action below and the disabled placeholder above
+            # -- both of which would otherwise be indistinguishable from a
+            # file action by toolTip() alone, since Qt falls back to the
+            # (mnemonic-stripped) text when no tooltip was set explicitly.
+            action.setData(path_str)
+            action.triggered.connect(lambda checked=False, p=path_str: self._open_recent(p))
+            self.recent_menu.addAction(action)
+        self.recent_menu.addSeparator()
+        clear_action = QAction("&Clear Recent Files", self)
+        clear_action.triggered.connect(self._clear_recent_files)
+        self.recent_menu.addAction(clear_action)
+
+    def _open_recent(self, path_str: str) -> None:
+        if not self._confirm_discard_changes():
+            return
+        self.load_scenario(Path(path_str))
+
+    def _clear_recent_files(self) -> None:
+        settings.clear_recent_files()
+        self._rebuild_recent_files_menu()
+
     def new_map(self, tiles: int = BLANK_TEMPLATE_TILES) -> None:
         """Starts a blank `tiles`x`tiles` map by generating it in memory from
         the shipped 120x120 donor template (descape.scenario_new.
@@ -6576,6 +6920,9 @@ class ViewerWindow(QMainWindow):
             self._untitled = untitled
             if untitled:
                 self.scenario.path = UNTITLED_PATH
+            else:
+                settings.add_recent_file(path)
+                self._rebuild_recent_files_menu()
             display_name = self.scenario.path.name
 
             self.edit_history.reset()

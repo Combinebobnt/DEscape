@@ -22,9 +22,20 @@ from pathlib import Path
 
 import pytest
 
+from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
+from AoE2ScenarioParser.objects.data_objects.unit import Unit
+
+from descape import library_compat
+from descape.edit_history import EditHistory
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_units import UnitAddSpec
-from descape.unit_model import UnitEditModel, UnitEditsUnavailableError, _serialize_unit
+from descape.unit_model import (
+    UnitEditModel,
+    UnitEditsUnavailableError,
+    UnitFieldSnapshot,
+    UnitSnapshot,
+    _serialize_unit,
+)
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
@@ -44,6 +55,22 @@ def _open() -> tuple:
 
 def _unit(loaded, reference_id: int):
     return next(u for u in loaded.unit_manager.get_all_units() if u.reference_id == reference_id)
+
+
+def _poison_unit_caption_fields() -> None:
+    """Reproduces, without a second document, exactly what loading a
+    pre-1.55 file does to the Unit class: replaces caption_string_id/
+    caption_string with a property whose getter and setter both raise
+    UnsupportedAttributeError -- the same shape
+    RetrieverObjectLink.overwrite_unsupported_properties() installs. Callers
+    must depoison() in teardown or this poisons every later test in the
+    process (see library_compat.depoison()'s own docstring)."""
+
+    def _raise(self_, val=None):
+        raise UnsupportedAttributeError("synthetic poisoning for a test")
+
+    Unit.caption_string_id = property(_raise, _raise)
+    Unit.caption_string = property(_raise, _raise)
 
 
 # -- 1. construction gate ----------------------------------------------------
@@ -336,6 +363,25 @@ def test_add_rejects_an_out_of_range_player() -> None:
         model.add(player=9, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
 
 
+def test_add_depoisons_before_constructing_unit() -> None:
+    """Plan 2026-09-12: Unit.__init__ unconditionally assigns
+    caption_string_id/caption_string, so a class left poisoned by an earlier
+    document's load raises inside add()'s own Unit(...) call, before
+    commit-time version gating ever gets a chance to matter. Regression for
+    the library_compat.depoison() call at the top of add(). The fixture is
+    1.58, so the real value must land after the fix, not a None sentinel --
+    that's what discriminates this fix from the rejected None-sentinel
+    variant."""
+    loaded, model = _open()
+    _poison_unit_caption_fields()
+    try:
+        unit = model.add(player=0, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
+        assert unit.caption_string_id == -1
+        assert unit.caption_string == ""
+    finally:
+        library_compat.depoison()
+
+
 # -- batch operations (descape/terrain_units.py's own callers) --------------
 
 
@@ -388,6 +434,39 @@ def test_add_many_rejects_an_out_of_range_player() -> None:
     spec = UnitAddSpec(x=1.5, y=1.5, unit_const=83, rotation=0.0, initial_animation_frame=0)
     with pytest.raises(ValueError):
         model.add_many(player=9, specs=[spec])
+
+
+def test_add_many_depoisons_before_constructing_units() -> None:
+    """Same regression as test_add_depoisons_before_constructing_unit: the
+    identical caption-field assignment sits in add_many()'s own Unit(...)
+    construction (unit_model.py's Paint Can-only batch path)."""
+    loaded, model = _open()
+    _poison_unit_caption_fields()
+    try:
+        spec = UnitAddSpec(x=1.5, y=1.5, unit_const=83, rotation=0.0, initial_animation_frame=0)
+        unit = model.add_many(player=0, specs=[spec])[0]
+        assert unit.caption_string_id == -1
+        assert unit.caption_string == ""
+    finally:
+        library_compat.depoison()
+
+
+def test_serialize_depoisons_before_committing_a_dirty_unit() -> None:
+    """Plan 2026-09-12's save-side half: commit()'s push_to_link reads
+    caption_string back via getattr, and a poisoned class's property getter
+    is a data descriptor that shadows the real instance attribute, so a
+    poisoned class raised ScenarioWritingError serializing *any* dirty unit
+    -- not just a newly added one, and independent of Place Unit. Regression
+    for the library_compat.depoison() call at the top of serialize()'s
+    commit branch."""
+    loaded, model = _open()
+    wall = _unit(loaded, _REF_WALL)
+    model.set_position(wall, 10.5, 10.5, 0.0)
+    _poison_unit_caption_fields()
+    try:
+        model.serialize()  # must not raise ScenarioWritingError
+    finally:
+        library_compat.depoison()
 
 
 def test_remove_many_deletes_every_unit() -> None:
@@ -474,6 +553,99 @@ def test_an_operation_on_an_untracked_unit_raises() -> None:
         model.set_position(stray, 1.0, 1.0, 0.0)
 
 
+# -- Batch D's D1a: unit_gen counter -------------------------------------------
+
+
+def _mutate_set_position(loaded, model) -> None:
+    model.set_position(_unit(loaded, _REF_VILLAGER_P1), 50.5, 51.5, 2.0)
+
+
+def _mutate_set_rotation(loaded, model) -> None:
+    model.set_rotation(_unit(loaded, _REF_ARCHER_P1), 1.5)
+
+
+def _mutate_set_unit_const(loaded, model) -> None:
+    model.set_unit_const(_gate(loaded), _GATE_E)
+
+
+def _mutate_reassign(loaded, model) -> None:
+    model.reassign(_unit(loaded, _REF_WALL), 1)
+
+
+def _mutate_add(loaded, model) -> None:
+    model.add(player=0, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
+
+
+def _mutate_add_many(loaded, model) -> None:
+    spec = UnitAddSpec(x=1.5, y=1.5, unit_const=349, rotation=0.0, initial_animation_frame=0)
+    model.add_many(player=0, specs=[spec])
+
+
+def _mutate_remove_many(loaded, model) -> None:
+    model.remove_many([_unit(loaded, _REF_TREE_OAK)])
+
+
+def _mutate_remove(loaded, model) -> None:
+    model.remove(_unit(loaded, _REF_TREE_OAK))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _mutate_set_position,
+        _mutate_set_rotation,
+        _mutate_set_unit_const,
+        _mutate_reassign,
+        _mutate_add,
+        _mutate_add_many,
+        _mutate_remove_many,
+        _mutate_remove,
+    ],
+    ids=[
+        "set_position",
+        "set_rotation",
+        "set_unit_const",
+        "reassign",
+        "add",
+        "add_many",
+        "remove_many",
+        "remove",
+    ],
+)
+def test_every_public_mutator_bumps_unit_gen(mutate) -> None:
+    loaded, model = _open()
+    gen0 = loaded.unit_gen
+    mutate(loaded, model)
+    assert loaded.unit_gen == gen0 + 1
+
+
+def test_restore_bumps_unit_gen() -> None:
+    """restore() is the ninth site (unit_model.py's own D1a list): undo/redo
+    can move x/y/z/rotation/unit_const without going through any of the
+    other eight, so a memo built before an undo must not survive it either."""
+    loaded, model = _open()
+    snapshot = model._capture([0])
+    gen0 = loaded.unit_gen
+    model.restore(snapshot)
+    assert loaded.unit_gen == gen0 + 1
+
+
+def test_a_direct_list_append_does_not_bump_unit_gen() -> None:
+    """The counter's documented contract (LoadedScenario.unit_gen's own
+    docstring): only UnitEditModel mutations bump it. A test fixture (or any
+    other code) that appends straight to unit_manager.units must bump
+    scenario.unit_gen itself if it wants a memo built afterward to be
+    invalidated."""
+    from AoE2ScenarioParser.objects.data_objects.unit import Unit
+
+    loaded, model = _open()
+    gen0 = loaded.unit_gen
+    loaded.unit_manager.units[0].append(
+        Unit(player=0, x=0, y=0, z=0, reference_id=88888, unit_const=4, status=2, rotation=0, initial_animation_frame=0)
+    )
+    assert loaded.unit_gen == gen0
+
+
 # -- 4. alignment guard --------------------------------------------------------
 
 
@@ -488,6 +660,249 @@ def test_check_alignment_catches_a_bypassed_mutation() -> None:
 
     with pytest.raises(RuntimeError):
         model.serialize()
+
+
+# -- 5. the derived structures (_pos, _garrison, _highest_ref_id) -------------
+
+
+def test_check_alignment_catches_a_stale_position_entry() -> None:
+    """The identity check inside _locate() cannot see a stale index that
+    still resolves to a real unit. The alignment gate is what does, and
+    without the _pos invariant this mutation would serialize silently."""
+    loaded, model = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    model._pos[id(villager)] = (1, 0)  # the house's slot
+
+    with pytest.raises(RuntimeError):
+        model.serialize()
+
+
+def test_check_alignment_catches_a_leaked_position_entry() -> None:
+    """The id() reuse hazard: an entry left behind for a removed unit."""
+    loaded, model = _open()
+    stray = object()
+    model._pos[id(stray)] = (0, 0)
+
+    with pytest.raises(RuntimeError):
+        model.serialize()
+
+
+def test_locate_self_heals_from_a_stale_position_entry() -> None:
+    """A miss or a mismatch costs one full walk and a retry, then lands on
+    the right unit. Both halves are exercised: the eager reindex a mid-list
+    remove does, and the rebuild a deliberately poisoned entry forces."""
+    loaded, model = _open()
+    house = _unit(loaded, _REF_HOUSE)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    house_pos = (house.x, house.y, house.z)
+
+    model.remove(archer)  # player 1's middle entry: the villager shifts to 1
+    assert model._pos[id(villager)] == (1, 1)
+
+    model._pos[id(villager)] = (1, 0)  # now the house's slot
+    model.set_position(villager, 60.5, 61.5, 2.0)
+
+    assert (villager.x, villager.y, villager.z) == (60.5, 61.5, 2.0)
+    assert (house.x, house.y, house.z) == house_pos, "the write must not have landed on the house"
+    assert model._pos[id(villager)] == (1, 1)
+
+
+def test_referencing_matches_the_flat_scan_it_replaces() -> None:
+    """Parity for the reverse-map: same units, same order, for every unit in
+    the file, including a unit garrisoned in itself, which the self-exclusion
+    must keep out of its own answer."""
+    loaded, model = _open()
+    self_ref = _unit(loaded, _REF_ARCHER_P2)
+    self_ref.garrisoned_in_id = self_ref.reference_id
+
+    def flat_scan(unit):
+        return [
+            u
+            for units in loaded.unit_manager.units
+            for u in units
+            if u is not unit and u.garrisoned_in_id == unit.reference_id
+        ]
+
+    all_units = list(loaded.unit_manager.get_all_units())
+    assert any(flat_scan(u) for u in all_units), "a parity check over an all-empty answer proves nothing"
+    for unit in all_units:
+        expected = flat_scan(unit)
+        actual = model.referencing(unit)
+        assert len(actual) == len(expected)
+        assert all(a is b for a, b in zip(actual, expected))
+
+    assert model.referencing(self_ref) == []
+    assert [u.reference_id for u in model.referencing(_unit(loaded, _REF_HOUSE))] == [_REF_VILLAGER_P1]
+
+
+def test_a_warm_garrison_map_survives_adds_and_removes() -> None:
+    """The reverse-map is spliced rather than dropped, so it stays warm
+    across a whole group-delete loop. serialize()'s alignment gate is what
+    proves each splice still matches a fresh walk."""
+    loaded, model = _open()
+    model.warm_garrison_map()
+
+    added = model.add(player=0, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
+    spec = UnitAddSpec(x=2.5, y=2.5, unit_const=349, rotation=0.0, initial_animation_frame=0)
+    batched = model.add_many(player=1, specs=[spec])[0]
+    model.remove(_unit(loaded, _REF_TREE_OAK))
+    model.remove_many([_unit(loaded, _REF_ARCHER_P2)])
+    model.reassign(added, 2)
+
+    model.serialize()  # the alignment gate must accept every splice above
+    assert model.referencing(added) == []
+    assert model.referencing(batched) == []
+
+
+def test_removing_a_garrison_holder_keeps_the_map_answering() -> None:
+    """Removing the unit that HOLDS a reference must drop it from its
+    holder's bucket, or the house would stay undeletable forever."""
+    loaded, model = _open()
+    house = _unit(loaded, _REF_HOUSE)
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    assert model.referencing(house)  # warm, and non-empty
+
+    model.remove(villager)
+
+    assert model.referencing(house) == []
+    model.remove(house)  # no longer refused
+    assert house not in loaded.unit_manager.units[1]
+
+
+def test_check_alignment_catches_a_drifted_highest_reference_id() -> None:
+    """A cache claiming to be fresh while sitting above (or below) the real
+    maximum would hand the next add() an id a full rescan never would."""
+    loaded, model = _open()
+    model._highest_ref_id += 5
+    model._highest_ref_id_stale = False
+
+    with pytest.raises(RuntimeError):
+        model.serialize()
+
+
+def test_a_remove_marks_the_highest_reference_id_cache_stale() -> None:
+    """remove() lowers the true maximum, so a monotone cache would be wrong
+    from that point on. The flag is what forces the next add() to rescan."""
+    loaded, model = _open()
+    assert model._highest_ref_id == _REF_VILLAGER_P2
+
+    model.remove(_unit(loaded, _REF_VILLAGER_P2))
+
+    assert model._highest_ref_id_stale
+    assert model._highest_ref_id_now() == _REF_ARCHER_P2
+    model.serialize()  # invariant 4 would fire here if the flag were missed
+
+
+# -- Batch D's D6: delta snapshots for set_* ops -----------------------------
+
+
+def _units_section(loaded) -> bytes:
+    return loaded.decompressed_body[loaded.units_block_offset : loaded.units_section_end]
+
+
+def test_set_position_delta_round_trip_is_byte_clean() -> None:
+    loaded, model = _open()
+    history = EditHistory()
+    original = _units_section(loaded)
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+
+    model.begin_unit_edit([1], fields_only=True)
+    model.set_position(villager, 40.5, 40.5, 5.0)
+    model.commit_unit_edit("Move villager", history)
+    assert model.has_edits
+
+    history.undo([], None, None, model)
+    assert not model.has_edits, "undo must restore blob cleanliness, not just content"
+    assert model.serialize() == original
+
+    history.redo([], None, None, model)
+    assert model.has_edits
+    assert (villager.x, villager.y, villager.z) == (40.5, 40.5, 5.0)
+
+
+def test_set_rotation_delta_round_trip_is_byte_clean() -> None:
+    loaded, model = _open()
+    history = EditHistory()
+    original = _units_section(loaded)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    before_rotation = archer.rotation
+
+    model.begin_unit_edit([1], fields_only=True)
+    model.set_rotation(archer, 1.5)
+    model.commit_unit_edit("Rotate archer", history)
+
+    history.undo([], None, None, model)
+    assert not model.has_edits
+    assert archer.rotation == before_rotation
+    assert model.serialize() == original
+
+    history.redo([], None, None, model)
+    assert archer.rotation == 1.5
+
+
+def test_set_unit_const_delta_round_trip_is_byte_clean() -> None:
+    loaded, model = _open()
+    history = EditHistory()
+    gate = _gate(loaded)
+    original = _units_section(loaded)
+    before = (gate.unit_const, gate.x, gate.y)
+
+    model.begin_unit_edit([1], fields_only=True)
+    model.set_unit_const(gate, _GATE_E)
+    model.commit_unit_edit("Cycle gate", history)
+
+    history.undo([], None, None, model)
+    assert (gate.unit_const, gate.x, gate.y) == before
+    assert model.serialize() == original
+
+    history.redo([], None, None, model)
+    assert gate.unit_const == _GATE_E
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [_mutate_reassign, _mutate_add, _mutate_add_many, _mutate_remove_many, _mutate_remove],
+    ids=["reassign", "add", "add_many", "remove_many", "remove"],
+)
+def test_a_membership_mutator_raises_inside_a_fields_only_edit(mutate) -> None:
+    """A fields_only edit's precondition (Batch D's D6): only set_position/
+    set_rotation/set_unit_const may run inside one, enforced rather than
+    left as a caller convention that could be told a lie by accident."""
+    loaded, model = _open()
+    model.begin_unit_edit([0, 1, 2], fields_only=True)
+    with pytest.raises(RuntimeError):
+        mutate(loaded, model)
+    model.abort_unit_edit()
+
+
+def test_a_delta_records_memory_is_proportional_to_touched_units_not_the_list() -> None:
+    """The whole point of D6: a fields_only Nudge of two units out of
+    player 1's much larger list must not capture that whole list twice."""
+    loaded, model = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    assert len(loaded.unit_manager.units[1]) > 2
+
+    model.begin_unit_edit([1], fields_only=True)
+    model.set_position(villager, villager.x + 1, villager.y, villager.z)
+    model.set_position(archer, archer.x + 1, archer.y, archer.z)
+    pending = model._pending
+    assert isinstance(pending, UnitFieldSnapshot)
+    assert len(pending.entries) == 2
+    model.commit_unit_edit("Nudge two units", EditHistory())
+
+
+def test_every_membership_changing_op_still_produces_a_whole_list_record() -> None:
+    """A non-fields_only edit (the default) must still snapshot whole player
+    lists -- fields_only is opt-in per edit, not a global behaviour change."""
+    loaded, model = _open()
+    history = EditHistory()
+    model.begin_unit_edit([1])
+    model.remove(_unit(loaded, _REF_VILLAGER_P1))
+    record = model.commit_unit_edit("Remove villager", history)
+    assert isinstance(record.before, UnitSnapshot)
+    assert record.unit_field_entries is None
 
 
 # -- corpus ---------------------------------------------------------------

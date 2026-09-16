@@ -45,16 +45,18 @@ Units are parsed eagerly at load time (scenario_io._load_map_and_units()
 depoisons and parses them unconditionally, before any lazy step), unlike
 Triggers -- so, unlike TriggerEditModel, this module holds no "never cache
 the manager, always re-fetch" invariant: loaded.unit_manager is a live
-reference good for the document's whole lifetime. The cost of that
-simplicity: there is no parse_units()-style re-depoison hook the way
-parse_triggers() re-depoisons on every call. Reading a unit's
-caption_string_id/caption_string on document A *after* opening document B in
-the same process can raise UnsupportedAttributeError if B's scenario version
-doesn't support those fields (see descape/library_compat.py's docstring on
-class-level poisoning). Documented and accepted as an open limitation for
-this headless slice -- nothing here reads captions back after the fact, and
-a future UI session inherits the same caveat parse_triggers() already lives
-with for the trigger side.
+reference good for the document's whole lifetime.
+
+Reading is still exposed to cross-document poisoning: opening document B in
+the same process after document A can leave A's already-parsed units unable
+to satisfy a caption_string_id/caption_string read (UnsupportedAttributeError
+if the class is currently poisoned against a version that excludes the
+field, plain AttributeError if a unit was parsed while poisoned -- see
+region_clipboard.copy_region()'s defensive read). Writing is not exposed:
+add(), add_many() and serialize() each call library_compat.depoison() first,
+which is what keeps Unit.__init__'s own unconditional assignment of those two
+fields, and commit()'s readback in serialize(), from raising regardless of
+which document loaded last.
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ from typing import Sequence
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
-from descape import gate_orientation, render, terrain_palette, unit_rotation
+from descape import gate_orientation, library_compat, render, terrain_palette, unit_rotation
 from descape.edit_history import EditHistory, UnitDiffRecord
 from descape.scenario_io import LoadedScenario
 
@@ -270,6 +272,37 @@ class UnitSnapshot:
     dirty: bool = False
 
 
+@dataclass
+class UnitFieldRecord:
+    """One unit's state inside a fields_only delta snapshot (Batch D's D6).
+
+    `player`/`index` are the unit's position in `_tracked`/`_blobs` at
+    capture time -- stable for the snapshot's whole lifetime, since the
+    membership-mutator guard on add/remove/reassign refuses to run inside a
+    fields_only edit. `state`/`blob` are unit_state(unit) and the unit's blob
+    slot, either just-before the first field write (the `before` half) or
+    just-after commit (the `after` half)."""
+
+    player: int
+    index: int
+    unit: Unit
+    state: UnitState
+    blob: bytes | None
+
+
+@dataclass
+class UnitFieldSnapshot:
+    """One side of a fields_only delta undo record -- O(units actually
+    touched) rather than UnitSnapshot's O(whole player list), for
+    set_position/set_rotation/set_unit_const edits (Move/Nudge/Rotate/Set
+    field/gate orientation). `entries` is keyed by id(unit), filled lazily
+    on each unit's first field write so N field writes to the same unit
+    still cost one entry."""
+
+    entries: dict[int, UnitFieldRecord] = field(default_factory=dict)
+    dirty: bool = False
+
+
 class UnitEditModel:
     """Per-document unit edit state: which units are dirty, and how the
     Units section serializes given that.
@@ -316,13 +349,25 @@ class UnitEditModel:
         # serialize()/restore() instead of silently splicing a blob into the
         # wrong player's section.
         self._tracked: list[list] = [list(units) for units in manager.units]
+        # See _rebuild_pos() for what this maps and what maintains it.
+        self._pos: dict[int, tuple[int, int]] = {}
+        self._rebuild_pos()
+        # garrisoned_in_id -> the units carrying it, built lazily by
+        # _build_garrison_map(). None means "not built".
+        self._garrison: dict[int, list] | None = None
+        # Cached _highest_reference_id(), so add() stops paying a full walk
+        # each time. Removal paths set the stale flag below instead.
+        self._highest_ref_id = _highest_reference_id(manager)
+        self._highest_ref_id_stale = False
         self._next_unit_id = _NEXT_UNIT_ID_STRUCT.unpack_from(loaded.decompressed_body, 0)[0]
         self._dirty = False
         self._has_added_units = False
         # Set only between begin_unit_edit() and commit/abort -- the
         # pre-mutation snapshot of the player list(s) the caller declared
-        # this edit may touch.
-        self._pending: UnitSnapshot | None = None
+        # this edit may touch. A UnitFieldSnapshot between a fields_only=True
+        # begin_unit_edit() and its commit (Batch D's D6), a whole-list
+        # UnitSnapshot otherwise.
+        self._pending: UnitSnapshot | UnitFieldSnapshot | None = None
 
     # -- state -----------------------------------------------------------
 
@@ -344,12 +389,107 @@ class UnitEditModel:
         next_unit_id_to_place to, once has_added_units is True."""
         return self._next_unit_id
 
+    def _rebuild_pos(self) -> None:
+        """id(unit) -> (player, index) into _tracked, so _locate() is a dict
+        hit rather than a linear scan of all nine lists.
+
+        Every removal path deletes its entries eagerly rather than leaving
+        them for a lazy repair: a recycled id() colliding with a stale entry
+        would be a silent wrong-unit write. _check_alignment() carries the
+        invariant that keeps that honest.
+        """
+        self._pos = {
+            id(unit): (player, index)
+            for player, tracked in enumerate(self._tracked)
+            for index, unit in enumerate(tracked)
+        }
+
+    def _reindex_pos_tail(self, player: int, start: int) -> None:
+        """Re-points every _pos entry from `start` to the end of `player`'s
+        list, after a del shifted that tail down by one."""
+        tracked = self._tracked[player]
+        for index in range(start, len(tracked)):
+            self._pos[id(tracked[index])] = (player, index)
+
+    def _pos_hit(self, unit: Unit) -> tuple[int, int] | None:
+        """The map's answer for `unit`, but only once verified by identity.
+        The check is load-bearing rather than a cheap assert: a stale index
+        must never resolve to another unit, since writing that unit's blob
+        is exactly the failure _check_alignment() exists to catch."""
+        entry = self._pos.get(id(unit))
+        if entry is None:
+            return None
+        player, index = entry
+        tracked = self._tracked[player]
+        if index < len(tracked) and tracked[index] is unit:
+            return entry
+        return None
+
     def _locate(self, unit: Unit) -> tuple[int, int]:
-        for player, tracked in enumerate(self._tracked):
-            for index, candidate in enumerate(tracked):
-                if candidate is unit:
-                    return player, index
+        entry = self._pos_hit(unit)
+        if entry is not None:
+            return entry
+        # A miss or a mismatch buys one full walk, exactly the cost every
+        # call used to pay, and then one retry.
+        self._rebuild_pos()
+        entry = self._pos_hit(unit)
+        if entry is not None:
+            return entry
         raise ValueError("unit is not tracked by this model -- was it added through it?")
+
+    def _build_garrison_map(self) -> dict[int, list]:
+        """garrisoned_in_id -> the units carrying it, in the same nine-list
+        order referencing() used to scan.
+
+        The `-1` bucket is deliberately not skipped: dropping it would change
+        referencing()'s answer on a pathological file where some unit's
+        reference_id is -1, and this step exists to be a faster path with a
+        byte-identical result.
+        """
+        garrison: dict[int, list] = {}
+        for units in self.loaded.unit_manager.units:
+            for unit in units:
+                garrison.setdefault(unit.garrisoned_in_id, []).append(unit)
+        return garrison
+
+    def _garrison_map(self) -> dict[int, list]:
+        if self._garrison is None:
+            self._garrison = self._build_garrison_map()
+        return self._garrison
+
+    def warm_garrison_map(self) -> None:
+        """Builds the garrison reverse-map now if it isn't already built.
+
+        For a caller about to run referencing() over a whole selection: with
+        splicing this is only a warm-up, never a correctness requirement.
+        """
+        self._garrison_map()
+
+    def _drop_garrison_entries(self, units: Sequence[Unit]) -> None:
+        """Splices `units` out of the garrison map, keeping it usable across
+        a whole group-delete loop instead of dropping it on the first
+        removal. One filtering pass per distinct holder bucket, so a batch
+        does not re-walk the (usually enormous) -1 bucket per unit."""
+        if self._garrison is None:
+            return
+        removed = {id(u) for u in units}
+        for unit in units:
+            # Empty or absent unless the unit garrisons itself, in which case
+            # this is also its holder bucket. Either way it goes. Both callers
+            # refuse a unit anything OUTSIDE the batch references, which is
+            # what keeps this from wiping the -1 bucket on a file where some
+            # unit's own reference_id is -1.
+            self._garrison.pop(unit.reference_id, None)
+        for key in {u.garrisoned_in_id for u in units}:
+            bucket = self._garrison.get(key)
+            if bucket is not None:
+                bucket[:] = [u for u in bucket if id(u) not in removed]
+
+    def _highest_ref_id_now(self) -> int:
+        if self._highest_ref_id_stale:
+            self._highest_ref_id = _highest_reference_id(self.loaded.unit_manager)
+            self._highest_ref_id_stale = False
+        return self._highest_ref_id
 
     def _reserve_reference_id(self) -> int:
         """Findings 8 and 11: never read UnitManager.next_unit_id (a
@@ -359,10 +499,48 @@ class UnitEditModel:
         same session; `self._next_unit_id` (seeded from the file's own
         next_unit_id_to_place at construction) is what normally dominates.
         """
-        highest = _highest_reference_id(self.loaded.unit_manager)
-        candidate = max(self._next_unit_id, highest + 1)
+        candidate = max(self._next_unit_id, self._highest_ref_id_now() + 1)
         self._next_unit_id = candidate + 1
         return candidate
+
+    def _bump_unit_gen(self) -> None:
+        """Batch D's D1a: called by every public mutator below, model-side
+        rather than from ViewerWindow, so it covers the two call sites that
+        drive begin_unit_edit()/commit_unit_edit() by hand (the terrain-unit
+        record and paste region) and a batch-edit script with no viewer at
+        all. render.py's memoized functions read scenario.unit_gen to decide
+        whether their cached answer is still valid -- see LoadedScenario.
+        unit_gen's own docstring for the contract this counter carries."""
+        self.loaded.unit_gen += 1
+
+    def _maybe_capture_field_delta(self, player: int, index: int, unit: Unit) -> None:
+        """Batch D's D6 capture-on-first-write: called by set_position/
+        set_rotation/set_unit_const immediately before mutating, a no-op
+        unless self._pending is a fields_only UnitFieldSnapshot. Records
+        `unit`'s pre-mutation state once, keyed by id(unit), so a unit
+        touched more than once in the same edit still gets exactly one
+        entry (its state going into the record is the state before the
+        FIRST write, which is the correct "before" for the whole edit)."""
+        pending = self._pending
+        if not isinstance(pending, UnitFieldSnapshot):
+            return
+        key = id(unit)
+        if key in pending.entries:
+            return
+        pending.entries[key] = UnitFieldRecord(
+            player=player, index=index, unit=unit, state=unit_state(unit), blob=self._blobs[player][index]
+        )
+
+    def _refuse_inside_field_delta(self, op: str) -> None:
+        """The fields_only edit's own precondition, enforced rather than
+        merely documented (Batch D's D6): add/remove/reassign change
+        membership or order, which UnitFieldSnapshot cannot represent and
+        _restore_field_delta() does not attempt to undo."""
+        if isinstance(self._pending, UnitFieldSnapshot):
+            raise RuntimeError(
+                f"{op}() changes unit membership/order and cannot run inside a fields_only "
+                f"unit edit -- only set_position/set_rotation/set_unit_const may"
+            )
 
     # -- operations --------------------------------------------------------
     # Each mutates manager.units[p] and self._blobs[p]/self._tracked[p] in
@@ -374,9 +552,11 @@ class UnitEditModel:
         """Assigns x/y/z and marks the unit's blob dirty. `z` passes through
         verbatim -- never derived from terrain elevation."""
         player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
         unit.x, unit.y, unit.z = x, y, z
         self._blobs[player][index] = None
         self._dirty = True
+        self._bump_unit_gen()
 
     def set_rotation(self, unit: Unit, rotation: float) -> None:
         """Assigns `rotation` (radians) and marks the unit's blob dirty.
@@ -400,9 +580,11 @@ class UnitEditModel:
                 f"transform it"
             )
         player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
         unit.rotation = rotation
         self._blobs[player][index] = None
         self._dirty = True
+        self._bump_unit_gen()
 
     def set_unit_const(self, unit: Unit, new_const: int) -> None:
         """Swaps a gate's `unit_const` for one of its orientation siblings and
@@ -435,12 +617,14 @@ class UnitEditModel:
                 f"({siblings if siblings is not None else 'this const is not a gate'})"
             )
         player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
         low_x, low_y = span_low_corner(unit)
         new_span = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
         unit.unit_const = new_const
         unit.x, unit.y = render.span_anchor(low_x, low_y, *new_span)
         self._blobs[player][index] = None
         self._dirty = True
+        self._bump_unit_gen()
 
     def reassign(self, unit: Unit, new_player: int) -> None:
         """Moves `unit` to `new_player`'s list. Zero re-serialization: the
@@ -459,6 +643,7 @@ class UnitEditModel:
         remove-then-append inverse would restore ownership but produce a
         different byte layout than the original file.
         """
+        self._refuse_inside_field_delta("reassign")
         if not 0 <= new_player <= 8:
             raise ValueError(f"new_player must be 0 (GAIA)..8, got {new_player}")
         player, index = self._locate(unit)
@@ -471,11 +656,17 @@ class UnitEditModel:
         self.loaded.unit_manager.units[new_player].append(unit)
         self._blobs[new_player].append(blob)
         self._tracked[new_player].append(unit)
+        self._reindex_pos_tail(player, index)
+        self._pos[id(unit)] = (new_player, len(self._tracked[new_player]) - 1)
+        # _garrison is deliberately untouched. Reassign changes which list a
+        # unit lives in, not the set of units, and neither reference_id nor
+        # garrisoned_in_id is ever written after construction.
         # Resyncs the cached _player that render.py/unit_filter.py read for
         # colour -- reassign never touches it otherwise, since ownership here
         # is purely which list the unit lives in.
         self.loaded.unit_manager.update_unit_player_values()
         self._dirty = True
+        self._bump_unit_gen()
 
     def add(
         self,
@@ -507,9 +698,25 @@ class UnitEditModel:
         version, and a version whose UnitStruct doesn't define the retriever
         at all simply has no such key in entry.retriever_map -- see
         _serialize_unit.
+
+        The depoison() call below is load-bearing, not defensive: it's
+        `Unit.__init__` itself, not the write path, that raises. Loading a
+        version below caption_string_id's/caption_string's own
+        Support(since=...) permanently replaces those two attributes on the
+        *class* with a property whose setter raises
+        UnsupportedAttributeError, and `Unit.__init__` assigns both
+        unconditionally -- so this constructor call raises before
+        commit-time gating ever gets a chance to matter, on any scenario
+        below caption_string's Support(since=1.55), and on a *later*
+        document of any version if an earlier one in the same process left
+        the class poisoned. depoison() restores the class first every time,
+        cheaply -- it's a walk of five classes -- rather than gating on
+        whether it looks needed.
         """
+        self._refuse_inside_field_delta("add")
         if not 0 <= player <= 8:
             raise ValueError(f"player must be 0 (GAIA)..8, got {player}")
+        library_compat.depoison()
         reference_id = self._reserve_reference_id()
         unit = Unit(
             player=player,
@@ -529,8 +736,15 @@ class UnitEditModel:
         self.loaded.unit_manager.units[player].append(unit)
         self._blobs[player].append(None)
         self._tracked[player].append(unit)
+        self._pos[id(unit)] = (player, len(self._tracked[player]) - 1)
+        self._highest_ref_id = max(self._highest_ref_id, reference_id)
+        if self._garrison is not None:
+            # Its own reference_id bucket needs no work here: anything
+            # already pointing there is already in the map.
+            self._garrison.setdefault(unit.garrisoned_in_id, []).append(unit)
         self._dirty = True
         self._has_added_units = True
+        self._bump_unit_gen()
         return unit
 
     def add_many(self, player: int, specs: Sequence) -> list[Unit]:
@@ -545,10 +759,15 @@ class UnitEditModel:
         other Unit field takes add()'s own default (z=0.0, status=2,
         garrisoned_in_id=-1, no caption) since nothing in this feature needs
         them to vary.
+
+        Same depoison() reasoning as add(): the caption fields are assigned
+        unconditionally in `Unit.__init__` for every unit in the batch.
         """
+        self._refuse_inside_field_delta("add_many")
         if not 0 <= player <= 8:
             raise ValueError(f"player must be 0 (GAIA)..8, got {player}")
-        next_id = max(self._next_unit_id, _highest_reference_id(self.loaded.unit_manager) + 1)
+        library_compat.depoison()
+        next_id = max(self._next_unit_id, self._highest_ref_id_now() + 1)
         units = []
         for spec in specs:
             units.append(
@@ -569,12 +788,21 @@ class UnitEditModel:
                 )
             )
             next_id += 1
+        base = len(self._tracked[player])
         self.loaded.unit_manager.units[player].extend(units)
         self._blobs[player].extend([None] * len(units))
         self._tracked[player].extend(units)
+        for offset, unit in enumerate(units):
+            self._pos[id(unit)] = (player, base + offset)
+        if units:
+            self._highest_ref_id = max(self._highest_ref_id, next_id - 1)
+            if self._garrison is not None:
+                # Every spec fixes garrisoned_in_id=-1, so this is one bucket.
+                self._garrison.setdefault(-1, []).extend(units)
         self._next_unit_id = next_id
         self._dirty = True
         self._has_added_units = True
+        self._bump_unit_gen()
         return units
 
     def remove_many(self, units: Sequence[Unit]) -> None:
@@ -590,6 +818,7 @@ class UnitEditModel:
         """
         if not units:
             return
+        self._refuse_inside_field_delta("remove_many")
         to_remove = {id(u) for u in units}
         reference_ids = {u.reference_id for u in units}
         referencing = [
@@ -604,6 +833,8 @@ class UnitEditModel:
                 f"{len(referencing)} other unit(s) -- refusing to remove any of them"
             )
 
+        for unit in units:
+            self._pos.pop(id(unit), None)
         for player, tracked in enumerate(self._tracked):
             keep = [i for i, u in enumerate(tracked) if id(u) not in to_remove]
             if len(keep) == len(tracked):
@@ -613,7 +844,14 @@ class UnitEditModel:
             manager_units[:] = [manager_units[i] for i in keep]
             blobs[:] = [blobs[i] for i in keep]
             tracked[:] = [tracked[i] for i in keep]
+            # Reindexed per player this loop actually rewrote, which is not
+            # the set begin_unit_edit() declared: the pass runs over all nine
+            # lists regardless of what the caller named.
+            self._reindex_pos_tail(player, 0)
+        self._drop_garrison_entries(units)
+        self._highest_ref_id_stale = True
         self._dirty = True
+        self._bump_unit_gen()
 
     def referencing(self, unit: Unit) -> list[Unit]:
         """Every OTHER unit whose garrisoned_in_id points at `unit`'s
@@ -624,18 +862,19 @@ class UnitEditModel:
         also reference a unit's id, but Triggers may not even be parsed, so
         that case stays documented as unhandled (plan open question 3), not
         covered here.
+
+        Answered off the garrison reverse-map rather than a nine-list scan.
+        The `u is not unit` self-exclusion is verbatim from the scan it
+        replaces: a unit whose own garrisoned_in_id equals its own
+        reference_id must not block its own deletion.
         """
-        return [
-            u
-            for units in self.loaded.unit_manager.units
-            for u in units
-            if u is not unit and u.garrisoned_in_id == unit.reference_id
-        ]
+        return [u for u in self._garrison_map().get(unit.reference_id, ()) if u is not unit]
 
     def remove(self, unit: Unit) -> None:
         """Deletes `unit`. Deliberately not UnitManager.remove_unit(), which
         scans all 9 lists and reads unit.player -- this already knows the
         list from _locate()."""
+        self._refuse_inside_field_delta("remove")
         player, index = self._locate(unit)
         referencing = self.referencing(unit)
         if referencing:
@@ -646,7 +885,12 @@ class UnitEditModel:
         del self.loaded.unit_manager.units[player][index]
         del self._blobs[player][index]
         del self._tracked[player][index]
+        del self._pos[id(unit)]
+        self._reindex_pos_tail(player, index)
+        self._drop_garrison_entries([unit])
+        self._highest_ref_id_stale = True
         self._dirty = True
+        self._bump_unit_gen()
 
     # -- undo/redo support ---------------------------------------------------
 
@@ -661,10 +905,13 @@ class UnitEditModel:
             )
         return UnitSnapshot(players=snapshots, next_unit_id=self._next_unit_id, dirty=self._dirty)
 
-    def restore(self, snapshot: UnitSnapshot) -> None:
+    def restore(self, snapshot: UnitSnapshot | UnitFieldSnapshot) -> None:
         """Put the document back to `snapshot`. The single place any undo/
         redo writes to the model, mirroring TriggerEditModel.restore()."""
         self._check_alignment()
+        if isinstance(snapshot, UnitFieldSnapshot):
+            self._restore_field_delta(snapshot)
+            return
         manager = self.loaded.unit_manager
         for player, pls in snapshot.players.items():
             # Trap 2 (plan): manager.units[p][:] = ..., never manager.units =
@@ -677,10 +924,33 @@ class UnitEditModel:
         # Trap 1 (plan): restore _player by direct assignment or
         # update_unit_player_values(), never the banned `player` property.
         manager.update_unit_player_values()
+        # Whole-list rewrites, so the derived structures are rebuilt rather
+        # than spliced. restore() is not on any hot path.
+        self._rebuild_pos()
+        self._garrison = None
+        self._highest_ref_id_stale = True
         self._next_unit_id = snapshot.next_unit_id
         self._dirty = snapshot.dirty
+        self._bump_unit_gen()
 
-    def begin_unit_edit(self, players: Sequence[int]) -> None:
+    def _restore_field_delta(self, snapshot: UnitFieldSnapshot) -> None:
+        """restore()'s delta counterpart (Batch D's D6): puts back the state
+        and blob of exactly the units `snapshot` names, keyed by identity
+        rather than by re-walking any player list.
+
+        Skips _rebuild_pos()/update_unit_player_values()/the garrison drop
+        that the whole-list branch above needs: a fields_only edit's own
+        precondition, enforced by _refuse_inside_field_delta() on every
+        membership mutator, is that no unit's membership, order or
+        garrisoned_in_id ever moved while this snapshot was live."""
+        for entry in snapshot.entries.values():
+            unit = entry.unit
+            unit.x, unit.y, unit.z, unit.rotation, unit.unit_const = entry.state
+            self._blobs[entry.player][entry.index] = entry.blob
+        self._dirty = snapshot.dirty
+        self._bump_unit_gen()
+
+    def begin_unit_edit(self, players: Sequence[int], fields_only: bool = False) -> None:
         """Snapshot before mutating. `players` is the caller's declaration of
         which player list(s) the upcoming edit will touch: one of
         set_position/set_rotation/set_unit_const/add/remove, or both of
@@ -689,10 +959,19 @@ class UnitEditModel:
 
         Must be called *before* the mutation -- there is no way to recover
         the "before" state afterwards.
+
+        `fields_only` (Batch D's D6): True opens a UnitFieldSnapshot instead
+        of capturing `players`' whole lists up front -- cheap for a single-
+        or few-unit edit that only ever calls set_position/set_rotation/
+        set_unit_const, which is exactly what add/remove/reassign are then
+        refused for (_refuse_inside_field_delta()) until this edit commits
+        or aborts. `players` is unused in this mode (nothing is captured up
+        front) but still required, so a caller can't silently drop the
+        declaration when flipping this flag.
         """
         if self._pending is not None:
             raise RuntimeError("begin_unit_edit() called while an edit was already in progress")
-        self._pending = self._capture(players)
+        self._pending = UnitFieldSnapshot(dirty=self._dirty) if fields_only else self._capture(players)
 
     def abort_unit_edit(self) -> None:
         """Discards the in-progress snapshot without recording. Does not roll
@@ -717,11 +996,31 @@ class UnitEditModel:
             raise RuntimeError("commit_unit_edit() called with no edit in progress")
         before = self._pending
         self._pending = None
-        after = self._capture(list(before.players))
+        if isinstance(before, UnitFieldSnapshot):
+            after = self._capture_field_delta_after(before)
+        else:
+            after = self._capture(list(before.players))
         record = UnitDiffRecord(label, before, after)
         if push:
             history.push_unit_record(record)
         return record
+
+    def _capture_field_delta_after(self, before: UnitFieldSnapshot) -> UnitFieldSnapshot:
+        """commit_unit_edit()'s delta counterpart to _capture(): builds
+        `after` from `before`'s own key list, in the same order, rather than
+        re-walking any player list -- the O(touched units) half of Batch D's
+        D6."""
+        after = UnitFieldSnapshot(dirty=self._dirty)
+        for key, entry in before.entries.items():
+            unit = entry.unit
+            after.entries[key] = UnitFieldRecord(
+                player=entry.player,
+                index=entry.index,
+                unit=unit,
+                state=unit_state(unit),
+                blob=self._blobs[entry.player][entry.index],
+            )
+        return after
 
     # -- serialization -------------------------------------------------------
 
@@ -731,7 +1030,11 @@ class UnitEditModel:
         TriggerEditModel._check_alignment() enforces, and for the same
         reason: a bypassed mutation (e.g. the banned `unit.player =` setter)
         would otherwise splice a real blob into the wrong player's section
-        and produce a file that loads fine and is wrong."""
+        and produce a file that loads fine and is wrong.
+
+        It is also where the three derived structures (_pos, _garrison,
+        _highest_ref_id) carry their invariant, rather than in a comment
+        asking each operation to be maintained correctly."""
         live = self.loaded.unit_manager.units
         aligned = len(live) == len(self._tracked) and all(
             len(a) == len(b) and all(x is y for x, y in zip(a, b)) for a, b in zip(live, self._tracked)
@@ -742,6 +1045,50 @@ class UnitEditModel:
                 "`unit.player = ...` setter, or UnitManager.add_unit/remove_unit/"
                 "change_ownership) -- every blob's index mapping is untrustworthy"
             )
+        self._check_derived()
+
+    def _check_derived(self) -> None:
+        """The invariant every _pos/_garrison/_highest_ref_id maintenance
+        step has to preserve, named per structure so a failure says which one
+        drifted rather than only that something did."""
+        tracked_total = sum(len(tracked) for tracked in self._tracked)
+        if len(self._pos) != tracked_total:
+            raise RuntimeError(
+                f"_pos holds {len(self._pos)} entries but the model tracks {tracked_total} units. "
+                f"An operation leaked or dropped a position entry, and a recycled id() would then "
+                f"resolve to the wrong unit"
+            )
+        for player, tracked in enumerate(self._tracked):
+            for index, unit in enumerate(tracked):
+                if self._pos.get(id(unit)) != (player, index):
+                    raise RuntimeError(
+                        f"_pos maps reference_id {unit.reference_id} to "
+                        f"{self._pos.get(id(unit))}, but it is tracked at ({player}, {index}). "
+                        f"An operation left a stale index behind"
+                    )
+        if self._garrison is not None:
+            fresh = self._build_garrison_map()
+            # By per-bucket identity membership, not list order: add() appends
+            # to a bucket whose other members may sit in an earlier player's list.
+            spliced_keys = {key for key, bucket in self._garrison.items() if bucket}
+            fresh_keys = {key for key, bucket in fresh.items() if bucket}
+            drifted = spliced_keys != fresh_keys or any(
+                sorted(id(u) for u in self._garrison[key]) != sorted(id(u) for u in fresh[key]) for key in fresh_keys
+            )
+            if drifted:
+                raise RuntimeError(
+                    "_garrison no longer matches a fresh walk of the unit lists. An operation "
+                    "changed which units carry which garrisoned_in_id without splicing the "
+                    "reverse-map"
+                )
+        if not self._highest_ref_id_stale:
+            actual = _highest_reference_id(self.loaded.unit_manager)
+            if self._highest_ref_id != actual:
+                raise RuntimeError(
+                    f"_highest_ref_id is {self._highest_ref_id} but the highest live "
+                    f"reference_id is {actual}. An operation moved the maximum without raising "
+                    f"the cache or marking it stale"
+                )
 
     def serialize(self) -> bytes:
         """The whole players_units array, ready to splice into the
@@ -758,6 +1105,13 @@ class UnitEditModel:
 
         entries_by_player = None
         if needs_commit:
+            # Same depoison() reasoning as add(): commit()'s push_to_link
+            # reads caption_string back via getattr, and a poisoned class's
+            # property getter is a data descriptor that shadows the real
+            # instance attribute, raising ScenarioWritingError for any dirty
+            # unit if a lower-version document was loaded earlier in this
+            # process.
+            library_compat.depoison()
             # A whole-manager-scoped, but link-name-narrowed, commit is what
             # rebuilds each player's unit structs when units were added or
             # removed (fact 11: selecting the link by name is what keeps this

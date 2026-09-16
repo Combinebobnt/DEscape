@@ -723,11 +723,15 @@ def test_the_hotspot_scales_with_the_sprite(install):
 
 def test_the_scaled_cache_evicts_rather_than_growing(install, monkeypatch):
     """sld_decoder holds no cache and a delta chain can be 313 links deep, so
-    an unbounded cache here is a real memory risk on a unit-dense map. P3-g4
-    sets the capacity; this only pins that it IS bounded."""
+    an unbounded cache here is a real memory risk on a unit-dense map. Item 24
+    moved this to a byte budget (see _ByteLRU); this only pins that it IS
+    bounded, the same way test_the_icon_cache_evicts_by_bytes_not_by_entry_count
+    pins it for the icon cache."""
     install.write(build_sld(4))
     install.register(angle_count=4, frame_count=1)
-    monkeypatch.setattr(unit_sprites._scaled_cache, "capacity", 2)
+    unit_sprites.sprite_for(CONST, 0.0, 1, 32)
+    entry_bytes = next(iter(unit_sprites._scaled_cache.values())).rgba.nbytes
+    monkeypatch.setattr(unit_sprites, "_scaled_cache", unit_sprites._ByteLRU(2 * entry_bytes))
     for a in range(4):
         unit_sprites.sprite_for(CONST, 2 * math.pi * a / 4, 1, 32)
     assert len(unit_sprites._scaled_cache) == 2

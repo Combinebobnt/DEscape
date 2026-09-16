@@ -20,12 +20,15 @@ pixel assertion for the wrong reason (P3-g3's sprite-anchor half-tile float),
 so asserting on the argument the production code is caught reading is the
 more direct check, not a weaker one.
 
-**Mutation arm for the real-gate case, run by hand and confirmed 2026-09-08,
-not asserted**: widening `unit_sprites.WALL_CONNECTOR_CONSTS` to also include
-789 (i.e. "fixing" the documented asymmetry) turns the third stage of
+**Mutation arm for the real-gate case, run by hand and confirmed 2026-09-12,
+not asserted**: `unit_sprites.wall_connector_consts()` now includes 789 (the
+generated replacement for the old hand-kept 15-const set), so the third stage
+of
 `test_a_real_gate_orientation_swap_changes_a_neighbouring_walls_connector_membership`
-red, since the probe wall would then keep its derived override instead of
-falling back to its own stored rotation.
+asserts the probe wall KEEPS its derived override across all of 797/793/789.
+Removing 789 from the set again (reverting to the old asymmetry) turns that
+stage red, since the probe wall would then fall back to its own stored
+rotation instead.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from descape import render, unit_sprites
+from descape import gate_orientation, render, unit_sprites
 from descape.terrain_palette import PLAYER_COLORS
 
 MAP_W = MAP_H = 12
@@ -101,7 +104,6 @@ def wall_install(monkeypatch):
     the rotation VALUE handed to the frame-dispatch functions, not decoded
     pixels."""
     monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({WALL_CONST}))
-    monkeypatch.setattr(unit_sprites, "WALL_CONNECTOR_CONSTS", frozenset({WALL_CONST}))
     monkeypatch.setattr(
         unit_sprites, "graphic_map",
         lambda: {WALL_CONST: {"graphic_id": 1, "file_name": "wall_synth_x1",
@@ -110,6 +112,77 @@ def wall_install(monkeypatch):
     unit_sprites.clear_caches()
     yield
     unit_sprites.clear_caches()
+
+
+# --- the generated connector set itself (2026-09-12 plan) --------------
+
+# The pre-2026-09-12 hand-kept set (8 walls, 7 gates picked by the 2026-09-02
+# counterexamples plan's corpus scan), frozen here so "strict superset" has a
+# fixed thing to compare against regardless of how the derivation evolves.
+_OLD_HAND_CONNECTOR_CONSTS = frozenset({
+    72, 117, 119, 155, 370, 788, 1062, 2678,  # walls
+    64, 88, 95, 659, 667, 793, 797,           # the 7 hand-picked gates
+})
+
+
+def test_wall_connector_consts_has_104_members():
+    assert len(unit_sprites.wall_connector_consts()) == 104
+
+
+def test_wall_connector_consts_is_a_strict_superset_of_the_old_hand_kept_set():
+    assert _OLD_HAND_CONNECTOR_CONSTS < unit_sprites.wall_connector_consts()
+
+
+def test_wall_connector_consts_equals_walls_union_gate_groups_flattened():
+    expected = unit_sprites._ROTATION_VARIANT_CONSTS | frozenset(
+        const for group in gate_orientation.groups().values() for const in group
+    )
+    assert unit_sprites.wall_connector_consts() == expected
+
+
+def test_wall_connector_consts_contains_every_palisade_closed_orientation():
+    """789/797/793/801 is the reported bug: cycling a palisade gate through
+    its closed group used to change whether it counted as a wall neighbour,
+    because the old hand-kept set had only 797 and 793 of the four."""
+    assert {789, 797, 793, 801} <= unit_sprites.wall_connector_consts()
+
+
+def test_wall_connector_consts_excludes_aqueduct():
+    """231 (Aqueduct) is a recorded, open decision (2026-09-12 generated-
+    replacement plan's [NEEDS DECISION] entry), not an accidental omission:
+    no wall neighbours an Aqueduct anywhere in the corpus, so its connector
+    membership can't be corpus-validated the way the gate half was."""
+    assert 231 not in unit_sprites.wall_connector_consts()
+
+
+def test_wall_connector_consts_excludes_the_colliding_corner_const():
+    """1192 pins groups()-over-raw-class-39: it shares gate_orientation's
+    GTAC2 code with 81 but has no unit_graphic_map.json entry and no corpus
+    placement, so groups() drops it, and this set must not re-admit it."""
+    assert 1192 not in unit_sprites.wall_connector_consts()
+
+
+def test_clear_caches_actually_clears_wall_connector_consts(monkeypatch):
+    # Leaves the cache holding a monkeypatched value if it exits early --
+    # clear_caches() at the end re-derives from the real table once
+    # monkeypatch reverts _ROTATION_VARIANT_CONSTS at teardown, which is what
+    # keeps this test from poisoning every test that runs after it.
+    monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({111}))
+    unit_sprites.clear_caches()
+    try:
+        first = unit_sprites.wall_connector_consts()
+        assert 111 in first
+
+        monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({222}))
+        stale = unit_sprites.wall_connector_consts()
+        assert stale == first, "sanity: still cached, or this test proves nothing"
+
+        unit_sprites.clear_caches()
+        fresh = unit_sprites.wall_connector_consts()
+        assert 222 in fresh
+        assert 111 not in fresh
+    finally:
+        unit_sprites.clear_caches()
 
 
 # --- the pure table, exercised through a real scenario -----------------
@@ -266,10 +339,11 @@ def test_all_three_paths_resolve_the_same_unit_to_the_same_derived_rotation(wall
 @pytest.fixture
 def real_gate_wall_install(monkeypatch):
     """Registers WALL_CONST as a variant-index, angle_count=5 connector
-    ALONGSIDE the real gate consts already in WALL_CONNECTOR_CONSTS --
+    ALONGSIDE the real gate consts wall_connector_consts() already derives --
     unlike wall_install above, this does NOT replace that set: the whole
-    point of the test below is exercising real gate membership (797/793 in,
-    789 out), which a wholesale replacement would erase."""
+    point of the test below is exercising real gate membership across a full
+    orientation cycle (789/797/793 all in), which a wholesale replacement
+    would erase."""
     monkeypatch.setattr(
         unit_sprites, "_ROTATION_VARIANT_CONSTS",
         unit_sprites._ROTATION_VARIANT_CONSTS | frozenset({WALL_CONST}),
@@ -284,21 +358,23 @@ def real_gate_wall_install(monkeypatch):
     unit_sprites.clear_caches()
 
 
-def test_a_real_gate_orientation_swap_changes_a_neighbouring_walls_connector_membership(
+def test_a_real_gate_orientation_cycle_never_changes_a_neighbouring_walls_connector_membership(
     real_gate_wall_install, rotation_spy
 ):
     """Retires the gate-orientation-cycling checklist's manual step 6: "cycle
-    a gate that sits in a wall run and check the neighbouring wall pieces.
-    This is the known WALL_CONNECTOR_CONSTS asymmetry; a palisade gate is the
-    case to try."
+    a gate that sits in a wall run and check the neighbouring wall pieces."
+    Before the 2026-09-12 generated replacement, this was the known
+    wall_connector_consts() asymmetry: a palisade gate's own closed group had
+    only two of its four orientations in the set, so cycling one could change
+    whether a neighbouring wall drew a connector. The generated set includes
+    every gate family whole, so a cycle is now invariant.
 
     The first case in this file to use REAL gate consts rather than the
     synthetic WALL_CONST=9001 -- deliberately does NOT reuse the wall_install
-    fixture above, which REPLACES WALL_CONNECTOR_CONSTS wholesale; this needs
-    the real set's own asymmetry intact (AGENTS.md's hard rule: palisade
-    closed's `("P", "A")` group is (789 ne, 797 e, 793 se, 801 n) in cycle
-    order -- 797 and 793 are members of WALL_CONNECTOR_CONSTS, 789 and 801
-    are not).
+    fixture above, which REPLACES wall_connector_consts() wholesale; this
+    needs the real set's own gate families intact (AGENTS.md's hard rule:
+    palisade closed's `("P", "A")` group is (789 ne, 797 e, 793 se, 801 n) in
+    cycle order, all four now members of wall_connector_consts()).
 
     span_low_corner()'s own invariant (descape/unit_model.py) is what makes
     this test possible without going through UnitEditModel.set_unit_const()
@@ -339,9 +415,9 @@ def test_a_real_gate_orientation_swap_changes_a_neighbouring_walls_connector_mem
     for calls in rotation_spy.values():
         calls.clear()
     gate.unit_const, gate.x, gate.y = gate_ne, 6.0, 4.5  # span_anchor() at the same low corner (4, 4)
-    assert _RADIAN[3] in _probe_rotations(), (
-        "793 -> 789 must drop the derived override (789 is outside WALL_CONNECTOR_CONSTS), "
-        "falling back to the probe wall's own stored (radian) rotation -- the accepted asymmetry"
+    assert _probe_rotations() == connector_rotations, (
+        "793 -> 789 must keep the derived override: wall_connector_consts() now includes "
+        "789, the fourth palisade-closed orientation that the old hand-kept set left out"
     )
 
 

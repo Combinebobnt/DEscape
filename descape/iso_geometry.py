@@ -1499,6 +1499,62 @@ def index_extent(producer, *key) -> tuple[int, int, int, int] | None:
     return int(dst_y.min()), int(dst_y.max()), int(dst_x.min()), int(dst_x.max())
 
 
+@lru_cache(maxsize=4096)
+def iso_tile_extent(
+    tile_px: int, drop_left: int, drop_right: int, rise_ul: int, rise_ur: int, rise_diag: int
+) -> tuple[int, int, int, int] | None:
+    """Inclusive (y_lo, y_hi, x_lo, x_hi) union of every destination a
+    render._render_tile_iso tile can write, in the same unoffset frame
+    index_extent uses, so the caller's own base_y/base_x apply unchanged.
+    That caller's early reject is byte-identical by construction: if this
+    union is wholly outside img, every sub-paint's own extent was too, and
+    each would have hit _clipped_paint/_clipped_darken's wholly-outside
+    return anyway.
+
+    All five deltas are PIXELS (already times proj.elev_step, so elev_step
+    is never part of the key), clamped to >= 0 by the caller, 0 meaning
+    that side draws nothing: an off-map neighbour or a non-positive delta.
+    skirt_quad_indices and shadow_quad_indices raise on a non-positive px,
+    so the > 0 gates below are required, not defensive.
+
+    The seam edge and seam apex are deliberately omitted: both are a 1px
+    contour on the tile's OWN diamond, so their boxes are subsets of
+    diamond_indices' box, and including them would put seam_qualified in
+    the key for no gain. tests/test_tile_reject.py asserts that subset
+    relation rather than trusting this paragraph. For the same reason the
+    band apex is unioned on rise_diag alone, without the seam_qualified
+    gate the caller applies: over-covering is always safe here, and
+    under-covering is a silent pixel drop.
+
+    SCOPE, and it is load-bearing: the reject this feeds belongs inside the
+    per-tile TERRAIN painter, never lifted up to _paint_tile_and_units_iso
+    or composite_rect_*'s candidate loop. _bystander_candidates merges in
+    tiles whose own terrain misses the rect precisely because a building
+    footprint on them does not (every footprint tile draws at the center
+    tile's elevation), so rejecting at the tile-and-units level would drop
+    those markers and their sprites."""
+    boxes = [index_extent(diamond_indices, tile_px)]
+    if drop_left > 0:
+        boxes.append(index_extent(skirt_quad_indices, tile_px, drop_left, "left"))
+    if drop_right > 0:
+        boxes.append(index_extent(skirt_quad_indices, tile_px, drop_right, "right"))
+    if rise_ul > 0:
+        boxes.append(index_extent(shadow_quad_indices, tile_px, rise_ul, "up_left"))
+    if rise_ur > 0:
+        boxes.append(index_extent(shadow_quad_indices, tile_px, rise_ur, "up_right"))
+    if rise_diag > 0:
+        boxes.append(index_extent(shadow_apex_indices, tile_px, rise_diag))
+    boxes = [b for b in boxes if b is not None]
+    if not boxes:
+        return None
+    return (
+        min(b[0] for b in boxes),
+        max(b[1] for b in boxes),
+        min(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
 @lru_cache(maxsize=256)
 def sloped_tile_outline(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int

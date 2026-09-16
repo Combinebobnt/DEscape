@@ -31,8 +31,11 @@ from descape.unit_model import UnitEditModel
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
 _REF_WALL = 102
+_REF_HOUSE = 200
 _REF_ARCHER_P1 = 201
 _REF_VILLAGER_P1 = 203
+_REF_ARCHER_P2 = 300
+_REF_VILLAGER_P2 = 301
 
 
 def _open() -> tuple:
@@ -42,6 +45,12 @@ def _open() -> tuple:
 
 def _unit(loaded, reference_id: int):
     return next(u for u in loaded.unit_manager.get_all_units() if u.reference_id == reference_id)
+
+
+def _index_of(loaded, player: int, unit) -> int:
+    """By identity, never list.index(). Position is the whole claim these
+    tests make, so a value-equal neighbour must not answer for it."""
+    return next(i for i, u in enumerate(loaded.unit_manager.units[player]) if u is unit)
 
 
 # -- 1. a unit undo is byte-clean ---------------------------------------------
@@ -188,6 +197,57 @@ def test_reassign_then_undo_is_byte_identical(tmp_path: Path) -> None:
     out = tmp_path / "undone.aoe2scenario"
     write_scenario(loaded, out, units=model)
     assert out.read_bytes() == FIXTURE_PATH.read_bytes()
+
+
+def test_bulk_delete_undo_redo_restores_both_players_exactly(tmp_path: Path) -> None:
+    """remove_many() rewrites whole lists across every player holding a
+    target, not just the ones begin_unit_edit() named, and it removes from
+    mid-list so later units shift down. Undo has to put every one of them
+    back at its exact original index, and the model's own derived position
+    map with it. The write below goes through _check_alignment(), which is
+    what turns a missed rebuild into a failure rather than a wrong save.
+    """
+    loaded, model, history = _open()
+    house = _unit(loaded, _REF_HOUSE)
+    archer_p1 = _unit(loaded, _REF_ARCHER_P1)
+    villager_p1 = _unit(loaded, _REF_VILLAGER_P1)
+    archer_p2 = _unit(loaded, _REF_ARCHER_P2)
+    villager_p2 = _unit(loaded, _REF_VILLAGER_P2)
+    placed = ((1, house), (1, archer_p1), (1, villager_p1), (2, archer_p2), (2, villager_p2))
+    before = {id(u): _index_of(loaded, p, u) for p, u in placed}
+    house_pos = (house.x, house.y, house.z)
+    assert before[id(archer_p1)] == 1, "the target must be mid-list, or nothing downstream shifts"
+
+    model.begin_unit_edit([1, 2])
+    model.remove_many([archer_p1, archer_p2])
+    model.commit_unit_edit("Delete 2 units", history)
+
+    assert _index_of(loaded, 1, villager_p1) == 1, "the delete must actually have shifted a later unit"
+    assert _index_of(loaded, 2, villager_p2) == 0
+    assert model.has_edits
+
+    history.undo([], None, None, model)
+
+    for player, unit in placed:
+        assert _index_of(loaded, player, unit) == before[id(unit)]
+    assert not model.has_edits
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()
+
+    history.redo([], None, None, model)
+
+    assert archer_p1 not in loaded.unit_manager.units[1]
+    assert archer_p2 not in loaded.unit_manager.units[2]
+    assert _index_of(loaded, 1, villager_p1) == 1
+
+    # A survivor must still resolve to itself after all that list churn: a
+    # stale position entry here would write the house's blob instead.
+    model.begin_unit_edit([1])
+    model.set_position(villager_p1, 60.5, 61.5, 2.0)
+    model.commit_unit_edit("Move villager", history)
+    assert (villager_p1.x, villager_p1.y, villager_p1.z) == (60.5, 61.5, 2.0)
+    assert (house.x, house.y, house.z) == house_pos
 
 
 def test_reassign_redo_moves_it_again() -> None:

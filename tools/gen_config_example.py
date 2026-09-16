@@ -126,6 +126,13 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # here -- it depends on your font. The value below is only an example.
 # log_height: 120
 
+# File > Open Recent, most-recently-opened first. Persisted automatically
+# on every open -- not something you normally set by hand. Capped at
+# {settings.MAX_RECENT_FILES} entries; omitted entirely until first saved. The value below is
+# only an example.
+# recent_files:
+#   - /path/to/recent_scenario.aoe2scenario
+
 # Every rebindable action (Settings > Keybinds), shown here at its default
 # -- see settings.REBINDABLE_ACTIONS for the full id/label/default list.
 # Omit an entry to leave that action at its default; "" means unbound.

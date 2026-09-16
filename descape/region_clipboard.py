@@ -32,6 +32,10 @@ version that doesn't support them is exactly what paste would produce
 anyway: unit_model.UnitEditModel.add()'s docstring notes that
 commit()'s write path already silently drops a field whose Support range
 excludes the scenario version, regardless of what value it's given.
+This read also catches plain AttributeError: a unit parsed while its class
+was poisoned (library_compat.depoison() only fixes the class, not objects
+already parsed under the old one) has no instance attribute at all for a
+disabled link, and reading it raises AttributeError instead.
 """
 
 from __future__ import annotations
@@ -117,7 +121,7 @@ def copy_region(
             if tx0 <= int(u.x) < tx1 and ty0 <= int(u.y) < ty1:
                 try:
                     caption_string_id, caption_string = u.caption_string_id, u.caption_string
-                except UnsupportedAttributeError:
+                except (UnsupportedAttributeError, AttributeError):
                     caption_string_id, caption_string = -1, ""
                 units.append(
                     RegionUnit(

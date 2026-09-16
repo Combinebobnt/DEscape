@@ -177,6 +177,144 @@ def test_paint_leaves_the_painter_transform_untouched() -> None:
     assert left_over == expected
 
 
+# --- exposedRect culling ---------------------------------------------------
+
+# Device-space origin of the scene in _paint_exposed's image, far enough in
+# that the outward-running y0/x0 ticks land inside it.
+_CULL_IMG_PX = 400
+_CULL_ORIGIN = 100.0
+_CULL_CASES = ("interior", "tick_tips", "labels_only")
+
+
+class _ExposedOption:
+    """Stand-in for QStyleOptionGraphicsItem: paint() reads exposedRect and
+    nothing else off it, and a real one cannot be handed an arbitrary rect."""
+
+    def __init__(self, rect):
+        self.exposedRect = rect
+
+
+def _paint_exposed(item, exposed, clip):
+    """One paint() clipped to `clip` (scene coords), told `exposed` is the
+    exposed area. Clipping both renders the same way is what makes the two
+    comparable: Qt's own paint dispatch clips to the exposed region too, so
+    the only thing `exposed` may change is which draw calls are issued.
+
+    Hands back (pixels, stats)."""
+    from PyQt5.QtGui import QImage, QPainter, QTransform
+
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    image = QImage(_CULL_IMG_PX, _CULL_IMG_PX, QImage.Format_RGB888)
+    image.fill(0)
+    painter = QPainter(image)
+    transform = QTransform()
+    transform.translate(_CULL_ORIGIN, _CULL_ORIGIN)
+    painter.setWorldTransform(transform)
+    painter.setClipRect(clip)
+    item.paint(painter, _ExposedOption(exposed))
+    stats = item.stats
+    painter.end()
+    return qimage_rgb888_to_array(image), stats
+
+
+def _cull_rect(name: str):
+    """The scene-space rect for one _CULL_CASES exposure.
+
+    `interior` holds whole marks, anchors included. `tick_tips` is scene y in
+    [-12, -3], where every anchor (y == 0) is outside while the outer part of
+    each y0 tick is inside: the partial-visibility case a naive
+    anchor-in-rect cull drops. `labels_only` is scene y in [-32, -18], past
+    even a major tick's 12px reach, so only label boxes can land there."""
+    from PyQt5.QtCore import QRectF
+
+    return {
+        "interior": QRectF(30, -34, 60, 60),
+        "tick_tips": QRectF(-10, -12, 200, 9),
+        "labels_only": QRectF(-10, -32, 200, 14),
+    }[name]
+
+
+@pytest.mark.parametrize("name", _CULL_CASES)
+def test_culling_to_the_exposed_rect_is_pixel_identical(name: str) -> None:
+    """The B9 bar: what reaches the screen must not depend on how much of
+    the item Qt says is exposed. Each rect is rendered twice, once with the
+    cull disarmed (exposed == the whole bounding rect) and once with it
+    armed, and the two must be byte-identical."""
+    _scene, item = _bare_scene()
+    clip = _cull_rect(name)
+    unculled, unculled_stats = _paint_exposed(item, item.boundingRect(), clip)
+    culled, culled_stats = _paint_exposed(item, clip, clip)
+
+    assert unculled.any(), f"{name} rendered nothing, so identity is vacuous"
+    assert np.array_equal(unculled, culled)
+    # ... and the cull really did fire, rather than passing by doing nothing.
+    assert culled_stats.ticks_drawn < unculled_stats.ticks_drawn
+
+
+def test_a_full_exposed_rect_culls_nothing() -> None:
+    _scene, item = _bare_scene()
+    rect = item.boundingRect()
+    full, full_stats = _paint_exposed(item, rect, rect)
+    _pixels, stats = _paint_exposed(item, item.boundingRect(), rect)
+    assert full.any()
+    assert full_stats.ticks_drawn == stats.ticks_drawn
+    assert full_stats.ticks_drawn == sum(len(run.anchors) for run in item._runs)
+    assert full_stats.labels_drawn == sum(sum(run.majors) for run in item._runs)
+
+
+def test_labels_survive_an_exposure_that_misses_their_own_tick() -> None:
+    """Labels are batched separately from the lines, so they need their own
+    proof that the cull's margin covers a label box whose anchor is well
+    outside the exposed rect."""
+    _scene, item = _bare_scene()
+    clip = _cull_rect("labels_only")
+    _pixels, stats = _paint_exposed(item, clip, clip)
+    assert stats.labels_drawn > 0
+
+
+def test_a_real_view_paint_narrows_the_exposed_rect_and_culls() -> None:
+    """ItemUsesExtendedStyleOption is what makes the cull reachable at all:
+    without it Qt reports the full boundingRect as exposed on every repaint
+    and every cull test above passes while production culls nothing.
+
+    Driven through a real QGraphicsView, not QGraphicsScene.render(): that
+    API hands every item its whole boundingRect as the exposed area
+    regardless of the flag (measured), so the capture helpers this file uses
+    elsewhere cannot ask this question. Same spy shape as
+    tests/test_lazy_viewport.py's own exposedRect check."""
+    from PyQt5.QtWidgets import QApplication, QGraphicsItem, QGraphicsView
+
+    scene, item = _bare_scene()
+    assert item.flags() & QGraphicsItem.ItemUsesExtendedStyleOption
+    total = sum(len(run.anchors) for run in item._runs)
+    bounding = item.boundingRect()
+    seen = []
+    original = item.paint
+
+    def spy(painter, option, widget=None):
+        original(painter, option, widget)
+        rect = option.exposedRect
+        seen.append((rect.width() * rect.height(), item.stats.ticks_drawn))
+
+    item.paint = spy
+    view = QGraphicsView(scene)
+    try:
+        view.resize(200, 200)
+        view.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        view.scale(3.0, 3.0)
+        QApplication.processEvents()
+    finally:
+        view.close()
+
+    assert seen, "the item was never painted"
+    full_area = bounding.width() * bounding.height()
+    assert min(area for area, _n in seen) < full_area / 4
+    assert min(n for _area, n in seen) < total
+
+
 # --- the LOD ladder --------------------------------------------------------
 
 

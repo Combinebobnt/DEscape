@@ -119,6 +119,12 @@ def test_retriever_object_links_expose_group_and_disabled() -> None:
         assert isinstance(link.disabled, bool)
         # `support` is None for an always-supported field, or a Support range.
         assert hasattr(link, "support")
+    assert callable(getattr(RetrieverObjectLink, "overwrite_unsupported_properties", None)), (
+        "RetrieverObjectLink.overwrite_unsupported_properties is the method the library's own "
+        "load path uses to poison a class -- descape/unit_model.py's tests mimic its exact "
+        "getter/setter shape rather than calling it directly, but the method itself is what "
+        "the poisoning bug this pins against depends on existing."
+    )
 
 
 def test_trigger_manager_exposes_the_structural_api_the_edit_model_wraps() -> None:

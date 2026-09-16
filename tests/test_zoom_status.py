@@ -56,7 +56,15 @@ def _wheel(view, up: bool = True) -> None:
     bypasses wheelEvent() and so cannot exercise it. Delivered directly to
     view.wheelEvent() rather than through QApplication.sendEvent(), since
     MapView.wheelEvent only reads event.angleDelta().y(); no other event
-    plumbing (position, viewport picking) is involved."""
+    plumbing (position, viewport picking) is involved.
+
+    One full 120-unit notch, ending any gesture in progress first. That reset
+    is what keeps a tight loop of these honest: wheelEvent clamps one gesture
+    to +/-1 mip level, and a loop with no sleep in it has no real time gap, so
+    without the reset 60 calls would be one flick and stop at the first mip
+    boundary instead of reaching the zoom ceiling. Tests that mean to
+    exercise the accumulator drive wheelEvent themselves (see
+    test_wheel_zoom.py) rather than resetting between events."""
     from PyQt5.QtCore import QPoint, QPointF, Qt
     from PyQt5.QtGui import QWheelEvent
 
@@ -65,6 +73,7 @@ def _wheel(view, up: bool = True) -> None:
     event = QWheelEvent(
         center, center, QPoint(0, 0), angle, Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False
     )
+    view._end_wheel_gesture()
     view.wheelEvent(event)
 
 

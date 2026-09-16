@@ -388,6 +388,81 @@ def test_stepped_pick_agrees_with_the_id_plane(elevated: bool) -> None:
     assert disagreements < hits, f"{disagreements} disagreements against only {hits} unit pixels"
 
 
+def test_stepped_pick_takes_an_already_resolved_terrain_tile() -> None:
+    """The caller may hand pick_unit() the tile it has already unprojected
+    for its own use, instead of paying screen_to_tile() twice for one pixel.
+
+    Two things have to hold, and the second is why the None case is here: an
+    argument that is silently ignored and recomputed would satisfy the
+    parity check on its own. An explicit None means "no terrain here", so an
+    occluded unit becomes visible, which nothing but a consumed argument can
+    produce.
+    """
+    scn = _scenario(elevated=True)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+
+    rng = np.random.default_rng(RNG_SEED)
+    ys = rng.integers(0, proj.canvas_h, SAMPLE_PIXELS)
+    xs = rng.integers(0, proj.canvas_w, SAMPLE_PIXELS)
+
+    hits = 0
+    revealed = 0
+    for sx, sy in zip(xs.tolist(), ys.tolist()):
+        default = pick_unit(index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
+        threaded = pick_unit(
+            index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj,
+            terrain_tile=iso_geometry.screen_to_tile(sx, sy, elevations, proj),
+        )
+        assert threaded is default, f"the resolved tile changed the pick at ({sx}, {sy})"
+        if default is not None:
+            hits += 1
+        unoccluded = pick_unit(
+            index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj, terrain_tile=None,
+        )
+        assert unoccluded is default or default is None
+        if unoccluded is not default:
+            revealed += 1
+    assert hits > 0, "sampled no unit pixels at all, so the parity check would be vacuous"
+    assert revealed > 0, "no sampled pixel had a terrain-occluded unit; terrain_tile=None proved nothing"
+
+
+def test_sloped_pick_takes_an_already_resolved_terrain_tile() -> None:
+    """Sloped's half of the same contract, on the fixture's 4x4 building.
+
+    A multi-tile footprint keeps the membership test on diamond_membership(),
+    so terrain_tile decides occlusion alone. A 1x1 unit's membership collapses
+    onto terrain_tile, which would conflate the two.
+    """
+    scn = _scenario(ramped=True)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
+    entry = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST)
+    plane = _sloped_id_plane(index, tile_px, corner_rise, proj)
+
+    pixels = np.argwhere(plane == entry.order + 1)
+    assert pixels.size, "the building is not visible anywhere, so there is nothing to pick"
+    sy, sx = (int(v) for v in pixels[len(pixels) // 2])
+    tile_id = int(terrain[sy, sx])
+    tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+
+    def _pick(**kwargs):
+        return pick_unit(
+            index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
+            corner_rise=corner_rise, **kwargs,
+        )
+
+    assert _pick(terrain_tile=tile) is entry
+    # The near corner outranks every footprint tile's own depth key, so
+    # handing it in must occlude the building, and None must un-occlude it.
+    # Both fail if terrain_tile is recomputed rather than read.
+    assert _pick(terrain_tile=(0, MAP_H - 1)) is None
+    assert _pick(terrain_tile=None) is entry
+
+
 @pytest.mark.corpus
 def test_stepped_pick_agrees_with_the_id_plane_on_a_real_file(scenario_path) -> None:
     """The plan's own corpus-tier requirement: run the oracle against a real

@@ -272,3 +272,68 @@ def test_region_does_not_survive_a_new_document() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- the marching ants' on-screen gate (perf batch B, step B3) ----------------
+
+
+def _tile_scene_center(map_view, tile_x: int, tile_y: int):
+    polygon = map_view._tile_polygon(tile_x, tile_y)
+    assert polygon is not None, f"no footprint for ({tile_x}, {tile_y})"
+    return polygon.boundingRect().center()
+
+
+def test_ants_stop_off_screen_and_restart_when_the_region_scrolls_back() -> None:
+    """The ants dirty a scene rect every 80ms, which re-enters the canvas
+    repaint. That is worth nothing while the region they outline is scrolled
+    out of the viewport. Driven through centerOn(), so this exercises the real
+    wiring (scrollContentsBy -> _note_viewport_changed -> the sync) rather
+    than the predicate on its own."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _select_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (2, 2), (5, 5))
+        assert map_view._region_ants_item is not None
+        assert map_view._region_ant_timer.isActive(), "a visible region should animate"
+
+        mm = window.scenario.map_manager
+        far = (mm.map_width - 3, mm.map_height - 3)
+        # Zoomed in far enough that the whole map no longer fits, so
+        # centerOn() has scrollbar range to actually move within.
+        map_view.scale(8, 8)
+        map_view.centerOn(_tile_scene_center(map_view, *far))
+        QApplication.processEvents()
+        assert not map_view._region_on_screen()
+        assert not map_view._region_ant_timer.isActive(), "off-screen region should stop the ants"
+
+        map_view.centerOn(_tile_scene_center(map_view, 3, 3))
+        QApplication.processEvents()
+        assert map_view._region_on_screen()
+        assert map_view._region_ant_timer.isActive(), "scrolling back into view should restart them"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_new_region_off_screen_does_not_start_the_ants() -> None:
+    """Set_region() rebuilds the overlay and syncs the timer off the same
+    gate, so a region committed while the view is elsewhere (Select All is
+    the real case, on a map bigger than the viewport) stays idle."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _select_window()
+    try:
+        map_view = window.map_view
+        mm = window.scenario.map_manager
+        map_view.scale(8, 8)
+        map_view.centerOn(_tile_scene_center(map_view, mm.map_width - 3, mm.map_height - 3))
+        QApplication.processEvents()
+
+        map_view.set_region((2, 2, 6, 6))
+        assert map_view._region_ants_item is not None
+        assert not map_view._region_ant_timer.isActive()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

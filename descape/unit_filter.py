@@ -24,6 +24,10 @@ from descape.terrain_palette import TREE_UNIT_IDS
 # players, and PLAYER_COLORS' own index-0 entry).
 GAIA_PLAYER_ID = 0
 
+# GAIA plus 8 real players. The Filters menu offers a checkbox per real
+# player; GAIA gets its own separate entry (see UnitFilter.matches).
+MAX_PLAYER_ID = 8
+
 
 @dataclass(frozen=True)
 class UnitFilter:

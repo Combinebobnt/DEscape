@@ -36,8 +36,9 @@ pytest-qt
 # selected families.
 ruff==0.16.3
 
-# genieutils-py is only used by tools/gen_terrain_texture_map.py, to regenerate
-# descape/terrain_texture_map.json if the game updates its terrain table. Not a
+# genieutils-py backs several tools/gen_*.py generators that regenerate a
+# committed descape/*.json table if the game updates its .dat (e.g.
+# gen_terrain_texture_map.py, gen_unit_render_data.py, gen_unit_stats.py). Not a
 # runtime dependency of anything a normal user runs.
 genieutils-py
 

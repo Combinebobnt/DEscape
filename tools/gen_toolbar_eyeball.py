@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Screenshots the toolbar (both rows) for a manual eyeball pass -- always
-writes PNGs, never pass/fail. Covers the toolbar-overflow plan's own
-Stages 1-2 verification step: dump both rows at 800/1024/1280 px in View,
-Terrain+Draw and Terrain+Set Elevation, confirming the empty params row
-holds its height and that mode-inapplicable tools disappear rather than
-grey out.
+"""Screenshots the main toolbar (both rows) for a manual eyeball pass on the
+width-driven "More Tools" tool-overflow button -- always writes PNGs, never
+pass/fail. Confirms the empty tool-params row holds its height across
+tools/widths, and that the More Tools button's text tracks the active tool
+when that tool is overflowed.
 
-Requires PyQt5 -- there is no off-engine fallback, since window chrome only
-exists in the real widget.
+Follows tools/gen_trigger_panel_eyeball.py's shape exactly: its own
+_ensure_qapp()/_isolate_config(), and no golden-image baseline -- this repo
+has no golden-image gate for window chrome anywhere, and establishing one is
+out of scope for this plan.
 
-Writes build/toolbar_eyeball/, gitignored. No test reads it. No golden
-images -- there is no baseline, only visual inspection.
+Writes build/toolbar_eyeball/, gitignored. No test reads it.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import argparse
 import importlib.util
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,14 +28,12 @@ OUT_DIR = ROOT / "build" / "toolbar_eyeball"
 
 PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
 
-WIDTHS = (800, 1024, 1280)
-
-# (prefix, mode label, tool_id or None for whichever tool the mode leaves
-# active -- Pan for View).
-STATES = (
-    ("view", "View", None),
+_WIDTHS = (800, 1024, 1280)
+# (prefix, mode text, tool_id to select once in that mode -- "" for none).
+_STATES = (
+    ("view", "View", ""),
     ("terrain_draw", "Terrain", "draw"),
-    ("terrain_set_level", "Terrain", "set_level"),
+    ("terrain_set_elevation", "Terrain", "set_level"),
 )
 
 _QAPP = None
@@ -53,10 +50,8 @@ def _ensure_qapp() -> None:
 
 
 def _isolate_config(tmp_dir: Path) -> None:
-    """Redirect CONFIG_PATH before any ViewerWindow exists, or
-    closeEvent()'s unconditional settings.set_window_size() writes straight
-    through to this developer's real config.yaml -- see
-    tools/gen_trigger_panel_eyeball.py's own copy of this function for why."""
+    """See tools/gen_trigger_panel_eyeball.py's own docstring for why this
+    must run before any ViewerWindow exists."""
     import descape.asset_source as asset_source_module
     import descape.settings as settings_module
 
@@ -78,45 +73,78 @@ def _isolate_config(tmp_dir: Path) -> None:
         setattr(settings_module, name, None)
 
 
-def _open_window(width: int):
+def _open_window():
     from descape.scenario_io import BLANK_TEMPLATE_PATH
     from descape.viewer import ViewerWindow
     from PyQt5.QtWidgets import QApplication
 
     window = ViewerWindow()
-    window.resize(width, 700)
-    window.show()
     window.load_scenario(BLANK_TEMPLATE_PATH)
     if window.scenario is None:
         window.close()
         raise SystemExit("blank template failed to load")
+    window.show()
     QApplication.processEvents()
     return window
 
 
-def _capture(prefix: str, mode: str, tool_id: str | None, width: int, out_dir: Path) -> Path:
-    from PyQt5.QtWidgets import QApplication
+def _grab_toolbars(window, out_path: Path) -> None:
+    """Both toolbar rows, stacked as one image -- there's no single widget
+    that spans both (they're separate QToolBars either side of
+    addToolBarBreak()), so grab each and paste them together."""
+    from PyQt5.QtGui import QImage, QPainter
 
-    window = _open_window(width)
-    try:
-        window.mode_combo.setCurrentText(mode)
-        if tool_id is not None:
-            window._on_tool_selected(tool_id)
-        QApplication.processEvents()
-        out_path = out_dir / f"{prefix}_{width}.png"
-        window.grab().save(str(out_path))
-    finally:
-        window.edit_history.mark_saved()
-        window.close()
-    return out_path
+    main_pix = window.main_toolbar.grab()
+    param_toolbar = next(
+        tb for tb in window.findChildren(type(window.main_toolbar)) if tb.windowTitle() == "Tool Options"
+    )
+    param_pix = param_toolbar.grab()
+
+    width = max(main_pix.width(), param_pix.width())
+    height = main_pix.height() + param_pix.height()
+    combined = QImage(width, height, QImage.Format_ARGB32)
+    combined.fill(0xFFFFFFFF)
+    painter = QPainter(combined)
+    painter.drawPixmap(0, 0, main_pix)
+    painter.drawPixmap(0, main_pix.height(), param_pix)
+    painter.end()
+    combined.save(str(out_path))
 
 
 def generate(out_dir: Path) -> list[Path]:
+    from PyQt5.QtWidgets import QApplication
+
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for prefix, mode, tool_id in STATES:
-        for width in WIDTHS:
-            written.append(_capture(prefix, mode, tool_id, width, out_dir))
+    window = _open_window()
+    try:
+        for prefix, mode_text, tool_id in _STATES:
+            window.mode_combo.setCurrentText(mode_text)
+            QApplication.processEvents()
+            if tool_id:
+                # .trigger() (not _on_tool_selected() directly) so the
+                # QAction's own checked state -- and so its toolbar
+                # button's highlight -- matches what a real click leaves
+                # behind, for an honest screenshot.
+                getattr(window, f"{tool_id}_action").trigger()
+                QApplication.processEvents()
+            for width in _WIDTHS:
+                window.resize(width, 800)
+                QApplication.processEvents()
+                more_tools_state = (
+                    "overflow" if window.more_tools_action.isVisible() else "no_overflow"
+                )
+                path = out_dir / f"{prefix}_{width}_{more_tools_state}.png"
+                _grab_toolbars(window, path)
+                written.append(path)
+                print(
+                    f"{prefix} @ {width}px: more_tools={more_tools_state} "
+                    f"button_text={window.more_tools_button.text()!r} "
+                    f"menu_count={len(window.more_tools_menu.actions())}"
+                )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
     return written
 
 
@@ -127,6 +155,8 @@ def main() -> None:
 
     if not PYQT5_AVAILABLE:
         raise SystemExit("PyQt5 not importable -- this script has no Qt-free fallback")
+
+    import tempfile
 
     _ensure_qapp()
     with tempfile.TemporaryDirectory() as tmp:

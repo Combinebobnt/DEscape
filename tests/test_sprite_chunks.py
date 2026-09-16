@@ -123,7 +123,7 @@ def _chunked(scn, full, elevations, proj, sprites):
     mm = scn.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     units_by_tile = render._units_by_tile(scn)
-    bboxes = render._building_bboxes_iso(units_by_tile, mm.map_width, mm.map_height, proj, elevations)
+    bboxes = render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
     merged = render.merge_sprite_bboxes(bboxes, sprites)
     out = np.zeros_like(full)
     h, w = full.shape[:2]
@@ -162,7 +162,7 @@ def test_without_the_widening_a_sprite_clips_at_a_chunk_edge(sprite_install):
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     units_by_tile = render._units_by_tile(scn)
     unwidened = render._building_bboxes_iso(
-        units_by_tile, mm.map_width, mm.map_height, proj, elevations
+        scn, mm.map_width, mm.map_height, proj, elevations
     )
     out = np.zeros_like(full)
     h, w = full.shape[:2]

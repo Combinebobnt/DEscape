@@ -8,6 +8,7 @@ from __future__ import annotations
 
 
 import math
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -98,6 +99,18 @@ class MapView(QGraphicsView):
     # unreachable dead weight in the ladder.
     MIN_ZOOM_FRACTION_OF_FIT = 0.5
     MAX_ZOOM_MULTIPLE_OF_FIT = 64.0
+
+    # One mouse-wheel detent in QWheelEvent.angleDelta() units (Qt's own
+    # documented value: eighths of a degree, 15 degrees per detent). A
+    # high-resolution wheel or a trackpad sends fractions of this many units
+    # per event, so wheelEvent() accumulates rather than treating every event
+    # as a full zoom step. See wheelEvent's own docstring.
+    WHEEL_NOTCH_UNITS = 120
+    # Idle gap that ends a wheel GESTURE, so the next event starts a fresh
+    # one with a fresh +/-1 mip budget. PROVISIONAL, in the same sense as
+    # VIEWPORT_POLL_MS: long enough that one flick of a real wheel stays one
+    # gesture, short enough that a deliberate second roll isn't refused.
+    WHEEL_GESTURE_GAP_S = 0.25
 
     # Repeating, self-stopping poll interval backing the viewport-changed hook
     # (maintainer plan 2026-09-07's A2.4) -- PROVISIONAL, to be tuned in the
@@ -358,6 +371,9 @@ class MapView(QGraphicsView):
         self._region_fill_item: QGraphicsPathItem | None = None
         self._region_outline_item: QGraphicsPathItem | None = None
         self._region_ants_item: QGraphicsPathItem | None = None
+        # The overlay's scene-space bounds, remembered whenever the boundary
+        # path is rebuilt. See _region_on_screen(), which gates the ants.
+        self._region_scene_rect: QRectF | None = None
         self._region_ant_offset = 0.0
         self._region_ant_timer = QTimer(self)
         self._region_ant_timer.setInterval(self.REGION_SELECT_ANT_TICK_MS)
@@ -492,6 +508,14 @@ class MapView(QGraphicsView):
         # set_isometric() once a map is loaded and a fit-to-view scale exists.
         self._min_linear_scale: float | None = None
         self._max_linear_scale: float | None = None
+        # Wheel-gesture state, all reset together by _end_wheel_gesture():
+        # leftover sub-notch angleDelta, the direction the gesture is
+        # running in, the mip it started on (None while idle), and when the
+        # last wheel event arrived.
+        self._wheel_accum = 0
+        self._wheel_dir = 0
+        self._wheel_gesture_mip: int | None = None
+        self._wheel_last_t = 0.0
         self.set_zoom_anchor_mode(settings.get_zoom_centered_on_cursor())
         self.setMouseTracking(True)
 
@@ -897,20 +921,27 @@ class MapView(QGraphicsView):
         entries = unit_pick.units_in_rect(self._unit_index, *tile_rect)
         return [unit_pick.unit_key(e.player_id, e.unit) for e in entries]
 
-    def pick_unit_at(self, pos: QPointF):
+    def pick_unit_at(self, pos: QPointF, tile=unit_pick.UNRESOLVED_TILE):
         """The unit under scene-space pos, or None -- in every style since
         Track C5's Step 3, so this mirrors _pick_tile again.
 
-        Sloped's two extra arguments both come from the live
-        SlopedChunkCache, for the same Risk #6 reason _pick_tile and
-        _tile_polygon read it: that object composited the pixels on screen,
-        so hit-testing and the outline see the SAME corner_rise those pixels
-        were painted from. terrain_tile is resolved here rather than inside
-        unit_pick because Sloped's terrain has no analytic inverse -- it is
-        a pick-plane lookup, which is exactly the cache reference unit_pick
-        stays free of."""
+        corner_rise comes from the live SlopedChunkCache, for the same Risk
+        #6 reason _pick_tile and _tile_polygon read it: that object
+        composited the pixels on screen, so hit-testing and the outline see
+        the SAME corner_rise those pixels were painted from. terrain_tile is
+        resolved here rather than inside unit_pick because Sloped's terrain
+        has no analytic inverse -- it is a pick-plane lookup, which is
+        exactly the cache reference unit_pick stays free of.
+
+        `tile` is that terrain tile, for a caller that has already resolved
+        it: mouseMoveEvent picks one per move for the hover cue, and
+        recomputing it here cost that pixel a second plane lookup (Sloped)
+        or a second screen_to_tile (Stepped) on every move. Omitting it
+        resolves one here, which is what the click paths do."""
         if self._unit_index is None or self._tile_pixels is None:
             return None
+        if tile is unit_pick.UNRESOLVED_TILE:
+            tile = self._pick_tile(pos)
         cache = self._sloped_cache()
         return unit_pick.pick_unit(
             self._unit_index,
@@ -923,7 +954,7 @@ class MapView(QGraphicsView):
             self._iso_elevations,
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
-            terrain_tile=None if cache is None else self._pick_tile(pos),
+            terrain_tile=tile,
             farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
         )
 
@@ -955,10 +986,7 @@ class MapView(QGraphicsView):
             self._select_anchor = None
             self._select_current = None
             self._update_region_overlay()
-        if tool in EDIT_TOOLS:
-            self._pulse_timer.start(self.HIGHLIGHT_PULSE_TICK_MS)
-        else:
-            self._pulse_timer.stop()
+        self._sync_pulse_timer()
         # Routed through _apply_drag_mode() rather than set here directly, so
         # Units mode's NoDrag can't be undone by a tool switch.
         self._apply_drag_mode()
@@ -1059,6 +1087,9 @@ class MapView(QGraphicsView):
         self._stroke_active = False
         self._stroke_touched = set()
         self._stroke_button = None
+        # Resumes the highlight pulse the press paused. See
+        # _sync_pulse_timer() for why a stroke stops it.
+        self._sync_pulse_timer()
         self._on_stroke_end()
 
     def mousePressEvent(self, event) -> None:
@@ -1185,6 +1216,9 @@ class MapView(QGraphicsView):
                 self._stroke_active = True
                 self._stroke_touched = set()
                 self._stroke_button = event.button()
+                # Pauses the pulse for the duration of the stroke, which is
+                # the one time its 40ms tick competes with real edit work.
+                self._sync_pulse_timer()
                 self._on_stroke_start()
                 self._touch_tile(*self._pick_tile(pos), event.modifiers())
             return
@@ -1452,6 +1486,9 @@ class MapView(QGraphicsView):
         else:
             self._highlight_outline_item.setPath(path)
             self._highlight_fill_item.setPath(path)
+        # A fill item created while the pulse is paused would otherwise sit
+        # at Qt's default opacity of 1.0 until the stroke ends.
+        self._apply_highlight_opacity()
 
     def _clear_highlight(self) -> None:
         # Always resets _highlight_key too, not just on a state change that
@@ -1558,6 +1595,9 @@ class MapView(QGraphicsView):
             self._region_fill_item.setPath(fill_path)
             self._region_outline_item.setPath(boundary_path)
             self._region_ants_item.setPath(boundary_path)
+        # The items sit at the scene origin untransformed, so the path's own
+        # bounds are already scene-space.
+        self._region_scene_rect = boundary_path.boundingRect()
         self._sync_region_ant_timer()
 
     def _clear_region_overlay(self) -> None:
@@ -1569,13 +1609,32 @@ class MapView(QGraphicsView):
             self._region_fill_item = None
             self._region_outline_item = None
             self._region_ants_item = None
+        self._region_scene_rect = None
         self._region_ant_timer.stop()
 
+    def _region_on_screen(self) -> bool:
+        """Whether the region overlay's own scene rect intersects the visible
+        viewport rect. Deliberately a rect test, not a per-tile visibility
+        one: a region straddling the edge keeps its ants running, which is
+        what the visible part of the outline needs.
+
+        Reads the remembered _region_scene_rect rather than asking the item
+        for its own bounds. This runs from _note_viewport_changed(), which
+        clear_image()/set_source() both reach in the window between
+        scene().clear() destroying the item and the Python-side reference
+        being dropped, where any call on the item raises."""
+        if self._region_ants_item is None or self._region_scene_rect is None:
+            return False
+        visible = self.mapToScene(self.viewport().rect()).boundingRect()
+        return self._region_scene_rect.intersects(visible)
+
     def _sync_region_ant_timer(self) -> None:
-        """The ants only cost anything while a region is actually shown --
-        gated the same way _pulse_timer is gated on an edit tool being
-        active."""
-        if self._region_ants_item is not None:
+        """The ants only cost anything while a region is actually shown, and
+        only earn it while that region is on screen. An off-screen one
+        dirties a scene rect every 80ms that nothing can see (perf findings
+        item 21). Re-checked from _note_viewport_changed(), so scrolling the
+        region back into view starts them again."""
+        if self._region_on_screen():
             if not self._region_ant_timer.isActive():
                 self._region_ant_timer.start()
         else:
@@ -1750,11 +1809,39 @@ class MapView(QGraphicsView):
         self._pulse_phase_ms = (self._pulse_phase_ms + self.HIGHLIGHT_PULSE_TICK_MS) % (
             self.HIGHLIGHT_PULSE_PERIOD_MS
         )
-        t = self._pulse_phase_ms / self.HIGHLIGHT_PULSE_PERIOD_MS
+        self._apply_highlight_opacity()
+
+    def _sync_pulse_timer(self) -> None:
+        """The pulse runs while an edit tool is active AND no stroke is in
+        progress. Every tick dirties the highlight's scene rect, which
+        re-enters MapCanvasItem.paint (perf findings item 21), so during a
+        stroke it competes with the edit work for the same frames. The
+        cursor is not resting there to be found anyway.
+
+        Paused rather than merely slowed, so the highlight has to hold a
+        steady value while it waits: see _pulse_alpha()."""
+        if self._tool in EDIT_TOOLS and not self._stroke_active:
+            if not self._pulse_timer.isActive():
+                self._pulse_timer.start(self.HIGHLIGHT_PULSE_TICK_MS)
+        else:
+            self._pulse_timer.stop()
+        self._apply_highlight_opacity()
+
+    def _pulse_alpha(self) -> float:
+        """The fill opacity for the current phase, or the steady mid-pulse
+        value while the pulse is paused. A paused highlight must read as a
+        solid cursor, never as a frozen fade-out at whichever phase the
+        press happened to interrupt."""
         mid = (self.HIGHLIGHT_PULSE_MIN_ALPHA + self.HIGHLIGHT_PULSE_MAX_ALPHA) / 2
+        if not self._pulse_timer.isActive():
+            return mid
         amplitude = (self.HIGHLIGHT_PULSE_MAX_ALPHA - self.HIGHLIGHT_PULSE_MIN_ALPHA) / 2
-        alpha = mid + amplitude * math.sin(2 * math.pi * t)
-        self._highlight_fill_item.setOpacity(alpha)
+        t = self._pulse_phase_ms / self.HIGHLIGHT_PULSE_PERIOD_MS
+        return mid + amplitude * math.sin(2 * math.pi * t)
+
+    def _apply_highlight_opacity(self) -> None:
+        if self._highlight_fill_item is not None:
+            self._highlight_fill_item.setOpacity(self._pulse_alpha())
 
     def clear_image(self) -> None:
         """Undoes set_source() -- back to the pre-load empty state (used by
@@ -1820,9 +1907,13 @@ class MapView(QGraphicsView):
         self._region_fill_item = None
         self._region_outline_item = None
         self._region_ants_item = None
+        self._region_scene_rect = None
         self._region_ant_timer.stop()
         self._stroke_active = False
         self._stroke_touched = set()
+        # File > Close mid-stroke drops the stroke without a release, so the
+        # pulse would otherwise stay paused for the next document.
+        self._sync_pulse_timer()
 
     def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:
         """Phase B-C's replacement for the old update_region_bbox()/
@@ -1997,7 +2088,13 @@ class MapView(QGraphicsView):
         scrolling, centerOn, and the scrollbar shifts a scale() call
         induces), wheelEvent (a zoom whose scrollbars happen not to move
         still changes the mip), _capture_zoom_baseline (covers
-        resizeEvent), and set_source()/clear_image() (a new document)."""
+        resizeEvent), and set_source()/clear_image() (a new document).
+
+        Also the funnel for the region ants' on-screen gate, since that is
+        the same set of paths that changes what is visible. That includes
+        the resize on show(), which is what starts the ants for a region set
+        while the window had no real viewport yet."""
+        self._sync_region_ant_timer()
         if not self._viewport_poll_timer.isActive():
             self._viewport_poll_timer.start()
 
@@ -2121,6 +2218,7 @@ class MapView(QGraphicsView):
         self._region_fill_item = None
         self._region_outline_item = None
         self._region_ants_item = None
+        self._region_scene_rect = None
         self._region_ant_timer.stop()
 
         self._canvas_item = MapCanvasItem(cache)
@@ -2549,13 +2647,107 @@ class MapView(QGraphicsView):
         super().scrollContentsBy(dx, dy)
         self._note_viewport_changed()
 
+    def _mip_for_zoom_factor(self, factor: float) -> int | None:
+        """The mip level a paint would select if this view were scaled by
+        `factor` right now; None with no canvas item.
+
+        Same reading as viewport_chunk_target(), and exact rather than
+        approximate for a uniform factor: scaling a transform by `s` scales
+        its singular values by `s`, which is the same argument that method
+        already makes for folding in devicePixelRatioF()."""
+        item = self._canvas_item
+        if item is None:
+            return None
+        device_transform = item.deviceTransform(self.viewportTransform())
+        scale = _max_axis_scale(device_transform) * self.devicePixelRatioF()
+        return item._cache.mip_for_scale(scale * factor)
+
+    def _end_wheel_gesture(self) -> None:
+        """Drops the sub-notch residual, the running direction and the
+        current gesture's mip budget, so the next wheel event starts a
+        gesture of its own."""
+        self._wheel_accum = 0
+        self._wheel_dir = 0
+        self._wheel_gesture_mip = None
+        self._wheel_last_t = 0.0
+
+    def _trim_wheel_notches(self, notches: int) -> int:
+        """Reduces a pending notch count until the zoom it asks for is inside
+        the floor/ceiling AND at most one mip level from where the gesture
+        started. 0 means the whole event is refused, which for a single
+        over-the-ceiling notch is exactly the refusal this has always been.
+        The arithmetic at |notches| == 1 is the pre-accumulation guard
+        unchanged."""
+        step = 1.25 if notches > 0 else 0.8
+        current = abs(self.transform().determinant()) ** 0.5
+        while notches != 0:
+            factor = step ** abs(notches)
+            target = current * factor
+            too_small = notches < 0 and self._min_linear_scale is not None and target < self._min_linear_scale
+            too_big = notches > 0 and self._max_linear_scale is not None and target > self._max_linear_scale
+            if not (too_small or too_big or self._crosses_wheel_mip_budget(factor)):
+                return notches
+            notches += -1 if notches > 0 else 1
+        return 0
+
+    def _crosses_wheel_mip_budget(self, factor: float) -> bool:
+        """Whether zooming by `factor` would land more than one mip level
+        from where this gesture started. False with no canvas item (nothing
+        selects a level) and on a single-level ladder, where mip_for_scale()
+        clamps every scale to the same answer."""
+        start = self._wheel_gesture_mip
+        if start is None:
+            return False
+        mip = self._mip_for_zoom_factor(factor)
+        return mip is not None and abs(mip - start) > 1
+
     def wheelEvent(self, event):
-        factor = 1.25 if event.angleDelta().y() > 0 else 0.8
-        current_scale = abs(self.transform().determinant()) ** 0.5
-        if factor < 1.0 and self._min_linear_scale is not None and current_scale * factor < self._min_linear_scale:
+        """Zooms by whole WHEEL_NOTCH_UNITS notches, at most one mip level
+        per gesture.
+
+        Accumulating angleDelta rather than taking every event as a full step
+        is what keeps a high-resolution wheel or a trackpad, which sends many
+        small deltas, to one zoom step per real detent instead of one per
+        event, and each step is a full-viewport repaint. A coarse wheel
+        sends exactly one notch per detent, so it behaves as it always has,
+        including the ceiling/floor refusal.
+
+        A GESTURE is a run of same-direction events with no
+        WHEEL_GESTURE_GAP_S pause between them: one flick of the wheel.
+        Notches past the first mip boundary in a gesture are dropped rather
+        than banked, so a hard flick lands one level away instead of two.
+        Two would land outside level_warm.neighbour_mips()'s +/-1 warm set
+        and pay a synchronous level build inside paint(). Pausing (or
+        reversing) starts a fresh gesture with a fresh budget."""
+        delta = event.angleDelta().y()
+        if delta == 0:
             return
-        if factor > 1.0 and self._max_linear_scale is not None and current_scale * factor > self._max_linear_scale:
+        now = time.monotonic()
+        # Direction is tracked separately from the residual, which is 0 after
+        # a whole detent: rolling in then straight back out is the common
+        # reversal, and it must not spend one budget in both directions.
+        flipped = self._wheel_dir != 0 and (delta > 0) != (self._wheel_dir > 0)
+        if flipped or now - self._wheel_last_t >= self.WHEEL_GESTURE_GAP_S:
+            self._end_wheel_gesture()
+        self._wheel_dir = 1 if delta > 0 else -1
+        # Stamped on every event, including one whose notches are all trimmed
+        # away: otherwise a refused event would let the next detent open a
+        # fresh gesture and step around the one-mip budget.
+        self._wheel_last_t = now
+        total = self._wheel_accum + delta
+        magnitude = abs(total) // self.WHEEL_NOTCH_UNITS
+        notches = magnitude if total > 0 else -magnitude
+        # Only sub-notch delta carries over; whole notches the trim refuses
+        # are dropped, not banked for the next event.
+        self._wheel_accum = total - notches * self.WHEEL_NOTCH_UNITS
+        if notches == 0:
             return
+        if self._wheel_gesture_mip is None:
+            self._wheel_gesture_mip = self._mip_for_zoom_factor(1.0)
+        notches = self._trim_wheel_notches(notches)
+        if notches == 0:
+            return
+        factor = 1.25**notches if notches > 0 else 0.8 ** -notches
         self.scale(factor, factor)
         self._note_viewport_changed()
         self._on_zoom_changed()
@@ -2657,7 +2849,9 @@ class MapView(QGraphicsView):
             # exactly there. Gating on on_map would make those pixels
             # unhoverable. See pick_unit()'s documented skirt residual.
             in_canvas = self._map_rect is not None and self._map_rect.contains(pos)
-            entry = self.pick_unit_at(pos) if in_canvas else None
+            # This same pixel's tile, resolved at the top of this handler;
+            # nothing since has touched the geometry it came from.
+            entry = self.pick_unit_at(pos, tile) if in_canvas else None
             if entry is None:
                 self._clear_unit_hover()
             else:

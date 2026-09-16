@@ -21,9 +21,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 import conftest
+from descape import render
 
 pytestmark = [
     pytest.mark.gui,
@@ -51,6 +52,22 @@ def _window():
     # instead of the plain top-down canvas this module means to exercise.
     window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText("Flat")
+    window.mode_combo.setCurrentText("Units")
+    return window
+
+
+def _window_with_style(style: str):
+    """Like _window(), but for Stepped/Sloped instead of Flat -- Batch D's
+    D5 scoped-patch wiring (dirty_screen_bbox_iso/_sloped via
+    _patch_unit_edit_cache) has no Flat counterpart to exercise it against,
+    since Flat's own branch there is patch_rects, not a bbox call."""
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    window = ViewerWindow()
+    window.load_scenario(FIXTURE_PATH)
+    assert window.scenario is not None, "fixture failed to load"
+    window.terrain_style_combo.setCurrentText(style)
     window.mode_combo.setCurrentText("Units")
     return window
 
@@ -121,14 +138,111 @@ def test_a_model_driven_edit_survives_undo_redo_and_reaches_disk(tmp_path: Path)
         _close(window)
 
 
+def _cursor_shape():
+    """The override cursor's shape, or None if there is no override. The shape
+    and not the QCursor: overrideCursor() hands back a pointer Qt owns and
+    destroys on restore, so a wrapper kept past that reads back as 0."""
+    cursor = QApplication.overrideCursor()
+    return None if cursor is None else cursor.shape()
+
+
+def _cursor_spy(monkeypatch, outcome):
+    """Replace viewer.UnitEditModel with a stand-in that records the override
+    cursor in force while the construction gate is running. `outcome` is
+    called with the scenario and decides what the gate does."""
+    import descape.viewer as viewer_module
+
+    seen = []
+
+    def _spy(scenario):
+        seen.append(_cursor_shape())
+        return outcome(scenario)
+
+    monkeypatch.setattr(viewer_module, "UnitEditModel", _spy)
+    return seen
+
+
+def test_the_first_unit_edit_gate_shows_a_wait_cursor_and_restores_it(monkeypatch) -> None:
+    """The gate scans every unit in the file, a one-time multi-hundred-ms
+    freeze that reads as a hang without a cursor. The repeat calls (one per
+    unit edit, forever after) are a cached return and must stay cursor-free,
+    since a flicker per edit would be worse than no cursor at all."""
+    import descape.viewer as viewer_module
+
+    window = _window()
+    try:
+        assert window.unit_edits is None, "the gate is supposed to be deferred to the first edit"
+        real = viewer_module.UnitEditModel
+        seen = _cursor_spy(monkeypatch, real)
+
+        assert QApplication.overrideCursor() is None
+        model = window._ensure_unit_edits()
+
+        assert model is not None
+        assert seen == [Qt.WaitCursor]
+        assert QApplication.overrideCursor() is None
+
+        assert window._ensure_unit_edits() is model
+        assert len(seen) == 1, "the cached return re-ran the gate"
+        assert QApplication.overrideCursor() is None
+    finally:
+        _close(window)
+
+
+def test_a_refused_unit_edit_gate_restores_the_cursor_before_its_dialog(monkeypatch) -> None:
+    """The refusal path returns None rather than raising, so it needs its own
+    coverage. The recorded cursor at dialog time is the point: a modal warning
+    under a wait cursor reads as a still-frozen window."""
+    from descape.unit_model import UnitEditsUnavailableError
+
+    def _refuse(scenario):
+        raise UnitEditsUnavailableError("synthetic refusal")
+
+    window = _window()
+    try:
+        seen = _cursor_spy(monkeypatch, _refuse)
+        at_dialog = []
+        monkeypatch.setattr(
+            QMessageBox, "warning", lambda *a, **k: at_dialog.append(_cursor_shape())
+        )
+
+        assert window._ensure_unit_edits() is None
+
+        assert seen == [Qt.WaitCursor]
+        assert at_dialog == [None]
+        assert QApplication.overrideCursor() is None
+    finally:
+        _close(window)
+
+
+def test_an_unexpected_gate_failure_still_restores_the_cursor(monkeypatch) -> None:
+    """An exception the gate does not classify propagates, and a stuck wait
+    cursor over a still-usable window would be a real UI bug."""
+
+    def _explode(scenario):
+        raise RuntimeError("synthetic gate failure")
+
+    window = _window()
+    try:
+        seen = _cursor_spy(monkeypatch, _explode)
+
+        with pytest.raises(RuntimeError):
+            window._ensure_unit_edits()
+
+        assert seen == [Qt.WaitCursor]
+        assert QApplication.overrideCursor() is None
+    finally:
+        _close(window)
+
+
 # --- b1.4: place ------------------------------------------------------------
 
 
 def test_placing_a_unit_snaps_to_the_tile_centre_and_selects_it() -> None:
     window = _window()
     try:
-        window.place_object_edit.set_value(_PLACE_CONST)
-        window.place_owner_combo.setCurrentIndex(window.place_owner_combo.findData(1))
+        window.units_panel.select_object(_PLACE_CONST)
+        window.units_panel.select_owner(1)
         window.place_unit_action.setChecked(True)
         before = _unit_count(window)
         before_records = len(window.edit_history.records)
@@ -145,6 +259,38 @@ def test_placing_a_unit_snaps_to_the_tile_centre_and_selects_it() -> None:
 
         window.undo()
         assert _unit_count(window) == before
+    finally:
+        _close(window)
+
+
+def test_activating_a_catalog_row_checks_place_unit_and_returns_focus_to_the_map() -> None:
+    """Double-click/Enter on the sidebar catalog replaces "accept the
+    dialog": it activates the Place Unit tool (if available) and hands focus
+    back to the map, so the common flow (pick an object, place it, then
+    nudge it with arrow keys) doesn't get stuck sending arrow keys to the
+    tree instead -- see units_panel.py's own _build_catalog_pane docstring.
+
+    Needs a real shown+activated window: Qt's focus tracking is a no-op on
+    an offscreen, never-activated one (test_keybinds.py's own comment on its
+    QTest.keyClick tests makes the same point for shortcut dispatch).
+    """
+    window = _window()
+    try:
+        window.show()
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+
+        window.units_panel.catalog_view.tree.setFocus()
+        window.units_panel.catalog_view.select(_PLACE_CONST)
+        current = window.units_panel.catalog_view.tree.currentItem()
+        window.units_panel.catalog_view.tree.itemActivated.emit(current, 0)
+        QApplication.processEvents()
+
+        assert window.place_unit_action.isChecked()
+        assert window.units_panel.selected_object_const() == _PLACE_CONST
+        assert QApplication.focusWidget() is window.map_view
     finally:
         _close(window)
 
@@ -171,7 +317,7 @@ def test_moving_a_selected_unit_snaps_to_the_target_tile_centre() -> None:
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
         before_records = len(window.edit_history.records)
 
         window.on_unit_move(key, _pos_for_tile(window, 25, 30), Qt.NoModifier)
@@ -210,7 +356,7 @@ def test_arrow_nudge_moves_by_a_fine_step_and_shift_by_a_whole_tile() -> None:
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
         start_x = entry.unit.x
 
         window.on_unit_nudge(1, 0, Qt.NoModifier)
@@ -236,14 +382,14 @@ def test_deleting_a_selected_unit_removes_it_immediately() -> None:
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
         before = _unit_count(window)
 
         window.on_unit_delete(Qt.NoModifier)
 
         assert _unit_count(window) == before - 1
         assert window._selection == []
-        assert window.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
 
         window.undo()
         assert _unit_count(window) == before
@@ -285,9 +431,9 @@ def test_owner_combo_reassigns_and_keeps_the_unit_selected() -> None:
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
 
-        combo = window.unit_field_editors["player"]
+        combo = window.units_panel.unit_field_editors["player"]
         combo.setCurrentIndex(combo.findData(2))
 
         assert window._selection == [(2, entry.unit.reference_id)]
@@ -305,10 +451,10 @@ def test_reassigning_to_the_same_owner_is_a_no_op() -> None:
         entry = next(e for e in window.map_view._unit_index.entries if e.player_id == 1)
         window._selection = [(entry.player_id, entry.unit.reference_id)]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
         before_records = len(window.edit_history.records)
 
-        combo = window.unit_field_editors["player"]
+        combo = window.units_panel.unit_field_editors["player"]
         combo.setCurrentIndex(combo.findData(1))
 
         assert len(window.edit_history.records) == before_records
@@ -323,11 +469,11 @@ def test_x_field_round_trips_through_a_single_undo_record() -> None:
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
         start_x = entry.unit.x
         before_records = len(window.edit_history.records)
 
-        spin = window.unit_field_editors["x"]
+        spin = window.units_panel.unit_field_editors["x"]
         spin.setValue(start_x + 7)
 
         assert len(window.edit_history.records) == before_records + 1
@@ -346,7 +492,7 @@ def test_float_editors_have_keyboard_tracking_off() -> None:
     window = _window()
     try:
         for field_id in ("x", "y", "z"):
-            assert window.unit_field_editors[field_id].keyboardTracking() is False
+            assert window.units_panel.unit_field_editors[field_id].keyboardTracking() is False
     finally:
         _close(window)
 
@@ -376,8 +522,8 @@ def test_place_pixels_appear_where_none_existed() -> None:
     window = _window()
     try:
         tx, ty = _empty_tile(window)
-        window.place_object_edit.set_value(_PLACE_CONST)
-        window.place_owner_combo.setCurrentIndex(window.place_owner_combo.findData(1))
+        window.units_panel.select_object(_PLACE_CONST)
+        window.units_panel.select_owner(1)
         window.place_unit_action.setChecked(True)
         cx, cy = _chunk_for_tile(window, tx, ty)
 
@@ -436,11 +582,11 @@ def test_reassign_pixels_change_colour() -> None:
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
-        window._update_unit_inspector(entry)
+        window.units_panel.show_unit(entry)
         cx, cy = _chunk_for_tile(window, int(entry.unit.x), int(entry.unit.y))
 
         before = window._cache.get_chunk(0, cx, cy).copy()
-        combo = window.unit_field_editors["player"]
+        combo = window.units_panel.unit_field_editors["player"]
         combo.setCurrentIndex(combo.findData(2))
         after = window._cache.get_chunk(0, cx, cy)
 
@@ -830,16 +976,16 @@ def test_a_gate_with_no_room_at_the_map_edge_refuses_and_says_so() -> None:
 def test_the_inspector_shows_an_editor_only_for_an_angle_const() -> None:
     window = _window()
     try:
-        editor = window.unit_field_editors["rotation"]
-        label = window.unit_field_labels["rotation"]
+        editor = window.units_panel.unit_field_editors["rotation"]
+        label = window.units_panel.unit_field_labels["rotation"]
 
         _select(window, _REF_ARCHER_P1)
-        assert editor.isVisibleTo(window.unit_inspector_grid)
-        assert not label.isVisibleTo(window.unit_inspector_grid)
+        assert editor.isVisibleTo(window.units_panel.unit_inspector_grid)
+        assert not label.isVisibleTo(window.units_panel.unit_inspector_grid)
 
         _select(window, _REF_WALL)
-        assert not editor.isVisibleTo(window.unit_inspector_grid)
-        assert label.isVisibleTo(window.unit_inspector_grid)
+        assert not editor.isVisibleTo(window.units_panel.unit_inspector_grid)
+        assert label.isVisibleTo(window.units_panel.unit_inspector_grid)
     finally:
         _close(window)
 
@@ -850,10 +996,140 @@ def test_typing_a_rotation_into_the_inspector_records_one_undo_step() -> None:
         (entry,) = _select(window, _REF_ARCHER_P1)
         before = entry.unit.rotation
 
-        window.unit_field_editors["rotation"].setValue(1.5)
+        window.units_panel.unit_field_editors["rotation"].setValue(1.5)
 
         assert entry.unit.rotation == pytest.approx(1.5)
         window.undo()
         assert entry.unit.rotation == before
+    finally:
+        _close(window)
+
+
+# --- Batch D's D5: scoped repaint on Stepped/Sloped -------------------------
+#
+# Every pixel test above runs on Flat (this module's own docstring), whose
+# _patch_unit_edit_cache() branch is patch_rects(), not a dirty_screen_bbox_*
+# call -- so Move's Stepped/Sloped branch has no coverage from them at all.
+# These pin both: pixels move correctly, AND the splice actually engaged
+# (render.sprite_draws_by_anchor(), the wholesale per-level rebuild D4's
+# splice exists to avoid, is never called) -- a call-counted oracle in the
+# same spirit as test_invalidate_units_splice.py's own, but through the real
+# ViewerWindow wiring D5 added rather than a direct cache call.
+
+
+def _move_without_wholesale_rebuild(window, monkeypatch) -> None:
+    """Drives the Set-field ("x") call site rather than on_unit_move(): the
+    latter goes through MapView._pick_tile()'s screen-to-tile inverse, which
+    is Flat-only arithmetic in this module by design (its own docstring) --
+    Stepped/Sloped's real inverse is test_unit_pick.py's job, not this
+    file's. The inspector spin editor sets x directly, still through
+    UnitEditModel.set_position() and the same _after_unit_mutation()/
+    _patch_unit_edit_cache() tail on_unit_move() itself uses.
+
+    Reads the whole canvas via render_rect(), not a single get_chunk(): a
+    chunk's (cx, cy) index is a flat tile_px/chunk_px division in Flat, but
+    Stepped/Sloped project a tile to an arbitrary screen diamond, so there
+    is no cheap way to know which chunk a unit's sprite lands in without
+    duplicating that projection here.
+
+    _REF_VILLAGER_P1, not _REF_ARCHER_P1: the archer's own tile sits inside
+    _REF_HOUSE's multi-tile footprint in this fixture, which is exactly
+    _splice_eligible()'s documented shared-tile fallback (own-tile sharing
+    is common enough that Batch D's D4 measured it directly, 5 of 16 corpus
+    files) -- a real edit, correctly NOT spliced, but the wrong unit to
+    prove the splice path with. The villager has no such neighbour."""
+    (entry,) = _select(window, _REF_VILLAGER_P1)
+    window.units_panel.show_unit(entry)
+    old_x = entry.unit.x
+
+    canvas_w, canvas_h = window._cache.canvas_dims(0)
+    # Builds level 0 once, normally -- the edit itself must not pay for this
+    # again (D4's splice deliberately never bumps _source_gen).
+    before = window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
+
+    calls = []
+    real = render.sprite_draws_by_anchor
+    monkeypatch.setattr(render, "sprite_draws_by_anchor", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+    window.units_panel.unit_field_editors["x"].setValue(old_x + 5)
+    after = window._cache.render_rect(0, 0, canvas_w, canvas_h)
+
+    assert not np.array_equal(before, after), "moving the unit should change the composited canvas"
+    assert calls == [], "a spliced unit edit should not pay for a wholesale sprite-source rebuild"
+
+
+def test_stepped_move_scopes_the_repaint_and_skips_the_wholesale_rebuild(monkeypatch) -> None:
+    window = _window_with_style("Stepped")
+    try:
+        _move_without_wholesale_rebuild(window, monkeypatch)
+    finally:
+        _close(window)
+
+
+def test_sloped_move_scopes_the_repaint_and_skips_the_wholesale_rebuild(monkeypatch) -> None:
+    window = _window_with_style("Sloped")
+    try:
+        _move_without_wholesale_rebuild(window, monkeypatch)
+    finally:
+        _close(window)
+
+
+# --- Batch D's D6: scoped undo/redo of a fields_only edit -------------------
+#
+# D5's own tests above pin the FORWARD edit's scoped path. Undo/redo goes
+# through a different method (_move_history()), which D6 gives its own
+# UnitSplice-building branch -- unpinned by anything above, since none of it
+# calls window.undo()/redo().
+
+
+def _move_then_undo_redo_without_wholesale_rebuild(window, monkeypatch) -> None:
+    (entry,) = _select(window, _REF_VILLAGER_P1)
+    window.units_panel.show_unit(entry)
+    old_x = entry.unit.x
+
+    window.units_panel.unit_field_editors["x"].setValue(old_x + 5)
+    moved_x = entry.unit.x
+    assert moved_x != old_x
+
+    calls = []
+    real = render.sprite_draws_by_anchor
+    monkeypatch.setattr(render, "sprite_draws_by_anchor", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+    window.undo()
+    assert entry.unit.x == old_x
+    window.redo()
+    assert entry.unit.x == moved_x
+    assert calls == [], "undo/redo of a fields_only edit should not pay for a wholesale sprite-source rebuild"
+
+
+def test_stepped_undo_redo_of_a_move_scopes_the_repaint(monkeypatch) -> None:
+    window = _window_with_style("Stepped")
+    try:
+        _move_then_undo_redo_without_wholesale_rebuild(window, monkeypatch)
+    finally:
+        _close(window)
+
+
+def test_sloped_undo_redo_of_a_move_scopes_the_repaint(monkeypatch) -> None:
+    window = _window_with_style("Sloped")
+    try:
+        _move_then_undo_redo_without_wholesale_rebuild(window, monkeypatch)
+    finally:
+        _close(window)
+
+
+def test_undo_of_a_delete_still_takes_the_wholesale_path() -> None:
+    """A membership edit (Delete) never gets fields_only=True, so its own
+    UnitDiffRecord carries no unit_field_entries -- undo must still fall back
+    to _after_unit_mutation(None) rather than crash trying to build splices
+    from a whole-list record."""
+    window = _window_with_style("Stepped")
+    try:
+        (entry,) = _select(window, _REF_VILLAGER_P1)
+        window.on_unit_delete(Qt.NoModifier)
+        assert window.map_view._unit_index.entry_for_key((entry.player_id, entry.unit.reference_id)) is None
+
+        window.undo()
+        assert window.map_view._unit_index.entry_for_key((entry.player_id, entry.unit.reference_id)) is not None
     finally:
         _close(window)

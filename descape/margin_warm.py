@@ -196,7 +196,21 @@ class MarginWarmer(_IdleTimerDriver):
     every viewport-changed poll fire (ViewerWindow._on_viewport_changed) --
     start() replaces whatever was queued outright, which IS the parent
     plan's A4 retarget mechanism; a second mechanism on top of that would be
-    new machinery this doesn't need."""
+    new machinery this doesn't need.
+
+    **Paused while any mouse button is held (item 23, decided 2026-09-10).**
+    A mouse pan's move events are discrete, so the 0ms idle timer still
+    fires in the gaps between them -- landing a 22-40ms chunk mid-drag as a
+    hitch. tick() gates on QApplication.mouseButtons() and backs the timer
+    off to HELD_INTERVAL_MS while held, restoring 0ms on release; warming
+    DURING a drag was considered and rejected (a fast drag already outruns
+    a finite margin per the parent plan's own Step A5 analysis, and middle
+    drag has no speed cap). Wheel and keyboard pans hold no button and are
+    unaffected. Applies equally to both MarginWarmer instances (the
+    navigation ring and the load-time _load_warmer) since it lives here
+    rather than in each call site."""
+
+    HELD_INTERVAL_MS = 50
 
     def __init__(self) -> None:
         super().__init__()
@@ -260,7 +274,20 @@ class MarginWarmer(_IdleTimerDriver):
         get_chunk() populates the cache itself, so there is nothing built-
         but-not-yet-installed to hand off -- which removes that module's
         single most delicate ordering hazard rather than reproducing it
-        here."""
+        here.
+
+        While any mouse button is held, warms nothing and backs the timer
+        off instead (see class docstring) -- the queue is left untouched,
+        so this always returns True here: the timer only ever reaches this
+        branch with a non-empty queue, since a drained queue stops the
+        timer before it can fire again."""
+        from PyQt5.QtWidgets import QApplication
+
+        if QApplication.mouseButtons():
+            self._set_interval(self.HELD_INTERVAL_MS)
+            return True
+        self._set_interval(0)
+
         if not self._queue:
             return self._drained()
         cx, cy = self._queue.pop(0)

@@ -7,6 +7,7 @@ PyQt5 viewer's canvas.
 from __future__ import annotations
 
 import math
+import weakref
 from collections.abc import Generator
 from dataclasses import dataclass
 from functools import lru_cache
@@ -658,15 +659,6 @@ def _render_tile_iso(
     terrain, not a coloured mark -- see SpriteLayer.farm_by_tile). This is
     the ONLY thing terrain_override changes; tile.terrain_id itself, and
     everything the caller derives from the tile object, is untouched."""
-    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
-    texture = asset_source.get_terrain_texture_array(terrain_id)
-    if texture is not None:
-        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
-        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
-    else:
-        r, g, b = color_for_terrain_id(terrain_id)
-        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
-
     off_x, off_y = offset
     # elevations[tile.y, tile.x], NOT tile.elevation, for every read below --
     # identical in every other mode (Risk #6's whole point is keeping them in
@@ -683,13 +675,39 @@ def _render_tile_iso(
     base_x -= off_x
     base_y -= off_y
 
-    for side, nx, ny in (("left", tile.x - 1, tile.y), ("right", tile.x, tile.y + 1)):
-        if not (0 <= nx < map_w and 0 <= ny < map_h):
-            continue  # map edge -- no neighbor to drop toward, so no skirt
-        delta = own_elev - int(elevations[ny, nx])
-        if delta <= 0:
-            continue  # this tile isn't higher than that neighbor -- no visible drop
-        drop_px = delta * proj.elev_step
+    # Every positive neighbour delta in px, read once: 0 for an off-map
+    # neighbour or a non-positive delta, the exact "draws nothing" gates
+    # each loop below applies. elev_step >= 1, so px > 0 iff delta > 0.
+    tx, ty = tile.x, tile.y
+    step = proj.elev_step
+    drop_left = max(own_elev - int(elevations[ty, tx - 1]), 0) * step if tx > 0 else 0
+    drop_right = max(own_elev - int(elevations[ty + 1, tx]), 0) * step if ty + 1 < map_h else 0
+    rise_ul = max(own_elev - int(elevations[ty - 1, tx]), 0) * step if ty > 0 else 0
+    rise_ur = max(own_elev - int(elevations[ty, tx + 1]), 0) * step if tx + 1 < map_w else 0
+    rise_diag = max(own_elev - int(elevations[ty - 1, tx + 1]), 0) * step if tx + 1 < map_w and ty > 0 else 0
+
+    # Early reject, before the texture crop: the union of every sub-paint's
+    # own extent, so wholly outside here means each paint below was a no-op.
+    # Terrain only, never lifted to the caller; see iso_tile_extent.
+    ext = iso_geometry.iso_tile_extent(tile_px, drop_left, drop_right, rise_ul, rise_ur, rise_diag)
+    if ext is not None:
+        y_lo, y_hi, x_lo, x_hi = ext
+        h, w = img.shape[0], img.shape[1]
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
+
+    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
+    texture = asset_source.get_terrain_texture_array(terrain_id)
+    if texture is not None:
+        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
+        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
+    else:
+        r, g, b = color_for_terrain_id(terrain_id)
+        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
+
+    for side, drop_px in (("left", drop_left), ("right", drop_right)):
+        if drop_px <= 0:
+            continue  # map edge, or not higher than that neighbor -- no visible drop
         dst_y, dst_x, src_y, src_x = iso_geometry.skirt_quad_indices(tile_px, drop_px, side)
         skirt = _skirt_lut(side)[top_block[src_y, src_x]]
         # Same producer, same key: the extent memo rides the very arrays
@@ -715,11 +733,9 @@ def _render_tile_iso(
     # seam exists to fix. See iso_geometry.seam_edge_indices for why the
     # band alone leaves each terrace edge dashed at every other pct too.
     seam_qualified = False
-    for side, nx, ny in (("up_left", tile.x, tile.y - 1), ("up_right", tile.x + 1, tile.y)):
-        if not (0 <= nx < map_w and 0 <= ny < map_h):
-            continue  # map edge -- nothing behind this edge to contour against
-        if own_elev - int(elevations[ny, nx]) <= 0:
-            continue  # no height discontinuity here -- a seam would be a grid outline on flat ground
+    for side, rise_px in (("up_left", rise_ul), ("up_right", rise_ur)):
+        if rise_px <= 0:
+            continue  # map edge, or no height discontinuity -- a seam would be a grid outline on flat ground
         seam_qualified = True
         seam_dst_y, seam_dst_x = iso_geometry.seam_edge_indices(tile_px, side)
         extent = iso_geometry.index_extent(iso_geometry.seam_edge_indices, tile_px, side)
@@ -747,13 +763,9 @@ def _render_tile_iso(
     # own diamond/skirts or any same-d tile, only already-painted smaller-d
     # ones). No texture is sampled -- this only darkens img in place via
     # _clipped_darken, never paints new color.
-    for side, nx, ny in (("up_left", tile.x, tile.y - 1), ("up_right", tile.x + 1, tile.y)):
-        if not (0 <= nx < map_w and 0 <= ny < map_h):
-            continue  # map edge -- no back neighbor to shadow onto
-        delta = own_elev - int(elevations[ny, nx])
-        if delta <= 0:
-            continue  # this tile isn't higher than that back neighbor -- no shadow to cast
-        rise_px = delta * proj.elev_step
+    for side, rise_px in (("up_left", rise_ul), ("up_right", rise_ur)):
+        if rise_px <= 0:
+            continue  # map edge, or not higher than that back neighbor -- no shadow to cast
         s_dst_y, s_dst_x, _depth, _span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
         if s_dst_y.size == 0:
             # This tile fully hides that neighbor -- nothing exposed to
@@ -787,18 +799,14 @@ def _render_tile_iso(
     # higher than its diagonal while level with BOTH direct back
     # neighbors, and darkening the apex there would be a lone floating
     # mark with no band on either side of it to bridge.
-    nx, ny = tile.x + 1, tile.y - 1
-    if seam_qualified and 0 <= nx < map_w and 0 <= ny < map_h:
-        delta = own_elev - int(elevations[ny, nx])
-        if delta > 0:
-            rise_px = delta * proj.elev_step
-            a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_px)
-            if a_dst_y.size:
-                # Non-None for the same reason the band's own extent is.
-                extent = iso_geometry.index_extent(iso_geometry.shadow_apex_indices, tile_px, rise_px)
-                _clipped_darken(
-                    img, base_y, base_x, a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_px, "apex"), extent=extent
-                )
+    if seam_qualified and rise_diag > 0:
+        a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_diag)
+        if a_dst_y.size:
+            # Non-None for the same reason the band's own extent is.
+            extent = iso_geometry.index_extent(iso_geometry.shadow_apex_indices, tile_px, rise_diag)
+            _clipped_darken(
+                img, base_y, base_x, a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_diag, "apex"), extent=extent
+            )
 
 
 def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True) -> np.ndarray:
@@ -918,12 +926,13 @@ def _canvas_pixel_dims(proj: iso_geometry.IsoProjection) -> tuple[int, int]:
 
 
 def _building_bboxes_iso(
-    units_by_tile: dict,
+    scenario: LoadedScenario,
     w: int,
     h: int,
     proj: iso_geometry.IsoProjection,
     elevations: np.ndarray,
     extra_top_px: int = 0,
+    unit_filter: UnitFilter = UnitFilter(),
 ) -> dict[tuple[int, int], tuple[int, int, int, int]]:
     """(px, py) -> that tile's own iso screen bbox, for every tile carrying
     at least one BUILDING (nonzero footprint radius) unit -- precomputed
@@ -950,26 +959,26 @@ def _building_bboxes_iso(
     flagging a tile as a bystander slightly more often than the tightest
     possible test would is a no-op extra paint, never a missed one.
 
-    **Deliberately keyed on OWN tiles even though units_by_tile no longer
-    is.** Since units_by_tile buckets a unit into every footprint tile, a
-    naive pass over its items would recompute _unit_screen_bbox_iso() once
-    per footprint tile -- 64 times for a Colosseum instead of once -- on the
-    path whose ~15-20ms rebuild is already the expensive one here. The
-    own-tile gate below restores exactly one bbox computation per unit, and
-    keeps this dict's contents byte-identical to what own-tile bucketing
-    produced. The gate is total because unit_tile_bounds() guarantees a
-    unit's own tile is inside the bounds it was bucketed over.
+    **Iterates units directly, at their own tile only** (Batch D's D7 --
+    before this, the caller's units_by_tile bucketed a unit into every
+    footprint tile, so a naive pass over its items would recompute
+    _unit_screen_bbox_iso() once per footprint tile -- 64 times for a
+    Colosseum instead of once -- on the path whose ~15-20ms rebuild is
+    already the expensive one here; a since-removed own-tile gate restored
+    the single computation but still paid the other 63 buckets' worth of
+    dict/list walking to reach it). Visiting scenario.unit_manager.units
+    directly costs exactly one visit per unit, full stop, and produces the
+    identical dict: unit_filter here is the same UnitFilter every caller
+    already threads through _units_by_tile() for this same elevations
+    snapshot, so filtering happens once, in the one place it's needed.
 
     extra_top_px is passed straight through to _unit_screen_bbox_iso() --
     see that function for why only Sloped ever passes a nonzero value, and
     why it is a top-edge-only widening."""
     out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
-    for (px, py), entries in units_by_tile.items():
-        union: tuple[int, int, int, int] | None = None
-        for unit, _color in entries:
-            if (int(unit.x), int(unit.y)) != (px, py):
-                # Reached through a footprint tile that isn't this unit's own;
-                # it gets its bbox computed once, at its own tile's key.
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        for unit in units:
+            if not unit_filter.matches(player_id, unit):
                 continue
             span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
             if span_x <= 1 and span_y <= 1:
@@ -982,17 +991,14 @@ def _building_bboxes_iso(
             bbox = _unit_screen_bbox_iso(unit, w, h, proj, elevations, extra_top_px)
             if bbox is None:
                 continue
-            if union is None:
-                union = bbox
-            else:
-                union = (
-                    min(union[0], bbox[0]),
-                    min(union[1], bbox[1]),
-                    max(union[2], bbox[2]),
-                    max(union[3], bbox[3]),
-                )
-        if union is not None:
-            out[(px, py)] = union
+            key = (int(unit.x), int(unit.y))
+            prior = out.get(key)
+            out[key] = bbox if prior is None else (
+                min(prior[0], bbox[0]),
+                min(prior[1], bbox[1]),
+                max(prior[2], bbox[2]),
+                max(prior[3], bbox[3]),
+            )
     return out
 
 
@@ -1008,6 +1014,7 @@ def _dirty_screen_bbox(
     unit_band_radius: int = 0,
     elevation_changed: set | None = None,
     flatten_elevations: bool = False,
+    extra_anchor_tiles: set[tuple[int, int]] | None = None,
 ) -> tuple[int, int, int, int] | None:
     """Shared body of dirty_screen_bbox_iso()/dirty_screen_bbox_sloped() --
     see the former's docstring for the full contract, which is this
@@ -1067,7 +1074,20 @@ def _dirty_screen_bbox(
     under the mode rather than fail loudly. When set, the write loop below
     stores 0 instead of the tile's real elevation, which also means no
     tile's elevation ever "changes" here, so elevation_changed_local stays
-    empty and the caller's cache-refresh gen bump is correctly skipped."""
+    empty and the caller's cache-refresh gen bump is correctly skipped.
+
+    extra_anchor_tiles (Batch D's D3): a unit edit's PRE-EDIT footprint
+    tiles, unioned into anchor_tiles before the with_sprites band's
+    `dilated & anchor_tiles` intersection below. anchor_tiles(scenario) is
+    read live, i.e. POST-edit, so a unit's OLD anchor is never in it by the
+    time this runs -- without this, a moved unit's old sprite fragment
+    would never get padded into the bbox and would be left stale on
+    screen. The caller (render._after_unit_mutation's D5 wiring) is
+    responsible for also including these same tiles' indices in
+    dirty_indices, since that is what gets them into `dilated` in the
+    first place; this parameter only keeps them from being dropped by the
+    anchor-tiles intersection once they're there. None (the default) is
+    every non-unit-edit caller's exact prior behavior."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -1212,7 +1232,15 @@ def _dirty_screen_bbox(
         # accepts, never a missed one. Not the resolved SpriteLayer either --
         # at bbox time it still holds the PRE-edit anchor set, and this
         # function runs BEFORE the cache's own post-edit rebuild.
-        anchor_tiles = {(int(u.x), int(u.y)) for units in scenario.unit_manager.units for u in units}
+        # Batch D's D1b: memoized on scenario.unit_gen rather than recomputed
+        # here every call -- named `live_anchor_tiles` locally so it can't
+        # shadow the module-level anchor_tiles() function it now calls.
+        live_anchor_tiles = anchor_tiles(scenario)
+        if extra_anchor_tiles:
+            # New set, never `|=`: live_anchor_tiles is the memo's own
+            # cached object, and mutating it in place would corrupt every
+            # future hit against the same scenario.unit_gen.
+            live_anchor_tiles = live_anchor_tiles | extra_anchor_tiles
         # band_tiles is the set of ANCHOR tiles to pad around, not dirty
         # tiles: the padding below must be centered on where the sprite
         # actually sits (an anchor's own tile_screen_origin), never on
@@ -1231,12 +1259,12 @@ def _dirty_screen_bbox(
             for dx in range(-r, r + 1)
             for dy in range(-r, r + 1)
         }
-        band_tiles = dilated & anchor_tiles
-        # Unit MOVES (not applicable here): this function only ever sees
-        # terrain/elevation edits (dirty_indices comes from the terrain
-        # array), and neither can move a unit -- so there is no "old anchor
-        # tile" case to union in. A future unit-move caller of this function
-        # would need to add one; none exists today.
+        band_tiles = dilated & live_anchor_tiles
+        # Unit MOVES: a terrain/elevation-only caller passes no
+        # extra_anchor_tiles, so live_anchor_tiles is exactly today's live
+        # anchor set and this reduces to the pre-D3 behavior. D5's unit-edit
+        # wiring is the caller that passes the pre-edit footprint tiles --
+        # see extra_anchor_tiles' own docstring above.
         for x, y in band_tiles:
             tx0, ty_hi = iso_geometry.tile_screen_origin(x, y, proj.max_elev, proj)
             x0 = min(x0, tx0 - pad_l)
@@ -1267,6 +1295,7 @@ def dirty_screen_bbox_iso(
     with_sprites: bool = False,
     elevation_changed: set | None = None,
     flatten_elevations: bool = False,
+    extra_anchor_tiles: set[tuple[int, int]] | None = None,
 ) -> tuple[int, int, int, int] | None:
     """The (x0, y0, x1, y1) canvas-pixel bbox a just-applied edit could have
     invalidated -- refresh_region_iso()'s original "half 1" (dirty tiles ->
@@ -1307,7 +1336,10 @@ def dirty_screen_bbox_iso(
     bookkeeping; only IsoChunkCache.patch()'s caller needs it.
 
     flatten_elevations (Flat+Isometric plan, F2): see _dirty_screen_bbox()'s
-    own docstring. Only ViewerWindow's Flat+Iso render path passes True."""
+    own docstring. Only ViewerWindow's Flat+Iso render path passes True.
+
+    extra_anchor_tiles (Batch D's D3): see _dirty_screen_bbox()'s own
+    docstring -- passed straight through."""
     # with_sprites is a PARAMETER as of P3-g's toggle, not a module global read
     # at call time: sprites are per-cache now, so this function cannot look the
     # answer up itself. The caller's obligation is therefore load-bearing --
@@ -1324,7 +1356,7 @@ def dirty_screen_bbox_iso(
     return _dirty_screen_bbox(
         scenario, dirty_indices, elevations, proj, _canvas_pixel_dims(proj), with_units,
         with_sprites=with_units and with_sprites, elevation_changed=elevation_changed,
-        flatten_elevations=flatten_elevations,
+        flatten_elevations=flatten_elevations, extra_anchor_tiles=extra_anchor_tiles,
     )
 
 
@@ -1336,6 +1368,7 @@ def dirty_screen_bbox_sloped(
     with_units: bool = True,
     with_sprites: bool = False,
     elevation_changed: set | None = None,
+    extra_anchor_tiles: set[tuple[int, int]] | None = None,
 ) -> tuple[int, int, int, int] | None:
     """Sloped's counterpart to dirty_screen_bbox_iso() -- Track C4's Step 3.
     Identical contract, including the in-place elevations mutation (Risk #6:
@@ -1388,12 +1421,15 @@ def dirty_screen_bbox_sloped(
       bbox wide enough to reach it.
 
     elevation_changed: same optional out-param as dirty_screen_bbox_iso()'s
-    own -- only SlopedChunkCache.patch()'s caller needs it."""
+    own -- only SlopedChunkCache.patch()'s caller needs it.
+
+    extra_anchor_tiles (Batch D's D3): see _dirty_screen_bbox()'s own
+    docstring -- passed straight through."""
     canvas_dims = _canvas_pixel_dims(proj) if with_sprites else (proj.canvas_w, proj.canvas_h)
     return _dirty_screen_bbox(
         scenario, dirty_indices, elevations, proj, canvas_dims, with_units,
         with_sprites=with_sprites, sprite_band_radius=1 if with_sprites else 0,
-        unit_band_radius=1, elevation_changed=elevation_changed,
+        unit_band_radius=1, elevation_changed=elevation_changed, extra_anchor_tiles=extra_anchor_tiles,
     )
 
 
@@ -1779,15 +1815,6 @@ def _render_tile_sloped(
     exactly (see that function's docstring): shading, corners, d_min and
     placement are all unaffected, and tile.terrain_id itself, and
     everything the caller derives from the tile object, stays untouched."""
-    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
-    texture = asset_source.get_terrain_texture_array(terrain_id)
-    if texture is not None:
-        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
-        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
-    else:
-        r, g, b = color_for_terrain_id(terrain_id)
-        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
-
     d_nw = int(corner_rise[tile.y, tile.x])
     d_ne = int(corner_rise[tile.y, tile.x + 1])
     d_sw = int(corner_rise[tile.y + 1, tile.x])
@@ -1797,12 +1824,29 @@ def _render_tile_sloped(
     base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx = _sloped_tile_quad(
         tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset
     )
-    top = top_block[src_y, src_x]
-    shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
-    shaded = np.clip(top.astype(np.float32) * shade[uv_idx][:, None], 0, 255).astype(np.uint8)
     # RAW d_nw..d_se, not the d_min-normalized ones: that is the tuple
     # _sloped_tile_quad passed sloped_quad_indices to get dst_y/dst_x.
     extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, d_nw, d_ne, d_sw, d_se)
+    # Early reject: the one paint below IS the tile's whole reach, so wholly
+    # outside here skips only no-ops. Must match _render_tile_sloped_ids'.
+    if extent is not None:
+        y_lo, y_hi, x_lo, x_hi = extent
+        h, w = img.shape[0], img.shape[1]
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
+
+    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
+    texture = asset_source.get_terrain_texture_array(terrain_id)
+    if texture is not None:
+        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
+        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
+    else:
+        r, g, b = color_for_terrain_id(terrain_id)
+        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
+
+    top = top_block[src_y, src_x]
+    shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
+    shaded = np.clip(top.astype(np.float32) * shade[uv_idx][:, None], 0, 255).astype(np.uint8)
     _clipped_paint(img, base_y, base_x, dst_y, dst_x, shaded, extent=extent)
 
 
@@ -1891,8 +1935,15 @@ def _render_tile_sloped_ids(
     base_y -= off_y + d_min
 
     dst_y, dst_x, _src_y, _src_x, _uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
-    values = np.full(dst_y.shape[0], tile.y * map_w + tile.x, dtype=np.int32)
     extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, d_nw, d_ne, d_sw, d_se)
+    # The same early reject as _render_tile_sloped, on the same predicate, or
+    # the colour image and this plane silently disagree.
+    if extent is not None:
+        y_lo, y_hi, x_lo, x_hi = extent
+        h, w = plane.shape[0], plane.shape[1]
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
+    values = np.full(dst_y.shape[0], tile.y * map_w + tile.x, dtype=np.int32)
     _clipped_paint(plane, base_y, base_x, dst_y, dst_x, values, extent=extent)
 
 
@@ -2294,8 +2345,9 @@ def composite_ids_rect_sloped(
     candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
 
     plane = np.full((y1 - y0, x1 - x0), PICK_ID_NONE, dtype=np.int32)
-    for cx, cy in candidates:
-        tile = mm.get_tile(int(cx), int(cy))
+    # Same direct terrain index as composite_rect_iso, same clamping argument.
+    for cx, cy in candidates.tolist():
+        tile = mm.terrain[cy * w + cx]
         _render_tile_sloped_ids(plane, tile, tile_px, proj, corner_rise, w, offset=(x0, y0))
     return plane
 
@@ -2598,7 +2650,7 @@ def refresh_region_iso(
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     units_by_tile = _units_by_tile(scenario) if with_units else {}
-    building_bboxes = _building_bboxes_iso(units_by_tile, w, h, proj, elevations) if with_units else {}
+    building_bboxes = _building_bboxes_iso(scenario, w, h, proj, elevations) if with_units else {}
 
     scratch = composite_rect_iso(
         scenario, x0, y0, x1, y1, elevations, proj, tile_px, units_by_tile, building_bboxes, with_units
@@ -2767,7 +2819,56 @@ def stored_rotation(player_id: int, unit) -> float:
     return float(unit.rotation)
 
 
+# Batch D's D1b: one WeakKeyDictionary[scenario] -> (gen, value) per
+# memoized function below, so neither can be invalidated by the other's
+# writes. `scenario.unit_gen` is the sole invalidation key (see
+# LoadedScenario.unit_gen's own docstring for exactly what bumps it).
+_ANCHOR_TILES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_WALL_OVERRIDES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _unit_gen_cached(memo: weakref.WeakKeyDictionary, scenario, compute):
+    """Returns compute()'s result, cached in `memo` against `scenario`'s
+    current unit_gen. getattr, not attribute access: both of this batch's
+    memoized functions are called with duck-typed scenario stand-ins in
+    tests (e.g. tests/test_wall_connectivity.py's), which carry no unit_gen
+    -- those must always compute fresh and must never touch `memo` at all,
+    which is exactly what returning before the dict lookup below gives."""
+    gen = getattr(scenario, "unit_gen", None)
+    if gen is None:
+        return compute()
+    cached = memo.get(scenario)
+    if cached is not None and cached[0] == gen:
+        return cached[1]
+    value = compute()
+    memo[scenario] = (gen, value)
+    return value
+
+
+def anchor_tiles(scenario) -> set[tuple[int, int]]:
+    """Every unit's own `(int(u.x), int(u.y))` tile -- the set `_dirty_
+    screen_bbox`'s with_sprites block pads sprite reach around (see that
+    block's own comment for why the filter is deliberately ignored: a
+    filtered-out unit's tile padding a bit further is safe over-inclusion).
+    Pure function of scenario.unit_manager.units, memoized per D1b above."""
+
+    def _compute() -> set[tuple[int, int]]:
+        return {(int(u.x), int(u.y)) for units in scenario.unit_manager.units for u in units}
+
+    return _unit_gen_cached(_ANCHOR_TILES_MEMO, scenario, _compute)
+
+
 def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:
+    """Memoized wrapper (Batch D's D1b) around _wall_variant_rotation_
+    overrides_uncached() below -- signature unchanged, so
+    tests/test_wall_connectivity.py's `"unit_filter" not in inspect.
+    signature(wall_variant_rotation_overrides)` assertion still holds."""
+    return _unit_gen_cached(
+        _WALL_OVERRIDES_MEMO, scenario, lambda: _wall_variant_rotation_overrides_uncached(scenario)
+    )
+
+
+def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int], float]:
     """Per-(player_id, index-in-that-player's-unit-list) derived rotation for
     a wall/gate whose real shape isn't recoverable from its own stored
     `rotation` -- see tools/scan_wall_rotation.py, which measures this
@@ -2802,10 +2903,11 @@ def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
 
+    connector_consts = unit_sprites.wall_connector_consts()
     connector_tiles: set[tuple[int, int]] = set()
     for units in scenario.unit_manager.units:
         for unit in units:
-            if unit.unit_const in unit_sprites.WALL_CONNECTOR_CONSTS:
+            if unit.unit_const in connector_consts:
                 occupied = unit_occupied_tiles(unit, tile_w, tile_h)
                 if occupied is not None:
                     connector_tiles.update(occupied)
@@ -3043,10 +3145,7 @@ def _units_by_tile(
     _draw_unit_iso() indexes elevations[int(unit.y), int(unit.x)] directly
     rather than re-deriving bounds, so it relies on this function having
     already skipped anything unit_tile_bounds() rejects. Buckets over the
-    CLAMPED bounds that function returns; its own-tile invariant guarantees
-    (int(unit.x), int(unit.y)) is among them even for a building hanging off
-    the top-left map edge, which is what keeps _building_bboxes_iso()'s
-    own-tile gate total.
+    CLAMPED bounds that function returns.
 
     unit_filter (phase 3) drops non-matching units outright rather than
     marking them -- so a hidden unit is absent from every downstream
@@ -3181,6 +3280,151 @@ def sprite_draws_by_anchor(
     return _drain(sprite_draws_by_anchor_sliced(scenario, proj, elevations, unit_filter, corner_rise, with_farms))
 
 
+@dataclass
+class _SpriteContribution:
+    """One unit's resolved contribution to a SpriteLayer -- Batch D's D2
+    extraction, so D4's splice can re-resolve a single edited unit against
+    an already-built layer instead of re-walking every unit. Exactly one of
+    (pieces, farm_tiles) is ever non-empty: a unit resolves to a real sprite,
+    a farm-terrain override, or (returned as None by the resolver, never as
+    an instance of this class) nothing at all -- see _resolve_unit_sprite()."""
+
+    skip_id: int
+    anchor: tuple[int, int] | None
+    pieces: list[tuple[object, int, int]]
+    bbox: tuple[int, int, int, int] | None
+    farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
+
+
+def _resolve_unit_sprite(
+    scenario: LoadedScenario,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    unit_filter: UnitFilter,
+    corner_rise: np.ndarray | None,
+    overrides: dict[tuple[int, int], float],
+    with_farms: bool,
+    player_id: int,
+    i: int,
+    unit,
+) -> _SpriteContribution | None:
+    """Resolves ONE unit to its sprite or farm-terrain-override contribution
+    -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
+    before Batch D's D2, extracted verbatim (byte-identical prereq) so a
+    future single-unit splice can call the same logic. None means the loop's
+    own `continue` (filtered out, off-map, or resolves to neither a sprite
+    nor a farm override) -- the caller's contract is identical to that
+    `continue`.
+
+    `i` must be the unit's own position in scenario.unit_manager.units
+    [player_id] -- see wall_variant_rotation_overrides()'s own docstring for
+    why that, and not a filtered/skipped counter, is the override dict's key."""
+    mm = scenario.map_manager
+    tile_w, tile_h = mm.map_width, mm.map_height
+    half_w, half_h = proj.half_w, proj.half_h
+    if not unit_filter.matches(player_id, unit):
+        return None
+    bounds = unit_tile_bounds(unit, tile_w, tile_h)
+    if bounds is None:
+        return None
+    rotation = stored_rotation(player_id, unit)
+    rotation = overrides.get((player_id, i), rotation)
+    team_index = scenario.team_indices[player_id]
+    pieces = unit_sprites.sprite_pieces_for(unit.unit_const, rotation, team_index, half_w)
+    if not pieces:
+        terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
+        if terrain_id is None:
+            return None
+        player_color = scenario.player_colors[player_id]
+        color = _unit_color(unit, player_color)
+        tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+        farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+        for ty in range(tile_y0, tile_y1):
+            for tx in range(tile_x0, tile_x1):
+                mask = 0
+                if tx == tile_x0:
+                    mask |= EDGE_LEFT
+                if ty == tile_y1 - 1:
+                    mask |= EDGE_RIGHT
+                if ty == tile_y0:
+                    mask |= EDGE_UP_LEFT
+                if tx == tile_x1 - 1:
+                    mask |= EDGE_UP_RIGHT
+                farm_tiles[(tx, ty)] = (terrain_id, color, mask)
+        return _SpriteContribution(
+            skip_id=id(unit), anchor=None, pieces=[], bbox=None, farm_tiles=farm_tiles
+        )
+
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    # The UNCLAMPED footprint start, so a building hanging off a map
+    # edge still anchors on its true centre rather than on the centre
+    # of whatever survived clamping.
+    fx = _span_start(unit.x, span_x) + span_x / 2
+    fy = _span_start(unit.y, span_y) + span_y / 2
+    ux, uy = int(unit.x), int(unit.y)
+    # own_fx/own_fy: sub-tile fractions INSIDE the unit's own tile,
+    # not to be confused with fx/fy above (the FOOTPRINT CENTRE in
+    # continuous tile coords) -- unit_rise_px() needs the former, the
+    # x/y placement below needs the latter. Same names, different
+    # quantities is exactly how this file has produced green-suite
+    # bugs before (see the half-tile floating-sprite bug this
+    # function's own comment below records).
+    own_fx, own_fy = unit.x - ux, unit.y - uy
+    rise_px = (
+        iso_geometry.unit_rise_px(corner_rise, ux, uy, own_fx, own_fy)
+        if corner_rise is not None
+        else int(elevations[uy, ux]) * proj.elev_step
+    )
+    ax = round(proj.origin_x + (fx + fy) * half_w)
+    # The trailing `+ half_h` is not a fudge, and leaving it out is what
+    # made every sprite float exactly half a tile above its ground
+    # (reported from a live window 2026-08-24, and the reason this line
+    # is commented at all).
+    #
+    # origin + ((fx+fy)*half_w, (fy-fx)*half_h) maps INTEGER tile coords
+    # to tile_screen_origin's convention, which is the diamond's
+    # BOUNDING-BOX TOP-LEFT -- not its centre. Feed that map a tile's
+    # four continuous corners and you get a diamond centred half_h ABOVE
+    # the one actually painted; the x term is centred for free (the two
+    # +0.5s add), the y term is not (they cancel). So the ground point a
+    # hotspot must land on is that map's output plus half_h.
+    #
+    # Only y needs it. Verified by measurement, not by eye: a visual
+    # "the base lands on its footprint diamond" check passed while this
+    # was wrong, because half a tile reads as plausible contact shadow.
+    #
+    # rise_px stays INSIDE this round() (Track P3-g6): pulling it out
+    # can differ by 1px from _paint_tile_and_units_sloped's own
+    # rounding and would break the flat-map byte-identity oracle this
+    # expression is required to reduce to exactly.
+    ay = round(proj.origin_y + (fy - fx) * half_h - rise_px) + half_h
+
+    # Every piece paints at the unit's own anchor tile, offset by its
+    # own (dx, dy) -- the degenerate placement case: real per-piece
+    # depth slotting (a town centre villager standing between the
+    # front and back pieces) is unplanned follow-up work. This still
+    # closes the reported bug in full; it only loses cross-piece
+    # unit sandwiching.
+    anchor = unit_sprites.sprite_anchor_tile(unit_occupied_tiles(unit, tile_w, tile_h))
+    piece_draws: list[tuple[object, int, int]] = []
+    bbox = None
+    for piece in pieces:
+        px, py = ax + piece.dx, ay + piece.dy
+        piece_draws.append((piece.draw, px, py))
+        h, w = piece.draw.rgba.shape[:2]
+        x0, y0 = px - piece.draw.hotspot_x, py - piece.draw.hotspot_y
+        piece_bbox = (x0, y0, x0 + w, y0 + h)
+        bbox = piece_bbox if bbox is None else (
+            min(bbox[0], piece_bbox[0]),
+            min(bbox[1], piece_bbox[1]),
+            max(bbox[2], piece_bbox[2]),
+            max(bbox[3], piece_bbox[3]),
+        )
+    return _SpriteContribution(
+        skip_id=id(unit), anchor=anchor, pieces=piece_draws, bbox=bbox, farm_tiles={}
+    )
+
+
 def sprite_draws_by_anchor_sliced(
     scenario: LoadedScenario,
     proj: iso_geometry.IsoProjection,
@@ -3203,10 +3447,9 @@ def sprite_draws_by_anchor_sliced(
     The yield sits at the TOP of the per-unit body, before the filter and
     bounds `continue`s, so granularity is one yield per unit even for a walk
     that skips most of them -- a filtered-out unit costs a resume, not a
-    whole unbounded run."""
-    mm = scenario.map_manager
-    tile_w, tile_h = mm.map_width, mm.map_height
-    half_w, half_h = proj.half_w, proj.half_h
+    whole unbounded run. Batch D's D2: the per-unit resolution itself is
+    _resolve_unit_sprite() -- this loop only does the yield and the
+    accumulation into by_anchor/bboxes/skip_ids/farm_by_tile."""
     overrides = wall_variant_rotation_overrides(scenario)
     by_anchor: dict[tuple[int, int], list] = {}
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
@@ -3214,111 +3457,31 @@ def sprite_draws_by_anchor_sliced(
     farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
 
     for player_id, units in enumerate(scenario.unit_manager.units):
-        player_color = scenario.player_colors[player_id]
         for i, unit in enumerate(units):
             yield
-            if not unit_filter.matches(player_id, unit):
-                continue
-            bounds = unit_tile_bounds(unit, tile_w, tile_h)
-            if bounds is None:
-                continue
-            rotation = stored_rotation(player_id, unit)
-            # See wall_variant_rotation_overrides()'s docstring: `i` is this
-            # loop's own per-player position, not a filtered/skipped counter.
-            rotation = overrides.get((player_id, i), rotation)
-            team_index = scenario.team_indices[player_id]
-            pieces = unit_sprites.sprite_pieces_for(unit.unit_const, rotation, team_index, half_w)
-            if not pieces:
-                terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
-                if terrain_id is not None:
-                    color = _unit_color(unit, player_color)
-                    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
-                    for ty in range(tile_y0, tile_y1):
-                        for tx in range(tile_x0, tile_x1):
-                            mask = 0
-                            if tx == tile_x0:
-                                mask |= EDGE_LEFT
-                            if ty == tile_y1 - 1:
-                                mask |= EDGE_RIGHT
-                            if ty == tile_y0:
-                                mask |= EDGE_UP_LEFT
-                            if tx == tile_x1 - 1:
-                                mask |= EDGE_UP_RIGHT
-                            # Later unit wins on overlap -- overlapping farms
-                            # can't happen in-game, but a scenario file can
-                            # contain them, and a byte-identity test needs a
-                            # deterministic answer.
-                            farm_by_tile[(tx, ty)] = (terrain_id, color, mask)
-                    skip_ids.add(id(unit))
-                continue
-
-            span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
-            # The UNCLAMPED footprint start, so a building hanging off a map
-            # edge still anchors on its true centre rather than on the centre
-            # of whatever survived clamping.
-            fx = _span_start(unit.x, span_x) + span_x / 2
-            fy = _span_start(unit.y, span_y) + span_y / 2
-            ux, uy = int(unit.x), int(unit.y)
-            # own_fx/own_fy: sub-tile fractions INSIDE the unit's own tile,
-            # not to be confused with fx/fy above (the FOOTPRINT CENTRE in
-            # continuous tile coords) -- unit_rise_px() needs the former, the
-            # x/y placement below needs the latter. Same names, different
-            # quantities is exactly how this file has produced green-suite
-            # bugs before (see the half-tile floating-sprite bug this
-            # function's own comment below records).
-            own_fx, own_fy = unit.x - ux, unit.y - uy
-            rise_px = (
-                iso_geometry.unit_rise_px(corner_rise, ux, uy, own_fx, own_fy)
-                if corner_rise is not None
-                else int(elevations[uy, ux]) * proj.elev_step
+            contribution = _resolve_unit_sprite(
+                scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms, player_id, i, unit
             )
-            ax = round(proj.origin_x + (fx + fy) * half_w)
-            # The trailing `+ half_h` is not a fudge, and leaving it out is what
-            # made every sprite float exactly half a tile above its ground
-            # (reported from a live window 2026-08-24, and the reason this line
-            # is commented at all).
-            #
-            # origin + ((fx+fy)*half_w, (fy-fx)*half_h) maps INTEGER tile coords
-            # to tile_screen_origin's convention, which is the diamond's
-            # BOUNDING-BOX TOP-LEFT -- not its centre. Feed that map a tile's
-            # four continuous corners and you get a diamond centred half_h ABOVE
-            # the one actually painted; the x term is centred for free (the two
-            # +0.5s add), the y term is not (they cancel). So the ground point a
-            # hotspot must land on is that map's output plus half_h.
-            #
-            # Only y needs it. Verified by measurement, not by eye: a visual
-            # "the base lands on its footprint diamond" check passed while this
-            # was wrong, because half a tile reads as plausible contact shadow.
-            #
-            # rise_px stays INSIDE this round() (Track P3-g6): pulling it out
-            # can differ by 1px from _paint_tile_and_units_sloped's own
-            # rounding and would break the flat-map byte-identity oracle this
-            # expression is required to reduce to exactly.
-            ay = round(proj.origin_y + (fy - fx) * half_h - rise_px) + half_h
-
-            # Every piece paints at the unit's own anchor tile, offset by its
-            # own (dx, dy) -- the degenerate placement case: real per-piece
-            # depth slotting (a town centre villager standing between the
-            # front and back pieces) is unplanned follow-up work. This still
-            # closes the reported bug in full; it only loses cross-piece
-            # unit sandwiching.
-            anchor = unit_sprites.sprite_anchor_tile(unit_occupied_tiles(unit, tile_w, tile_h))
-            slot = by_anchor.setdefault(anchor, [])
-            bbox = bboxes.get(anchor)
-            for piece in pieces:
-                px, py = ax + piece.dx, ay + piece.dy
-                slot.append((piece.draw, px, py))
-                h, w = piece.draw.rgba.shape[:2]
-                x0, y0 = px - piece.draw.hotspot_x, py - piece.draw.hotspot_y
-                piece_bbox = (x0, y0, x0 + w, y0 + h)
-                bbox = piece_bbox if bbox is None else (
-                    min(bbox[0], piece_bbox[0]),
-                    min(bbox[1], piece_bbox[1]),
-                    max(bbox[2], piece_bbox[2]),
-                    max(bbox[3], piece_bbox[3]),
-                )
-            bboxes[anchor] = bbox
-            skip_ids.add(id(unit))
+            if contribution is None:
+                continue
+            if contribution.farm_tiles:
+                # Later unit wins on overlap -- overlapping farms can't
+                # happen in-game, but a scenario file can contain them, and a
+                # byte-identity test needs a deterministic answer.
+                farm_by_tile.update(contribution.farm_tiles)
+                skip_ids.add(contribution.skip_id)
+                continue
+            slot = by_anchor.setdefault(contribution.anchor, [])
+            slot.extend(contribution.pieces)
+            bbox = bboxes.get(contribution.anchor)
+            bbox = contribution.bbox if bbox is None else (
+                min(bbox[0], contribution.bbox[0]),
+                min(bbox[1], contribution.bbox[1]),
+                max(bbox[2], contribution.bbox[2]),
+                max(bbox[3], contribution.bbox[3]),
+            )
+            bboxes[contribution.anchor] = bbox
+            skip_ids.add(contribution.skip_id)
     return SpriteLayer(
         by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile
     )

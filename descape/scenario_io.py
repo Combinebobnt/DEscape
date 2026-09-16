@@ -119,7 +119,10 @@ TERRAIN_STRUCT_SIZE = 7
 _LAYER_STRUCT = struct.Struct("<h")  # offset 5 within one TerrainStruct
 
 
-@dataclass
+# eq=False (Batch D's D1b): identity equality/hash, so this can key a
+# WeakKeyDictionary memo in render.py -- default eq=True sets __hash__ to
+# None, and no code anywhere compares two LoadedScenario instances by value.
+@dataclass(eq=False)
 class LoadedScenario:
     path: Path  # display + Save-As-default only -- write_scenario() takes an explicit
     # destination and never reads this. descape/viewer.py may replace it with a
@@ -243,6 +246,17 @@ class LoadedScenario:
     # collected the moment load_map_and_units() returns and those lookups start
     # raising "Unable to find scenario based on the given identifier".
     _scenario: AoE2DEScenario
+
+    # Bumped by every UnitEditModel mutator (descape/unit_model.py's
+    # _bump_unit_gen(), Batch D's D1a) -- never by anything else. A memo
+    # keyed on this is only valid against mutations that went through
+    # UnitEditModel: appending straight to unit_manager.units (as some test
+    # fixtures do) does not bump it, and a memo built before such an append
+    # is stale by design -- callers that mutate the list directly must bump
+    # this themselves. Placed last, with a default, because every other
+    # field above is positional with no default and dataclass field order
+    # requires defaulted fields to come after all non-defaulted ones.
+    unit_gen: int = 0
 
 
 def retriever_length(retriever: Any) -> int:

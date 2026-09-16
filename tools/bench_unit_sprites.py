@@ -12,9 +12,9 @@ Five things get measured, because they fail in different ways:
 - **Distinct sprite keys per file.** Decode cost scales with distinct
   (graphic, frame, player) combinations actually used, NOT with the unit count
   -- most GAIA clutter and most buildings of one type share a handful of
-  graphics. This is also what sizes the scaled LRU: a capacity below a real
-  file's distinct count means every rebuild re-decodes everything, which turns
-  a cache into pure overhead.
+  graphics. This is also what sizes SCALED_CACHE_BYTES: a byte budget below a
+  real file's resident-level working set means every rebuild re-decodes
+  everything, which turns a cache into pure overhead.
 - **Layer build, cold and warm.** sprite_draws_by_anchor() is the
   per-mip-level lazy rebuild, so it is paid once per edit per resident level,
   right alongside the ~15-20ms units_by_tile/building_bboxes rebuild that
@@ -151,17 +151,19 @@ def bench_file(path: Path) -> str:
         f"    layer build: cold {_ms(cold)} | warm {_ms(warm)} | "
         f"sprites drawn {len(layer.skip_ids)} at {len(layer.by_anchor)} anchors"
     )
+    scaled_cache = unit_sprites._scaled_cache
     lines.append(
         f"    cache resident: native {native_b / 1e6:.1f}MB in "
         f"{len(unit_sprites._native_cache)} entries | scaled {scaled_b / 1e6:.1f}MB in "
-        f"{len(unit_sprites._scaled_cache)} entries"
-        + ("  <-- AT CAPACITY, so it is thrashing" if len(unit_sprites._scaled_cache)
-           >= unit_sprites._scaled_cache.capacity else "")
+        f"{len(scaled_cache)} entries (budget {scaled_cache.capacity_bytes / 1e6:.0f}MB)"
+        + ("  <-- AT CAPACITY, so it is thrashing"
+           if scaled_cache._bytes >= scaled_cache.capacity_bytes else "")
     )
 
     name, worst = _worst_frame_resolution(scenario, proj)
     lines.append(f"    worst single cold frame: {_ms(worst)} ({name})")
 
+    lines.extend(_bench_stepped_sprites(scenario, proj, elevations))
     lines.extend(_bench_flat_icons(scenario, tile_px))
 
     unit_sprites.clear_caches()
@@ -190,6 +192,44 @@ def bench_file(path: Path) -> str:
     return "\n".join(lines)
 
 
+def _bench_stepped_sprites(scenario, proj, elevations) -> list[str]:
+    """Stepped's scaled-sprite arm (Item 24), an adjacent-level thrashing probe.
+
+    Mirrors _bench_flat_icons's structure, but the axis that matters for
+    _scaled_cache is ADJACENT mip levels sharing one byte budget -- the real
+    level warm keeps the current level +/-1 resident (level_warm.neighbour_mips)
+    -- not repeated same-level rebuilds. So each pair builds level A cold,
+    builds its neighbour B, then rebuilds A: a rebuild near A's own cold cost
+    means B evicted it. mip_projections_for(), not the raw candidate dict,
+    because Stepped's elev_step term is not exact at every candidate tile_px
+    the way Flat's icons are.
+    """
+    mm = scenario.map_manager
+    projs = iso_geometry.mip_projections_for(
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct()
+    )
+    levels = sorted(projs)
+    lines = ["    stepped sprites, adjacent-level thrashing (Item 24):"]
+    for level_a, level_b in zip(levels, levels[1:]):
+        proj_a, proj_b = projs[level_a], projs[level_b]
+        unit_sprites.clear_caches()
+        cold = _time(lambda: render.sprite_draws_by_anchor(scenario, proj_a, elevations))
+        _time(lambda: render.sprite_draws_by_anchor(scenario, proj_b, elevations))
+        rebuild = _time(lambda: render.sprite_draws_by_anchor(scenario, proj_a, elevations))
+        ratio = rebuild / cold if cold else 0.0
+        flag = "  <-- THRASHING" if rebuild >= 0.5 * cold else ""
+        lines.append(
+            f"      mip {level_a:>2}/{level_b:>2} tile_px {proj_a.tile_px:>3}/{proj_b.tile_px:>3}: "
+            f"cold {_ms(cold)} | rebuild after neighbour {_ms(rebuild)} ({ratio:.2f}x){flag}"
+        )
+    scaled_cache = unit_sprites._scaled_cache
+    lines.append(
+        f"      scaled cache: {scaled_cache._bytes / 1e6:.1f}MB in {len(scaled_cache)} entries "
+        f"(budget {scaled_cache.capacity_bytes / 1e6:.0f}MB)"
+    )
+    return lines
+
+
 def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
     """Flat's icon-layer arm (P3-g7), per mip level.
 
@@ -198,7 +238,7 @@ def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
     ladder and a budget that fits one level can thrash on the next. The whole
     point of ICON_CACHE_BYTES is to exceed the biggest level's working set --
     a warm rebuild that matches its own cold one is the tell that it does not,
-    the same failure NATIVE_CACHE_SIZE/SCALED_CACHE_SIZE's comment records.
+    the same failure NATIVE_CACHE_SIZE/SCALED_CACHE_BYTES's comment records.
 
     Flat multiplies the cold build by RESIDENT level count, which Stepped
     already does too, so that is accepted by precedent rather than new -- but
@@ -270,7 +310,7 @@ def main() -> None:
     print(f"Sprite bench -- install {asset_source.get_install_path()}")
     print(
         f"caches: native capacity {unit_sprites.NATIVE_CACHE_SIZE}, "
-        f"scaled capacity {unit_sprites.SCALED_CACHE_SIZE}, "
+        f"scaled budget {unit_sprites.SCALED_CACHE_BYTES / 1e6:.0f}MB, "
         f"icon budget {unit_sprites.ICON_CACHE_BYTES / 1e6:.0f}MB"
     )
     worsts = []

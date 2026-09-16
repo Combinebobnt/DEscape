@@ -26,8 +26,16 @@ Checks:
      arrays verbatim there, so this exercises ZERO resample code and proves
      nothing about the sloped branch. Kept because it pins the delegation,
      not because it covers geometry.
-  5. The pick-plane memo is bounded, and is dropped by every source-state
-     change (patch/invalidate_region/set_unit_filter).
+  5. The pick-plane memo is bounded, and no source-state change can leave a
+     stale plane behind: invalidate_region()/set_unit_filter() drop the lot,
+     and patch() either drops a plane (over PICK_PLANE_PATCH_MAX_FRACTION)
+     or rewrites the intersected sub-rect in place.
+  6. A plane patch() rewrote in place is byte-identical to a fresh
+     composite_ids_rect_sloped over that plane's own clipped rect. This is
+     B8's whole correctness bar: an under-covered rewrite leaves the plane
+     reporting the pre-edit tile, which is a wrong click target with no
+     crash, so the oracle compares the WHOLE plane rather than the
+     rewritten sub-rect.
 
 Fixture note, and it is deliberate: a LOW-AMPLITUDE BUMPY field is the
 visually worst case, not the mildest. It puts a transition at nearly
@@ -41,15 +49,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry
+from descape import iso_geometry, render
+from descape.elevation_tools import set_tile_elevation
 from descape.render import (
     PICK_ID_NONE,
     composite_ids_rect_sloped,
+    dirty_screen_bbox_sloped,
     sloped_elevations_and_proj,
     tile_pixels_for_map,
 )
 from descape.render_cache import (
     MAX_PICK_PLANES,
+    PICK_PLANE_PATCH_MAX_FRACTION,
     SlopedChunkCache,
 )
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
@@ -276,7 +287,14 @@ def test_pick_plane_memo_is_bounded():
 @pytest.mark.parametrize("method", ["patch", "invalidate_region"])
 def test_source_state_changes_drop_the_memo(method):
     """Check 5b -- a memo outliving an edit is exactly how a click starts
-    resolving against geometry that is no longer on screen."""
+    resolving against geometry that is no longer on screen.
+
+    A WHOLE-CANVAS bbox, which is why both arms still assert a wholesale
+    drop after B8: invalidate_region() drops unconditionally, and for
+    patch() every resident plane is 100% covered, far above
+    PICK_PLANE_PATCH_MAX_FRACTION, so every one is dropped rather than
+    rewritten. The partial-coverage cases patch() now handles instead are
+    check 6's own tests below."""
     scenario = _bumpy_scenario()
     _elev, corner_rise, proj, tile_px = _sloped_state(scenario)
     cache = SlopedChunkCache(scenario, _elev, corner_rise, proj, tile_px, chunk_px=128)
@@ -285,3 +303,181 @@ def test_source_state_changes_drop_the_memo(method):
     assert cache._pick_planes
     getattr(cache, method)((0, 0, proj.canvas_w, proj.canvas_h))
     assert not cache._pick_planes
+
+
+def _edit_and_bbox(scenario, elevations, proj, ex: int, ey: int, delta: int):
+    """One real elevation edit, returning the (bbox, elevation_changed) pair
+    ViewerWindow._apply_dirty hands patch().
+
+    dirty_screen_bbox_sloped mutates `elevations` in place by contract, and
+    _sloped_state() hands back the same array object the cache was built
+    with, which is what lets the cache's own corner_rise rebuild inside
+    patch() see this edit at all."""
+    mm = scenario.map_manager
+    before = [int(t.elevation) for t in mm.terrain]
+    set_tile_elevation(mm, ex, ey, int(mm.get_tile(ex, ey).elevation) + delta)
+    dirty = [i for i, t in enumerate(mm.terrain) if int(t.elevation) != before[i]]
+    assert dirty, "the fixture edit changed no tile, so the test below would prove nothing"
+    elevation_changed: set = set()
+    bbox = dirty_screen_bbox_sloped(
+        scenario, dirty, elevations, proj, with_units=True, elevation_changed=elevation_changed
+    )
+    assert bbox is not None, "a legal in-range edit must not decline the incremental path"
+    assert elevation_changed, "an elevation edit must report a non-empty elevation_changed"
+    return bbox, elevation_changed
+
+
+def _plane_rect(cache, key) -> tuple[int, int, int, int]:
+    """A resident plane's own pixel rect, taken from .shape rather than
+    chunk_px so an edge plane clipped by canvas_dims() reads correctly."""
+    plane = cache._pick_planes[key]
+    px0, py0 = key[0] * cache.chunk_px, key[1] * cache.chunk_px
+    return px0, py0, px0 + plane.shape[1], py0 + plane.shape[0]
+
+
+def _plane_oracle(cache, key) -> np.ndarray:
+    """Check 6's bar: what that plane's ids must be, composited fresh
+    against the cache's post-patch corner_rise."""
+    px0, py0, px1, py1 = _plane_rect(cache, key)
+    return composite_ids_rect_sloped(
+        cache.scenario, px0, py0, px1, py1, cache.corner_rise, cache.proj, cache.tile_px
+    )
+
+
+def _coverage(cache, key, bbox) -> float:
+    """The share of that plane the bbox covers, i.e. what patch() compares
+    against PICK_PLANE_PATCH_MAX_FRACTION."""
+    px0, py0, px1, py1 = _plane_rect(cache, key)
+    bx0, by0, bx1, by1 = bbox
+    w = max(0, min(bx1, px1) - max(bx0, px0))
+    h = max(0, min(by1, py1) - max(by0, py0))
+    return w * h / ((px1 - px0) * (py1 - py0))
+
+
+def test_patch_rewrites_a_resident_plane_in_place():
+    """Check 6a: the whole point of B8. The plane object must survive the
+    patch (a drop-and-rebuild would satisfy the oracle while paying exactly
+    the 13.5ms this step exists to remove), its contents must match a fresh
+    composite, and they must differ from the pre-edit copy, without which
+    the oracle could be comparing two identical no-ops."""
+    scenario = _bumpy_scenario()
+    elevations, corner_rise, proj, tile_px = _sloped_state(scenario)
+    cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=1024)
+
+    sx, sy = proj.canvas_w // 2, proj.canvas_h // 2
+    tile = cache.pick_tile(sx, sy)
+    assert tile is not None, "the canvas centre must be on-map for this fixture"
+    key = (sx // cache.chunk_px, sy // cache.chunk_px)
+    plane = cache._pick_planes[key]
+    before = plane.copy()
+
+    bbox, elevation_changed = _edit_and_bbox(scenario, elevations, proj, tile[0], tile[1], 1)
+    covered = _coverage(cache, key, bbox)
+    assert 0 < covered <= PICK_PLANE_PATCH_MAX_FRACTION, (
+        f"the fixture edit covers {covered:.0%} of the plane, so patch() would DROP it. "
+        "This test would then be exercising the drop path, not the rewrite it is about"
+    )
+
+    cache.patch(bbox, elevation_changed=elevation_changed)
+
+    assert cache._pick_planes.get(key) is plane, "the plane was rebuilt, not patched in place"
+    assert not np.array_equal(plane, before), "the edit moved no ids, so the oracle below proves nothing"
+    assert np.array_equal(plane, _plane_oracle(cache, key))
+
+
+def test_patch_rewrites_both_planes_a_bbox_straddles():
+    """Check 6b: the partial-coverage path on TWO planes at once, which
+    is what a drag along a chunk seam does and where the per-plane slice
+    arithmetic can silently go wrong (an offset taken from the bbox rather
+    than from each plane's own origin still lands inside the array, so it
+    corrupts rather than raises)."""
+    scenario = _bumpy_scenario()
+    elevations, corner_rise, proj, tile_px = _sloped_state(scenario)
+    chunk_px = 1024
+    cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=chunk_px)
+
+    seam_x = (proj.canvas_w // 2 // chunk_px) * chunk_px
+    sy = proj.canvas_h // 2
+    tile = cache.pick_tile(seam_x, sy)
+    assert tile is not None
+    cache.pick_tile(seam_x - 1, sy)  # warm the plane on the other side too
+    left, right = ((seam_x - 1) // chunk_px, sy // chunk_px), (seam_x // chunk_px, sy // chunk_px)
+    assert left != right and left in cache._pick_planes and right in cache._pick_planes
+    planes = {key: cache._pick_planes[key] for key in (left, right)}
+    before = {key: plane.copy() for key, plane in planes.items()}
+
+    bbox, elevation_changed = _edit_and_bbox(scenario, elevations, proj, tile[0], tile[1], 1)
+    for key in (left, right):
+        covered = _coverage(cache, key, bbox)
+        assert 0 < covered <= PICK_PLANE_PATCH_MAX_FRACTION, f"{key} is covered {covered:.0%}, not straddled"
+
+    cache.patch(bbox, elevation_changed=elevation_changed)
+
+    for key in (left, right):
+        assert cache._pick_planes.get(key) is planes[key], f"{key} was rebuilt, not patched in place"
+        assert np.array_equal(planes[key], _plane_oracle(cache, key)), f"{key} disagrees with a fresh composite"
+    assert any(not np.array_equal(planes[key], before[key]) for key in (left, right)), "the edit moved no ids"
+
+
+def test_patch_rewrites_an_edge_plane_clipped_by_the_canvas():
+    """Check 6c: an edge plane is RAGGED (_pick_plane clips it to
+    canvas_dims), so its high edge must come from .shape, never from
+    chunk_px. The bbox here deliberately overshoots the canvas, which is
+    free (over-covering only recomposites more): with the chunk_px slip the
+    sub-rect composites past the canvas and the slice-assign raises on the
+    shape mismatch instead of silently mis-writing."""
+    scenario = _bumpy_scenario()
+    elevations, corner_rise, proj, tile_px = _sloped_state(scenario)
+    chunk_px = 1024
+    cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=chunk_px)
+
+    cy = (proj.canvas_h - 1) // chunk_px
+    sy = (cy * chunk_px + proj.canvas_h) // 2
+    sx = proj.canvas_w // 2
+    tile = cache.pick_tile(sx, sy)
+    assert tile is not None, "the bottom chunk row's centre must be on-map for this fixture"
+    key = (sx // chunk_px, cy)
+    plane = cache._pick_planes[key]
+    assert plane.shape[0] != chunk_px, "this fixture's bottom chunk row is not clipped, so the check is toothless"
+
+    bbox, elevation_changed = _edit_and_bbox(scenario, elevations, proj, tile[0], tile[1], 1)
+    bbox = (bbox[0], bbox[1], bbox[2], proj.canvas_h + tile_px)
+    covered = _coverage(cache, key, bbox)
+    assert 0 < covered <= PICK_PLANE_PATCH_MAX_FRACTION, f"the edge plane is covered {covered:.0%}, so it is dropped"
+
+    cache.patch(bbox, elevation_changed=elevation_changed)
+
+    assert cache._pick_planes.get(key) is plane, "the edge plane was rebuilt, not patched in place"
+    assert np.array_equal(plane, _plane_oracle(cache, key))
+
+
+def test_an_empty_elevation_changed_leaves_a_warm_plane_untouched(monkeypatch):
+    """Check 6d: the terrain-paint-only case, which the findings call most
+    edits. A plane's ids read corner_rise, proj, tile_px and the map dims
+    alone, so an edit that moved no elevation cannot move an id and must
+    cost nothing at all. None still means "unknown" and must not take this
+    shortcut: over a whole-canvas bbox it drops, exactly as check 5b pins."""
+    scenario = _bumpy_scenario()
+    elevations, corner_rise, proj, tile_px = _sloped_state(scenario)
+    cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=1024)
+
+    sx, sy = proj.canvas_w // 2, proj.canvas_h // 2
+    assert cache.pick_tile(sx, sy) is not None
+    key = (sx // cache.chunk_px, sy // cache.chunk_px)
+    plane = cache._pick_planes[key]
+    before = plane.copy()
+
+    # Counted, not just compared: a rewrite against an unchanged corner_rise
+    # produces the same bytes, so equality alone would pass the wasted work.
+    calls = []
+    real = render.composite_ids_rect_sloped
+    monkeypatch.setattr(
+        render, "composite_ids_rect_sloped", lambda *a, **k: (calls.append(a[1:5]), real(*a, **k))[1]
+    )
+    cache.patch((sx - 64, sy - 64, sx + 64, sy + 64), elevation_changed=set())
+    assert not calls, f"an empty elevation_changed recomposited {len(calls)} sub-rect(s) it cannot have invalidated"
+    assert cache._pick_planes.get(key) is plane, "an empty elevation_changed must not touch the memo"
+    assert np.array_equal(plane, before), "an empty elevation_changed rewrote a plane it cannot have invalidated"
+
+    cache.patch((0, 0, proj.canvas_w, proj.canvas_h), elevation_changed=None)
+    assert not cache._pick_planes, "an unknown elevation_changed over the whole canvas must drop every plane"

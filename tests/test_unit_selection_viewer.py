@@ -74,7 +74,7 @@ def _select_first_unit(window):
     entry = index.entries[-1]
     window._selection = [(entry.player_id, entry.unit.reference_id)]
     window.map_view.set_unit_selection([entry])
-    window._update_unit_inspector(entry)
+    window.units_panel.show_unit(entry)
     return entry
 
 
@@ -218,18 +218,63 @@ def test_inspector_populates_and_clears() -> None:
     window = _window()
     try:
         window.mode_combo.setCurrentText("Units")
-        assert window.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
 
         entry = _select_first_unit(window)
-        assert not window.unit_inspector_empty.isVisibleTo(window.left_stack)
-        assert window.unit_field_labels["reference_id"].text() == str(entry.unit.reference_id)
-        assert window.unit_field_editors["player"].currentData() == 1
-        assert window.unit_field_labels["unit_const"].text() == str(_BUILDING_CONST)
-        assert window.unit_field_labels["name"].text()
+        assert not window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_field_labels["reference_id"].text() == str(entry.unit.reference_id)
+        assert window.units_panel.unit_field_editors["player"].currentData() == 1
+        assert window.units_panel.unit_field_labels["unit_const"].text() == str(_BUILDING_CONST)
+        assert window.units_panel.unit_field_labels["name"].text()
+        # _BUILDING_CONST has a full stats row (real ground truth, pinned
+        # independently in tests/test_unit_stats_table.py).
+        assert window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
+        hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
+        assert hp_value.isVisibleTo(window.left_stack)
+        assert hp_value.text()
 
-        window._update_unit_inspector(None)
-        assert window.unit_inspector_empty.isVisibleTo(window.left_stack)
-        assert window.unit_field_labels["reference_id"].text() == ""
+        window.units_panel.show_unit(None)
+        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_field_labels["reference_id"].text() == ""
+        # Clearing blanks the stat labels too, not just the scenario fields.
+        assert not window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
+        assert hp_value.text() == ""
+    finally:
+        _close(window)
+
+
+def test_a_tree_shows_only_hit_points_no_combat_rows() -> None:
+    """Const 349 (Oak tree, this file's _TREE_CONST) has hp=20 and neither a
+    type_50 nor a creatable block -- the four combat rows must disappear
+    outright rather than show empty."""
+    window = _window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        tree_entry = next(e for e in window.map_view._unit_index.entries if e.unit.unit_const == _TREE_CONST)
+        window.units_panel.show_unit(tree_entry)
+
+        assert window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
+        hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
+        assert hp_value.isVisibleTo(window.left_stack)
+        assert hp_value.text() == "20"
+        for field_id in ("attack", "melee_armour", "pierce_armour", "range"):
+            caption, value = window.units_panel.unit_stat_rows[field_id]
+            assert not caption.isVisibleTo(window.left_stack)
+            assert not value.isVisibleTo(window.left_stack)
+    finally:
+        _close(window)
+
+
+def test_stats_caveat_names_civ_bonuses_and_tech_upgrades() -> None:
+    """The one-line note stays short at MIN_USEFUL_WIDTH, but the full
+    caveat -- naming both civ bonuses and trigger effects -- is still one
+    hover away, same pattern as the Rotation caption's own tooltip."""
+    window = _window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        _select_first_unit(window)
+        assert "civ bonuses" in window.units_panel.unit_stats_note.toolTip()
+        assert "trigger effects" in window.units_panel.unit_stats_note.toolTip()
     finally:
         _close(window)
 
@@ -239,8 +284,8 @@ def test_gaia_owner_is_labelled_gaia_not_player_0() -> None:
     try:
         window.mode_combo.setCurrentText("Units")
         gaia_entry = next(e for e in window.map_view._unit_index.entries if e.player_id == 0)
-        window._update_unit_inspector(gaia_entry)
-        assert window.unit_field_editors["player"].currentData() == GAIA_PLAYER_ID
+        window.units_panel.show_unit(gaia_entry)
+        assert window.units_panel.unit_field_editors["player"].currentData() == GAIA_PLAYER_ID
     finally:
         _close(window)
 
@@ -255,9 +300,14 @@ def test_rotation_is_shown_raw_with_its_variant_index_warning() -> None:
         window.mode_combo.setCurrentText("Units")
         gaia_entry = next(e for e in window.map_view._unit_index.entries if e.player_id == 0)
         gaia_entry.unit.rotation = 37
-        window._update_unit_inspector(gaia_entry)
-        assert window.unit_field_labels["rotation"].text() == "37"
-        assert "variant index" in window.unit_rotation_note.text()
+        window.units_panel.show_unit(gaia_entry)
+        assert window.units_panel.unit_field_labels["rotation"].text() == "37"
+        assert "variant index" in window.units_panel.unit_rotation_note.text()
+        assert window.units_panel.unit_rotation_note.isVisibleTo(window.units_panel)
+        # The "shown raw, in radians" half stays reachable regardless of
+        # const, via the Rotation caption's own tooltip -- see
+        # units_panel.py's _ROTATION_TOOLTIP.
+        assert "radians" in window.units_panel.unit_rotation_label.toolTip()
     finally:
         _close(window)
 
@@ -272,13 +322,13 @@ def test_a_filter_that_hides_the_selection_clears_it() -> None:
         gaia_entry = next(e for e in window.map_view._unit_index.entries if e.player_id == 0)
         window._selection = [(gaia_entry.player_id, gaia_entry.unit.reference_id)]
         window.map_view.set_unit_selection([gaia_entry])
-        window._update_unit_inspector(gaia_entry)
+        window.units_panel.show_unit(gaia_entry)
         assert window.map_view._unit_select_item is not None
 
         window.show_gaia_action.setChecked(False)
         assert window._selection == []
         assert window.map_view._unit_select_item is None
-        assert window.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
     finally:
         _close(window)
 
@@ -384,7 +434,7 @@ def test_leaving_units_mode_clears_the_selection_key_not_just_the_cue() -> None:
         window.mode_combo.setCurrentText("Units")
         assert window._selection == []
         assert window.map_view._unit_select_item is None
-        assert window.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
     finally:
         _close(window)
 
@@ -451,5 +501,57 @@ def test_sloped_produces_a_unit_highlight_at_the_units_own_rise() -> None:
         rect = item.path().boundingRect()
         assert (round(rect.left()), round(rect.top())) == (min(xs), min(ys))
         assert (round(rect.right()), round(rect.bottom())) == (max(xs), max(ys))
+    finally:
+        _close(window)
+
+
+def test_pick_unit_at_reuses_a_tile_it_is_handed_in_sloped() -> None:
+    """mouseMoveEvent resolves the terrain tile once for the hover cue and
+    hands it to pick_unit_at(), which used to look the same pixel up through
+    the Sloped pick plane a second time.
+
+    Both halves are pinned here, against a real cache rather than a
+    synthetic corner_rise: the threaded tile must not change the answer, and
+    it must be the value occlusion is actually decided by. The 4x4 building
+    is deliberate. A multi-tile footprint keeps membership on
+    diamond_membership(), so terrain_tile moves nothing but occlusion.
+    """
+    window = _window()
+    try:
+        from PyQt5.QtCore import QPointF
+
+        from descape import unit_pick
+
+        window.terrain_style_combo.setCurrentText("Sloped")
+        mv = window.map_view
+        index = unit_pick.build_index(window.scenario, UnitFilter())
+        mv.set_unit_index(index)
+        entry = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST)
+        polygons = unit_pick.unit_polygons(
+            entry,
+            "sloped",
+            mv._tile_pixels,
+            mv._map_width,
+            mv._map_height,
+            None,
+            mv._iso_proj,
+            corner_rise=mv._sloped_cache().corner_rise,
+        )
+        poly = polygons[0]  # one footprint diamond; its centre is inside it
+        pos = QPointF(
+            sum(x for x, _y in poly) / len(poly),
+            sum(y for _x, y in poly) / len(poly),
+        )
+        assert mv.pick_unit_at(pos) is entry, "the building is not pickable at its own diamond centre"
+
+        tile = mv._pick_tile(pos)
+        assert tile is not None
+        assert mv.pick_unit_at(pos, tile) is entry, "the threaded tile changed the answer"
+
+        # The map's near corner outranks every footprint tile's depth key, so
+        # handing it in must occlude the building, and None ("no terrain
+        # here") must leave it unoccluded. Both fail if the tile is ignored.
+        assert mv.pick_unit_at(pos, (0, mv._map_height - 1)) is None
+        assert mv.pick_unit_at(pos, None) is entry
     finally:
         _close(window)

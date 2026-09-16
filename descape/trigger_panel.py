@@ -43,6 +43,7 @@ from descape.scenario_io import (
 from descape.trigger_model import (
     exec_order_value,
 )
+from descape.value_picker import _HScrollStableTreeWidget
 from descape.viewer_common import _fit_combo_width, _make_spinbox
 
 
@@ -189,24 +190,6 @@ class VariablesDialog(QDialog):
         if not self._editable or variable_id is None:
             return
         self._on_structural("remove", variable_id, "")
-
-
-class _HScrollStableTreeWidget(QTreeWidget):
-    """QTreeWidget that ignores Qt's horizontal auto-scroll on selection.
-
-    Qt's default scrollTo(index, EnsureVisible) chases a ResizeToContents
-    column's full width, so selecting a long row yanks the horizontal
-    scrollbar to that row's far-right edge. Restoring the horizontal
-    position after the base implementation runs keeps its vertical
-    auto-scroll (needed for keyboard navigation) while dropping the
-    horizontal jump, regardless of what triggered the scroll.
-    """
-
-    def scrollTo(self, index, hint=QTreeWidget.EnsureVisible) -> None:
-        hbar = self.horizontalScrollBar()
-        pos = hbar.value()
-        super().scrollTo(index, hint)
-        hbar.setValue(pos)
 
 
 class TriggerPanel(QWidget):

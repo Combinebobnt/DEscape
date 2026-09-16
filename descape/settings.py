@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
@@ -573,6 +574,50 @@ def set_log_height(height: int) -> None:
     _save_config(config)
 
 
+# File > Open Recent. Most-recently-opened first; capped rather than
+# unbounded so the submenu (and the config file) can't grow forever.
+MAX_RECENT_FILES = 10
+
+_recent_files: list[str] | None = None
+
+
+def get_recent_files() -> list[str]:
+    """Up to MAX_RECENT_FILES most-recently-opened scenario paths, most
+    recent first. Empty if none yet. Existence isn't checked here -- the
+    menu that renders this list filters missing files itself, so this stays
+    a pure read of what was persisted."""
+    global _recent_files
+    if _recent_files is None:
+        raw = _load_config().get("recent_files", [])
+        if isinstance(raw, list):
+            _recent_files = [p for p in raw if isinstance(p, str)][:MAX_RECENT_FILES]
+        else:
+            _recent_files = []
+    return _recent_files
+
+
+def add_recent_file(path: Path) -> None:
+    """Moves path to the front of the recent-files list, deduplicating
+    against any existing entry for the same path and capping at
+    MAX_RECENT_FILES."""
+    global _recent_files
+    resolved = str(path)
+    files = [p for p in get_recent_files() if p != resolved]
+    files.insert(0, resolved)
+    _recent_files = files[:MAX_RECENT_FILES]
+    config = _load_config()
+    config["recent_files"] = _recent_files
+    _save_config(config)
+
+
+def clear_recent_files() -> None:
+    global _recent_files
+    _recent_files = []
+    config = _load_config()
+    config["recent_files"] = []
+    _save_config(config)
+
+
 @dataclass(frozen=True)
 class ToolDef:
     """One entry per toolbar Tool (Pan, Draw, Elevate, Set Elevation, and
@@ -684,7 +729,7 @@ TOOLS: list[ToolDef] = [
     # shared QKeySequence does -- fires NEITHER action, silently).
     ToolDef(
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
-        click_only=True, param_widget="object", modes=("units",),
+        click_only=True, modes=("units",),
     ),
     # Phase 3.5b's b2.5 (D3): a brush, not a click-once tool, so it reuses
     # the generic stroke mechanism (begin/tile/end) every brush tool already
@@ -805,11 +850,12 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
-    # ViewerWindow._select_player(). range(9) rather than viewer.py's
-    # MAX_PLAYER_ID on purpose: importing it would drag this Qt-free,
-    # widely-imported config module onto unit_filter -> terrain_palette,
-    # which parses two JSON files at import time. A test cross-checks the
-    # count instead.
+    # ViewerWindow._select_player(). range(9) rather than
+    # unit_filter.MAX_PLAYER_ID on purpose: importing it would still drag
+    # this widely-imported config module onto terrain_palette, which parses
+    # two JSON files at import time, even though the constant itself no
+    # longer lives on the Qt-heavy viewer.py. A test cross-checks the count
+    # instead.
     (f"player_select_{pid}", f"Select {'GAIA' if pid == 0 else f'Player {pid}'}", str(pid))
     for pid in range(9)
 ] + [(f"tool_{t.tool_id}", f"{t.label} Tool", t.default_key) for t in TOOLS] + [

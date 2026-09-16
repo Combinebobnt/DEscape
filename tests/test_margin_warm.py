@@ -248,6 +248,93 @@ def test_margin_warmer_on_drained_does_not_fire_on_a_refused_or_empty_start() ->
     assert drained == [], "an empty chunk list has nothing to wait for either"
 
 
+def test_margin_warmer_pauses_while_a_mouse_button_is_held(monkeypatch) -> None:
+    """Item 23: a held mouse button means discrete move events with idle
+    gaps between them, so the 0ms timer would otherwise land a chunk
+    mid-drag as a hitch. tick() must warm nothing while held. No
+    QApplication here, so there's no real QTimer to check the backed-off
+    interval on -- that half is checked separately, gui-marked, below."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    monkeypatch.setattr(QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton))
+
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(1, 1), (2, 2)])
+
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [], "held means no chunk warmed"
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [], "still held, still nothing warmed"
+    assert warmer.is_active
+
+
+def test_margin_warmer_resumes_and_drains_on_release(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    held = {"value": True}
+    monkeypatch.setattr(
+        QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if held["value"] else Qt.NoButton)
+    )
+
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(1, 1), (2, 2)])
+
+    warmer.tick()
+    assert cache.get_chunk_calls == [], "still held -- vacuous otherwise"
+
+    held["value"] = False
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [(0, 1, 1)]
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls == [(0, 1, 1), (0, 2, 2)]
+    assert not warmer.is_active
+
+
+@pytest.mark.gui
+def test_margin_warmer_backs_off_the_timer_interval_while_held_and_restores_it(monkeypatch) -> None:
+    """The other half of item 23: returning early with the 0ms repeating
+    timer still armed would spin a core for the whole drag, so tick() must
+    retarget the real QTimer's interval, not just skip the warm. Needs a
+    real QApplication for a real QTimer to exist on the driver at all."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    conftest.ensure_qapp()
+    held = {"value": True}
+    monkeypatch.setattr(
+        QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if held["value"] else Qt.NoButton)
+    )
+
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(1, 1), (2, 2)])
+
+    warmer.tick()
+    assert warmer._timer.interval() == margin_warm.MarginWarmer.HELD_INTERVAL_MS
+
+    held["value"] = False
+    warmer.tick()
+    assert warmer._timer.interval() == 0
+    warmer.cancel()
+
+
+def test_wheel_driven_retarget_is_unaffected_by_the_held_gate() -> None:
+    """A wheel/keyboard pan holds no mouse button, so a retarget through
+    that path must warm normally -- the existing no-monkeypatch tests
+    already prove this implicitly (no QApplication means mouseButtons()
+    reads NoButton), but this pins it explicitly against item 23's own
+    claim rather than relying on that as an accident of test setup."""
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(1, 1)])
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls == [(0, 1, 1)]
+
+
 def test_margin_warmer_on_drained_does_not_fire_on_cancel() -> None:
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     warmer = margin_warm.MarginWarmer()

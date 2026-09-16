@@ -482,18 +482,70 @@ def test_no_warm_is_scheduled_with_the_setting_off(monkeypatch) -> None:
         _close(window)
 
 
+def _in_flight_jobs(warmer) -> list:
+    """The LevelWarmJob objects a warmer is currently holding, queued or
+    running. Returns the objects themselves, not their ids: the caller
+    compares them by identity across a cancel, and an id of a dropped job can
+    legitimately be reused by the job that replaces it."""
+    jobs = [job for _, job in warmer._queue]
+    if warmer._job is not None:
+        jobs.append(warmer._job)
+    return jobs
+
+
 @pytest.mark.gui
-def test_an_edit_cancels_an_in_flight_warm(monkeypatch) -> None:
+def test_an_edit_drops_the_in_flight_warm_and_re_arms(monkeypatch) -> None:
     """The cancel side of Step 4, through a real viewer path rather than by
     calling the driver directly: _after_unit_mutation is one of the mutating
-    call sites, and the warm must be gone before it returns."""
+    call sites, and every job in flight when it starts must be gone before it
+    returns.
+
+    The assertion is job IDENTITY, not `not is_active`, because Batch B step
+    B1 re-arms a fresh warm at that method's tail. Identity is the invariant
+    the cancel actually carries: a job built before the edit walks the
+    pre-edit unit list, and one built after the invalidation cannot. Both
+    halves are pinned here, so neither the cancel nor the re-arm can go
+    missing without a failure.
+    """
     from descape import settings
 
     monkeypatch.setattr(settings, "_preload_zoom_levels", True)
     window = _shown_window()
     try:
         assert window._level_warmer.is_active, "the load queued nothing -- vacuous"
+        stale = _in_flight_jobs(window._level_warmer)
+        assert stale, "vacuous: nothing was in flight"
+
         window._after_unit_mutation()
-        assert not window._level_warmer.is_active
+
+        live = _in_flight_jobs(window._level_warmer)
+        assert not [job for job in live if any(job is old for old in stale)], (
+            "a job that started before the edit is still in flight after it"
+        )
+        assert window._level_warmer.is_active, "B1's tail re-arm queued nothing"
+    finally:
+        _close(window)
+
+
+@pytest.mark.gui
+def test_a_terrain_edit_re_arms_the_level_warm(monkeypatch) -> None:
+    """B1's other half. _apply_dirty() cancels the warms at its top, and
+    before B1 nothing started them again, so the first stroke, paste or undo
+    of a session left every neighbour mip cold until the next file open and
+    the next zoom paid the whole level build inside paint()."""
+    from descape import settings
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = _shown_window()
+    try:
+        assert window._level_warmer.is_active, "vacuous: the load queued nothing"
+        stale = _in_flight_jobs(window._level_warmer)
+        assert stale, "vacuous: nothing was in flight"
+
+        window._apply_dirty([0])
+
+        live = _in_flight_jobs(window._level_warmer)
+        assert not [job for job in live if any(job is old for old in stale)]
+        assert window._level_warmer.is_active, "B1's tail re-arm queued nothing"
     finally:
         _close(window)

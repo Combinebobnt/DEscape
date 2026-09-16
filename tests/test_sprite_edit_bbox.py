@@ -379,6 +379,136 @@ def test_the_bbox_covers_the_sprite_at_every_span_parity(sprite_install, monkeyp
         )
 
 
+# --- Batch D's D3: extra_anchor_tiles ------------------------------------
+#
+# These three tests cannot drive UnitEditModel: this file's Unit is a
+# duck-typed dataclass appended straight to unit_manager.units (see
+# _fixture_scenario above), never tracked by UnitEditModel, and
+# UnitEditModel.__init__ additionally requires units_write_supported, exactly
+# 9 unit sections and a byte-verification of every unit this fixture cannot
+# satisfy. So the move here is unit.x/unit.y assigned directly plus a hand
+# `scenario.unit_gen += 1` -- the first consumer of D1's own documented
+# direct-mutation contract (LoadedScenario.unit_gen's own docstring: a caller
+# that mutates unit_manager.units without going through UnitEditModel must
+# bump unit_gen itself, or a memo built before the mutation stays stale).
+
+
+def _terrain_index(mm, x: int, y: int) -> int:
+    return next(i for i, t in enumerate(mm.terrain) if (int(t.x), int(t.y)) == (x, y))
+
+
+def test_a_unit_move_with_extra_anchor_tiles_covers_both_old_and_new_sprite_rects(
+    sprite_install, monkeypatch
+):
+    """extra_anchor_tiles is what keeps a moved unit's OLD sprite fragment
+    inside the bbox: anchor_tiles(scenario) is read live, i.e. POST-move, so
+    it no longer contains the unit's old tile at all -- without this
+    parameter the old fragment would never get padded in and would be left
+    stale on screen."""
+    scenario = _fixture_scenario()
+    mm = scenario.map_manager
+    elevations, proj = render.elevations_and_proj(scenario)
+    old_x, old_y = EDIT_X, EDIT_Y
+    new_x, new_y = EDIT_X + 1, EDIT_Y
+
+    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+
+    unit = scenario.unit_manager.units[1][0]
+    unit.x, unit.y = float(new_x), float(new_y)
+    scenario.unit_gen += 1
+
+    new_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+
+    dirty = [_terrain_index(mm, old_x, old_y), _terrain_index(mm, new_x, new_y)]
+    bbox = dirty_screen_bbox_iso(
+        scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
+        elevation_changed=set(), extra_anchor_tiles={(old_x, old_y)},
+    )
+    assert bbox is not None
+    for e in (proj.min_elev, proj.max_elev):
+        assert _covers(bbox, old_rects[e]), f"bbox {bbox} misses the OLD sprite rect {old_rects[e]} at {e}"
+        assert _covers(bbox, new_rects[e]), f"bbox {bbox} misses the NEW sprite rect {new_rects[e]} at {e}"
+
+
+def test_without_extra_anchor_tiles_the_same_move_misses_the_old_sprite_rect(
+    sprite_install, monkeypatch
+):
+    """Non-vacuity, same shape test 2 uses: this is the test that fails if
+    D5 ever stops passing the pre-edit footprint tiles into extra_anchor_tiles.
+
+    Moves 40 tiles, not 1: the fixture's sprite reach (384px each side) is so
+    large that a 1-tile move's own padding around the NEW anchor already
+    reaches back and covers the OLD rect anyway, which would make this
+    assertion fail for a reason that has nothing to do with the parameter
+    under test. 40 tiles (1280px of horizontal screen separation alone) clears
+    that by a wide margin while staying on this 120x120 map."""
+    scenario = _fixture_scenario()
+    mm = scenario.map_manager
+    elevations, proj = render.elevations_and_proj(scenario)
+    old_x, old_y = EDIT_X, EDIT_Y
+    new_x, new_y = EDIT_X + 40, EDIT_Y
+
+    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+
+    unit = scenario.unit_manager.units[1][0]
+    unit.x, unit.y = float(new_x), float(new_y)
+    scenario.unit_gen += 1
+
+    dirty = [_terrain_index(mm, old_x, old_y), _terrain_index(mm, new_x, new_y)]
+    bbox = dirty_screen_bbox_iso(
+        scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
+        elevation_changed=set(),
+    )  # no extra_anchor_tiles
+    assert bbox is not None
+    for e in (proj.min_elev, proj.max_elev):
+        assert not _covers(bbox, old_rects[e]), (
+            f"bbox {bbox} already covers the OLD sprite rect {old_rects[e]} at {e} without "
+            f"extra_anchor_tiles -- this test no longer proves the parameter is load-bearing"
+        )
+
+
+def test_extra_anchor_tiles_covers_a_multi_tile_old_footprint_not_just_the_anchor(
+    sprite_install, monkeypatch
+):
+    """The gate-orientation case (set_unit_const swaps among spans (4, 1),
+    (1, 4) and two 4x4 diagonals, so a gate's old footprint is not a subset
+    of its new one), without dragging in gate_orientation/BUILDING_TILE_
+    OFFSETS: BUILDING_TILE_SPANS[CONST] monkeypatched between the two
+    _sprite_rect calls simulates the same defect -- a multi-tile OLD
+    footprint that extra_anchor_tiles must carry in full, not just the
+    single anchor tile a naive caller might pass instead."""
+    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, (4, 1))
+    scenario = _fixture_scenario()
+    mm = scenario.map_manager
+    elevations, proj = render.elevations_and_proj(scenario)
+    unit = scenario.unit_manager.units[1][0]
+
+    old_footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    assert len(old_footprint) > 1, "fixture must actually span more than one tile to prove anything"
+    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+
+    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, (1, 4))
+    unit.x, unit.y = float(EDIT_X + 2), float(EDIT_Y)
+    scenario.unit_gen += 1
+
+    new_footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    assert not old_footprint & new_footprint, "old and new footprints must not overlap, or this proves nothing"
+
+    dirty_xy = old_footprint | new_footprint
+    dirty = [i for i, t in enumerate(mm.terrain) if (int(t.x), int(t.y)) in dirty_xy]
+
+    bbox = dirty_screen_bbox_iso(
+        scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
+        elevation_changed=set(), extra_anchor_tiles=old_footprint,
+    )
+    assert bbox is not None
+    for e, rect in old_rects.items():
+        assert _covers(bbox, rect), (
+            f"bbox {bbox} misses the OLD (4, 1)-span sprite rect {rect} at {e} -- "
+            f"extra_anchor_tiles must carry the WHOLE old footprint, not just one tile"
+        )
+
+
 # --- the oracle ---------------------------------------------------------
 
 

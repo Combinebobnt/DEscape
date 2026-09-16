@@ -174,6 +174,24 @@ def terrain_edit_window():
     return window
 
 
+def shown_terrain_window(width: int = 1200, height: int = 800):
+    """terrain_edit_window(), but shown and processed -- what
+    tests/test_toolbar_overflow.py needs and no existing fixture gives it.
+    shown_window() has no map (View mode, nothing to paint), and
+    terrain_edit_window() is built on blank_window(), documented as never
+    shown -- geometry/sizeHint()-driven assertions on an unshown window test
+    Qt's layout fallback, not real behaviour. resize() + processEvents()
+    twice: once for the show to settle, once for the resize to take."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = terrain_edit_window()
+    window.show()
+    QApplication.processEvents()
+    window.resize(width, height)
+    QApplication.processEvents()
+    return window
+
+
 def close_window(window) -> None:
     """Close without the dirty-document modal. Same requirement
     stepped_window() documents: closeEvent() -> _confirm_discard_changes()
@@ -333,6 +351,7 @@ _SETTINGS_MEMOIZED_GLOBALS = (
     "_distance_tick_font_px",
     "_paint_trees",
     "_paint_eye_candy",
+    "_recent_files",
 )
 
 

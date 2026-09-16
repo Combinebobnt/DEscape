@@ -351,7 +351,7 @@ def _stitched(scn, elevations, proj, sprites) -> np.ndarray:
     mm = scn.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     units_by_tile = render._units_by_tile(scn)
-    bboxes = render._building_bboxes_iso(units_by_tile, mm.map_width, mm.map_height, proj, elevations)
+    bboxes = render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
     merged = render.merge_sprite_bboxes(bboxes, sprites)
     out = np.zeros((proj.canvas_h + (iso_geometry.MAX_ELEVATION - iso_geometry.MIN_ELEVATION) * proj.elev_step,
                      proj.canvas_w, 3), dtype=np.uint8)
