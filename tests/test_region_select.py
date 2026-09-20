@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import settings, viewer_common
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -43,26 +44,11 @@ def _select_window(style: str = "Flat"):
     return window
 
 
-def _viewport_pos(map_view, tile_x: int, tile_y: int):
-    from PyQt5.QtCore import QPointF
-
-    polygon = map_view._tile_polygon(tile_x, tile_y)
-    assert polygon is not None, f"no footprint for ({tile_x}, {tile_y})"
-    return QPointF(map_view.mapFromScene(polygon.boundingRect().center()))
-
-
-def _mouse_event(kind, pos, button, buttons):
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QMouseEvent
-
-    return QMouseEvent(kind, pos, button, buttons, Qt.NoModifier)
-
-
 def _press(map_view, tile: tuple[int, int]) -> None:
     from PyQt5.QtCore import QEvent, Qt
 
     map_view.mousePressEvent(
-        _mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, *tile), Qt.LeftButton, Qt.LeftButton)
+        conftest.mouse_event(QEvent.MouseButtonPress, conftest.polygon_viewport_pos(map_view, *tile), Qt.LeftButton, Qt.LeftButton)
     )
 
 
@@ -70,7 +56,7 @@ def _move(map_view, tile: tuple[int, int]) -> None:
     from PyQt5.QtCore import QEvent, Qt
 
     map_view.mouseMoveEvent(
-        _mouse_event(QEvent.MouseMove, _viewport_pos(map_view, *tile), Qt.NoButton, Qt.LeftButton)
+        conftest.mouse_event(QEvent.MouseMove, conftest.polygon_viewport_pos(map_view, *tile), Qt.NoButton, Qt.LeftButton)
     )
 
 
@@ -78,7 +64,7 @@ def _release(map_view, tile: tuple[int, int]) -> None:
     from PyQt5.QtCore import QEvent, Qt
 
     map_view.mouseReleaseEvent(
-        _mouse_event(QEvent.MouseButtonRelease, _viewport_pos(map_view, *tile), Qt.LeftButton, Qt.NoButton)
+        conftest.mouse_event(QEvent.MouseButtonRelease, conftest.polygon_viewport_pos(map_view, *tile), Qt.LeftButton, Qt.NoButton)
     )
 
 
@@ -334,6 +320,163 @@ def test_a_new_region_off_screen_does_not_start_the_ants() -> None:
         map_view.set_region((2, 2, 6, 6))
         assert map_view._region_ants_item is not None
         assert not map_view._region_ant_timer.isActive()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- the boundary path traces the true perimeter -----------------------------
+#
+# The old overlay added each perimeter tile's WHOLE polygon, so it stroked
+# every seam between two adjacent boundary tiles as well as the silhouette --
+# visible as ant marks running into the selection. These pin the replacement:
+# one closed ring along the outward-facing edges only.
+#
+# Note _select_window()'s style argument reaches ViewerWindow but NOT
+# MapView._terrain_style, which only set_source() assigns and which a restyle
+# cannot reach offscreen. So MapView stays Stepped here whatever is asked for,
+# and these are Stepped assertions. Sloped's own 1px apex overlap is why
+# iso_geometry.sloped_tile_edge_outline's docstring forbids vertex-level
+# continuity assertions there.
+
+
+def _path_points(path) -> list[tuple[float, float]]:
+    return [(path.elementAt(i).x, path.elementAt(i).y) for i in range(path.elementCount())]
+
+
+def _subpath_count(path) -> int:
+    return sum(1 for i in range(path.elementCount()) if path.elementAt(i).isMoveTo())
+
+
+def test_boundary_path_is_one_continuous_closed_ring() -> None:
+    """The structural half, and the one that fails loudest on the old code:
+    16 boundary tiles each contributing a closed polygon is 16 subpaths, not
+    a ring. Deliberately no element-COUNT assertion -- coincident endpoints
+    make counts an emission detail rather than the property."""
+    window = _select_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (14, 14))
+        path = map_view._region_outline_item.path()
+        assert _subpath_count(path) == 1
+        points = _path_points(path)
+        assert points[0] == points[-1], "ring does not close"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_boundary_path_has_no_interior_vertices() -> None:
+    """The geometric half. The blank template is uniformly elevation 0 (see
+    the unique-elevation guard below), so a tile rectangle's silhouette is
+    exactly the parallelogram through its four extreme tile tips, and every
+    vertex of a true-perimeter ring lies ON one of those four straight edges.
+    A vertex on an interior seam does not, which is what the old whole-diamond
+    path emitted. Exact integer arithmetic throughout -- tile_screen_origin is
+    documented as integer-only, so this needs no tolerance."""
+    import numpy as np
+
+    window = _select_window()
+    try:
+        map_view = window.map_view
+        assert np.unique(map_view._iso_elevations).tolist() == [0], (
+            "this test's parallelogram silhouette assumes uniform elevation"
+        )
+        _drag(map_view, (10, 10), (14, 14))
+        tx0, ty0, tx1, ty1 = map_view._region
+        # Stepped polygons are unit_pick.diamond_points' [N, E, S, W]; the
+        # extreme tip in each screen direction belongs to a different corner
+        # tile, since screen_x tracks (x + y) and screen_y tracks (y - x).
+        def tip(tile_x, tile_y, index):
+            point = map_view._tile_polygon(tile_x, tile_y)[index]
+            return (point.x(), point.y())
+
+        west = tip(tx0, ty0, 3)
+        north = tip(tx1 - 1, ty0, 0)
+        east = tip(tx1 - 1, ty1 - 1, 1)
+        south = tip(tx0, ty1 - 1, 2)
+        edges = [(west, north), (north, east), (east, south), (south, west)]
+
+        def on_segment(point, a, b) -> bool:
+            (px, py), (ax, ay), (bx, by) = point, a, b
+            if (bx - ax) * (py - ay) - (by - ay) * (px - ax) != 0:
+                return False
+            return min(ax, bx) <= px <= max(ax, bx) and min(ay, by) <= py <= max(ay, by)
+
+        for point in _path_points(map_view._region_outline_item.path()):
+            assert any(on_segment(point, a, b) for a, b in edges), (
+                f"vertex {point} is not on the selection silhouette "
+                f"{west}->{north}->{east}->{south}"
+            )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_ants_and_outline_share_one_path(style: str) -> None:
+    window = _select_window(style)
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (14, 14))
+        assert map_view._region_ants_item.path() == map_view._region_outline_item.path()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("corner", [(10, 10), (14, 10), (10, 14)])
+def test_degenerate_regions_are_still_fully_outlined(corner) -> None:
+    """1x1, Nx1 and 1xN need no special case in the ring walk: a tile
+    appearing in more than one chain under DIFFERENT sides is the point, and
+    is why the old _region_boundary_tiles' de-duplication guards were dropped
+    rather than ported."""
+    window = _select_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), corner)
+        path = map_view._region_outline_item.path()
+        assert not path.isEmpty()
+        assert _subpath_count(path) == 1
+        tx0, ty0, tx1, ty1 = map_view._region
+        # A 1x1 region's ring must still cover the whole diamond.
+        expected = map_view._tile_polygon(tx0, ty0).boundingRect()
+        for ty in range(ty0, ty1):
+            for tx in range(tx0, tx1):
+                expected = expected.united(map_view._tile_polygon(tx, ty).boundingRect())
+        assert path.boundingRect() == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_flat_boundary_path_has_no_interior_vertices() -> None:
+    """Flat's own branch of _tile_edge_points, which the harness cannot reach
+    by asking for the style (see the note above): MapView._terrain_style is
+    poked directly, which is safe here because Flat's _tile_polygon branch
+    reads nothing but self._tile_pixels.
+
+    Worth its own test rather than folding into the Stepped one: Flat indexes
+    a DIFFERENT vertex table, and a swapped pair there would draw a bowtie
+    that the Stepped assertions above cannot see. Flat is plain integer
+    tile-pixel arithmetic, so "no vertex in the rect's interior" is exactly
+    the property, stated directly."""
+    window = _select_window()
+    try:
+        map_view = window.map_view
+        map_view._terrain_style = "flat"
+        map_view.set_region((10, 10, 15, 15))
+        tx0, ty0, tx1, ty1 = map_view._region
+        tp = map_view._tile_pixels
+        x_edges, y_edges = (tx0 * tp, tx1 * tp), (ty0 * tp, ty1 * tp)
+        path = map_view._region_outline_item.path()
+        assert _subpath_count(path) == 1
+        points = _path_points(path)
+        assert points[0] == points[-1], "ring does not close"
+        for x, y in points:
+            assert x in x_edges or y in y_edges, (
+                f"interior vertex at ({x}, {y}); rect px x{x_edges} y{y_edges}"
+            )
     finally:
         window.edit_history.mark_saved()
         window.close()

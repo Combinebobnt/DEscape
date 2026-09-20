@@ -71,9 +71,11 @@ def test_no_shipped_type_derives_an_unsupported_field() -> None:
                 attributes=tuple(value.get("attributes", ())),
                 default_attributes=dict(value.get("default_attributes", {})),
             )
-            for spec in trigger_fields.field_specs(entry, presentation, type_attribute):
-                if spec.kind == trigger_fields.UNSUPPORTED:
-                    offenders.append(f"{version}/{kind}/{value['name']}.{spec.name}")
+            offenders.extend(
+                f"{version}/{kind}/{value['name']}.{spec.name}"
+                for spec in trigger_fields.field_specs(entry, presentation, type_attribute)
+                if spec.kind == trigger_fields.UNSUPPORTED
+            )
     assert offenders == [], f"fields with no widget: {offenders}"
 
 
@@ -192,6 +194,34 @@ def test_enum_choices_have_no_duplicate_values() -> None:
         assert len(values) == len(set(values)), f"{presentation} has alias duplicates"
 
 
+def test_wants_picker_selects_exactly_the_six_large_enums() -> None:
+    """Pinned by name so a library enum growing past the threshold shows up
+    here as a deliberate change, not a silent widget swap."""
+    qualifying = {
+        presentation
+        for presentation in trigger_fields._ENUM_TYPES
+        if trigger_fields.wants_picker(
+            FieldSpec("f", trigger_fields.ENUM, trigger_fields.enum_choices(presentation), presentation=presentation)
+        )
+    }
+    assert qualifying == {
+        "Attribute",
+        "ObjectAttribute",
+        "ObjectClass",
+        "DamageClass",
+        "ActionType",
+        "UnitAIAction",
+    }
+    assert len(trigger_fields.enum_choices("ColorMood")) == trigger_fields.PICKER_MIN_CHOICES - 1
+
+
+def test_wants_picker_is_enum_only() -> None:
+    many = tuple((f"choice {i}", i) for i in range(trigger_fields.PICKER_MIN_CHOICES * 2))
+    assert trigger_fields.wants_picker(FieldSpec("f", trigger_fields.ENUM, many))
+    assert not trigger_fields.wants_picker(FieldSpec("f", trigger_fields.INT, many))
+    assert not trigger_fields.wants_picker(FieldSpec("f", trigger_fields.REFERENCE, presentation="UnitInfo"))
+
+
 def test_enum_choices_is_empty_for_a_reference() -> None:
     """A reference must not silently become a 498-entry combo box."""
     assert trigger_fields.enum_choices("UnitInfo") == ()
@@ -235,7 +265,7 @@ def test_catalog_presentations_point_at_a_non_empty_catalog() -> None:
 
 
 def test_document_references_are_the_two_intra_document_presentations() -> None:
-    assert trigger_fields.DOCUMENT_REFERENCES == {"TriggerId", "VariableId"}
+    assert {"TriggerId", "VariableId"} == trigger_fields.DOCUMENT_REFERENCES
     for presentation in trigger_fields.DOCUMENT_REFERENCES:
         assert presentation in trigger_fields._REFERENCE_DATASETS
         assert presentation not in trigger_fields.CATALOG_PRESENTATIONS
@@ -326,3 +356,224 @@ def test_format_int_list_tolerates_a_scalar() -> None:
     whenever a spec and a live entry disagree."""
     assert trigger_fields.format_int_list(-1) == ""
     assert trigger_fields.format_int_list(None) == ""
+
+
+# -- XS script fields --------------------------------------------------------
+
+
+def test_the_multiline_mode_is_exactly_the_named_pairs_in_every_version() -> None:
+    """Swept over every shipped version, not the fixture's: XS only exists
+    from v1.40, and a field-count census scoped to one version has been wrong
+    here before.
+
+    Asserts the *mode*, not a bool: the XS pairs and the prose pairs are both
+    multi-line but want different widgets, so a pair landing in the wrong set
+    would pass a truthiness check and still render wrong.
+    """
+    found = set()
+    offenders = []
+    for version, kind, raw in _every_shipped_vocabulary():
+        presentation = raw.get("-1", {}).get("attribute_presentation", {})
+        type_attribute = "condition_type" if kind == "conditions" else "effect_type"
+        for key, value in raw.items():
+            if key == "-1":
+                continue
+            entry = library_compat.VocabularyEntry(
+                id=int(key),
+                name=value["name"],
+                attributes=tuple(value.get("attributes", ())),
+                default_attributes=dict(value.get("default_attributes", {})),
+            )
+            for spec in trigger_fields.field_specs(entry, presentation, type_attribute):
+                pair = (entry.name, spec.name)
+                if pair in trigger_fields.MULTILINE_FIELDS:
+                    expected = trigger_fields.XS
+                elif pair in trigger_fields.PROSE_FIELDS:
+                    expected = trigger_fields.PROSE
+                else:
+                    expected = ""
+                if expected:
+                    found.add(pair)
+                    if spec.kind != trigger_fields.STR:
+                        offenders.append(f"{version}/{kind}/{entry.name}.{spec.name} is not STR")
+                if spec.multiline != expected:
+                    offenders.append(
+                        f"{version}/{kind}/{entry.name}.{spec.name}: "
+                        f"{spec.multiline!r} != {expected!r}"
+                    )
+    assert offenders == [], f"wrong multiline mode: {offenders}"
+    # Every named pair reaches a real spec in at least one shipped version --
+    # a misspelled name in either frozenset would otherwise match nothing and
+    # fail silently. Not every version: script_call arrived in v1.40, and so
+    # did change_technology_description.
+    assert found == trigger_fields.MULTILINE_FIELDS | trigger_fields.PROSE_FIELDS
+
+
+def test_the_trigger_s_own_prose_fields_are_prose_and_its_name_is_not() -> None:
+    modes = {spec.name: spec.multiline for spec in trigger_fields.TRIGGER_FIELDS}
+    assert modes["description"] == trigger_fields.PROSE
+    assert modes["short_description"] == trigger_fields.PROSE
+    assert modes["name"] == ""
+
+
+def test_the_armour_attack_rule_keeps_the_multiline_mode() -> None:
+    specs = (
+        FieldSpec("quantity", trigger_fields.INT),
+        FieldSpec("armour_attack_quantity", trigger_fields.INT),
+        FieldSpec("message", trigger_fields.STR, sentinel=None, multiline=trigger_fields.XS),
+    )
+
+    class _Entry:
+        quantity = 5
+        armour_attack_quantity = None
+
+    ruled = trigger_fields.apply_armour_attack_rule(specs, _Entry())
+    assert [spec.read_only for spec in ruled] == [False, True, False]
+    assert ruled[2].multiline == trigger_fields.XS
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "",
+        "void r(){\rif(xsCreateFile(false)){\rxsWriteString(\"hello world\");\rxsCloseFile();\r}\r}",
+        "void f()\r{\r  // a line comment\r  int a = 0;\r}\r",
+        "\r\r",
+    ],
+)
+def test_a_cr_separated_script_round_trips_byte_exactly(stored) -> None:
+    display = trigger_fields.xs_to_display(stored)
+    assert "\r" not in display
+    assert display.count("\n") == stored.count("\r")
+    assert trigger_fields.xs_from_display(display) == stored
+
+
+def test_crlf_and_lf_display_as_lines_and_write_back_as_cr() -> None:
+    """Not an involution: a stored CRLF or LF comes back as CR. The panel's
+    latch, not this translation, is what keeps an untouched field byte-identical."""
+    assert trigger_fields.xs_to_display("a\r\nb") == "a\nb"
+    assert trigger_fields.xs_to_display("a\nb") == "a\nb"
+    assert trigger_fields.xs_from_display("a\r\nb") == "a\rb"
+    assert trigger_fields.xs_from_display("a\nb") == "a\rb"
+
+
+def test_xs_to_display_tolerates_none() -> None:
+    assert trigger_fields.xs_to_display(None) == ""
+
+
+# -- the retype carry-over rule (GH #37) -------------------------------------
+
+
+class _Live:
+    """A stand-in for a live Condition/Effect: plain instance attributes, which
+    is exactly what the library gives these (see the module docstring's point
+    2)."""
+
+    def __init__(self, **values):
+        self.__dict__.update(values)
+
+
+def test_a_shared_field_with_a_real_value_carries() -> None:
+    old = _entry(["condition_type", "amount_or_quantity", "source_player"],
+                 {"condition_type": 1, "amount_or_quantity": -1, "source_player": -1})
+    new = _entry(["condition_type", "amount_or_quantity"],
+                 {"condition_type": 2, "amount_or_quantity": -1}, entry_id=2)
+    entry = _Live(condition_type=1, amount_or_quantity=7, source_player=-1)
+    applied, dropped = trigger_fields.retype_carryover(entry, old, new, "condition_type")
+    assert applied == {"amount_or_quantity": 7}
+    assert dropped == ()
+
+
+def test_a_field_only_the_old_type_has_is_dropped_and_named() -> None:
+    old = _entry(["condition_type", "timer", "source_player"],
+                 {"condition_type": 1, "timer": -1, "source_player": -1})
+    new = _entry(["condition_type", "source_player"],
+                 {"condition_type": 2, "source_player": -1}, entry_id=2)
+    entry = _Live(condition_type=1, timer=30, source_player=3)
+    applied, dropped = trigger_fields.retype_carryover(entry, old, new, "condition_type")
+    assert applied == {"source_player": 3}
+    assert dropped == ("timer",)
+
+
+def test_a_value_equal_to_the_old_default_does_not_carry() -> None:
+    """Nothing meaningful to carry, and carrying it would clobber a new type's
+    own non-(-1) default -- change_object_attack defaults
+    armour_attack_quantity to 1, not -1."""
+    old = _entry(["effect_type", "quantity_stub"], {"effect_type": 1, "quantity_stub": -1})
+    new = _entry(["effect_type", "quantity_stub"], {"effect_type": 2, "quantity_stub": 1},
+                 entry_id=2)
+    entry = _Live(effect_type=1, quantity_stub=-1)
+    applied, dropped = trigger_fields.retype_carryover(entry, old, new, "effect_type")
+    assert applied == {}
+    assert dropped == ()
+
+
+def test_the_excluded_cluster_never_carries_on_an_effect() -> None:
+    """quantity is bit-split with the armour/attack pair and the library
+    re-derives which slot is authoritative from the effect type."""
+    names = ["effect_type", "quantity", "quantity_float", "armour_attack_quantity",
+             "armour_attack_class", "source_player"]
+    defaults = dict.fromkeys(names, -1)
+    old = _entry(names, {**defaults, "effect_type": 1})
+    new = _entry(names, {**defaults, "effect_type": 2}, entry_id=2)
+    entry = _Live(effect_type=1, quantity=5, quantity_float=5.0, armour_attack_quantity=2,
+                  armour_attack_class=3, source_player=1)
+    applied, dropped = trigger_fields.retype_carryover(entry, old, new, "effect_type")
+    assert applied == {"source_player": 1}
+    assert set(dropped) == {"quantity", "quantity_float", "armour_attack_quantity",
+                            "armour_attack_class"}
+
+
+def test_a_conditions_quantity_does_carry() -> None:
+    """The exclusion set is effect-only: 14 condition types list `quantity` as
+    an ordinary field with no second slot behind it."""
+    old = _entry(["condition_type", "quantity"], {"condition_type": 1, "quantity": -1})
+    new = _entry(["condition_type", "quantity"], {"condition_type": 2, "quantity": -1},
+                 entry_id=2)
+    entry = _Live(condition_type=1, quantity=4)
+    applied, dropped = trigger_fields.retype_carryover(entry, old, new, "condition_type")
+    assert applied == {"quantity": 4}
+    assert dropped == ()
+
+
+def test_a_list_value_is_copied_not_aliased() -> None:
+    """restore()'s trap 6: the library mutates lists handed to it in place."""
+    old = _entry(["effect_type", "selected_object_ids"],
+                 {"effect_type": 1, "selected_object_ids": []})
+    new = _entry(["effect_type", "selected_object_ids"],
+                 {"effect_type": 2, "selected_object_ids": []}, entry_id=2)
+    stored = [11, 12]
+    entry = _Live(effect_type=1, selected_object_ids=stored)
+    applied, _dropped = trigger_fields.retype_carryover(entry, old, new, "effect_type")
+    assert applied["selected_object_ids"] == [11, 12]
+    assert applied["selected_object_ids"] is not stored
+    applied["selected_object_ids"].append(13)
+    assert stored == [11, 12]
+
+
+def test_an_unknown_old_type_carries_nothing_without_raising() -> None:
+    """_describe() already renders such an entry; retyping is how a user gets
+    out of it, so it must not be the one op that raises."""
+    new = _entry(["effect_type", "source_player"], {"effect_type": 2, "source_player": -1})
+    entry = _Live(effect_type=999, source_player=4)
+    applied, dropped = trigger_fields.retype_carryover(entry, None, new, "effect_type")
+    assert applied == {}
+    assert dropped == ()
+
+
+def test_an_unreadable_field_is_simply_not_carried() -> None:
+    """A version-gated property raises rather than being absent."""
+
+    class _Gated(_Live):
+        @property
+        def gated(self):
+            raise RuntimeError("unsupported in this scenario version")
+
+    old = _entry(["effect_type", "gated", "source_player"],
+                 {"effect_type": 1, "gated": -1, "source_player": -1})
+    new = _entry(["effect_type", "gated", "source_player"],
+                 {"effect_type": 2, "gated": -1, "source_player": -1}, entry_id=2)
+    entry = _Gated(effect_type=1, source_player=2)
+    applied, dropped = trigger_fields.retype_carryover(entry, old, new, "effect_type")
+    assert applied == {"source_player": 2}
+    assert dropped == ()

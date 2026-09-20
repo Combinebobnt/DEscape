@@ -21,14 +21,8 @@ argument makes them the same call.
 
 from __future__ import annotations
 
-
 import numpy as np
-
-from testkit.fakes import (
-    FakeScenario,
-    SyntheticTile,
-    SyntheticUnit,
-)
+import pytest
 
 from descape import render, render_cache
 from descape.render import (
@@ -41,9 +35,11 @@ from descape.render import (
 from descape.render_cache import FlatChunkCache
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
-
-
-
+from testkit.fakes import (
+    FakeScenario,
+    SyntheticTile,
+    SyntheticUnit,
+)
 
 # Picked dynamically rather than hardcoded, matching verify_iso_units.py's
 # own reasoning: a hardcoded const would silently stop testing anything if
@@ -83,9 +79,7 @@ def _expected_visible(scenario, unit_filter: UnitFilter) -> list[tuple[int, Synt
     than a restatement of the code under test."""
     out = []
     for player_id, units in enumerate(scenario.unit_manager.units):
-        for unit in units:
-            if unit_filter.matches(player_id, unit):
-                out.append((player_id, unit))
+        out.extend((player_id, unit) for unit in units if unit_filter.matches(player_id, unit))
     return out
 
 
@@ -165,11 +159,11 @@ def test_units_by_tile_default_filter_matches_independent_oracle() -> None:
                 expected.setdefault((tx, ty), []).append((unit, color))
 
     assert got.keys() == expected.keys()
-    for key in expected:
+    for key, want in expected.items():
         # Identity comparison per entry, and in order: this is the check that
         # a mis-threaded call site cannot pass by accident.
-        assert [id(u) for u, _c in got[key]] == [id(u) for u, _c in expected[key]]
-        assert [c for _u, c in got[key]] == [c for _u, c in expected[key]]
+        assert [id(u) for u, _c in got[key]] == [id(u) for u, _c in want]
+        assert [c for _u, c in got[key]] == [c for _u, c in want]
 
 
 def test_units_by_tile_honours_a_real_filter() -> None:
@@ -381,3 +375,124 @@ def test_sloped_cache_filters_units() -> None:
     assert not np.array_equal(before, _whole_canvas(cache))
     cache.set_unit_filter(UnitFilter())
     assert np.array_equal(before, _whole_canvas(cache))
+
+
+# --- GH #65's const gates: walls (and gates) and eye candy --------------
+#
+# On their OWN fixture rather than _scenario()'s, deliberately: the tests
+# above derive their expectations from whatever _scenario() holds, so adding
+# units there would silently rewrite twenty oracles at once. These consts are
+# real ones from unit_kind's derived sets, not synthetic ids -- the gate is a
+# const-membership test, so a made-up const would test nothing.
+
+_WALL_CONST = 117  # WALL2, the corpus's most-placed wall
+_GATE_CONST = 64  # a stone gate: hidden by show_walls too, per unit_kind
+_EYE_CANDY_CONST = 1358  # Grass Green
+_RESOURCE_CONST = 66  # GOLDM -- type 10 but a resource, so NOT eye candy
+
+
+def _kind_scenario() -> FakeScenario:
+    """Walls, a gate, eye candy and a resource, split across GAIA and a real
+    player. The player-owned copies are the load-bearing half: both new gates
+    are owner-blind, like show_trees, and an owner-gated implementation would
+    pass a GAIA-only fixture."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[GAIA_PLAYER_ID] = [
+        SyntheticUnit(x=1.5, y=1.5, unit_const=_WALL_CONST),
+        SyntheticUnit(x=2.5, y=1.5, unit_const=_EYE_CANDY_CONST),
+        SyntheticUnit(x=3.5, y=1.5, unit_const=_RESOURCE_CONST),
+    ]
+    units_by_player[1] = [
+        SyntheticUnit(x=6.5, y=6.5, unit_const=_WALL_CONST),
+        SyntheticUnit(x=8.5, y=6.5, unit_const=_GATE_CONST),
+        SyntheticUnit(x=6.5, y=9.5, unit_const=_EYE_CANDY_CONST),
+        SyntheticUnit(x=8.5, y=9.5, unit_const=_PLAIN_CONST),
+    ]
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+def test_show_walls_false_hides_walls_and_gates_under_every_owner() -> None:
+    scn = _kind_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_walls=False))
+    assert all(u.unit_const not in (_WALL_CONST, _GATE_CONST) for _pid, u in visible)
+    # Gates in particular: a wall line left with gate-shaped lumps in it is
+    # exactly what this toggle exists to avoid.
+    assert any(pid == 1 for pid, _ in visible), "hiding walls must not empty a player slot"
+    assert any(u.unit_const == _EYE_CANDY_CONST for _pid, u in visible)
+
+
+def test_show_eye_candy_false_hides_decoratives_but_keeps_resources() -> None:
+    """Gold, stone and berry bushes are type 10 like grass is, and are what
+    the user is looking *for* -- the same reasoning that split show_trees off
+    show_gaia."""
+    scn = _kind_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_eye_candy=False))
+    assert all(u.unit_const != _EYE_CANDY_CONST for _pid, u in visible)
+    assert any(u.unit_const == _RESOURCE_CONST for _pid, u in visible)
+    assert any(u.unit_const == _WALL_CONST for _pid, u in visible)
+
+
+def test_the_two_new_gates_are_independent_of_each_other_and_of_owner() -> None:
+    scn = _kind_scenario()
+    both = _expected_visible(scn, UnitFilter(show_walls=False, show_eye_candy=False))
+    kept = {u.unit_const for _pid, u in both}
+    assert kept == {_RESOURCE_CONST, _PLAIN_CONST}
+    # show_gaia still governs the GAIA slot on its own: the const gates run
+    # first but do not subsume it.
+    gaia_off = _expected_visible(scn, UnitFilter(show_gaia=False))
+    assert all(pid != GAIA_PLAYER_ID for pid, _ in gaia_off)
+
+
+def test_is_default_false_for_the_two_new_fields() -> None:
+    assert not UnitFilter(show_walls=False).is_default
+    assert not UnitFilter(show_eye_candy=False).is_default
+    assert UnitFilter().is_default
+
+
+def test_default_filter_over_the_kind_fixture_is_byte_identical_to_no_filter() -> None:
+    """The byte-identity gate again, on the fixture that actually carries
+    walls and eye candy: adding two fields to UnitFilter must leave a DEFAULT
+    filter producing the same pixels as omitting the argument entirely."""
+    scn = _kind_scenario()
+    tile_px = tile_pixels_for_map(MAP_W, MAP_H)
+    base = np.zeros((MAP_H * tile_px, MAP_W * tile_px, 3), dtype=np.uint8)
+    assert np.array_equal(overlay_units(base, scn), overlay_units(base, scn, UnitFilter()))
+
+
+@pytest.mark.parametrize("field", ["show_walls", "show_eye_candy"])
+def test_every_compositor_round_trips_the_new_gates_byte_identically(field: str) -> None:
+    """One parametrized pass per compositor -- Flat, Stepped and Sloped all
+    reach the same matches() predicate, but they cache units differently
+    (Flat's unit_draws, Stepped's lazily-rebuilt per-level bboxes, Sloped's
+    _units_by_tile), so "the toggle repaints" has to be asserted on each."""
+    scn = _kind_scenario()
+    hidden_filter = UnitFilter(**{field: False})
+    for make in (_flat_cache, _iso_cache, _sloped_cache):
+        cache = make(scn, UnitFilter())
+        before = _whole_canvas(cache).copy()
+        cache.set_unit_filter(hidden_filter)
+        assert not np.array_equal(before, _whole_canvas(cache)), (
+            f"{type(cache).__name__}: {field}=False changed no pixels"
+        )
+        cache.set_unit_filter(UnitFilter())
+        assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: {field} did not restore"
+
+
+def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
+    """render_cache._splice_units_by_tile() used to return before clearing
+    splice.old_tiles when matches() was False, which was correct only because
+    no splice-eligible edit could flip matches() mid-splice. GH #65's const
+    gates widen that blast radius, so the clear now happens first; this pins
+    it directly rather than through a path that cannot currently reach it."""
+    scn = _kind_scenario()
+    unit = scn.unit_manager.units[1][0]
+    assert unit.unit_const == _WALL_CONST
+    by_tile = _units_by_tile(scn, UnitFilter())
+    occupied = [t for t, entries in by_tile.items() if any(u is unit for u, _c in entries)]
+    assert occupied, "the fixture wall occupies no tile -- this test would prove nothing"
+
+    splice = render_cache.UnitSplice(1, 0, unit, (6, 6), None, tuple(occupied), ())
+    render_cache._splice_units_by_tile(by_tile, scn, UnitFilter(show_walls=False), splice)
+    remaining = [t for t, entries in by_tile.items() if any(u is unit for u, _c in entries)]
+    assert remaining == [], f"a hidden unit was left in {remaining}"

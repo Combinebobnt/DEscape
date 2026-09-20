@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import conftest
-
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.trigger_model import SECTION_HEADER_SIZE
+
+import conftest
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
@@ -143,7 +143,7 @@ def test_every_trigger_still_drifts_after_a_commit() -> None:
     entries = section.retriever_map["trigger_data"].data
     clean = [
         index
-        for index, (slice_, entry) in enumerate(zip(slices, entries))
+        for index, (slice_, entry) in enumerate(zip(slices, entries, strict=True))
         if slice_ == entry.get_data_as_bytes()
     ]
     assert not clean, (

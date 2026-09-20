@@ -34,9 +34,10 @@ import math
 import numpy as np
 import pytest
 
-import conftest
 from descape import asset_source, iso_geometry, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 from test_unit_sprites import build_sld
 
 pytestmark = [
@@ -145,7 +146,7 @@ def test_flat_variant_sprites_are_unaffected_by_the_flat_facing_offset(facing_re
         window.iso_action.setChecked(False)
         tiles = [(_ANCHOR_TX + i, _ANCHOR_TY) for i in range(len(_VARIANT_CONSTS))]
         units = window.scenario.unit_manager.units[1]
-        for (tx, ty), const in zip(tiles, _VARIANT_CONSTS):
+        for (tx, ty), const in zip(tiles, _VARIANT_CONSTS, strict=True):
             units.append(_Unit(float(tx), float(ty), const, _RADIAN_INDEX_2))
         window.refresh_map()
 

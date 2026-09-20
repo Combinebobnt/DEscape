@@ -8,7 +8,7 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 ## Running
 
 ```
-./run_all_tests.sh                                  # default tier -- seconds, no corpus needed (Linux/Mac)
+./run_all_tests.sh                                  # default tier -- ~19 min for 5318 tests, no corpus needed (Linux/Mac)
 run_all_tests.bat                                   # same, for Windows
 .venv/bin/python3 -m pytest                         # same thing, invoked directly
 
@@ -26,9 +26,12 @@ around the default tier only -- they exist so there's one obvious command
 for "did I break anything," not a shortcut for the corpus tier, which
 still needs the `-m` flag spelled out above.
 
-`test_lint.py` (default tier -- runs ruff, see `ruff.toml`) fails outright,
-not skips, if ruff isn't installed. `.venv/bin/python3 -m pip install ruff`
-(`requirements-dev.txt`) before running the suite for the first time.
+`test_lint.py` (default tier, runs `ruff check .`, see `ruff.toml`) fails
+outright, not skips, if ruff isn't installed. `.venv/bin/python3 -m pip install
+ruff` (`requirements-dev.txt`) before running the suite for the first time.
+The selected ruleset is broad rather than syntax-only, so expect this test to
+catch style and idiom findings (line length at 140, import order, bugbear,
+security, datetime, modernization) as readily as real errors.
 
 **Anything that rebuilds `.venv` drops the dev dependencies, pytest
 included** -- `bootstrap.py` (what the `LAUNCH_DEscape_*` launchers run)
@@ -74,8 +77,9 @@ assuming the full corpus needs re-running.
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
 
 `test_lint.py` (`ruff check .`, see `ruff.toml`) runs in the default tier
-alongside these -- unmarked, since it's not a corpus/gui/slow concern, just
-a fast static check.
+alongside these, unmarked, since it's not a corpus/gui/slow concern. It stays
+a fast static check despite the breadth of the ruleset: a cold `--no-cache`
+run over all 348 linted files takes well under a second.
 
 A `pytest_terminal_summary` hook in `conftest.py` prints how much of the
 run was deselected/skipped, so an empty `examples/` or a default `-m` run
@@ -182,7 +186,12 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
 Every test gets `descape.settings.CONFIG_PATH` (and `asset_source`'s own
 copy) redirected to a per-test `tmp_path/config.yaml` via `conftest.py`'s
 autouse `_isolated_settings` fixture, and every `settings.py` module-level
-memoized global reset. `CONFIG_PATH` now resolves to the OS-standard
+memoized global reset. That reset list is
+`testkit.settings_isolation.MEMOIZED_GLOBALS`, shared with the `tools/gen_*`
+capture scripts (which call its `isolate_settings()`, having no fixture to
+lean on) and guarded by `test_settings_isolation.py`, which discovers the real
+set from `settings.py` and fails when the list has drifted.
+`CONFIG_PATH` now resolves to the OS-standard
 per-user config location rather than a repo-relative path, which makes
 this redirect more important, not less -- an unredirected write now lands
 in the developer's real `~/.config/DEscape/` (or platform equivalent)

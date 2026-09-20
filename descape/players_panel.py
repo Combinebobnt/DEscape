@@ -50,7 +50,7 @@ GAIA's own PlayerDataTwo color slot is known junk (terrain_palette.py).
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 
 from AoE2ScenarioParser.helper.bytes_conversions import str_to_bytes
 from PyQt5.QtCore import Qt
@@ -63,6 +63,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -162,6 +163,19 @@ class PlayersPanel(QWidget):
         "documented anywhere in AoE2ScenarioParser. Writing a byte nobody has "
         "identified risks corrupting a value whose meaning isn't confirmed."
     )
+    _DISABLES_LABEL = "Disabled Objects…"
+    _DISABLES_TOOLTIP = (
+        "Which buildings, units and technologies each player cannot build or "
+        "research. The in-game editor's Disable Objects control."
+    )
+    _DISABLES_CARRIER_GATE_REASON = (
+        "Read-only for this file: its map-option block failed verification, "
+        "which the disable lists' write path shares a model with."
+    )
+    _DISABLES_GATE_REASON = (
+        "Read-only for this file: its Options disable lists failed verification, "
+        "so rewriting that region would land at an offset that cannot be trusted."
+    )
     _PLAYER_COUNT_LABEL = "Number of players"
     _PLAYER_COUNT_TOOLTIP = (
         "How many players this scenario defines. Lowering it deactivates the "
@@ -171,12 +185,13 @@ class PlayersPanel(QWidget):
         "on a file whose other player settings are editable."
     )
 
-    def __init__(self, on_player_field=None, on_player_count=None):
+    def __init__(self, on_player_field=None, on_player_count=None, on_disables_requested=None):
         super().__init__()
         # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel's callbacks have.
         self._on_player_field = on_player_field or (lambda *args: None)
         self._on_player_count = on_player_count or (lambda *args: None)
+        self._on_disables_requested = on_disables_requested or (lambda *args: None)
 
         self._loaded: LoadedScenario | None = None
         self._specs = ()
@@ -230,6 +245,18 @@ class PlayersPanel(QWidget):
         self.area = QScrollArea()
         self.area.setWidgetResizable(True)
         layout.addWidget(self.area, stretch=1)
+
+        # Below the form, outside every group box: like Number of Players
+        # above, this opens something scenario-wide (all eight players at
+        # once), not a setting of whichever player is selected. It matches
+        # where the in-game editor puts the control -- on the Players tab,
+        # not in a menu -- and is duplicated as a menu action so it can be
+        # keybound.
+        self.disables_button = QPushButton(self._DISABLES_LABEL)
+        self.disables_button.setEnabled(False)
+        self.disables_button.clicked.connect(lambda *_: self._on_disables_requested())
+        layout.addWidget(self.disables_button)
+
         self._rebuild_host()
 
     def _rebuild_host(self) -> None:
@@ -257,6 +284,7 @@ class PlayersPanel(QWidget):
             self._pending_values = {}
             self._player_count = _MIN_PLAYER_COUNT
             self.player_count_spin.setEnabled(False)
+            self._set_disables_enabled(False)
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
             self.player_combo.blockSignals(False)
@@ -274,6 +302,8 @@ class PlayersPanel(QWidget):
         read_only_reasons: Mapping[str, str] | None = None,
         pending_values: Mapping[str, Mapping[int, int | str]] | None = None,
         player_count: int | None = None,
+        disables_editable: bool = False,
+        disables_carrier_ok: bool = True,
     ) -> None:
         """Populate from `loaded`. The single repopulate path -- both
         ViewerWindow._show_players() (mode entry, a new document) and
@@ -310,6 +340,15 @@ class PlayersPanel(QWidget):
         offset a scenario version 1.37 header walk cannot supply), so it
         can legitimately be the only read-only row on a file, or the only
         editable one.
+
+        `disables_editable` is the Disabled Objects button's own gate --
+        a sixth independent one (options_model.disables_write_supported),
+        since that region is spliced rather than byte-patched and fails
+        for its own reasons. A False here greys the button and explains
+        why; it does not affect any row above it.
+        `disables_carrier_ok` is which of its two gates refused, so the
+        tooltip can name the right one -- the same carrier/own split
+        `read_only_reasons` already carries for the per-player rows.
         """
         if loaded is None:
             self.clear_document()
@@ -324,6 +363,7 @@ class PlayersPanel(QWidget):
         self._populate_player_count(
             defined_player_count(loaded) if player_count is None else player_count
         )
+        self._set_disables_enabled(disables_editable, disables_carrier_ok)
 
         if not same_document:
             self._player_id = 1
@@ -336,6 +376,22 @@ class PlayersPanel(QWidget):
             self.player_combo.setEnabled(True)
 
         self._populate_current_player()
+
+    def _set_disables_enabled(self, editable: bool, carrier_ok: bool = True) -> None:
+        """Enable the Disabled Objects button, or grey it out and say which
+        of its two gates refused -- the same carrier/own split every
+        per-player row here already makes, and for the same reason: "this
+        file's map options failed" and "this file's disable lists failed" are
+        different facts, and a tooltip that names the wrong one sends the
+        reader to the wrong place."""
+        self.disables_button.setEnabled(editable)
+        if editable:
+            reason = self._DISABLES_TOOLTIP
+        elif carrier_ok:
+            reason = self._DISABLES_GATE_REASON
+        else:
+            reason = self._DISABLES_CARRIER_GATE_REASON
+        self.disables_button.setToolTip(reason)
 
     def _populate_player_count(self, count: int) -> None:
         """Put Number of Players' spinbox in step with `count`, widening its
@@ -602,6 +658,21 @@ class PlayersPanel(QWidget):
     def current_player_count(self) -> int:
         """Number of Players as currently shown."""
         return self._player_count
+
+    def refresh_player_swatches(self, loaded) -> None:
+        """Re-icon the P1..P8 combo from `loaded`'s current player_colors,
+        after a colour edit re-derived them.
+
+        Its own path rather than a show_scenario() round trip: the combo is
+        built under `if not same_document`, which is False on every edit, so
+        a repopulate alone never rebuilds the icons. setItemIcon() in place
+        over the existing items -- no clear(), no setCurrentIndex() -- keeps
+        that guard's selection-preservation intent.
+        """
+        if loaded is None or self.player_combo.count() == 0:
+            return
+        for i in range(self.player_combo.count()):
+            self.player_combo.setItemIcon(i, _swatch_icon(loaded.player_colors[i + 1]))
 
 
 def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:

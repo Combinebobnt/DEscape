@@ -17,6 +17,7 @@ lists them:
 
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -103,10 +104,10 @@ def test_every_players_target_offset_is_within_the_body_and_disjoint_per_player(
     spans = []
     for key, entries in targets.items():
         for t in entries:
-            assert 0 <= t.offset and t.offset + t.length <= len(body), key
+            assert t.offset >= 0 and t.offset + t.length <= len(body), key
             spans.append((t.offset, t.offset + t.length))
     spans.sort()
-    for (a_start, a_end), (b_start, b_end) in zip(spans, spans[1:]):
+    for (_a_start, a_end), (b_start, _b_end) in pairwise(spans):
         assert a_end <= b_start, "two targets overlap"
 
 

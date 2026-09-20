@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import settings, viewer_common
 from descape.toolbar_overflow import partition
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from descape import option_fields
-from descape.edit_history import EditHistory, OptionsDiffRecord
+from descape.edit_history import CompositeDiffRecord, EditHistory, OptionsDiffRecord
 from descape.options_model import OptionsEditModel
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.trigger_model import TriggerEditModel
@@ -41,13 +41,12 @@ def _a_flag_spec(loaded):
     """Pinned to lock_teams -- see test_options_write_path.py's own copy of
     this helper for why the Diplomacy-panel move (step 5) does not disturb
     this resolution."""
+    # By id, not first-checkbox order: custom_conquest now precedes it in _SPECS.
     for spec in option_fields.specs_for(loaded):
-        if spec.kind == option_fields.CHECKBOX and spec.section != "Triggers":
-            if option_fields.current_value(loaded, spec) in (0, 1):
-                assert spec.field_id == "lock_teams", (
-                    f"_a_flag_spec silently re-resolved to {spec.field_id!r}"
-                )
-                return spec
+        if spec.field_id == "lock_teams":
+            assert spec.kind == option_fields.CHECKBOX
+            assert option_fields.current_value(loaded, spec) in (0, 1)
+            return spec
     raise AssertionError("no writable flag row on this file")
 
 
@@ -77,6 +76,22 @@ def test_undoing_an_option_edit_restores_the_stored_value() -> None:
     history.undo([], None, model)
     assert model.current_value(spec.field_id) == stored
     assert not model.has_edits, "an undone option edit still reads as dirty"
+
+
+def test_undoing_a_custom_victory_edit_restores_the_stored_value() -> None:
+    loaded = _loaded()
+    spec = next(s for s in option_fields.specs_for(loaded) if s.field_id == "custom_relics")
+    stored = option_fields.current_value(loaded, spec)
+    model = OptionsEditModel(loaded)
+    history = EditHistory()
+
+    _set(model, history, spec.field_id, stored + 7)
+    assert model.current_value(spec.field_id) == stored + 7
+    assert model.has_edits
+
+    history.undo([], None, model)
+    assert model.current_value(spec.field_id) == stored
+    assert not model.has_edits, "an undone custom-victory edit still reads as dirty"
 
 
 def test_redoing_an_option_edit_reapplies_it() -> None:
@@ -208,3 +223,136 @@ def test_an_exec_order_edit_and_a_trigger_edit_undo_independently() -> None:
     history.undo(loaded.map_manager.terrain, model)
     assert model.exec_order == stored
     assert not model.has_edits
+
+
+# -- per-player disable lists ------------------------------------------------
+#
+# A fifth additive field set on the same model (descape/disables_fields.py),
+# and the only one whose value is a tuple rather than an int or a str. It
+# rides the same OptionsDiffRecord, so the tests below are the scalar ones
+# above with a tuple in place of the number -- plus the two things only a
+# variable-length field can get wrong: leaking into serialize_patches(), and
+# a revert that compares a list against the stored tuple and never matches.
+
+
+_DISABLES_FIELD = "disabled:buildings:2"
+
+
+def test_a_disables_edit_records_and_undoes_like_a_scalar() -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    assert model.disables_supported, "the shipped fixture should pass the disables gate"
+    history = EditHistory()
+    stored = model.current_value(_DISABLES_FIELD)
+
+    _set(model, history, _DISABLES_FIELD, (72, 621))
+    assert model.current_value(_DISABLES_FIELD) == (72, 621)
+    assert model.has_edits
+    assert model.has_disables_edits
+
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert model.current_value(_DISABLES_FIELD) == stored
+    assert not model.has_edits
+    assert not model.has_disables_edits
+
+    history.redo(loaded.map_manager.terrain, None, model)
+    assert model.current_value(_DISABLES_FIELD) == (72, 621)
+    assert model.has_edits
+
+
+def test_setting_a_disables_list_back_to_its_stored_value_clears_the_edit() -> None:
+    """The house rule this whole module exists for: a model dirty while the
+    history is not closes the document with no save prompt. A *list* here,
+    not a tuple -- [1, 2] == (1, 2) is False, so an un-normalized value would
+    leave a phantom pending entry behind."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    stored = model.current_value(_DISABLES_FIELD)
+
+    model.set_value(_DISABLES_FIELD, (72, 621))
+    assert model.has_edits
+    model.set_value(_DISABLES_FIELD, list(stored))
+    assert not model.has_edits
+    assert not model.has_disables_edits
+
+
+def test_a_disables_edit_never_reaches_serialize_patches() -> None:
+    """These lists are variable-length; serialize_patches() asserts a fixed
+    one. A leak here would fire that assert inside the write path."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(_DISABLES_FIELD, (72,))
+    model.set_value("lock_teams", 1 - model.original_value("lock_teams"))
+    patches = model.serialize_patches()
+    assert patches, "the scalar edit should still emit its own patch"
+    resize = model.serialize_disables_resize()
+    assert resize is not None
+    start, end, replacement = resize
+    assert len(replacement) == (end - start) + 4
+    assert all(not (start <= offset < end) for offset, _data in patches)
+
+
+def test_a_clean_model_emits_no_disables_resize() -> None:
+    model = OptionsEditModel(_loaded())
+    assert model.serialize_disables_resize() is None
+
+
+def test_set_value_rejects_a_non_sequence_and_an_out_of_range_id() -> None:
+    model = OptionsEditModel(_loaded())
+    with pytest.raises(ValueError):
+        model.set_value(_DISABLES_FIELD, 72)
+    with pytest.raises(ValueError):
+        model.set_value(_DISABLES_FIELD, [-1])
+    with pytest.raises(ValueError):
+        model.set_value(_DISABLES_FIELD, [0x1_0000_0000])
+    assert not model.has_edits
+
+
+def test_disables_ids_are_deduped_in_first_seen_order() -> None:
+    model = OptionsEditModel(_loaded())
+    model.set_value(_DISABLES_FIELD, [621, 72, 621, 10])
+    assert model.current_value(_DISABLES_FIELD) == (621, 72, 10)
+
+
+def test_a_disables_edit_and_a_scalar_edit_undo_independently() -> None:
+    """Both are OptionsDiffRecords on one model, so a mis-keyed restore
+    would silently unwind the wrong one."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    history = EditHistory()
+    spec = _a_flag_spec(loaded)
+    stored_flag = model.current_value(spec.field_id)
+
+    _set(model, history, _DISABLES_FIELD, (72,))
+    _set(model, history, spec.field_id, 1 - stored_flag)
+
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert model.current_value(spec.field_id) == stored_flag
+    assert model.current_value(_DISABLES_FIELD) == (72,), "undoing the flag reverted the list too"
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert not model.has_edits
+
+
+def test_a_dialog_session_undoes_as_one_step() -> None:
+    """What ViewerWindow.set_disabled_ids() pushes: several lists changed by
+    one OK, wrapped in a CompositeDiffRecord so it costs one Ctrl+Z."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    history = EditHistory()
+    changes = {"disabled:buildings:2": (72,), "disabled:techs:5": (22, 23)}
+    records = []
+    for field_id, ids in changes.items():
+        before = model.current_value(field_id)
+        model.set_value(field_id, ids)
+        records.append(OptionsDiffRecord(f"Set {field_id}", field_id, before, ids))
+    history.push_composite_record(CompositeDiffRecord("Set disabled objects", records))
+
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert not model.has_edits
+    assert model.current_value("disabled:buildings:2") == ()
+    assert model.current_value("disabled:techs:5") == ()
+
+    history.redo(loaded.map_manager.terrain, None, model)
+    assert model.current_value("disabled:buildings:2") == (72,)
+    assert model.current_value("disabled:techs:5") == (22, 23)
+    assert model.has_disables_edits

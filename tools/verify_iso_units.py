@@ -147,7 +147,7 @@ def check_position() -> tuple[bool, str]:
     scenario, _ = _flat_scenario(w, h, [[], [SyntheticUnit(x=3.5, y=3.5, unit_const=999999)]])
     scenario.map_manager.get_tile(3, 3).elevation = raised_elev
 
-    img, elevations, proj = render.render_terrain_iso_with_proj(scenario)
+    img, _elevations, proj = render.render_terrain_iso_with_proj(scenario)
     color = PLAYER_COLORS[1 % len(PLAYER_COLORS)]
     dst_y, dst_x, _, _ = iso_geometry.diamond_indices(render.tile_pixels_for_map(w, h))
 
@@ -369,7 +369,7 @@ def check_incremental_building_corner() -> tuple[bool, str]:
     w, h = 16, 16
     cx, cy = 8, 8
     unit = SyntheticUnit(x=cx + 0.5, y=cy + 0.5, unit_const=_BUILDING_UNIT_CONST)
-    x0, x1, y0, y1 = render.unit_tile_bounds(unit, w, h)
+    _x0, x1, _y0, y1 = render.unit_tile_bounds(unit, w, h)
     corner_x, corner_y = x1 - 1, y1 - 1
     if not (corner_x - int(unit.x) > 1 and corner_y - int(unit.y) > 1):
         return False, (

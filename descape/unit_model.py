@@ -33,10 +33,11 @@ nobody touched).
 **Rotate is narrowly scoped, not out of scope.** For walls, gates and most
 GAIA doodads, `rotation` is a shape-variant index rather than an angle
 (AGENTS.md's hard rule), and transforming one would write a value the game
-re-derives or a frame the author never picked. set_rotation() is the sole
-operation here that transforms an existing rotation, and it refuses any const
-descape/unit_rotation.py does not classify ANGLE -- that guard is what carries
-the old blanket rule forward as "never transform a non-angle rotation".
+re-derives or a frame the author never picked. set_rotation() and set_variant() are the
+only operations here that transform an existing rotation: the first refuses any
+const descape/unit_rotation.py does not classify ANGLE, the second any const
+descape/unit_variant.py does not call cyclable (which excludes walls, cliffs
+and gates). Those guards carry the old blanket rule forward.
 add()'s `rotation` parameter stays a verbatim pass-through, never validated or
 normalized as an angle: storing a caller-supplied value on a newly placed unit
 transforms nothing.
@@ -62,13 +63,21 @@ which document loaded last.
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
-from descape import gate_orientation, library_compat, render, terrain_palette, unit_rotation
+from descape import (
+    gate_orientation,
+    library_compat,
+    render,
+    terrain_palette,
+    unit_rotation,
+    unit_sprites,
+    unit_variant,
+)
 from descape.edit_history import EditHistory, UnitDiffRecord
 from descape.scenario_io import LoadedScenario
 
@@ -191,8 +200,8 @@ def _check_all_units_reproduce(blobs_by_player, entries_by_player) -> None:
     commit) is what makes comparing against still-unedited retrievers safe
     here. Fails closed per unit -- see _serialize_unit's docstring for why
     there is no file-wide caption "style" to decide in advance."""
-    for player_blobs, player_entries in zip(blobs_by_player, entries_by_player):
-        for raw, entry in zip(player_blobs, player_entries):
+    for player_blobs, player_entries in zip(blobs_by_player, entries_by_player, strict=True):
+        for raw, entry in zip(player_blobs, player_entries, strict=True):
             produced = _serialize_unit(entry)
             if produced != raw:
                 ref_id = entry.retriever_map["reference_id"].data
@@ -332,7 +341,7 @@ class UnitEditModel:
         entries_by_player = [pu.retriever_map["units"].data for pu in players_units]
         blobs_by_player = _raw_unit_blobs(loaded, players_units)
 
-        for player, (units, entries) in enumerate(zip(manager.units, entries_by_player)):
+        for player, (units, entries) in enumerate(zip(manager.units, entries_by_player, strict=True)):
             if len(units) != len(entries):
                 raise UnitEditsUnavailableError(
                     f"Player {player} has {len(units)} parsed units but {len(entries)} raw "
@@ -586,6 +595,69 @@ class UnitEditModel:
         self._dirty = True
         self._bump_unit_gen()
 
+    def set_variant(self, unit: Unit, rotation: float) -> None:
+        """Assigns a graphic-variant index to `rotation` and marks the blob dirty.
+
+        The Cycle Variant counterpart to set_rotation(), with the same contract:
+        assign the value as given (unit_variant.cycle_step()/random_variant()
+        produce it), and refuse loudly, never a silent no-op, any const
+        unit_variant.is_cyclable() rejects. Walls, cliffs and gates stay
+        verbatim because the game re-derives their index from neighbours.
+        """
+        if not unit_variant.is_cyclable(unit.unit_const):
+            raise ValueError(
+                f"unit_const {unit.unit_const} has no cyclable graphic variants "
+                f"({unit_rotation.semantics_for(unit.unit_const)}) -- refusing to transform it"
+            )
+        player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
+        unit.rotation = rotation
+        self._blobs[player][index] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def set_wall_variant(self, unit: Unit, index: int) -> None:
+        """Writes a wall's neighbour-derived shape index to `rotation`, for
+        the Wall Run tool's junction rewrites (2026-09-19 wall-runs plan).
+
+        The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
+        and the reason it is allowed at all: the game re-derives a wall's
+        index from its neighbours, so writing the derived value converges
+        with what the game will do rather than diverging from it. Everything
+        else about a wall still passes through verbatim, including
+        `initial_animation_frame`, which is 0 on all 8193 corpus wall
+        placements and is not touched here.
+
+        Deliberately NOT a loosening of set_variant(): that method excludes
+        walls on purpose, and that reasoning stands for *cycling* an
+        author-chosen variant. This is a separate, narrower method whose
+        value is derived, not picked.
+
+        Scope, refused loudly rather than silently no-op'd like every other
+        exception in that list: the 8 rotation_variant_eligible() wall
+        consts (angle_count == 5) and an index in range(5). Gates are
+        excluded by that predicate and must stay excluded -- they have
+        angle_count == 1 and their orientation lives in the const.
+
+        Always the literal integer, never a radian re-encoding: correct for
+        the game either way, correct for DEscape's own render in both file
+        classes, and unable to flip file_is_radian()'s classification, which
+        keys on any NON-literal value.
+        """
+        if not unit_sprites.rotation_variant_eligible(unit.unit_const):
+            raise ValueError(
+                f"unit_const {unit.unit_const} is not one of the wall consts whose `rotation` is "
+                f"a neighbour-derived shape index -- refusing to transform it"
+            )
+        if index not in range(5):
+            raise ValueError(f"wall variant index must be 0..4, got {index!r}")
+        player, position = self._locate(unit)
+        self._maybe_capture_field_delta(player, position, unit)
+        unit.rotation = float(index)
+        self._blobs[player][position] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
     def set_unit_const(self, unit: Unit, new_const: int) -> None:
         """Swaps a gate's `unit_const` for one of its orientation siblings and
         re-anchors x/y so the footprint keeps the low corner it had.
@@ -750,9 +822,9 @@ class UnitEditModel:
     def add_many(self, player: int, specs: Sequence) -> list[Unit]:
         """Batch counterpart to add(): resolves _reserve_reference_id()'s
         cost (a walk of all nine player lists) once for the whole batch
-        instead of once per unit. Used only by descape/terrain_units.py's
-        bulk tree/doodad placement, where a large Paint Can fill can add
-        thousands of units in one gesture.
+        instead of once per unit. Used by descape/terrain_units.py's bulk
+        tree/doodad placement, where a large Paint Can fill can add
+        thousands of units in one gesture, and by descape/scatter.py.
 
         Each spec supplies exactly the fields terrain_units.UnitAddSpec
         carries (x, y, unit_const, rotation, initial_animation_frame); every
@@ -918,7 +990,7 @@ class UnitEditModel:
             # [...], whose setter re-wraps in UuidList and pads to 9.
             manager.units[player][:] = list(pls.units)
             self._blobs[player][:] = list(pls.blobs)
-            for unit, state in zip(pls.units, pls.states):
+            for unit, state in zip(pls.units, pls.states, strict=True):
                 unit.x, unit.y, unit.z, unit.rotation, unit.unit_const = state
             self._tracked[player][:] = list(pls.units)
         # Trap 1 (plan): restore _player by direct assignment or
@@ -1037,7 +1109,7 @@ class UnitEditModel:
         asking each operation to be maintained correctly."""
         live = self.loaded.unit_manager.units
         aligned = len(live) == len(self._tracked) and all(
-            len(a) == len(b) and all(x is y for x, y in zip(a, b)) for a, b in zip(live, self._tracked)
+            len(a) == len(b) and all(x is y for x, y in zip(a, b, strict=True)) for a, b in zip(live, self._tracked, strict=True)
         )
         if not aligned:
             raise RuntimeError(
@@ -1120,7 +1192,7 @@ class UnitEditModel:
             manager.commit(link_list=[_player_units_link(manager)])
             players_units = self.loaded._scenario.sections["Units"].retriever_map["players_units"].data
             entries_by_player = [pu.retriever_map["units"].data for pu in players_units]
-            for player, (entries, blobs) in enumerate(zip(entries_by_player, self._blobs)):
+            for player, (entries, blobs) in enumerate(zip(entries_by_player, self._blobs, strict=True)):
                 if len(entries) != len(blobs):
                     raise RuntimeError(
                         f"Player {player}: committed {len(entries)} unit structs but the "

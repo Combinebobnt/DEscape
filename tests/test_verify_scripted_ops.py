@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import iso_geometry
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+
+import conftest
 
 
 @pytest.mark.parametrize("module_name", ["verify_iso_incremental", "verify_iso_chunks"])

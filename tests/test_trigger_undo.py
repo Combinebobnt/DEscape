@@ -437,7 +437,7 @@ def test_commit_after_a_raising_structural_edit_still_undoes_cleanly() -> None:
     loaded, model, history = _open()
 
     model.begin_trigger_edit()
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="99"):
         model.structural_edit(lambda m: m.reorder_triggers([0, 1, 99]))
     record = model.commit_trigger_edit("Failed reorder", history)
 

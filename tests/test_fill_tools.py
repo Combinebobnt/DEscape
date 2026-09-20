@@ -195,7 +195,7 @@ def test_undo_redo_round_trip() -> None:
 
 
 def test_blank_template_fill_covers_whole_map() -> None:
-    from descape.scenario_io import load_map_and_units, BLANK_TEMPLATE_PATH
+    from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
     scenario = load_map_and_units(BLANK_TEMPLATE_PATH)
     mm = scenario.map_manager

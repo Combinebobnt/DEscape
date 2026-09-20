@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import settings
 from descape.edit_history import CompositeDiffRecord, TileDiffRecord
-from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -27,13 +27,7 @@ def _window(tool: str = "draw"):
     """The blank template loaded, Terrain mode, `tool` active, FOREST_OAK
     selected on terrain_combo. Caller must edit_history.mark_saved() +
     close()."""
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Terrain")
+    window = conftest.terrain_edit_window()
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(FOREST_OAK))
     return window
@@ -152,8 +146,9 @@ def test_paint_can_below_threshold_fills_units_with_no_confirm(monkeypatch) -> N
 
 
 def test_paint_can_above_threshold_confirms_and_cancel_leaves_map_untouched(monkeypatch) -> None:
-    import descape.viewer as viewer_module
     from PyQt5.QtWidgets import QMessageBox
+
+    import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
 

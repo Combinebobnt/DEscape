@@ -78,10 +78,10 @@ def _sub_rect(
     real drag bbox cuts out of a plane and carries more border per pixel."""
     if band:
         w = plane_w
-        h = max(1, int(round(plane_h * fraction)))
+        h = max(1, round(plane_h * fraction))
     else:
         side = math.sqrt(fraction)
-        w, h = max(1, int(round(plane_w * side))), max(1, int(round(plane_h * side)))
+        w, h = max(1, round(plane_w * side)), max(1, round(plane_h * side))
     x0 = px0 + (plane_w - w) // 2
     y0 = py0 + (plane_h - h) // 2
     return x0, y0, x0 + w, y0 + h
@@ -180,8 +180,10 @@ def bench(path: Path, chunk_px: int) -> str:
     tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
     _elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
     lines = [
-        f"  {path.name} ({mm.map_width}x{mm.map_height}, tile_px={tile_px}, "
-        f"canvas {proj.canvas_w}x{proj.canvas_h}, chunk_px={chunk_px})",
+        (
+            f"  {path.name} ({mm.map_width}x{mm.map_height}, tile_px={tile_px}, "
+            f"canvas {proj.canvas_w}x{proj.canvas_h}, chunk_px={chunk_px})"
+        ),
         "",
     ]
     lines += _section_1(scenario, corner_rise, proj, tile_px, chunk_px)

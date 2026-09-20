@@ -69,7 +69,7 @@ def scene_rect_to_array(scene, rect):
     from PyQt5.QtCore import QRectF
     from PyQt5.QtGui import QImage, QPainter
 
-    w, h = int(math.ceil(rect.width())), int(math.ceil(rect.height()))
+    w, h = math.ceil(rect.width()), math.ceil(rect.height())
     image = QImage(w, h, QImage.Format_RGB888)
     image.fill(0)
     painter = QPainter(image)

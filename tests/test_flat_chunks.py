@@ -335,7 +335,7 @@ def _check_composite_rect_flat_mutates_nothing(files: list[Path]) -> tuple[bool,
     if not np.array_equal(bboxes_before, bboxes_after) or not np.array_equal(colors_before, colors_after):
         return False, f"{path.name}: unit_draws changed after composite_rect_flat()"
     if terrain_before != terrain_after:
-        n = sum(1 for a, b in zip(terrain_before, terrain_after) if a != b)
+        n = sum(1 for a, b in zip(terrain_before, terrain_after, strict=True) if a != b)
         return False, f"{path.name}: {n} tiles' terrain/elevation changed after composite_rect_flat()"
     return True, f"OK ({path.name}, unit_draws and terrain state bit-identical before/after composite_rect_flat())"
 

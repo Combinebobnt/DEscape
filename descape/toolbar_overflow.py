@@ -7,7 +7,7 @@ feeds real pixel widths into, so it can be unit-tested with no QApplication.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def partition(

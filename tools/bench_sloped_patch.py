@@ -103,8 +103,10 @@ def bench_sloped_patch(path: Path) -> str:
     bboxes_i = _building_bboxes_iso(units_by_tile, mm.map_width, mm.map_height, proj_i, elevations_i)
 
     lines = [
-        f"  {path.name} ({mm.map_width}x{mm.map_height}, tile_px={tile_px}, "
-        f"canvas {proj_s.canvas_w}x{proj_s.canvas_h})",
+        (
+            f"  {path.name} ({mm.map_width}x{mm.map_height}, tile_px={tile_px}, "
+            f"canvas {proj_s.canvas_w}x{proj_s.canvas_h})"
+        ),
         "",
         "  (1) edit-sized rects -- synthetic, NOT from a real edit (see module docstring)",
         f"    {'rect':>14}  {'sloped':>10}  {'stepped':>10}  {'ratio':>7}",

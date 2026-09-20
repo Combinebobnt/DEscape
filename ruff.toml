@@ -2,20 +2,41 @@
 # pip-installable), see tests/README.md.
 #
 # select started as the classic minimal ruff set (E4/E7/E9/F) and was broadened
-# deliberately -- ruff's own real installed defaults are NOT a safe target to
-# adopt wholesale: they enable only E722/E902/W605 from the E/W families, so
-# switching to "defaults" would silently drop E401/E402 and E711/E712/E721/E731,
-# weakening this gate rather than widening it. Every family below was added by
-# name, and every `ignore` entry exists because that rule's findings here are a
-# deliberate repo idiom, not a defect -- see the comment on each.
+# deliberately, family by family. Ruff's own installed defaults are NOT a safe
+# target to adopt wholesale: they enable only E722/E902/W605 from the E/W
+# families, so switching to "defaults" would silently drop E401/E402 and
+# E711/E712/E721/E731, weakening this gate rather than widening it. Every family
+# below was added by name, and every `ignore` entry exists because that rule's
+# findings here are a deliberate repo idiom, not a defect, with the reason on
+# each.
+#
+# Where that leaves the gate, measured 2026-09-19 against ruff 0.16.3: 511 rules
+# resolve as enabled, 151 of them rules the defaults do not carry. It does leave
+# out 53 default rules, and their status differs, so don't read them all as
+# settled: D, N and TRY were assessed and ruled out; FURB, PGH, PLR, PT, PTH, TC
+# and T100 were simply never considered (8 live findings among them today, so
+# selecting any of those is a real proposal, not a no-op); EXE001 is ignored
+# below with its reason; W605 is the one E/W default not selected, at zero sites.
 target-version = "py311"
-line-length = 140   # governs only import wrapping (I001) -- E501 is not selected
+line-length = 140   # enforced as a real width by E501, and governs import wrapping
 
 [lint]
-# select is broadened incrementally, one stage at a time, each landing with the
-# code fixes its own findings require. Currently: stage 0 (config foundation
-# only, no new rules).
-select = ["E4", "E7", "E9", "F"]
+# The broadening is finished: every family below is live, and the whole tree is
+# clean under it. Each family landed together with the code fixes its own
+# findings required, so the gate was green at every commit along the way; adding
+# another family later should work the same way.
+select = [
+  "E4", "E7", "E9", "F",                    # the original gate -- defaults would drop E4/E7
+  "ASYNC", "C4", "FA", "FLY", "G", "INT",   # low-yield correctness and idiom families
+  "LOG", "PIE", "PYI", "S", "YTT",
+  "E501",                                   # enforces the line-length set above, rather
+                                            # than letting it govern import wrapping alone
+  "ISC", "PLC", "PLE", "RET", "SIM", "UP",  # modernization and simplification
+  "B", "BLE", "DTZ",                        # bugbear, blind excepts, naive datetimes
+  "PERF", "PLW",                            # performance, and pylint's warning set
+  "EXE", "RUF",                             # shebang hygiene, and ruff's own rules
+  "I",                                      # import sorting, at line-length 140
+]
 ignore = [
   "EXE001",   # 34 hits, all vestigial: every .py here with a shebang is always
               # invoked as `python3 <path>`, never `./<path>` -- setting +x would
@@ -29,6 +50,13 @@ ignore = [
               # "120 x 120" (real character, not ASCII x) -- intentional
               # typography, not a paste artifact.
   "S101",     # 1651 hits: `assert` is how the test suite is written.
+  "SIM108",   # 10 hits: the ternary it wants is worse at 9 of them -- the
+              # rewrites nest (`a if not r else b if c else d`) or run past
+              # 100 chars of bilinear-interpolation math. The if/else block is
+              # the more readable form here, not a missed simplification.
+  "S311",     # 21 hits: every one is a seeded `random.Random(seed)` driving
+              # unit scatter or a test fixture. Reproducibility is the whole
+              # point; nothing here is a secret, a token or a nonce.
   "S603", "S606", "S607",  # tools/ and tests/ shell out to real subprocesses
               # (bootstrap, corpus scripts) deliberately.
 ]
@@ -44,14 +72,23 @@ extend-immutable-calls = ["descape.unit_filter.UnitFilter"]
 # (importable via pytest.ini's `pythonpath = .`), not third-party packages --
 # without this, isort sorts them alphabetically among third-party imports and
 # collapses the deliberate local-import group used across ~23 test files.
-known-local-folder = ["conftest", "test_unit_sprites"]
+#
+# iso_bench_numpy is reachable only because tools/bench_iso_backend.py does a
+# sys.path.insert of native/iso_render/ first. Listing it keeps it sorting last,
+# after descape/, so the path hack it depends on stays visually obvious rather
+# than being merged into the third-party numpy group.
+known-local-folder = ["conftest", "test_unit_sprites", "iso_bench_numpy"]
 
 [lint.per-file-ignores]
 # tools/*.py scripts add the repo root to sys.path before importing
 # descape/other tools modules, so the import can't be at the literal top of
-# the file. Idiom, not a defect -- see tests/README.md's own note on why
-# tools/ scripts aren't pip-installable-package modules.
-"tools/*.py" = ["E402", "BLE001"]
+# the file. Idiom, not a defect: this repo has no pyproject.toml and isn't
+# pip-installable, so tools/ scripts can't import descape as a package.
+#
+# S112 (try/except/continue): the corpus-scanning tools skip a file the
+# parser can't load and carry on -- the skip IS the handling, and logging
+# each one would bury the scan's real output. Same rationale as BLE001 here.
+"tools/*.py" = ["E402", "BLE001", "S112"]
 
 # bootstrap.py runs before dependencies (including a logging setup) exist, so
 # there is nowhere to log to yet -- it IS the fallback ladder that constructs
@@ -63,9 +100,13 @@ known-local-folder = ["conftest", "test_unit_sprites"]
 # QApplication in a variable deliberately (own in-file comment: an
 # unassigned QApplication(...) crashes the first ViewerWindow(), since PyQt5
 # doesn't keep it alive via its own singleton registration alone) -- not
-# unused. Both files are mid-migration into tests/ and are kept
-# byte-for-byte untouched until their own per-script review lands, so this
-# is a config-level ignore, not a code fix.
+# unused. The F841 ignore is a config-level ignore, not a code fix, for
+# either file, independent of the byte-for-byte note below.
+#
+# verify_copy_paste.py's own byte-for-byte freeze was lifted to let it
+# carry a garrison-remap check alongside the rest of its units coverage; it
+# is no longer mid-migration-frozen. verify_iso_viewer_pick.py still is,
+# until its own per-script review lands.
 "tools/verify_copy_paste.py" = ["F841"]
 "tools/verify_iso_viewer_pick.py" = ["F841"]
 
@@ -73,6 +114,32 @@ known-local-folder = ["conftest", "test_unit_sprites"]
 # same iteration, by _time_ms() -- never stored or deferred, so the loop
 # variables they close over can't have been rebound. B023 false positive.
 "tools/bench_sloped_patch.py" = ["B023"]
+
+# Same shape, same _time(fn) helper that calls fn() on the line it's handed:
+# the lambda never outlives the iteration that built it.
+"tools/bench_preload.py" = ["B023"]
+"tools/bench_unit_sprites.py" = ["B023"]
+
+# test_mip_geometry.py's corpus tests close over per-file loop variables in a
+# monkeypatched wrapper. That IS a real hazard -- leaving the patch installed
+# across an iteration makes the wrapper call itself (RecursionError), which is
+# why each `continue` after the patch now undoes it first. With that in place
+# the closures are only ever called within their own iteration.
+"tests/test_mip_geometry.py" = ["B023"]
+
+# S105 false positive on the name alone: `token` here is the newline token a
+# message field round-trips ("\r\n", "\r", "\n" or None), never a credential.
+# See messages_fields.normalize_for_display()'s own docstring. The trigger
+# panel's prose fields latch the same token, so its tests name it too.
+"descape/messages_fields.py" = ["S105"]
+"tests/test_messages_fields.py" = ["S105"]
+"tests/test_trigger_panel.py" = ["S105"]
+
+# test_library_compat.py's bare `condition.local_technology` statements are the
+# test, not dead code: reading a version-gated attribute is what triggers the
+# library's poisoned-property raise these cases assert on. Assigning them to a
+# variable to satisfy B018 would only add an unused name.
+"tests/test_library_compat.py" = ["B018"]
 
 # key_extent()'s `_cache={}` is a deliberate mutable-default memo (comment in
 # place at the call site): resolved once per distinct key rather than once
@@ -83,3 +150,12 @@ known-local-folder = ["conftest", "test_unit_sprites"]
 # Log) -- local wall-clock time is exactly right for "what did the app just
 # do", and only %H:%M:%S is formatted, never compared or serialized.
 "descape/debug_log.py" = ["DTZ005"]
+
+# Same reasoning, for timestamps that are only ever strftime'd into a filename
+# suffix or a dialog column: the user reads these next to their own clock and
+# their own file browser, so local time is the correct rendering. The one site
+# in here that actually COMPARED times (autosave.prune_stale's cutoff) does
+# epoch arithmetic instead and is not covered by an ignore.
+"descape/autosave.py" = ["DTZ006"]
+"descape/autosave_dialog.py" = ["DTZ006"]
+"descape/crash_report.py" = ["DTZ005", "DTZ006"]

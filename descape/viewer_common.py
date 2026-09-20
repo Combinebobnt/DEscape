@@ -12,18 +12,14 @@ directly by a lot of tests."""
 
 from __future__ import annotations
 
-
-
 from PyQt5.QtWidgets import (
     QComboBox,
     QSpinBox,
 )
 
-
 from descape import (
     settings,
 )
-
 
 # Derived from settings.TOOLS -- the single tool registry -- rather than
 # hand-duplicated here, so a new tool added there can't silently miss an
@@ -46,6 +42,14 @@ _TOOL_PARAM = {t.tool_id: t.param_widget for t in settings.TOOLS}
 # Tools whose stroke applies across a brush footprint (size + shape) rather
 # than always exactly one tile -- see ToolDef.supports_brush's own comment.
 BRUSH_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_brush)
+# Draw Line / Draw Rectangle: press-drag-preview, commit once at release.
+# Members are edit tools but must never reach the per-tile stroke path --
+# see MapView's shape branches, which sit above the EDIT_TOOLS ones.
+SHAPE_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.drag_shape)
+_TOOL_SHAPE = {t.tool_id: t.drag_shape for t in settings.TOOLS}
+# Tools that offer the free (non-snapped) placement checkbox -- see
+# ToolDef.supports_free_place's own comment.
+FREE_PLACE_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_free_place)
 # The Ruler and Eyedropper are the only tools that are neither an edit tool
 # nor Pan, so they can't be recognised by set membership the way the four
 # sets above are.
@@ -56,6 +60,22 @@ TOOL_SELECT = "select"
 # Which mode(s) each tool's toolbar button shows in -- see
 # settings.ToolDef.modes.
 _TOOL_MODES = {t.tool_id: t.modes for t in settings.TOOLS}
+
+
+def brush_applicable(tool_id: str, *, rect_filled: bool) -> bool:
+    """True if `tool_id` paints across a brush footprint right now.
+
+    BRUSH_TOOLS membership on its own is not the answer for Draw Rectangle:
+    it supports a brush in Outline mode (a thicker border) but not in Filled
+    mode, where a brush would dilate the rectangle past the bounds the
+    preview just showed. That carve-out lives here, in one Qt-free place,
+    rather than in the two viewer.py call sites plus the TOOLS-derived
+    expectations in tests/test_toolbar_params.py -- which is what keeps
+    those expectations generated rather than hand-listed.
+    """
+    if tool_id not in BRUSH_TOOLS:
+        return False
+    return not (_TOOL_SHAPE.get(tool_id) == "rect" and rect_filled)
 
 
 def tool_applicable(tool_id: str, mode: str) -> bool:

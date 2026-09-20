@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
 
 from descape import unit_rotation
 

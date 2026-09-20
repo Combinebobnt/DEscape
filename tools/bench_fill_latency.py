@@ -140,7 +140,7 @@ def main() -> None:
     from descape.viewer import ViewerWindow
 
     output = []
-    for label, path in [(f"blank_{BLANK_TEMPLATE_PATH.stem.split('_')[1]}", BLANK_TEMPLATE_PATH)]:
+    for _label, path in [(f"blank_{BLANK_TEMPLATE_PATH.stem.split('_')[1]}", BLANK_TEMPLATE_PATH)]:
         window = ViewerWindow()
         window.load_scenario(path)
         window.mode_combo.setCurrentText("Terrain")

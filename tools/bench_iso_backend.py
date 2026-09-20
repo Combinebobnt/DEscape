@@ -76,8 +76,7 @@ def synthetic_ludicrous_tiles(size: int = 480) -> list[SyntheticTile]:
     shading cost is part of what's being measured."""
     tiles = []
     for y in range(size):
-        for x in range(size):
-            tiles.append(SyntheticTile(x=x, y=y, elevation=(x + y) % 7))
+        tiles.extend(SyntheticTile(x=x, y=y, elevation=(x + y) % 7) for x in range(size))
     return tiles
 
 

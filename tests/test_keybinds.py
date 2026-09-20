@@ -302,8 +302,9 @@ def test_tool_shortcut_fires_while_overflowed_into_more_tools() -> None:
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication
 
-    import conftest
     from descape import settings
+
+    import conftest
 
     window = conftest.shown_terrain_window(width=settings.MIN_WINDOW_WIDTH)
     try:
@@ -339,15 +340,75 @@ def test_keybinds_tab_renders_menu_section_headers() -> None:
     try:
         dialog = SettingsDialog(window)
         try:
-            headers = {
+            # Scoped to a freshly-built Keybinds tab, not the whole dialog:
+            # other tabs carry bold labels of their own, and the duplicate
+            # check below would read those as a split section.
+            keybinds_tab = dialog._build_keybinds_tab()
+            header_list = [
                 label.text().replace("<b>", "").replace("</b>", "")
-                for label in dialog.findChildren(QLabel)
+                for label in keybinds_tab.findChildren(QLabel)
                 if label.text().startswith("<b>")
-            }
+            ]
+            headers = set(header_list)
             for expected in ("File", "Edit", "View", "Help", "Modes", "Tools", "Tool Value"):
                 assert expected in headers, f"{expected} section header missing from Keybinds tab"
+            # Presence alone would not catch a SPLIT section: _build_keybinds_tab
+            # only compares against the previous row's prefix, so a non-contiguous
+            # view_* run emits a second "View" header rather than failing.
+            assert len(header_list) == len(headers), f"duplicate section header(s) in {header_list}"
         finally:
             dialog.close()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_pan_actions_are_registered_and_default_to_the_arrow_keys() -> None:
+    from descape import settings
+
+    expected = {
+        "view_pan_up": ("Pan Up", "Up"),
+        "view_pan_down": ("Pan Down", "Down"),
+        "view_pan_left": ("Pan Left", "Left"),
+        "view_pan_right": ("Pan Right", "Right"),
+    }
+    rows = {a: (label, default) for a, label, default in settings.REBINDABLE_ACTIONS}
+    for action_id, row in expected.items():
+        assert rows.get(action_id) == row
+
+
+def test_the_view_action_ids_form_one_contiguous_run() -> None:
+    """_build_keybinds_tab only compares against the PREVIOUS row's prefix,
+    so a view_* id separated from the others emits a second "View" header."""
+    from descape import settings
+
+    prefixes = [a.split("_", 1)[0] for a, _label, _default in settings.REBINDABLE_ACTIONS]
+    view_positions = [i for i, p in enumerate(prefixes) if p == "view"]
+    assert view_positions == list(range(view_positions[0], view_positions[-1] + 1))
+
+
+def test_the_pan_ids_reach_map_view_rather_than_a_qaction_shortcut() -> None:
+    """apply_keybind's one deliberate deviation from the generic path: these
+    four never get a shortcut, so asserting .shortcut() would be asserting
+    the wrong thing. The binding landing in MapView is the real contract."""
+    from PyQt5.QtCore import Qt
+
+    from descape import settings
+    from descape.map_view import MapView
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        for action_id in MapView.PAN_DIRECTIONS:
+            assert window._keybind_actions[action_id].shortcut().isEmpty()
+        bound = set(window.map_view._pan_bindings.values())
+        assert bound == set(MapView.PAN_DIRECTIONS.values())
+
+        settings.set_keybind("view_pan_up", "W")
+        window.apply_keybind("view_pan_up")
+        assert window._keybind_actions["view_pan_up"].shortcut().isEmpty()
+        assert (int(Qt.Key_W), 0) in window.map_view._pan_bindings
     finally:
         window.edit_history.mark_saved()
         window.close()

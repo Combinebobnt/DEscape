@@ -252,7 +252,8 @@ def run_worker(path: Path, args) -> dict:
     if args.trace:
         cmd.append("--trace")
     cmd += ["--hex-window", str(args.hex_window)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    # check=False: a worker failure becomes a WORKERFAIL record below.
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
     for line in proc.stdout.splitlines():
         if line.startswith(RECORD_PREFIX):
             return json.loads(line[len(RECORD_PREFIX) :])
@@ -291,8 +292,10 @@ def report(record: dict) -> str:
         return f"{status:<9s} v{version:<5s} {record.get('detail', '')}  {name}"
 
     lines = [
-        f"{status:<9s} v{version:<5s} {record['section']}.{record['retriever']} "
-        f"@ {record['buffer']} offset {record['offset']} of {record['buffer_bytes']}  {name}",
+        (
+            f"{status:<9s} v{version:<5s} {record['section']}.{record['retriever']} "
+            f"@ {record['buffer']} offset {record['offset']} of {record['buffer_bytes']}  {name}"
+        ),
         f"      {record['detail']}",
     ]
     reading = record.get("reading", {})

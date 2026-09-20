@@ -31,9 +31,10 @@ tests/test_private_api_guard.py needs no new names.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from AoE2ScenarioParser.datasets import buildings, players, techs, trigger_lists, units
 
@@ -49,6 +50,14 @@ ENUM = "enum"
 INT_LIST = "int_list"
 REFERENCE = "reference"
 UNSUPPORTED = "unsupported"
+
+# -- multi-line modes (FieldSpec.multiline) ----------------------------------
+
+# An XS script body: monospace, un-wrapped, CR-separated on the way back out.
+XS = "xs"
+# User-facing prose: proportional, word-wrapped, and written back with
+# whichever newline token the stored value already used.
+PROSE = "prose"
 
 # The library's "this field is not set" value across every numeric trigger
 # field. A spinbox shows it as "(unset)" at its minimum rather than as -1.
@@ -145,7 +154,11 @@ class FieldSpec:
     """One editable field of a condition, effect, or trigger.
 
     `choices` is (label, value) pairs for ENUM only. `sentinel` is the value
-    meaning "unset", or None for kinds that have no such value.
+    meaning "unset", or None for kinds that have no such value. `multiline`
+    is XS, PROSE or "" -- a mode rather than a bool, since the two multi-line
+    kinds need different widgets (monospace and un-wrapped vs. proportional
+    and wrapping) and different newline handling, while `if spec.multiline:`
+    still reads as "this field is multi-line".
     """
 
     name: str
@@ -154,6 +167,7 @@ class FieldSpec:
     sentinel: int | None = UNSET
     presentation: str = ""
     read_only: bool = False
+    multiline: str = ""
 
     @property
     def label(self) -> str:
@@ -164,9 +178,12 @@ class FieldSpec:
 # rather than derived: TriggerStruct's JSON carries storage fields
 # (description_stid, condition_order) that are not user-editable properties.
 TRIGGER_FIELDS: tuple[FieldSpec, ...] = (
+    # `name` stays one line: 1569 corpus values, median 18 chars, none with a
+    # newline. The other two are real prose (description: 407 values, max 235,
+    # 16 of them multi-line across all three newline tokens).
     FieldSpec("name", STR, sentinel=None),
-    FieldSpec("short_description", STR, sentinel=None),
-    FieldSpec("description", STR, sentinel=None),
+    FieldSpec("short_description", STR, sentinel=None, multiline=PROSE),
+    FieldSpec("description", STR, sentinel=None, multiline=PROSE),
     FieldSpec("enabled", BOOL, sentinel=None),
     FieldSpec("looping", BOOL, sentinel=None),
     FieldSpec("header", BOOL, sentinel=None),
@@ -187,6 +204,19 @@ def enum_choices(presentation: str) -> tuple[tuple[str, int], ...]:
         return ()
     pairs = [(member.name.replace("_", " "), int(member.value)) for member in enum_type]
     return tuple(sorted(pairs, key=lambda pair: pair[1]))
+
+
+# Above this many members a combo stops being a choice and becomes a scroll.
+# 20 is the user's own line: ColorMood (19) is the largest that stays a combo,
+# UnitAIAction (25) the smallest that becomes a picker.
+PICKER_MIN_CHOICES = 20
+
+
+def wants_picker(spec: FieldSpec) -> bool:
+    """Whether an editable field gets the type-ahead ValueLineEdit picker
+    instead of a QComboBox. Only ENUM fields qualify; the presentation stays
+    in _ENUM_TYPES and `choices` stays populated either way."""
+    return spec.kind == ENUM and len(spec.choices) >= PICKER_MIN_CHOICES
 
 
 def resolve_reference(presentation: str, value: Any) -> str:
@@ -211,7 +241,9 @@ def resolve_reference(presentation: str, value: Any) -> str:
         return ""
     try:
         member = dataset.from_id(value)
-    except Exception:
+    except (KeyError, ValueError, TypeError):
+        # Measured against UnitInfo/TechInfo/BuildingInfo: an out-of-range id
+        # raises KeyError, a negative one ValueError, a non-int TypeError.
         return ""
     return getattr(member, "name", "").replace("_", " ")
 
@@ -231,6 +263,40 @@ def _kind_for(attribute: str, default: Any, presentation: str) -> tuple[str, str
     # guessed at, and pinned by test_every_presentation_is_covered so a library
     # bump surfaces here instead of in the UI.
     return (UNSUPPORTED, presentation)
+
+
+# (vocabulary entry name, attribute) pairs rendered as a multi-line editor: the
+# XS script bodies. Keyed on the entry's name, not its id, since names are what
+# stay stable across the shipped version JSONs.
+MULTILINE_FIELDS = frozenset({("script_call", "message"), ("script_call", "xs_function")})
+
+# The same, for user-facing prose. Set from the corpus: these are the message
+# fields that actually hold sentences (display_instructions alone has 510
+# values, median 89 chars, max 256). Every *_name message, change_variable,
+# modify_attribute and sound_name stays single-line -- each is an identifier
+# under 30 characters, not prose. change_technology_description is absent from
+# the corpus but is the same field class as change_object_description, and
+# exists from v1.40 on.
+PROSE_FIELDS = frozenset(
+    {
+        ("display_instructions", "message"),
+        ("send_chat", "message"),
+        ("display_timer", "message"),
+        ("change_object_description", "message"),
+        ("change_technology_description", "message"),
+    }
+)
+
+
+def _multiline_mode(entry_name: str, attribute: str, kind: str) -> str:
+    """XS, PROSE or "" for one (type, field) pair."""
+    if kind != STR:
+        return ""
+    if (entry_name, attribute) in MULTILINE_FIELDS:
+        return XS
+    if (entry_name, attribute) in PROSE_FIELDS:
+        return PROSE
+    return ""
 
 
 def field_specs(
@@ -259,9 +325,145 @@ def field_specs(
                 sentinel=None if kind in (STR, BOOL, INT_LIST) else UNSET,
                 presentation=presentation,
                 read_only=attribute in DISPLAY_ONLY or kind == UNSUPPORTED,
+                multiline=_multiline_mode(entry.name, attribute, kind),
             )
         )
     return tuple(specs)
+
+
+# -- retyping an existing condition or effect (GH #37) -----------------------
+
+# Four Effect fields whose stored meaning depends on effect_type: `quantity` is
+# bit-split with the armour/attack pair, and the library re-derives which slot
+# is authoritative from (effect_type, object_attributes). Carrying them across
+# types is the same hazard entry_structural_edit()'s "copy" op avoids by
+# deepcopying rather than copying fields across.
+#
+# Effect-only. 14 condition types list `quantity` as an ordinary field, where
+# it is a plain number with no second slot behind it.
+#
+# `variable` is deliberately absent: it is a plain slot, and only the private
+# _variable_ref serializer merges it with armour_attack_class, which is never
+# carried, so the fresh entry's own default governs that merge.
+_RETYPE_EXCLUDED = frozenset(
+    {"quantity", "quantity_float", "armour_attack_quantity", "armour_attack_class"}
+)
+
+
+def _live_value(entry: Any, attribute: str):
+    """getattr that tolerates the library's version-gated properties, which
+    raise UnsupportedAttributeError rather than being absent. Same rule as
+    TriggerPanel._read(): an unreadable field is simply not carried."""
+    try:
+        return getattr(entry, attribute, None)
+    except Exception:  # noqa: BLE001 -- see docstring
+        return None
+
+
+def retype_carryover(
+    entry: Any,
+    old_definition: VocabularyEntry | None,
+    new_definition: VocabularyEntry,
+    type_attribute: str,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """(values to re-apply, names that did not carry) for a retype.
+
+    The caller builds a *fresh* entry of the new type through the library's own
+    construction path and then applies the returned values, so this only has to
+    answer "which of the old entry's set fields still mean the same thing".
+
+    A candidate is skipped when its live value is None or equal to the old
+    type's own default: there is nothing meaningful to carry, and carrying a
+    default would clobber the new type's own non-(-1) default (change_object_
+    attack defaults armour_attack_quantity to 1).
+
+    `dropped` names every field the old type listed that held a real value and
+    did not carry, excluded ones included, so the user is always told.
+
+    An unknown old type (`old_definition is None`) carries nothing rather than
+    raising: such an entry is already renderable, and the retype is exactly how
+    a user gets out of it.
+    """
+    if old_definition is None:
+        return ({}, ())
+
+    excluded = _RETYPE_EXCLUDED if type_attribute == "effect_type" else frozenset()
+    # Effect types 77/78 (create_object_attack/_armor) omit effect_type from
+    # their own `attributes` list. Harmless and deliberately left alone: the
+    # type id is read off the object, not off this list.
+    shared = set(new_definition.attributes) & set(old_definition.attributes)
+    applied: dict[str, Any] = {}
+    dropped: list[str] = []
+    for attribute in old_definition.attributes:
+        if attribute == type_attribute:
+            continue
+        value = _live_value(entry, attribute)
+        if value is None or value == old_definition.default_attributes.get(attribute):
+            continue
+        if attribute in shared and attribute not in excluded:
+            # Copied, never aliased: the library mutates lists handed to it in
+            # place, which is restore()'s trap 6.
+            applied[attribute] = list(value) if isinstance(value, list) else value
+        else:
+            dropped.append(attribute)
+    return (applied, tuple(dropped))
+
+
+def retype_entry(
+    trigger: Any,
+    kind: str,
+    entry_index: int,
+    type_id: int,
+    definitions: Mapping[int, VocabularyEntry],
+    type_attribute: str,
+) -> tuple[str, ...]:
+    """Replace one condition or effect with a fresh entry of `type_id`,
+    carrying over what retype_carryover() says still applies. Returns the
+    names that did not carry.
+
+    Build-then-replace, not a write to the type attribute:
+
+    - `_add_condition`/`_add_effect` is the library's own construction path.
+      It builds from the module-level default_attributes that
+      _initialise_version_dependencies rewrites per load, so the result is
+      right for this file's version, and an unsupported type raises
+      UnsupportedAttributeError rather than writing junk.
+    - It leaves no stale value in a slot the new type does not list. Every
+      field is serialized regardless of type, so a stale one would reach the
+      file.
+    - It sidesteps Effect.effect_type's setter, which recomputes the
+      armour/attack flag.
+
+    Here rather than in the viewer so the corpus tier can run it against every
+    shipped scenario version without a QApplication. Qt-free like the rest of
+    this module; it only ever touches library objects.
+    """
+    entries = trigger.conditions if kind == "condition" else trigger.effects
+    old = entries[entry_index]
+    applied, dropped = retype_carryover(
+        old,
+        definitions.get(_live_value(old, type_attribute)),
+        definitions[type_id],
+        type_attribute,
+    )
+    if kind == "condition":
+        trigger._add_condition(type_id)
+    else:
+        trigger._add_effect(type_id)
+    # Append, pop, replace-at-index: the length never changes, so
+    # condition_order/effect_order's lazy getter -- a no-op at equal length --
+    # has nothing to rebuild and the user's display order survives. Nothing
+    # reads that getter in between.
+    # An explicit index, not a bare pop(): UuidList.pop's signature defaults
+    # __index to `...` rather than -1, so the no-argument form raises.
+    fresh = entries.pop(len(entries) - 1)
+    # After construction, never before: object_attributes has a setter that
+    # recomputes the armour/attack flag.
+    for name, value in applied.items():
+        setattr(fresh, name, value)
+    # Through UuidList.__setitem__, which re-anchors the fresh object's _uuid.
+    entries[entry_index] = fresh
+    return dropped
 
 
 # -- the armour/attack live-value rule ---------------------------------------
@@ -299,14 +501,7 @@ def apply_armour_attack_rule(specs: Sequence[FieldSpec], entry: Any) -> tuple[Fi
         else ("quantity",)
     )
     return tuple(
-        FieldSpec(
-            name=spec.name,
-            kind=spec.kind,
-            choices=spec.choices,
-            sentinel=spec.sentinel,
-            presentation=spec.presentation,
-            read_only=True,
-        )
+        replace(spec, read_only=True)
         if spec.name in inert
         else spec
         for spec in specs
@@ -330,3 +525,21 @@ def parse_int_list(text: str) -> list[int]:
     the edit rather than write a half-parsed list."""
     cleaned = text.replace(",", " ").split()
     return [int(item) for item in cleaned]
+
+
+# -- XS script text ----------------------------------------------------------
+
+
+def xs_to_display(value: Any) -> str:
+    """An XS field's editor text. The game stores lines separated by a bare CR,
+    which a text widget cannot hold, so every separator becomes LF."""
+    if value is None:
+        return ""
+    return str(value).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def xs_from_display(text: str) -> str:
+    """Inverse of xs_to_display() for the CR-only values the game writes. Not
+    an involution on a stored CRLF or lone LF, which is why the panel only
+    calls this on text the user actually changed."""
+    return text.replace("\r\n", "\n").replace("\n", "\r")

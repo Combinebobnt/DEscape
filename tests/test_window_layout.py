@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import settings
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -27,16 +28,7 @@ pytestmark = [
 
 def _window():
     """A shown, fixed-size offscreen ViewerWindow."""
-    from PyQt5.QtWidgets import QApplication
-
-    from descape.viewer import ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    window.resize(1500, 900)
-    window.show()
-    QApplication.processEvents()
-    return window
+    return conftest.shown_window(1500, 900)
 
 
 def test_left_column_runs_full_height_with_the_log_beside_it() -> None:

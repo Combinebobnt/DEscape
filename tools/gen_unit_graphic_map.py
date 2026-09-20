@@ -23,6 +23,12 @@ resolves to a named graphic:
                               -- rotation_is_variant() reads this instead of
                               -- its own hand-kept frozensets (2026-09-06 Tier
                               -- B plan).
+      "variant_count": int,  -- OPTIONAL, only beside rotation_is_variant:
+                              -- the .sld's real frame count // frame_count,
+                              -- omitted when the .sld is unreadable here.
+                              -- The edit path's install-free cycle modulus
+                              -- (descape.unit_variant); render still reads
+                              -- the file itself.
       "pieces": [            -- OPTIONAL. Present only for a multi-graphic
                               -- composite building (town centres, pastures);
                               -- absent means "one graphic", same as today.
@@ -34,9 +40,24 @@ resolves to a named graphic:
                                 -- piece's own graphic, not of whichever
                                 -- unit is standing on the map.
          "file_name": str, "angle_count": int, "frame_count": int,
-         "dx": int, "dy": int},   -- native-pixel offset from the parent's
+         "dx": int, "dy": int,    -- native-pixel offset from the parent's
                                   -- own anchor; see "Composite buildings"
-        ...                       -- below. Depth-sorted: draw in list order.
+                                  -- below.
+         "mx": float, "my": float,  -- _COMPOSITE_SCOPE only: the annex's raw
+                                  -- misplacement in tiles, which dx/dy cannot
+                                  -- be inverted back to (a town centre's
+                                  -- cancels to (0, 0)); the depth-slot input.
+         "slot": [int, int],     -- _COMPOSITE_SCOPE only: the footprint tile,
+                                  -- offset from its low corner, whose depth
+                                  -- moment paints this piece (_PIECE_SLOTS).
+                                  -- Absent: paint at the unit's own anchor.
+         "parent": true},       -- OPTIONAL, on exactly ONE piece per entry:
+                                  -- the piece whose failure to resolve drops
+                                  -- the whole composite to the coloured mark.
+                                  -- Explicit rather than inferred from
+                                  -- unit_id == unit_const, which every piece
+                                  -- of a direct-delta gate or a wall shares.
+        ...                       -- Depth-sorted: draw in list order.
       ]
     }
 
@@ -143,7 +164,13 @@ resolve (24 at 2 pieces -- bare corner pillars and the four sea-gate consts,
 both resolved via their own root; 72 at 5 pieces -- directional/composite
 gates), the same single holdout as any other scoping (const 1192, a legacy
 duplicate with no filename, already excluded above). A gate's pieces carry
-no per-piece depth slot, unlike a town centre's.
+no per-piece depth slot, unlike a town centre's, so they all paint at the
+unit's single anchor tile.
+
+**Decoration-shell walls.** The three `_BODY_GRAPHIC_OVERRIDES` consts keep
+the body as their top-level graphic but also carry `pieces`: the shell's
+modern deltas in .dat list order, then the flag shell itself, all at (0, 0),
+with the body marked parent. See `_resolve_wall_pieces`.
 """
 
 from __future__ import annotations
@@ -175,6 +202,23 @@ def _sld_status(path: Path) -> str:
         return "bad_magic"
     layout = int.from_bytes(head[10:12], "little")
     return "ok" if layout in SLD_LAYOUT_READABLE else f"layout_{layout}"
+
+
+def _sld_frame_count(path: Path) -> int | None:
+    """The .sld header's own frame count, or None when the file isn't readable.
+
+    Header only (magic, version, frame_count at offset 6), same literal-read
+    reasoning as SLD_MAGIC above."""
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(12)
+    except OSError:
+        return None
+    if len(head) < 12 or head[:4] != SLD_MAGIC:
+        return None
+    if int.from_bytes(head[10:12], "little") not in SLD_LAYOUT_READABLE:
+        return None
+    return int.from_bytes(head[6:8], "little")
 
 
 def _looks_modern(file_name: str | None) -> bool:
@@ -318,6 +362,26 @@ _COMPOSITE_SCOPE: frozenset[int] = frozenset({
     1889, 1890, 2079, 2080,               # pastures
 })
 
+# unit_const -> each piece's depth slot [sx, sy], in emitted piece order: the
+# footprint tile, as an offset from the footprint's low corner, whose moment in
+# the depth walk paints that piece. Output of tools/measure_piece_slots.py
+# (needs the real .sld art, so it is committed rather than derived here);
+# re-verified by tests/test_unit_graphic_map.py's corpus slot test. 1890/2079/
+# 2080 have a [1, 1] span, so every piece collapses onto the one tile.
+_PIECE_SLOTS: dict[int, list[list[int]]] = {
+    71: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    109: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    141: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    142: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    1889: [[3, 0], [0, 3], [0, 2], [0, 1], [0, 3]],
+    1890: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
+    2079: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
+    2080: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
+    2275: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    2276: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    2277: [[1, 2], [0, 3], [0, 3], [0, 3]],
+}
+
 # Native-pixel iso half-dimensions, mirroring descape.unit_sprites.
 # NATIVE_TILE_W (96) // 2 and // 2 again -- kept as literals rather than an
 # import so this stays a standalone genieutils script.
@@ -361,6 +425,9 @@ def _resolve_pieces(
             "frame_count": parent_graphic.frame_count,
             "dx": 0,
             "dy": 0,
+            "mx": 0.0,
+            "my": 0.0,
+            "parent": True,
         })
     ]
     for annex in building.annexes:
@@ -383,6 +450,8 @@ def _resolve_pieces(
             "frame_count": piece_graphic.frame_count,
             "dx": dx,
             "dy": dy,
+            "mx": round(float(annex.misplacement_x), 6),
+            "my": round(float(annex.misplacement_y), 6),
         }))
 
     if len(pieces) < 2:
@@ -392,7 +461,19 @@ def _resolve_pieces(
             f"than silently dropping the composite"
         )
     pieces.sort(key=lambda dp: dp[0])
-    return [p for _, p in pieces]
+    result = [p for _, p in pieces]
+    # Keyed on scope membership, never on "has pieces": gates and walls carry
+    # pieces too, and deliberately no slot.
+    slots = _PIECE_SLOTS.get(unit_const)
+    if slots is None or len(slots) != len(result):
+        raise SystemExit(
+            f"_PIECE_SLOTS has {'no' if slots is None else len(slots)} slot(s) for "
+            f"_COMPOSITE_SCOPE const {unit_const}, which emits {len(result)} pieces -- "
+            f"re-run tools/measure_piece_slots.py and commit its table"
+        )
+    for piece, slot in zip(result, slots, strict=True):
+        piece["slot"] = list(slot)
+    return result
 
 
 # unit_const -> the delta graphic_id that holds the real BODY, for consts whose
@@ -426,14 +507,63 @@ def _resolve_pieces(
 # defect at these 3 consts out of 2,307, so an override table is both
 # sufficient and auditable.
 #
-# The flag is genuinely part of a palisade wall and is LOST by this retarget.
-# Recovering it needs multi-piece delta compositing, a planned follow-up
-# not solved here.
+# The retarget only picks the entry's top-level graphic. The flag, and 788's
+# submerged base, come back as composite pieces via _resolve_wall_pieces below
+# (2026-09-02 wall-flag plan): the body stays the parent, so a consumer that
+# ignores `pieces` still draws the wall.
 _BODY_GRAPHIC_OVERRIDES: dict[int, int] = {
     72: 587,    # Palisade Wall        -> b_dark_wall_palisade_x1
     119: 605,   # Fortified Palisade   -> b_scen_wall_palisade_fortified_x1
     788: 6595,  # Sea Wall             -> b_scen_wall_sea_x1
 }
+
+
+def _resolve_wall_pieces(
+    graphics: list, unit_const: int, shell, body_id: int
+) -> list[dict[str, object]]:
+    """The composite pieces for a _BODY_GRAPHIC_OVERRIDES const: every modern
+    delta of the decoration shell in .dat list order at its own offset, then
+    the shell itself (the flag) last at (0, 0). Measured 2026-09-02: 72/119
+    give body -> flag, 788 gives underwater -> body -> flag, all at (0, 0).
+
+    Not the gate helpers: their one-piece-per-offset dedupe would collapse
+    every wall piece, since all of them sit at (0, 0). unit_id is unit_const
+    on every piece, so the parent is marked on the body explicitly."""
+    pieces: list[dict[str, object]] = []
+    for delta in shell.deltas:
+        dg_id = delta.graphic_id
+        if dg_id is None or not (0 <= dg_id < len(graphics)):
+            continue
+        dg = graphics[dg_id]
+        if dg is None or not _looks_modern(dg.file_name):
+            continue
+        pieces.append({
+            "unit_id": unit_const,
+            "file_name": dg.file_name,
+            "angle_count": dg.angle_count,
+            "frame_count": dg.frame_count,
+            "dx": delta.offset_x,
+            "dy": delta.offset_y,
+            **({"parent": True} if dg_id == body_id else {}),
+        })
+    pieces.append({
+        "unit_id": unit_const,
+        "file_name": shell.file_name,
+        "angle_count": shell.angle_count,
+        "frame_count": shell.frame_count,
+        "dx": 0,
+        "dy": 0,
+    })
+    for piece in pieces:
+        # Same guard as the gate branch's angle_count == 1, inverted: a wall
+        # piece that stops being a 5-shape variant graphic is a real .dat change.
+        if piece["angle_count"] != 5:
+            raise SystemExit(
+                f"wall piece {piece['file_name']!r} (unit_const {unit_const}) has "
+                f"angle_count {piece['angle_count']}, not 5 -- re-verify "
+                f"_BODY_GRAPHIC_OVERRIDES against the .dat"
+            )
+    return pieces
 
 
 def main() -> None:
@@ -456,6 +586,7 @@ def main() -> None:
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
+    graphics_dir = args.aoe2de_root / "resources/_common/drs/graphics"
     data = DatFile.parse(str(dat_path))
     graphics = data.graphics
     units = data.civs[0].units
@@ -489,6 +620,10 @@ def main() -> None:
                         f"tools/gen_unit_graphic_map.py's gate section against the "
                         f".dat before shipping this"
                     )
+            # The parent is pieces[0] because it supplies the entry's top-level
+            # fields. For an X-state gate (e.g. 487) that is a corner pillar, not
+            # the middle span; retargeting the top-level fields changes which
+            # piece's failure drops the whole gate.
             _, primary, _, _ = gate_pieces[0]
             entries[str(unit_const)] = {
                 "graphic_id": primary.id,
@@ -504,8 +639,9 @@ def main() -> None:
                         "frame_count": g.frame_count,
                         "dx": dx,
                         "dy": dy,
+                        **({"parent": True} if i == 0 else {}),
                     }
-                    for uid, g, dx, dy in gate_pieces
+                    for i, (uid, g, dx, dy) in enumerate(gate_pieces)
                 ],
             }
             gate_composited.add(unit_const)
@@ -536,6 +672,7 @@ def main() -> None:
                     f"re-verify against the .dat"
                 )
             overridden[unit_const] = (graphic.file_name, body.file_name)
+            wall_pieces = _resolve_wall_pieces(graphics, unit_const, graphic, override_id)
             graphic = body
         elif not _looks_modern(graphic.file_name):
             resolved = _resolve_modern_graphic(graphics, graphic_id)
@@ -554,11 +691,24 @@ def main() -> None:
             unit.type != _CREATABLE_TYPE and graphic.angle_count > 1
         ):
             entry["rotation_is_variant"] = True
+            frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
+            if frames is not None and graphic.frame_count > 0:
+                entry["variant_count"] = frames // graphic.frame_count
         pieces = _resolve_pieces(units, graphics, unit_const, graphic)
-        if pieces is not None:
+        if override_id is not None:
+            entry["pieces"] = wall_pieces
+        elif pieces is not None:
             entry["pieces"] = pieces
             composited.add(unit_const)
         entries[str(unit_const)] = entry
+
+    for unit_const, entry in entries.items():
+        parents = sum(1 for piece in entry.get("pieces", ()) if piece.get("parent"))
+        if "pieces" in entry and parents != 1:
+            raise SystemExit(
+                f"unit_const {unit_const} emitted {parents} parent pieces, not exactly 1 -- "
+                f"sprite_pieces_for() bails on the parent, so this must be unambiguous"
+            )
 
     out_path = Path(__file__).resolve().parent.parent / "descape" / "unit_graphic_map.json"
     out_path.write_text(
@@ -589,7 +739,6 @@ def main() -> None:
     print(f"    piece-count histogram: {dict(sorted(gate_piece_counts.items()))}")
 
     if args.scan_sld:
-        graphics_dir = args.aoe2de_root / "resources/_common/drs/graphics"
         status = Counter()
         distinct: dict[str, str] = {}
         for entry in entries.values():

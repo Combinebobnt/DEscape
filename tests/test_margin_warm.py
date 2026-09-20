@@ -21,11 +21,12 @@ from __future__ import annotations
 import math
 
 import pytest
+from test_level_warm import Unit, _flat_cache, _iso_cache, _scenario, _warm
 
-import conftest
 from descape import level_warm, margin_warm
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
-from test_level_warm import Unit, _flat_cache, _iso_cache, _scenario, _warm
+
+import conftest
 from test_unit_sprites import CONST
 
 
@@ -213,7 +214,7 @@ def test_margin_warmer_logs_and_continues_past_a_bad_chunk(monkeypatch) -> None:
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     cache.fail_on.add((0, 2, 2))
     logged = []
-    monkeypatch.setattr(debug_log, "log", lambda msg: logged.append(msg))
+    monkeypatch.setattr(debug_log, "log", logged.append)
 
     warmer = margin_warm.MarginWarmer()
     warmer.start(cache, 0, [(1, 1), (2, 2), (3, 3)])
@@ -391,8 +392,8 @@ def test_bounded_chunk_range_slides_to_fit_near_an_edge_without_shrinking() -> N
     function's own docstring for the [5, 6]/span=2 example this guards."""
     cx0, cy0, cx1, cy1 = margin_warm.bounded_chunk_range(2, 5, 4, 6, span_w=3, span_h=2)
     assert (cx1 - cx0 + 1, cy1 - cy0 + 1) == (3, 2), "must not shrink just because it's near an edge"
-    assert 2 <= cx0 and cx1 <= 4
-    assert 5 <= cy0 and cy1 <= 6
+    assert cx0 >= 2 and cx1 <= 4
+    assert cy0 >= 5 and cy1 <= 6
 
 
 def test_bounded_chunk_range_never_exceeds_the_input_range() -> None:
@@ -431,6 +432,7 @@ def _sprite_install(tmp_path, monkeypatch):
     pytest's own by-name fixture lookup and avoids that lint, so the dozen
     lines of setup are kept here instead."""
     from descape import asset_source, unit_sprites
+
     from test_unit_sprites import FILE_NAME, build_sld
 
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH

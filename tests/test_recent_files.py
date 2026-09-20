@@ -10,9 +10,10 @@ from pathlib import Path
 
 import pytest
 
-import conftest
 import descape.settings as settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
+
+import conftest
 
 
 def _copy_fixture(tmp_path: Path, name: str) -> Path:

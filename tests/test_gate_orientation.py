@@ -81,7 +81,7 @@ def test_every_group_agrees_with_its_graphics_own_orientation_token():
     graphics = _graphics()
     checked = 0
     for key, consts in gate_orientation.groups().items():
-        for orientation, const in zip(("A", "C", "B", "D"), consts):
+        for orientation, const in zip(("A", "C", "B", "D"), consts, strict=True):
             match = _ORIENTATION_TOKEN_RE.search(graphics[const]["file_name"])
             if match is None:
                 continue
@@ -127,7 +127,7 @@ def test_no_gate_const_is_also_a_rotatable_angle_const():
 
 
 def test_four_steps_return_the_original_const():
-    for const in STONE_CLOSED + (PALISADE_CLOSED_NE,):
+    for const in (*STONE_CLOSED, PALISADE_CLOSED_NE):
         assert gate_orientation.cycle_const(const, 4) == const
         assert gate_orientation.cycle_const(const, -4) == const
 

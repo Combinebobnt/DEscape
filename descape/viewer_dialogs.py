@@ -8,11 +8,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import QUrl, Qt
+from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
+    QFontDatabase,
     QPalette,
 )
 from PyQt5.QtWidgets import (
@@ -25,7 +26,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
-
 
 from descape import (
     debug_log,
@@ -47,6 +47,11 @@ if TYPE_CHECKING:
 # "light" state should be Fusion's own default, not a different style's
 # palette that would look inconsistent switching back and forth.
 _LIGHT_PALETTE: QPalette | None = None
+
+# The same trick for apply_ui_font(): the app's font before this app ever
+# set one, captured on the first call, so clearing the setting restores the
+# real platform default rather than a guess at it.
+_DEFAULT_FONT: QFont | None = None
 
 
 def _build_dark_palette() -> QPalette:
@@ -91,18 +96,44 @@ def apply_theme(app: QApplication, dark: bool) -> None:
         _LIGHT_PALETTE = app.style().standardPalette()
     app.setPalette(_build_dark_palette() if dark else _LIGHT_PALETTE)
 
+
+def apply_ui_font(app: QApplication, family: str, size: int | None) -> None:
+    """App chrome only, apply_theme()'s sibling and same carve-out: the map
+    view's own overlay text (ruler readout, distance-tick numbers, stacked-
+    unit badges) is built from viewer_canvas.map_overlay_font() and does not
+    follow this. Called once at startup (main()) and live from the
+    Appearance settings tab -- safe to call repeatedly.
+
+    `family` "" and `size` None both mean "platform default", and restore
+    the baseline captured on the first call, the same cache-once trick
+    apply_theme uses for _LIGHT_PALETTE. An unknown family is ignored
+    rather than handed to Qt's silent substitution."""
+    global _DEFAULT_FONT
+    if _DEFAULT_FONT is None:
+        _DEFAULT_FONT = QFont(app.font())
+    font = QFont(_DEFAULT_FONT)
+    if family and family in QFontDatabase().families():
+        font.setFamily(family)
+    if size is not None:
+        font.setPointSize(size)
+    app.setFont(font)
+
+
 class DebugLogDialog(QDialog):
     """Read-only viewer over debug_log's in-memory buffer. A snapshot at open
     time (and after Refresh), not a live tail -- simplest thing that's useful
     for "what did the app just do," not meant as a full log console."""
 
-    def __init__(self, parent: "ViewerWindow"):
+    def __init__(self, parent: ViewerWindow):
         super().__init__(parent)
         self.setWindowTitle("Debug Log")
         self.resize(640, 400)
 
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
+        # Family only, deliberately: a log wants columns, so monospace is
+        # pinned against apply_ui_font(), but the size is left unset so it
+        # still follows the user's chrome font size.
         self.text.setFont(QFont("Monospace"))
         self._refresh()
 
@@ -145,7 +176,7 @@ class CrashReportDialog(QDialog):
 
     def __init__(
         self,
-        parent: "ViewerWindow | None",
+        parent: ViewerWindow | None,
         *,
         summary: str,
         dump_path: Path,

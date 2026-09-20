@@ -13,6 +13,8 @@ for that landed at offsets tens of thousands of bytes negative.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from descape import option_fields, scenario_io
@@ -50,15 +52,13 @@ def test_every_offset_reproduces_its_retriever_s_own_bytes() -> None:
         assert body[fo.offset : fo.offset + fo.length] == retriever.get_data_as_bytes(), spec.field_id
 
 
-def test_the_global_victory_anchor_walks_across_the_deferred_custom_fields() -> None:
-    """The three live Global Victory specs (mode, required_score_..., and
-    time_for_timed_game_...) sit at the very end of the section -- the
-    shallowest possible walk. The four still-deferred custom-victory fields
-    sit earlier, and nothing in specs_for() exercises reaching past them.
+def test_the_global_victory_anchor_walks_to_the_start_of_the_section() -> None:
+    """The live specs reach at most all_custom_conditions_required's
+    neighbours; nothing in specs_for() walks back to `separator`, the first
+    retriever and so the deepest possible Global Victory walk.
 
-    Declared locally rather than added to option_fields._SPECS, because the
-    custom-victory deferral is deliberate and a spec added "just for a test"
-    would put those rows back in the panel by accident.
+    Declared locally rather than added to option_fields._SPECS, because
+    `separator` is not a setting and must never become a panel row.
     """
     from descape.option_fields import COMBO, SPINBOX, OptionFieldSpec
 
@@ -70,9 +70,9 @@ def test_the_global_victory_anchor_walks_across_the_deferred_custom_fields() -> 
             "GlobalVictory", "mode", COMBO, choices=((0, "Standard"),),
         ),
         OptionFieldSpec(
-            "gv_all_custom", "Require all custom", "Global Victory",
-            "GlobalVictory", "all_custom_conditions_required", SPINBOX,
-            minimum=0, maximum=1,
+            "gv_separator", "Separator", "Global Victory",
+            "GlobalVictory", "separator", SPINBOX,
+            minimum=0, maximum=0xFFFFFFFF,
         ),
     )
     loaded = _loaded()
@@ -101,7 +101,7 @@ def test_offsets_within_a_section_are_distinct_and_dont_overlap() -> None:
 
     for section, spans in by_section.items():
         spans.sort()
-        for (off_a, len_a), (off_b, _len_b) in zip(spans, spans[1:]):
+        for (off_a, len_a), (off_b, _len_b) in pairwise(spans):
             assert off_a + len_a <= off_b, section
 
 

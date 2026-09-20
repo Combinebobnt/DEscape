@@ -80,7 +80,7 @@ def _pick_movable_unit(scenario):
     scanning players 1..8 first (real buildings/units), falling back to
     GAIA."""
     manager = scenario.unit_manager
-    for player in list(range(1, len(manager.units))) + [0]:
+    for player in [*range(1, len(manager.units)), 0]:
         units = manager.units[player]
         if units:
             return player, units[0]

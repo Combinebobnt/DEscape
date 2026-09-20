@@ -20,9 +20,9 @@ entry's migrated_test_nodeid is filled in.
 from __future__ import annotations
 
 import pytest
+from migration_manifest import MANIFEST
 
 import conftest
-from migration_manifest import MANIFEST
 
 
 def _make_none_test(module_name: str, check_name: str):

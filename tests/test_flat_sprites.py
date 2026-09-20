@@ -58,6 +58,7 @@ import pytest
 from descape import asset_source, iso_geometry, render, render_cache, unit_sprites
 from descape.terrain_palette import PLAYER_COLORS
 from descape.unit_filter import UnitFilter
+
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 MAP_W = MAP_H = 12
@@ -151,8 +152,9 @@ def sprite_install(tmp_path, monkeypatch):
 
     def entry(const):
         piece = {"unit_id": const, "file_name": FILE_NAME, "angle_count": 4,
-                 "frame_count": 1, "dx": 0, "dy": 0}
-        below = dict(piece, unit_id=const + 100, dy=unit_sprites.NATIVE_TILE_W)
+                 "frame_count": 1, "dx": 0, "dy": 0, "parent": True}
+        below = {**piece, "unit_id": const + 100, "dy": unit_sprites.NATIVE_TILE_W}
+        del below["parent"]
         return {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 4,
                 "mirroring_mode": 6, "frame_count": 1, "pieces": [piece, below]}
 
@@ -213,7 +215,18 @@ def _footprint_rects(scn, tile_px):
             if bounds is None:
                 continue
             tx0, tx1, ty0, ty1 = bounds
-            rects.append((tx0 * tile_px, ty0 * tile_px, tx1 * tile_px, ty1 * tile_px))
+            # Shifted by the same free-placement offset _draw_unit() applies
+            # (Stage 1, 2026-09-17). This fixture places units at INTEGER
+            # coordinates on purpose, and an integer coordinate is a grid
+            # vertex, not a tile centre -- so those marks legitimately sit
+            # half a tile up-left of their own tile and this rect has to
+            # follow them or the no-widening assertion tests the wrong box.
+            dx, dy = render.unit_paint_offset(unit)
+            ox, oy = round(dx * tile_px), round(dy * tile_px)
+            rects.append((
+                tx0 * tile_px + ox, ty0 * tile_px + oy,
+                tx1 * tile_px + ox, ty1 * tile_px + oy,
+            ))
     return rects
 
 
@@ -290,7 +303,7 @@ def test_stitched_chunks_match_the_full_sprite_render(sprite_install):
     assert cache._level_icons(0), "no unit resolved to an icon, so this proves nothing"
 
     seams = {x for x, _y, x1, _y1 in _footprint_rects(scn, tile_px) for x in (x, x1)}
-    assert any(0 < s % CHUNK for s in seams if s % CHUNK), "no footprint crosses a chunk seam"
+    assert any(s % CHUNK > 0 for s in seams if s % CHUNK), "no footprint crosses a chunk seam"
 
     assert np.array_equal(_stitched(cache), _full(scn, with_sprites=True))
 

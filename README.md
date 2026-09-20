@@ -168,7 +168,20 @@ python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file 
 
 Saving (Ctrl+S or File > Save) leaves a `.bak` and, on the first save of a
 given file, a one-time `.orig` snapshot beside it, so the write path always
-has something to fall back to.
+has something to fall back to. Settings > Saving can switch that pair off.
+
+Autosave (Settings > Saving, on by default) writes a recovery snapshot every
+few minutes to its own rotating slot. It never writes the file you have open,
+and never clears the unsaved-changes marker. A tick is skipped while the
+document is clean, unchanged since its last autosave, or mid-stroke, so the
+write only ever lands on an idle map. Slots go in an `autosave/` folder
+beside `config.yaml`, or beside the scenario itself if you pick that;
+File > Recover from Autosave… lists them and opens one as a new untitled
+document, so recovering can never overwrite the file you're comparing it
+against.
+
+For XS scripts in Script Call triggers, including scripts longer than the
+in-game editor accepts, see `docs/XS_SCRIPTING.md`.
 
 ## Scriptable batch edits
 
@@ -185,16 +198,22 @@ buildings), `neighbors` (adjacent-tile lookup, off-map-safe), `is_water`
 correct elevation clamp, an order-safe bulk variant, and double-terrain-blend
 reset, matching what the viewer's own tools already enforce).
 
-**Only terrain edits persist.** `batch_api.save()` writes Map terrain
-exactly like the viewer's Save As does — it does not write Units or the
-trigger tail at all, regardless of what's in memory. `buildings_of()` hands
-back real, mutable `Unit` objects so a script can *read* unit data to decide
-*where* to edit terrain (that's what every example below does), but editing
-a unit itself (reassigning its player, moving it, etc.) and calling `save()`
-silently drops that edit — confirmed directly, not just documented. See
-`descape/batch_api.py`'s module docstring for the full detail.
+**Unit edits persist only through a `UnitEditModel`.** `batch_api.save()`
+always writes Map terrain exactly like the viewer's Save As does. Units are
+written only when edited through a `descape.unit_model.UnitEditModel` passed as
+`save(..., units=model)`; mutating a `Unit` object returned by `buildings_of()`
+directly (its player, position, etc.) and calling `save()` silently drops that
+edit, on purpose. See `descape/batch_api.py`'s module docstring for the full
+detail.
 
-`batch_scripts/` has two runnable examples:
+`descape/scatter.py` places units at random, reproducible positions across a
+tile set you build yourself (e.g. every water tile, or one connected pond):
+`scatter_units(scenario, units, tiles, unit_const, count=40, seed=7)`. It never
+randomizes `rotation`, which is a graphic-variant index rather than an angle for
+many GAIA objects; pass `rotation_choices=` with values you've confirmed if you
+need variety.
+
+`batch_scripts/` has runnable examples:
 
 ```bash
 # Raise the tile elevation under every one of Player 3's buildings by 1
@@ -205,12 +224,21 @@ silently drops that edit — confirmed directly, not just documented. See
 .venv/bin/python3 batch_scripts/recolor_dirt_near_water.py \
     examples/2_Joan_coop_1_v0_13.aoe2scenario out.aoe2scenario
 
+# Reassign every unit_const 4 unit from Player 1 to Player 2
+.venv/bin/python3 batch_scripts/reassign_units_by_const.py \
+    examples/2_Joan_coop_2_v0_15.aoe2scenario out.aoe2scenario \
+    --unit-const 4 --from-player 1 --to-player 2
+
+# Scatter 40 GAIA fish across water, reproducibly (--pond-at X Y for one pond)
+.venv/bin/python3 batch_scripts/scatter_fish_in_water.py \
+    examples/2_Joan_coop_1_v0_13.aoe2scenario out.aoe2scenario --count 40 --seed 7
+
 # Verify the API itself against a directory of scenarios
 .venv/bin/python3 tools/verify_batch_api.py examples/
 ```
 
 A script that processes many scenario files in one Python process (rather
-than one file per run, like the two examples above) should read
+than one file per run, like the examples above) should read
 `descape/batch_api.py`'s module docstring first — it documents a real
 AoE2ScenarioParser bug around creating new units (`add_unit`/`clone_unit`)
 after an older-format file has been loaded earlier in the same process.
@@ -254,7 +282,8 @@ Typical Steam install locations, if you need a starting point for Browse…:
 **Proprietary assets are never bundled in this repo** — `descape/asset_source.py`
 is the one place that reads real `.dds` files from your configured install at
 runtime; nothing from that install gets copied into the repo or committed. The
-one thing that *is* committed is `descape/terrain_texture_map.json`: a plain
+things that *are* committed are small factual correspondence tables (not
+asset content), the first of which is `descape/terrain_texture_map.json`: a plain
 factual `terrain_id -> filename` table (not asset content), extracted once via
 `tools/gen_terrain_texture_map.py` using
 [genieutils-py](https://github.com/SiegeEngineers/genieutils-py) (`pip install
@@ -264,6 +293,14 @@ real matching `.dds` file, cross-checked against several terrain IDs already
 known from real scenario data (e.g. `terrain_id=19` is `FOREST_PINE` in both
 AoE2ScenarioParser's enum and the `.dat` table's own terrain name). Only needed
 again if the game updates its terrain table; not a runtime dependency.
+
+`descape/terrain_classes.json` is the second, from the same `.dat` and the same
+kind of generator (`tools/gen_terrain_classes.py`): each terrain's water/land
+family and climate, which is what lets the Draw tool's "Auto beach" option pick
+a shoreline terrain from the game's own classification rather than guessing from
+enum names. That distinction is not cosmetic — `BEACH_NON_NAVIGABLE` is
+classified as land, and `FOREST_MANGROVE` and the rice-farm terrains as
+shallows, both of which a name match gets backwards.
 
 A related SLP-icon decoder (`descape/slp_decoder.py`) exists from investigating
 whether UI graphics could enhance the viewer too, parked rather than wired in.
@@ -289,8 +326,8 @@ distributed combination of this tool with its dependencies is GPL territory
 regardless.
 
 The committed game-derived data files (`descape/terrain_texture_map.json`,
-`tree_unit_ids.json`, `unit_render_data.json`, `unit_graphic_map.json`,
-`unit_stats.json`) are factual id/name/filename correspondence tables, not
+`terrain_classes.json`, `tree_unit_ids.json`, `unit_render_data.json`,
+`unit_graphic_map.json`, `unit_stats.json`, `object_catalog.json`) are factual id/name/filename correspondence tables, not
 game asset content. The four committed
 `.aoe2scenario` files (`descape/templates/blank_120x120.aoe2scenario` and the
 three blanks under `tests/fixtures/`) are unit-stripped exports of the in-game
@@ -317,8 +354,8 @@ Rules.
 - [genieutils-py](https://github.com/SiegeEngineers/genieutils-py) by the
   SiegeEngineers organization — parses the game's own `.dat` file to keep
   several committed `descape/*.json` tables accurate, including
-  `descape/terrain_texture_map.json` (see "Real terrain colors"
-  above).
+  `descape/terrain_texture_map.json` and `descape/terrain_classes.json` (see
+  "Real terrain colors" above).
 - [genie](https://github.com/fredreichbier/genie) by fredreichbier — its
   documentation of the classic SLP sprite format is the basis for
   `descape/slp_decoder.py`'s reimplementation (no code reused; see that

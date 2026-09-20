@@ -34,9 +34,10 @@ from pathlib import Path
 
 import pytest
 
-import conftest
 from descape.scenario_io import BLANK_TEMPLATE_SIZES, TEMPLATE_DIR, blank_template_path, load_map_and_units
 from descape.scenario_write import _compress_bytes
+
+import conftest
 
 strip_units_module = conftest.load_verify_module("strip_units")
 strip_units = strip_units_module.strip_units

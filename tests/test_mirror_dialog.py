@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape.mirror_tools import plan_mirror
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -31,14 +32,7 @@ _OTHER_TERRAIN = 2  # BEACH -- distinct from the blank template's own terrain_id
 def _mirror_window():
     """Loads the blank template and switches to Terrain mode. Caller must
     edit_history.mark_saved() + close()."""
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Terrain")
-    return window
+    return conftest.terrain_edit_window()
 
 
 def _paint_asymmetric_tiles(window) -> None:
@@ -275,6 +269,26 @@ def test_mirror_refuses_on_elevation_violations(monkeypatch) -> None:
         window.close()
 
 
+def test_mirror_overlay_every_subpath_is_closed() -> None:
+    """Same bug class as test_footprint_outlines.test_every_subpath_is_closed:
+    show_mirror_overlay() built one addPolygon() per tile with no
+    closeSubpath(), so a stroked tile diamond drew only 3 of its 4 edges."""
+    from PyQt5.QtGui import QPainterPath
+
+    window = _mirror_window()
+    try:
+        window.map_view.show_mirror_overlay([(0, 0), (5, 3), (2, 2)], [])
+        path = window.map_view._mirror_overlay_outline_item.path()
+        moves = sum(
+            1 for i in range(path.elementCount()) if path.elementAt(i).type == QPainterPath.MoveToElement
+        )
+        assert moves > 0
+        assert path.elementCount() == 5 * moves
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_keybinds_tab_renders_map_section_header() -> None:
     from PyQt5.QtWidgets import QLabel
 
@@ -293,6 +307,121 @@ def test_keybinds_tab_renders_map_section_header() -> None:
             assert "Map" in headers
         finally:
             dialog.close()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- Stage 2: units -----------------------------------------------------------
+
+
+def _place(window, unit_const: int, x: float, y: float, player: int = 1):
+    model = window._ensure_unit_edits()
+    model.begin_unit_edit([player])
+    unit = model.add(player=player, unit_const=unit_const, x=x, y=y)
+    model.commit_unit_edit("Place unit", window.edit_history)
+    window._after_unit_mutation()
+    return unit
+
+
+def _units(window):
+    return list(window.scenario.unit_manager.get_all_units())
+
+
+def test_units_checkbox_is_available_and_off_by_default() -> None:
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window)
+        assert dialog.units_checkbox.isEnabled()
+        assert not dialog.units_checkbox.isChecked()
+        assert not dialog.ownership_checkbox.isChecked()
+        assert not dialog.ownership_spin.isEnabled()
+        dialog.ownership_checkbox.setChecked(True)
+        assert dialog.ownership_spin.isEnabled()
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_mirroring_units_copies_them_into_every_slice_as_one_undo_record() -> None:
+    from descape.mirror_tools import plan_mirror_units
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        _place(window, 349, 10.5, 12.5, player=0)  # an oak, well inside mode 1's source slice
+        before = len(_units(window))
+        records = len(window.edit_history.records)
+
+        plan = plan_mirror(mm, 1, 0, do_terrain=True, do_elevation=False)
+        unit_plan = plan_mirror_units(
+            mm, 1, 0, window.scenario.unit_manager.units, plan.source_indices,
+            referencing=window.unit_edits.referencing,
+        )
+        window.on_mirror(plan, unit_plan)
+
+        assert len(window.edit_history.records) == records + 1
+        assert len(_units(window)) == before + 1
+        image = max(_units(window), key=lambda u: u.reference_id)
+        assert (image.x, image.y) == (mm.map_width - 12.5, mm.map_width - 10.5)
+
+        window.undo()
+        assert len(_units(window)) == before
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_mirroring_units_refuses_a_straddling_building() -> None:
+    from descape.mirror_tools import plan_mirror_units
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        n = mm.map_width
+        _place(window, 82, n / 2 - 1.0, n / 2 - 1.0)  # a castle across mode 1's axis
+        before = len(_units(window))
+
+        plan = plan_mirror(mm, 1, 0, do_terrain=True, do_elevation=False)
+        unit_plan = plan_mirror_units(
+            mm, 1, 0, window.scenario.unit_manager.units, plan.source_indices
+        )
+        assert unit_plan.blocked
+        assert window.on_mirror(plan, unit_plan) is None
+        assert len(_units(window)) == before
+        assert "straddle" in window.status_log.toPlainText()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_dialogs_own_units_path_previews_and_auto_undoes() -> None:
+    """The dialog's own _compute_unit_plan(): a preview with Units ticked
+    applies terrain and units as one composite, and changing an option undoes
+    it again."""
+    from descape.edit_history import CompositeDiffRecord
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        _paint_asymmetric_tiles(window)
+        _place(window, 349, 10.5, 12.5, player=0)
+        before = len(_units(window))
+
+        dialog = MirrorDialog(window)
+        dialog.mode_combo.setCurrentIndex(0)  # mode 1
+        dialog.units_checkbox.setChecked(True)
+        dialog._on_preview()
+
+        assert isinstance(window.edit_history.peek_undo(), CompositeDiffRecord)
+        assert len(_units(window)) == before + 1
+
+        dialog.elevation_checkbox.setChecked(not dialog.elevation_checkbox.isChecked())
+        assert len(_units(window)) == before, "changing an option must undo the preview"
+        dialog.reject()
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -43,8 +43,9 @@ from __future__ import annotations
 
 import copy
 import struct
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 from AoE2ScenarioParser.objects.managers.trigger_manager import (
     TriggerManager,
@@ -188,6 +189,27 @@ def exec_order_value(loaded: LoadedScenario) -> int | None:
     if retriever is None or retriever_length(retriever) == 0:
         return None
     return retriever.data
+
+
+EXEC_MODE_DISPLAY = "display"
+EXEC_MODE_LEGACY = "legacy"
+EXEC_MODE_UNKNOWN = "unknown"
+
+
+def resolve_exec_mode(stored: int | None, pending: int | None) -> tuple[str, bool]:
+    """(mode, unsaved): which axis governs execution, and whether that answer
+    comes from an unsaved edit.
+
+    `stored` is exec_order_value(loaded); `pending` is the window-resolved
+    in-progress Map Options value (see ViewerWindow._show_triggers()). The one
+    resolution both the Triggers status line and the trigger tree's position
+    header read, so the two cannot disagree. A pending value on a file that
+    stores no flag is ignored: there is no byte for it to land in.
+    """
+    if stored is None:
+        return EXEC_MODE_UNKNOWN, False
+    shown = stored if pending is None else pending
+    return (EXEC_MODE_LEGACY if shown else EXEC_MODE_DISPLAY), shown != stored
 
 
 def _variable_signature(manager: TriggerManager) -> tuple[tuple[int, str], ...]:
@@ -565,7 +587,7 @@ class TriggerEditModel:
         # fields across, which would walk into the Effect.quantity bit-split.
         restored = [
             copy.deepcopy(state) if state is not None else trigger
-            for trigger, state in zip(snapshot.triggers, snapshot.states)
+            for trigger, state in zip(snapshot.triggers, snapshot.states, strict=True)
         ]
 
         # Trap 1: `manager.triggers = [...]` resets trigger_display_order to
@@ -582,21 +604,21 @@ class TriggerEditModel:
 
         # Trap 2: restoring list membership does not restore trigger_id -- after
         # a remove_trigger(0) and a slice-restore, ids came back [0, 0, 1, 2].
-        for trigger, trigger_id in zip(manager.triggers, snapshot.trigger_ids):
+        for trigger, trigger_id in zip(manager.triggers, snapshot.trigger_ids, strict=True):
             trigger.trigger_id = trigger_id
 
         # Trap 3: remove_triggers()/reorder_triggers() rewrite ce.trigger_id on
         # *surviving* triggers in place, so restoring membership does not undo
         # them. This is also the restore checksum: a length mismatch means the
         # live graph is not the one this snapshot was taken from.
-        for trigger, ref_ids in zip(manager.triggers, snapshot.ref_ids):
+        for trigger, ref_ids in zip(manager.triggers, snapshot.ref_ids, strict=True):
             referencing = get_trigger_referencing_ce(trigger)
             if len(referencing) != len(ref_ids):
                 raise RuntimeError(
                     f"Trigger {trigger.trigger_id} has {len(referencing)} trigger references "
                     f"but the snapshot recorded {len(ref_ids)} -- refusing to restore"
                 )
-            for ce, trigger_id in zip(referencing, ref_ids):
+            for ce, trigger_id in zip(referencing, ref_ids, strict=True):
                 ce.trigger_id = trigger_id
 
         if snapshot.variables is not None:
@@ -728,7 +750,7 @@ class TriggerEditModel:
         # it, an operation that deletes a trigger and creates another could see
         # CPython reuse the freed object's id() and match the wrong blob.
         before = list(manager.triggers)
-        before_blobs = {id(t): blob for t, blob in zip(before, self._blobs)}
+        before_blobs = {id(t): blob for t, blob in zip(before, self._blobs, strict=True)}
         before_signatures = {id(t): _reference_signature(t) for t in before}
         before_variables = _variable_signature(manager)
         before_display_order = list(manager.trigger_display_order)
@@ -815,7 +837,7 @@ class TriggerEditModel:
         everything after the variable block splices verbatim.
         """
         manager = self.manager()
-        self._check_alignment(manager)
+        self._validate_coherence(manager)
         # A whole-manager commit is what rebuilds trigger_data when triggers
         # were added or removed. Its output for clean triggers is ignored --
         # only the dirty ones are read back out of it.
@@ -824,16 +846,19 @@ class TriggerEditModel:
         section = self.loaded._scenario.sections["Triggers"]
         entries = section.retriever_map["trigger_data"].data or []
         if len(entries) != len(self._blobs):
+            # Only checkable after commit(), so it cannot live in
+            # _validate_coherence(); same vocabulary, same exception.
             raise RuntimeError(
-                f"Committed {len(entries)} trigger structs but the model tracks "
-                f"{len(self._blobs)} blobs -- a structural edit bypassed structural_edit()"
+                f"The trigger list is incoherent: commit() produced {len(entries)} "
+                f"trigger structs but the model tracks {len(self._blobs)} blobs -- a "
+                f"structural edit bypassed structural_edit()"
             )
 
         parts: list[bytes] = [
             self._original_section[: SECTION_HEADER_SIZE - _TRIGGER_COUNT_STRUCT.size],
             _TRIGGER_COUNT_STRUCT.pack(len(self._blobs)),
         ]
-        for blob, entry in zip(self._blobs, entries):
+        for blob, entry in zip(self._blobs, entries, strict=True):
             parts.append(entry.get_data_as_bytes() if blob is None else blob)
         parts.append(self._display_order_bytes(manager))
         parts.append(
@@ -858,14 +883,48 @@ class TriggerEditModel:
         if self._exec_order is None:
             return tail
         offset = self.regions.exec_order_offset
-        if offset is None:  # pragma: no cover -- set_exec_order() refuses first
-            raise TriggerEditsUnavailableError(
-                "A trigger execution-order edit is pending on a file that stores no such flag."
-            )
         local = offset - self.regions.variables_end
         patched = bytearray(tail)
         patched[local] = self._exec_order
         return bytes(patched)
+
+    def _validate_coherence(self, manager: TriggerManager) -> None:
+        """Every "the model's view of this document is untrustworthy" check
+        that can run before any bytes are built, in one place, so serialize()
+        refuses with a legible message instead of writing a corrupt file.
+
+        Deliberately absent: any rule tying legacy_exec_order to the display
+        order. Measured across the corpus, legacy mode (1) coexists with a
+        non-identity display order in atilla_1_scn_resaved, R4_LeLoi_4 and
+        F7_2_Dos Pilas, so "legacy implies identity" would reject real files.
+        """
+        self._check_alignment(manager)
+
+        if self._exec_order is not None and self.regions.exec_order_offset is None:
+            # Defensive, not a live path: set_exec_order() is gated on
+            # exec_order_write_supported(), which is False whenever the offset
+            # is None. Only a direct write to _exec_order reaches this.
+            raise TriggerEditsUnavailableError(
+                "A trigger execution-order edit is pending on a file that stores no such flag."
+            )
+
+        # The getter has side effects (Trap 7); serialize() reads it again in
+        # _display_order_bytes() regardless, so one more read here changes nothing.
+        order = list(manager.trigger_display_order)
+        count = len(self._blobs)
+        if len(order) != count:
+            raise RuntimeError(
+                f"The trigger list is incoherent: trigger_display_order has "
+                f"{len(order)} entries for {count} triggers"
+            )
+        counts = Counter(order)
+        duplicated = sorted(index for index, n in counts.items() if n > 1)
+        missing = sorted(set(range(count)) - counts.keys())
+        if duplicated or missing:
+            raise RuntimeError(
+                f"The trigger list is incoherent: trigger_display_order is not a "
+                f"permutation of 0..{count - 1} (duplicated: {duplicated}, missing: {missing})"
+            )
 
     def _check_alignment(self, manager: TriggerManager) -> None:
         """Refuses to serialize if the blob list no longer describes the live
@@ -880,7 +939,7 @@ class TriggerEditModel:
         """
         live = list(manager.triggers)
         aligned = len(live) == len(self._tracked) and all(
-            a is b for a, b in zip(live, self._tracked)
+            a is b for a, b in zip(live, self._tracked, strict=True)
         )
         if not aligned:
             raise RuntimeError(
@@ -895,6 +954,8 @@ class TriggerEditModel:
         one u32 per trigger and its length changes with the trigger count, so
         there is nothing to preserve."""
         order = list(manager.trigger_display_order)
+        # Belt and braces behind _validate_coherence(), which raises the
+        # legible version of this first.
         if sorted(order) != list(range(len(self._blobs))):
             raise RuntimeError(
                 f"trigger_display_order is not a permutation of 0..{len(self._blobs) - 1}: {order}"

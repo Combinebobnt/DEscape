@@ -90,9 +90,12 @@ def test_editing_one_field_leaves_every_other_section_unchanged(tmp_path: Path) 
 
 def _a_flag_spec(loaded):
     for spec in option_fields.specs_for(loaded):
-        if spec.kind == option_fields.CHECKBOX and spec.section != "Triggers":
-            if option_fields.current_value(loaded, spec) in (0, 1):
-                return spec
+        if (
+            spec.kind == option_fields.CHECKBOX
+            and spec.section != "Triggers"
+            and option_fields.current_value(loaded, spec) in (0, 1)
+        ):
+            return spec
     raise AssertionError("no writable flag row on this file")
 
 

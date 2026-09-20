@@ -17,9 +17,9 @@ here is about what a run of events does, so the run has to stay one gesture.
 from __future__ import annotations
 
 import pytest
+from test_zoom_status import _window
 
 import conftest
-from test_zoom_status import _window
 
 pytestmark = [
     pytest.mark.gui,

@@ -120,7 +120,7 @@ def scan(scenario_dirs: list[Path]) -> dict[frozenset[Direction], Counter[tuple[
     for path in [p for d in scenario_dirs for p in _corpus_files(d)]:
         try:
             scenario = load_map_and_units(path)
-        except Exception:  # noqa: BLE001 -- a scan tool, not production code
+        except Exception:
             continue
         mm = scenario.map_manager
         tile_w, tile_h = mm.map_width, mm.map_height

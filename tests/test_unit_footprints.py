@@ -309,7 +309,7 @@ def test_real_buildings_span_their_real_footprints(scenario_path):
                 continue
             x0, x1, y0, y1 = result
             # Only assert the full span where the map hasn't clamped it.
-            if 0 < x0 and x1 < width and 0 < y0 and y1 < height:
+            if x0 > 0 and x1 < width and y0 > 0 and y1 < height:
                 assert (x1 - x0, y1 - y0) == span, f"{name} at ({unit.x}, {unit.y})"
                 seen += 1
             assert x0 <= int(unit.x) < x1, f"{name} at ({unit.x}, {unit.y})"

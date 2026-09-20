@@ -37,8 +37,6 @@ seam-off A/B each triptych already carries.
 from __future__ import annotations
 
 import argparse
-import importlib.util
-import os
 import sys
 from pathlib import Path
 
@@ -48,14 +46,13 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 from descape import iso_geometry as ig
-from descape import render
-from descape import settings
+from descape import render, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
-from testkit import qt_capture
+from testkit import qt_capture, qt_window
 
 OUT_DIR = ROOT / "build" / "seam_eyeball"
 
-PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
+PYQT5_AVAILABLE = qt_window.PYQT5_AVAILABLE
 
 PCT_VALUES = (25, 50, 100, 200)
 MIP_TILE_PX_VALUES = (8, 16)
@@ -70,8 +67,6 @@ MIP_TILE_PX_VALUES = (8, 16)
 _ANCHOR = (60, 60)
 PYRAMID_RADIUS = 3
 PYRAMID_MAX_ELEV = 3  # step=1 * PYRAMID_RADIUS rings
-
-_QAPP = None
 
 
 def _apply_pyramid(scenario, center=_ANCHOR, step: int = 1) -> None:
@@ -161,16 +156,6 @@ def _triptych_off_engine(scenario, tile_px: int, elev_step_pct: int, crop_radius
     return on, off, _amplify_diff(on, off)
 
 
-def _ensure_qapp() -> None:
-    global _QAPP
-    if _QAPP is not None:
-        return
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt5.QtWidgets import QApplication
-
-    _QAPP = QApplication.instance() or QApplication(sys.argv[:1])
-
-
 # 1:1 ONLY -- see testkit.qt_capture for why any other target size silently
 # degrades exactness to a near-match.
 _scene_rect_to_array = qt_capture.scene_rect_to_array
@@ -178,32 +163,29 @@ _scene_rect_to_array = qt_capture.scene_rect_to_array
 
 def _stepped_window(elev_step_pct: int, graphics_quality: int):
     """Real, shown ViewerWindow with the pyramid fixture loaded in Stepped
-    mode, offscreen. Local duplicate of tests/conftest.py's own
-    stepped_window(), for the same reason _scene_rect_to_array() is.
+    mode, offscreen. testkit.qt_window does the load and the show; the
+    pyramid and _render_current() in between are this tool's own.
 
-    Settings are pinned via the MODULE GLOBALS directly, not
-    settings.set_elev_step_pct()/set_graphics_quality() -- unlike a pytest
-    run there is no autouse fixture redirecting CONFIG_PATH here, so the
-    real setters would write straight through to this developer's own
-    config.yaml (this happened once already, to an ad-hoc debug
-    snippet)."""
-    _ensure_qapp()
-    import descape.settings as settings_module
-    from descape.viewer import ViewerWindow
-    from PyQt5.QtWidgets import QApplication
+    That ordering (load, pyramid, _render_current, show) is load-bearing and
+    is why this cannot just call qt_window.stepped_window() and be done:
+    window.grab() in _grabs() captures the VIEW, whose fit state fitInView
+    establishes from the scene rect at show time.
 
-    settings_module._elev_step_pct = elev_step_pct
-    settings_module._graphics_quality = graphics_quality
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    if window.scenario is None:
-        window.close()
-        raise SystemExit(f"{BLANK_TEMPLATE_PATH.name} failed to load")
+    Kept under this name and signature because tools/gen_contact_shadow_
+    eyeball.py imports and calls it.
+    """
+    try:
+        window = qt_window.stepped_window(
+            BLANK_TEMPLATE_PATH,
+            elev_step_pct=elev_step_pct,
+            graphics_quality=graphics_quality,
+            show=False,
+        )
+    except qt_window.ScenarioLoadError as exc:
+        raise SystemExit(str(exc)) from exc
     _apply_pyramid(window.scenario)
     window._render_current()
-    window.show()
-    QApplication.processEvents()
+    qt_window.show_and_settle(window)
     return window
 
 

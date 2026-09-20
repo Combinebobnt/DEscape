@@ -22,10 +22,11 @@ from dataclasses import dataclass
 
 import pytest
 
-import conftest
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -229,7 +230,7 @@ def test_inspector_populates_and_clears() -> None:
         # _BUILDING_CONST has a full stats row (real ground truth, pinned
         # independently in tests/test_unit_stats_table.py).
         assert window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
-        hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
+        _hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
         assert hp_value.isVisibleTo(window.left_stack)
         assert hp_value.text()
 
@@ -254,7 +255,7 @@ def test_a_tree_shows_only_hit_points_no_combat_rows() -> None:
         window.units_panel.show_unit(tree_entry)
 
         assert window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
-        hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
+        _hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
         assert hp_value.isVisibleTo(window.left_stack)
         assert hp_value.text() == "20"
         for field_id in ("attack", "melee_armour", "pierce_armour", "range"):

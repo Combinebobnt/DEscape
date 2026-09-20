@@ -124,7 +124,7 @@ def check_full_pixel_roundtrip() -> tuple[bool, str]:
         for tile in tiles:
             base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, tile.elevation, proj)
             d_origin = tile.y - tile.x
-            for dy, dx in zip(dst_y, dst_x):
+            for dy, dx in zip(dst_y, dst_x, strict=True):
                 sx, sy = base_x + int(dx), base_y + int(dy)
                 total_pixels += 1
                 got = iso_geometry.screen_to_tile(sx, sy, elevations, proj)
@@ -151,7 +151,7 @@ def check_diamond_partition() -> tuple[bool, str]:
     exactly once each -- no gap, no double-cover."""
     tile_px = 8
     for w, h in [(6, 6), (5, 9), (9, 5)]:
-        tiles, elevations = synthetic_map(w, h, tile_px, lambda x, y: 0)
+        tiles, _elevations = synthetic_map(w, h, tile_px, lambda x, y: 0)
         proj = iso_geometry.canvas_size_and_origin(w, h, tile_px, 0, 0)
         coverage = np.zeros((proj.canvas_h, proj.canvas_w), dtype=np.int32)
         dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
@@ -359,13 +359,13 @@ def check_shadow_geometry() -> tuple[bool, str]:
         half_w, half_h = iso_geometry.half_dims(tile_px)
         tops, _bottoms, used = iso_geometry._diamond_column_edges(tile_px)
         diamond_dst_y, diamond_dst_x, _sy, _sx = iso_geometry.diamond_indices(tile_px)
-        diamond_pixels = set(zip(diamond_dst_y.tolist(), diamond_dst_x.tolist()))
+        diamond_pixels = set(zip(diamond_dst_y.tolist(), diamond_dst_x.tolist(), strict=True))
 
         skirt_pixels: set = set()
         for drop_px in (1, half_h, half_h * 3):
             for side in ("left", "right"):
                 sk_y, sk_x, _sy2, _sx2 = iso_geometry.skirt_quad_indices(tile_px, drop_px, side)
-                skirt_pixels |= set(zip(sk_y.tolist(), sk_x.tolist()))
+                skirt_pixels |= set(zip(sk_y.tolist(), sk_x.tolist(), strict=True))
 
         empty_threshold = 2 * half_h - 2
         side_pixels: dict = {}
@@ -403,7 +403,7 @@ def check_shadow_geometry() -> tuple[bool, str]:
                     for (r, c) in neighbor
                     if 0 <= c < 2 * half_w and used[c] and (c < half_w) == (side == "up_left") and r < tops[c]
                 }
-                pixels = list(zip(dst_y.tolist(), dst_x.tolist()))
+                pixels = list(zip(dst_y.tolist(), dst_x.tolist(), strict=True))
                 pixel_set = set(pixels)
                 if len(pixels) != len(pixel_set):
                     problems.append(f"{label}: (dst_y, dst_x) pairs not unique")

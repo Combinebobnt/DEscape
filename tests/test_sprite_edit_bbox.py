@@ -9,7 +9,7 @@ terrain diamond, the skirt and the contact shadow and NO unit pixel extent. So
 an edit beside a big building under-repainted it and left a stale fragment.
 
 The gap is far wider vertically than horizontally, and it grows as
-`elev_step_pct` shrinks: the swept bbox carries `(max_elev - e) * elev_step` of
+`elev_step_pct` shrinks: the swept bbox used to carry `(max_elev - e) * elev_step` of
 free slack, which is what accidentally covered the horizontal case. Tall
 sprites out-reach it upward by up to 230px at `tile_px=64`.
 
@@ -34,12 +34,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import conftest
 from descape import asset_source, iso_geometry, render, unit_sprites
 from descape.elevation_tools import set_tile_elevation
 from descape.render import dirty_screen_bbox_iso, render_terrain_iso_with_proj
 from descape.render_cache import IsoChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+
+import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 # 12 tiles wide at native scale, so the sprite reaches 6 whole tiles past its
@@ -53,7 +54,7 @@ REACH_NAMES = (
     "MAX_SPRITE_REACH_DOWN",
 )
 
-# Elevation 14 everywhere, edited to 15. NOT arbitrary: the swept bbox carries
+# Elevation 14 everywhere, edited to 15. NOT arbitrary: the swept bbox used to carry
 # (max_elev - e) * elev_step of free vertical slack, so a sprite low on the map
 # is covered for the wrong reason and the whole module passes vacuously. At
 # max_elev that slack is zero and the widening is the only thing holding the
@@ -63,6 +64,16 @@ REACH_NAMES = (
 BASE_ELEVATION = 14
 EDIT_ELEVATION = 15
 EDIT_X = EDIT_Y = 60
+# The only heights the edit ever paints a sprite at. Coverage is asserted here,
+# not at min_elev/max_elev: the bbox sweeps the observed pre/post range now
+# (bbox-elev-sweep plan), and the scenario never holds any other height.
+OBSERVED_ELEVATIONS = (BASE_ELEVATION, EDIT_ELEVATION)
+
+# The coarser mip the bottom test patches alongside level 0. This fixture
+# enumerates [-2, -1, 0, 1] at tile_px 64, so -1 is tile_px 32: an exact
+# halving, which is what makes is_exact_mip's shrink-by-the-same-ratio
+# argument the thing under measurement rather than a rounding question.
+COARSER_LEVEL = -1
 
 
 @dataclass
@@ -153,7 +164,7 @@ def _edit_and_dirty(mm, ex: int, ey: int, elevation: int):
     before = _elevation_grid(mm)
     set_tile_elevation(mm, ex, ey, elevation)
     after = _elevation_grid(mm)
-    changed = {(int(x), int(y)) for y, x in zip(*np.nonzero(before != after))}
+    changed = {(int(x), int(y)) for y, x in zip(*np.nonzero(before != after), strict=True)}
     assert changed, "set_tile_elevation produced no change -- fixture is broken"
     return [i for i, tile in enumerate(mm.terrain) if (tile.x, tile.y) in changed], changed
 
@@ -204,6 +215,22 @@ def _covers(bbox, rect) -> bool:
     return bbox[0] <= rect[0] and bbox[1] <= rect[1] and bbox[2] >= rect[2] and bbox[3] >= rect[3]
 
 
+def _full_render_at_level(cache, monkeypatch, scenario) -> np.ndarray:
+    """A fresh whole-canvas render at COARSER_LEVEL's tile_px, the ground
+    truth the cache's coarse level is compared against. Same technique
+    tests/test_mip_geometry.py's patch-at-a-non-reference-level check uses.
+
+    monkeypatch.context() rather than a bare setattr + undo(): undo() is
+    all-or-nothing and would also revert sprite_install's graphic_map and
+    MAX_SPRITE_REACH_* patches, silently turning every later assertion in the
+    test into a measurement of the real constants against a synthetic sprite.
+    """
+    with monkeypatch.context() as m:
+        m.setattr(render, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(COARSER_LEVEL))
+        full, _elev, _proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
+    return full
+
+
 def _zero_the_reaches(monkeypatch) -> None:
     """The in-suite mutation knob: reaches at 0 leaves the widening block
     running but contributing nothing beyond its 1px rounding slack."""
@@ -252,7 +279,7 @@ def test_the_widening_grows_the_bbox_and_covers_a_sprite_the_plain_one_misses(
         f"canvas ({SPRITE_CANVAS}) and BASE_ELEVATION ({BASE_ELEVATION}) first."
     )
 
-    for elevation in (proj.min_elev, proj.max_elev):
+    for elevation in OBSERVED_ELEVATIONS:
         rect = _sprite_rect(scenario, proj, elevation)
         clamped = _clamped(rect, proj)
         assert clamped == rect, (
@@ -344,7 +371,7 @@ def test_the_bbox_covers_the_sprite_at_every_span_parity(sprite_install, monkeyp
     )
     assert bbox is not None
 
-    for elevation in (proj.min_elev, proj.max_elev):
+    for elevation in OBSERVED_ELEVATIONS:
         rect = _sprite_rect(scenario, proj, elevation)
         tile_x0, tile_y = iso_geometry.tile_screen_origin(EDIT_X, EDIT_Y, elevation, proj)
         # The anchor is the rect's own hotspot, recovered from the rect and the
@@ -411,13 +438,13 @@ def test_a_unit_move_with_extra_anchor_tiles_covers_both_old_and_new_sprite_rect
     old_x, old_y = EDIT_X, EDIT_Y
     new_x, new_y = EDIT_X + 1, EDIT_Y
 
-    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (BASE_ELEVATION,)}
 
     unit = scenario.unit_manager.units[1][0]
     unit.x, unit.y = float(new_x), float(new_y)
     scenario.unit_gen += 1
 
-    new_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+    new_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (BASE_ELEVATION,)}
 
     dirty = [_terrain_index(mm, old_x, old_y), _terrain_index(mm, new_x, new_y)]
     bbox = dirty_screen_bbox_iso(
@@ -425,7 +452,7 @@ def test_a_unit_move_with_extra_anchor_tiles_covers_both_old_and_new_sprite_rect
         elevation_changed=set(), extra_anchor_tiles={(old_x, old_y)},
     )
     assert bbox is not None
-    for e in (proj.min_elev, proj.max_elev):
+    for e in (BASE_ELEVATION,):
         assert _covers(bbox, old_rects[e]), f"bbox {bbox} misses the OLD sprite rect {old_rects[e]} at {e}"
         assert _covers(bbox, new_rects[e]), f"bbox {bbox} misses the NEW sprite rect {new_rects[e]} at {e}"
 
@@ -448,7 +475,7 @@ def test_without_extra_anchor_tiles_the_same_move_misses_the_old_sprite_rect(
     old_x, old_y = EDIT_X, EDIT_Y
     new_x, new_y = EDIT_X + 40, EDIT_Y
 
-    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (BASE_ELEVATION,)}
 
     unit = scenario.unit_manager.units[1][0]
     unit.x, unit.y = float(new_x), float(new_y)
@@ -460,7 +487,7 @@ def test_without_extra_anchor_tiles_the_same_move_misses_the_old_sprite_rect(
         elevation_changed=set(),
     )  # no extra_anchor_tiles
     assert bbox is not None
-    for e in (proj.min_elev, proj.max_elev):
+    for e in (BASE_ELEVATION,):
         assert not _covers(bbox, old_rects[e]), (
             f"bbox {bbox} already covers the OLD sprite rect {old_rects[e]} at {e} without "
             f"extra_anchor_tiles -- this test no longer proves the parameter is load-bearing"
@@ -485,7 +512,7 @@ def test_extra_anchor_tiles_covers_a_multi_tile_old_footprint_not_just_the_ancho
 
     old_footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
     assert len(old_footprint) > 1, "fixture must actually span more than one tile to prove anything"
-    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (proj.min_elev, proj.max_elev)}
+    old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (BASE_ELEVATION,)}
 
     monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, (1, 4))
     unit.x, unit.y = float(EDIT_X + 2), float(EDIT_Y)
@@ -572,6 +599,120 @@ def test_patch_after_edit_matches_a_fresh_full_render(sprite_install, monkeypatc
         "with the sprite reaches zeroed the patch STILL matched a fresh full render, so "
         "the widening is not what makes the first half pass -- the sprite is sitting "
         "inside the pre-existing dilation and this oracle is vacuous"
+    )
+
+
+def _warm_both_levels(cache, probe):
+    """Warms `probe` (a level-0 pixel rect) at level 0 AND at COARSER_LEVEL,
+    and returns the (mip, cx, cy) keys that must still be resident afterwards.
+
+    A SUB-RECT, not the whole canvas, and that is the whole trick. The byte
+    budget _init_max_chunks sets is exactly one level-0 canvas
+    (canvas_dims() area * 3), by design: "N levels redistribute memory, they
+    don't multiply it". So warming the full canvas at level 0 and then at a
+    coarser level evicts level-0 chunks to pay for the coarse ones (MEASURED
+    on this fixture: 120 level-0 chunks in, 90 left after the second warm).
+    Evicted chunks are exactly the ones patch() skips and get_chunk()
+    recomposites fresh against the post-edit state, so a whole-canvas
+    two-level warm produces an oracle that cannot fail. It was written that
+    way first and passed against a deliberately neutered widening.
+    """
+    lvl_probe = cache._bbox_to_level(COARSER_LEVEL, probe)
+    cache.render_rect(*probe, mip=0)
+    cache.render_rect(*lvl_probe, mip=COARSER_LEVEL)
+    keys = set()
+    for mip, rect in ((0, probe), (COARSER_LEVEL, lvl_probe)):
+        cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, *rect)
+        keys |= {(mip, cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1)}
+    return lvl_probe, keys
+
+
+def test_patch_after_edit_matches_a_fresh_full_render_at_a_coarser_mip(sprite_install, monkeypatch):
+    """The same oracle, with a COARSER mip level resident as well as level 0.
+
+    Every other test in this module runs at level 0 alone, because warming via
+    render_rect(0, 0, canvas_w, canvas_h) leaves only the reference level
+    resident and _ChunkCacheBase.patch iterates resident levels only. So the
+    widening had never actually been patched at a mip.
+
+    The widening is believed correct here, and that belief is the reason to
+    measure it: _bbox_to_level floors the low edge and ceils the high one, so a
+    level-0 rect covering the sprite converts to a superset at any coarser
+    level, and the sprite shrinks by the same exact ratio (is_exact_mip). The
+    argument is sound. It was still an argument standing in for a measurement,
+    which is what the rest of this module deliberately avoids.
+
+    ONE dirty_screen_bbox_iso call and ONE patch(), asserted at both levels.
+    That is the contract: the caller computes the dirty rect once, in level-0
+    screen space, and every resident level has to come out right.
+
+    Scoped to the sprite's own neighbourhood rather than the whole canvas, for
+    the eviction reason _warm_both_levels() documents, and compared against the
+    matching crop of a full render at each level.
+    """
+    scenario, dirty, elevations, proj = _edited_scenario()
+    mm = scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+
+    cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
+    # An assert, not a skip: this fixture is the shipped 120x120 template at
+    # fixed settings, so the level either enumerates here always or never. A
+    # skip would let the whole test quietly stop running.
+    assert COARSER_LEVEL in cache.mip_levels(), (
+        f"level {COARSER_LEVEL} not enumerated on the fixture (levels={cache.mip_levels()})"
+    )
+    probe = _clamped(_sprite_rect(scenario, proj, EDIT_ELEVATION), proj)
+    lvl_probe, warmed = _warm_both_levels(cache, probe)
+    # The guard that stops this test going vacuous the way its first draft did.
+    # Both levels' probe chunks must survive the second warm; a chunk that was
+    # evicted is recomposited fresh below and could not fail whatever the
+    # widening did.
+    missing = sorted(k for k in warmed if not cache.has_chunk(*k))
+    assert not missing, f"probe chunks evicted before patch(), oracle would be vacuous: {missing}"
+
+    bbox = dirty_screen_bbox_iso(
+        scenario, dirty, cache.elevations, proj, with_units=True, with_sprites=True
+    )
+    assert bbox is not None, "a legal in-range edit must not decline the incremental path"
+    cache.patch(bbox)
+
+    full, _elev, _proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
+    x0, y0, x1, y1 = probe
+    assert np.array_equal(cache.render_rect(*probe, mip=0), full[y0:y1, x0:x1]), (
+        "level 0 diverged after a patch() that also had a coarser level resident"
+    )
+
+    full_lvl = _full_render_at_level(cache, monkeypatch, scenario)
+    lx0, ly0, lx1, ly1 = lvl_probe
+    assert np.array_equal(
+        cache.render_rect(*lvl_probe, mip=COARSER_LEVEL), full_lvl[ly0:ly1, lx0:lx1]
+    ), f"level {COARSER_LEVEL} diverged after patch()"
+
+    # Mutation, at the coarse level only, since the oracle above already
+    # covers level 0's. full_lvl is reused: the reaches are read by
+    # dirty_screen_bbox_iso alone, never by a full render, so a fresh full
+    # render of the identical post-edit scenario would be byte-identical.
+    _zero_the_reaches(monkeypatch)
+    scenario2, dirty2, elevations2, proj2 = _edited_scenario()
+    # sprites=True on this cache too. It is easy to read the neutered arm as
+    # not needing it, but the knob being neutered is the REACHES, not the
+    # sprites; with sprites off the canvas would differ from full_lvl
+    # everywhere a sprite belongs and the assertion below would pass no matter
+    # what the reaches did.
+    cache2 = IsoChunkCache(scenario2, elevations2, proj2, tile_px, sprites=True)
+    _warm_both_levels(cache2, probe)
+    bbox2 = dirty_screen_bbox_iso(
+        scenario2, dirty2, cache2.elevations, proj2, with_units=True, with_sprites=True
+    )
+    assert bbox2 is not None
+    cache2.patch(bbox2)
+
+    assert not np.array_equal(
+        cache2.render_rect(*lvl_probe, mip=COARSER_LEVEL), full_lvl[ly0:ly1, lx0:lx1]
+    ), (
+        f"with the sprite reaches zeroed the level-{COARSER_LEVEL} patch STILL matched a fresh "
+        "full render, so the widening is not what makes the first half pass and this check is "
+        "vacuous at a coarser mip"
     )
 
 

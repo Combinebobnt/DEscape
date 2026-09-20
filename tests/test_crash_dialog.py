@@ -15,14 +15,16 @@ from __future__ import annotations
 import faulthandler
 import sys
 import threading
+from typing import ClassVar
 
 import pytest
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QPushButton
 
-import conftest
 from descape import crash_report
 from descape.viewer_dialogs import CrashReportDialog
+
+import conftest
 
 
 @pytest.mark.gui
@@ -58,7 +60,7 @@ class _FakeDialog:
     """Stand-in for CrashReportDialog that records what it was built with
     instead of ever calling the real exec_() -- see module docstring."""
 
-    opened: list[tuple] = []
+    opened: ClassVar[list[tuple]] = []
 
     def __init__(self, parent, *, summary, dump_path, dump_text, from_last_session=False):
         _FakeDialog.opened.append((parent, summary, dump_path, dump_text, from_last_session))

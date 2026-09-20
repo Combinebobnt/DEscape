@@ -52,18 +52,15 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 
-import conftest
 from descape.render import render_terrain_iso
+from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from testkit import qt_capture
 
-if TYPE_CHECKING:
-    from descape.viewer import ViewerWindow
-from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
+import conftest
 
 # PyQt5/descape.viewer are NOT imported at module level -- both pull in
 # PyQt5, and an ImportError here would fail collection for every test in the
@@ -101,47 +98,13 @@ PAN_STEP_PX = 150
 _scene_rect_to_array = qt_capture.scene_rect_to_array
 
 
-def _stepped_window(path: Path) -> "ViewerWindow":
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(path)
-    if window.scenario is None:
-        window.close()
-        pytest.skip(f"{path.name} failed to load")
-    window.terrain_style_combo.setCurrentText("Stepped")
-    return window
-
-
-def _show_and_settle(window) -> None:
-    """Shows the top-level WINDOW (not just map_view directly -- map_view is
-    a child widget embedded in the window's layout, and calling show() on a
-    child alone, confirmed empirically, never triggers a real paint cycle;
-    only its top-level ancestor being shown does, offscreen platform or
-    not) and pumps the event loop until the initial fitInView-on-open paint
-    has actually happened.
-
-    Callers that want to measure exposedRect/chunk-touch behavior must
-    install their spies AFTER this returns, then call _zoom_and_pan() --
-    the fit-to-view state legitimately exposes the whole canvas (the
-    entire map IS on screen then; see IsoChunkCache's own docstring on why
-    that's correct, not a bug), so a spy installed before this would have
-    that call polluting what's supposed to be a "zoomed in past fit"
-    measurement."""
-    from PyQt5.QtWidgets import QApplication
-
-    window.resize(300, 300)
-    window.show()
-    QApplication.processEvents()
-    QApplication.processEvents()
-
-
 def _zoom_and_pan(map_view) -> None:
     """Zooms in by ZOOM_FACTOR the same way wheelEvent does (self.scale(...)),
     then walks the scrollbars PAN_STEPS times the same way a middle-drag pan
     does (horizontalScrollBar()/verticalScrollBar().setValue()), each step
     followed by processEvents() so Qt actually delivers the resulting paint
-    event before the next step. Call _show_and_settle() first."""
+    event before the next step. Call this only on a window conftest.
+    stepped_window() already showed and settled."""
     from PyQt5.QtWidgets import QApplication
 
     map_view.scale(ZOOM_FACTOR, ZOOM_FACTOR)
@@ -155,10 +118,8 @@ def _zoom_and_pan(map_view) -> None:
 
 
 def _check_exposed_rect_smaller(path: Path) -> tuple[bool, str]:
-    conftest.ensure_qapp()
-    window = _stepped_window(path)
+    window = conftest.stepped_window(path, size=300)
     try:
-        _show_and_settle(window)
         item = window.map_view._canvas_item
         if item is None:
             return False, "Stepped mode produced no MapCanvasItem"
@@ -172,6 +133,12 @@ def _check_exposed_rect_smaller(path: Path) -> tuple[bool, str]:
             exposed.append((option.exposedRect.width(), option.exposedRect.height()))
             original_paint(painter, option, widget)
 
+        # Installed only now, after stepped_window() has shown and settled:
+        # the fit-to-view state legitimately exposes the whole canvas (the
+        # entire map IS on screen then; see IsoChunkCache's own docstring on
+        # why that's correct, not a bug), so a spy installed before that
+        # would have the fit paint polluting a "zoomed in past fit"
+        # measurement.
         item.paint = spy_paint
         _zoom_and_pan(window.map_view)
 
@@ -197,10 +164,8 @@ def _check_exposed_rect_smaller(path: Path) -> tuple[bool, str]:
 
 
 def _check_panning_proportional(path: Path) -> tuple[bool, str]:
-    conftest.ensure_qapp()
-    window = _stepped_window(path)
+    window = conftest.stepped_window(path, size=300)
     try:
-        _show_and_settle(window)
         item = window.map_view._canvas_item
         if item is None:
             return False, "Stepped mode produced no MapCanvasItem"
@@ -218,6 +183,9 @@ def _check_panning_proportional(path: Path) -> tuple[bool, str]:
             requested.add((mip, cx, cy))
             return original_get_chunk(mip, cx, cy)
 
+        # Installed only now, for the same reason _check_exposed_rect_
+        # smaller's paint spy is: the fit-to-view paint stepped_window()
+        # already settled would otherwise count as pan traffic.
         cache.get_chunk = spy_get_chunk
         _zoom_and_pan(window.map_view)
 
@@ -237,8 +205,16 @@ def _check_panning_proportional(path: Path) -> tuple[bool, str]:
 def _check_matches_full_render(path: Path) -> tuple[bool, str]:
     from PyQt5.QtCore import QRectF
 
-    conftest.ensure_qapp()
-    window = _stepped_window(path)
+    # show=False preserves what this check has always done: it is the one
+    # caller that never showed its window. MEASURED, and not what you would
+    # guess: forcing show=True here does NOT turn the comparison red, on the
+    # fixture or on any corpus file. That is consistent with this module's own
+    # docstring, since QGraphicsScene.render() over a fixed scene rect is
+    # view-independent. So `show` is a one-way requirement, load-bearing only
+    # in the show=True direction that tests/test_mip_viewer.py's paint-cycle
+    # checks need. Kept at False anyway: zero behavioural change, and a show()
+    # here is pure cost.
+    window = conftest.stepped_window(path, show=False)
     try:
         item = window.map_view._canvas_item
         if item is None:
@@ -297,3 +273,68 @@ def test_panning_proportional_to_viewport_corpus(scenario_path) -> None:
 @pytest.mark.corpus
 def test_scene_render_matches_full_render_corpus(scenario_path) -> None:
     conftest.run_check(_check_matches_full_render, scenario_path)
+
+
+def _check_key_pan_repaints_edge_ticks_every_step(path: Path) -> tuple[bool, str]:
+    """EdgeTickItem has a documented on-scroll smear failure mode
+    (viewer_canvas.py's _apply_geometry: prepareGeometryChange() after the
+    assignment leaves a STALE Qt scene-index entry rather than failing
+    cleanly), and a held-key pan exercises it far harder than the old
+    one-jump-per-keypress arrow scroll did -- ~60 small scrolls a second
+    instead of one per press.
+
+    A stale scene index shows up as the item simply not being handed a paint
+    call for a region it owns, so the paint spy this module already uses is
+    the right instrument. A pixel comparison is NOT: QWidget.grab()
+    re-renders from scratch rather than reading the backing store, so it
+    cannot see a smear at all -- measured, not assumed.
+
+    Drives the scrollbars through MapView._scroll_by at the step size a
+    700 px/s pan actually emits at 16 ms, rather than one big jump.
+    """
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(path, size=300)
+    try:
+        view = window.map_view
+        window.distance_ticks_action.setChecked(True)
+        QApplication.processEvents()
+        item = view._edge_tick_item
+        if item is None:
+            return False, "distance ticks enabled but MapView built no EdgeTickItem"
+        view.scale(ZOOM_FACTOR, ZOOM_FACTOR)
+        QApplication.processEvents()
+
+        exposed: list[float] = []
+        original_paint = item.paint
+
+        def spy_paint(painter, option, widget=None):
+            exposed.append(option.exposedRect.width() * option.exposedRect.height())
+            original_paint(painter, option, widget)
+
+        item.paint = spy_paint
+        # 11 px is one tick of a PAN_SPEED_DEFAULT hold at PAN_TICK_MS.
+        steps, per_step = 20, 11
+        missed = 0
+        for _ in range(steps):
+            before = len(exposed)
+            view._scroll_by(per_step, per_step // 2)
+            QApplication.processEvents()
+            if len(exposed) == before:
+                missed += 1
+        if missed:
+            return False, (
+                f"EdgeTickItem was not repainted on {missed}/{steps} scroll steps -- a stale "
+                "scene-index entry is exactly what smears ticks across a held-key pan"
+            )
+        if not any(area > 0 for area in exposed):
+            return False, "EdgeTickItem painted, but every exposedRect was empty -- check is vacuous"
+        return True, f"OK (repainted on all {steps} steps, largest exposedRect {max(exposed):.0f}px^2)"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+def test_key_pan_repaints_edge_ticks_every_step() -> None:
+    conftest.run_check(_check_key_pan_repaints_edge_ticks_every_step, FIXTURE_PATH)

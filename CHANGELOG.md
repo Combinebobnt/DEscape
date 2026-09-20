@@ -22,6 +22,236 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [0.7] - 2026-09-20
+
+### Added
+
+- **View > Layers > Small Trees.** Draws tree sprites at 60% size so the
+  tiles behind and beside a tree stay readable, without hiding the forest the
+  way Filters > Show Trees does. Session-only, default off, Stepped and Sloped
+  only; the tree still stands on the same tile and is still picked by its whole
+  footprint. Rebindable in Settings > Keybinds; ships unbound.
+- **Disable buildings, units and technologies per player.** A Disabled
+  Objects dialog off Players mode, matching the in-game editor's own
+  control: a player selector, Buildings / Units / Techs tabs, and a
+  two-pane mover each. One OK is one undo step. Rebindable in Settings >
+  Keybinds; ships unbound. A scenario that already carries disable lists
+  now shows them instead of passing them through unseen, and a file that
+  is only browsed still saves byte-identically.
+- **Change an existing condition or effect's type.** A Type… button in the
+  trigger panel's condition/effect row retypes the selected entry in place,
+  keeping its position and every field the new type shares; anything that did
+  not carry over is named in the status log, and the whole change is one undo
+  step.
+- **A Wall Run tool, Units mode.** Drag to place a whole run of walls in one
+  undo record, for any of the eight wall families. The run is 45-degree
+  aligned like the game's own: an off-angle drag bends once, into one
+  diagonal segment and one axis-aligned one, and Shift constrains it to a
+  single straight segment. Each piece's shape is derived from its
+  neighbours, and walls the run meets are reshaped to match in the same undo
+  record. Rebindable in Settings > Keybinds; ships unbound.
+- **Filters > Show Walls and Show Eye Candy.** Two per-session toggles that
+  hide walls and gates, or decorative objects (grass, rocks, flowers, stumps,
+  barrels), from the map render and from picking alike. Resources, cliffs and
+  trees are unaffected - gold, stone and berry bushes stay visible. Both are
+  rebindable in Settings > Keybinds.
+- **A UI font family and size, Settings > Appearance.** App chrome only -
+  menus, dialogs, panels and the status log - applied live and remembered
+  across restarts, with a Reset button for the platform default. The map
+  view's own overlay text (the Ruler readout, distance-tick numbers,
+  stacked-unit badges) keeps its own fixed sizes and no longer picks up the
+  chrome font's family.
+- **View > Layers.** Two per-session toggles for what the map draws at all:
+  Terrain Textures (flat per-terrain colour instead of the real terrain
+  textures) and Farm Terrain Overlay (Stepped and Sloped, with sprites on -
+  turning it off draws farms as ordinary coloured marks rather than their own
+  crop terrain). Both are rebindable in Settings > Keybinds.
+- **Smooth, rebindable arrow-key panning.** Holding Pan Up/Down/Left/Right
+  (Settings > Keybinds, defaulting to the arrow keys) now scrolls the map
+  continuously instead of one step per keypress, at a speed set by the new Pan
+  speed slider on Settings > Appearance. In Units mode an arrow still nudges the
+  selection; with nothing selected it pans.
+- **`tools/gen_review_pack.py`: review packs for an agent to judge a render.**
+  Writes framed captures plus a checklist fixed before the images exist, for a
+  blind agent to review, with injected-defect runs that show whether the
+  reviewer can actually see a defect. See `tools/REVIEW_PACK.md`.
+
+- **A move preview while you drag a unit.** Dragging a unit now shows a
+  translucent copy of it following the cursor - its real sprite where sprites
+  are on, its coloured mark otherwise - snapped to the destination tile and
+  sitting at that tile's elevation. Escape cancels a drag. The original stays
+  drawn at its source tile until you release.
+
+- **Clipboard history.** Copy Region now keeps the last 10 copies instead of
+  one. Edit > Clipboard History opens a list with a terrain thumbnail for each,
+  where you can pick which one Paste Region uses, rename entries, or clear
+  them. Session-only, so nothing is written to disk.
+
+- **Move a pasted region.** After pasting, drag from inside the selection to
+  re-place it somewhere else. The whole paste-plus-moves gesture collapses to a
+  single undo step.
+
+- **Terrain Mode: Draw Line and Draw Rectangle.** Drag out a straight line or
+  a rectangle of terrain instead of freehanding it; nothing is painted until
+  you release, so dragging back over your own path leaves no residue. Hold
+  Shift to snap a line to one of 16 directions, or to square a rectangle.
+  Rectangles paint filled or outlined, and an outline thickens with the brush.
+
+- **A visual terrain browser**, on the "…" button beside the Terrain type
+  combo: pick terrain by sight from category-grouped swatches of the real
+  texture, with a filter and a box for the unused/moddable terrains. Falls
+  back to flat colour swatches with no AoE2DE install configured.
+
+- **Draw's new "Auto beach" option** paints a beach shoreline around water as
+  you lay it down, one to three tiles wide. Which beach comes from the game's
+  own terrain table rather than from terrain names, so ice gets an ice beach,
+  and existing water, shallows and the non-navigable beaches are left alone.
+
+- **View > Grid** draws a line on every tile boundary, every fourth one
+  stronger, with blend and thickness sliders in Settings > Appearance. Blend
+  is a smooth slider that leaves the lines invisible in the middle, darkens
+  the terrain under them towards black to the left and whitens it to the
+  right, like the in-game grid. Its
+  **Follow Terrain Elevation** half (on by default) drapes the grid onto raised
+  ground in Stepped and Sloped instead of leaving it on the flat ground plane.
+
+- **View > Footprint Outlines** outlines the tiles each unit occupies, so
+  buildings sharing an edge read apart and a footprint stays visible under
+  sprite art. Scoped to multi-tile buildings, all buildings or all units, in a
+  colour you can change in Settings > Appearance.
+
+- **The distance-tick ruler labels each edge with the axis it measures**, X or
+  Y, drawn outboard of the tile numbers.
+
+- **The Ruler's two measuring-point tiles now glow**, pulsing in the ruler's
+  own colour, instead of sitting as static outlines.
+
+- **Edit > Cycle Variant** changes the graphic variant of selected trees,
+  plants, rocks and scenery, which is what their `rotation` field really
+  stores: Previous (`;`), Next (`'`) and Random (`-`), the whole selection in
+  one undo step. Walls, cliffs and gates are skipped, since the game derives
+  their shape from their neighbours.
+- **Mirror Map can mirror units**, not just terrain and elevation: tick Units
+  and every other slice's units are rewritten from the source slice in the
+  same undo step. Optionally the copies change owner, one player per slice
+  along the scenario's own defined-player list. A wall's run direction swaps
+  with the axis, and a gate becomes the orientation it is mirrored into.
+  Buildings whose footprint straddles the symmetry axis are reported and the
+  mirror is refused rather than half-applied.
+- **Map Options: Custom victory settings.** Conquest, Exploration, Relics and
+  the Any one / All switch are now editable in the Global Victory group,
+  greyed (still showing the stored values) unless Victory condition is Custom.
+- **The info panel shows a scenario's XS attachment**: the attached script
+  file name and the size of any embedded script, both read-only. See
+  `docs/XS_SCRIPTING.md`.
+- **Script Call XS opens in a multi-line editor.** A Script Call effect's
+  `message` or condition's `xs_function` now shows its script as lines in a
+  monospace box, where the old one-line field displayed every line break as a
+  space.
+- **`tools/census_xs_usage.py`**: counts Script Call XS and file-level XS
+  attachments across a folder of scenarios, read-only.
+- **`tools/census_player_ai.py`**: censuses each player's AI mode byte against
+  its AI script name and embedded script length across a folder of scenarios,
+  read-only.
+- **Stacked units are marked and reachable.** In Units mode a count badge
+  sits over every spot where a unit is hidden under another, and clicking
+  that spot again selects the next unit down. View > Show Stacked-Unit
+  Badges turns the badges off.
+- **Triggers: a position column** shows each trigger's place in display
+  order, headed "Exec #" when that is the execution order and "Display #"
+  when it isn't (legacy ID order, or not stored in the file).
+- **Tools > Map Analysis** runs a read-only check pass over the open map
+  (elevation seams, off-map units, broken trigger and unit references, empty
+  players, units stranded on small land areas, missing instructions). Each
+  check reports clean, findings or unavailable; double-click a finding to jump
+  to it.
+- **`descape/scatter.py`** places units at random, reproducible positions
+  across a tile set for batch scripts, with a runnable
+  `batch_scripts/scatter_fish_in_water.py` example.
+- **`tools/gen_contact_shadow_eyeball.py`** renders A/B sheets of Stepped
+  contact-shadow settings, with connectivity and coverage numbers per cell.
+- **Place Unit's Free placement checkbox** drops a unit exactly under the
+  cursor instead of at the centre of the tile it fell in, in all three render
+  styles; hold Alt for a one-off free placement without changing the setting.
+- **Autosave**, on by default, writes a recovery snapshot every few minutes to
+  its own rotating slot: never the file you have open, and it never clears the
+  unsaved-changes marker. File > Recover from Autosave… lists the slots and
+  opens one as a new untitled document. Settings > Saving holds the interval,
+  how many to keep, whether they go beside `config.yaml` or beside the
+  scenario, and a switch for the `.bak`/`.orig` pair a real save writes.
+
+### Fixed
+
+- **The trigger editor's message boxes fit real dialogue** (GH #38). The
+  trigger's own Description and Short Description, and the message on Display
+  Instructions, Send Chat, Display Timer, Change Object Description and Change
+  Technology Description, are now word-wrapping six-line boxes instead of
+  one-line fields. Each keeps whichever line separator the file already used,
+  so editing one does not rewrite the rest of the field.
+
+- **Clicking a unit in a downloaded build no longer crashes** (GH #72). Three
+  data files, including the one the unit stats panel reads, were missing from
+  the packaged build. The build now bundles every `descape/*.json` it finds
+  rather than a hand-kept list, and the bundle's own `--self-check` derives the
+  files it verifies from the code that reads them.
+
+- **View > Grid no longer draws a line across the middle of a raised tile** in
+  Stepped with Follow Terrain Elevation on. A tile boundary's lower copy is now
+  skipped where the nearer tile's slab would bury it, so every grid line sits on
+  a tile edge.
+
+- **A Players-tab colour edit reaches the map.** Changing a player's colour now
+  repaints its unit marks and sprite tint immediately, and updates the P1..P8
+  swatches in both Players and Diplomacy mode. Undo and redo reverse all three.
+
+- **The region selection's marching ants trace its true outer edge**, instead
+  of outlining every boundary tile's own diamond. No ant marks land on the
+  seams between tiles inside the selection any more.
+- **Palisade Walls, Fortified Palisades and Sea Walls draw their banner**,
+  which is also the only piece of a palisade that carries player colour, and a
+  Sea Wall now sits on its submerged rocky base instead of on nothing.
+- **A gate or corner pillar no longer disappears entirely** when one of its
+  pieces fails to decode: the pieces that did resolve still draw, matching what
+  two of the gate consts already did.
+- **The Terrain brush cursor outlines every tile edge.** Each tile in the brush
+  footprint was drawn from an unclosed path, so one of its four edges never
+  stroked; the highlight's own fill had been hiding it. The Mirror Map overlay
+  had the same open path and now strokes all its edges too.
+- **Units render at the position their file actually stores.** Any sub-tile
+  position was previously rounded away to the tile centre, so the 0.1
+  arrow-key nudge and the inspector's two-decimal X/Y boxes moved a unit
+  without moving it on screen, and units saved off-centre by the in-game
+  editor were drawn up to half a tile from where they stand.
+- **The hover tile readout** no longer stops updating on non-square maps.
+- **Stepped contact shadows** no longer draw small tick marks at tile corners
+  along straight terrace edges, or break at the vertex where an edge turns an
+  inside corner.
+- **Paste Region now preserves garrison links inside the copied region.**
+  Copying a building with units garrisoned inside it and pasting it used to
+  drop them to loose units standing on the same tile; the pasted occupant is
+  now still garrisoned in the pasted building.
+
+### Changed
+
+- **Trigger fields with 20 or more choices** (attributes, object classes,
+  damage classes and the like) use a type-ahead box with a "…" browse list
+  instead of a long dropdown.
+
+- **The Convert brush recolours units while you drag**, not only when the
+  mouse is released. Still one undo step per drag.
+
+- **Stepped contact shadows scale with step height**: taller steps cast longer
+  shadows, filling in as triangles at high elevation step settings, and low
+  settings are lighter than before.
+
+- **A unit standing inside a town centre paints between the building's
+  pieces** rather than behind the whole building, and a pasture's corner posts
+  depth-sort against nearby units individually.
+
+- **Elevation edits repaint a smaller region**, so a drag over hilly terrain
+  keeps up better: the redrawn area now covers only the heights a tile was
+  actually drawn at, instead of the whole 0-15 range.
+
 ## [0.6] - 2026-09-16
 
 ### Added

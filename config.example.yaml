@@ -32,6 +32,13 @@ graphics_quality: 3
 # Default: 50.
 elev_step_pct: 50
 
+# Held-key pan speed for the Pan Up/Down/Left/Right keybinds, in viewport
+# pixels per second, Settings > Appearance. Measured in screen pixels like
+# the middle-drag pan, so a fixed speed covers fewer tiles the further you
+# zoom in. Clamped to 200-2000 on read.
+# Default: 700.
+pan_speed: 700
+
 # Anchor mouse-wheel zoom under the cursor (true) or the view center
 # (false). Default: true.
 zoom_centered_on_cursor: true
@@ -54,6 +61,35 @@ distance_ticks: false
 # Every 4th minor is a major and carries a tile number.
 # Default: 5.
 distance_tick_interval: 5
+
+# In Units mode, a count badge over every spot where a unit is hidden under
+# another, View > Show Stacked-Unit Badges. Default: true.
+stack_badges: true
+
+# A line on every tile boundary, View > Grid. Default: false.
+grid_overlay: false
+
+# Whether the grid drapes over the terrain rather than lying on the flat
+# elevation-0 ground plane, View > Grid > Follow Terrain Elevation. No effect
+# in Flat. Default: true.
+grid_follow_elevation: true
+
+# An outline around every unit footprint in scope, View > Footprint Outlines.
+# Default: false.
+footprint_outlines: false
+
+# Which units carry one: multitile or buildings or all. Anything else falls back to the
+# default on read. Default: multitile.
+footprint_scope: multitile
+
+# How strongly the grid lines blend into the terrain, Settings > Appearance:
+# -100 is solid black lines, 0 is invisible, 100 is solid white ones.
+# Out-of-range values clamp. Default: -50.
+grid_blend: -50
+
+# Grid line width in screen pixels, Settings > Appearance. Snaps to the
+# nearest of [1, 2, 3, 4]. Default: 1.
+grid_thickness: 1
 
 # Main window size in pixels, [width, height]. Persisted automatically on
 # resize -- not something you normally set by hand.
@@ -96,11 +132,25 @@ keybinds:
   edit_paste: Ctrl+V
   edit_select_all: Ctrl+A
   edit_deselect: Ctrl+Shift+A
+  edit_clipboard_history: ''
   edit_settings: ''
+  edit_disables: ''
   map_mirror: ''
   view_isometric: Ctrl+Shift+I
   view_distance_ticks: ''
   view_show_sprites: ''
+  view_stack_badges: ''
+  view_grid_overlay: ''
+  view_grid_follow: ''
+  view_footprint_outlines: ''
+  view_layer_terrain_textures: ''
+  view_layer_farm_overlay: ''
+  view_layer_small_trees: ''
+  view_pan_up: Up
+  view_pan_down: Down
+  view_pan_left: Left
+  view_pan_right: Right
+  analysis_run: ''
   help_about: ''
   help_debug_log: ''
   help_perf_trace: ''
@@ -114,6 +164,8 @@ keybinds:
   mode_messages: Ctrl+Shift+M
   filter_show_gaia: ''
   filter_show_trees: ''
+  filter_show_walls: ''
+  filter_show_eye_candy: ''
   filter_all_players: ''
   filter_no_players: ''
   filter_show_all: ''
@@ -122,6 +174,9 @@ keybinds:
   unit_rotate_cw: .
   unit_rotate_ccw_coarse: <
   unit_rotate_cw_coarse: '>'
+  unit_variant_prev: ;
+  unit_variant_next: ''''
+  unit_variant_random: '-'
   player_select_0: '0'
   player_select_1: '1'
   player_select_2: '2'
@@ -136,12 +191,15 @@ keybinds:
   tool_fill: P
   tool_elevation: E
   tool_set_level: L
+  tool_draw_line: ''
+  tool_draw_rect: ''
   tool_cliff: ''
   tool_eyedropper: I
   tool_select: S
   tool_ruler: R
   tool_place_unit: ''
   tool_convert: ''
+  tool_wall_run: ''
   adjust_increment: ']'
   adjust_decrement: '['
 
@@ -151,9 +209,19 @@ keybinds:
 ruler_label_font_px: 18
 
 # Pixel size of the map-edge distance ruler's major-tick numbers, Settings >
-# Appearance. Only 8-24 are legal; anything else falls back to the default.
+# Appearance. Only 8-24 are
+# legal; anything else falls back to the default.
 # Default: 12.
 distance_tick_font_px: 12
+
+# DEscape's own UI font, Settings > Appearance -- app chrome only (menus,
+# dialogs, panels, the status log); the map view's overlay text keeps its
+# own fixed sizes. "" means the platform default family.
+ui_font_family: ""
+
+# Point size for the same, 7-20; anything else (or null) means
+# the platform default size.
+ui_font_size: null
 
 # Every tool overlay color (Settings > Appearance), shown here at its
 # default -- see settings.OVERLAY_COLORS for the full id/label/default list.
@@ -165,6 +233,8 @@ overlay_colors:
   unit_hover: '#ffffff'
   unit_select: '#50aaff'
   unit_select_fill: '#50aaff'
+  unit_stack: '#ffd24a'
+  footprint_outline: '#e65ae6'
   ruler_line: '#ff8228'
   ruler_label: '#ffbe6e'
   ruler_label_outline: '#000000'
@@ -172,3 +242,28 @@ overlay_colors:
   region_outline: '#141414'
   region_ants: '#3ce6c8'
   mirror_overlay: '#50dcff'
+
+# Settings > Saving. Autosave writes its own rotating recovery slot on a
+# timer, never the file you have open, and never clears the unsaved-changes
+# marker -- File > Recover from Autosave... is how you open one back up.
+# Default: true.
+autosave_enabled: true
+
+# Minutes between autosave ticks. Only 1, 2, 5, 10, 15, 30 are legal;
+# anything else falls back to the default. Default: 5.
+autosave_interval_min: 5
+
+# How many autosave slots to keep per document before the oldest is deleted.
+# Only 1, 2, 3, 5, 10 are legal; anything else falls back to the
+# default. Default: 3.
+autosave_retention: 3
+
+# Where autosave slots go: "central" (an autosave/ folder beside this config
+# file) or "sidecar" (beside the scenario itself). Sidecar falls back to
+# central for any document it cannot serve -- an untitled one, a Steam
+# Workshop/Proton path, or a shipped template. Default: "central".
+autosave_location: central
+
+# Whether a real save also writes the .bak (previous contents) and .orig
+# (one-time pristine snapshot) pair beside the file. Default: true.
+backups_enabled: true

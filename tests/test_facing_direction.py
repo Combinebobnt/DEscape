@@ -31,6 +31,7 @@ constant, not the gate side.
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 
 import pytest
 
@@ -62,7 +63,8 @@ def _unwrap(angles_deg: list[float]) -> list[float]:
     monotonic sequence can still show a spurious decrease right at the wrap
     unless each step is adjusted into the same turn as its predecessor."""
     out = [angles_deg[0]]
-    for a in angles_deg[1:]:
+    for raw_a in angles_deg[1:]:
+        a = raw_a
         prev = out[-1]
         while a - prev > 180:
             a -= 360
@@ -84,7 +86,7 @@ def test_angle_index_is_monotonically_increasing_in_rotation():
     angle_count = 16
     samples = [i * 2 * math.pi / 200 for i in range(200)]
     indices = [unit_sprites.angle_index(r, angle_count, 0.0) for r in samples]
-    violations = [(a, b) for a, b in zip(indices, indices[1:]) if b < a and b != 0]
+    violations = [(a, b) for a, b in pairwise(indices) if b < a and b != 0]
     assert not violations, violations
     assert len(set(indices)) == angle_count, "the samples never even covered every stored index"
 
@@ -118,7 +120,7 @@ def test_a_positive_rotate_step_advances_an_archers_screen_facing_clockwise():
         screen_angles.append(_archer_screen_angle_deg(rotation, angle_count))
 
     unwrapped = _unwrap(screen_angles)
-    diffs = [b - a for a, b in zip(unwrapped, unwrapped[1:])]
+    diffs = [b - a for a, b in pairwise(unwrapped)]
     assert all(d > 0 for d in diffs), (
         f"a positive rotate_step() must always advance the screen angle -- got {diffs}"
     )
@@ -135,9 +137,9 @@ def test_a_gate_cycle_step_advances_its_run_angle_clockwise_on_screen():
     -26.57, 0, +26.57, +90 degrees (the 2:1 vertical squash), still
     monotonically increasing (clockwise)."""
     screen_angles = [_screen_angle_deg(i * math.pi / 4) for i in range(4)]
-    for got, want in zip(screen_angles, (-26.565, 0.0, 26.565, 90.0)):
+    for got, want in zip(screen_angles, (-26.565, 0.0, 26.565, 90.0), strict=True):
         assert got == pytest.approx(want, abs=0.01), (got, want)
-    diffs = [b - a for a, b in zip(screen_angles, screen_angles[1:])]
+    diffs = [b - a for a, b in pairwise(screen_angles)]
     assert all(d > 0 for d in diffs), diffs
 
 

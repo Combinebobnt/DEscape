@@ -9,7 +9,7 @@ window decides what that means.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (

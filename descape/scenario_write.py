@@ -76,6 +76,14 @@ higher offset, before player_data_1, offset 0) -- each splice needs every
 offset used by an earlier step to still be valid, which only holds if
 nothing upstream of that step has shifted yet.
 
+GH #57's per-player disable lists are the first step to land in the *middle*
+of that descending order rather than at one end, and so the first real test
+of the rule rather than a restatement of it: the region sits at the front of
+the Options section, below Units/Triggers and above Messages, so
+_patch_disables() runs after _assemble_body() and before _patch_messages().
+Three splices can now apply in one save, which is what
+tests/test_disables_write_path.py's combined case exists to pin.
+
 See tests/test_write_path.py, tests/test_trigger_write_path.py,
 tests/test_units_write_path.py, and tests/test_player_write_path.py for the
 evidence.
@@ -90,20 +98,21 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from descape.scenario_io import (
-    TERRAIN_STRUCT_SIZE,
-    FORBIDDEN_WRITE_MARKER,
-    TEMPLATE_DIR,
-    LoadedScenario,
-    _LAYER_STRUCT,
-)
 from descape.messages_model import MessagesEditModel
 from descape.options_model import (
     OptionsEditModel,
     diplomacy_write_supported,
+    disables_write_supported,
     options_write_supported,
     player_count_write_supported,
     players_write_supported,
+)
+from descape.scenario_io import (
+    _LAYER_STRUCT,
+    FORBIDDEN_WRITE_MARKER,
+    TEMPLATE_DIR,
+    TERRAIN_STRUCT_SIZE,
+    LoadedScenario,
 )
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
@@ -274,6 +283,59 @@ def _assemble_body(
         tail = base[scenario.units_section_end :]
 
     return head + tail
+
+
+def _patch_disables(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with the whole per-player disables region (the front of
+    the Options section) spliced to reflect every pending disable-list edit.
+    A no-op (returns `body` unchanged) unless
+    options.serialize_disables_resize() has something to apply, so a save
+    with no such edit is byte-identical to one from before this step existed.
+
+    The third resizing step, and the middle one by offset. The rule the
+    module docstring states is fixed-offset patches first, then resizing
+    splices in *descending* offset order, and this region sits below
+    Units/Triggers but above Messages:
+
+    - after _assemble_body(), whose own assert requires a body still at its
+      original length, and whose splices are at higher offsets than this one
+      so they leave every offset here valid;
+    - before _patch_messages(), which is upstream of Options and so would
+      have its own load-time span invalidated by a length change here.
+
+    _patch_trigger_count() patching Options.number_of_triggers at the *end*
+    of the section is unaffected: it runs in place, before this, at its
+    original offset, and this splice is entirely in front of it.
+
+    Refuses (WriteBlockedError) a region not inside
+    [diplomacy_section_end, options_section_end] -- the boundary the codec's
+    own span check already makes unreachable in practice, but a locator bug
+    landing outside it must be refused, not silently written over real
+    content somewhere else.
+
+    Asserts the region still holds the bytes it did at load time before
+    splicing. Nothing else in this write path patches inside it today, and
+    that assert is what keeps that true if something later tries to.
+    """
+    resize = options.serialize_disables_resize()
+    if resize is None:
+        return body
+    start, end, replacement = resize
+    if not (0 <= scenario.diplomacy_section_end <= start <= end <= scenario.options_section_end):
+        raise WriteBlockedError(
+            f"A disables splice at {start}..{end} falls outside the Options region "
+            f"this write path owns ({scenario.diplomacy_section_end}.."
+            f"{scenario.options_section_end})."
+        )
+    assert body[start:end] == scenario.decompressed_body[start:end], (
+        "something patched inside the disables region before the splice -- the "
+        "replacement was built from the load-time values and would discard it"
+    )
+    new_body = body[:start] + replacement + body[end:]
+    assert len(new_body) == len(body) + (len(replacement) - (end - start)), (
+        "disables splice length mismatch"
+    )
+    return new_body
 
 
 def _patch_messages(body: bytes, scenario: LoadedScenario, messages: MessagesEditModel) -> bytes:
@@ -464,8 +526,11 @@ def write_scenario(
             on a file whose map-option block does not re-verify, or has
             Diplomacy grid edits on a file whose grid does not re-verify, or
             has Players mode edits on a file whose per-player block does not
-            re-verify (diplomacy_write_supported/players_write_supported are
-            False; each a separate gate from the map-option one, per
+            re-verify, or has disable-list edits on a file whose disables
+            region no longer round-trips
+            (diplomacy_write_supported/players_write_supported/
+            disables_write_supported are False; each a separate gate from the
+            map-option one, per
             options_model.diplomacy_write_supported's docstring), or if
             `messages` has edits on a file whose Messages section no longer
             passes messages_write_supported. All of the above are raised
@@ -528,6 +593,11 @@ def write_scenario(
                 "This file's Number of Players write surface no longer verifies -- "
                 "patching would land at an offset that can't be trusted."
             )
+        if options.has_disables_edits and not disables_write_supported(scenario):
+            raise WriteBlockedError(
+                "This file's per-player disable lists no longer verify -- splicing "
+                "would land at an offset that can't be trusted."
+            )
         header_bytes = _patch_header_player_count(header_bytes, options)
         patched_body = _patch_options(patched_body, scenario, options)
 
@@ -563,6 +633,13 @@ def write_scenario(
         header_bytes = _patch_header_trigger_count(header_bytes, triggers.trigger_count)
 
     patched_body = _assemble_body(scenario, patched_body, units, triggers)
+
+    if options is not None:
+        # Runs unconditionally, like _patch_player_data_1() below and for the
+        # same reason: serialize_disables_resize() already no-ops cleanly for
+        # a model with no pending disable-list edit, and this keeps the whole
+        # descending-offset ordering rule readable in one place.
+        patched_body = _patch_disables(patched_body, scenario, options)
 
     if messages is not None and messages.has_edits:
         patched_body = _patch_messages(patched_body, scenario, messages)

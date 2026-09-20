@@ -20,7 +20,7 @@ import platform
 import sys
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 DUMP_PREFIX = "crash-"
@@ -39,7 +39,7 @@ def build_report(
     qt_version: str = "unknown",
     frozen: bool = False,
 ) -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     header = (
         f"DEscape crash report\n"
         f"Time: {timestamp}\n"

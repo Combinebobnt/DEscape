@@ -40,8 +40,9 @@ them entirely, so there is nothing to copy/paste):
    the source region (deterministic regardless of what the file already
    has), copied and pasted at a translated destination; confirms each
    pasted unit's rotation is passed through byte-for-byte (AGENTS.md's hard
-   rule) and that begin_unit_edit() was given every owner in the block, not
-   just one.
+   rule), that begin_unit_edit() was given every owner in the block, not
+   just one, and that a garrison link between two units captured in the
+   same region is remapped to the pasted holder's own new reference_id.
 5. One undo step reverts a paste with terrain+elevation+units all checked --
    CompositeDiffRecord, not two separate records.
 6. Non-square map -- the Elevation paste checkbox's own gate
@@ -297,13 +298,16 @@ def _check_units_round_trip(window: ViewerWindow, mm, problems: list[str]) -> No
     before_src = len(_units_in_rect(window, sx0, sy0, sx0 + 2, sy0 + 2))
     before_dst = len(_units_in_rect(window, dx0, dy0, dx0 + 2, dy0 + 2))
     a = unit_edits.add(player=1, unit_const=83, x=sx0 + 0.5, y=sy0 + 0.5, z=0.0, rotation=1.75)
-    b = unit_edits.add(player=0, unit_const=83, x=sx0 + 1.5, y=sy0 + 1.5, z=0.0, rotation=37.0)
-    window.edit_history.reset()  # the two adds above are test setup, not part of what this check measures
+    c = unit_edits.add(player=1, unit_const=79, x=sx0 + 1.5, y=sy0 + 1.5, z=0.0, rotation=99.0)
+    b = unit_edits.add(
+        player=0, unit_const=83, x=sx0 + 1.5, y=sy0 + 1.5, z=0.0, rotation=37.0, garrisoned_in_id=c.reference_id
+    )
+    window.edit_history.reset()  # the three adds above are test setup, not part of what this check measures
 
     window._on_tool_selected("select")
     _select(window, sx0, sy0, sx0 + 2, sy0 + 2)
     window.copy_region()
-    expected_captured = before_src + 2
+    expected_captured = before_src + 3
     got_captured = None if window._region_clipboard is None else len(window._region_clipboard.units)
     if got_captured != expected_captured:
         problems.append(f"copy_region() should have captured {expected_captured} units, got {got_captured}")
@@ -323,15 +327,31 @@ def _check_units_round_trip(window: ViewerWindow, mm, problems: list[str]) -> No
             f"expected {before_dst + expected_captured} units at the destination after paste, "
             f"found {len(pasted_all)}"
         )
-    # Identify OUR two pasted units specifically (by rotation, distinctive
+    # Identify OUR three pasted units specifically (by rotation, distinctive
     # enough not to collide with whatever the file already had) rather than
     # assuming the whole destination rect's contents are ours.
-    mine = [u for u in pasted_all if u.rotation in (a.rotation, b.rotation)]
+    mine = [u for u in pasted_all if u.rotation in (a.rotation, b.rotation, c.rotation)]
     rotations = sorted(u.rotation for u in mine)
-    if rotations != sorted([a.rotation, b.rotation]):
-        problems.append(f"pasted rotations {rotations} don't match the copied ones {[a.rotation, b.rotation]} verbatim")
-    if any(u.garrisoned_in_id != -1 for u in mine):
-        problems.append("pasted units should have garrisoned_in_id reset to -1")
+    if rotations != sorted([a.rotation, b.rotation, c.rotation]):
+        problems.append(
+            f"pasted rotations {rotations} don't match the copied ones "
+            f"{[a.rotation, b.rotation, c.rotation]} verbatim"
+        )
+    pasted_a = next((u for u in mine if u.rotation == a.rotation), None)
+    pasted_b = next((u for u in mine if u.rotation == b.rotation), None)
+    pasted_c = next((u for u in mine if u.rotation == c.rotation), None)
+    if pasted_a is None or pasted_b is None or pasted_c is None:
+        problems.append("could not identify all three pasted units by rotation, garrison check skipped")
+    else:
+        if pasted_a.garrisoned_in_id != -1:
+            problems.append("pasted ungarrisoned unit should have garrisoned_in_id == -1")
+        if pasted_b.garrisoned_in_id != pasted_c.reference_id:
+            problems.append(
+                f"pasted occupant's garrisoned_in_id ({pasted_b.garrisoned_in_id}) should equal the "
+                f"pasted holder's new reference_id ({pasted_c.reference_id})"
+            )
+        if pasted_b.garrisoned_in_id == c.reference_id:
+            problems.append("pasted occupant's garrisoned_in_id still points at the source holder's id")
 
     window.undo()
     after_undo = len(_units_in_rect(window, dx0, dy0, dx0 + 2, dy0 + 2))

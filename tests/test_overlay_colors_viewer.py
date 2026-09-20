@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from test_ruler_viewer import _drag, _ruler_window
 
-import conftest
 from descape import settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
-from test_ruler_viewer import _drag, _ruler_window
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -27,12 +28,7 @@ pytestmark = [
 ]
 
 
-def _dialog_and_window():
-    from descape.viewer import SettingsDialog, ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    return SettingsDialog(window), window
+_dialog_and_window = conftest.dialog_and_window
 
 
 def test_every_overlay_color_prefix_has_a_section_title() -> None:

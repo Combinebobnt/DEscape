@@ -132,7 +132,16 @@ def is_water(terrain_id: int) -> bool:
     ICE/ICE_NAVIGABLE/BEACH_ICE:
     despite being frozen water, AoE2 treats ice as walkable solid ground for
     land units, not water, so a "borders water" bulk edit shouldn't treat it
-    as one."""
+    as one.
+
+    Deliberately NOT unified with descape/terrain_classes.py's
+    is_water_family(), which answers the same-sounding question from the
+    game's own .dat table instead. The two disagree on exactly eight ids
+    (26, 28, 55, 63-67), and tests/test_terrain_classes.py pins that set --
+    switching this function to the table would flip ICE_NAVIGABLE,
+    WATER_2D_BRIDGE, FOREST_MANGROVE and the five rice-farm terrains, which
+    is a behaviour change to a published API whose own assertions are pinned
+    in tools/verify_batch_api.py and tests/migration_manifest.py."""
     name = TerrainId(terrain_id).name
     return "WATER" in name or "SHALLOW" in name
 

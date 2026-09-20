@@ -26,7 +26,14 @@ import numpy as np
 from descape import iso_geometry, render, settings, unit_sprites
 from descape.scenario_io import LoadedScenario
 from descape.unit_filter import UnitFilter
+from descape.view_layers import DEFAULT_LAYERS, LayerState
 
+# LayerState fields that are baked into a SpriteLayer's own contents when it
+# is BUILT, rather than read off self.layers at paint time. Flipping one needs
+# the unit sources rebuilding, not just the chunks evicting -- see
+# _ChunkCacheBase.set_layers(). A new build-time row belongs here; a paint-time
+# one deliberately does not.
+_BUILD_TIME_LAYER_FIELDS = ("farm_overlay", "small_trees")
 
 # Default chunk size for IsoChunkCache -- measured, not guessed: benched
 # CHUNK_PX in {256, 512, 1024} via tools/verify_iso_chunks.py on this
@@ -99,10 +106,26 @@ def _splice_eligible(units_by_tile: dict, splice: UnitSplice) -> bool:
     unit = splice.unit
     if unit_sprites.rotation_variant_eligible(unit.unit_const) or unit.unit_const in unit_sprites.wall_connector_consts():
         return False
-    for tile in splice.changed_tiles:
+    # The all(not any(...)) one-liner ruff suggests here double-negates.
+    for tile in splice.changed_tiles:  # noqa: SIM110
         if any(u is not unit for u, _ in units_by_tile.get(tile, ())):
             return False
     return True
+
+
+def _drop_from_tiles(units_by_tile: dict, splice: UnitSplice) -> None:
+    """Removes splice.unit from every bucket it used to occupy, deleting a
+    bucket that empties (an empty list and a missing key are not the same
+    thing to render._units_by_tile()'s consumers)."""
+    for tile in splice.old_tiles:
+        bucket = units_by_tile.get(tile)
+        if not bucket:
+            continue
+        remaining = [e for e in bucket if e[0] is not splice.unit]
+        if remaining:
+            units_by_tile[tile] = remaining
+        else:
+            del units_by_tile[tile]
 
 
 def _splice_units_by_tile(
@@ -113,18 +136,18 @@ def _splice_units_by_tile(
     _splice_eligible()'s guard, which guarantees every tile this touches
     holds at most `splice.unit` itself, so removing it from its old
     buckets and appending it to its new ones can't clobber another unit's
-    entry or disturb paint order within a shared bucket (there is none)."""
+    entry or disturb paint order within a shared bucket (there is none).
+
+    A filtered-out unit still has its OLD buckets cleared before the early
+    return. Today no splice-eligible edit can flip matches() mid-splice (the
+    one const-changing path, gate-orientation cycling, is rejected by
+    _splice_eligible via wall_connector_consts()), so this is defensive --
+    but returning first would leave a stale entry behind the moment some
+    future edit does change what matches() tests, and GH #65's const gates
+    put another two predicates in that blast radius."""
+    _drop_from_tiles(units_by_tile, splice)
     if not unit_filter.matches(splice.player_id, splice.unit):
         return
-    for tile in splice.old_tiles:
-        bucket = units_by_tile.get(tile)
-        if not bucket:
-            continue
-        remaining = [e for e in bucket if e[0] is not splice.unit]
-        if remaining:
-            units_by_tile[tile] = remaining
-        else:
-            del units_by_tile[tile]
     if splice.new_tiles:
         player_color = scenario.player_colors[splice.player_id]
         entry = (splice.unit, render._unit_color(splice.unit, player_color))
@@ -142,6 +165,8 @@ def _splice_building_and_sprites(
     corner_rise: np.ndarray | None,
     extra_top_px: int,
     splice: UnitSplice,
+    with_farms: bool = True,
+    tree_scale: float = 1.0,
 ) -> render.SpriteLayer | None:
     """Updates one cache's (or, for Iso, one level's) building_bboxes --
     span>1 units only, keyed by own-tile -- and, if `sprites` is not None,
@@ -154,15 +179,21 @@ def _splice_building_and_sprites(
 
     Only valid under _splice_eligible()'s guard: it is what lets every
     touched key (the unit's own-tile for building_bboxes, its
-    sprite_anchor_tile() for by_anchor/bboxes/farm_by_tile) be treated as
-    belonging to `splice.unit` alone -- so each is a plain delete-then-
+    per-piece slot tiles, all inside its footprint, for by_anchor/bboxes/
+    farm_by_tile) be treated as belonging to `splice.unit` alone -- so each is a plain delete-then-
     recompute rather than a subtraction from a union with unknown other
     contributors. overrides is passed as {} rather than a fresh
     render.wall_variant_rotation_overrides(scenario) call: the guard above
     already excludes every rotation-variant-eligible unit, so a real
     overrides dict would never be consulted for `splice.unit` anyway (see
     render._wall_variant_rotation_overrides_uncached's own candidate
-    filter) -- {} just skips paying for the lookup."""
+    filter) -- {} just skips paying for the lookup.
+
+    with_farms and tree_scale must be the OWNING CACHE's current View >
+    Layers values, not the defaults: this re-resolves the edited unit, so a
+    hardcoded True would quietly re-admit a farm's terrain override on the
+    next move/rotate after the layer was turned off, and a hardcoded 1.0
+    would re-inflate a moved tree to full size under Small Trees."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     unit = splice.unit
@@ -197,27 +228,32 @@ def _splice_building_and_sprites(
     # recompute each exactly once regardless of how they overlap.
     touched_keys = {splice.old_own_tile, splice.new_own_tile}
 
-    old_anchor = unit_sprites.sprite_anchor_tile(list(splice.old_tiles)) if splice.old_tiles else None
-    if old_anchor is not None:
-        by_anchor.pop(old_anchor, None)
-        bboxes.pop(old_anchor, None)
-    touched_keys.add(old_anchor)
+    # Every OLD footprint tile, not just sprite_anchor_tile(old_tiles): a
+    # composite building's pieces carry their own depth slots and land on
+    # several tiles inside that footprint (see render._resolve_unit_sprite).
+    # The guard above is what makes clearing all of them safe -- each holds
+    # this unit alone.
+    for tile in splice.old_tiles:
+        by_anchor.pop(tile, None)
+        bboxes.pop(tile, None)
+        touched_keys.add(tile)
     for tile in splice.old_tiles:
         farm_by_tile.pop(tile, None)
     skip_ids.discard(id(unit))
 
     if splice.new_tiles:
         contribution = render._resolve_unit_sprite(
-            scenario, proj, elevations, unit_filter, corner_rise, {}, True, splice.player_id, splice.index, unit
+            scenario, proj, elevations, unit_filter, corner_rise, {}, with_farms,
+            splice.player_id, splice.index, unit, tree_scale,
         )
         if contribution is not None:
             skip_ids.add(contribution.skip_id)
             if contribution.farm_tiles:
                 farm_by_tile.update(contribution.farm_tiles)
             else:
-                by_anchor[contribution.anchor] = contribution.pieces
-                bboxes[contribution.anchor] = contribution.bbox
-                touched_keys.add(contribution.anchor)
+                by_anchor.update(contribution.by_anchor)
+                bboxes.update(contribution.bboxes)
+                touched_keys.update(contribution.by_anchor)
 
     # Reconcile building_bboxes at every touched key: the plain building
     # part exists only at new_own_tile (old_own_tile's own contribution was
@@ -288,7 +324,8 @@ class _ChunkCacheBase:
       - canvas_dims(mip=0) -> (width, height) in LEVEL canvas pixels
       - _composite_rect(mip, x0, y0, x1, y1) -> (h, w, 3) uint8 array
       - _refresh_source_caches() -> None
-      - a `style` class attribute ("stepped" / "flat") -- checked at the
+      - a `style` class attribute (one of terrain_style.TERRAIN_STYLES:
+        "flat" / "stepped" / "sloped") -- checked at the
         MapView.set_source() boundary (Phase B-E) to catch a cache wired to
         the wrong terrain style at construction time, rather than only once
         an edit exposes the mismatch later.
@@ -709,7 +746,7 @@ class _ChunkCacheBase:
         merely over-evicted (harmless); this fixes both directions the same
         way, by computing each resident level's own true chunk-index
         range instead of reusing the reference's."""
-        px0, py0, px1, py1 = bbox
+        _px0, _py0, _px1, _py1 = bbox
         ranges: dict[int, tuple[int, int, int, int]] = {}
         for mip in {key[0] for key in self._cache}:
             lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
@@ -758,6 +795,45 @@ class _ChunkCacheBase:
             return
         self.unit_filter = unit_filter
         self._refresh_unit_sources()
+        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+
+    def set_layers(self, layers: LayerState) -> None:
+        """Swaps the View > Layers state and makes it actually visible.
+
+        Same three-step shape as set_unit_filter() above, including its
+        no-op guard (LayerState is frozen and compares by value, and
+        evicting the whole canvas is the most expensive thing this class
+        can be asked to do), and the same final step is the trap: both
+        layers are baked into cached chunk PIXELS, so storing the state
+        alone leaves every already-composited chunk showing the old render.
+
+        The two kinds of field cost different things, so they are diffed
+        rather than both paying for the worse case:
+
+        - A PAINT-TIME field (terrain_textures) is read straight off
+          self.layers by _composite_rect, so eviction alone is the whole
+          update.
+        - A BUILD-TIME field (_BUILD_TIME_LAYER_FIELDS: farm_overlay,
+          small_trees) is baked into the SpriteLayer's own contents when it
+          is BUILT, so it needs _refresh_unit_sources() first. Skipping that
+          would leave IsoChunkCache._level()'s `gen != self._source_gen`
+          short-circuit holding and the level serving the pre-flip layer --
+          the under-repaint class set_sprites_enabled() documents, not
+          cosmetic staleness.
+
+        FlatChunkCache inherits this unchanged and correctly: it reaches
+        neither build-time field (no farm path at all, and icon_for()
+        contain-fits every unit into its own footprint), so a flip there
+        rebuilds and repaints to the same pixels rather than pretending to
+        apply a layer it has no path for."""
+        if layers == self.layers:
+            return
+        rebuild = any(
+            getattr(layers, f) != getattr(self.layers, f) for f in _BUILD_TIME_LAYER_FIELDS
+        )
+        self.layers = layers
+        if rebuild:
+            self._refresh_unit_sources()
         self.invalidate_region((0, 0, *self.canvas_dims(0)))
 
     def set_sprites_enabled(self, enabled: bool) -> None:
@@ -877,6 +953,7 @@ class IsoChunkCache(_ChunkCacheBase):
         with_units: bool = True,
         unit_filter: UnitFilter = UnitFilter(),
         sprites: bool = SPRITES_ENABLED,
+        layers: LayerState = DEFAULT_LAYERS,
     ):
         self.scenario = scenario
         self.elevations = elevations
@@ -887,6 +964,9 @@ class IsoChunkCache(_ChunkCacheBase):
         # Must be set before _refresh_source_caches() below, since _level()
         # reads it to decide whether to build a level's sprite layer at all.
         self.sprites_enabled = sprites
+        # Same ordering constraint: _level() reads the build-time layer
+        # fields (_BUILD_TIME_LAYER_FIELDS) to build a level's sprite layer.
+        self.layers = layers
         # Phase B-D-b: the REAL per-level projection set. settings.
         # get_elev_step_pct() is read here rather than threaded through as
         # a parameter because it's exactly the same function every real
@@ -980,7 +1060,11 @@ class IsoChunkCache(_ChunkCacheBase):
             # P3-g3: resolving and decoding sprites is far too expensive to do
             # per chunk, so it rides this same per-level lazy rebuild.
             sprites = (
-                render.sprite_draws_by_anchor(self.scenario, lvl.proj, self.elevations, self.unit_filter)
+                render.sprite_draws_by_anchor(
+                    self.scenario, lvl.proj, self.elevations, self.unit_filter,
+                    with_farms=self.layers.farm_overlay,
+                    tree_scale=self.layers.tree_scale,
+                )
                 if self.with_units and self.sprites_enabled
                 else None
             )
@@ -1061,7 +1145,8 @@ class IsoChunkCache(_ChunkCacheBase):
             for s in changed:
                 lvl.sprites = _splice_building_and_sprites(
                     lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
-                    self.unit_filter, None, 0, s,
+                    self.unit_filter, None, 0, s, self.layers.farm_overlay,
+                    self.layers.tree_scale,
                 )
             lvl.bystander_grid = render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
 
@@ -1089,7 +1174,11 @@ class IsoChunkCache(_ChunkCacheBase):
         start_gen = self._source_gen
         if lvl.gen == start_gen:
             return None
-        gen = render.sprite_draws_by_anchor_sliced(self.scenario, lvl.proj, self.elevations, self.unit_filter)
+        gen = render.sprite_draws_by_anchor_sliced(
+            self.scenario, lvl.proj, self.elevations, self.unit_filter,
+            with_farms=self.layers.farm_overlay,
+            tree_scale=self.layers.tree_scale,
+        )
 
         def install(sprites: render.SpriteLayer) -> bool:
             if self._source_gen != start_gen or lvl.gen == self._source_gen:
@@ -1150,6 +1239,40 @@ class IsoChunkCache(_ChunkCacheBase):
             self._level(mip)
         self.invalidate_region((0, 0, *self.canvas_dims(0)))
 
+    def set_layers(self, layers: LayerState) -> None:
+        """The base method plus set_sprites_enabled()'s eager resident-level
+        warm, and only on a _BUILD_TIME_LAYER_FIELDS flip, which is the only
+        kind that rebuilds a sprite layer at all.
+
+        Same reason and same load-bearing step order as there: the caller
+        holds a wait cursor around this call, so leaving the rebuild to
+        _level()'s laziness would lift the cursor and then freeze the window
+        inside the next Qt paint instead; and the resident set has to be
+        captured BEFORE invalidate_region() empties the cache and takes it
+        away.
+
+        Cheaper than set_sprites_enabled() in practice, on both halves.
+        Small Trees does miss _scaled_cache for every tree (its key carries
+        the factor), but the .sld decode behind that sits in its own
+        _native_cache, keyed without the factor, so the flip pays a re-tint
+        and a re-resize rather than that method's cold decode. Flipping the
+        farm
+        layer re-walks the units but decodes no new .sld, so it does not pay
+        that method's 0.5-4.1s cold-decode case."""
+        if layers == self.layers:
+            return
+        if all(
+            getattr(layers, f) == getattr(self.layers, f) for f in _BUILD_TIME_LAYER_FIELDS
+        ):
+            super().set_layers(layers)
+            return
+        self.layers = layers
+        resident = sorted({key[0] for key in self._cache}) or [0]
+        self._refresh_unit_sources()
+        for mip in resident:
+            self._level(mip)
+        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+
     @property
     def building_bboxes(self) -> dict:
         """Level 0's building_bboxes, forcing a rebuild first if stale.
@@ -1181,6 +1304,7 @@ class IsoChunkCache(_ChunkCacheBase):
             self.with_units,
             sprites=lvl.sprites,
             bystander_grid=lvl.bystander_grid,
+            layers=self.layers,
         )
 
 
@@ -1232,6 +1356,7 @@ class FlatChunkCache(_ChunkCacheBase):
         with_units: bool = True,
         unit_filter: UnitFilter = UnitFilter(),
         sprites: bool = SPRITES_ENABLED,
+        layers: LayerState = DEFAULT_LAYERS,
     ):
         self.scenario = scenario
         self.tile_px = tile_px
@@ -1240,6 +1365,10 @@ class FlatChunkCache(_ChunkCacheBase):
         # Must be set before _refresh_source_caches() below, the same ordering
         # trap IsoChunkCache.__init__ and SlopedChunkCache.__init__ document.
         self.sprites_enabled = sprites
+        # Only layers.terrain_textures means anything here -- Flat has no
+        # farm path. Stored anyway so ViewerWindow can carry one state
+        # across a style switch without special-casing which cache is live.
+        self.layers = layers
         # Phase B-D-b: the real candidate ladder, UNFILTERED -- "unfiltered"
         # here means the MIP ladder, nothing to do with unit_filter. Flat has no
         # projection (canvas_dims() is a bare multiply, exact at every
@@ -1462,6 +1591,7 @@ class FlatChunkCache(_ChunkCacheBase):
             unit_draws=self._level_unit_draws(mip),
             with_units=self.with_units,
             icons=self._level_icons(mip),
+            layers=self.layers,
         )
 
 
@@ -1549,6 +1679,7 @@ class SlopedChunkCache(_ChunkCacheBase):
         with_units: bool = True,
         unit_filter: UnitFilter = UnitFilter(),
         sprites: bool = SPRITES_ENABLED,
+        layers: LayerState = DEFAULT_LAYERS,
     ):
         self.scenario = scenario
         self.elevations = elevations
@@ -1566,6 +1697,10 @@ class SlopedChunkCache(_ChunkCacheBase):
         # this to decide whether to build a sprite layer at all -- same
         # ordering trap IsoChunkCache.__init__ documents for itself.
         self.sprites_enabled = sprites
+        # Same ordering constraint: _refresh_source_caches() reads the
+        # build-time layer fields (_BUILD_TIME_LAYER_FIELDS) when it builds
+        # the sprite layer.
+        self.layers = layers
         self._pick_planes: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
         self._init_mip_levels({0: tile_px})
         # Set here, not left to _init_max_chunks below: _set_building_bboxes()
@@ -1687,7 +1822,8 @@ class SlopedChunkCache(_ChunkCacheBase):
             self.sprites = (
                 render.sprite_draws_by_anchor(
                     self.scenario, self.proj, self.elevations, self.unit_filter,
-                    corner_rise=self.corner_rise,
+                    corner_rise=self.corner_rise, with_farms=self.layers.farm_overlay,
+                    tree_scale=self.layers.tree_scale,
                 )
                 if self.with_units and self.sprites_enabled
                 else None
@@ -1714,7 +1850,8 @@ class SlopedChunkCache(_ChunkCacheBase):
         self.sprites = (
             render.sprite_draws_by_anchor(
                 self.scenario, self.proj, self.elevations, self.unit_filter,
-                corner_rise=self.corner_rise,
+                corner_rise=self.corner_rise, with_farms=self.layers.farm_overlay,
+                tree_scale=self.layers.tree_scale,
             )
             if self.with_units and self.sprites_enabled
             else None
@@ -1765,7 +1902,8 @@ class SlopedChunkCache(_ChunkCacheBase):
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
             self.sprites = _splice_building_and_sprites(
                 self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
-                self.unit_filter, self.corner_rise, headroom, s,
+                self.unit_filter, self.corner_rise, headroom, s, self.layers.farm_overlay,
+                self.layers.tree_scale,
             )
         self._set_building_bboxes(self.building_bboxes)
 
@@ -1817,6 +1955,7 @@ class SlopedChunkCache(_ChunkCacheBase):
             self.with_units,
             sprites=self.sprites,
             bystander_grid=self.bystander_grid,
+            layers=self.layers,
         )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:

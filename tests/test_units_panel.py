@@ -18,10 +18,11 @@ from dataclasses import dataclass
 import pytest
 from PyQt5.QtCore import Qt
 
-import conftest
 from descape.unit_filter import GAIA_PLAYER_ID
 from descape.unit_pick import UnitEntry
 from descape.units_panel import UnitsPanel
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -44,7 +45,7 @@ class SyntheticUnit:
 
 
 def _entry(player_id=1, **kwargs) -> UnitEntry:
-    defaults = dict(x=4.5, y=8.5, unit_const=_ARCHER_CONST, reference_id=101)
+    defaults = {"x": 4.5, "y": 8.5, "unit_const": _ARCHER_CONST, "reference_id": 101}
     defaults.update(kwargs)
     unit = SyntheticUnit(**defaults)
     return UnitEntry(player_id=player_id, unit=unit, own_x=int(unit.x), own_y=int(unit.y), order=0)
@@ -140,7 +141,7 @@ def test_stats_block_hides_combat_rows_for_an_hp_only_const() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_TREE_CONST))
     assert panel.unit_stats_header.isVisibleTo(panel)
-    hp_caption, hp_value = panel.unit_stat_rows["hp"]
+    _hp_caption, hp_value = panel.unit_stat_rows["hp"]
     assert hp_value.isVisibleTo(panel)
     assert hp_value.text() == "20"
     for field_id in ("attack", "melee_armour", "pierce_armour", "range"):
@@ -162,7 +163,7 @@ def test_stats_block_hides_and_blanks_on_show_unit_none() -> None:
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
     panel.show_unit(None)
     assert not panel.unit_stats_header.isVisibleTo(panel)
-    hp_caption, hp_value = panel.unit_stat_rows["hp"]
+    _hp_caption, hp_value = panel.unit_stat_rows["hp"]
     assert hp_value.text() == ""
 
 

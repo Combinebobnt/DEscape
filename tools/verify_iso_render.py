@@ -153,8 +153,8 @@ def _replay_expected_paint(scenario, elevations: np.ndarray):
     owner_y = np.full((canvas_h, proj.canvas_w), -1, dtype=np.int32)
     owner_skirt = np.zeros((canvas_h, proj.canvas_w), dtype=bool)
 
-    for x, y in iso_geometry.depth_order(w, h):
-        x, y = int(x), int(y)
+    for raw_x, raw_y in iso_geometry.depth_order(w, h):
+        x, y = int(raw_x), int(raw_y)
         e = int(elevations[y, x])
         base_x, base_y = iso_geometry.tile_screen_origin(x, y, e, proj)
         for side, nx, ny in (("left", x - 1, y), ("right", x, y + 1)):
@@ -390,7 +390,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
 
     scenario, elevations = synthetic_scenario(w, h, elev)
     rise_px = seam_delta * proj.elev_step
-    dst_y, dst_x, _depth, _span = iso_geometry.shadow_quad_indices(tile_px, rise_px, "up_right")
+    dst_y, _dst_x, _depth, _span = iso_geometry.shadow_quad_indices(tile_px, rise_px, "up_right")
     if dst_y.size == 0:
         return False, "test setup produced an empty band -- doesn't exercise anything"
 
@@ -418,7 +418,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
 
     try:
         img = render.render_terrain_iso(scenario, with_units=False)
-    except Exception as e:  # noqa: BLE001 -- exactly what "no crash" means here
+    except Exception as e:
         return False, f"render_terrain_iso raised {type(e).__name__}: {e}"
 
     # Half 2: _render_tile_iso's `offset` (scratch-canvas) call site, where
@@ -435,7 +435,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
         before = scratch.copy()
         try:
             render._render_tile_iso(scratch, caster, tile_px, proj, elevations, w, h, offset=off)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return False, f"_render_tile_iso raised {type(e).__name__}: {e} at scratch offset {off}"
         if off == (cbx - 3 * tile_px, cby - 3 * tile_px) and not np.array_equal(scratch, before):
             return False, (

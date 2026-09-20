@@ -18,12 +18,18 @@ from pathlib import Path
 
 import pytest
 
-from testkit import qt_capture
+from testkit import qt_capture, qt_window, settings_isolation
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = ROOT / "tools"
 
-PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
+# Re-exported so the 85 existing `conftest.ensure_qapp()` call sites across
+# 30 files, and test_lazy_viewport.py's `conftest.PYQT5_AVAILABLE`
+# pytestmark, keep working unchanged; same posture as the
+# scene_rect_to_array re-export below. The implementation now lives in
+# testkit/ so tools/ scripts, which can't import conftest, can share it.
+PYQT5_AVAILABLE = qt_window.PYQT5_AVAILABLE
+ensure_qapp = qt_window.ensure_qapp
 
 
 def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
@@ -36,7 +42,7 @@ def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     assert len(before) == len(after)
     ranges: list[tuple[int, int]] = []
     start = None
-    for i, (a, b) in enumerate(zip(before, after)):
+    for i, (a, b) in enumerate(zip(before, after, strict=True)):
         if a != b and start is None:
             start = i
         elif a == b and start is not None:
@@ -46,36 +52,6 @@ def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
         ranges.append((start, len(before)))
     return ranges
 
-_QAPP = None
-
-
-def ensure_qapp() -> None:
-    """verify_iso_viewer_pick.py/verify_copy_paste.py's own main()s each
-    construct exactly one QApplication, held in a module-level variable for
-    the rest of the process, before any ViewerWindow() -- their own comment
-    explains an unassigned QApplication(...) crashes the first ViewerWindow()
-    since PyQt5 doesn't keep it alive via its own singleton registration
-    alone. This suite never calls those main()s, so gui-tier tests must do
-    the same setup themselves, once, or every ViewerWindow() construction
-    aborts the whole interpreter (confirmed: a bare Fatal Python error, not
-    a catchable exception -- there is no per-test recovery from skipping
-    this)."""
-    global _QAPP
-    if not PYQT5_AVAILABLE or _QAPP is not None:
-        return
-    import os
-
-    # Set directly rather than relying on verify_iso_viewer_pick.py/
-    # verify_copy_paste.py's own module-level os.environ.setdefault side
-    # effect -- this runs before load_verify_module() imports either script,
-    # and QApplication() aborts immediately if it tries to reach a real
-    # display that doesn't exist in this sandbox.
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt5.QtWidgets import QApplication
-
-    _QAPP = QApplication.instance() or QApplication(["pytest"])
-
-
 # Re-exported so the many existing `conftest.scene_rect_to_array(...)` call
 # sites keep working; the implementation now lives in testkit/ so tools/
 # scripts, which can't import conftest, can share it. See that module for
@@ -83,69 +59,50 @@ def ensure_qapp() -> None:
 scene_rect_to_array = qt_capture.scene_rect_to_array
 
 
-def stepped_window(path, *, elev_step_pct: int | None = None, graphics_quality: int | None = None):
+def stepped_window(
+    path,
+    *,
+    elev_step_pct: int | None = None,
+    graphics_quality: int | None = None,
+    show: bool = True,
+    size: int | None = None,
+):
     """A real, shown ViewerWindow with `path` loaded in Stepped mode,
     offscreen -- the setup every gui-tier seam test needs, factored out
     because tests/test_seam_line.py's own module docstring names this
     exact gap ("nothing in this file mechanically guards" the geometry
     <-> render link) as the reason that file couldn't close it alone.
 
-    elev_step_pct/graphics_quality, if given, are pinned via the settings
-    MODULE GLOBALS directly, before ViewerWindow() is constructed (its
-    __init__ reads settings.get_window_size(), and _render_current() reads
-    both of these) -- not via settings.set_elev_step_pct()/
-    set_graphics_quality(). Under _isolated_settings' autouse tmp_path
-    redirect either approach is equally safe from touching the real
-    config.yaml; module globals are used here only for consistency with
-    tests/test_seam_line.py's own test_seam_changes_a_hill_at_every_pct_
-    including_200, which already does this and documents why: the real
-    setters persist to disk, which "a test has no business doing" even
-    when the disk in question is a throwaway.
-
-    Does NOT call terrain_style_combo.setCurrentText("Stepped"). Terrain
-    Style already defaults to "stepped" (ViewerWindow._terrain_style), and
-    on_terrain_style_changed() early-returns whenever the requested style
-    matches the current one -- so every earlier gui test doing this
-    (tests/test_lazy_viewport.py, tests/test_mip_viewer.py) was asserting
-    the default, not exercising a real switch. A caller that genuinely
-    needs to drive a style change should go through "Flat" first.
-
-    Caller must call window.edit_history.mark_saved() before
-    window.close() -- see tools/verify_iso_viewer_pick.py's own finally
-    block: closeEvent() -> _confirm_discard_changes() pops a modal
-    QMessageBox on a dirty document, which blocks forever offscreen with
-    nothing to click it."""
-    ensure_qapp()
-    import descape.settings as settings_module
-    from descape.viewer import ViewerWindow
-    from PyQt5.QtWidgets import QApplication
-
-    if elev_step_pct is not None:
-        settings_module._elev_step_pct = elev_step_pct
-    if graphics_quality is not None:
-        settings_module._graphics_quality = graphics_quality
-
-    window = ViewerWindow()
-    window.load_scenario(path)
-    if window.scenario is None:
-        window.close()
-        pytest.skip(f"{Path(path).name} failed to load")
-    window.show()
-    QApplication.processEvents()
-    return window
+    The implementation is testkit.qt_window.stepped_window(); this is the
+    pytest edge that turns its ScenarioLoadError into a skip. See that
+    module for the settings-module-globals rule, the Stepped-combo no-op,
+    and the mark_saved()-before-close() requirement."""
+    try:
+        return qt_window.stepped_window(
+            path,
+            elev_step_pct=elev_step_pct,
+            graphics_quality=graphics_quality,
+            show=show,
+            size=size,
+        )
+    except qt_window.ScenarioLoadError as exc:
+        pytest.skip(str(exc))
 
 
-def shown_window():
-    """An empty, shown, 1200x800 ViewerWindow -- no scenario loaded. For
-    tests that drive the window's own chrome (menus, undo stack, panels)
-    and open a document themselves, or not at all."""
+def shown_window(width: int = 1200, height: int = 800):
+    """An empty, shown ViewerWindow (1200x800 unless told otherwise) -- no
+    scenario loaded. For tests that drive the window's own chrome (menus,
+    undo stack, panels) and open a document themselves, or not at all.
+    show() + processEvents() matters for anything reading a splitter or
+    other geometry: on an unshown window those assertions test Qt's layout
+    fallback, not the code under test."""
     from PyQt5.QtWidgets import QApplication
 
     from descape.viewer import ViewerWindow
 
     ensure_qapp()
     window = ViewerWindow()
-    window.resize(1200, 800)
+    window.resize(width, height)
     window.show()
     QApplication.processEvents()
     return window
@@ -192,6 +149,15 @@ def shown_terrain_window(width: int = 1200, height: int = 800):
     return window
 
 
+def dialog_and_window():
+    """An empty ViewerWindow (never shown) and a SettingsDialog built on it."""
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    ensure_qapp()
+    window = ViewerWindow()
+    return SettingsDialog(window), window
+
+
 def close_window(window) -> None:
     """Close without the dirty-document modal. Same requirement
     stepped_window() documents: closeEvent() -> _confirm_discard_changes()
@@ -209,6 +175,33 @@ def viewport_pos(map_view, tile_x: int, tile_y: int):
     tile_px = map_view._tile_pixels
     scene_pt = QPointF((tile_x + 0.5) * tile_px, (tile_y + 0.5) * tile_px)
     return QPointF(map_view.mapFromScene(scene_pt))
+
+
+def polygon_viewport_pos(map_view, tile_x: int, tile_y: int):
+    """Viewport-space centre of tile (x, y)'s real footprint polygon, so it is
+    correct in every terrain style. A different function from viewport_pos()
+    above, which is tile-pixel arithmetic and Flat-only."""
+    from PyQt5.QtCore import QPointF
+
+    polygon = map_view._tile_polygon(tile_x, tile_y)
+    assert polygon is not None, f"no footprint for ({tile_x}, {tile_y})"
+    return QPointF(map_view.mapFromScene(polygon.boundingRect().center()))
+
+
+def mouse_event(kind, pos, button, buttons):
+    """A synthetic QMouseEvent with no keyboard modifiers, for driving
+    MapView's own handlers directly. Promoted here from four byte-identical
+    private copies (test_region_select.py, test_fill_tool.py,
+    test_brush_stroke.py, test_ruler_viewer.py); the 2026-08-28 sweep that
+    promoted viewport_pos() above scoped only two of those files and left
+    this one behind. Callers that need modifiers construct their own.
+
+    Not paired with viewport_pos() above, and neither is polygon_viewport_pos():
+    those are position helpers, this only builds the event."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    return QMouseEvent(kind, pos, button, buttons, Qt.NoModifier)
 
 
 def pytest_addoption(parser):
@@ -334,27 +327,6 @@ def load_verify_module(name: str):
     return module
 
 
-_SETTINGS_MEMOIZED_GLOBALS = (
-    "_zoom_centered_on_cursor",
-    "_graphics_quality",
-    "_dark_mode",
-    "_preload_zoom_levels",
-    "_elev_step_pct",
-    "_window_size",
-    "_split_sizes",
-    "_log_height",
-    "_distance_ticks",
-    "_distance_tick_interval",
-    "_keybinds",
-    "_overlay_colors",
-    "_ruler_label_font_px",
-    "_distance_tick_font_px",
-    "_paint_trees",
-    "_paint_eye_candy",
-    "_recent_files",
-)
-
-
 @pytest.fixture(autouse=True)
 def _isolated_settings(tmp_path, monkeypatch) -> None:
     """Every test gets its own throwaway config.yaml, never the developer's
@@ -367,7 +339,11 @@ def _isolated_settings(tmp_path, monkeypatch) -> None:
     gui-tier test (caught after Phase 1's first two corpus runs already did
     this -- harmless only because the offscreen window's size happened to
     match what was last saved). Autouse, so every existing and future test
-    gets this for free without declaring it."""
+    gets this for free without declaring it.
+
+    The reset list is testkit.settings_isolation.MEMOIZED_GLOBALS, shared with
+    the tools/ capture scripts; monkeypatch here rather than its
+    isolate_settings(), so every value is restored after the test."""
     import descape.asset_source as asset_source_module
     import descape.settings as settings_module
 
@@ -378,7 +354,7 @@ def _isolated_settings(tmp_path, monkeypatch) -> None:
     # exercises that particular call path.
     monkeypatch.setattr(asset_source_module, "CONFIG_PATH", fake_config_path)
     monkeypatch.setattr(settings_module, "CONFIG_PATH", fake_config_path)
-    for name in _SETTINGS_MEMOIZED_GLOBALS:
+    for name in settings_isolation.MEMOIZED_GLOBALS:
         monkeypatch.setattr(settings_module, name, None)
 
 

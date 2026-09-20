@@ -23,8 +23,9 @@ import pytest
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-import conftest
 from descape import render
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -714,7 +715,8 @@ def test_marquee_over_a_filtered_out_player_selects_nothing() -> None:
     window = _window()
     try:
         window.show_gaia_action.setChecked(False)
-        rect = QRectF(5 * window.map_view._tile_pixels, 5 * window.map_view._tile_pixels, 3 * window.map_view._tile_pixels, window.map_view._tile_pixels)
+        tile_px = window.map_view._tile_pixels
+        rect = QRectF(5 * tile_px, 5 * tile_px, 3 * tile_px, tile_px)
         keys = window.map_view._units_in_scene_rect(rect)
         assert keys == []
     finally:
@@ -874,6 +876,115 @@ def test_the_rotate_actions_need_a_selection() -> None:
         assert all(not a.isEnabled() for a in window._rotate_actions)
         _select(window, _REF_ARCHER_P1)
         assert all(a.isEnabled() for a in window._rotate_actions)
+    finally:
+        _close(window)
+
+
+# --- Cycle Variant -------------------------------------------------------------
+_REF_TREE_OAK = 100  # GAIA oak, 42 variants, stored 7.0
+
+
+def test_cycle_variant_steps_the_selected_tree_and_undoes() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        key = (entry.player_id, entry.unit.reference_id)
+
+        window.on_unit_variant(1)
+
+        assert window.map_view._unit_index.entry_for_key(key).unit.rotation == 8.0
+        assert "Cycled Tree Oak to variant 8/42" in window.status_log.toPlainText()
+        window.undo()
+        assert window.map_view._unit_index.entry_for_key(key).unit.rotation == 7.0
+    finally:
+        _close(window)
+
+
+def test_cycle_variant_changes_the_resolved_frame() -> None:
+    from descape import unit_rotation, unit_variant
+
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        const = entry.unit.unit_const
+        args = (unit_rotation.angle_count_for(const), unit_variant.variant_count_for(const))
+        before = unit_variant.variant_of(entry.unit.rotation, *args)
+        window.on_unit_variant(-1)
+        assert unit_variant.variant_of(entry.unit.rotation, *args) == before - 1
+    finally:
+        _close(window)
+
+
+def test_a_mixed_variant_selection_cycles_the_tree_and_reports_the_skips() -> None:
+    window = _window()
+    try:
+        entries = _select(window, _REF_TREE_OAK, _REF_WALL, _REF_ARCHER_P1)
+        before = {e.unit.reference_id: e.unit.rotation for e in entries}
+
+        window.on_unit_variant(1)
+
+        after = {e.unit.reference_id: e.unit.rotation for e in entries}
+        assert after[_REF_TREE_OAK] != before[_REF_TREE_OAK]
+        assert after[_REF_WALL] == before[_REF_WALL]
+        assert after[_REF_ARCHER_P1] == before[_REF_ARCHER_P1]
+        assert "2 skipped (this object has no graphic variants)" in window.status_log.toPlainText()
+        window.undo()
+        assert {e.unit.reference_id: e.unit.rotation for e in entries} == before
+    finally:
+        _close(window)
+
+
+def test_a_fully_skipped_variant_cycle_records_nothing() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_WALL)
+        before = entry.unit.rotation
+        window.on_unit_variant(1)
+        assert entry.unit.rotation == before
+        assert not window.edit_history.is_dirty
+        assert "no graphic variants" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_randomize_variant_is_seedable_and_always_changes() -> None:
+    import random
+
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        window._variant_rng = random.Random(5)
+        expected = random.Random(5).randrange(41)
+        expected = float(expected + 1 if expected >= 7 else expected)
+
+        window.on_unit_variant(randomize=True)
+
+        assert entry.unit.rotation == expected
+        assert entry.unit.rotation != 7.0
+        assert "Randomized Tree Oak to variant" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_cycle_variant_does_nothing_outside_units_mode() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        window.mode_combo.setCurrentText("Terrain")
+        window.on_unit_variant(1)
+        assert entry.unit.rotation == 7.0
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_the_variant_actions_need_a_selection() -> None:
+    window = _window()
+    try:
+        assert len(window._variant_actions) == 3
+        assert all(not a.isEnabled() for a in window._variant_actions)
+        _select(window, _REF_TREE_OAK)
+        assert all(a.isEnabled() for a in window._variant_actions)
     finally:
         _close(window)
 
@@ -1131,5 +1242,535 @@ def test_undo_of_a_delete_still_takes_the_wholesale_path() -> None:
 
         window.undo()
         assert window.map_view._unit_index.entry_for_key((entry.player_id, entry.unit.reference_id)) is not None
+    finally:
+        _close(window)
+
+
+# --- stacked units: badges and repeat-click cycling ------------------------
+
+
+def _make_stack(window, count: int = 3) -> tuple[tuple[int, int], list[tuple[int, int]]]:
+    """Places `count` villagers at one identical point on an empty tile, in
+    one wholesale edit. Returns (tile, keys top-first)."""
+    tile = _empty_tile(window)
+    model = window._ensure_unit_edits()
+    units = []
+    with window._unit_edit(model, "Stack", [1]):
+        units.extend(model.add(1, _PLACE_CONST, tile[0] + 0.5, tile[1] + 0.5) for _ in range(count))
+    keys = [(1, u.reference_id) for u in reversed(units)]
+    return tile, keys
+
+
+def test_stack_groups_follow_the_index_and_badges_show_the_count() -> None:
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        members = window.map_view.stack_group_at(tile)
+        assert [(m.player_id, m.unit.reference_id) for m in members] == keys
+        item = window.map_view._stack_badge_item
+        assert "3" in item.badge_texts()
+        assert item.isVisible()
+    finally:
+        _close(window)
+
+
+def test_repeat_clicks_walk_the_stack_and_wrap() -> None:
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        pos = _pos_for_tile(window, *tile)
+        first = window.map_view.pick_unit_at(pos)
+
+        selected = [window.on_click_select(pos, Qt.NoModifier) for _ in range(4)]
+
+        assert selected[0] == (first.player_id, first.unit.reference_id) == keys[0]
+        assert selected == [keys[0], keys[1], keys[2], keys[0]]
+        assert window._selection == [keys[0]]
+        assert window._stack_cycle[0] == tile
+    finally:
+        _close(window)
+
+
+def test_a_modified_click_resets_the_cycle() -> None:
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        pos = _pos_for_tile(window, *tile)
+        window.on_click_select(pos, Qt.NoModifier)
+        window.on_click_select(pos, Qt.NoModifier)
+        window.on_click_select(pos, Qt.ControlModifier)
+        assert window._stack_cycle is None
+        window._selection = []
+        assert window.on_click_select(pos, Qt.NoModifier) == keys[0]
+    finally:
+        _close(window)
+
+
+def test_a_selection_changed_elsewhere_restarts_the_cycle() -> None:
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        pos = _pos_for_tile(window, *tile)
+        window.on_click_select(pos, Qt.NoModifier)
+        window.on_click_select(pos, Qt.NoModifier)
+        window.on_marquee_select([keys[2]], Qt.NoModifier)
+        assert window.on_click_select(pos, Qt.NoModifier) == keys[0]
+    finally:
+        _close(window)
+
+
+def test_a_click_on_an_unstacked_unit_is_unchanged() -> None:
+    window = _window()
+    try:
+        entry = next(
+            e for e in window.map_view._unit_index.entries
+            if window.map_view.stack_group_at((e.own_x, e.own_y)) is None
+            and e.unit.unit_const not in render.BUILDING_TILE_SPANS
+        )
+        pos = _pos_for_tile(window, entry.own_x, entry.own_y)
+        picked = window.map_view.pick_unit_at(pos)
+        key = (picked.player_id, picked.unit.reference_id)
+        assert window.on_click_select(pos, Qt.NoModifier) == key
+        assert window.on_click_select(pos, Qt.NoModifier) == key
+    finally:
+        _close(window)
+
+
+def _press_release(map_view, viewport_pos) -> None:
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QMouseEvent
+
+    for kind, button, buttons in (
+        (QEvent.MouseButtonPress, Qt.LeftButton, Qt.LeftButton),
+        (QEvent.MouseButtonRelease, Qt.LeftButton, Qt.NoButton),
+    ):
+        event = QMouseEvent(kind, viewport_pos, button, buttons, Qt.NoModifier)
+        if kind == QEvent.MouseButtonPress:
+            map_view.mousePressEvent(event)
+        else:
+            map_view.mouseReleaseEvent(event)
+
+
+def test_after_cycling_the_drag_key_names_the_selected_unit_not_the_top_one() -> None:
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QMouseEvent
+
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        map_view = window.map_view
+        viewport_pos = conftest.viewport_pos(map_view, *tile)
+        _press_release(map_view, viewport_pos)
+        map_view.mousePressEvent(
+            QMouseEvent(QEvent.MouseButtonPress, viewport_pos, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        )
+        assert window._selection == [keys[1]]
+        assert map_view._unit_drag_key == keys[1]
+    finally:
+        _close(window)
+
+
+def test_a_units_mode_press_picks_exactly_once(monkeypatch) -> None:
+    """mousePressEvent used to call pick_unit_at() and then hand the same
+    scene pos to on_click_select(), which picks again through
+    pick_unit_cover_at(). Two full unit picks per click, on a path that
+    already costs a plane lookup (Sloped) or a screen_to_tile (Stepped).
+
+    Counted at unit_pick.pick_unit_cover, the single function both routes
+    bottom out in, so this stays honest if either wrapper is renamed. Both
+    the hit and the miss are covered: the miss is what decides whether the
+    press arms a marquee, and it used to read `entry`, not the callback's
+    return."""
+    from PyQt5.QtCore import QEvent, QPointF
+    from PyQt5.QtGui import QMouseEvent
+
+    from descape import unit_pick
+
+    window = _window()
+    try:
+        tile, _keys = _make_stack(window)
+        map_view = window.map_view
+        calls = []
+        real = unit_pick.pick_unit_cover
+        monkeypatch.setattr(
+            unit_pick, "pick_unit_cover", lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+        )
+
+        hit = conftest.viewport_pos(map_view, *tile)
+        map_view.mousePressEvent(
+            QMouseEvent(QEvent.MouseButtonPress, hit, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        )
+        assert len(calls) == 1, f"a press on a unit picked {len(calls)} times, expected 1"
+        assert map_view._unit_drag_key is not None
+        assert map_view._marquee_start_pos is None
+
+        calls.clear()
+        # Far off the map, so the pick genuinely misses rather than landing
+        # on some other unit.
+        miss = QPointF(-500.0, -500.0)
+        map_view.mousePressEvent(
+            QMouseEvent(QEvent.MouseButtonPress, miss, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        )
+        assert len(calls) == 1, f"a press on empty ground picked {len(calls)} times, expected 1"
+        assert map_view._unit_drag_key is None
+        assert map_view._marquee_start_pos is not None
+    finally:
+        _close(window)
+
+
+def test_a_double_click_press_still_cycles() -> None:
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QMouseEvent
+
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        map_view = window.map_view
+        viewport_pos = conftest.viewport_pos(map_view, *tile)
+        _press_release(map_view, viewport_pos)
+        map_view.mouseDoubleClickEvent(
+            QMouseEvent(QEvent.MouseButtonDblClick, viewport_pos, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        )
+        assert window._selection == [keys[1]]
+    finally:
+        _close(window)
+
+
+def test_deleting_a_stack_member_updates_the_badge_and_restarts_the_cycle() -> None:
+    window = _window()
+    try:
+        tile, keys = _make_stack(window)
+        pos = _pos_for_tile(window, *tile)
+        window.on_click_select(pos, Qt.NoModifier)
+        window.on_click_select(pos, Qt.NoModifier)
+        window.on_unit_delete(Qt.NoModifier)
+        assert window._stack_cycle is None
+        assert len(window.map_view.stack_group_at(tile)) == 2
+        assert window.on_click_select(pos, Qt.NoModifier) == keys[0]
+    finally:
+        _close(window)
+
+
+def test_the_badge_toggle_hides_the_layer_and_persists() -> None:
+    from descape import settings
+
+    window = _window()
+    try:
+        _make_stack(window)
+        item = window.map_view._stack_badge_item
+        assert item.isVisible()
+        window.stack_badges_action.setChecked(False)
+        assert not item.isVisible()
+        assert settings.get_stack_badges() is False
+        window.stack_badges_action.setChecked(True)
+        assert item.isVisible()
+    finally:
+        _close(window)
+
+
+def test_badges_only_show_in_units_mode() -> None:
+    window = _window()
+    try:
+        _make_stack(window)
+        item = window.map_view._stack_badge_item
+        window.mode_combo.setCurrentText("View")
+        assert not item.isVisible()
+        window.mode_combo.setCurrentText("Units")
+        assert window.map_view._stack_badge_item.isVisible()
+    finally:
+        _close(window)
+
+
+# --- Convert brush: live reassignment during the drag -----------------------
+
+
+def _convert_setup(window, count: int = 2):
+    """Destination Player 2, brush size 1, and `count` player-1 units on
+    distinct tiles whose tile holds nothing but player-1 units."""
+    window.units_panel.select_owner(2)
+    window.brush_size_spin.setValue(1)
+    index = window.map_view._unit_index
+    picked = []
+    seen_tiles = set()
+    for entry in index.entries:
+        tile = (entry.own_x, entry.own_y)
+        if entry.player_id != 1 or tile in seen_tiles:
+            continue
+        if entry.unit.unit_const in render.BUILDING_TILE_SPANS:
+            continue
+        bucket = [index.entries[o] for o in index.by_tile[tile]]
+        if all(e.player_id == 1 for e in bucket):
+            seen_tiles.add(tile)
+            picked.append(entry)
+        if len(picked) == count:
+            break
+    assert len(picked) == count
+    return picked
+
+
+def test_a_convert_stroke_reassigns_live_and_records_one_undo_step() -> None:
+    window = _window()
+    try:
+        entries = _convert_setup(window)
+        before_records = len(window.edit_history.records)
+        units = [e.unit for e in entries]
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(entries[0].own_x, entries[0].own_y)
+        # Mutated before mouse-up, not batched to it.
+        assert units[0] in window.scenario.unit_manager.units[2]
+        window._convert_stroke_tile(entries[1].own_x, entries[1].own_y)
+        window._end_convert_stroke()
+
+        assert len(window.edit_history.records) == before_records + 1
+        assert all(u in window.scenario.unit_manager.units[2] for u in units)
+        assert window.unit_edits._pending is None
+
+        window.undo()
+        assert all(u in window.scenario.unit_manager.units[1] for u in units)
+        assert len([u for u in window.scenario.unit_manager.units[2] if u in units]) == 0
+    finally:
+        _close(window)
+
+
+def test_convert_pixels_change_before_the_stroke_ends() -> None:
+    window = _window()
+    try:
+        (entry,) = _convert_setup(window, count=1)
+        cx, cy = _chunk_for_tile(window, entry.own_x, entry.own_y)
+        before = window._cache.get_chunk(0, cx, cy).copy()
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(entry.own_x, entry.own_y)
+        assert window._convert_refresh_timer.isActive()
+        window._convert_refresh_timer.stop()
+        window._flush_convert_refresh()
+        mid = window._cache.get_chunk(0, cx, cy).copy()
+        assert window._convert_model is not None  # still mid-stroke
+        window._end_convert_stroke()
+
+        assert not np.array_equal(before, mid)
+    finally:
+        _close(window)
+
+
+def test_convert_coalesces_the_repaint_across_touched_tiles(monkeypatch) -> None:
+    window = _window()
+    try:
+        entries = _convert_setup(window, count=2)
+        calls = []
+        original = window._after_unit_mutation
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs.get("defer_index", False))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(window, "_after_unit_mutation", spy)
+        window._begin_convert_stroke()
+        for entry in entries:
+            window._convert_stroke_tile(entry.own_x, entry.own_y)
+        assert calls == []  # no per-tile refresh; the timer hasn't fired
+        window._end_convert_stroke()
+        assert calls == [False]
+        assert not window._convert_refresh_timer.isActive()
+    finally:
+        _close(window)
+
+
+def test_a_convert_stroke_that_touches_nothing_records_nothing() -> None:
+    window = _window()
+    try:
+        before_records = len(window.edit_history.records)
+        tile = _empty_tile(window)
+        window.units_panel.select_owner(2)
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(*tile)
+        window._end_convert_stroke()
+        assert len(window.edit_history.records) == before_records
+        assert window.unit_edits._pending is None
+    finally:
+        _close(window)
+
+
+def test_a_stroke_left_open_is_aborted_by_the_next_one() -> None:
+    window = _window()
+    try:
+        (entry,) = _convert_setup(window, count=1)
+        window._begin_convert_stroke()
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(entry.own_x, entry.own_y)
+        window._end_convert_stroke()
+        assert window.unit_edits._pending is None
+        assert entry.unit in window.scenario.unit_manager.units[2]
+    finally:
+        _close(window)
+
+
+# --- D2's free-placement toggle (free placement, Stage 3) -------------------
+
+
+def _pos_in_tile(window, tile_x: int, tile_y: int, fx: float, fy: float) -> QPointF:
+    """A scene position at a chosen sub-tile fraction. Flat only, which is
+    what this module forces -- one continuous tile unit is tile_px pixels."""
+    tp = window.map_view._tile_pixels
+    return QPointF((tile_x + fx) * tp, (tile_y + fy) * tp)
+
+
+def _place_at(window, pos, modifiers=Qt.NoModifier):
+    window.units_panel.select_object(_PLACE_CONST)
+    window.units_panel.select_owner(1)
+    window.place_unit_action.setChecked(True)
+    window.on_unit_place(pos, modifiers)
+    return window.map_view._unit_index.entry_for_key(window._selection[0])
+
+
+def test_the_free_placement_checkbox_shows_only_for_place_unit() -> None:
+    """Asserted on the captured QAction handle, never on the widget's own
+    isVisible(): offscreen, a never-shown widget reads False unconditionally."""
+    window = _window()
+    try:
+        window._on_tool_selected("place_unit")
+        assert window.free_place_param_action.isVisible()
+        assert window.free_place_check.isEnabled()
+        assert window.tool_param_separator_action.isVisible()
+
+        window._on_tool_selected("convert")
+        assert not window.free_place_param_action.isVisible()
+        assert not window.free_place_check.isEnabled()
+    finally:
+        _close(window)
+
+
+def test_the_toggle_is_session_only_and_starts_off() -> None:
+    """Tool options are deliberately not persisted, so there is no settings
+    key behind this and a fresh window must start snapped."""
+    window = _window()
+    try:
+        assert not window.free_place_check.isChecked()
+        assert not any("free_place" in key for key in dir(__import__("descape.settings", fromlist=["x"]))), (
+            "free placement grew a settings accessor; it is supposed to be session-only"
+        )
+    finally:
+        _close(window)
+
+
+def test_placement_snaps_by_default_and_floats_with_the_toggle() -> None:
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
+        assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
+
+        window.free_place_check.setChecked(True)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
+        assert (entry.unit.x, entry.unit.y) != (tx + 0.5, ty + 0.5)
+        # Under the cursor, to within the pixel the click itself quantizes to.
+        tp = window.map_view._tile_pixels
+        assert abs(entry.unit.x - (tx + 0.15)) <= 1 / tp
+        assert abs(entry.unit.y - (ty + 0.85)) <= 1 / tp
+    finally:
+        _close(window)
+
+
+def test_held_alt_places_free_for_one_click_without_changing_the_toggle() -> None:
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85), Qt.AltModifier)
+        assert (entry.unit.x, entry.unit.y) != (tx + 0.5, ty + 0.5)
+        assert not window.free_place_check.isChecked(), "the one-off modifier flipped the toggle"
+
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
+        assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
+    finally:
+        _close(window)
+
+
+def test_moving_a_unit_takes_the_same_branch_as_placing_one() -> None:
+    """The choice lives in _placement_point, so Move and Place cannot
+    disagree -- this is what pins that they really share it."""
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.5, 0.5))
+        key = window._selection[0]
+
+        window.free_place_check.setChecked(True)
+        window.on_unit_move(key, _pos_in_tile(window, tx + 1, ty + 1, 0.2, 0.7), Qt.NoModifier)
+        moved = window.map_view._unit_index.entry_for_key(key)
+        assert moved is not None
+        assert (moved.unit.x, moved.unit.y) != (tx + 1.5, ty + 1.5)
+
+        window.free_place_check.setChecked(False)
+        window.on_unit_move(key, _pos_in_tile(window, tx + 2, ty + 2, 0.2, 0.7), Qt.NoModifier)
+        moved = window.map_view._unit_index.entry_for_key(key)
+        assert (moved.unit.x, moved.unit.y) == (tx + 2.5, ty + 2.5)
+        assert entry is not None
+    finally:
+        _close(window)
+
+
+def test_a_free_placed_unit_paints_where_it_stands() -> None:
+    """The end-to-end check the whole feature exists for: model coordinates
+    reaching the canvas. A model-only assertion is exactly what b1's own
+    postmortem records as having missed the last bug here."""
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        window.free_place_check.setChecked(True)
+        _place_at(window, _pos_in_tile(window, tx, ty, 0.1, 0.1))
+        cx, cy = _chunk_for_tile(window, tx, ty)
+        low = np.array(window._cache.get_chunk(0, cx, cy), copy=True)
+
+        window.undo()
+        window.free_place_check.setChecked(False)
+        _place_at(window, _pos_in_tile(window, tx, ty, 0.1, 0.1))
+        snapped = np.array(window._cache.get_chunk(0, cx, cy), copy=True)
+
+        assert not np.array_equal(low, snapped), (
+            "a free-placed unit painted the same pixels as a snapped one"
+        )
+    finally:
+        _close(window)
+
+
+def test_a_refused_inverse_snaps_and_says_so(monkeypatch) -> None:
+    """The screen -> map-point inverse can legitimately have no answer for a
+    pixel: a degenerate denominator, or a round-trip that misses by more than
+    a pixel, both reachable on a steep Sloped ramp. Snapping there is the
+    right behaviour, but a SILENT snap is not -- a tester cannot tell it from
+    a checkbox that never applied or an Alt the window manager ate.
+
+    Driven by forcing _pick_map_point to refuse rather than by constructing a
+    degenerate ramp: this module forces Flat on purpose, and the geometry's
+    own degenerate case is pinned in tests/test_screen_to_map_point.py. What
+    is untested without this is the viewer's REACTION to a refusal."""
+    from descape.viewer import FREE_PLACE_FALLBACK_MESSAGE
+
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        window.free_place_check.setChecked(True)
+        monkeypatch.setattr(window.map_view, "_pick_map_point", lambda pos: None)
+
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
+
+        assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
+        assert FREE_PLACE_FALLBACK_MESSAGE in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_successful_free_placement_stays_quiet() -> None:
+    """The other half: the fallback line must not fire on every free click,
+    or it stops meaning anything."""
+    from descape.viewer import FREE_PLACE_FALLBACK_MESSAGE
+
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        window.free_place_check.setChecked(True)
+        _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
+        assert FREE_PLACE_FALLBACK_MESSAGE not in window.status_log.toPlainText()
     finally:
         _close(window)

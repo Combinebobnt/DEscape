@@ -39,7 +39,14 @@ from descape.options_model import (
 )
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.scenario_write import WriteBlockedError, write_scenario
-from descape.trigger_model import TriggerEditModel, exec_order_value
+from descape.trigger_model import (
+    EXEC_MODE_DISPLAY,
+    EXEC_MODE_LEGACY,
+    EXEC_MODE_UNKNOWN,
+    TriggerEditModel,
+    exec_order_value,
+    resolve_exec_mode,
+)
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120x120.aoe2scenario"
@@ -58,7 +65,7 @@ def _differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     assert len(before) == len(after)
     ranges: list[tuple[int, int]] = []
     start = None
-    for i, (a, b) in enumerate(zip(before, after)):
+    for i, (a, b) in enumerate(zip(before, after, strict=True)):
         if a != b and start is None:
             start = i
         elif a == b and start is not None:
@@ -76,23 +83,17 @@ def _loaded(path: Path = FIXTURE_PATH):
 
 
 def _a_flag_spec(loaded):
-    """A checkbox row this file stores as a real 0/1 flag. Picked from the
-    file rather than named, so this does not silently start testing a row the
-    spec list dropped.
+    """A checkbox row this file stores as a real 0/1 flag: lock_teams.
 
-    Pinned to lock_teams -- moving the Diplomacy-group specs to
-    DiplomacyPanel only tagged them with OptionFieldSpec.panel="diplomacy",
-    it did not remove them from option_fields._SPECS, so this still resolves
-    to the same row it always has -- OptionsEditModel writes lock_teams
-    exactly as before, regardless of which panel renders it. The assert
-    below is what would catch it if that ever stopped being true."""
+    Resolved through specs_for(), so a spec list that dropped it fails here
+    rather than silently testing another row. The Diplomacy-panel move (step
+    5) only tagged it panel="diplomacy"; OptionsEditModel writes it as before."""
+    # By id, not first-checkbox order: custom_conquest now precedes it in _SPECS.
     for spec in option_fields.specs_for(loaded):
-        if spec.kind == option_fields.CHECKBOX and spec.section != "Triggers":
-            if option_fields.current_value(loaded, spec) in (0, 1):
-                assert spec.field_id == "lock_teams", (
-                    f"_a_flag_spec silently re-resolved to {spec.field_id!r}"
-                )
-                return spec
+        if spec.field_id == "lock_teams":
+            assert spec.kind == option_fields.CHECKBOX
+            assert option_fields.current_value(loaded, spec) in (0, 1)
+            return spec
     raise AssertionError("no writable flag row on this file")
 
 
@@ -111,7 +112,7 @@ def test_every_writable_option_repacks_its_own_stored_bytes(path: Path) -> None:
     specs = option_fields.specs_for(loaded)
     offsets, _ = field_offsets(loaded, specs)
     assert offsets, "no offsets resolved -- this test would pass vacuously"
-    for spec, _fo in offsets.items():
+    for spec in offsets:
         retriever = loaded._scenario.sections[spec.section].retriever_map[spec.retriever]
         packer = pack_struct_for(retriever)
         assert packer is not None, f"{spec.field_id} has no packer"
@@ -234,6 +235,43 @@ def test_a_victory_condition_edit_changes_exactly_that_fields_bytes(tmp_path: Pa
         )
 
 
+@pytest.mark.parametrize(
+    "field_id, flip",
+    [
+        ("custom_conquest", lambda stored: 1 - stored),
+        ("custom_explored_percent", lambda stored: 33 if stored != 33 else 34),
+        ("custom_relics", lambda stored: 7 if stored != 7 else 8),
+        ("custom_all_conditions", lambda stored: 1 - stored),
+    ],
+)
+def test_a_custom_victory_edit_changes_exactly_that_fields_bytes(
+    tmp_path: Path, field_id, flip
+) -> None:
+    """The four custom-victory rows sit mid-section, between retrievers no
+    spec names, so each walk is checked on its own rather than by one
+    representative."""
+    loaded = _loaded()
+    spec = next(s for s in option_fields.specs_for(loaded) if s.field_id == field_id)
+    stored = option_fields.current_value(loaded, spec)
+    offsets, _ = field_offsets(loaded, option_fields.specs_for(loaded))
+    expected = offsets[spec]
+
+    base = tmp_path / "base.aoe2scenario"
+    write_scenario(loaded, base)
+
+    model = OptionsEditModel(loaded)
+    model.set_value(field_id, flip(stored))
+    edited = tmp_path / "edited.aoe2scenario"
+    write_scenario(loaded, edited, options=model)
+
+    ranges = _differing_ranges(_written_body(base), _written_body(edited))
+    assert ranges, "no bytes changed"
+    for start, end in ranges:
+        assert expected.offset <= start and end <= expected.offset + expected.length, (
+            f"changed range ({start}, {end}) escapes {field_id}'s own span"
+        )
+
+
 def test_two_option_edits_change_exactly_two_fields_bytes(tmp_path: Path) -> None:
     """Patches are independent: each is fixed-width, so neither shifts the
     other's offset."""
@@ -242,9 +280,11 @@ def test_two_option_edits_change_exactly_two_fields_bytes(tmp_path: Path) -> Non
         spec
         for spec in option_fields.specs_for(loaded)
         if spec.kind == option_fields.CHECKBOX
-        and spec.section != "Triggers"
+        and spec.section not in ("Triggers", "GlobalVictory")
         and option_fields.current_value(loaded, spec) in (0, 1)
     ][:2]
+    # GlobalVictory excluded: custom_conquest is a u32, and a 0/1 flip moves
+    # one byte of it, not the whole span the byte-set check below expects.
     assert len(specs) == 2
     offsets, _ = field_offsets(loaded, option_fields.specs_for(loaded))
 
@@ -359,6 +399,26 @@ def test_exec_order_value_is_none_before_triggers_are_parsed() -> None:
     loaded = load_map_and_units(FIXTURE_PATH)
     assert "Triggers" not in loaded._scenario.sections
     assert exec_order_value(loaded) is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "pending", "expected"),
+    [
+        (0, None, (EXEC_MODE_DISPLAY, False)),
+        (1, None, (EXEC_MODE_LEGACY, False)),
+        (0, 0, (EXEC_MODE_DISPLAY, False)),
+        (1, 1, (EXEC_MODE_LEGACY, False)),
+        (0, 1, (EXEC_MODE_LEGACY, True)),
+        (1, 0, (EXEC_MODE_DISPLAY, True)),
+        (None, None, (EXEC_MODE_UNKNOWN, False)),
+        (None, 0, (EXEC_MODE_UNKNOWN, False)),
+        (None, 1, (EXEC_MODE_UNKNOWN, False)),
+    ],
+)
+def test_resolve_exec_mode_covers_every_stored_and_pending_combination(stored, pending, expected) -> None:
+    """A pending value on a file storing no flag has nowhere to land, so it
+    must not change the answer -- the status line has always ignored it."""
+    assert resolve_exec_mode(stored, pending) == expected
 
 
 # -- 5. both write paths in one save -----------------------------------------
@@ -486,7 +546,7 @@ def test_every_writable_option_repacks_its_stored_bytes_across_the_corpus(
     parse_triggers(loaded)
     specs = option_fields.specs_for(loaded)
     offsets, _ = field_offsets(loaded, specs)
-    for spec, _fo in offsets.items():
+    for spec in offsets:
         retriever = loaded._scenario.sections[spec.section].retriever_map[spec.retriever]
         packer = pack_struct_for(retriever)
         if packer is None:

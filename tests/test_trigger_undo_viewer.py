@@ -213,6 +213,20 @@ _OPERATIONS = [
     # An activate-trigger effect is a reference the id remap has to follow, so
     # adding one and undoing it is the content-edit half of the same trap.
     ("new activate-trigger effect", lambda w: w.entry_structural_edit("new", 0, "effect", -1, 53)),
+    # Retype (GH #37). Trigger 0's effect is display_instructions (20) and its
+    # condition is timer (10); the targets share some fields and not others, so
+    # both the carried and the dropped half of the rule run here.
+    ("retype effect", lambda w: w.entry_structural_edit("retype", 0, "effect", 0, 3)),
+    ("retype condition", lambda w: w.entry_structural_edit("retype", 0, "condition", 0, 3)),
+    # Trigger 2's first effect really is activate_trigger (EffectId value 8),
+    # so retyping it away drops a trigger reference and changes what
+    # get_trigger_referencing_ce() returns for that trigger. That is the one
+    # case in this feature that could trip restore()'s trap-3 checksum, which
+    # compares ref_ids captured before and after independently.
+    (
+        "retype an activate-trigger effect",
+        lambda w: w.entry_structural_edit("retype", 2, "effect", 0, 20),
+    ),
 ]
 
 

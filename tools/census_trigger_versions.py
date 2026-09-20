@@ -127,6 +127,7 @@ def run_worker(path: Path) -> dict:
         capture_output=True,
         text=True,
         timeout=600,
+        check=False,  # the caller reads returncode/stdout and reports itself
     )
     for line in proc.stdout.splitlines():
         if line.startswith(RECORD_PREFIX):

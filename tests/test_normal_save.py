@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import conftest
 from descape.scenario_io import load_map_and_units
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -25,11 +26,7 @@ BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120
 
 
 def _window():
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    return window
+    return conftest.blank_window(load=False)
 
 
 def _close(window) -> None:

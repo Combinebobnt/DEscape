@@ -3,9 +3,10 @@ VariablesDialog that hangs off it."""
 
 from __future__ import annotations
 
+from typing import ClassVar
 
-
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,6 +18,7 @@ from PyQt5.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -28,9 +30,9 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-
 from descape import (
     library_compat,
+    messages_fields,
     object_catalog,
     trigger_fields,
     trigger_organize,
@@ -41,10 +43,103 @@ from descape.scenario_io import (
     parse_triggers,
 )
 from descape.trigger_model import (
+    EXEC_MODE_DISPLAY,
+    EXEC_MODE_LEGACY,
+    EXEC_MODE_UNKNOWN,
     exec_order_value,
+    resolve_exec_mode,
 )
-from descape.value_picker import _HScrollStableTreeWidget
+from descape.value_picker import PickerItem, ValueLineEdit, _HScrollStableTreeWidget
 from descape.viewer_common import _fit_combo_width, _make_spinbox
+
+
+class _MultiLineEdit(QPlainTextEdit):
+    """A multi-line field editor with QLineEdit's commit contract.
+
+    textChanged fires per keystroke, and commit_trigger_edit() pushes
+    unconditionally, so wiring it would record one undo step per character.
+    editingFinished fires on focus-out instead, as a QLineEdit's does.
+
+    Subclasses pick the font and wrap mode in _configure(), which runs before
+    the height band is computed from fontMetrics().
+    """
+
+    editingFinished = pyqtSignal()
+
+    VISIBLE_LINES = 6
+    # A NoWrap editor can show a horizontal scrollbar, and its band has to pay
+    # for it or the last line is clipped. A wrapping one never shows it.
+    RESERVE_HSCROLL = True
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(parent)
+        self._configure()
+        # Tab must leave the field, or the user could never tab out to commit.
+        self.setTabChangesFocus(True)
+        self.setPlainText(text)
+        # The text as populated. The commit handler compares against this, not
+        # against the stored value, whose separators the display form does not
+        # keep (trigger_fields.xs_from_display(), ProseTextEdit.newline_token).
+        self.latched_text = self.toPlainText()
+        # A fixed band keeps the wrapped form's heightForWidth computable.
+        margins = self.contentsMargins()
+        height = (
+            self.fontMetrics().lineSpacing() * self.VISIBLE_LINES
+            + 2 * int(self.document().documentMargin())
+            + margins.top()
+            + margins.bottom()
+        )
+        if self.RESERVE_HSCROLL:
+            height += self.horizontalScrollBar().sizeHint().height()
+        self.setFixedHeight(height)
+
+    def _configure(self) -> None:
+        raise NotImplementedError
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        # Same exemptions as QLineEdit: a popup or a window switch is not the
+        # user leaving the field.
+        if event.reason() not in (Qt.PopupFocusReason, Qt.ActiveWindowFocusReason):
+            self.editingFinished.emit()
+
+
+class XsTextEdit(_MultiLineEdit):
+    """The multi-line editor for an XS script body: monospace, un-wrapped."""
+
+    def _configure(self) -> None:
+        # Not QFontDatabase.systemFont(FixedFont): offscreen and bare X answer
+        # that with a proportional font.
+        font = QFont("monospace")
+        font.setStyleHint(QFont.TypeWriter)
+        self.setFont(font)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+
+
+class ProseTextEdit(_MultiLineEdit):
+    """The multi-line editor for a user-facing prose field.
+
+    Wrapping is the whole point, not line count: the dominant real value is
+    one long line with no newline in it at all (display_instructions.message,
+    510 corpus values, median 89 chars, max 256), which the XS widget renders
+    as a single line behind a horizontal scrollbar.
+
+    `newline_token` is what the stored value used, latched at populate time so
+    _prose_changed() can write the field back in its own convention rather
+    than imposing one (trigger `description` occurs with CR, CRLF and LF).
+    """
+
+    RESERVE_HSCROLL = False
+
+    def __init__(self, text: str, newline_token: str | None = None, parent=None) -> None:
+        self.newline_token = newline_token
+        super().__init__(text, parent)
+
+    def _configure(self) -> None:
+        self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        # WidgetWidth never needs it; policy rather than inference so the band
+        # above and the widget agree even mid-relayout.
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
 
 class VariablesDialog(QDialog):
@@ -241,11 +336,43 @@ class TriggerPanel(QWidget):
     _BEFORE_FIRST_SECTION = "(before the first section)"
 
     # A row's parsed [tag] (str | None), stashed at populate time. The tag
-    # combo matches against this, never against text(1): the rendered label
-    # substitutes "(unnamed)" and appends "  (disabled)", and inheriting that
-    # false-positive class into a facet would be far more visible than it
-    # already is in the free-text filter.
+    # combo matches against this, never against the name column's text: the
+    # rendered label substitutes "(unnamed)" and appends "  (disabled)", and
+    # inheriting that false-positive class into a facet would be far more
+    # visible than it already is in the free-text filter.
     _TAG_ROLE = Qt.UserRole + 1
+
+    # The trigger tree's columns. Detail, picker and variables trees keep
+    # their own indices.
+    _COL_POS = 0
+    _COL_ID = 1
+    _COL_NAME = 2
+    # Qt.UserRole and _TAG_ROLE are row data pinned to column 0, whichever
+    # column that is; they do not follow the ID column.
+    _ROLE_COL = 0
+
+    # Position header per resolve_exec_mode() mode, 0-based like the ID column
+    # and the on-disk trigger_display_order array.
+    _POSITION_HEADERS: ClassVar[dict[str, tuple[str, str]]] = {
+        EXEC_MODE_DISPLAY: (
+            "Exec #",
+            "Position in display order, which is also execution order in this file.",
+        ),
+        EXEC_MODE_LEGACY: (
+            "Display #",
+            (
+                "Position in display order. This file executes in trigger-ID order "
+                "(legacy), so the ID column is the execution order."
+            ),
+        ),
+        EXEC_MODE_UNKNOWN: (
+            "Display #",
+            (
+                "Position in display order. This file does not store which order "
+                "its triggers execute in."
+            ),
+        ),
+    }
 
     def __init__(
         self,
@@ -273,6 +400,11 @@ class TriggerPanel(QWidget):
         # picker is showing, so a selection change in between would otherwise
         # add the condition to a different trigger than the user asked.
         self._picker_trigger_index: int | None = None
+        # The entry being retyped, latched at open for the same reason, plus
+        # its current type id so the "picked the type it already has" no-op
+        # check needs no lookup at accept time. None means "Add", not "Change".
+        self._picker_entry_ref: tuple[str, int] | None = None
+        self._picker_entry_type: int = -1
 
         # True while widgets are being populated programmatically. Qt fires
         # valueChanged/currentIndexChanged on a programmatic set exactly as it
@@ -375,18 +507,18 @@ class TriggerPanel(QWidget):
         pane_layout.addLayout(filter_row)
 
         self.tree = _HScrollStableTreeWidget()
-        self.tree.setHeaderLabels(["ID", "Trigger"])
-        self.tree.setColumnCount(2)
+        self.tree.setColumnCount(3)
+        self._set_position_header(EXEC_MODE_UNKNOWN)
         self.tree.setUniformRowHeights(True)
         self.tree.setRootIsDecorated(False)
         self._configure_scrolling(self.tree)
-        # Both content-sized, unlike the detail tree's capped Item/Detail
-        # split: ID is a few digits wide, so giving Trigger the same
-        # ResizeToContents treatment still leaves it effectively the whole
+        # All content-sized, unlike the detail tree's capped Item/Detail
+        # split: position and ID are a few digits wide, so giving Trigger the
+        # same ResizeToContents treatment still leaves it effectively the whole
         # pane. No _fit_entry_columns()-style cap and no resizeEvent hook --
         # the sizing here has nothing viewport-dependent to react to.
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        for column in (self._COL_POS, self._COL_ID, self._COL_NAME):
+            self.tree.header().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.tree.currentItemChanged.connect(lambda *_: self._on_trigger_selected())
         pane_layout.addWidget(self.tree, stretch=1)
 
@@ -448,9 +580,17 @@ class TriggerPanel(QWidget):
                 ("entry_new_button", "New", "Add a condition or effect to this trigger"),
                 ("entry_copy_button", "Copy", "Duplicate the selected condition or effect"),
                 ("entry_delete_button", "Delete", "Remove the selected condition or effect"),
+                # "Type…" rather than "Change Type": 4b.6b measured that three
+                # buttons fit the 340 px pane and five do not, so the fourth
+                # has to be short. The tooltip carries the rest.
+                (
+                    "entry_retype_button",
+                    "Type…",
+                    "Change the selected condition or effect to a different type",
+                ),
             ],
             lambda op: (lambda checked=False: self._request_entry_op(op)),
-            ("new", "copy", "delete"),
+            ("new", "copy", "delete", "retype"),
         )
         pane_layout.addLayout(self.entry_buttons)
 
@@ -468,7 +608,7 @@ class TriggerPanel(QWidget):
         """One row of equally-weighted push buttons, stored on self by name."""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        for (attribute, label, tip), op in zip(buttons, ops):
+        for (attribute, label, tip), op in zip(buttons, ops, strict=True):
             button = QPushButton(label)
             button.setToolTip(tip)
             # checked=False first: QPushButton.clicked passes a positional bool,
@@ -626,6 +766,8 @@ class TriggerPanel(QWidget):
             self._display_slots = []
             self._display_position = {}
             self._grouped = False
+            # Neutral, so an empty panel stops asserting the last file's mode.
+            self._set_position_header(EXEC_MODE_UNKNOWN)
             self.status.setText(self._NO_DOCUMENT)
             # Closed, not just emptied: its contents belong to a document that
             # is no longer open, and leaving it up invites an edit against one.
@@ -671,6 +813,7 @@ class TriggerPanel(QWidget):
                 self.tag_combo.clear()
                 self.tag_combo.addItem("All tags", None)
                 self.tag_combo.setEnabled(False)
+                self._set_position_header(EXEC_MODE_UNKNOWN)
                 self.status.setText(self._UNSUPPORTED)
                 # This return leaves via the finally below, skipping the tail,
                 # so the buttons have to be settled here as well.
@@ -695,17 +838,24 @@ class TriggerPanel(QWidget):
                 f"{loaded.trigger_version:g}{note}. "
                 f"{self._exec_order_readout(loaded, pending_exec_order)}"
             )
+            self._set_position_header(
+                resolve_exec_mode(exec_order_value(loaded), pending_exec_order)[0]
+            )
+            # Always display order, whatever the sort: the position column and
+            # Move Up/Down bounds both mean display position, not view row.
+            self._display_slots = list(manager.trigger_display_order)
+            self._display_position = {
+                index: position for position, index in enumerate(self._display_slots)
+            }
             # Display order by default -- the in-game order, and what raw
             # list order already disagrees with on 6 of 14 parseable corpus
             # files. "index" (raw list order) is the alternate sort a user can
             # pick, e.g. to match a file's trigger ids for scripting purposes.
             order = (
-                list(manager.trigger_display_order)
+                list(self._display_slots)
                 if self._sort_mode == "display"
                 else list(range(len(triggers)))
             )
-            self._display_slots = order
-            self._display_position = {index: position for position, index in enumerate(order)}
 
             names = [self._read(t, "name") or "" for t in triggers]
             self._populate_tag_combo(names)
@@ -764,10 +914,27 @@ class TriggerPanel(QWidget):
         finally:
             self.tag_combo.blockSignals(False)
 
+    def _set_position_header(self, mode: str) -> None:
+        text, tooltip = self._POSITION_HEADERS[mode]
+        labels = ["", "ID", "Trigger"]
+        labels[self._COL_POS] = text
+        self.tree.setHeaderLabels(labels)
+        self.tree.headerItem().setToolTip(self._COL_POS, tooltip)
+
+    def _position_text(self, index: int) -> str:
+        position = self._display_position.get(index)
+        return "" if position is None else str(position)
+
     def _make_trigger_item(self, index: int, trigger) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([str(index), self._trigger_label(trigger)])
-        item.setData(0, Qt.UserRole, index)
-        item.setData(0, self._TAG_ROLE, trigger_organize.parse_tag(self._read(trigger, "name") or ""))
+        columns = ["", "", ""]
+        columns[self._COL_POS] = self._position_text(index)
+        columns[self._COL_ID] = str(index)
+        columns[self._COL_NAME] = self._trigger_label(trigger)
+        item = QTreeWidgetItem(columns)
+        item.setData(self._ROLE_COL, Qt.UserRole, index)
+        item.setData(
+            self._ROLE_COL, self._TAG_ROLE, trigger_organize.parse_tag(self._read(trigger, "name") or "")
+        )
         return item
 
     def _populate_flat(self, triggers, order: list[int]) -> None:
@@ -784,9 +951,11 @@ class TriggerPanel(QWidget):
         the one synthetic row in the whole tree."""
         for section in parts:
             if section.header_index is None:
-                top = QTreeWidgetItem(["", self._BEFORE_FIRST_SECTION])
-                top.setData(0, Qt.UserRole, None)
-                top.setData(0, self._TAG_ROLE, None)
+                columns = ["", "", ""]
+                columns[self._COL_NAME] = self._BEFORE_FIRST_SECTION
+                top = QTreeWidgetItem(columns)
+                top.setData(self._ROLE_COL, Qt.UserRole, None)
+                top.setData(self._ROLE_COL, self._TAG_ROLE, None)
                 # Not a real trigger: selecting it must be impossible, not just
                 # handled gracefully if it somehow gets selected.
                 top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
@@ -911,14 +1080,13 @@ class TriggerPanel(QWidget):
         edit, passed in rather than read through a model here for that same
         reason.
         """
-        value = exec_order_value(loaded)
-        if value is None:
+        mode, unsaved = resolve_exec_mode(exec_order_value(loaded), pending_exec_order)
+        if mode == EXEC_MODE_UNKNOWN:
             return "Execution order is not stored in this file."
-        shown = value if pending_exec_order is None else pending_exec_order
-        unsaved = " - unsaved change." if shown != value else "."
-        if shown:
-            return f"Executes in trigger-ID order (legacy){unsaved}"
-        return f"Executes in display order{unsaved}"
+        suffix = " - unsaved change." if unsaved else "."
+        if mode == EXEC_MODE_LEGACY:
+            return f"Executes in trigger-ID order (legacy){suffix}"
+        return f"Executes in display order{suffix}"
 
     def current_trigger_index(self) -> int | None:
         """The trigger's stable list index, not its row -- these diverge under
@@ -1126,6 +1294,10 @@ class TriggerPanel(QWidget):
             return "(unset)"
         if spec.kind == trigger_fields.INT_LIST:
             return trigger_fields.format_int_list(value) or "(unset)"
+        if spec.multiline == trigger_fields.XS:
+            return trigger_fields.xs_to_display(value)
+        if spec.multiline == trigger_fields.PROSE:
+            return messages_fields.normalize_for_display("" if value is None else str(value))[0]
         if spec.kind == trigger_fields.BOOL:
             return "yes" if value else "no"
         if spec.kind == trigger_fields.ENUM:
@@ -1159,6 +1331,25 @@ class TriggerPanel(QWidget):
             )
             return widget
 
+        if spec.kind == trigger_fields.STR and spec.multiline == trigger_fields.XS:
+            widget = XsTextEdit(trigger_fields.xs_to_display(value))
+            widget.setReadOnly(not editable)
+            widget.editingFinished.connect(
+                lambda s=spec, k=kind, i=entry_index, w=widget: self._xs_changed(s, k, i, w)
+            )
+            return widget
+
+        if spec.kind == trigger_fields.STR and spec.multiline == trigger_fields.PROSE:
+            display, token = messages_fields.normalize_for_display(
+                "" if value is None else str(value)
+            )
+            widget = ProseTextEdit(display, token)
+            widget.setReadOnly(not editable)
+            widget.editingFinished.connect(
+                lambda s=spec, k=kind, i=entry_index, w=widget: self._prose_changed(s, k, i, w)
+            )
+            return widget
+
         if spec.kind == trigger_fields.STR:
             widget = QLineEdit("" if value is None else str(value))
             widget.setReadOnly(not editable)
@@ -1181,6 +1372,8 @@ class TriggerPanel(QWidget):
             return widget
 
         if spec.kind == trigger_fields.ENUM:
+            if trigger_fields.wants_picker(spec):
+                return self._build_enum_picker_widget(spec, kind, entry_index, value, editable)
             widget = QComboBox()
             _fit_combo_width(widget)
             for label, choice in spec.choices:
@@ -1241,6 +1434,29 @@ class TriggerPanel(QWidget):
         # Connected after set_value(), matching every other widget here: a
         # populate must not look like a user edit (trigger_fields.py's own
         # note on why _changed()'s _populating guard is otherwise unreachable).
+        widget.committed.connect(
+            lambda new, s=spec, k=kind, i=entry_index: self._changed(s, k, i, new)
+        )
+        return widget
+
+    def _build_enum_picker_widget(
+        self, spec, kind: str, entry_index: int, value, editable: bool
+    ) -> QWidget:
+        """A large ENUM (trigger_fields.wants_picker()): a ValueLineEdit over
+        the enum's (label, value) pairs, in place of a combo too long to scroll.
+
+        Unlike _build_catalog_widget(), UNSET (-1) is not mapped to None: an
+        enum holding -1 renders "unknown (-1)", exactly as its combo did. Only
+        None, an attribute _read() could not reach, shows the placeholder.
+        """
+        widget = ValueLineEdit(
+            [PickerItem(label, choice) for label, choice in spec.choices],
+            show_values=True,
+            browse_title=spec.label.capitalize(),
+        )
+        widget.set_value(value if isinstance(value, int) and not isinstance(value, bool) else None)
+        widget.setEnabled(editable)
+        # Connected after set_value(), matching every other widget here.
         widget.committed.connect(
             lambda new, s=spec, k=kind, i=entry_index: self._changed(s, k, i, new)
         )
@@ -1363,6 +1579,26 @@ class TriggerPanel(QWidget):
             return
         self._changed(spec, kind, entry_index, value)
 
+    def _xs_changed(self, spec, kind: str, entry_index: int, widget: XsTextEdit) -> None:
+        # Untouched text is a guaranteed no-op, whatever separators the stored
+        # value holds; _changed()'s equality check alone misses CRLF and LF.
+        text = widget.toPlainText()
+        if text == widget.latched_text:
+            return
+        self._changed(spec, kind, entry_index, trigger_fields.xs_from_display(text))
+        widget.latched_text = text
+
+    def _prose_changed(self, spec, kind: str, entry_index: int, widget: ProseTextEdit) -> None:
+        # Same latch as _xs_changed(): on a CR- or CRLF-stored field the
+        # display text differs from the stored value, so _changed()'s equality
+        # check alone would record a phantom undo step on a bare focus-out.
+        text = widget.toPlainText()
+        if text == widget.latched_text:
+            return
+        value = messages_fields.substitute_newlines(text, widget.newline_token)
+        self._changed(spec, kind, entry_index, value)
+        widget.latched_text = text
+
     def _refresh_labels(self, trigger_index: int) -> None:
         """Update only the rows an edit can have changed.
 
@@ -1377,11 +1613,11 @@ class TriggerPanel(QWidget):
             trigger = manager.triggers[trigger_index]
             item = self._item_for_index.get(trigger_index)
             if item is not None:
-                item.setText(1, self._trigger_label(trigger))
+                item.setText(self._COL_NAME, self._trigger_label(trigger))
                 # The tag facet's stashed role, kept in step with a rename that
                 # doesn't cross the divider predicate (repartitions handles
                 # that case with a full repopulate instead -- see _changed()).
-                item.setData(0, self._TAG_ROLE, trigger_organize.parse_tag(self._read(trigger, "name") or ""))
+                item.setData(self._ROLE_COL, self._TAG_ROLE, trigger_organize.parse_tag(self._read(trigger, "name") or ""))
 
             entry_item = self.entry_tree.currentItem()
             if entry_item is None:
@@ -1481,6 +1717,12 @@ class TriggerPanel(QWidget):
                 self._display_slots[neighbor_position] = trigger_index
                 self._display_position[trigger_index] = neighbor_position
                 self._display_position[neighbor_index] = position
+                # Both rows' position text is now stale; nothing else on this
+                # fast path would rewrite it.
+                item.setText(self._COL_POS, self._position_text(trigger_index))
+                neighbor_item = self._item_for_index.get(neighbor_index)
+                if neighbor_item is not None:
+                    neighbor_item.setText(self._COL_POS, self._position_text(neighbor_index))
 
         self.tree.setCurrentItem(item)
         self._update_buttons()
@@ -1560,6 +1802,21 @@ class TriggerPanel(QWidget):
         if op == "new":
             self._open_picker(trigger_index)
             return
+        if op == "retype":
+            current = self._current_entry()
+            # The trigger row is not an entry. _current_entry() still returns it
+            # (as kind "trigger") where _selected_entry_ref() drops it, so the
+            # gate Copy and Delete get for free has to be explicit here.
+            if current is None or current[0] == "trigger":
+                return
+            kind, entry_index, entry = current
+            _, _, type_attribute = self._vocab_for(kind)
+            self._open_picker(
+                trigger_index,
+                entry_ref=(kind, entry_index),
+                entry_type=self._read(entry, type_attribute),
+            )
+            return
         selected = self._selected_entry_ref()
         if selected is None:
             return
@@ -1568,11 +1825,35 @@ class TriggerPanel(QWidget):
 
     # -- the vocabulary picker -----------------------------------------------
 
-    def _open_picker(self, trigger_index: int) -> None:
+    def _open_picker(
+        self,
+        trigger_index: int,
+        entry_ref: tuple[str, int] | None = None,
+        entry_type: int = -1,
+    ) -> None:
+        """Show the vocabulary picker over the lower pane.
+
+        `entry_ref` switches it from Add to Change: the picker then offers only
+        that entry's own kind and opens on the type it already has.
+        """
         if self._vocabulary is None:
             return
         self._picker_trigger_index = trigger_index
+        self._picker_entry_ref = entry_ref
+        self._picker_entry_type = entry_type if isinstance(entry_type, int) else -1
         self._populate_picker()
+        retyping = self._picker_entry_ref is not None
+        self.picker_add_button.setText("Change" if retyping else "Add")
+        self.picker_tree.setHeaderLabels(
+            [f"Change this {self._picker_entry_ref[0]} to"]
+            if retyping
+            else ["Add to this trigger"]
+        )
+        self.picker_filter.setPlaceholderText(
+            f"Filter {self._picker_entry_ref[0]}s…"
+            if retyping
+            else "Filter conditions and effects…"
+        )
         self.detail_stack.setCurrentIndex(1)
         # The picker gets the whole lower pane while it is up. Sharing it with
         # the detail tree left 144 types in five visible rows, and the tree has
@@ -1591,6 +1872,8 @@ class TriggerPanel(QWidget):
         is why the window is only ever told about an accepted pick.
         """
         self._picker_trigger_index = None
+        self._picker_entry_ref = None
+        self._picker_entry_type = -1
         self.picker_tree.clear()
         self.picker_filter.clear()
         self.detail_stack.setCurrentIndex(0)
@@ -1605,10 +1888,17 @@ class TriggerPanel(QWidget):
                 widget.setVisible(visible)
 
     def _populate_picker(self) -> None:
+        """Both kinds in Add mode; only the latched entry's own kind in Change
+        mode, where it also opens on the type the entry already has. Retyping a
+        condition into an effect is not offered: they are separate lists."""
         self.picker_tree.clear()
         if self._vocabulary is None:
             return
-        for kind, label in (("condition", "Conditions"), ("effect", "Effects")):
+        groups = (("condition", "Conditions"), ("effect", "Effects"))
+        if self._picker_entry_ref is not None:
+            groups = tuple(g for g in groups if g[0] == self._picker_entry_ref[0])
+        current_item = None
+        for kind, label in groups:
             entries, _presentation, _type_attribute = self._vocab_for(kind)
             if entries is None:
                 continue
@@ -1627,7 +1917,17 @@ class TriggerPanel(QWidget):
                 child = QTreeWidgetItem([entry.name.replace("_", " ")])
                 child.setData(0, Qt.UserRole, (kind, entry.id))
                 group.addChild(child)
+                if (
+                    self._picker_entry_ref is not None
+                    and entry.id == self._picker_entry_type
+                ):
+                    current_item = child
             group.setExpanded(True)
+        # After the tree is built: setCurrentItem on a child whose group has not
+        # been added yet does nothing.
+        if current_item is not None:
+            self.picker_tree.setCurrentItem(current_item)
+            self.picker_tree.scrollToItem(current_item)
 
     def _apply_picker_filter(self, text: str) -> None:
         """Hide non-matching rows, and any group left with nothing under it."""
@@ -1654,11 +1954,21 @@ class TriggerPanel(QWidget):
     def _accept_pick(self) -> None:
         picked = self._picked()
         trigger_index = self._picker_trigger_index
+        entry_ref = self._picker_entry_ref
+        entry_type = self._picker_entry_type
         if picked is None or trigger_index is None:
             return
         kind, type_id = picked
         self._close_picker()
-        self._on_entry_structural("new", trigger_index, kind, -1, type_id)
+        if entry_ref is None:
+            self._on_entry_structural("new", trigger_index, kind, -1, type_id)
+            return
+        if type_id == entry_type:
+            # The only place a no-op retype can be stopped: commit_trigger_edit()
+            # pushes unconditionally, so calling through would record an undo
+            # step that changes nothing.
+            return
+        self._on_entry_structural("retype", trigger_index, kind, entry_ref[1], type_id)
 
     # -- button enablement ---------------------------------------------------
 
@@ -1682,6 +1992,9 @@ class TriggerPanel(QWidget):
         has_entry = has_trigger and self._selected_entry_ref() is not None
         self.entry_copy_button.setEnabled(can_edit and has_entry)
         self.entry_delete_button.setEnabled(can_edit and has_entry)
+        self.entry_retype_button.setEnabled(
+            can_edit and has_entry and self._vocabulary is not None
+        )
 
         self.picker_add_button.setEnabled(picking and self._picked() is not None)
 
@@ -1748,7 +2061,7 @@ class TriggerPanel(QWidget):
         """
         try:
             return getattr(entry, attribute, None)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- see docstring: a row must always render
             return None
 
     def _apply_filter(self, *_args) -> None:
@@ -1766,9 +2079,11 @@ class TriggerPanel(QWidget):
             self._apply_filter_flat(needle, wanted_tag)
 
     def _row_matches(self, item: QTreeWidgetItem, needle: str, wanted_tag) -> bool:
-        if needle and needle not in item.text(1).lower():
+        if needle and needle not in item.text(self._COL_NAME).lower():
             return False
-        if wanted_tag is not None and item.data(0, self._TAG_ROLE) != wanted_tag:
+        # Kept as parallel guard clauses; negating only the second one into the
+        # return would read as if it were the sole test.
+        if wanted_tag is not None and item.data(self._ROLE_COL, self._TAG_ROLE) != wanted_tag:  # noqa: SIM103
             return False
         return True
 

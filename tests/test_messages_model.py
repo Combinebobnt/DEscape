@@ -101,7 +101,7 @@ def test_header_patch_present_when_instructions_changed_and_synced() -> None:
     model.set_value("instructions", "new text")
     patch = model.header_patch()
     assert patch is not None
-    start, end, payload = patch
+    _start, _end, payload = patch
     assert payload == b"\x08\x00\x00\x00new text"
 
 

@@ -12,17 +12,44 @@ commands, and architecture.
 - GAIA units' `rotation` field is not an angle for ~65% of GAIA objects — it's a
   tree/doodad graphic-variant index (integer values well outside `[0, 2π)`, e.g.
   7..53). Every write path must pass it through verbatim, never normalize it.
-- **The one exception to "verbatim", and its exact scope.** `descape/
-  unit_rotation.py` classifies each `unit_const` as ANGLE, VARIANT or INERT,
-  and the Rotate action is the only code anywhere that may transform an
-  existing unit's `rotation`, and only on ANGLE consts. Every other write path,
-  and every VARIANT or INERT const, stays verbatim as above.
-  `UnitEditModel.set_rotation()` raises rather than silently no-op'ing on a
-  non-ANGLE const, and that guard is what keeps the rule enforced rather than
-  merely documented. The whitelist is the .dat's own `unit.type == 70`
-  (creatable), which has zero counterexamples across 5808 corpus placements,
-  plus four hand-verified trebuchet consts; it is re-measured by a
-  corpus-marked test, not trusted.
+- **The exceptions to "verbatim", and their exact scope.** This list is
+  exhaustive: every other write path stays verbatim as above, and each
+  exception that goes through a model method raises rather than silently
+  no-op'ing outside its scope, which is what keeps the rule enforced rather
+  than merely documented.
+  - *Rotate*, via `UnitEditModel.set_rotation()`, only on ANGLE consts.
+    `descape/unit_rotation.py` classifies each `unit_const` as ANGLE, VARIANT
+    or INERT. The ANGLE whitelist is the .dat's own `unit.type == 70`
+    (creatable), which has zero counterexamples across 5808 corpus placements,
+    plus four hand-verified trebuchet consts; it is re-measured by a
+    corpus-marked test, not trusted.
+  - *Map mirroring's unit images*, via `mirror_tools.plan_mirror_units()`.
+    This one transforms nothing in place: it derives a NEW unit's rotation
+    from its source's and `UnitEditModel.add()`s it, so there is no model
+    guard here, only the plan's own rule. A wall's stored run-direction index
+    (0 along x, 1 along y) swaps under the four axis-swapping D4 elements,
+    and only in a file that encodes the index as a literal integer (a
+    radian-encoded file carries no shape information there, measured). Every
+    other rotation, including a real facing angle, is copied verbatim.
+  - *Cycle Variant*, via `UnitEditModel.set_variant()`, only on consts
+    `descape/unit_variant.py` calls cyclable: VARIANT, at least two real
+    variants, and not a wall, cliff or gate. Those three are excluded by const
+    set (never by `unit.class_`, which would also drop Aqueduct and Mole)
+    because the game re-derives their index from neighbours, so a written
+    value would be overridden. It always writes a literal integer index: every
+    corpus placement on a cyclable const stores one, never the radian form.
+  - *The Wall Run tool's junction rewrites*, via
+    `UnitEditModel.set_wall_variant()`, only on the 8 wall consts
+    `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
+    and only for an index in `0..4`. Allowed for the same reason the bullet
+    above forbids *cycling* a wall: the game re-derives a wall's index from
+    its neighbours, so writing the value derived from those same neighbours
+    converges with the game rather than diverging from it, where an
+    author-picked one would just be overwritten. The index is always the
+    literal integer, never the radian re-encoding, and
+    `initial_animation_frame` is not touched (it is 0 on all 8193 corpus wall
+    placements). Gates are outside the scope and stay there: they have
+    `angle_count == 1` and their orientation lives in the const.
 - Gates carry no rotation at all: all 24 visible gate consts (6 families × 4
   orientations) have `angle_count == 1`, so there is no second frame for a
   rotation to select, and across 300 corpus gate placements the field is only
@@ -43,6 +70,10 @@ commands, and architecture.
   `rotation` and `z` pass through verbatim as above: a gate's stored rotation
   is `0.0` or the junk sentinel `7.0`, and every sibling has
   `angle_count == 1`, so there is nothing there to normalize.
+  Map mirroring is not an exception to this rule: it never changes a placed
+  gate's const, it `add()`s a *new* gate whose const comes from
+  `mirror_tools.reorient_gate_const()` and whose anchor is re-derived from
+  that sibling's own span.
 - The same is true of walls, for a different reason, and it is confirmed
   in-game: a wall graphic's five stored frames are SHAPES (two diagonal runs, a
   tower, a flatter run, a narrow column), not five facings, so `rotation`
@@ -51,7 +82,9 @@ commands, and architecture.
   index as `k*2π/5` radians — so both must be read, and neither may have an
   angular zero-point offset applied. `unit_sprites.variant_index()` is the only
   correct reader; `angle_index()` mis-maps 3 and 4. A write path must pass the
-  field through verbatim here too. A wall's correct stored value is also a
+  field through verbatim here too, with the single exception listed above
+  (`UnitEditModel.set_wall_variant()`, which writes the value derived from
+  the same neighbours the game would read). A wall's correct stored value is also a
   function of its neighbours (98.9%/99.1% agreement between neighbour mask and
   stored index across the corpus), so rotating one would write a value the game
   re-derives. Walls are VARIANT, and Rotate skips them.

@@ -213,3 +213,31 @@ def test_variable_name_for_falls_back_to_empty_when_missing() -> None:
 def test_variable_choices_labels_an_unnamed_variable_by_id() -> None:
     manager = _manager(variables=[(2, "")])
     assert object_catalog.variable_choices(manager) == (("Variable 2", 2),)
+
+
+# -- tech_name: the tech-side mirror of object_name ---------------------------
+
+
+def test_tech_name_resolves_a_tech_the_enum_carries() -> None:
+    assert object_catalog.tech_name(22) == "Loom"
+
+
+def test_tech_name_resolves_an_internal_tech_the_enum_hides() -> None:
+    """1359 is the motivating case from GH #57's plan: a real, disable-able
+    tech id whose row object_catalog.json carries but no heuristic separates
+    from an ordinary one. Asserted as "resolves at all" rather than against a
+    literal, because which of the two names comes back depends on whether an
+    install is visible -- conftest deliberately hides the configured one, so
+    this is the .dat short code here and the install string in the app."""
+    assert object_catalog.tech_name(1359) not in ("", "UNKNOWN_1359")
+
+
+def test_tech_name_falls_back_to_unknown() -> None:
+    assert object_catalog.tech_name(999999) == "UNKNOWN_999999"
+
+
+def test_tech_name_and_object_name_read_separate_id_spaces() -> None:
+    """The reason this is its own function: the same number means different
+    things in the two tables, so resolving a tech through the objects table
+    would name it after an unrelated unit."""
+    assert object_catalog.tech_name(109) != object_catalog.object_name(109)

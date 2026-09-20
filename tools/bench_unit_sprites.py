@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from itertools import pairwise
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -170,7 +171,7 @@ def bench_file(path: Path) -> str:
     layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
     units_by_tile = render._units_by_tile(scenario)
     mm = scenario.map_manager
-    bboxes = render._building_bboxes_iso(units_by_tile, mm.map_width, mm.map_height, proj, elevations)
+    bboxes = render._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations)
     merged = render.merge_sprite_bboxes(bboxes, layer)
     canvas_w, canvas_h = render._canvas_pixel_dims(proj)
     rects = _sample_rects(canvas_w, canvas_h)
@@ -210,7 +211,7 @@ def _bench_stepped_sprites(scenario, proj, elevations) -> list[str]:
     )
     levels = sorted(projs)
     lines = ["    stepped sprites, adjacent-level thrashing (Item 24):"]
-    for level_a, level_b in zip(levels, levels[1:]):
+    for level_a, level_b in pairwise(levels):
         proj_a, proj_b = projs[level_a], projs[level_b]
         unit_sprites.clear_caches()
         cold = _time(lambda: render.sprite_draws_by_anchor(scenario, proj_a, elevations))

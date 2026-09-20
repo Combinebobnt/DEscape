@@ -26,12 +26,15 @@ local scratch file can never trip this.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+
+_LINE_LEADER = re.compile(r"^[ \t]*(?:#|//|\*)?[ \t]*")
 
 _EXEMPT = {
     "tests/test_no_maintainer_refs.py",
@@ -57,13 +60,25 @@ def _read_text(rel: str) -> str | None:
         return None
 
 
+def _joined(text: str) -> str:
+    """Reforms a citation a comment/docstring line-wrap split mid-token --
+    e.g. `plans/descape-dedup-qapp-stepped-` / `# window.md` on the next
+    line -- so the containment check below still catches it. A plain
+    substring search over `text` misses this: the wrap point falls inside
+    the target string, not between two of them. Strips each line's leading
+    indentation and comment marker before concatenating with no separator,
+    since that's exactly what a word-wrapped token needs undone; unrelated
+    words glue together too, which is harmless for a containment check."""
+    return "".join(_LINE_LEADER.sub("", line, count=1) for line in text.split("\n"))
+
+
 def test_no_tracked_file_cites_a_maintainer_path():
     hits = []
     for rel in _tracked_files():
         if rel in _EXEMPT:
             continue
         text = _read_text(rel)
-        if text is not None and "maintainer/" in text:
+        if text is not None and "maintainer/" in _joined(text):
             hits.append(rel)
     assert not hits, (
         "these tracked files cite a maintainer/-relative path a clone of "
@@ -101,7 +116,8 @@ def test_no_tracked_file_cites_a_maintainer_doc_by_bare_filename():
         text = _read_text(rel)
         if text is None:
             continue
-        cited = sorted(name for name in basenames if name in text)
+        joined = _joined(text)
+        cited = sorted(name for name in basenames if name in joined)
         if cited:
             hits.append(f"{rel}: {cited}")
     assert not hits, (
@@ -109,3 +125,16 @@ def test_no_tracked_file_cites_a_maintainer_doc_by_bare_filename():
         "filename -- a clone without maintainer/ can't resolve it; restate "
         f"the fact inline instead: {hits}"
     )
+
+
+def test_joined_catches_a_filename_wrapped_mid_token():
+    """Regression for the real miss, reproducing the exact wrap that escaped
+    both checks in tests/test_lazy_viewport.py before it was fixed by hand
+    (814e3a2): the citation was intact character-for-character, just split
+    across two `# `-commented lines at a hyphen inside the filename."""
+    wrapped = (
+        "    # caller that never showed its window. MEASURED, against plans/descape-\n"
+        "    # dedup-qapp-stepped-window.md's expectation: forcing show=True here does\n"
+    )
+    assert "descape-dedup-qapp-stepped-window.md" not in wrapped
+    assert "descape-dedup-qapp-stepped-window.md" in _joined(wrapped)

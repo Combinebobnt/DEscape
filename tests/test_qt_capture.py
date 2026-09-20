@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from testkit import qt_capture
+
+import conftest
 
 pytestmark = pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 

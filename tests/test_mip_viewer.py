@@ -51,10 +51,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import conftest
 from descape.render_cache import _ChunkCacheBase
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from testkit import qt_capture
+
+import conftest
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -387,7 +388,9 @@ def _bare_map_view():
 
     conftest.ensure_qapp()
     noop = lambda *a, **k: None  # noqa: E731
-    return MapView(noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop)
+    return MapView(
+        noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop
+    )
 
 
 @pytest.mark.gui
@@ -474,21 +477,11 @@ def test_zoom_out_floor_on_a_real_window_stays_capped_despite_a_real_ladder() ->
 
 
 def _stepped_window():
-    from descape.viewer import ViewerWindow
-    from PyQt5.QtWidgets import QApplication
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    window.load_scenario(FIXTURE_PATH)
-    if window.scenario is None:
-        window.close()
-        pytest.skip(f"{FIXTURE_PATH.name} failed to load")
-    window.terrain_style_combo.setCurrentText("Stepped")
-    window.resize(WINDOW_SIZE, WINDOW_SIZE)
-    window.show()
-    QApplication.processEvents()
-    QApplication.processEvents()
-    return window
+    # A one-line forwarder rather than inlining conftest.stepped_window() at
+    # all six call sites: it binds FIXTURE_PATH and WINDOW_SIZE once instead
+    # of six times, and nothing is forked here, which is the point of the
+    # consolidation this replaced a local builder with.
+    return conftest.stepped_window(FIXTURE_PATH, size=WINDOW_SIZE)
 
 
 def _paint_spy(monkeypatch):
@@ -687,6 +680,7 @@ def test_block_tiling_matches_a_single_draw_at_a_scaled_level(monkeypatch, zoom)
     level, same residuals (1.25/1.5/1.85), same assertions; only how they're
     reached changed."""
     from PyQt5.QtCore import QRectF
+
     from descape.viewer_canvas import MapCanvasItem
 
     window = _stepped_window()
@@ -743,6 +737,7 @@ def test_block_tiling_matches_a_single_draw_at_a_minifying_residual(monkeypatch,
     to do with block seams and would make this test read as a failure of
     something it doesn't test."""
     from PyQt5.QtCore import QRectF
+
     from descape.viewer_canvas import MapCanvasItem
 
     window = _stepped_window()
@@ -841,7 +836,13 @@ def _probe_mip_at_scale_factor(scale_factor: str, steps=HIDPI_ZOOM_STEPS) -> tup
     env.pop("QT_AUTO_SCREEN_SCALE_FACTOR", None)
     script = _HIDPI_PROBE.format(size=WINDOW_SIZE, steps=tuple(steps))
     proc = subprocess.run(
-        [sys.executable, "-c", script], cwd=ROOT, env=env, capture_output=True, text=True, timeout=300
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=env,
+        check=False,  # a non-zero probe exit is a skip below, not an error
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     if proc.returncode != 0:
         pytest.skip(f"HiDPI probe subprocess failed at QT_SCALE_FACTOR={scale_factor}: {proc.stderr[-800:]}")

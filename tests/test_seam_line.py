@@ -69,8 +69,8 @@ def test_seam_is_a_subset_of_the_tiles_own_diamond(tile_px, side):
     """
     dst_y, dst_x = ig.seam_edge_indices(tile_px, side)
     dy, dx, _src_y, _src_x = ig.diamond_indices(tile_px)
-    diamond = set(zip(dy.tolist(), dx.tolist()))
-    got = set(zip(dst_y.tolist(), dst_x.tolist()))
+    diamond = set(zip(dy.tolist(), dx.tolist(), strict=True))
+    got = set(zip(dst_y.tolist(), dst_x.tolist(), strict=True))
     assert got, f"tile_px={tile_px} side={side}: empty seam"
     assert got <= diamond, f"tile_px={tile_px} side={side}: {len(got - diamond)} seam px off the diamond"
 
@@ -119,9 +119,9 @@ def test_the_three_passes_partition_the_top_edge(tile_px):
     qualify.
     """
     half_w, _half_h = ig.half_dims(tile_px)
-    left = set(zip(*(a.tolist() for a in ig.seam_edge_indices(tile_px, "up_left"))))
-    right = set(zip(*(a.tolist() for a in ig.seam_edge_indices(tile_px, "up_right"))))
-    apex = set(zip(*(a.tolist() for a in ig.seam_apex_indices(tile_px))))
+    left = set(zip(*(a.tolist() for a in ig.seam_edge_indices(tile_px, "up_left")), strict=True))
+    right = set(zip(*(a.tolist() for a in ig.seam_edge_indices(tile_px, "up_right")), strict=True))
+    apex = set(zip(*(a.tolist() for a in ig.seam_apex_indices(tile_px)), strict=True))
     assert not (left & right), f"tile_px={tile_px}: {len(left & right)} px shared between the two sides"
     assert not (left & apex), f"tile_px={tile_px}: up_left overlaps the apex pass"
     assert not (right & apex), f"tile_px={tile_px}: up_right overlaps the apex pass"
@@ -292,7 +292,7 @@ def _band_pixels_landing_on_the_neighbours_seam(tile_px, rise_px, side):
     nb_y = s_dst_y + half_h - rise_px
     nb_x = s_dst_x + off_x
     seam_y, seam_x = ig.seam_edge_indices(tile_px, _OPPOSITE[side])
-    seam_px = set(zip(seam_y.tolist(), seam_x.tolist()))
+    seam_px = set(zip(seam_y.tolist(), seam_x.tolist(), strict=True))
     on_seam = [
         float(band_factors[i]) for i in range(nb_y.size) if (int(nb_y[i]), int(nb_x[i])) in seam_px
     ]
@@ -461,10 +461,10 @@ def _predicted_seam_pixels(scenario, elevations, proj):
                 continue
             qualified = True
             dy, dx = ig.seam_edge_indices(tile_px, side)
-            predicted |= {(base_y + int(a), base_x + int(b)) for a, b in zip(dy.tolist(), dx.tolist())}
+            predicted |= {(base_y + int(a), base_x + int(b)) for a, b in zip(dy.tolist(), dx.tolist(), strict=True)}
         if qualified:
             dy, dx = ig.seam_apex_indices(tile_px)
-            predicted |= {(base_y + int(a), base_x + int(b)) for a, b in zip(dy.tolist(), dx.tolist())}
+            predicted |= {(base_y + int(a), base_x + int(b)) for a, b in zip(dy.tolist(), dx.tolist(), strict=True)}
     return predicted
 
 
@@ -499,7 +499,7 @@ def test_rendered_seam_mask_equals_the_predicted_pixel_set():
         render._seam_factors.cache_clear()
 
     ys, xs = np.nonzero(np.any(with_seam != without_seam, axis=2))
-    changed = set(zip(ys.tolist(), xs.tolist()))
+    changed = set(zip(ys.tolist(), xs.tolist(), strict=True))
     predicted = _predicted_seam_pixels(hill, elevations, proj)
     assert predicted, "fixture drew no seam at all"
 
@@ -575,7 +575,7 @@ def test_apex_columns_are_drawn_exactly_once():
         if sides_lower != 2:
             continue
         base_x, base_y = ig.tile_screen_origin(tile.x, tile.y, tile.elevation, proj)
-        for a, b in zip(apex_dy.tolist(), apex_dx.tolist()):
+        for a, b in zip(apex_dy.tolist(), apex_dx.tolist(), strict=True):
             y, x = base_y + int(a), base_x + int(b)
             src = without_seam[y, x].astype(np.float32)
             if not src.any():

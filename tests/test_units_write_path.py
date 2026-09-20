@@ -22,12 +22,13 @@ from pathlib import Path
 import pytest
 from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 
-from conftest import differing_ranges
 from descape.option_fields import specs_for
 from descape.options_model import field_offsets
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.unit_model import UnitEditModel
+
+from conftest import differing_ranges
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
@@ -231,12 +232,16 @@ def test_a_patch_landing_inside_the_units_region_is_refused_not_dropped(tmp_path
         has_diplomacy_edits = False
         has_player_edits = False
         has_player_count_edit = False
+        has_disables_edits = False
         specs = model.specs
 
         def serialize_patches(self):
             return model.serialize_patches()
 
         def header_patch(self):
+            return None
+
+        def serialize_disables_resize(self):
             return None
 
     with pytest.raises(WriteBlockedError):

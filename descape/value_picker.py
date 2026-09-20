@@ -14,8 +14,8 @@ signals the caller decides what to do with.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Sequence
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
@@ -404,7 +404,11 @@ class ValueLineEdit(QWidget):
         completer.activated[str].connect(self._commit_from_text)
 
         self.browse_button = QPushButton("…")
-        self.browse_button.setFixedWidth(28)
+        # Not a bare 28: at Settings > Appearance's largest UI font the
+        # ellipsis measures 27px in several families, which leaves it
+        # touching both borders. Sized at construction, so a live font
+        # change reaches it once the widget is next rebuilt.
+        self.browse_button.setFixedWidth(max(28, self.browse_button.fontMetrics().horizontalAdvance("…") + 12))
         self.browse_button.setToolTip("Browse…")
         self.browse_button.clicked.connect(self._browse)
 
@@ -427,8 +431,12 @@ class ValueLineEdit(QWidget):
             self.line_edit.setText(_rendered_text(item, self._show_values))
         else:
             self.line_edit.setText(f"unknown ({value})" if self._show_values else str(value))
+        # Show the start, not the end: setText() leaves the cursor past the
+        # last character, so a label too long for the field read "nown (9999)".
+        self.line_edit.setCursorPosition(0)
 
-    def setEnabled(self, enabled: bool) -> None:  # noqa: N802 (Qt override)
+    # camelCase because it overrides QWidget.setEnabled, not a style slip.
+    def setEnabled(self, enabled: bool) -> None:
         super().setEnabled(enabled)
         self.line_edit.setEnabled(enabled)
         self.browse_button.setEnabled(enabled)

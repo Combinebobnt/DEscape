@@ -240,7 +240,7 @@ def _agreement_summary(files: list[Path]) -> dict:
     for path in files:
         try:
             scenario = load_map_and_units(path)
-        except Exception:  # noqa: BLE001 -- a scan tool, not production code
+        except Exception:
             continue
         mm = scenario.map_manager
         tile_w, tile_h = mm.map_width, mm.map_height
@@ -287,7 +287,7 @@ def _diff_sets(files: list[Path], set_a: str, set_b: str) -> list[tuple[str, int
     for path in files:
         try:
             scenario = load_map_and_units(path)
-        except Exception:  # noqa: BLE001 -- a scan tool, not production code
+        except Exception:
             continue
         with _connector_set(set_a):
             overrides_a = wall_variant_rotation_overrides(scenario)
@@ -364,7 +364,7 @@ def main() -> None:
         for path in files:
             try:
                 result = scan_file(path)
-            except Exception as exc:  # noqa: BLE001 -- a scan tool, not production code
+            except Exception as exc:
                 print(f"{path.name:45s} FAILED: {exc}")
                 continue
             print(

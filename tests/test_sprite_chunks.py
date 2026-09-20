@@ -31,6 +31,7 @@ import pytest
 
 from descape import asset_source, iso_geometry, render, render_cache, unit_sprites
 from descape.terrain_palette import PLAYER_COLORS
+
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 MAP_W = MAP_H = 12
@@ -224,7 +225,7 @@ def composite_sprite_install(tmp_path, monkeypatch):
             "mirroring_mode": 0, "frame_count": 1,
             "pieces": [
                 {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1,
-                 "frame_count": 1, "dx": 0, "dy": 0},
+                 "frame_count": 1, "dx": 0, "dy": 0, "parent": True},
                 {"unit_id": CONST + 1, "file_name": piece_b_name, "angle_count": 1,
                  "frame_count": 1, "dx": 2 * canvas, "dy": -canvas},
             ],
@@ -241,14 +242,71 @@ def test_a_composite_units_stitched_chunks_match_the_full_render(composite_sprit
     """Every piece of a multi-graphic composite (a town centre, a pasture)
     must reach the chunked compositor exactly like a plain sprite does --
     the P3-g3 stitching guarantee (this module's own opening docstring)
-    extends to each piece's own offset anchor, not just the parent's."""
+    extends to each piece's own offset anchor, not just the parent's.
+
+    **Also the no-slot fallback pin**, which covers all 96 gate consts and the
+    three decoration-shell walls: this fixture's pieces carry no `slot`, so
+    both must still land on the unit's single anchor tile (asserted below).
+    The slotted counterpart is
+    test_a_slotted_composites_pieces_land_on_their_own_anchor_tiles."""
     scn = _scenario([[], [Unit(4.0, 4.0, CONST)]])
     full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
     sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
     assert sprites.skip_ids, "the fixture resolved no sprites, so this proves nothing"
 
+    assert len(sprites.by_anchor) == 1, "a piece with no slot paints at the unit's own anchor"
     anchor = next(iter(sprites.by_anchor))
     assert len(sprites.by_anchor[anchor]) == 2, "both composite pieces must reach the same anchor slot"
+
+    got = _chunked(scn, full, elevations, proj, sprites)
+    assert np.array_equal(got, full)
+
+
+@pytest.fixture
+def wall_composite_install(tmp_path, monkeypatch):
+    """A decoration-shell wall's shape (consts 72/119/788): a 5-variant body
+    marked parent plus a flag piece whose art exists at variant 2 only, both
+    sharing the wall's own unit_id. The flag sits well outside the body so the
+    composite's bbox is larger at variant 2 than at the other four."""
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    canvas = 4 * unit_sprites.NATIVE_TILE_W
+    flag_name = "t_flag_x1"
+    (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(5, canvas=canvas))
+    (graphics / f"{flag_name}.sld").write_bytes(
+        build_sld(5, canvas=canvas, empty_frames=frozenset({0, 1, 3, 4}))
+    )
+    piece = {"unit_id": CONST, "angle_count": 5, "frame_count": 1}
+    monkeypatch.setattr(
+        unit_sprites, "graphic_map",
+        lambda: {CONST: {
+            "graphic_id": 1, "file_name": FILE_NAME, "angle_count": 5,
+            "mirroring_mode": 0, "frame_count": 1, "rotation_is_variant": True,
+            "pieces": [
+                {**piece, "file_name": FILE_NAME, "dx": 0, "dy": 0, "parent": True},
+                {**piece, "file_name": flag_name, "dx": 2 * canvas, "dy": -canvas},
+            ],
+        }},
+    )
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def test_a_walls_per_variant_composite_bbox_stitches_at_every_variant(wall_composite_install):
+    """Walls vastly outnumber gates in the corpus, so a chunk-seam regression
+    shows there first. One wall per variant, each its own bbox size."""
+    units = [Unit(2.0 + 2 * v, 2.0 + 2 * v, CONST, rotation=float(v)) for v in range(5)]
+    scn = _scenario([[], units])
+    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    assert len(sprites.skip_ids) == 5, "every variant must draw, the flag's misses included"
+
+    widths = [x1 - x0 for (x0, _y0, x1, _y1) in sprites.bboxes.values()]
+    assert len(widths) == 5 and len(set(widths)) == 2, f"the variant-2 bbox should be wider: {widths}"
+    assert sum(len(v) for v in sprites.by_anchor.values()) == 6
 
     got = _chunked(scn, full, elevations, proj, sprites)
     assert np.array_equal(got, full)
@@ -344,3 +402,121 @@ def test_the_chunk_cache_renders_sprites_when_enabled(sprite_install):
 
     w, h = cache.canvas_dims(0)
     assert np.array_equal(cache.render_rect(0, 0, w, h), full[:h, :w])
+
+
+# --- per-piece depth slots (annex-composite Step 3) --------------------
+
+SLOT_CONST = CONST + 40
+SLOT_SPAN = (2, 2)
+BACK_FILE, FRONT_FILE = "t_slot_back_x1", "t_slot_front_x1"
+
+
+@pytest.fixture
+def slotted_composite_install(tmp_path, monkeypatch):
+    """A 2x2 composite whose two pieces carry their own depth slots, plus a
+    plain 1x1 unit -- the town centre sandwich in miniature. Each of the three
+    graphics has its own frame colour, so paint order is readable off pixels.
+
+    The slots bracket tile (4, 4) in depth order: the back piece at (5, 4)
+    paints before it, the front piece at (4, 5) after it."""
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    canvas = 4 * unit_sprites.NATIVE_TILE_W
+    (graphics / f"{BACK_FILE}.sld").write_bytes(build_sld(1, canvas=canvas, colour_base=3, playercolor=False))
+    (graphics / f"{FRONT_FILE}.sld").write_bytes(build_sld(1, canvas=canvas, colour_base=9, playercolor=False))
+    (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(1, canvas=canvas, colour_base=17, playercolor=False))
+
+    def piece(file_name, slot, dy):
+        # Offset vertically so the two pieces only partly overlap: identical
+        # offsets would leave the later one covering the earlier one entirely,
+        # and "the unit painted over the back piece" would be unobservable.
+        return {"unit_id": SLOT_CONST, "file_name": file_name, "angle_count": 1,
+                "frame_count": 1, "dx": 0, "dy": dy, "parent": file_name == BACK_FILE,
+                "slot": slot}
+
+    monkeypatch.setattr(
+        unit_sprites, "graphic_map",
+        lambda: {
+            SLOT_CONST: {
+                "graphic_id": 1, "file_name": BACK_FILE, "angle_count": 1,
+                "mirroring_mode": 0, "frame_count": 1,
+                "pieces": [piece(BACK_FILE, [1, 0], -96), piece(FRONT_FILE, [0, 1], 96)],
+            },
+            CONST: {"graphic_id": 2, "file_name": FILE_NAME, "angle_count": 1,
+                    "mirroring_mode": 0, "frame_count": 1},
+        },
+    )
+    monkeypatch.setitem(render.BUILDING_TILE_SPANS, SLOT_CONST, SLOT_SPAN)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def test_a_slotted_composites_pieces_land_on_their_own_anchor_tiles(slotted_composite_install):
+    """The degenerate case this replaces put both pieces on one anchor -- the
+    pin at test_a_composite_units_stitched_chunks_match_the_full_render still
+    covers that for a piece with no slot."""
+    scn = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST)]])
+    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+
+    assert {k: len(v) for k, v in sprites.by_anchor.items()} == {(5, 4): 1, (4, 5): 1}
+    assert set(sprites.bboxes) == {(5, 4), (4, 5)}
+
+
+def _visible(img, colour):
+    return int(np.count_nonzero(np.all(img == np.array(colour, dtype=img.dtype), axis=2)))
+
+
+def _piece_colour(draw):
+    """The one opaque colour build_sld paints a frame in."""
+    rgba = draw.rgba
+    return tuple(int(v) for v in rgba[rgba.shape[0] // 2, rgba.shape[1] // 2, :3])
+
+
+def test_a_unit_paints_between_a_slotted_composites_pieces(slotted_composite_install):
+    """Step 3's whole point: a unit standing inside a town centre is painted
+    OVER the back piece and UNDER the front one, instead of behind the whole
+    building. Its tile (4, 4) sits between the two slots in depth order."""
+    building = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST)]])
+    both = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST), Unit(4.5, 4.5, CONST)]])
+    alone = _scenario([[], [Unit(4.5, 4.5, CONST)]])
+
+    half_w = render.render_terrain_iso_with_proj(building, with_sprites=True)[2].half_w
+    back, front = (_piece_colour(p.draw) for p in unit_sprites.sprite_pieces_for(
+        SLOT_CONST, 0.0, 1, half_w))
+    unit_colour = _piece_colour(unit_sprites.sprite_for(CONST, 0.0, 1, half_w))
+    assert len({back, front, unit_colour}) == 3, "the three sprites must be distinguishable"
+
+    before = render.render_terrain_iso_with_proj(building, with_sprites=True)[0]
+    after = render.render_terrain_iso_with_proj(both, with_sprites=True)[0]
+    solo = render.render_terrain_iso_with_proj(alone, with_sprites=True)[0]
+
+    assert _visible(after, unit_colour) > 0, "the unit drew nothing, so this proves nothing"
+    # Over the back piece, under the front one -- both halves, or a degenerate
+    # single-anchor placement would satisfy whichever half it kept.
+    assert _visible(after, back) < _visible(before, back)
+    assert _visible(after, front) == _visible(before, front)
+    assert _visible(after, unit_colour) < _visible(solo, unit_colour)
+
+
+def test_a_slotted_composite_stitches_across_chunk_boundaries(slotted_composite_install):
+    scn = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST), Unit(4.5, 4.5, CONST)]])
+    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    assert np.array_equal(_chunked(scn, full, elevations, proj, sprites), full)
+
+
+def test_an_edge_clipped_composite_keeps_every_slot_inside_the_map(slotted_composite_install):
+    """A building hanging off the map edge derives its slots from the UNCLAMPED
+    footprint start, so each one still has to be clamped back onto a real tile."""
+    scn = _scenario([[], [Unit(0.0, 0.0, SLOT_CONST)]])
+    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+
+    assert sprites.by_anchor, "the clipped building resolved no pieces"
+    for tx, ty in sprites.by_anchor:
+        assert 0 <= tx < MAP_W and 0 <= ty < MAP_H, (tx, ty)
+    assert np.array_equal(_chunked(scn, full, elevations, proj, sprites), full)

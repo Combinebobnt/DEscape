@@ -259,12 +259,8 @@ def check_is_water_classification() -> tuple[bool, str]:
         TerrainId.ICE_NAVIGABLE,
     ]
     problems = []
-    for t in expect_water:
-        if not batch_api.is_water(t):
-            problems.append(f"{t.name}: expected is_water=True, got False")
-    for t in expect_not_water:
-        if batch_api.is_water(t):
-            problems.append(f"{t.name}: expected is_water=False, got True")
+    problems.extend(f"{t.name}: expected is_water=True, got False" for t in expect_water if not batch_api.is_water(t))
+    problems.extend(f"{t.name}: expected is_water=False, got True" for t in expect_not_water if batch_api.is_water(t))
     if problems:
         return False, "; ".join(problems)
     return True, f"OK ({len(expect_water)} water, {len(expect_not_water)} non-water terrains classified correctly)"

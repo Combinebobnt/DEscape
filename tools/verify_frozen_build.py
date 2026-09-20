@@ -31,7 +31,8 @@ def _bundle_executable() -> Path:
 
 def _run_mode(exe: Path, mode: str) -> int:
     print(f"=== {mode} ===")
-    result = subprocess.run([str(exe), mode], capture_output=True, text=True)
+    # check=False: this function reports the failure and returns the exit code.
+    result = subprocess.run([str(exe), mode], capture_output=True, text=True, check=False)
     print(result.stdout)
     if result.stderr:
         print(result.stderr, file=sys.stderr)

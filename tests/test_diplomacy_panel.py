@@ -40,21 +40,10 @@ BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120
 
 
 def _window():
-    from PyQt5.QtWidgets import QApplication
-
-    from descape.viewer import ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    window.resize(1500, 900)
-    window.show()
-    QApplication.processEvents()
-    return window
+    return conftest.shown_window(1500, 900)
 
 
-def _close(window) -> None:
-    window.edit_history.mark_saved()
-    window.close()
+_close = conftest.close_window
 
 
 def _diplomacy_window(path=BLANK_FIXTURE):
@@ -314,7 +303,7 @@ def test_switching_player_repopulates_the_form_with_that_players_stances() -> No
 def _is_grid_cell(field_id: str) -> bool:
     """stance:i:j / allied_victory:i, as opposed to a bare Teams-group spec
     field id like "lock_teams" -- see module docstring's collision note."""
-    return field_id.startswith("stance:") or field_id.startswith("allied_victory:")
+    return field_id.startswith(("stance:", "allied_victory:"))
 
 
 def _row_enabled(widget) -> bool:

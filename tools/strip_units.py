@@ -62,8 +62,7 @@ def strip_units(scenario: LoadedScenario) -> bytes:
     body = bytearray(scenario.decompressed_body)
     struct.pack_into("<I", body, 0, 0)  # next_unit_id_to_place
     zero_counts = b"\0\0\0\0" * scenario.number_of_unit_sections
-    new_body = bytes(body[: scenario.units_block_offset]) + zero_counts + bytes(body[scenario.units_section_end :])
-    return new_body
+    return bytes(body[: scenario.units_block_offset]) + zero_counts + bytes(body[scenario.units_section_end :])
 
 
 def _self_test(golden_path: Path) -> None:

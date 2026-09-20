@@ -1,8 +1,8 @@
 """Which units a render (or, from phase 3 on, a pick) is allowed to see.
 
-A leaf module by construction: it imports terrain_palette (itself a leaf)
-and nothing else from this package, so render.py can import it with no cycle
-risk, and unit_pick.py can import both.
+A leaf module by construction: it imports terrain_palette and unit_kind
+(both leaves themselves, stdlib-only) and nothing else from this package, so
+render.py can import it with no cycle risk, and unit_pick.py can import both.
 
 Filtering exists because of scale, not taste. This project's example
 scenarios reach ~10,871 units in a single file, ~9,988 of them GAIA clutter
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from descape import unit_kind
 from descape.terrain_palette import TREE_UNIT_IDS
 
 # scenario.unit_manager.units is indexed by player, and index 0 is GAIA (see
@@ -45,10 +46,19 @@ class UnitFilter:
     and stone are GAIA too and are usually the thing you're looking *for*,
     so collapsing the two into one toggle would make the useful case
     unreachable.
+
+    show_walls and show_eye_candy (GH #65) are const gates rather than owner
+    gates for the same reason show_trees is: a wall or a doodad belongs to
+    whoever placed it, and both are commonly owned by a real player, so an
+    owner gate would answer the wrong question. Their const sets are derived
+    from the committed .dat tables by unit_kind, not listed here -- see that
+    module for what each covers and why.
     """
 
     show_gaia: bool = True
     show_trees: bool = True
+    show_walls: bool = True
+    show_eye_candy: bool = True
     # None means every player, which is NOT the same as frozenset(range(9)):
     # a scenario may have fewer players, and None avoids having to know how
     # many before building a default filter.
@@ -57,13 +67,15 @@ class UnitFilter:
     def matches(self, player_id: int, unit) -> bool:
         """Whether this unit, owned by player_id, should be drawn/picked.
 
-        Three independent gates, ANDed. Order between them doesn't matter
+        Five independent gates, ANDed. Order between them doesn't matter
         (they never disagree about a unit, only about why it's hidden), but
         which field governs which gate does:
 
         - Trees are gated by show_trees regardless of owner, matching
           _unit_color()'s own "dark green regardless of owner" rule. A tree
           assigned to a real player is still a tree.
+        - Walls (and gates) and eye candy are gated the same owner-blind way,
+          which is why the three const gates all sit ahead of the owner ones.
         - GAIA is gated by show_gaia alone.
         - players gates only the non-GAIA slots. Folding GAIA into players
           too would double-gate it, so a Filters menu offering "Show GAIA"
@@ -71,6 +83,10 @@ class UnitFilter:
           sync to avoid GAIA vanishing while its own checkbox stayed ticked.
         """
         if not self.show_trees and unit.unit_const in TREE_UNIT_IDS:
+            return False
+        if not self.show_walls and unit.unit_const in unit_kind.wall_consts():
+            return False
+        if not self.show_eye_candy and unit.unit_const in unit_kind.eye_candy_consts():
             return False
         if player_id == GAIA_PLAYER_ID:
             return self.show_gaia
@@ -85,4 +101,10 @@ class UnitFilter:
         code, so callers can assert against it rather than against a
         hand-listed set of field values.
         """
-        return self.show_gaia and self.show_trees and self.players is None
+        return (
+            self.show_gaia
+            and self.show_trees
+            and self.show_walls
+            and self.show_eye_candy
+            and self.players is None
+        )

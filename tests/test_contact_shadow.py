@@ -155,13 +155,13 @@ def test_band_equals_the_whole_exposed_sliver(tile_px, rise_px_steps):
     half_w, half_h = ig.half_dims(tile_px)
     tops, _bottoms, used = ig._diamond_column_edges(tile_px)
     dy, dx, _, _ = ig.diamond_indices(tile_px)
-    diamond = set(zip(dy.tolist(), dx.tolist()))
+    diamond = set(zip(dy.tolist(), dx.tolist(), strict=True))
     rise_px = rise_px_steps * max(1, half_h // 4)
 
     for side in ("up_left", "up_right"):
         off_x = -half_w if side == "up_left" else half_w
         s_dst_y, s_dst_x, _depth, _span = ig.shadow_quad_indices(tile_px, rise_px, side)
-        got = set(zip(s_dst_y.tolist(), s_dst_x.tolist()))
+        got = set(zip(s_dst_y.tolist(), s_dst_x.tolist(), strict=True))
         # The neighbour's diamond, expressed in the CASTER's local frame.
         neighbour = {(r - half_h + rise_px, c + off_x) for r, c in diamond}
         exposed = {
@@ -194,7 +194,7 @@ def test_no_pixel_darkened_twice_across_the_whole_map(tile_px, elev_step_pct, st
         if s_dst_y.size == 0:
             continue
         bx, by = base
-        pixels = set(zip((by + s_dst_y).tolist(), (bx + s_dst_x).tolist()))
+        pixels = set(zip((by + s_dst_y).tolist(), (bx + s_dst_x).tolist(), strict=True))
         assert not (pixels & seen), f"{len(pixels & seen)} canvas pixels darkened by two bands"
         seen |= pixels
 
@@ -243,11 +243,12 @@ def test_shadow_factors_dtype_and_range(tile_px):
 
 
 @pytest.mark.parametrize("tile_px", TILE_PX)
-def test_falloff_ramps_out_within_a_fixed_fraction_of_a_tile(tile_px):
+def test_falloff_ramps_out_within_the_height_derived_ramp(tile_px):
     """The band's WEIGHT is capped near the silhouette even though its
     EXTENT is still the whole exposed sliver -- the fix for "a one-level
     step darkens 51.6% of the neighbour tile at elev_step_pct=50, 82.0% at
     10", which rendered as a lattice of dark triangles instead of relief.
+    The cap is now derived from rise_px, not a fixed fraction of a tile.
 
     Guards the property, not the constant: any pixel at or beyond the ramp
     must be exactly 1.0 (an exact no-op multiply in _clipped_darken, so
@@ -258,9 +259,9 @@ def test_falloff_ramps_out_within_a_fixed_fraction_of_a_tile(tile_px):
     `depth / span` it replaced left a 3-row apex column ending at 0.88.
     """
     _half_w, half_h = ig.half_dims(tile_px)
-    ramp = max(1, half_h // render.CONTACT_RAMP_DIVISOR)
     for side in ("up_left", "up_right"):
         for rise_px in (1, max(1, half_h // 2), 2 * half_h - 3):
+            ramp = render._contact_ramp(tile_px, rise_px, side)
             _dy, dst_x, depth, span = ig.shadow_quad_indices(tile_px, rise_px, side)
             if depth.size == 0:
                 continue
@@ -361,6 +362,43 @@ def test_apex_wedge_fills_every_column_the_band_leaves_bare(tile_px):
 
 
 @pytest.mark.parametrize("tile_px", TILE_PX)
+def test_apex_wedge_halves_fill_their_own_side_and_union_to_both(tile_px):
+    """The side-split's contract. Each half, together with its own side's
+    band, must leave no bare used column on that side of the apex, and the
+    two halves must share both apex columns and union to exactly "both".
+
+    Sharing is the point: a strict half_w partition was measured to reopen a
+    1px hole at the junction on a one-sided run. The half-wise fill is what
+    drawing only one flank must still guarantee, since that flank is all
+    that connects a straight run's band to its neighbour's."""
+    half_w, half_h = ig.half_dims(tile_px)
+    _tops, _bottoms, used = ig._diamond_column_edges(tile_px)
+    cols = np.arange(2 * half_w)
+    for rise_px in range(1, 2 * half_h):
+        halves = {}
+        for side in ("up_left", "up_right"):
+            _y, ax, _d, _s = ig.shadow_apex_indices(tile_px, rise_px, side)
+            halves[side] = {int(c) for c in np.unique(ax)}
+        _y, both_x, _d, _s = ig.shadow_apex_indices(tile_px, rise_px, "both")
+        both = {int(c) for c in np.unique(both_x)}
+        where = f"tile_px={tile_px} rise_px={rise_px}"
+        assert halves["up_left"] | halves["up_right"] == both, f"{where}: halves do not union to both"
+        assert all(c <= half_w for c in halves["up_left"]), f"{where}: up_left crossed the apex"
+        assert all(c >= half_w - 1 for c in halves["up_right"]), f"{where}: up_right crossed the apex"
+        if both:
+            shared = halves["up_left"] & halves["up_right"]
+            assert shared == {half_w - 1, half_w}, f"{where}: apex columns not shared, got {sorted(shared)}"
+        if rise_px >= 2 * half_h - 2:
+            continue  # band empty; the wedge's thin cue stands alone here
+        for side, in_side in (("up_left", cols < half_w), ("up_right", cols >= half_w)):
+            _dy, dx, _dd, _ss = ig.shadow_quad_indices(tile_px, rise_px, side)
+            band = {int(c) for c in np.unique(dx)}
+            expected = {int(c) for c in np.flatnonzero(used & in_side)}
+            missing = expected - (halves[side] | band)
+            assert not missing, f"{where} {side}: bare columns {sorted(missing)}"
+
+
+@pytest.mark.parametrize("tile_px", TILE_PX)
 def test_apex_wedge_stays_inside_the_diagonal_neighbours_own_diamond(tile_px):
     """The flat-ground-spill guard for this pass, and the reason it is safe
     to darken a tile nothing else touches.
@@ -412,7 +450,7 @@ def test_apex_wedge_depth_and_span_contract(tile_px):
             continue
         assert dst_y.shape == dst_x.shape == depth.shape == span.shape
         assert np.all(depth >= 0) and np.all(depth < span)
-        factors = render._shadow_factors(tile_px, rise_px, "apex")
+        factors = render._shadow_factors(tile_px, rise_px, "apex_both")
         assert factors.dtype == np.float32 and factors.shape == dst_y.shape
         assert np.all(factors >= render.CONTACT_SHADE) and np.all(factors <= 1.0)
 
@@ -422,21 +460,82 @@ def test_apex_wedge_rejects_a_nonpositive_rise():
         ig.shadow_apex_indices(64, 0)
 
 
-@pytest.mark.parametrize("tile_px", TILE_PX)
-def test_apex_wedge_is_thinner_than_the_band_it_bridges(tile_px):
-    """The apex side ramps over HALF the band's fraction of half_h. With a
-    shared ramp the wedge renders at the band's full thickness while the
-    band it joins has already tapered to half that at the junction, and the
-    step reads as a horizontal barb off every tile apex (seen directly in
-    the A/B render before this was added)."""
+def _darkened_rows(eff: int) -> int:
+    # A ramp of eff rows darkens eff - 1 (its last row is the 1.0 endpoint),
+    # except a 1-row ramp, which is its own contact row.
+    return max(eff - 1, 1)
+
+
+@pytest.mark.parametrize("tile_px", [*TILE_PX, 128])
+@pytest.mark.parametrize("weight", ["even", "taper"])
+def test_apex_wedge_ramp_tracks_the_band_ramp(tile_px, weight, monkeypatch):
+    """The wedge's weight at the junction is DERIVED from the band's at every
+    tile_px, under both CONTACT_WEDGE_WEIGHT candidates. The fixed ramp // 2
+    it replaces matched the junction at tile_px=64 only (1 row each) and
+    left a 3-vs-1 barb at 128; a one-sided "thinner than the band" bound
+    would be inverted by "even" and prove nothing about "taper"."""
+    monkeypatch.setattr(render, "CONTACT_WEDGE_WEIGHT", weight)
+    render._shadow_factors.cache_clear()
+    try:
+        _half_w, half_h = ig.half_dims(tile_px)
+        for rise_px in range(1, 2 * half_h - 2):
+            band_ramp = max(render.CONTACT_RAMP_MIN, round(rise_px * render.CONTACT_RAMP_GAIN))
+            for sides, band_side in (("up_left", "up_left"), ("up_right", "up_right"), ("both", "up_left")):
+                _y, ax, _d, aspan = ig.shadow_apex_indices(tile_px, rise_px, sides)
+                if ax.size == 0:
+                    continue
+                factors = render._shadow_factors(tile_px, rise_px, "apex_" + sides)
+                col = ax == ax[0]
+                got = int(np.count_nonzero(factors[col] < 1.0))
+                _by, bx, _bd, bspan = ig.shadow_quad_indices(tile_px, rise_px, band_side)
+                junction = bx == (bx.max() if band_side == "up_left" else bx.min())
+                band_rows = int(np.count_nonzero(render._shadow_factors(tile_px, rise_px, band_side)[junction] < 1.0))
+                target = band_ramp if weight == "even" else min(int(bspan[junction][0]), band_ramp)
+                want = _darkened_rows(min(int(aspan[0]), target))
+                where = f"tile_px={tile_px} rise_px={rise_px} sides={sides} weight={weight}"
+                assert got == want, f"{where}: wedge darkens {got} rows, expected {want}"
+                if weight == "taper" and aspan[0] >= target:
+                    assert got == band_rows, f"{where}: wedge {got} rows vs band junction {band_rows}"
+    finally:
+        render._shadow_factors.cache_clear()
+
+
+def _coverage(tile_px, rise_px):
+    """Both bands' still-darkening pixels over one diamond's pixel count --
+    the metric that reproduces the 51.6% / 12.1% figures in
+    render.CONTACT_RAMP_GAIN's comment."""
+    darkened = 0
+    for side in ("up_left", "up_right"):
+        if ig.shadow_quad_indices(tile_px, rise_px, side)[0].size:
+            darkened += int(np.count_nonzero(render._shadow_factors(tile_px, rise_px, side) < 1.0))
+    return darkened / ig.diamond_indices(tile_px)[0].size
+
+
+@pytest.mark.parametrize("tile_px", [*TILE_PX, 128])
+def test_coverage_responds_to_step_height_without_blanketing(tile_px):
+    """Two halves. Ceiling: no rise_px darkens more than 35% of the
+    neighbour, the lattice bar. Monotonicity: taller steps cast at least as
+    much shadow, but ONLY where the ramp binds -- above CONTACT_RAMP_MIN and
+    at most half the widest column's span. Both exclusions are required: at
+    rise 1 -> 2 coverage really falls (5.9% -> 5.5% at tile_px=64), since
+    both floor to the same ramp while the sliver loses columns. Column spans
+    run linearly from 0 to span.max(), so past half of it the ramp no longer
+    clips most columns and the shrinking sliver wins: measured peaks at rise
+    5 / 11 / 21 for tile_px 32 / 64 / 128, spans 9 / 19 / 41. The looser
+    `ramp < span.max()` bound was measured to fail at 64, rise 11 -> 12."""
     _half_w, half_h = ig.half_dims(tile_px)
-    rise_px = max(1, half_h // 2)
-    apex = render._shadow_factors(tile_px, rise_px, "apex")
-    darkened = int(np.count_nonzero(apex < 1.0))
-    _dy, _dx, _d, span = ig.shadow_apex_indices(tile_px, rise_px)
-    per_column = darkened / max(1, len(np.unique(_dx)))
-    full_ramp = max(1, half_h // render.CONTACT_RAMP_DIVISOR)
-    assert per_column <= full_ramp, f"apex ramp {per_column} not thinner than band ramp {full_ramp}"
+    prev = None
+    for rise_px in range(1, 2 * half_h - 2):
+        cov = _coverage(tile_px, rise_px)
+        assert cov <= 0.35, f"tile_px={tile_px} rise_px={rise_px}: coverage {cov:.1%} over the 35% ceiling"
+        ramp = round(rise_px * render.CONTACT_RAMP_GAIN)
+        span_max = max(int(ig.shadow_quad_indices(tile_px, rise_px, s)[3].max()) for s in ("up_left", "up_right"))
+        if ramp > render.CONTACT_RAMP_MIN and 2 * ramp <= span_max:
+            if prev is not None:
+                assert cov >= prev, f"tile_px={tile_px} rise_px={rise_px}: coverage fell {prev:.1%} -> {cov:.1%}"
+            prev = cov
+        else:
+            prev = None
 
 
 def _level_diagonal_scenario(anchor=(60, 60)):
@@ -499,3 +598,143 @@ def test_apex_wedge_never_darkens_a_diagonal_level_with_the_caster():
         f"{differing} pixels of the diagonal at {diag} were darkened even though it is "
         f"LEVEL with its caster -- the apex wedge is spilling onto flat ground"
     )
+
+
+# --- The tip pass: the receiving neighbour's two apex columns at an inner
+# corner, which no other pass can claim because they are the casters' own
+# unused diamond tip columns. See iso_geometry.shadow_tip_indices.
+
+
+@pytest.mark.parametrize("tile_px", [*TILE_PX, 128])
+@pytest.mark.parametrize("side", ["up_left", "up_right"])
+def test_tip_pass_extent_contract(tile_px, side):
+    """Exactly the caster's own tip column on that side, inside its bounding
+    box (a column past it broke chunked rendering); rows ending at
+    half_h - 1, 2*half_h - rise_px - 1 of them; empty exactly at
+    rise_px >= 2*half_h - 1; and never row 0 of the receiving neighbour,
+    which is where that neighbour's own seam_apex_indices pass draws."""
+    half_w, half_h = ig.half_dims(tile_px)
+    column = 2 * half_w - 1 if side == "up_right" else 0
+    for rise_px in range(1, 3 * half_h):
+        dst_y, dst_x, depth, span = ig.shadow_tip_indices(tile_px, rise_px, side)
+        where = f"tile_px={tile_px} rise_px={rise_px} side={side}"
+        for arr in (dst_y, dst_x, depth, span):
+            assert arr.dtype == np.int64
+        if rise_px >= 2 * half_h - 1:
+            assert dst_y.size == 0, f"{where}: should be empty"
+            continue
+        rows = 2 * half_h - rise_px - 1
+        assert dst_y.size == rows, f"{where}: {dst_y.size} px, expected {rows}"
+        assert set(np.unique(dst_x).tolist()) == {column}, f"{where}: wrong column"
+        assert dst_y.max() == half_h - 1 and dst_y.min() == rise_px - half_h + 1, f"{where}: wrong rows"
+        assert (dst_y + half_h - rise_px).min() == 1, f"{where}: claims the receiving neighbour's row 0"
+        assert np.all(depth >= 0) and np.all(depth < span), f"{where}: depth/span contract"
+        assert len(set(dst_y.tolist())) == dst_y.size, f"{where}: duplicate pixel"
+    with pytest.raises(ValueError):
+        ig.shadow_tip_indices(tile_px, 0, side)
+    with pytest.raises(ValueError):
+        ig.shadow_tip_indices(tile_px, 1, "both")
+
+
+@pytest.mark.parametrize("tile_px", [*TILE_PX, 128])
+def test_tip_pass_halves_tile_the_receiving_neighbours_apex_columns(tile_px):
+    """The spill and double-darken guard. Each half lands in its receiving
+    neighbour's diamond (up_right: N at (+half_w, -half_h + rise_px); up_left:
+    (-half_w, same)), and the two halves, cast by two different casters onto
+    the same N, cover N's two apex columns exactly once between them. Neither
+    touches the caster's own diamond, band or apex wedge."""
+    half_w, half_h = ig.half_dims(tile_px)
+    dy, dx, _sy, _sx = ig.diamond_indices(tile_px)
+    diamond = set(zip(dy.tolist(), dx.tolist(), strict=True))
+    for rise_px in range(1, 2 * half_h - 1):
+        in_n = {}
+        where = f"tile_px={tile_px} rise_px={rise_px}"
+        for side, off_x in (("up_right", half_w), ("up_left", -half_w)):
+            dst_y, dst_x, _d, _s = ig.shadow_tip_indices(tile_px, rise_px, side)
+            tip = set(zip(dst_y.tolist(), dst_x.tolist(), strict=True))
+            in_n[side] = {(y + half_h - rise_px, x - off_x) for y, x in tip}
+            assert in_n[side] <= diamond, f"{where} {side}: outside the receiving neighbour"
+            others = set(diamond)
+            for band_side in ("up_left", "up_right"):
+                by, bx, _bd, _bs = ig.shadow_quad_indices(tile_px, rise_px, band_side)
+                others |= set(zip(by.tolist(), bx.tolist(), strict=True))
+            ay, ax, _ad, _as = ig.shadow_apex_indices(tile_px, rise_px)
+            others |= set(zip(ay.tolist(), ax.tolist(), strict=True))
+            assert not (tip & others), f"{where} {side}: overlaps the caster's own diamond/band/wedge"
+        assert not (in_n["up_left"] & in_n["up_right"]), f"{where}: the halves overlap"
+        cols = {x for _y, x in in_n["up_left"] | in_n["up_right"]}
+        assert cols == {half_w - 1, half_w}, f"{where}: not the neighbour's apex columns, got {sorted(cols)}"
+
+
+def _inner_corner_scenario(a=(60, 60)):
+    """A = (x, y) and B = (x+1, y+1) raised by one level, everything else
+    flat, so both cast onto N = (x+1, y): the smallest inner corner."""
+    ax, ay = a
+    scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
+    for tile in scenario.map_manager.terrain:
+        tile.elevation = 1 if (tile.x, tile.y) in ((ax, ay), (ax + 1, ay + 1)) else 0
+    return scenario
+
+
+def _straight_run_scenario(axis):
+    """A raised half-plane whose edge runs along one screen diagonal, so its
+    casters use only that side's tip gate."""
+    scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
+    for tile in scenario.map_manager.terrain:
+        tile.elevation = 1 if (tile.x <= 60 if axis == "up_right" else tile.y >= 60) else 0
+    return scenario
+
+
+def _render_without_tip(scenario, monkeypatch):
+    def empty(tile_px, rise_px, side):
+        e = np.zeros(0, dtype=np.int64)
+        return e, e.copy(), e.copy(), e.copy()
+
+    with monkeypatch.context() as m:
+        m.setattr(ig, "shadow_tip_indices", empty)
+        render._shadow_factors.cache_clear()
+        img, _elev, proj = render.render_terrain_iso_with_proj(scenario, with_units=False)
+    render._shadow_factors.cache_clear()
+    return img, proj
+
+
+@pytest.mark.parametrize("elev_step_pct", [50, 100])
+def test_tip_pass_closes_the_inner_corner_vertex(elev_step_pct, monkeypatch):
+    """The regression bar, render-level. Without the pass, N's two apex
+    columns stay bare through the rows where both flanking bands darken; with
+    it, every tip pixel inside the ramp, from both casters' halves, is darker
+    than the tip-less render."""
+    from descape import settings
+
+    settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
+    settings.set_elev_step_pct(elev_step_pct)
+    scenario = _inner_corner_scenario()
+    img, _elev, proj = render.render_terrain_iso_with_proj(scenario, with_units=False)
+    bare, _ = _render_without_tip(scenario, monkeypatch)
+
+    rise_px = proj.elev_step
+    for side, caster in (("up_right", (60, 60)), ("up_left", (61, 61))):
+        dst_y, dst_x, _depth, _span = ig.shadow_tip_indices(proj.tile_px, rise_px, side)
+        factors = render._shadow_factors(proj.tile_px, rise_px, "tip_" + side)
+        bx, by = ig.tile_screen_origin(caster[0], caster[1], 1, proj)
+        ys, xs = by + dst_y[factors < 1.0], bx + dst_x[factors < 1.0]
+        assert ys.size > 0, f"{side}: fixture assumption broke, no darkening tip rows"
+        darker = np.all(img[ys, xs] < bare[ys, xs], axis=-1) | np.all(bare[ys, xs] == 0, axis=-1)
+        assert darker.all(), f"{side}: {int((~darker).sum())} of {ys.size} vertex pixels left bare"
+
+
+@pytest.mark.parametrize("axis", ["up_left", "up_right"])
+def test_tip_pass_leaves_a_straight_run_byte_identical(axis, monkeypatch):
+    """The inner-corner gate's bar: on a straight terrace edge the other
+    caster is never higher than N, so neither half may fire; an ungated
+    stripe would add a vertical line at every tile, a lattice rather than
+    relief. Mutation-checked per side: dropping that side's gate turns its
+    parametrization red."""
+    from descape import settings
+
+    settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
+    settings.set_elev_step_pct(50)
+    scenario = _straight_run_scenario(axis)
+    img, _elev, _proj = render.render_terrain_iso_with_proj(scenario, with_units=False)
+    bare, _ = _render_without_tip(scenario, monkeypatch)
+    assert np.array_equal(img, bare), "the tip pass drew on a straight run"

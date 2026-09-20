@@ -233,3 +233,45 @@ def test_sloped_keeps_the_selected_tool_rather_than_forcing_pan() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_pick_map_point_resolves_the_continuous_point_under_a_pixel(style: str) -> None:
+    """Free placement's Stage 2, at the Qt boundary. `_pick_map_point`'s
+    per-style branches are the one part of the inverse that the pure-geometry
+    tier (tests/test_screen_to_map_point.py) cannot reach: wiring the wrong
+    projection or corner_rise in here would ship silently, since the geometry
+    itself would still be right.
+
+    Checked as "lands inside the tile `_pick_tile` resolved", not against a
+    hand-computed coordinate -- that is the actual contract the two call sites
+    rely on, and it holds in all three styles without this file having to
+    reproduce each one's projection.
+
+    Flat is absent here and covered elsewhere, not skipped: this file's
+    fixture window will not actually leave Stepped for Flat (the combo change
+    is gated), and Flat's own branch is exercised end to end by the
+    free-placement tests in tests/test_unit_edit_viewer.py, which force Flat
+    on purpose."""
+    from PyQt5.QtCore import QPointF
+
+    window = conftest.terrain_edit_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        mv = window.map_view
+        assert mv._terrain_style == style.lower(), "the fixture did not switch style"
+        proj = mv._iso_proj
+        pos = QPointF(proj.canvas_w // 2 + 5, proj.canvas_h // 2 + 3)
+
+        tile = mv._pick_tile(pos)
+        assert tile is not None, "fixture assumption: the probed pixel must land on a tile"
+        point = mv._pick_map_point(pos)
+        assert point is not None, f"{style} resolved a tile but no continuous point"
+        assert (int(point[0]), int(point[1])) == tile, (
+            f"{style}: {point} is not inside the tile _pick_tile resolved, {tile}"
+        )
+        # And it is genuinely fractional, not the tile centre in disguise.
+        assert (point[0], point[1]) != (tile[0] + 0.5, tile[1] + 0.5)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

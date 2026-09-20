@@ -88,8 +88,11 @@ def _edit_and_dirty(mm):
     return dirty
 
 
-def _swept_bounds_clamped(x, y, proj, canvas_w, canvas_h):
-    tx0, ty0, tx1, ty1 = iso_geometry.tile_screen_bounds_swept(x, y, proj)
+def _observed_bounds_clamped(x, y, proj, canvas_w, canvas_h):
+    """Tile (x, y)'s bounds over the elevations this fixture actually paints
+    the Mill at, BASE_ELEVATION before the edit and one above after. Not the
+    whole legal range: the bbox stopped sweeping that (bbox-elev-sweep plan)."""
+    tx0, ty0, tx1, ty1 = iso_geometry.tile_screen_bounds_over(x, y, BASE_ELEVATION, BASE_ELEVATION + 1, proj)
     tx0, ty0 = max(0, tx0), max(0, ty0)
     tx1, ty1 = min(canvas_w, tx1), min(canvas_h, ty1)
     return tx0, ty0, tx1, ty1
@@ -106,7 +109,7 @@ def _contains(bbox, inner) -> bool:
 def test_sloped_bbox_reaches_the_mills_far_corner():
     scenario = _scenario()
     mm = scenario.map_manager
-    elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
+    elevations, _corner_rise, proj = sloped_elevations_and_proj(scenario)
     canvas_w, canvas_h = proj.canvas_w, proj.canvas_h
 
     dirty = _edit_and_dirty(mm)
@@ -114,7 +117,7 @@ def test_sloped_bbox_reaches_the_mills_far_corner():
     assert bbox is not None
 
     for fx, fy in UNCOVERED_BY_FLOOR_1:
-        inner = _swept_bounds_clamped(fx, fy, proj, canvas_w, canvas_h)
+        inner = _observed_bounds_clamped(fx, fy, proj, canvas_w, canvas_h)
         assert _contains(bbox, inner), (
             f"Sloped bbox {bbox} does not reach footprint tile ({fx}, {fy}) -- "
             f"unit_band_radius=1 should have pulled the Mill's own tile into the seed"
@@ -135,7 +138,7 @@ def test_stepped_bbox_does_not_widen_for_a_non_own_tile_edit():
     bbox = dirty_screen_bbox_iso(scenario, dirty, elevations, proj, with_units=True)
     assert bbox is not None
 
-    far_corner = _swept_bounds_clamped(59, 59, proj, canvas_w, canvas_h)
+    far_corner = _observed_bounds_clamped(59, 59, proj, canvas_w, canvas_h)
     assert not _contains(bbox, far_corner), (
         f"Stepped bbox {bbox} widened to cover ({59, 59}) for an edit that "
         f"never touched the Mill's own tile -- the narrowing is not narrowing"
@@ -182,5 +185,5 @@ def test_stepped_patch_matches_a_fresh_full_render():
     cache.patch(bbox, elevation_changed=elevation_changed)
 
     stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
-    full, _full_elev, full_proj = render_terrain_iso_with_proj(scenario, with_units=True)
+    full, _full_elev, _full_proj = render_terrain_iso_with_proj(scenario, with_units=True)
     assert np.array_equal(stitched, full[:canvas_h, :canvas_w])

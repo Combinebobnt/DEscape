@@ -38,6 +38,11 @@ from pathlib import Path
 from typing import Any
 
 from AoE2ScenarioParser import settings
+from AoE2ScenarioParser.helper.incremental_generator import IncrementalGenerator
+from AoE2ScenarioParser.objects.aoe2_object_manager import AoE2ObjectManager
+from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+from AoE2ScenarioParser.objects.managers.trigger_manager import TriggerManager
+from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 from AoE2ScenarioParser.scenarios.aoe2_de_scenario import AoE2DEScenario
 from AoE2ScenarioParser.scenarios.aoe2_scenario import (
     _decompress_bytes,
@@ -45,11 +50,6 @@ from AoE2ScenarioParser.scenarios.aoe2_scenario import (
     _get_scenario_variant,
     _initialise_version_dependencies,
 )
-from AoE2ScenarioParser.helper.incremental_generator import IncrementalGenerator
-from AoE2ScenarioParser.objects.aoe2_object_manager import AoE2ObjectManager
-from AoE2ScenarioParser.objects.managers.map_manager import MapManager
-from AoE2ScenarioParser.objects.managers.trigger_manager import TriggerManager
-from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
 # Imported for its import-time side effect as much as for its API: library_compat
 # snapshots the library's poisoned classes before any scenario has been loaded, and
@@ -610,6 +610,64 @@ def _read_player_colors(scenario: AoE2DEScenario) -> list[int]:
     """
     resources = scenario.sections["PlayerDataTwo"].retriever_map["resources"].data
     return [resources[i].retriever_map["player_color"].data for i in range(8)]
+
+
+def refresh_player_colors(loaded: LoadedScenario, pending_colors: dict[int, int]) -> bool:
+    """Re-derive player_colors/team_indices, in place, from the file's own
+    stored ids overlaid with pending colour edits ({player_id: color_id}).
+    True iff either tuple actually changed.
+
+    Both tuples are computed once at load and never otherwise recomputed, but
+    a Players-mode colour edit is an in-place byte patch to decompressed_body
+    for the save path -- it never mutates the retriever _read_player_colors()
+    reads, so nothing re-derives them and the map keeps drawing the pre-edit
+    colour. This is what descape/viewer.py's _after_player_color_change()
+    calls to close that gap.
+
+    Wholesale, not an incremental patch of the cached tuple: the base ids are
+    unaffected by the byte patch, so overlaying the pending edits on them
+    makes undo/redo come out right for free (an undone edit simply drops out
+    of pending_colors). In place rather than derived on demand because the
+    chunk caches hold their own scenario handle and both player panels read
+    off the same object, so one mutation reaches every reader.
+
+    Requires a real LoadedScenario -- it reaches _scenario and its parsed
+    PlayerDataTwo. The duck-typed fakes in testkit/fakes.py and
+    tests/test_farm_terrain.py set both tuples as plain attributes with no
+    _scenario, so no path a fake travels may reach here.
+    """
+    color_ids = _read_player_colors(loaded._scenario)
+    for player_id, color_id in pending_colors.items():
+        if 1 <= player_id <= 8:
+            # color_ids is P1-first; the combo's raw value is ColorId.value,
+            # 0-based over 0..7, which indexes PLAYER_COLOR_BY_ID directly.
+            color_ids[player_id - 1] = int(color_id)
+    player_colors, team_indices = resolve_player_colors(color_ids)
+    changed = player_colors != loaded.player_colors or team_indices != loaded.team_indices
+    loaded.player_colors = player_colors
+    loaded.team_indices = team_indices
+    return changed
+
+
+def xs_attachment(loaded: LoadedScenario) -> tuple[str | None, int | None]:
+    """(Map script_name, embedded Files script_file_content length in chars).
+
+    Read-only: script_name is a variable-length string ahead of terrain_data
+    in Map, so no byte-patch write path may ever change it. script_name is
+    None before scenario 1.40 (no retriever). The embedded length is None
+    until parse_triggers() has reached Files; this never forces that parse.
+    Characters, not bytes: the value is already decoded.
+    """
+    sections = loaded._scenario.sections
+    map_retriever = sections["Map"].retriever_map.get("script_name")
+    script_name = None if map_retriever is None else (map_retriever.data or "")
+    embedded = None
+    files = sections.get("Files") if loaded.trigger_read_supported else None
+    if files is not None:
+        content = files.retriever_map.get("script_file_content")
+        if content is not None:
+            embedded = len(content.data or "")
+    return script_name, embedded
 
 
 def _read_trigger_version(trigger_tail: bytes) -> float:

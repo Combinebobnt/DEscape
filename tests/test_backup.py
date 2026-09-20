@@ -14,12 +14,13 @@ from pathlib import Path
 import pytest
 from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 
-import conftest
 import descape.backup as backup_module
 from descape.backup import BackupFailedError, bak_path, make_backups, orig_path
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import FORBIDDEN_WRITE_MARKER, TEMPLATE_DIR, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
+
+import conftest
 
 
 def _copy_fixture(tmp_path: Path, name: str = "map.aoe2scenario") -> Path:

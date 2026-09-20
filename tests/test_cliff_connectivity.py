@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import conftest
 import pytest
 
 from descape import cliff_connectivity
+
+import conftest
 
 ROOT = Path(__file__).resolve().parent.parent
 PRIVATE_CORPUS = ROOT / "maintainer" / "scenarios_for_descape"

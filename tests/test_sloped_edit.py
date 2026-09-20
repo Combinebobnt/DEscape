@@ -26,8 +26,7 @@ Checks:
   1. _apply_dirty() in Sloped leaves the cache byte-identical to a fresh
      full render_terrain_sloped() of the post-edit scenario.
   2. The bbox covers a one-tile ring around every CHANGED tile, not just
-     the clicked one (with_units=False, so the ring is the radius rather
-     than being subsumed by UNIT_FOOTPRINT_MAX_RADIUS).
+     the clicked one (with_units=False, so no unit footprint widens it).
   3. The elevations array is mutated IN PLACE -- same object, new values
      (Risk #6: the pick plane and the pixels must not drift).
   4. corner_rise is re-derived by patch(), not carried over from
@@ -49,8 +48,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import conftest
-from descape import iso_geometry
+from descape import iso_geometry, render
 from descape.elevation_tools import set_tile_elevation
 from descape.render import (
     SLOPE_CORNER_RULE,
@@ -62,6 +60,8 @@ from descape.render import (
 )
 from descape.render_cache import SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+
+import conftest
 
 
 def _load_sloped_scenario():
@@ -91,7 +91,7 @@ def _edit_and_dirty(mm, ex: int, ey: int, elevation: int):
     before = _elevation_grid(mm)
     set_tile_elevation(mm, ex, ey, elevation)
     after = _elevation_grid(mm)
-    changed = {(int(x), int(y)) for y, x in zip(*np.nonzero(before != after))}
+    changed = {(int(x), int(y)) for y, x in zip(*np.nonzero(before != after), strict=True)}
     assert changed, "set_tile_elevation produced no change -- fixture is broken"
     return [i for i, tile in enumerate(mm.terrain) if (tile.x, tile.y) in changed], changed
 
@@ -127,14 +127,19 @@ def test_patch_after_edit_matches_a_fresh_full_render():
 def test_bbox_covers_a_one_tile_ring_around_every_changed_tile():
     """Check 2. The failure mode is a stale one-tile fringe, not a crash, and
     it is invisible on a byte-identity run whose edit happens to sit mid-chunk
-    -- so assert the ring directly. with_units=False pins the ring itself:
-    with units on, UNIT_FOOTPRINT_MAX_RADIUS is larger and would cover a
-    dropped ring for the wrong reason."""
+    -- so assert the ring directly. with_units=False pins the ring itself, so
+    no unit footprint's own widening can cover a dropped ring.
+
+    Each ring tile is required at the elevations it is painted at before and
+    after the edit (its 3x3 neighbourhood, since a Sloped corner reads that),
+    not the whole legal range the bbox no longer sweeps."""
     scenario = _load_sloped_scenario()
     mm = scenario.map_manager
     _cache, elevations, proj = _make_cache(scenario)
+    pre = elevations.copy()
 
     dirty, changed = _edit_and_dirty(mm, mm.map_width // 4, mm.map_height // 4, 3)
+    post = _elevation_grid(mm)
     bbox = dirty_screen_bbox_sloped(scenario, dirty, elevations, proj, with_units=False)
     assert bbox is not None
     x0, y0, x1, y1 = bbox
@@ -143,7 +148,11 @@ def test_bbox_covers_a_one_tile_ring_around_every_changed_tile():
     for cx, cy in sorted(changed):
         for nx in range(max(0, cx - 1), min(mm.map_width, cx + 2)):
             for ny in range(max(0, cy - 1), min(mm.map_height, cy + 2)):
-                tx0, ty0, tx1, ty1 = iso_geometry.tile_screen_bounds_swept(nx, ny, proj)
+                ys = slice(max(0, ny - 1), ny + 2)
+                xs = slice(max(0, nx - 1), nx + 2)
+                lo = int(min(pre[ys, xs].min(), post[ys, xs].min()))
+                hi = int(max(pre[ys, xs].max(), post[ys, xs].max()))
+                tx0, ty0, tx1, ty1 = iso_geometry.tile_screen_bounds_over(nx, ny, lo, hi, proj)
                 # Clamped the same way the bbox itself is: a tile hanging off
                 # the canvas can only be required to be covered where the
                 # canvas actually exists.
@@ -153,7 +162,7 @@ def test_bbox_covers_a_one_tile_ring_around_every_changed_tile():
                     continue
                 assert x0 <= tx0 and y0 <= ty0 and x1 >= tx1 and y1 >= ty1, (
                     f"tile ({nx}, {ny}), in the ring around changed tile ({cx}, {cy}), "
-                    f"has swept bounds {(tx0, ty0, tx1, ty1)} outside bbox {bbox}"
+                    f"has observed bounds {(tx0, ty0, tx1, ty1)} outside bbox {bbox}"
                 )
 
 
@@ -196,11 +205,17 @@ def test_patch_rebuilds_corner_rise():
     assert np.array_equal(cache.corner_rise, expected)
 
 
-def test_bbox_clamps_to_the_sloped_canvas_not_the_padded_one():
+def test_bbox_clamps_to_the_sloped_canvas_not_the_padded_one(monkeypatch):
     """Check 5. The one divergence from dirty_screen_bbox_iso: Sloped's cache
     canvas carries no skirt headroom, so a bbox clamped to Stepped's padded
     height would hand patch()/invalidate_region() rows the Sloped canvas does
     not have.
+
+    The clamp is checked by the canvas each wrapper hands _dirty_screen_bbox,
+    not by comparing the two bboxes' bottoms. Those used to differ because the
+    whole-range sweep reached into Stepped's headroom; the observed-range
+    sweep (bbox-elev-sweep plan) stops at the deepest tile's real bottom, so
+    both clamps now agree on every edit and a pixel comparison proves nothing.
 
     Edited at the DEEPEST tile on screen, swept for rather than assumed to
     be (w-1, h-1) -- it is the west corner (0, h-1) in this projection, and
@@ -217,13 +232,25 @@ def test_bbox_clamps_to_the_sloped_canvas_not_the_padded_one():
         for x in range(mm.map_width)
     )
     dirty, _changed = _edit_and_dirty(mm, ex, ey, 3)
+
+    passed_dims = []
+    real = render._dirty_screen_bbox
+
+    def spy(scenario, dirty_indices, elevations, proj, canvas_dims, *args, **kwargs):
+        passed_dims.append(canvas_dims)
+        return real(scenario, dirty_indices, elevations, proj, canvas_dims, *args, **kwargs)
+
+    monkeypatch.setattr(render, "_dirty_screen_bbox", spy)
     sloped = dirty_screen_bbox_sloped(scenario, dirty, elevations.copy(), proj, with_units=True)
     stepped = dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_units=True)
     assert sloped is not None and stepped is not None
 
     assert sloped[2] <= canvas_w and sloped[3] <= canvas_h
-    assert stepped[3] > sloped[3], (
-        "the two clamps agree here, so this fixture no longer exercises the divergence"
+    sloped_dims, stepped_dims = passed_dims
+    assert sloped_dims == (canvas_w, canvas_h)
+    assert stepped_dims == render._canvas_pixel_dims(proj)
+    assert stepped_dims[1] > sloped_dims[1], (
+        "the two canvases have the same height, so this test no longer exercises the divergence"
     )
 
 

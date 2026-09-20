@@ -38,7 +38,7 @@ def _by_tile_as_sets(index):
 
 def _assert_indexes_equivalent(patched, fresh) -> None:
     assert len(patched.entries) == len(fresh.entries)
-    for a, b in zip(patched.entries, fresh.entries):
+    for a, b in zip(patched.entries, fresh.entries, strict=True):
         assert (a.player_id, a.unit, a.own_x, a.own_y, a.order) == (b.player_id, b.unit, b.own_x, b.own_y, b.order)
     assert set(patched.by_key) == set(fresh.by_key)
     for key in fresh.by_key:

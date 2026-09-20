@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 from descape.unit_filter import UnitFilter
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -177,3 +178,156 @@ def test_filter_is_not_persisted_across_windows() -> None:
         assert second.show_gaia_action.isChecked()
     finally:
         conftest.close_window(second)
+
+
+# --- GH #65: Show Walls / Show Eye Candy -------------------------------
+
+_WALL_CONST = 117  # WALL2, a unit_kind.wall_consts() member
+_EYE_CANDY_CONST = 1358  # Grass Green
+
+
+def test_the_two_new_actions_exist_and_ship_checked() -> None:
+    window = conftest.blank_window()
+    try:
+        assert window.show_walls_action.isChecked()
+        assert window.show_eye_candy_action.isChecked()
+        assert window._current_unit_filter() == UnitFilter()
+    finally:
+        conftest.close_window(window)
+
+
+def test_toggling_walls_and_eye_candy_builds_the_matching_filter() -> None:
+    window = conftest.blank_window()
+    try:
+        window.show_walls_action.setChecked(False)
+        assert window._unit_filter == UnitFilter(show_walls=False)
+        window.show_eye_candy_action.setChecked(False)
+        assert window._unit_filter == UnitFilter(show_walls=False, show_eye_candy=False)
+        window.show_walls_action.setChecked(True)
+        window.show_eye_candy_action.setChecked(True)
+        assert window._unit_filter.is_default
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_new_toggles_reach_the_live_cache() -> None:
+    window = conftest.blank_window()
+    try:
+        window.show_walls_action.setChecked(False)
+        assert window._cache.unit_filter == UnitFilter(show_walls=False)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("action_name", ["show_walls_action", "show_eye_candy_action"])
+def test_one_toggle_costs_exactly_one_apply(action_name: str) -> None:
+    """Each apply evicts and recomposites the whole canvas, so a single
+    checkbox must not fan out into several set_unit_filter() calls."""
+    window = conftest.blank_window()
+    try:
+        calls = []
+        real = window._cache.set_unit_filter
+        window._cache.set_unit_filter = lambda f: (calls.append(f), real(f))[1]
+
+        getattr(window, action_name).setChecked(False)
+        assert len(calls) == 1, f"expected one apply, got {len(calls)}"
+    finally:
+        conftest.close_window(window)
+
+
+def test_hide_all_and_show_all_reach_the_new_toggles_too() -> None:
+    """_set_all_filters is the menu's bulk shortcut; a new kind toggle that
+    it misses would leave "Hide All" visibly not hiding everything."""
+    window = conftest.blank_window()
+    try:
+        window._set_all_filters(False)
+        assert not window.show_walls_action.isChecked()
+        assert not window.show_eye_candy_action.isChecked()
+
+        window._set_all_filters(True)
+        assert window.show_walls_action.isChecked()
+        assert window.show_eye_candy_action.isChecked()
+        assert window._unit_filter.is_default
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_new_toggles_appear_in_the_filter_summary() -> None:
+    window = conftest.blank_window()
+    try:
+        window.show_walls_action.setChecked(False)
+        assert "walls hidden" in window._filter_summary()
+        window.show_eye_candy_action.setChecked(False)
+        assert "eye candy hidden" in window._filter_summary()
+    finally:
+        conftest.close_window(window)
+
+
+def _place_wall(window):
+    """Places a wall through the model and returns (unit, its on-screen
+    centre). The click point comes from the entry's own footprint polygon
+    rather than tile*tile_pixels: the default style is isometric, so a
+    top-down position resolves to no tile at all -- and a test built on one
+    would then "pass" for the wrong reason the moment walls were hidden."""
+    from PyQt5.QtCore import QPointF
+
+    model = window._ensure_unit_edits()
+    occupied = {(int(u.x), int(u.y)) for units in window.scenario.unit_manager.units for u in units}
+    tile = next((x, y) for x in range(40, 60) for y in range(40, 60) if (x, y) not in occupied)
+    with window._unit_edit(model, "Place wall", [1]):
+        unit = model.add(1, _WALL_CONST, tile[0] + 0.5, tile[1] + 0.5)
+    mv = window.map_view
+    entry = next(e for e in mv._unit_index.entries if e.unit is unit)
+    poly = mv._unit_polygons_for(entry)[0]
+    return unit, QPointF(sum(x for x, _y in poly) / len(poly), sum(y for _x, y in poly) / len(poly))
+
+
+def test_a_hidden_wall_is_unpickable() -> None:
+    """The half that makes this a Filters entry rather than a View one: a
+    hidden unit is absent from UnitIndex entirely, so it cannot be picked
+    through the tile it no longer paints on."""
+    window = conftest.blank_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        _unit, pos = _place_wall(window)
+        mv = window.map_view
+        assert mv.pick_unit_at(pos) is not None, "the wall was unpickable to begin with"
+
+        window.show_walls_action.setChecked(False)
+        assert mv.pick_unit_at(pos) is None
+        window.show_walls_action.setChecked(True)
+        assert mv.pick_unit_at(pos) is not None
+    finally:
+        conftest.close_window(window)
+
+
+def test_placing_a_unit_the_filter_hides_says_so() -> None:
+    """The cliff tool's "(Show GAIA is off...)" cue, generalized to the whole
+    filter: placing a wall with Show Walls off looks exactly like the tool
+    doing nothing.
+
+    Asserted through on_unit_place()'s own status line rather than through a
+    const set, so it also covers eye candy, trees and owner -- and whatever
+    gate the next Filters entry adds."""
+    from PyQt5.QtCore import Qt
+
+    window = conftest.blank_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        _unit, pos = _place_wall(window)
+        window.units_panel.select_object(_WALL_CONST)
+        assert window.units_panel.selected_object_const() == _WALL_CONST
+
+        window.on_unit_place(pos, Qt.NoModifier)
+        assert "Placed" in _last_status(window)
+        assert "Filters" not in _last_status(window)
+
+        window.show_walls_action.setChecked(False)
+        window.on_unit_place(pos, Qt.NoModifier)
+        assert "Filters" in _last_status(window), _last_status(window)
+    finally:
+        conftest.close_window(window)
+
+
+def _last_status(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]

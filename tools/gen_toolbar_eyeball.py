@@ -6,7 +6,7 @@ tools/widths, and that the More Tools button's text tracks the active tool
 when that tool is overflowed.
 
 Follows tools/gen_trigger_panel_eyeball.py's shape exactly: its own
-_ensure_qapp()/_isolate_config(), and no golden-image baseline -- this repo
+_ensure_qapp(), testkit.settings_isolation, and no golden-image baseline -- this repo
 has no golden-image gate for window chrome anywhere, and establishing one is
 out of scope for this plan.
 
@@ -23,6 +23,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+from testkit import settings_isolation
 
 OUT_DIR = ROOT / "build" / "toolbar_eyeball"
 
@@ -49,34 +51,11 @@ def _ensure_qapp() -> None:
     _QAPP = QApplication.instance() or QApplication(sys.argv[:1])
 
 
-def _isolate_config(tmp_dir: Path) -> None:
-    """See tools/gen_trigger_panel_eyeball.py's own docstring for why this
-    must run before any ViewerWindow exists."""
-    import descape.asset_source as asset_source_module
-    import descape.settings as settings_module
-
-    fake_config_path = tmp_dir / "config.yaml"
-    asset_source_module.CONFIG_PATH = fake_config_path
-    settings_module.CONFIG_PATH = fake_config_path
-    for name in (
-        "_zoom_centered_on_cursor",
-        "_graphics_quality",
-        "_dark_mode",
-        "_elev_step_pct",
-        "_window_size",
-        "_split_sizes",
-        "_log_height",
-        "_distance_ticks",
-        "_distance_tick_interval",
-        "_keybinds",
-    ):
-        setattr(settings_module, name, None)
-
-
 def _open_window():
+    from PyQt5.QtWidgets import QApplication
+
     from descape.scenario_io import BLANK_TEMPLATE_PATH
     from descape.viewer import ViewerWindow
-    from PyQt5.QtWidgets import QApplication
 
     window = ViewerWindow()
     window.load_scenario(BLANK_TEMPLATE_PATH)
@@ -160,7 +139,7 @@ def main() -> None:
 
     _ensure_qapp()
     with tempfile.TemporaryDirectory() as tmp:
-        _isolate_config(Path(tmp))
+        settings_isolation.isolate_settings(Path(tmp))
         written = generate(args.out_dir)
 
     for path in written:

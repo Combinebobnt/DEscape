@@ -38,8 +38,9 @@ Two entry points, for two callers:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, ClassVar, Sequence
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:  # keeps this module library-free at runtime -- see docstring
     from descape.messages_model import MessagesEditModel
@@ -230,8 +231,15 @@ class OptionsDiffRecord(DiffRecord):
     OptionsEditModel.set_value() is idempotent, so replaying the "before" value
     is a complete restore.
 
-    Covers only the byte-patched scalars. The trigger execution-order row looks
-    identical in the panel but is *not* one of these -- it lives inside the
+    The tuple form is a per-player disable list (descape/disables_fields.py),
+    the one value here whose write is a region splice rather than a byte
+    patch. It needs no record class of its own for exactly the reason above:
+    set_value() is idempotent there too, so replaying the "before" tuple is a
+    complete restore. A whole Disabled Objects dialog session is several of
+    these wrapped in one CompositeDiffRecord, so it costs one Ctrl+Z.
+
+    Covers only the byte-patched scalars and those lists. The trigger
+    execution-order row looks identical in the panel but is *not* one of these -- it lives inside the
     Triggers region and rides on TriggerEditModel, so its record is a
     TriggerDiffRecord. That is also what makes it restore together with
     trigger_display_order, which item 2's execution-order invariant couples it
@@ -239,8 +247,8 @@ class OptionsDiffRecord(DiffRecord):
     """
 
     field_id: str
-    before: int | str
-    after: int | str
+    before: int | str | tuple[int, ...]
+    after: int | str | tuple[int, ...]
     kind: ClassVar[str] = "options"
 
     def require_target(
@@ -591,6 +599,15 @@ class EditHistory:
         second push path that reimplements the saved_at_cursor arithmetic will
         get it subtly wrong, and the symptom (a file that silently stops
         reading as dirty) shows up nowhere near the bug."""
+        # The truncation below destroys the saved state whenever it sat AHEAD
+        # of the cursor (undo, then a different edit). Leaving the marker
+        # pointing at an index that now holds a different record makes
+        # is_dirty read clean at a cursor that no longer reconstructs the file
+        # on disk -- the same failure the overflow branch below guards against.
+        # A move is undo-then-push by construction, so it reaches this in one
+        # gesture: save right after a paste, then drag it.
+        if self.saved_at_cursor is not None and self.saved_at_cursor > self.cursor:
+            self.saved_at_cursor = None
         del self.records[self.cursor :]
         self.records.append(record)
         self.cursor += 1

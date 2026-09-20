@@ -6,16 +6,17 @@ reaches back up into the window."""
 
 from __future__ import annotations
 
-
 import math
 import time
 from collections.abc import Callable
+from typing import ClassVar
 
 import numpy as np
-from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt, QTimer
+from PyQt5.QtCore import QElapsedTimer, QLineF, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import (
     QBrush,
     QColor,
+    QKeySequence,
     QPainter,
     QPainterPath,
     QPen,
@@ -23,6 +24,7 @@ from PyQt5.QtGui import (
     QTransform,
 )
 from PyQt5.QtWidgets import (
+    QApplication,
     QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsPathItem,
@@ -33,7 +35,6 @@ from PyQt5.QtWidgets import (
     QGraphicsView,
 )
 
-
 from descape import (
     brush,
     iso_geometry,
@@ -41,6 +42,7 @@ from descape import (
     region_clipboard,
     ruler,
     settings,
+    shape_tools,
     unit_pick,
 )
 from descape.render import SMALL_MAP_TILE_PIXELS
@@ -49,14 +51,42 @@ from descape.render_cache import (
     IsoChunkCache,
     SlopedChunkCache,
 )
-from descape.viewer_canvas import EdgeTickItem, MapCanvasItem, _max_axis_scale, level_rect_for
-from descape.viewer_common import CLICK_TOOLS, EDIT_TOOLS, TOOL_EYEDROPPER, TOOL_RULER, TOOL_SELECT
 
 # The two non-Flat terrain styles, which share a projected pick plane and a
-# diamond ground outline. Deliberately local: the same pair appears in
-# render.py and viewer.py too, but render.py imports no PyQt5 at all, so a
-# shared home has to be Qt-free -- viewer_common.py is not it.
-_ELEVATED_STYLES = ("stepped", "sloped")
+# diamond ground outline. Aliased to this module's existing private name so
+# its use sites read unchanged. The shared home is terrain_style.py, which is
+# Qt-free -- render.py imports no PyQt5 at all, so viewer_common.py (which
+# does) could never have been it.
+from descape.terrain_style import ELEVATED_STYLES as _ELEVATED_STYLES
+from descape.viewer_canvas import (
+    EdgeTickItem,
+    GridItem,
+    MapCanvasItem,
+    StackBadgeItem,
+    UnitGhostItem,
+    _max_axis_scale,
+    level_rect_for,
+    map_overlay_font,
+)
+from descape.viewer_common import (
+    _TOOL_SHAPE,
+    CLICK_TOOLS,
+    EDIT_TOOLS,
+    SHAPE_TOOLS,
+    TOOL_EYEDROPPER,
+    TOOL_RULER,
+    TOOL_SELECT,
+)
+
+
+def _add_closed_polygons(path, polygons) -> None:
+    """Appends each polygon to `path` as its own CLOSED subpath.
+    addPolygon() leaves the subpath open, so stroking it draws only 3 of a
+    diamond's 4 edges -- invisible wherever a fill dominates, and plain wrong
+    for an outline-only cue."""
+    for points in polygons:
+        path.addPolygon(QPolygonF([QPointF(x, y) for x, y in points]))
+        path.closeSubpath()
 
 
 class MapView(QGraphicsView):
@@ -124,8 +154,10 @@ class MapView(QGraphicsView):
     # Hover-highlight convention for every brush-style tool (Terrain,
     # Elevate, Set Elevation): an outline plus a translucent fill (default
     # gold) that pulses steadily, so it reads as a live cursor following the
-    # mouse rather than a static "you clicked here" marker. Follows on hover,
-    # not just on click. Colors are user-settable (Settings > Appearance,
+    # mouse rather than a static "you clicked here" marker. A GOLD pulse is
+    # specifically "a brush is live and about to mutate"; the Ruler's
+    # endpoints pulse too (RULER_PULSE_MIN_ALPHA below), in its own orange,
+    # meaning "an active measurement". Follows on hover, not just on click. Colors are user-settable (Settings > Appearance,
     # settings.OVERLAY_COLORS) and live in self._highlight_outline_pen/
     # self._highlight_fill_color, rebuilt by _rebuild_overlay_ink() -- these
     # are just the pulse behaviour, which isn't a color and stays fixed.
@@ -134,9 +166,27 @@ class MapView(QGraphicsView):
     HIGHLIGHT_PULSE_PERIOD_MS = 500
     HIGHLIGHT_PULSE_TICK_MS = 40
 
+    # Held-key pan: ~60 fps, and the dt clamp that stops a stalled event loop
+    # from teleporting the view on the tick that finally lands.
+    PAN_TICK_MS = 16
+    PAN_MAX_DT_MS = 100.0
+    # Referenced from viewer.py as MapView.PAN_DIRECTIONS (that module does
+    # `from descape.map_view import MapView`, so a bare module-level name
+    # would not be reachable there).
+    PAN_DIRECTIONS: ClassVar[dict[str, tuple[int, int]]] = {
+        "view_pan_up": (0, -1),
+        "view_pan_down": (0, 1),
+        "view_pan_left": (-1, 0),
+        "view_pan_right": (1, 0),
+    }
+    # QKeySequence packs a key WITH its modifier bits into one int; this
+    # masks the modifier half off. Qt.KeyboardModifierMask isn't exposed by
+    # every PyQt5 build, hence the literal.
+    _KEY_MODIFIER_MASK = 0xFE000000
+
     # Units mode's two cues, phase 3's P3-d. Deliberately NOT the pulsing
-    # highlight above reserves for "live and about to paint": phase 3
-    # mutates nothing, so it must not claim that signal. Hover defaults thin
+    # highlight above: a selection is a resting state, where both pulses
+    # above mean something is live right now. Hover defaults thin
     # and quiet like Pan's; selection is solid plus a translucent fill, in a
     # color distinct from the edit highlight by default. Neither pulses.
     # Colors live in self._unit_hover_pen/self._unit_select_pen/
@@ -153,6 +203,12 @@ class MapView(QGraphicsView):
     # added the canvas item. Two independently-lazily-created unit items
     # would stack in whichever order the user happened to trigger first, so
     # these are explicit rather than inheriting that latent ordering bug.
+    # View > Footprint Outlines. Below UNIT_HOVER_Z, explicitly rather than
+    # by insertion order, so hover, selection and the ruler stay legible over
+    # a map-wide outline layer. Colour is settings.OVERLAY_COLORS'
+    # "footprint_outline", rebuilt by _rebuild_overlay_ink().
+    FOOTPRINT_Z = 5.0
+
     UNIT_HOVER_Z = 10.0
     UNIT_SELECT_Z = 11.0
 
@@ -161,6 +217,14 @@ class MapView(QGraphicsView):
     # mouse rarely lands at the exact press pixel, so a bare "did it move at
     # all" test would misfire on ordinary clicks.
     UNIT_DRAG_THRESHOLD_PX = 4
+
+    # Above this many tiles, a shape preview drops its brush union and
+    # previews the bare rasterized path instead. The committed set is
+    # unaffected. A size-9 brush unioned along a 680-tile line is ~55k tiles
+    # before dedupe, each one a _tile_polygon() call -- in Sloped that reads
+    # four corner_rise values per tile, into a single QPainterPath, which
+    # freezes the drag.
+    SHAPE_PREVIEW_TILE_LIMIT = 4000
 
     # The Ruler's line, its two endpoint outlines and its label. A fixed
     # (user-settable) colour rather than a themed one: MapView paints its
@@ -172,8 +236,17 @@ class MapView(QGraphicsView):
     # and bright terrain without a backing rect regardless of the chosen hue.
     RULER_LABEL_OUTLINE_ALPHA = 230
     RULER_LABEL_GAP_PX = 6.0
+    # The two endpoint tiles' pulsing fill, a sibling of each static outline
+    # rather than a property of it: pulsing the outline itself would fade the
+    # crisp shape that says which tile was picked. Its own min/max pair, not
+    # the highlight's: it sits over terrain the edit highlight never covers.
+    # Colour is the ruler's own, so recolouring the ruler recolours the glow.
+    RULER_PULSE_MIN_ALPHA = 0.15
+    RULER_PULSE_MAX_ALPHA = 0.50
     # Above UNIT_SELECT_Z: a measurement is a deliberate act, and should
     # not be occluded by the hover cue it was drawn on top of.
+    # Under RULER_Z so the endpoint outline still reads over its own glow.
+    RULER_GLOW_Z = 11.7
     RULER_Z = 12.0
     RULER_LABEL_Z = 13.0
 
@@ -192,13 +265,22 @@ class MapView(QGraphicsView):
     # _rebuild_overlay_ink() on every rebuild.
     REGION_SELECT_FILL_ALPHA = 50
     REGION_SELECT_PEN_WIDTH = 2
-    REGION_SELECT_ANT_DASH = [4.0, 4.0]  # device pixels, since cosmetic
+    REGION_SELECT_ANT_DASH: ClassVar[list[float]] = [4.0, 4.0]  # device pixels, since cosmetic
     REGION_SELECT_ANT_STEP_PX = 1.0
     REGION_SELECT_ANT_TICK_MS = 80
     # Above UNIT_SELECT_Z (a region can carry units, so its outline must read
     # on top of the units inside it), below RULER_Z (a measurement is a
     # deliberate act and should never be occluded).
     REGION_SELECT_Z = 11.5
+    # Stacked-unit count badges: above the region outline (a badge is small
+    # and must stay readable over a selection), below the ruler.
+    UNIT_STACK_Z = 11.6
+
+    # The mid-drag move preview's ghost. Above REGION_SELECT_Z (a unit dragged
+    # across a selected region must read on top of that region's outline, since
+    # the ghost IS the thing the gesture is about), below UNIT_STACK_Z so a
+    # stack badge stays readable through a drag passing under it.
+    UNIT_GHOST_Z = 11.55
 
     # Map mirroring's (Stage 1) live preview overlay in MirrorDialog: the
     # shaded source slice and, in Flat mode only, the mode's own symmetry
@@ -220,6 +302,7 @@ class MapView(QGraphicsView):
         on_stroke_tile,
         on_stroke_end,
         on_click_edit,
+        on_shape_commit,
         on_click_select,
         on_unit_place,
         on_unit_move,
@@ -227,6 +310,8 @@ class MapView(QGraphicsView):
         on_unit_delete,
         on_marquee_select,
         on_region_selected,
+        on_region_move,
+        on_unit_drag_preview,
         on_ruler_measured,
         on_ruler_changed,
         on_zoom_changed,
@@ -256,6 +341,22 @@ class MapView(QGraphicsView):
         self._edge_tick_item: EdgeTickItem | None = None
         self._edge_ticks_enabled = settings.get_distance_ticks()
         self._edge_tick_interval = settings.get_distance_tick_interval()
+        # View > Grid, same lifetime as the tick state above.
+        self._grid_item: GridItem | None = None
+        self._grid_enabled = settings.get_grid_overlay()
+        self._grid_blend = settings.get_grid_blend()
+        self._grid_thickness = settings.get_grid_thickness()
+        self._grid_follow_elevation = settings.get_grid_follow_elevation()
+        # View > Footprint Outlines, same lifetime again.
+        self._footprint_item = None
+        self._footprint_enabled = settings.get_footprint_outlines()
+        self._footprint_scope = settings.get_footprint_scope()
+        self._footprint_refresh_pending = False
+        # Stacked-unit badges: groups recomputed on every index swap, item
+        # rebuilt per set_source() like _edge_tick_item.
+        self._stack_badge_item: StackBadgeItem | None = None
+        self._stack_badges_enabled = settings.get_stack_badges()
+        self._stack_groups: dict = {}
         # The Ruler's grammar lives in the Qt-free descape.ruler; this
         # class only turns its two tiles into scene items. Like the tick
         # state above it sits on MapView, which outlives every set_source().
@@ -297,6 +398,7 @@ class MapView(QGraphicsView):
         self._last_viewport_target: tuple[int, int, int, int, int] | None = None
         self._ruler_line_item: QGraphicsLineItem | None = None
         self._ruler_end_items: list[QGraphicsPolygonItem] = []
+        self._ruler_glow_items: list[QGraphicsPolygonItem] = []
         self._ruler_label_item: QGraphicsSimpleTextItem | None = None
         self._on_hover = on_hover
         # A "stroke" is one drag with an edit tool active, from press to
@@ -317,6 +419,27 @@ class MapView(QGraphicsView):
         # begin_stroke/commit_stroke pairing above stays exactly one-to-one
         # with no special-casing.
         self._on_click_edit = on_click_edit
+        # SHAPE_TOOLS (Draw Line, Draw Rectangle): on_shape_commit(tiles)
+        # fires exactly once, at release, with the final tile list. Neither
+        # the stroke trio nor on_click_edit fits -- a stroke cannot un-paint
+        # a tile the rubber band has since shrunk off, so nothing is mutated
+        # until the button comes up. The tile list is computed here rather
+        # than re-derived by ViewerWindow so the committed set can never
+        # disagree with the one the preview just showed.
+        self._on_shape_commit = on_shape_commit
+        # The live shape drag: anchor tile at press, endpoint at the last
+        # move, and the modifiers last seen (Shift recomputes the preview
+        # from them). Plain attributes rather than a session object like the
+        # Ruler's -- a shape drag never outlives its press, so there is no
+        # pending state to model, and an armed-across-tool-switch MUTATING
+        # tool is a hazard the Ruler can afford and this cannot.
+        self._shape_anchor: tuple[int, int] | None = None
+        self._shape_end: tuple[int, int] | None = None
+        self._shape_modifiers = Qt.NoModifier
+        # Draw Rectangle's Fill/Outline state, pushed down from the toolbar
+        # combo by ViewerWindow.set_rect_filled() the same way set_brush()
+        # pushes brush size/shape.
+        self._rect_filled = True
         # Units mode's selection click (phase 3's P3-d), the sixth injected
         # callable. MapView emits no pyqtSignal anywhere -- plain callables
         # are this repo's established MapView -> ViewerWindow convention, and
@@ -356,6 +479,24 @@ class MapView(QGraphicsView):
         # this same handler directly rather than through a callback -- see
         # set_region()'s own docstring for the split.
         self._on_region_selected = on_region_selected
+        # on_region_move(dx, dy), the thirteenth: a committed region the
+        # window has marked movable (set_region_movable) was dragged by whole
+        # tiles and released somewhere else. Fires only on a non-zero delta,
+        # and only reports the delta -- what a move MEANS is entirely the
+        # window's business, since MapView knows nothing about pastes.
+        self._on_region_move = on_region_move
+        # on_unit_drag_preview(key, scene_pos, modifiers), the fourteenth: one
+        # mouse-move of an in-progress unit drag, past UNIT_DRAG_THRESHOLD_PX.
+        # MapView cannot resolve what the ghost should look like -- it holds no
+        # scenario, so it has no player_colors, no team_indices and no sprites
+        # toggle -- so it reports the gesture and ViewerWindow pushes the
+        # resolved content back through set_unit_ghost(), the same split
+        # on_click_select/set_unit_selection already uses.
+        self._on_unit_drag_preview = on_unit_drag_preview
+        # The ghost overlay itself, created lazily on the first move past the
+        # threshold and cleared on every exit from the drag (release, leave,
+        # Escape) -- _update_marquee/_clear_marquee's lifecycle exactly.
+        self._unit_ghost_item: UnitGhostItem | None = None
         # The anchor tile from mousePressEvent, and the last tile a move
         # resolved to (frozen, like the Ruler's endpoint, if the drag runs
         # off-map) -- both None outside an in-progress drag. The COMMITTED
@@ -363,6 +504,12 @@ class MapView(QGraphicsView):
         # split ruler.RulerSession keeps internally.
         self._select_anchor: tuple[int, int] | None = None
         self._select_current: tuple[int, int] | None = None
+        # The move-a-pasted-region drag. MapView deliberately knows nothing
+        # about what a paste is: the window sets _region_movable, and this
+        # class decides only press-inside vs press-outside.
+        self._region_movable = False
+        self._move_anchor: tuple[int, int] | None = None
+        self._move_current: tuple[int, int] | None = None
         # The committed region, half-open tile-space (tx0, ty0, tx1, ty1).
         # Set by set_region() -- MapView's own drag-release/Escape-clear
         # paths, and ViewerWindow's Select All/Deselect, both funnel through
@@ -499,6 +646,23 @@ class MapView(QGraphicsView):
         self._pulse_phase_ms = 0
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._on_pulse_tick)
+        # Held-key pan (view_pan_*). Its own timer, deliberately not
+        # _pulse_timer above: that one only runs in EDIT_TOOLS and no-ops
+        # without a highlight item, i.e. it is stopped in exactly the
+        # Pan-mode case that matters here.
+        #
+        # _pan_bindings maps (key, modifiers) -> (dx, dy) and is pushed in by
+        # ViewerWindow.apply_keybind; _pan_held is the subset currently down.
+        # The accumulators carry the sub-pixel remainder between ticks --
+        # setValue() takes an int, so a slow speed at 16 ms ticks would
+        # otherwise truncate to zero every tick and never move.
+        self._pan_bindings: dict[tuple[int, int], tuple[int, int]] = {}
+        self._pan_held: dict[tuple[int, int], tuple[int, int]] = {}
+        self._pan_accum_x = 0.0
+        self._pan_accum_y = 0.0
+        self._pan_timer = QTimer(self)
+        self._pan_timer.timeout.connect(self._on_pan_tick)
+        self._pan_elapsed = QElapsedTimer()
         # Middle-button pan is independent of the active tool/dragMode
         # (Qt's ScrollHandDrag only ever responds to the left button) --
         # handled manually via the scrollbars, see mouse{Press,Move,Release}Event.
@@ -548,6 +712,7 @@ class MapView(QGraphicsView):
         self._ruler_label_color = QColor(settings.get_overlay_color("ruler_label"))
         self._ruler_label_outline = QColor(settings.get_overlay_color("ruler_label_outline"))
         self._ruler_label_outline.setAlpha(self.RULER_LABEL_OUTLINE_ALPHA)
+        self._ruler_glow_color = QColor(settings.get_overlay_color("ruler_line"))
         self._region_fill_color = QColor(settings.get_overlay_color("region_fill"))
         self._region_fill_color.setAlpha(self.REGION_SELECT_FILL_ALPHA)
         self._region_outline_pen = _pen("region_outline", self.REGION_SELECT_PEN_WIDTH, cosmetic=True)
@@ -558,6 +723,7 @@ class MapView(QGraphicsView):
         self._mirror_overlay_fill_color = QColor(settings.get_overlay_color("mirror_overlay"))
         self._mirror_overlay_fill_color.setAlpha(self.MIRROR_OVERLAY_FILL_ALPHA)
         self._mirror_axis_pen = _pen("mirror_overlay", 0)
+        self._footprint_pen = _pen("footprint_outline", 0)
 
     def apply_overlay_colors(self) -> None:
         """Settings > Appearance's re-entry point for a color change: persist
@@ -587,6 +753,8 @@ class MapView(QGraphicsView):
             self._ruler_line_item.setPen(self._ruler_pen)
             for item in self._ruler_end_items:
                 item.setPen(self._ruler_pen)
+            for item in self._ruler_glow_items:
+                item.setBrush(QBrush(self._ruler_glow_color))
             self._ruler_label_item.setBrush(QBrush(self._ruler_label_color))
             self._ruler_label_item.setPen(QPen(self._ruler_label_outline, 0))
         if self._region_fill_item is not None:
@@ -597,6 +765,10 @@ class MapView(QGraphicsView):
             ants_pen = QPen(self._region_ants_pen)
             ants_pen.setDashOffset(self._region_ants_item.pen().dashOffset())
             self._region_ants_item.setPen(ants_pen)
+        if self._stack_badge_item is not None:
+            self._stack_badge_item.set_color(QColor(settings.get_overlay_color("unit_stack")))
+        if self._footprint_item is not None:
+            self._footprint_item.setPen(self._footprint_pen)
         if self._mirror_overlay_outline_item is not None:
             self._mirror_overlay_outline_item.setPen(self._mirror_overlay_outline_pen)
             self._mirror_overlay_fill_item.setBrush(QBrush(self._mirror_overlay_fill_color))
@@ -617,8 +789,11 @@ class MapView(QGraphicsView):
         picks up the new size with no extra plumbing needed."""
         if self.scene() is None or self._ruler_label_item is None:
             return
-        font = self._ruler_label_item.font()
-        font.setPixelSize(settings.get_ruler_label_font_px())
+        # Rebuilt from map_overlay_font rather than the item's own font, so
+        # this stays the carve-out font even if a live app-font change ever
+        # reaches the item some other way. Bold is re-applied, not inherited.
+        font = map_overlay_font(settings.get_ruler_label_font_px())
+        font.setBold(True)
         self._ruler_label_item.setFont(font)
         self._update_ruler()
 
@@ -654,6 +829,14 @@ class MapView(QGraphicsView):
         self._brush_shape = shape
         self._highlight_key = None  # force the next _update_highlight to rebuild
 
+    def set_rect_filled(self, filled: bool) -> None:
+        """Draw Rectangle's Fill/Outline state, pushed down from the toolbar
+        combo. Same shape as set_brush() above, including the memo reset: the
+        preview's tile set depends on this, so a stale key would keep the old
+        one on screen until the cursor crossed a tile boundary."""
+        self._rect_filled = filled
+        self._highlight_key = None
+
     def refresh_highlight(self, tile: tuple[int, int] | None) -> None:
         """Rebuilds the edit-mode hover highlight for `tile` right now,
         using whatever brush state set_brush() last set -- for a caller
@@ -663,6 +846,13 @@ class MapView(QGraphicsView):
         _hover_tile, last reported by on_hover(). A None tile, or a tool
         with no highlight of this kind, just clears it -- same as if the
         mouse had left the map."""
+        # A live shape drag owns the highlight: this method is reached from
+        # the brush widgets' own change handler, so ]/[ mid-drag would
+        # otherwise replace the rubber band with a brush footprint. The
+        # preview is rebuilt with the new brush instead.
+        if self._shape_anchor is not None:
+            self._update_shape_preview()
+            return
         if tile is not None and self._tool in EDIT_TOOLS:
             self._update_highlight(*tile)
         else:
@@ -693,8 +883,15 @@ class MapView(QGraphicsView):
             # eventual release.
             self._unit_drag_key = None
             self._unit_drag_press_pos = None
+            self._clear_unit_ghost()
             self._marquee_start_pos = None
             self._clear_marquee()
+        # Defensive, mirroring the _unit_drag_key reset above: a mode
+        # switch mid-drag reaches the tool through _update_tool_enabled's
+        # forced-back-to-Pan path (which calls set_tool, which cancels
+        # already), so this is a second belt on the same trousers.
+        self._cancel_shape()
+        self._sync_stack_badges_visible()
         # Units mode forces NoDrag regardless of the active tool (Pan is the
         # only tool reachable there) -- without this a left click would fall
         # through to ScrollHandDrag and pan instead of selecting.
@@ -720,12 +917,59 @@ class MapView(QGraphicsView):
         """Swaps the pick index (a filter change rebuilds it) and drops any
         hover/selection keys that the new index can no longer resolve."""
         self._unit_index = index
+        self.refresh_stack_groups()
         self._clear_unit_hover()
         self.refresh_unit_highlight()
+        self.refresh_footprint_overlay()
 
-    def _unit_path(self, entry) -> QPainterPath | None:
+    def refresh_after_index_patch(self) -> None:
+        """For a caller that patched _unit_index in place rather than
+        swapping it: everything derived from the index, which is the stacks
+        and the footprint outlines."""
+        self.refresh_stack_groups()
+        self.refresh_footprint_overlay()
+
+    def refresh_stack_groups(self) -> None:
+        """Recomputes the stacks from the current index -- for a caller that
+        patched that index in place rather than swapping it."""
+        self._stack_groups = {} if self._unit_index is None else unit_pick.stack_groups(self._unit_index)
+        self._rebuild_stack_badges()
+
+    def stack_group_at(self, tile: tuple[int, int]) -> list | None:
+        """The stack members (top-first) anchored at `tile`, or None."""
+        return self._stack_groups.get(tile)
+
+    def _rebuild_stack_badges(self) -> None:
+        if self._stack_badge_item is None:
+            return
+        badges = []
+        for (tx, ty), members in self._stack_groups.items():
+            polygon = self._tile_polygon(tx, ty)
+            if polygon is None:
+                continue
+            rect = polygon.boundingRect()
+            badges.append((QPointF(rect.center().x(), rect.top()), len(members)))
+        self._stack_badge_item.set_badges(badges)
+        self._sync_stack_badges_visible()
+
+    def _sync_stack_badges_visible(self) -> None:
+        if self._stack_badge_item is not None:
+            self._stack_badge_item.setVisible(
+                self._stack_badges_enabled and self._mode == "units" and bool(self._stack_groups)
+            )
+
+    def set_stack_badges(self, enabled: bool) -> None:
+        """Shows or hides the stacked-unit badges. Nothing is baked into
+        chunk pixels, so there is nothing to evict."""
+        self._stack_badges_enabled = enabled
+        self._sync_stack_badges_visible()
+
+    def _unit_polygons_for(self, entry):
+        """One place decides which elevations and corner_rise a unit's
+        geometry is read from, so the hover cue and the footprint overlay can
+        never outline against different height fields."""
         cache = self._sloped_cache()
-        polygons = unit_pick.unit_polygons(
+        return unit_pick.unit_polygons(
             entry,
             self._terrain_style,
             self._tile_pixels or 1,
@@ -736,16 +980,13 @@ class MapView(QGraphicsView):
             corner_rise=None if cache is None else cache.corner_rise,
             farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
         )
+
+    def _unit_path(self, entry) -> QPainterPath | None:
+        polygons = self._unit_polygons_for(entry)
         if not polygons:
             return None
         path = QPainterPath()
-        for points in polygons:
-            path.addPolygon(QPolygonF([QPointF(x, y) for x, y in points]))
-            # addPolygon() leaves the subpath OPEN, so stroking it draws only
-            # 3 of a diamond's 4 edges. Invisible wherever a fill dominates,
-            # but the hover cue is outline-only -- confirmed by rendering it
-            # offscreen and looking at the image, not by reading the docs.
-            path.closeSubpath()
+        _add_closed_polygons(path, polygons)
         return path
 
     def _update_unit_hover(self, entry) -> None:
@@ -863,6 +1104,35 @@ class MapView(QGraphicsView):
             self.scene().removeItem(self._marquee_item)
             self._marquee_item = None
 
+    def set_unit_ghost(self, draws=None, polygons=None, color=None) -> None:
+        """The mid-drag move preview's content, resolved by ViewerWindow and
+        pushed here -- `set_unit_selection`'s shape, for the same reason (see
+        this class's `_on_unit_drag_preview` comment).
+
+        `draws` are render.unit_sprite_draws_at()'s (draw, px, py) triples;
+        `polygons`/`color` are the coloured-mark fallback. Passing neither, or
+        a sprite resolve that comes back empty with no mark behind it, clears
+        the ghost rather than leaving a stale one on screen: an empty
+        sprite_pieces_for(), and a None from unit_polygons() on a ghost entry
+        at a destination with no elevations/proj/corner_rise, both mean "no
+        ghost this frame" -- never a crash, never a partial draw."""
+        item = self._unit_ghost_item
+        if item is None:
+            item = UnitGhostItem()
+            item.setZValue(self.UNIT_GHOST_Z)
+            self.scene().addItem(item)
+            self._unit_ghost_item = item
+        if draws and item.set_sprites(draws):
+            return
+        if polygons and color is not None and item.set_mark(polygons, color):
+            return
+        self._clear_unit_ghost()
+
+    def _clear_unit_ghost(self) -> None:
+        if self._unit_ghost_item is not None:
+            self.scene().removeItem(self._unit_ghost_item)
+            self._unit_ghost_item = None
+
     def _scene_rect_to_tile_rect(self, rect: QRectF) -> tuple[int, int, int, int] | None:
         """A tile-space bounding box covering `rect`, half-open
         ([tx0, tx1), [ty0, ty1)), clamped to the map -- the marquee's own
@@ -894,8 +1164,8 @@ class MapView(QGraphicsView):
         step = max(1, self._tile_pixels or 1)
         left, top = int(rect.left()), int(rect.top())
         right, bottom = int(rect.right()), int(rect.bottom())
-        xs = list(range(left, right, step)) + [right]
-        ys = list(range(top, bottom, step)) + [bottom]
+        xs = [*range(left, right, step), right]
+        ys = [*range(top, bottom, step), bottom]
         tiles = [
             tile
             for y in ys
@@ -938,12 +1208,18 @@ class MapView(QGraphicsView):
         recomputing it here cost that pixel a second plane lookup (Sloped)
         or a second screen_to_tile (Stepped) on every move. Omitting it
         resolves one here, which is what the click paths do."""
+        found = self.pick_unit_cover_at(pos, tile)
+        return None if found is None else found[0]
+
+    def pick_unit_cover_at(self, pos: QPointF, tile=unit_pick.UNRESOLVED_TILE):
+        """pick_unit_at() plus the footprint tile the winner was covering,
+        as (entry, (x, y)) -- the click path's key into stack_group_at()."""
         if self._unit_index is None or self._tile_pixels is None:
             return None
         if tile is unit_pick.UNRESOLVED_TILE:
             tile = self._pick_tile(pos)
         cache = self._sloped_cache()
-        return unit_pick.pick_unit(
+        return unit_pick.pick_unit_cover(
             self._unit_index,
             self._terrain_style,
             int(pos.x()),
@@ -982,10 +1258,18 @@ class MapView(QGraphicsView):
         # not: it must survive a tool switch (Copy/Paste act on it
         # regardless of which tool is active), so only the anchor is
         # cancelled here, not self._region.
-        if tool != TOOL_SELECT and self._select_anchor is not None:
+        if tool != TOOL_SELECT and (self._select_anchor is not None or self._move_anchor is not None):
             self._select_anchor = None
             self._select_current = None
+            self._move_anchor = None
+            self._move_current = None
             self._update_region_overlay()
+        # Cancel, never commit -- a shape the user never released is not a
+        # shape they asked to paint. Unconditional rather than gated on the
+        # new tool: unlike a region, a live shape drag belongs to the drag,
+        # not to the tool, so even switching between Line and Rectangle
+        # drops it.
+        self._cancel_shape()
         self._sync_pulse_timer()
         # Routed through _apply_drag_mode() rather than set here directly, so
         # Units mode's NoDrag can't be undone by a tool switch.
@@ -1055,6 +1339,44 @@ class MapView(QGraphicsView):
                 return None
             return cache.pick_tile(int(pos.x()), int(pos.y()))
         return int(pos.x()) // self._tile_pixels, int(pos.y()) // self._tile_pixels
+
+    def _pick_map_point(self, pos: QPointF) -> tuple[float, float] | None:
+        """The CONTINUOUS map point under scene-space pos, or None -- free
+        placement's Stage 2, and `_pick_tile`'s fractional counterpart.
+
+        A separate method rather than a widened `_pick_tile`, deliberately:
+        `_pick_tile` has many callers (`_pos_on_map`, `mouseMoveEvent`,
+        `_scene_rect_to_tile_rect`, `pick_unit_at`, `on_unit_place`,
+        `on_unit_move`) and every one of them wants an integer tile.
+
+        The float is carried past the `int()` truncation the tile path does,
+        which is what actually caps precision at one pixel -- Sloped still
+        hands `cache.pick_tile` integers, since the id plane is integer-indexed,
+        but the solve itself gets the unrounded position. corner_rise comes
+        through `_sloped_cache()`, the same accessor `_pick_tile` and
+        `_tile_polygon` use and for the same reason: it is the object that
+        actually composited the pixels."""
+        if self._terrain_style == "stepped":
+            if self._iso_elevations is None or self._iso_proj is None:
+                return None
+            return iso_geometry.screen_to_map_point(
+                int(pos.x()), int(pos.y()), "stepped", self._iso_proj,
+                elevations=self._iso_elevations,
+            )
+        if self._terrain_style == "sloped":
+            cache = self._sloped_cache()
+            if cache is None or self._iso_proj is None:
+                return None
+            tile = cache.pick_tile(int(pos.x()), int(pos.y()))
+            if tile is None:
+                return None
+            return iso_geometry.screen_to_map_point(
+                int(pos.x()), int(pos.y()), "sloped", self._iso_proj,
+                corner_rise=cache.corner_rise, tile=tile,
+            )
+        return iso_geometry.screen_to_map_point(
+            int(pos.x()), int(pos.y()), "flat", tile_px=self._tile_pixels
+        )
 
     def _pos_on_map(self, pos: QPointF) -> bool:
         """Flat mode's old _map_rect.contains(pos) generalizes in Stepped
@@ -1129,9 +1451,34 @@ class MapView(QGraphicsView):
                 pos = self.mapToScene(event.pos())
                 if self._pos_on_map(pos):
                     tile = self._pick_tile(pos)
-                    self._select_anchor = tile
-                    self._select_current = tile
+                    if self._region_movable and self._tile_in_region(tile):
+                        self._move_anchor = tile
+                        self._move_current = tile
+                    else:
+                        self._select_anchor = tile
+                        self._select_current = tile
                     self._update_region_overlay()
+            return
+        # Draw Line / Draw Rectangle, above the EDIT_TOOLS stroke branch
+        # below (they are edit tools, so they would otherwise open a stroke)
+        # and beside the Ruler/Select branches, whose press-drag-release
+        # grammar they share. Gated on _pos_on_map, NOT "_pick_tile is not
+        # None" -- see the Ruler's own note above for why those differ in
+        # Flat. Right button cancels rather than drawing an inverse: there
+        # is no meaningful inverse of painting a shape, and _touch_tile ORs
+        # in ShiftModifier for right-button strokes, which this path would
+        # read as a phantom constrain.
+        if self._tool in SHAPE_TOOLS:
+            if event.button() == Qt.RightButton:
+                self._cancel_shape()
+            elif event.button() == Qt.LeftButton and self._map_rect is not None:
+                pos = self.mapToScene(event.pos())
+                if self._pos_on_map(pos):
+                    tile = self._pick_tile(pos)
+                    self._shape_anchor = tile
+                    self._shape_end = tile
+                    self._shape_modifiers = event.modifiers()
+                    self._update_shape_preview()
             return
         # Units mode's selection click, deliberately ABOVE the CLICK_TOOLS/
         # EDIT_TOOLS checks and independent of whatever tool is active (the
@@ -1161,14 +1508,23 @@ class MapView(QGraphicsView):
             # and where, so mouseReleaseEvent can tell a plain click from a
             # drag. The selection click itself still fires unconditionally --
             # a press-then-tiny-jitter-then-release must still select.
-            entry = self.pick_unit_at(pos)
-            self._on_click_select(pos, event.modifiers())
-            self._unit_drag_key = None if entry is None else unit_pick.unit_key(entry.player_id, entry.unit)
+            #
+            # on_click_select's return IS the press's pick result: it returns
+            # the key it acted on, or None on empty ground, and it decides that
+            # from pick_unit_cover_at(), which pick_unit_at() is a one-line
+            # wrapper over. So a separate pick_unit_at() here was a second full
+            # unit pick per click (perf item: "a Units-mode CLICK does two full
+            # unit picks"), and its `selected_key or unit_key(entry...)`
+            # fallback was unreachable, since the two can only be None together.
+            # After a repeat click on a stack the key is a lower unit than the
+            # top one, which is exactly the one dragging must move.
+            selected_key = self._on_click_select(pos, event.modifiers())
+            self._unit_drag_key = selected_key
             self._unit_drag_press_pos = event.pos()
             # b2.3's marquee: only a candidate when the press hit nothing --
             # a hit is already b1.5's move-drag above, and the two must never
             # both be live (mouseReleaseEvent checks _unit_drag_key first).
-            self._marquee_start_pos = event.pos() if entry is None else None
+            self._marquee_start_pos = event.pos() if selected_key is None else None
             return
         # Click-only tools (Paint Can) never open a stroke: one edit per
         # press, nothing per drag-entered tile. Handled here, above the
@@ -1224,6 +1580,11 @@ class MapView(QGraphicsView):
             return
         super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:
+        # QGraphicsView's default swallows the second press of a fast pair,
+        # which would drop a repeat click on a stack (or a second edit click).
+        self.mousePressEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MiddleButton and self._middle_drag_active:
             self._middle_drag_active = False
@@ -1247,6 +1608,17 @@ class MapView(QGraphicsView):
         # set_region(), then announces it -- the one path
         # ViewerWindow.on_region_selected() shares with Select All/Deselect.
         if self._tool == TOOL_SELECT:
+            if event.button() == Qt.LeftButton and self._move_anchor is not None:
+                anchor, current = self._move_anchor, self._move_current
+                self._move_anchor = None
+                self._move_current = None
+                self._update_region_overlay()
+                dx, dy = current[0] - anchor[0], current[1] - anchor[1]
+                # A zero-delta press-release inside the selection is a no-op
+                # that KEEPS the region, deliberately not a deselect.
+                if dx or dy:
+                    self._on_region_move(dx, dy)
+                return
             if event.button() == Qt.LeftButton and self._select_anchor is not None:
                 anchor, current = self._select_anchor, self._select_current
                 self._select_anchor = None
@@ -1257,6 +1629,19 @@ class MapView(QGraphicsView):
                 self.set_region(region)
                 self._on_region_selected(region)
             return
+        # The shape tools' sole commit point. One on_shape_commit() call per
+        # drag, with the exact (never the preview-approximated) tile set;
+        # the drag state is cleared BEFORE the callback so a re-entrant
+        # repaint during the commit can't see a half-live drag. A release
+        # arriving with no anchor -- a drag closed mid-flight by set_tool(),
+        # say -- falls through to a no-op rather than committing.
+        if self._tool in SHAPE_TOOLS:
+            if event.button() == Qt.LeftButton and self._shape_anchor is not None:
+                tiles = self._shape_tiles(preview=False)
+                self._cancel_shape()
+                if tiles:
+                    self._on_shape_commit(tiles)
+            return
         # b1.5's move-by-drag: the matching half of the press-time bookkeeping
         # above. Cleared unconditionally either way -- a drag is decided once,
         # here, never left pending for a later event.
@@ -1265,6 +1650,10 @@ class MapView(QGraphicsView):
             press_pos = self._unit_drag_press_pos
             self._unit_drag_key = None
             self._unit_drag_press_pos = None
+            # Unconditionally, before either outcome below: the ghost is a
+            # preview of a pending move, and both a committed move and a
+            # below-threshold click end the gesture it was previewing.
+            self._clear_unit_ghost()
             moved = (
                 press_pos is not None
                 and (event.pos() - press_pos).manhattanLength() > self.UNIT_DRAG_THRESHOLD_PX
@@ -1302,10 +1691,12 @@ class MapView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    # Arrow-key nudge deltas, in tiles -- Qt.Key -> (dx, dy). Not a
-    # REBINDABLE_ACTIONS set (see this method's own docstring on Escape,
-    # which the same reasoning applies to).
-    _UNIT_NUDGE_KEYS = {
+    # Arrow-key nudge deltas, in tiles -- Qt.Key -> (dx, dy). This MAPPING is
+    # fixed, not a REBINDABLE_ACTIONS set (see this method's own docstring on
+    # Escape, which the same reasoning applies to). The same four physical
+    # keys are also the view_pan_* defaults, which is a separate, rebindable
+    # binding; keyPressEvent below is where the two are arbitrated.
+    _UNIT_NUDGE_KEYS: ClassVar[dict[int, tuple[int, int]]] = {
         Qt.Key_Left: (-1, 0),
         Qt.Key_Right: (1, 0),
         Qt.Key_Up: (0, -1),
@@ -1314,12 +1705,24 @@ class MapView(QGraphicsView):
 
     def keyPressEvent(self, event) -> None:
         """Escape clears a live measurement; in Units mode, arrow keys nudge
-        the selection (b1.5) and Delete removes it (b1.6).
+        the selection (b1.5) and Delete removes it (b1.6); anything bound to
+        view_pan_* starts a held-key pan.
 
-        None of these are REBINDABLE_ACTIONS rows: Escape/Delete/arrows are
-        platform conventions rather than commands, and every added row is one
-        more hand-audited entry in a keybind namespace with no runtime
-        collision detection.
+        Escape/Delete/the nudge mapping are not REBINDABLE_ACTIONS rows: they
+        are platform conventions rather than commands, and every added row is
+        one more hand-audited entry in a keybind namespace with no runtime
+        collision detection. Pan is, and ships defaulted to the same four
+        arrow keys.
+
+        **Arrow-key ownership.** An arrow nudges when Units mode has a
+        selection the nudge can actually act on, and pans in every other case
+        -- including Units mode with nothing selected. on_unit_nudge's own
+        return value is the discriminator (it already refuses on no scenario,
+        no unit index, no resolvable entries and no edit model), so there is
+        one authority for "did the nudge happen" rather than two that can
+        disagree. Consequences worth knowing: rebinding pan to WASD makes W
+        pan even with a selection, since W is not a nudge key, and Shift+Up
+        with a selection is always the whole-tile nudge, never a pan.
 
         Accepted limitation: all of these only fire while the view holds
         keyboard focus, so after clicking away to the status log they do
@@ -1328,14 +1731,36 @@ class MapView(QGraphicsView):
         nudge-or-delete flow works; Right-click and starting the next ruler
         measurement both still clear it.
         """
+        # Above the Ruler's own Escape below: the two are never live at once
+        # (different tools), so order is arbitrary, but a mutating tool's
+        # cancel reads better first.
+        if event.key() == Qt.Key_Escape and self._shape_anchor is not None:
+            self._cancel_shape()
+            return
         if event.key() == Qt.Key_Escape and self._ruler.state != ruler.STATE_IDLE:
             self._clear_ruler()
             return
-        # Select tool's Escape: cancel an in-progress drag first, only clear
-        # a committed region when there is no drag -- same ordering rule
-        # daubED's canvas_widget.py follows, so releasing Escape mid-drag
-        # can never destroy a PREVIOUSLY committed region the drag hadn't
+        # Cancels a unit drag outright. Not optional polish: a visible preview
+        # invites a cancel gesture, and before this a started drag could only
+        # be completed. Dropping _unit_drag_key is what makes the eventual
+        # release commit nothing -- mouseReleaseEvent's unit branch is gated on
+        # exactly that key being set.
+        if event.key() == Qt.Key_Escape and self._unit_drag_key is not None:
+            self._unit_drag_key = None
+            self._unit_drag_press_pos = None
+            self._clear_unit_ghost()
+            return
+        # Select tool's Escape, in three ordered clauses: cancel a live MOVE,
+        # else cancel an in-progress selection drag, and only clear a
+        # committed region when neither is live -- the same ordering rule
+        # daubED's canvas_widget.py follows, so releasing Escape mid-gesture
+        # can never destroy a PREVIOUSLY committed region that gesture hadn't
         # replaced yet.
+        if event.key() == Qt.Key_Escape and self._move_anchor is not None:
+            self._move_anchor = None
+            self._move_current = None
+            self._update_region_overlay()
+            return
         if event.key() == Qt.Key_Escape and self._select_anchor is not None:
             self._select_anchor = None
             self._select_current = None
@@ -1345,19 +1770,184 @@ class MapView(QGraphicsView):
             self.set_region(None)
             self._on_region_selected(None)
             return
+        # Live Shift: mouseMoveEvent already carries event.modifiers(), so a
+        # shape drag gets snap-on-next-move for free -- but pressing Shift
+        # without moving the mouse is exactly the gesture a constrain
+        # modifier is reached for, and it has to answer immediately.
+        # keyReleaseEvent below is the other half; MapView is StrongFocus,
+        # so both actually arrive during a drag.
+        if event.key() == Qt.Key_Shift and self._shape_anchor is not None:
+            self._shape_modifiers = self._shape_modifiers | Qt.ShiftModifier
+            self._update_shape_preview()
+            return
         if self._mode == "units":
             if event.key() in self._UNIT_NUDGE_KEYS:
                 dx, dy = self._UNIT_NUDGE_KEYS[event.key()]
-                self._on_unit_nudge(dx, dy, event.modifiers())
-                return
-            if event.key() == Qt.Key_Delete:
+                if self._on_unit_nudge(dx, dy, event.modifiers()):
+                    # Ownership of this key just moved from pan to nudge --
+                    # clicking a unit mid-hold is the real case. Ending the
+                    # pan here rather than at a release the pan path no
+                    # longer owns is what stops a runaway timer.
+                    self._release_pan_key(event.key())
+                    event.accept()
+                    return
+                # Falls through to the pan branches below: "no selection to
+                # nudge" is exactly the case the user asked to pan.
+            elif event.key() == Qt.Key_Delete:
                 self._on_unit_delete(event.modifiers())
                 return
+        # Conditional, not a blanket auto-repeat swallow: the nudge above
+        # deliberately fires once per OS repeat, so short-circuiting every
+        # repeat here would kill held-arrow nudging.
+        pan_key = (event.key(), self._pan_modifiers(event.modifiers()))
+        if event.isAutoRepeat() and pan_key in self._pan_held:
+            event.accept()
+            return
+        direction = self._pan_bindings.get(pan_key)
+        if direction is not None:
+            self._pan_held[pan_key] = direction
+            if not self._pan_timer.isActive():
+                self._pan_elapsed.start()
+                self._pan_timer.start(self.PAN_TICK_MS)
+            event.accept()
+            return
+        # Suppresses QAbstractScrollArea's native single-step arrow scroll,
+        # so panning is governed only by the keybind system above: rebind pan
+        # to WASD and a bare arrow pans nothing.
+        if self._pan_modifiers(event.modifiers()) == 0 and event.key() in self._UNIT_NUDGE_KEYS:
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def set_pan_binding(self, action_id: str, key_sequence_text: str) -> None:
+        """ViewerWindow.apply_keybind's target for the four view_pan_* ids --
+        they never reach a QAction, since a shortcut consumes the press and
+        never reports the release a hold timer needs.
+
+        An empty sequence unbinds. A multi-chord sequence is treated as
+        unbound too: a chord cannot be "held"."""
+        direction = self.PAN_DIRECTIONS[action_id]
+        for key, bound in list(self._pan_bindings.items()):
+            if bound == direction:
+                del self._pan_bindings[key]
+                self._release_pan_key(key[0])
+        if not key_sequence_text:
+            return
+        seq = QKeySequence(key_sequence_text)
+        if seq.isEmpty() or seq.count() != 1:
+            return
+        packed = int(seq[0])
+        key = packed & ~self._KEY_MODIFIER_MASK
+        self._pan_bindings[(key, self._pan_modifiers(packed & self._KEY_MODIFIER_MASK))] = direction
+
+    @classmethod
+    def _pan_modifiers(cls, modifiers) -> int:
+        """The modifier half a pan binding is matched on, with KeypadModifier
+        masked off. Not optional tidiness: on macOS Qt sets KeypadModifier on
+        the ARROW keys themselves, so an unmasked comparison would leave the
+        shipped arrow defaults matching nothing there -- no pan, and the bare
+        arrow falling through to the native single-step jump this feature
+        replaces. Masking it also makes the numpad arrows behave like the
+        cursor arrows, which is what a pan key should do anyway."""
+        return int(modifiers) & ~int(Qt.KeypadModifier)
+
+    def _release_pan_key(self, key: int) -> None:
+        """Drops a held key and stops the timer once nothing is held. Safe to
+        call for a key that was never held -- a nudged arrow, or any
+        unrelated release.
+
+        Matched on the Qt key ALONE, never on (key, modifiers): releasing
+        Ctrl before Up on a Ctrl+Up binding delivers the Up release with the
+        modifier already gone, and a tuple match would miss it and leave the
+        timer running forever."""
+        released = [k for k in self._pan_held if k[0] == key]
+        if not released:
+            return
+        for k in released:
+            del self._pan_held[k]
+        if not self._pan_held:
+            self._stop_pan()
+
+    def _stop_pan(self) -> None:
+        self._pan_timer.stop()
+        self._pan_accum_x = 0.0
+        self._pan_accum_y = 0.0
+
+    def _on_pan_tick(self) -> None:
+        dt_ms = min(float(self._pan_elapsed.restart()), self.PAN_MAX_DT_MS)
+        self._pan_step(dt_ms)
+
+    def _pan_step(self, dt_ms: float) -> None:
+        """Split out from _on_pan_tick so a test can drive a deterministic
+        dt. Stops the timer when the view is clamped in every held direction
+        and nothing actually moved."""
+        if self._middle_drag_active:
+            return  # two mechanisms, one pair of scrollbars
+        if not self._pan_held:
+            self._stop_pan()
+            return
+        dx = sum(d[0] for d in self._pan_held.values())
+        dy = sum(d[1] for d in self._pan_held.values())
+        # No diagonal normalization, deliberately: two keys held gives
+        # ~1.41x, exactly as middle-drag does not normalize either.
+        px = settings.get_pan_speed() * dt_ms / 1000.0
+        self._pan_accum_x += dx * px
+        self._pan_accum_y += dy * px
+        step_x = int(self._pan_accum_x)
+        step_y = int(self._pan_accum_y)
+        self._pan_accum_x -= step_x
+        self._pan_accum_y -= step_y
+        if step_x == 0 and step_y == 0:
+            return
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        before = (h.value(), v.value())
+        self._scroll_by(step_x, step_y)
+        if (h.value(), v.value()) == before:
+            self._stop_pan()
+
+    def _scroll_by(self, dx: int, dy: int) -> None:
+        """The one place that moves the scrollbars. Shared by middle-drag and
+        the held-key pan, so both get setSceneRect()'s overscroll clamping and
+        zoom-relative feel identically."""
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dx)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dy)
+
+    def focusOutEvent(self, event) -> None:
+        """Alt+Tab mid-hold never delivers a release, so the timer would
+        otherwise run forever."""
+        self._pan_held.clear()
+        self._stop_pan()
+        super().focusOutEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        """Shift during a shape drag (the matching half of keyPressEvent's
+        live-constrain branch), and the end of a held pan.
+
+        X11 emits release+press pairs while a key is held, both flagged
+        isAutoRepeat(), so an auto-repeat release must not end the hold. A
+        release for a key that nudged, or was never held at all, falls
+        through silently."""
+        if not event.isAutoRepeat():
+            self._release_pan_key(event.key())
+        if event.key() == Qt.Key_Shift and self._shape_anchor is not None:
+            self._shape_modifiers = self._shape_modifiers & ~Qt.ShiftModifier
+            self._update_shape_preview()
+            return
+        super().keyReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
-        self._clear_highlight()
+        # Before the unconditional _clear_highlight() below, which would
+        # otherwise nuke the rubber band. Cancelled only when NO button is
+        # held: dragging a rectangle past the viewport edge on a zoomed view
+        # is ordinary, and Qt's implicit grab still routes the release back
+        # here. leaveEvent gets a bare QEvent with no button state of its
+        # own, hence the QApplication query.
+        shape_held = self._shape_anchor is not None and QApplication.mouseButtons() != Qt.NoButton
+        if self._shape_anchor is not None and not shape_held:
+            self._cancel_shape()
+        if not shape_held:
+            self._clear_highlight()
         self._clear_pan_highlight()
         # Hover only -- a selection deliberately survives the cursor leaving
         # the map, the same way it survives moving onto empty ground.
@@ -1379,14 +1969,95 @@ class MapView(QGraphicsView):
         if self._marquee_start_pos is not None:
             self._marquee_start_pos = None
             self._clear_marquee()
+        # The ghost only, not _unit_drag_key: Qt's implicit grab still routes
+        # the eventual release back here, so a drag that merely crosses the
+        # viewport edge must still be able to commit its move. What must not
+        # survive is a preview drawn at a destination the cursor has left.
+        self._clear_unit_ghost()
         # Defensive, same reasoning as the marquee above: cancelled outright,
         # not committed -- there is no natural release position to resolve
         # against. The committed region (if any) is untouched, exactly like
         # an Escape-cancel.
-        if self._select_anchor is not None:
+        if self._select_anchor is not None or self._move_anchor is not None:
             self._select_anchor = None
             self._select_current = None
+            self._move_anchor = None
+            self._move_current = None
             self._update_region_overlay()
+
+    def center_on_tile(self, tile_x: int, tile_y: int) -> None:
+        """Scroll so tile (tile_x, tile_y) is centred, in every terrain style
+        (routed through _tile_polygon for exactly that reason)."""
+        poly = self._tile_polygon(tile_x, tile_y)
+        if poly is not None:
+            self.centerOn(poly.boundingRect().center())
+
+    def _sloped_tile_base(
+        self, tile_x: int, tile_y: int
+    ) -> tuple[int, int, tuple[int, int, int, int]] | None:
+        """Sloped mode's per-tile placement: the screen origin to translate a
+        tile-local outline by, plus its four normalized corner rises. Shared by
+        _tile_polygon and _tile_edge_points so a whole-tile outline and a
+        single-edge one can never disagree about where a tile sits.
+
+        corner_rise lives on the cache rather than on MapView because it is the
+        same array the cache composited these pixels from -- reading it from
+        anywhere else would risk outlining against different geometry than the
+        one on screen. None before a projection snapshot and a cache exist."""
+        cache = self._sloped_cache()
+        if self._iso_proj is None or cache is None:
+            return None
+        corner_rise = cache.corner_rise
+        d_nw = int(corner_rise[tile_y, tile_x])
+        d_ne = int(corner_rise[tile_y, tile_x + 1])
+        d_sw = int(corner_rise[tile_y + 1, tile_x])
+        d_se = int(corner_rise[tile_y + 1, tile_x + 1])
+        ox, oy = iso_geometry.tile_screen_origin(tile_x, tile_y, 0, self._iso_proj)
+        oy -= min(d_nw, d_ne, d_sw, d_se)
+        return ox, oy, (d_nw, d_ne, d_sw, d_se)
+
+    # Which two _tile_polygon vertices bound each side, per style. Stepped's
+    # polygon is unit_pick.diamond_points' [N, E, S, W]; Flat's is
+    # [TL, TR, BR, BL]. Both orders put the side facing grid neighbor
+    # (x, y-1) first and then run screen-clockwise, so consecutive sides of a
+    # region walk chain end-to-start.
+    _STEPPED_EDGE_VERTICES: ClassVar[dict[str, tuple[int, int]]] = {
+        "up_left": (3, 0), "up_right": (0, 1), "right": (1, 2), "left": (2, 3),
+    }
+    _FLAT_EDGE_VERTICES: ClassVar[dict[str, tuple[int, int]]] = {
+        "up_left": (0, 1), "up_right": (1, 2), "right": (2, 3), "left": (3, 0),
+    }
+
+    def _tile_edge_points(self, tile_x: int, tile_y: int, side: str) -> list[QPointF] | None:
+        """Just the one side of tile (tile_x, tile_y)'s screen outline that
+        faces grid neighbor `side` (iso_geometry.tile_edge_indices' vocabulary),
+        in screen-clockwise order.
+
+        Flat and Stepped index _tile_polygon's own corners rather than
+        rebuilding any geometry, so there is no second construction to drift.
+        Sloped has no corners to index -- its silhouette is a pair of warped
+        staircases -- so it goes through iso_geometry.sloped_tile_edge_outline,
+        translated exactly as _tile_polygon translates the full outline.
+
+        None propagates from _tile_polygon / _sloped_tile_base (defensive:
+        before a projection snapshot exists)."""
+        if self._terrain_style == "sloped":
+            base = self._sloped_tile_base(tile_x, tile_y)
+            if base is None:
+                return None
+            ox, oy, corners = base
+            points = iso_geometry.sloped_tile_edge_outline(self._tile_pixels, side, *corners)
+            return [QPointF(ox + px, oy + py) for px, py in points]
+        polygon = self._tile_polygon(tile_x, tile_y)
+        if polygon is None:
+            return None
+        table = (
+            self._STEPPED_EDGE_VERTICES
+            if self._terrain_style == "stepped"
+            else self._FLAT_EDGE_VERTICES
+        )
+        first, second = table[side]
+        return [polygon[first], polygon[second]]
 
     def _tile_polygon(self, tile_x: int, tile_y: int, *, coarse: bool = False) -> QPolygonF | None:
         """The on-screen footprint of tile (tile_x, tile_y) as a polygon --
@@ -1418,25 +2089,15 @@ class MapView(QGraphicsView):
         if self._terrain_style == "sloped":
             # Deliberately NOT unit_pick.diamond_points: a sloped tile's
             # silhouette is a pair of warped staircases, not a diamond (see
-            # iso_geometry.sloped_tile_outline). corner_rise lives on the
-            # cache rather than on MapView because it is the same array the
-            # cache composited these pixels from -- reading it from anywhere
-            # else would risk outlining against different geometry than the
-            # one on screen.
-            cache = self._sloped_cache()
-            if self._iso_proj is None or cache is None:
+            # iso_geometry.sloped_tile_outline).
+            base = self._sloped_tile_base(tile_x, tile_y)
+            if base is None:
                 return None
-            corner_rise = cache.corner_rise
-            d_nw = int(corner_rise[tile_y, tile_x])
-            d_ne = int(corner_rise[tile_y, tile_x + 1])
-            d_sw = int(corner_rise[tile_y + 1, tile_x])
-            d_se = int(corner_rise[tile_y + 1, tile_x + 1])
-            ox, oy = iso_geometry.tile_screen_origin(tile_x, tile_y, 0, self._iso_proj)
-            oy -= min(d_nw, d_ne, d_sw, d_se)
+            ox, oy, corners = base
             outline_fn = (
                 iso_geometry.sloped_tile_outline_coarse if coarse else iso_geometry.sloped_tile_outline
             )
-            points = outline_fn(self._tile_pixels, d_nw, d_ne, d_sw, d_se)
+            points = outline_fn(self._tile_pixels, *corners)
             return QPolygonF([QPointF(ox + px, oy + py) for px, py in points])
         tp = self._tile_pixels
         x0, y0 = tile_x * tp, tile_y * tp
@@ -1463,18 +2124,30 @@ class MapView(QGraphicsView):
         key = (tile_x, tile_y, self._brush_size, self._brush_shape)
         if key == self._highlight_key:
             return
-        self._highlight_key = key
         if self._map_width is None or self._map_height is None:
             tiles = [(tile_x, tile_y)]
         else:
             tiles = brush.brush_tiles(
                 tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height
             )
+        self._set_highlight_tiles(tiles, key)
+
+    def _set_highlight_tiles(self, tiles: list[tuple[int, int]], key) -> None:
+        """Paints `tiles` as the pulsing edit highlight, memoized on `key`.
+        Split out of _update_highlight above so the shape tools' rubber band
+        can reuse the item management and path build wholesale -- the two
+        differ only in which tiles they name and how the memo key is
+        composed."""
+        self._highlight_key = key
         path = QPainterPath()
         for tx, ty in tiles:
             polygon = self._tile_polygon(tx, ty, coarse=True)
             if polygon is not None:
                 path.addPolygon(polygon)
+                # addPolygon() leaves the subpath OPEN, so the outline pen
+                # drew 3 of each tile's 4 edges. Invisible until now only
+                # because the fill below covers the same path.
+                path.closeSubpath()
         if path.isEmpty():
             self._clear_highlight()
             return
@@ -1489,6 +2162,111 @@ class MapView(QGraphicsView):
         # A fill item created while the pulse is paused would otherwise sit
         # at Qt's default opacity of 1.0 until the stroke ends.
         self._apply_highlight_opacity()
+
+    def _shape_span(self) -> tuple[int, int, int, int]:
+        """The drag's anchor and endpoint in tile space, with Shift already
+        applied. Tile space, never screen space: in Sloped the projection
+        warps per corner with elevation, so a screen angle is not even
+        well-defined along the line's own length, and the same drag would
+        paint different tiles per view style."""
+        ax, ay = self._shape_anchor
+        ex, ey = self._shape_end
+        if self._shape_modifiers & Qt.ShiftModifier:
+            dx, dy = ex - ax, ey - ay
+            shape = _TOOL_SHAPE.get(self._tool)
+            if shape == "line":
+                dx, dy = shape_tools.snap_line_delta(dx, dy)
+            elif shape == "wall":
+                # 8 directions, not the line tool's 16: a wall run has no
+                # shallow-angle form to snap to (see snap_wall_delta).
+                dx, dy = shape_tools.snap_wall_delta(dx, dy)
+            else:
+                dx, dy = shape_tools.snap_square_delta(dx, dy)
+            ex, ey = ax + dx, ay + dy
+        return ax, ay, ex, ey
+
+    def _brush_union(self, tiles: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Every brush footprint along `tiles`, deduped, order preserved.
+        dict.fromkeys rather than a set: the committed order is what
+        EditHistory records, and a set would make it arbitrary per run."""
+        if self._brush_size <= 1 or self._map_width is None or self._map_height is None:
+            return tiles
+        out: dict[tuple[int, int], None] = {}
+        for tx, ty in tiles:
+            for tile in brush.brush_tiles(
+                tx, ty, self._brush_size, self._brush_shape, self._map_width, self._map_height
+            ):
+                out[tile] = None
+        return list(out)
+
+    def _shape_tiles(self, *, preview: bool) -> list[tuple[int, int]]:
+        """The tile set this drag names. `preview=True` may return a cheaper
+        approximation; the COMMITTED set (preview=False) is always exact.
+
+        The approximation matters: one rebuild of a 480-square filled
+        rectangle is ~230k _tile_polygon() calls into a single QPainterPath,
+        each reading four corner_rise values in Sloped, which freezes the
+        drag. A filled rectangle previews its perimeter ring instead, which
+        is what the user reads as "the rectangle" anyway."""
+        if self._shape_anchor is None or self._shape_end is None:
+            return []
+        if self._map_width is None or self._map_height is None:
+            return []
+        x0, y0, x1, y1 = self._shape_span()
+        width, height = self._map_width, self._map_height
+        shape = _TOOL_SHAPE.get(self._tool)
+        if shape == "wall":
+            # Same set for preview and commit, no approximation: a wall run
+            # is bounded by the drag's own longer axis, so it can never
+            # reach the tile counts a filled rectangle can. No brush union
+            # either -- the tool has supports_brush=False, since a wall's
+            # shape is derived from tile adjacency and a dilated piece has
+            # no meaning.
+            return shape_tools.wall_path_tiles(x0, y0, x1, y1, width, height)
+        if shape == "line":
+            core = shape_tools.line_tiles(x0, y0, x1, y1, width, height)
+            if preview and len(core) * self._brush_size**2 > self.SHAPE_PREVIEW_TILE_LIMIT:
+                return core
+            return self._brush_union(core)
+        if self._rect_filled:
+            if preview:
+                return shape_tools.rect_perimeter_tiles(x0, y0, x1, y1, width, height)
+            return shape_tools.rect_tiles(x0, y0, x1, y1, width, height, filled=True)
+        ring = shape_tools.rect_perimeter_tiles(x0, y0, x1, y1, width, height)
+        if preview and len(ring) * self._brush_size**2 > self.SHAPE_PREVIEW_TILE_LIMIT:
+            return ring
+        return self._brush_union(ring)
+
+    def _update_shape_preview(self) -> None:
+        """Repaints the rubber band. Memoized on the same key shape
+        _update_highlight uses, for the same reason: this runs on every
+        pixel of a drag, and a rebuild is only warranted when the tile set
+        could actually have changed."""
+        if self._shape_anchor is None:
+            return
+        key = (
+            *self._shape_span(),
+            self._brush_size,
+            self._brush_shape,
+            self._rect_filled,
+            self._tool,
+        )
+        if key == self._highlight_key:
+            return
+        self._set_highlight_tiles(self._shape_tiles(preview=True), key)
+
+    def _cancel_shape(self) -> None:
+        """Drops a live drag without committing. Every exit that is not a
+        left release lands here -- Escape, right button, tool/mode switch,
+        a new image -- because a shape tool mutates, so "still armed after
+        you switched away" is a hazard rather than the convenience it is for
+        the Ruler."""
+        if self._shape_anchor is None:
+            return
+        self._shape_anchor = None
+        self._shape_end = None
+        self._shape_modifiers = Qt.NoModifier
+        self._clear_highlight()
 
     def _clear_highlight(self) -> None:
         # Always resets _highlight_key too, not just on a state change that
@@ -1531,19 +2309,59 @@ class MapView(QGraphicsView):
         self._region = region
         self._update_region_overlay()
 
-    def _region_boundary_tiles(self, tx0: int, ty0: int, tx1: int, ty1: int) -> list[tuple[int, int]]:
-        """The perimeter ring of the half-open rectangle, one tile deep --
-        NOT every tile in it. A Select region can span the whole map, unlike
-        a brush footprint, so _update_region_overlay() below only ever walks
-        O(perimeter) tiles, never O(area)."""
-        tiles = [(x, ty0) for x in range(tx0, tx1)]
-        if ty1 - ty0 > 1:
-            tiles.extend((x, ty1 - 1) for x in range(tx0, tx1))
-        for y in range(ty0 + 1, ty1 - 1):
-            tiles.append((tx0, y))
-            if tx1 - tx0 > 1:
-                tiles.append((tx1 - 1, y))
-        return tiles
+    def set_region_movable(self, movable: bool) -> None:
+        """The window's word on whether the committed region is the result of
+        a paste that can still be re-placed. MapView never decides this
+        itself -- it only turns the flag into press-inside vs press-outside."""
+        self._region_movable = bool(movable)
+        if not self._region_movable and self._move_anchor is not None:
+            self._move_anchor = None
+            self._move_current = None
+        self._update_region_overlay()
+
+    def _tile_in_region(self, tile) -> bool:
+        if tile is None or self._region is None:
+            return False
+        tx0, ty0, tx1, ty1 = self._region
+        return tx0 <= tile[0] < tx1 and ty0 <= tile[1] < ty1
+
+    def _region_edge_walk(self, tx0: int, ty0: int, tx1: int, ty1: int):
+        """The half-open rectangle's OUTER boundary as (tile_x, tile_y, side)
+        triples, screen-clockwise in one closed ring -- only the edges facing
+        outside the region, never an interior seam between two boundary tiles.
+
+        Four chains, each a straight run along one map axis emitting the one
+        side that faces off-region there:
+
+            row ty0,     x ascending  -> up_left   (faces y-1)
+            col tx1-1,   y ascending  -> up_right  (faces x+1)
+            row ty1-1,   x descending -> right     (faces y+1)
+            col tx0,     y descending -> left      (faces x-1)
+
+        The ring closes exactly. Within a chain, consecutive tiles' emitted
+        endpoints coincide in Flat and share screen-x in Stepped (differing in
+        y only by the elevation step, which is precisely the vertical riser a
+        stepped silhouette wants). Chain-to-chain transitions land on the SAME
+        tile's shared vertex -- chain 1 ends at (tx1-1, ty0)'s N, chain 2
+        starts there -- so they are zero-length. Sloped abuts to within the 1px
+        apex overlap sloped_tile_edge_outline documents.
+
+        Degenerate rects need no special case: 1x1 emits all four sides of the
+        one tile, and 1xN / Nx1 emit two long sides plus two caps. A tile
+        appearing in more than one chain under DIFFERENT sides is the point,
+        which is why this has none of the old _region_boundary_tiles'
+        de-duplication guards.
+
+        Still O(perimeter), never O(area): a Select region can span the whole
+        map, unlike a brush footprint."""
+        for x in range(tx0, tx1):
+            yield x, ty0, "up_left"
+        for y in range(ty0, ty1):
+            yield tx1 - 1, y, "up_right"
+        for x in range(tx1 - 1, tx0 - 1, -1):
+            yield x, ty1 - 1, "right"
+        for y in range(ty1 - 1, ty0 - 1, -1):
+            yield tx0, y, "left"
 
     def _region_render_rect(self) -> tuple[int, int, int, int] | None:
         """What the overlay should show right now: the live anchor-to-current
@@ -1551,6 +2369,14 @@ class MapView(QGraphicsView):
         drag previews without disturbing self._region until the drag actually
         commits (Escape-cancel then just re-renders the untouched committed
         value)."""
+        if self._move_anchor is not None and self._move_current is not None and self._region is not None:
+            return region_clipboard.translated_region(
+                self._region,
+                self._move_current[0] - self._move_anchor[0],
+                self._move_current[1] - self._move_anchor[1],
+                self._map_width or 0,
+                self._map_height or 0,
+            )
         if self._select_anchor is not None and self._select_current is not None:
             return region_clipboard.normalize_region(
                 self._select_anchor, self._select_current, self._map_width or 0, self._map_height or 0
@@ -1559,22 +2385,39 @@ class MapView(QGraphicsView):
 
     def _update_region_overlay(self) -> None:
         """Rebuilds the region's outline/ants/fill from _region_render_rect().
-        Outline and ants share one QPainterPath built from _tile_polygon()
-        per BOUNDARY tile (see _region_boundary_tiles()) -- the way
-        _update_highlight() assembles the brush cursor, restricted to the
-        perimeter so the outline conforms to Stepped columns and Sloped
-        warping without costing O(area) on a region the size of the whole
-        map. The fill is a separate O(area) path over every tile in the
-        rect -- TODO(descape#region-select-perf): revisit if this lags on a
-        whole-map Select All."""
+        Outline and ants share one QPainterPath: a single continuous ring
+        traced edge by edge along _region_edge_walk(), so it conforms to
+        Stepped columns and Sloped warping while landing ink only on the
+        selection's true silhouette. Adding each perimeter tile's WHOLE
+        polygon instead would stroke every seam between two adjacent boundary
+        tiles, which is what the ants used to crawl along. Still O(perimeter),
+        never O(area).
+
+        The fill is a separate O(area) path over every tile in the rect --
+        TODO(descape#region-select-perf): revisit if this lags on a whole-map
+        Select All."""
         rect = self._region_render_rect()
         boundary_path = QPainterPath()
         fill_path = QPainterPath()
         if rect is not None:
-            for tx, ty in self._region_boundary_tiles(*rect):
-                polygon = self._tile_polygon(tx, ty)
-                if polygon is not None:
-                    boundary_path.addPolygon(polygon)
+            started = False
+            for tx, ty, side in self._region_edge_walk(*rect):
+                points = self._tile_edge_points(tx, ty, side)
+                if not points:
+                    # Defensive only (no projection snapshot yet). Break the
+                    # chain rather than bridging across a gap in it.
+                    started = False
+                    continue
+                if not started:
+                    boundary_path.moveTo(points[0])
+                    started = True
+                for point in points:
+                    # Consecutive sides join end-to-start by construction, so
+                    # the first point of each is usually where we already are.
+                    if point != boundary_path.currentPosition():
+                        boundary_path.lineTo(point)
+            if started:
+                boundary_path.closeSubpath()
             tx0, ty0, tx1, ty1 = rect
             for ty in range(ty0, ty1):
                 for tx in range(tx0, tx1):
@@ -1666,6 +2509,8 @@ class MapView(QGraphicsView):
             polygon = self._tile_polygon(tx, ty)
             if polygon is not None:
                 path.addPolygon(polygon)
+                # addPolygon() leaves the subpath OPEN -- see _set_highlight_tiles.
+                path.closeSubpath()
         if not path.isEmpty():
             self._mirror_overlay_outline_item = self.scene().addPath(
                 path, self._mirror_overlay_outline_pen
@@ -1718,13 +2563,22 @@ class MapView(QGraphicsView):
         self._ruler_line_item = scene.addLine(QLineF(), self._ruler_pen)
         self._ruler_line_item.setZValue(self.RULER_Z)
         self._ruler_end_items = []
+        self._ruler_glow_items = []
         for _ in range(2):
+            glow = scene.addPolygon(QPolygonF(), QPen(Qt.NoPen), QBrush(self._ruler_glow_color))
+            glow.setZValue(self.RULER_GLOW_Z)
+            # Seeded from the live phase, so a new measurement joins the
+            # breath already in progress instead of flashing at full alpha
+            # for one frame.
+            glow.setOpacity(self._ruler_pulse_alpha())
+            self._ruler_glow_items.append(glow)
             item = scene.addPolygon(QPolygonF(), self._ruler_pen)
             item.setZValue(self.RULER_Z)
             self._ruler_end_items.append(item)
         label = scene.addSimpleText("")
-        font = label.font()
-        font.setPixelSize(settings.get_ruler_label_font_px())
+        # map_overlay_font, not label.font(): the latter is the app chrome
+        # font, so the family silently followed apply_ui_font()'s setting.
+        font = map_overlay_font(settings.get_ruler_label_font_px())
         font.setBold(True)
         label.setFont(font)
         label.setBrush(QBrush(self._ruler_label_color))
@@ -1749,11 +2603,13 @@ class MapView(QGraphicsView):
             return
         if self._ruler_line_item is None:
             self._create_ruler_items()
+            self._sync_pulse_timer()
         self._ruler_line_item.setLine(QLineF(anchor_a, anchor_b))
         for i in range(2):
             polygon = self._tile_polygon(*ends[i])
             if polygon is not None:
                 self._ruler_end_items[i].setPolygon(polygon)
+                self._ruler_glow_items[i].setPolygon(polygon)
         self._ruler_label_item.setText(ruler.format_measurement(self._ruler.measurement))
         self._position_ruler_label(anchor_b)
         self._on_ruler_changed(self._ruler.measurement)
@@ -1792,24 +2648,31 @@ class MapView(QGraphicsView):
         self._ruler.clear()
         if self._ruler_line_item is not None:
             self.scene().removeItem(self._ruler_line_item)
-            for item in self._ruler_end_items:
+            for item in self._ruler_end_items + self._ruler_glow_items:
                 self.scene().removeItem(item)
             self.scene().removeItem(self._ruler_label_item)
         self._forget_ruler_items()
         self._on_ruler_changed(None)
 
     def _forget_ruler_items(self) -> None:
+        """The one choke point every clear gesture funnels through, which is
+        why the pulse timer is re-synced here rather than per gesture: a timer
+        still ticking after scene().clear() would call setOpacity() on a
+        destroyed C++ object."""
         self._ruler_line_item = None
         self._ruler_end_items = []
+        self._ruler_glow_items = []
         self._ruler_label_item = None
+        self._sync_pulse_timer()
 
     def _on_pulse_tick(self) -> None:
-        if self._highlight_fill_item is None:
-            return
+        # Phase advances unconditionally, so the animation is free-running
+        # wall-clock rather than resuming mid-breath where it left off.
         self._pulse_phase_ms = (self._pulse_phase_ms + self.HIGHLIGHT_PULSE_TICK_MS) % (
             self.HIGHLIGHT_PULSE_PERIOD_MS
         )
         self._apply_highlight_opacity()
+        self._apply_ruler_glow_opacity()
 
     def _sync_pulse_timer(self) -> None:
         """The pulse runs while an edit tool is active AND no stroke is in
@@ -1820,28 +2683,41 @@ class MapView(QGraphicsView):
 
         Paused rather than merely slowed, so the highlight has to hold a
         steady value while it waits: see _pulse_alpha()."""
-        if self._tool in EDIT_TOOLS and not self._stroke_active:
+        editing = self._tool in EDIT_TOOLS and not self._stroke_active
+        if editing or self._ruler_glow_items:
             if not self._pulse_timer.isActive():
                 self._pulse_timer.start(self.HIGHLIGHT_PULSE_TICK_MS)
         else:
             self._pulse_timer.stop()
         self._apply_highlight_opacity()
+        self._apply_ruler_glow_opacity()
 
     def _pulse_alpha(self) -> float:
         """The fill opacity for the current phase, or the steady mid-pulse
         value while the pulse is paused. A paused highlight must read as a
         solid cursor, never as a frozen fade-out at whichever phase the
         press happened to interrupt."""
-        mid = (self.HIGHLIGHT_PULSE_MIN_ALPHA + self.HIGHLIGHT_PULSE_MAX_ALPHA) / 2
+        return self._phase_alpha(self.HIGHLIGHT_PULSE_MIN_ALPHA, self.HIGHLIGHT_PULSE_MAX_ALPHA)
+
+    def _ruler_pulse_alpha(self) -> float:
+        return self._phase_alpha(self.RULER_PULSE_MIN_ALPHA, self.RULER_PULSE_MAX_ALPHA)
+
+    def _phase_alpha(self, min_alpha: float, max_alpha: float) -> float:
+        mid = (min_alpha + max_alpha) / 2
         if not self._pulse_timer.isActive():
             return mid
-        amplitude = (self.HIGHLIGHT_PULSE_MAX_ALPHA - self.HIGHLIGHT_PULSE_MIN_ALPHA) / 2
+        amplitude = (max_alpha - min_alpha) / 2
         t = self._pulse_phase_ms / self.HIGHLIGHT_PULSE_PERIOD_MS
         return mid + amplitude * math.sin(2 * math.pi * t)
 
     def _apply_highlight_opacity(self) -> None:
         if self._highlight_fill_item is not None:
             self._highlight_fill_item.setOpacity(self._pulse_alpha())
+
+    def _apply_ruler_glow_opacity(self) -> None:
+        alpha = self._ruler_pulse_alpha()
+        for item in self._ruler_glow_items:
+            item.setOpacity(alpha)
 
     def clear_image(self) -> None:
         """Undoes set_source() -- back to the pre-load empty state (used by
@@ -1869,12 +2745,24 @@ class MapView(QGraphicsView):
         # loaded. File > Close then a resize would call a method on a deleted
         # object and raise RuntimeError.
         self._edge_tick_item = None
+        self._grid_item = None
+        self._footprint_item = None
+        self._stack_badge_item = None
+        self._stack_groups = {}
+        # Same hazard: scene().clear() destroyed the ghost's C++ object, so
+        # _clear_unit_ghost()'s removeItem() on the next drag exit would raise.
+        self._unit_ghost_item = None
         # Same hazard as the tick item above, and the same fix: forget the
         # destroyed items, and drop the measurement itself, since File > Close
         # leaves no map for it to refer to.
         self._ruler.clear()
         self._forget_ruler_items()
         self._on_ruler_changed(None)
+        # Same reasoning for a shape drag: File > Close mid-drag leaves no
+        # map for the release to commit against.
+        self._shape_anchor = None
+        self._shape_end = None
+        self._shape_modifiers = Qt.NoModifier
         # _capture_zoom_baseline() is not called here (that would recompute
         # bounds against a since-cleared map) -- but the readout still has to
         # fall back to "--", so fire the notification directly.
@@ -1903,6 +2791,8 @@ class MapView(QGraphicsView):
         # map for a region to refer to, so there is no "survives" case here.
         self._select_anchor = None
         self._select_current = None
+        self._move_anchor = None
+        self._move_current = None
         self._region = None
         self._region_fill_item = None
         self._region_outline_item = None
@@ -2117,9 +3007,9 @@ class MapView(QGraphicsView):
         self,
         tile_pixels: int,
         terrain_style: str = "flat",
-        cache: "IsoChunkCache | FlatChunkCache | SlopedChunkCache | None" = None,
+        cache: IsoChunkCache | FlatChunkCache | SlopedChunkCache | None = None,
         elevations: np.ndarray | None = None,
-        proj: "iso_geometry.IsoProjection | None" = None,
+        proj: iso_geometry.IsoProjection | None = None,
         unit_index=None,
         reset_view: bool = True,
         on_paint_timed: Callable[[float, int], None] | None = None,
@@ -2164,7 +3054,7 @@ class MapView(QGraphicsView):
         assert cache is not None, f"set_source(terrain_style={terrain_style!r}) requires cache"
         assert cache.style == terrain_style, (
             f"set_source(terrain_style={terrain_style!r}) got a cache built for "
-            f"style={cache.style!r} -- Flat/Stepped must never cross-wire"
+            f"style={cache.style!r} -- Flat/Stepped/Sloped must never cross-wire"
         )
         self._tile_pixels = tile_pixels
         self._terrain_style = terrain_style
@@ -2190,6 +3080,11 @@ class MapView(QGraphicsView):
         self._ruler.clear()
         self._forget_ruler_items()
         self._on_ruler_changed(None)
+        # scene().clear() destroyed the rubber band's items too, and a
+        # shape anchored on the old map's tiles means nothing on the new one.
+        self._shape_anchor = None
+        self._shape_end = None
+        self._shape_modifiers = Qt.NoModifier
         # scene().clear() destroyed the unit items too. Selection is dropped
         # rather than re-resolved: set_source() means a new scenario or a
         # style switch, and neither guarantees the old key still addresses
@@ -2201,6 +3096,13 @@ class MapView(QGraphicsView):
         self._unit_select_keys = []
         self._marquee_item = None
         self._marquee_start_pos = None
+        # The ghost went with it too, and the drag behind it means nothing
+        # against a new scenario -- dropped, not re-anchored, so the release
+        # commits nothing (see keyPressEvent's Escape branch for the other
+        # place that pairing matters).
+        self._unit_ghost_item = None
+        self._unit_drag_key = None
+        self._unit_drag_press_pos = None
         self._unit_index = unit_index
         # scene().clear() destroyed the region's items too, but -- unlike the
         # ruler/unit selection above -- the region ITSELF is only dropped on
@@ -2213,6 +3115,8 @@ class MapView(QGraphicsView):
         # match the new render.
         self._select_anchor = None
         self._select_current = None
+        self._move_anchor = None
+        self._move_current = None
         if reset_view:
             self._region = None
         self._region_fill_item = None
@@ -2267,6 +3171,36 @@ class MapView(QGraphicsView):
         # session, not on the next map open.
         self._edge_tick_item.set_label_font_px(settings.get_distance_tick_font_px())
         self.scene().addItem(self._edge_tick_item)
+
+        # Same always-built-then-hidden shape as the ticks. No setZValue: at
+        # the default 0.0, insertion order keeps the lazily created brush
+        # highlight, pan outline and marquee above the grid.
+        self._grid_item = GridItem(
+            self._map_width,
+            self._map_height,
+            self._map_rect,
+            proj=iso_proj,
+            tile_px=tile_pixels,
+            blend=self._grid_blend,
+            thickness=self._grid_thickness,
+            style=terrain_style,
+            follow_elevation=self._grid_follow_elevation,
+        )
+        self._grid_item.setVisible(self._grid_enabled)
+        self.scene().addItem(self._grid_item)
+        self.refresh_grid_overlay()
+
+        self._footprint_item = self.scene().addPath(QPainterPath(), self._footprint_pen)
+        self._footprint_item.setZValue(self.FOOTPRINT_Z)
+        self._footprint_item.setVisible(self._footprint_enabled)
+
+        # Empty until the caller installs an index via set_unit_index().
+        tile_extent = 2 * proj.half_w if iso_proj is not None else tile_pixels
+        self._stack_groups = {}
+        self._stack_badge_item = StackBadgeItem(tile_extent, QColor(settings.get_overlay_color("unit_stack")))
+        self._stack_badge_item.setZValue(self.UNIT_STACK_Z)
+        self._stack_badge_item.setVisible(False)
+        self.scene().addItem(self._stack_badge_item)
 
         # Ends with set_isometric(), which funnels into
         # _capture_zoom_baseline() and hands the item its first pad.
@@ -2599,7 +3533,7 @@ class MapView(QGraphicsView):
         self._note_viewport_changed()
 
     def _repad_edge_ticks(self) -> None:
-        """Hands the tick overlay the smallest scale the view can currently
+        """Hands the tick and grid overlays the smallest scale the view can currently
         reach, which is what its bounding-rect pad has to cover.
 
         min() of the floor and the CURRENT scale, and neither term subsumes
@@ -2609,11 +3543,13 @@ class MapView(QGraphicsView):
         current scale below the new minimum. wheelEvent needs no hook of its
         own: zooming in only raises the scale, and zooming out is refused
         below _min_linear_scale, which this already covers."""
-        if self._edge_tick_item is None:
-            return
         current = abs(self.transform().determinant()) ** 0.5
         floor = self._min_linear_scale
-        self._edge_tick_item.set_min_view_scale(min(floor, current) if floor is not None else current)
+        scale = min(floor, current) if floor is not None else current
+        if self._edge_tick_item is not None:
+            self._edge_tick_item.set_min_view_scale(scale)
+        if self._grid_item is not None:
+            self._grid_item.set_min_view_scale(scale)
 
     def set_edge_ticks(self, enabled: bool) -> None:
         """Shows or hides the map-edge distance ruler. Never rebuilds a
@@ -2622,6 +3558,99 @@ class MapView(QGraphicsView):
         self._edge_ticks_enabled = enabled
         if self._edge_tick_item is not None:
             self._edge_tick_item.setVisible(enabled)
+
+    def set_grid_overlay(self, enabled: bool) -> None:
+        """Shows or hides View > Grid. Never rebuilds a chunk cache: the
+        lines are a scene item, not canvas pixels, so there is nothing to
+        evict."""
+        self._grid_enabled = enabled
+        if self._grid_item is not None:
+            self._grid_item.setVisible(enabled)
+
+    def set_grid_follow_elevation(self, enabled: bool) -> None:
+        self._grid_follow_elevation = enabled
+        if self._grid_item is not None:
+            self._grid_item.set_follow_elevation(enabled)
+            self.refresh_grid_overlay()
+
+    def refresh_grid_overlay(self) -> None:
+        """Re-pushes the live height field to the grid overlay. Called on
+        every elevation edit, and unconditionally rather than only while the
+        grid is visible and following: a hidden item's update() costs nothing,
+        and skipping the push is what would leave the grid drawing against a
+        SlopedChunkCache.patch()-rebound corner_rise the next time it is
+        shown. Reads the cache's own array for the same reason _tile_polygon
+        does, so the outline and the pixels can never disagree."""
+        if self._grid_item is None:
+            return
+        if self._terrain_style == "stepped":
+            self._grid_item.set_elevation_source(elevations=self._iso_elevations)
+        elif self._terrain_style == "sloped":
+            cache = self._sloped_cache()
+            self._grid_item.set_elevation_source(corner_rise=cache.corner_rise if cache else None)
+
+    def set_footprint_outlines(self, enabled: bool) -> None:
+        """Shows or hides View > Footprint Outlines. Like set_edge_ticks,
+        this evicts no chunk cache: the outlines are a scene item, never
+        baked into canvas pixels."""
+        self._footprint_enabled = enabled
+        if self._footprint_item is not None:
+            self._footprint_item.setVisible(enabled)
+        self.refresh_footprint_overlay()
+
+    def set_footprint_scope(self, scope: str) -> None:
+        self._footprint_scope = scope
+        self.refresh_footprint_overlay()
+
+    def refresh_footprint_overlay(self) -> None:
+        """Rebuilds the outline path from the live index and height field.
+
+        Runs even while the overlay is hidden, unlike refresh_unit_highlight,
+        which may skip elevation edits because terrain edits are only
+        reachable in Terrain mode and leaving Units mode drops the selection.
+        An always-on overlay voids that argument: it is live in Terrain mode
+        while the elevations under it change."""
+        if self._footprint_item is None:
+            return
+        path = QPainterPath()
+        if self._unit_index is not None:
+            for entry in unit_pick.footprint_entries(self._unit_index, self._footprint_scope):
+                polygons = self._unit_polygons_for(entry)
+                if polygons:
+                    _add_closed_polygons(path, polygons)
+        self._footprint_item.setPath(path)
+
+    def refresh_elevation_overlays(self) -> None:
+        """Both overlays whose geometry follows the terrain, for an elevation
+        edit to call once per touched-tile batch.
+
+        The grid's own rebuild is lazy (it happens inside paint(), which Qt
+        already coalesces), but the footprint path is built eagerly, and on
+        the largest example file at All units in Sloped that is ~1s. So this
+        defers it to the event loop: one 8-step Set Elevation drag touches
+        131 tiles per _apply_dirty's own comment, and rebuilding per touch
+        would be unusable."""
+        self.refresh_grid_overlay()
+        self.schedule_footprint_refresh()
+
+    def schedule_footprint_refresh(self) -> None:
+        if self._footprint_refresh_pending or self._footprint_item is None:
+            return
+        self._footprint_refresh_pending = True
+        QTimer.singleShot(0, self._flush_footprint_refresh)
+
+    def _flush_footprint_refresh(self) -> None:
+        self._footprint_refresh_pending = False
+        # scene().clear() can have destroyed the item between the schedule
+        # and this call (File > Close, a style switch), so re-check.
+        if self._footprint_item is not None:
+            self.refresh_footprint_overlay()
+
+    def set_grid_appearance(self, blend: int, thickness: int) -> None:
+        self._grid_blend = blend
+        self._grid_thickness = thickness
+        if self._grid_item is not None:
+            self._grid_item.set_appearance(blend, thickness)
 
     def set_edge_tick_interval(self, interval: int) -> None:
         self._edge_tick_interval = interval
@@ -2756,8 +3785,7 @@ class MapView(QGraphicsView):
         if self._middle_drag_active:
             delta = event.pos() - self._middle_drag_last_pos
             self._middle_drag_last_pos = event.pos()
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self._scroll_by(-delta.x(), -delta.y())
             return
         super().mouseMoveEvent(event)
         pos = self.mapToScene(event.pos())
@@ -2794,16 +3822,52 @@ class MapView(QGraphicsView):
                 # None there, a documented residual).
                 self._clear_pan_highlight()
             return
+        # A sibling of the Ruler/Select branches, NOT nested inside the
+        # generic EDIT_TOOLS branch below -- that branch's own
+        # _update_highlight(*tile) call is exactly what would overwrite the
+        # rubber band on every move.
+        if self._tool in SHAPE_TOOLS:
+            self._clear_pan_highlight()
+            self._clear_unit_hover()
+            if self._shape_anchor is not None:
+                # An off-map move mid-drag holds the last valid endpoint
+                # rather than collapsing the shape -- same convention as the
+                # Ruler above, and the only option available, since there is
+                # no tile there to clamp to.
+                if tile is not None:
+                    self._shape_end = tile
+                self._shape_modifiers = event.modifiers()
+                self._update_shape_preview()
+            elif on_map:
+                # Before the press these tools show the ordinary brush hover
+                # cue, so the cursor still says what a press would paint.
+                with perf_trace.phase("highlight"):
+                    self._update_highlight(*tile)
+            else:
+                self._clear_highlight()
+            return
         if self._tool == TOOL_SELECT:
             self._clear_highlight()
             self._clear_pan_highlight()
             self._clear_unit_hover()
-            if self._select_anchor is not None and tile is not None:
+            if self._move_anchor is not None and tile is not None:
+                # Same "hold the last valid tile" convention as the select
+                # drag below -- a move legitimately runs off the map edge and
+                # back, and the block is re-pasted at an unclipped anchor.
+                self._move_current = tile
+                self._update_region_overlay()
+            elif self._select_anchor is not None and tile is not None:
                 # Same "hold the last valid tile" convention as the Ruler
                 # above: an off-map move mid-drag must not collapse the
                 # preview, since the drag legitimately runs off the edge.
                 self._select_current = tile
                 self._update_region_overlay()
+            # Advertises the gesture. _apply_tool_cursor() stays the
+            # tool/mode-level default and is deliberately not touched.
+            if self._move_anchor is not None or (self._region_movable and self._tile_in_region(tile)):
+                self.setCursor(Qt.SizeAllCursor)
+            else:
+                self.setCursor(Qt.CrossCursor)
             return
         # Gated on MODE, not tool, so a unit pick costs nothing per pixel in
         # View/Terrain/Triggers. Both TILE highlights are cleared here: Units
@@ -2831,8 +3895,24 @@ class MapView(QGraphicsView):
             if self._unit_drag_key is not None:
                 # A unit drag is in progress (b1.5): the hover cue would
                 # misleadingly highlight whatever the cursor happens to be
-                # crossing, and there is no live drag preview to update here
-                # either -- the move is computed once, at release.
+                # crossing, so it is cleared here the way every sibling branch
+                # clears it. Before the mid-drag preview this branch returned
+                # without clearing, which froze the cyan outline over the
+                # source unit for the whole drag.
+                self._clear_unit_hover()
+                press_pos = self._unit_drag_press_pos
+                # Only once the drag is real -- the same threshold
+                # mouseReleaseEvent uses to tell a click from a drag. A ghost
+                # appearing on 1px of jitter during a plain selection click
+                # would read as a flicker bug.
+                if (
+                    press_pos is not None
+                    and (event.pos() - press_pos).manhattanLength() > self.UNIT_DRAG_THRESHOLD_PX
+                    and self._pos_on_map(pos)
+                ):
+                    self._on_unit_drag_preview(self._unit_drag_key, pos, event.modifiers())
+                else:
+                    self._clear_unit_ghost()
                 return
             if self._marquee_start_pos is not None:
                 # b2.3: a marquee drag is in progress -- update the rubber

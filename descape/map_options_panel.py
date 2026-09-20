@@ -3,9 +3,8 @@ conditions, diplomacy, map flags and the trigger execution-order mode."""
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Sequence
-
 import math
+from collections.abc import Iterable, Mapping, Sequence
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -20,7 +19,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 
 from descape import (
     option_fields,
@@ -55,6 +53,19 @@ class MapOptionsPanel(QWidget):
     # widest row this panel actually builds -- see
     # tests/test_map_options_panel.py's width check.
     MIN_USEFUL_WIDTH = 300
+
+    # Rows that only apply under a Custom victory. Greyed here rather than
+    # dropped from editable_fields: "not applicable right now" is not "this
+    # file can't write it", and the window's read-only count must not see them.
+    _CUSTOM_VICTORY_FIELDS = (
+        "custom_conquest", "custom_explored_percent", "custom_relics", "custom_all_conditions",
+    )
+    _CUSTOM_MODE = 4
+    _CUSTOM_ONLY_TOOLTIP = "Only applies when Victory condition is Custom."
+    _CUSTOM_ONLY_NOTE = (
+        "{count} Global Victory setting{s} only appl{verb} when Victory condition is "
+        "Custom and {is_are} greyed until it is, still showing the stored value."
+    )
 
     _NO_DOCUMENT = "No map open."
     # Not one flag: which rows are editable is two independent gates, and the
@@ -93,9 +104,15 @@ class MapOptionsPanel(QWidget):
         # the ORIGINAL value, so re-reading the file would make every edit look
         # like a fresh change on the next populate.
         self._widgets: dict[str, QWidget] = {}
+        # The row label and the tooltip _build_groups() settled on, kept so the
+        # custom-victory gate can grey the label too and restore that exact tip.
+        self._row_labels: dict[str, QWidget] = {}
+        self._base_tooltips: dict[str, str] = {}
         self._values: dict[str, int] = {}
         self._editable_fields: frozenset[str] = frozenset()
         self._read_only_reasons: dict[str, str] = {}
+        # The window's status notes, kept so a mode flip can refresh the summary.
+        self._notes: tuple[str, ...] = ()
         self._populating = False
 
         layout = QVBoxLayout(self)
@@ -130,6 +147,8 @@ class MapOptionsPanel(QWidget):
         self.host_layout.setContentsMargins(6, 6, 6, 6)
         self.area.setWidget(self.host)
         self._widgets = {}
+        self._row_labels = {}
+        self._base_tooltips = {}
 
     # -- document state ------------------------------------------------------
 
@@ -141,6 +160,7 @@ class MapOptionsPanel(QWidget):
             self._values = {}
             self._editable_fields = frozenset()
             self._read_only_reasons = {}
+            self._notes = ()
             self._rebuild_host()
             self.status.setText(self._NO_DOCUMENT)
             self.status.setToolTip("")
@@ -201,8 +221,10 @@ class MapOptionsPanel(QWidget):
                 self._values.update({k: v for k, v in values.items() if k in self._values})
             self._editable_fields = frozenset(editable_fields) & set(self._values)
             self._read_only_reasons = dict(read_only_reasons or {})
+            self._notes = tuple(notes)
             self._rebuild_host()
             self._build_groups()
+            self._apply_custom_victory_gate()
             text, tooltip = self._status_text(loaded, notes)
             self.status.setText(text)
             self.status.setToolTip(tooltip)
@@ -239,6 +261,17 @@ class MapOptionsPanel(QWidget):
         elif read_only:
             summary.append(f"{read_only} read-only")
             detail.insert(0, self._SOME_READ_ONLY_NOTE.format(count=read_only, total=total))
+        custom_only = self._custom_only_count()
+        if custom_only:
+            summary.append(f"{custom_only} Custom-victory only")
+            detail.append(
+                self._CUSTOM_ONLY_NOTE.format(
+                    count=custom_only,
+                    s="" if custom_only == 1 else "s",
+                    verb="ies" if custom_only == 1 else "y",
+                    is_are="is" if custom_only == 1 else "are",
+                )
+            )
         if as_stored:
             summary.append(f"{as_stored} shown as stored")
             detail.append(
@@ -290,6 +323,8 @@ class MapOptionsPanel(QWidget):
             if tip and not widget.toolTip():
                 widget.setToolTip(tip)
             form.addRow(spec.label, widget)
+            self._row_labels[spec.field_id] = form.labelForField(widget)
+            self._base_tooltips[spec.field_id] = widget.toolTip()
         # Absorbs the leftover height so the groups stay stacked at the top
         # instead of spreading out over a tall pane.
         self.host_layout.addStretch(1)
@@ -438,6 +473,48 @@ class MapOptionsPanel(QWidget):
         spin.valueChanged.connect(lambda new, s=spec: self._changed(s, new))
         return spin
 
+    # -- the Custom-victory gate ---------------------------------------------
+
+    def _custom_victory_applies(self) -> bool | None:
+        """None when this file lists no victory_condition row to gate on."""
+        mode = self._values.get("victory_condition")
+        return None if mode is None else int(mode) == self._CUSTOM_MODE
+
+    def _custom_only_count(self) -> int:
+        if self._custom_victory_applies() is not False:
+            return 0
+        return sum(1 for field_id in self._CUSTOM_VICTORY_FIELDS if field_id in self._widgets)
+
+    def _apply_custom_victory_gate(self) -> None:
+        """Grey the four Custom-only rows unless the mode is Custom.
+
+        setEnabled on already-built widgets only, never a repopulate: this runs
+        from inside the victory combo's currentIndexChanged, and a rebuild would
+        delete the combo whose handler is on the stack. A disabled widget emits
+        nothing, so greying can never write these bytes.
+
+        On a write-gated file this only ever runs from show_scenario(), since
+        _changed() returns early first. Correct: nothing there can change the
+        mode anyway.
+        """
+        applies = self._custom_victory_applies()
+        if applies is None:
+            return
+        for field_id in self._CUSTOM_VICTORY_FIELDS:
+            widget = self._widgets.get(field_id)
+            if widget is None:
+                continue
+            label = self._row_labels.get(field_id)
+            if label is not None:
+                label.setEnabled(applies)
+            base_tip = self._base_tooltips.get(field_id, "")
+            if isinstance(widget, QLabel):
+                # As-stored: stays enabled and keeps its own explanation.
+                continue
+            widget.setEnabled(applies and field_id in self._editable_fields)
+            # The stored tip always wins, matching _build_groups()' precedence.
+            widget.setToolTip(base_tip or ("" if applies else self._CUSTOM_ONLY_TOOLTIP))
+
     # -- reporting an edit ---------------------------------------------------
 
     def _changed(self, spec, value: int) -> None:
@@ -464,6 +541,11 @@ class MapOptionsPanel(QWidget):
             return
         self._values[spec.field_id] = value
         self._on_option_field(spec, value)
+        if spec.field_id == "victory_condition":
+            self._apply_custom_victory_gate()
+            text, tooltip = self._status_text(self._loaded, self._notes)
+            self.status.setText(text)
+            self.status.setToolTip(tooltip)
 
     # -- read access, for the window and for tests ---------------------------
 

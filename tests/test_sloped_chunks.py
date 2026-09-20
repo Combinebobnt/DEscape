@@ -126,7 +126,7 @@ def test_patch_after_elevation_edit_matches_full_render():
     from descape import iso_geometry as ig
 
     x0 = y0 = x1 = y1 = None
-    for cx, cy in zip(changed_xs.tolist(), changed_ys.tolist()):
+    for cx, cy in zip(changed_xs.tolist(), changed_ys.tolist(), strict=True):
         for nx in range(max(0, cx - 1), min(mm.map_width, cx + 2)):
             for ny in range(max(0, cy - 1), min(mm.map_height, cy + 2)):
                 tx0, ty0, tx1, ty1 = ig.tile_screen_bounds_swept(nx, ny, proj)

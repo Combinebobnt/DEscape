@@ -27,9 +27,9 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-import conftest
-
 from descape.scenario_io import load_map_and_units
+
+import conftest
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
@@ -159,14 +159,17 @@ def test_empty_captions_are_length_zero_on_disk() -> None:
     """
     gen = _generator()
     loaded = load_map_and_units(FIXTURE_PATH)
-    for player, entry, raw in _raw_unit_slices(loaded):
+    for _player, entry, raw in _raw_unit_slices(loaded):
         if entry.retriever_map["reference_id"].data == gen._REF_ARCHER_P2:
             continue  # the one deliberately non-empty caption; see the test below
         offset_in_entry = sum(
             r.get_data_as_bytes().__len__() for name, r in entry.retriever_map.items() if name != "caption_string"
         )
         length_prefix = int.from_bytes(raw[offset_in_entry : offset_in_entry + 4], "little", signed=True)
-        assert length_prefix == 0, f"reference_id {entry.retriever_map['reference_id'].data}: caption length prefix {length_prefix}, expected 0"
+        assert length_prefix == 0, (
+            f"reference_id {entry.retriever_map['reference_id'].data}: "
+            f"caption length prefix {length_prefix}, expected 0"
+        )
         assert len(raw) == offset_in_entry + 4, "a length-0 str32 field is exactly its 4-byte prefix, no trailing byte"
 
 
@@ -191,7 +194,7 @@ def test_non_empty_caption_raw_encoding_is_an_assumption_not_a_measurement() -> 
     # Library form (add_str_trail): a 4-byte length prefix of len(text) + 1,
     # covering the text plus its trailing NUL.
     expected_tail = (len(text) + 1).to_bytes(4, "little", signed=True) + text.encode("utf-8") + b"\x00"
-    for player, entry, raw in _raw_unit_slices(loaded):
+    for _player, entry, raw in _raw_unit_slices(loaded):
         if entry.retriever_map["reference_id"].data != gen._REF_ARCHER_P2:
             continue
         assert raw.endswith(expected_tail), f"raw tail {raw[-len(expected_tail):]!r} != assumed {expected_tail!r}"

@@ -49,11 +49,12 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 import AoE2ScenarioParser
 from AoE2ScenarioParser.objects.data_objects.condition import Condition

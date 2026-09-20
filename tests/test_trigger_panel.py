@@ -47,16 +47,7 @@ def _window():
     geometry, so on an unshown window every size assertion tests Qt's layout
     fallback rather than the code under test.
     """
-    from PyQt5.QtWidgets import QApplication
-
-    from descape.viewer import ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    window.resize(1500, 900)
-    window.show()
-    QApplication.processEvents()
-    return window
+    return conftest.shown_window(1500, 900)
 
 
 def test_triggers_mode_swaps_the_left_panel_and_gates_edit_tools() -> None:
@@ -349,7 +340,7 @@ def test_editing_a_trigger_name_through_the_widget_records_one_edit() -> None:
 
         assert window.trigger_edits is not None
         assert window.trigger_edits.dirty_indices() == [0]
-        assert panel.tree.topLevelItem(0).text(1) == "Renamed in the panel", (
+        assert panel.tree.topLevelItem(0).text(panel._COL_NAME) == "Renamed in the panel", (
             "the list row updates in place rather than waiting for a rebuild"
         )
     finally:
@@ -578,6 +569,138 @@ def test_setting_a_catalog_reference_through_the_widget_round_trips(tmp_path: Pa
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- large ENUM picker --------------------------------------------------------
+#
+# "Fixture: armour split" (list index 1), first effect: object_attributes =
+# 8 (ObjectAttribute, 147 members) and armour_attack_class = 3 (DamageClass,
+# 50), both editable; its second effect locks armour_attack_class read-only.
+
+
+def _select_armour_split_effect(panel, child: int) -> None:
+    panel.select_trigger(1)
+    panel.entry_tree.setCurrentItem(panel.entry_tree.topLevelItem(2).child(child))
+
+
+def test_a_large_enum_gets_the_picker_and_a_small_one_keeps_its_combo() -> None:
+    from PyQt5.QtWidgets import QComboBox
+
+    from descape.value_picker import ValueLineEdit
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_armour_split_effect(panel, 0)
+        attributes = _row_widget(panel, "object_attributes")
+        assert isinstance(attributes, ValueLineEdit)
+        assert attributes.value() == 8
+        assert attributes.line_edit.text() == "ARMOR (8)"
+        assert isinstance(_row_widget(panel, "armour_attack_class"), ValueLineEdit)
+        assert isinstance(_row_widget(panel, "operation"), QComboBox), "Operation has 5 members"
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_read_only_large_enum_still_renders_as_a_disabled_label() -> None:
+    from PyQt5.QtWidgets import QLabel
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_armour_split_effect(panel, 1)
+        widget = _row_widget(panel, "armour_attack_class")
+        assert isinstance(widget, QLabel) and not widget.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_enum_picker_shows_unset_as_unknown_and_none_as_the_placeholder() -> None:
+    """Trap 5: -1 is not special-cased for enums (the combo showed
+    "unknown (-1)"); only None, an unreachable attribute, is empty."""
+    from descape.trigger_fields import ENUM, UNSET, FieldSpec, enum_choices
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_armour_split_effect(panel, 0)
+        spec = FieldSpec("object_attributes", ENUM, enum_choices("ObjectAttribute"), presentation="ObjectAttribute")
+        unset = panel._build_enum_picker_widget(spec, "effect", 0, UNSET, True)
+        assert unset.value() == UNSET
+        assert unset.line_edit.text() == "unknown (-1)"
+        missing = panel._build_enum_picker_widget(spec, "effect", 0, None, True)
+        assert missing.value() is None
+        assert missing.line_edit.text() == ""
+        assert missing.line_edit.placeholderText() == "(unset)"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_unchanged_enum_picker_commit_records_nothing() -> None:
+    """A focus-out on untouched text must not push a phantom undo step."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_armour_split_effect(panel, 0)
+        widget = _row_widget(panel, "object_attributes")
+        widget.line_edit.editingFinished.emit()
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected", "shown"),
+    [
+        ("base melee", 4, "BASE MELEE (4)"),
+        ("WAR ELEPHANTS (5)", 5, "WAR ELEPHANTS (5)"),
+        ("9999", 9999, "unknown (9999)"),
+    ],
+    ids=["bare label", "rendered label", "out of vocabulary"],
+)
+def test_setting_a_large_enum_through_the_picker_round_trips(
+    tmp_path: Path, typed: str, expected: int, shown: str
+) -> None:
+    """armour_attack_class (DamageClass, 50), not object_attributes: moving
+    an armour-split effect's object_attributes off ARMOR fails to save with
+    the plain combo too, a separate pre-existing defect. A value the enum does
+    not cover must survive untouched, via the raw-integer escape hatch."""
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_armour_split_effect(panel, 0)
+        widget = _row_widget(panel, "armour_attack_class")
+        widget.line_edit.setText(typed)
+        widget.line_edit.editingFinished.emit()
+
+        assert window.trigger_edits is not None
+        assert window.trigger_edits.dirty_indices() == [1]
+
+        out = tmp_path / "edited.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        reloaded = parse_triggers(load_map_and_units(out))
+        assert reloaded.triggers[1].effects[0].armour_attack_class == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+    reopened = _window()
+    try:
+        reopened.load_scenario(out)
+        reopened.mode_combo.setCurrentText("Triggers")
+        _select_armour_split_effect(reopened.trigger_panel, 0)
+        assert _row_widget(reopened.trigger_panel, "armour_attack_class").line_edit.text() == shown
+    finally:
+        reopened.edit_history.mark_saved()
+        reopened.close()
 
 
 def test_setting_a_document_reference_through_the_widget_round_trips(tmp_path: Path) -> None:
@@ -1038,13 +1161,21 @@ def test_structural_buttons_track_the_selection_and_the_write_support_flag() -> 
         # nothing for Copy/Delete to act on while one of them is selected.
         panel.entry_tree.setCurrentItem(panel.entry_tree.topLevelItem(0))
         assert not panel.entry_copy_button.isEnabled()
+        assert not panel.entry_retype_button.isEnabled()
+        # And the funnel refuses it too, not just the button: the trigger row
+        # reaches _current_entry() as kind "trigger", where Copy and Delete go
+        # through _selected_entry_ref(), which drops it.
+        panel._request_entry_op("retype")
+        assert panel.detail_stack.currentIndex() == 0, "the trigger row opened a retype picker"
         panel.entry_tree.setCurrentItem(_group(panel, "effect"))
         assert not panel.entry_copy_button.isEnabled()
         assert not panel.entry_delete_button.isEnabled()
+        assert not panel.entry_retype_button.isEnabled()
 
         _select_first_condition(panel)
         assert panel.entry_copy_button.isEnabled()
         assert panel.entry_delete_button.isEnabled()
+        assert panel.entry_retype_button.isEnabled()
 
         # And every one of them goes dead on a file that cannot be written.
         window.scenario.trigger_write_supported = False
@@ -1058,12 +1189,14 @@ def test_structural_buttons_track_the_selection_and_the_write_support_flag() -> 
             panel.entry_new_button,
             panel.entry_copy_button,
             panel.entry_delete_button,
+            panel.entry_retype_button,
         ):
             assert not button.isEnabled(), f"{button.text()} is live on a read-only file"
 
         # And the gate holds below the buttons too, not just on them.
         panel._request_trigger_op("new")
         panel._request_entry_op("new")
+        panel._request_entry_op("retype")
         assert window.trigger_edits is None, "a gated panel must not reach the model"
         assert panel.detail_stack.currentIndex() == 0
     finally:
@@ -1341,7 +1474,7 @@ def test_move_up_patches_one_row_without_a_full_repopulate() -> None:
 
         assert _tree_order(panel)[0] == moved_index
         after_items = [panel.tree.topLevelItem(i) for i in range(panel.tree.topLevelItemCount())]
-        assert set(id(i) for i in before_items) == set(id(i) for i in after_items), (
+        assert {id(i) for i in before_items} == {id(i) for i in after_items}, (
             "a full repopulate would have replaced every QTreeWidgetItem"
         )
         assert panel.current_trigger_index() == moved_index, "the moved trigger stays selected"
@@ -1397,6 +1530,164 @@ def test_moving_a_trigger_undoes_independently_of_an_exec_order_edit() -> None:
         window.close()
 
 
+# -- execution-position column ------------------------------------------------
+#
+# Column _COL_POS is always the trigger's 0-based position in
+# trigger_display_order; only the header says whether that is also the
+# execution position. See trigger_model.resolve_exec_mode().
+
+
+def _positions(panel) -> list[str]:
+    return [
+        panel.tree.topLevelItem(i).text(panel._COL_POS) for i in range(panel.tree.topLevelItemCount())
+    ]
+
+
+def _header(panel) -> str:
+    return panel.tree.headerItem().text(panel._COL_POS)
+
+
+def test_the_position_column_reads_monotonically_under_display_sort() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        custom = _force_custom_display_order(window)
+        assert custom != sorted(custom), "the forced order must not be identity"
+        assert _positions(panel) == [str(p) for p in range(len(custom))]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_position_column_is_display_position_under_file_order_sort() -> None:
+    """Non-monotonic by design under File order: it is still each trigger's
+    display position, not its row. Not a bug to "fix"."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        custom = _force_custom_display_order(window)
+        panel.sort_combo.setCurrentIndex(1)  # "File order (trigger ID)"
+        assert _tree_order(panel) == list(range(len(custom)))
+        assert _positions(panel) == [str(custom.index(i)) for i in range(len(custom))]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("pending", "expected"), [(0, "Exec #"), (1, "Display #")], ids=["display-order file", "legacy file"]
+)
+def test_the_position_header_follows_the_execution_mode(pending: int, expected: str) -> None:
+    """Driven through pending_exec_order, the same resolution a real stored
+    byte goes through; the corpus test below covers stored values."""
+    from descape.trigger_model import exec_order_value
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        assert exec_order_value(window.scenario) is not None, "fixture assumption: the flag is stored"
+        panel.show_scenario(window.scenario, pending_exec_order=pending)
+        assert _header(panel) == expected
+        assert panel.tree.headerItem().toolTip(panel._COL_POS)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_pending_exec_order_flip_switches_the_position_header() -> None:
+    """The column's counterpart to
+    test_a_pending_exec_order_flip_updates_the_triggers_readout."""
+    window = _window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        from descape.trigger_model import exec_order_value
+
+        before = exec_order_value(window.scenario)
+        assert _header(panel) == ("Display #" if before else "Exec #")
+
+        window.mode_combo.setCurrentText("Map Options")
+        widget = window.map_options_panel.widget_for("legacy_exec_order")
+        widget.setCurrentIndex(widget.findData(1 - before))
+        window.mode_combo.setCurrentText("Triggers")
+        assert _header(panel) == ("Exec #" if before else "Display #")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_closing_the_document_resets_the_position_header() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.show_scenario(window.scenario, pending_exec_order=0)
+        assert _header(panel) == "Exec #"
+        panel.clear_document()
+        assert _header(panel) == "Display #"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_move_up_relabels_both_swapped_rows() -> None:
+    """The fast "order" tier never repopulates, so without move_row()'s own
+    setText both rows keep their old numbers. Item identity is asserted too,
+    so this cannot pass by regressing to a full repopulate."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        before_items = [panel.tree.topLevelItem(i) for i in range(panel.tree.topLevelItemCount())]
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(1))
+        moved_index = panel.current_trigger_index()
+
+        window.trigger_structural_edit("move_up", moved_index)
+
+        after_items = [panel.tree.topLevelItem(i) for i in range(panel.tree.topLevelItemCount())]
+        assert set(map(id, before_items)) == set(map(id, after_items))
+        assert _positions(panel) == [str(p) for p in range(len(after_items))]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.corpus
+def test_the_position_column_matches_display_order_on_real_files(scenario_path) -> None:
+    """Every row's position cell is its index in trigger_display_order, the
+    header matches resolve_exec_mode(), and a grouped tree's synthetic header
+    row has no position. Covers the not-stored case (F7_3_York) and the
+    legacy + non-identity files by walking the whole corpus."""
+    from PyQt5.QtCore import Qt
+
+    from descape.trigger_model import exec_order_value, resolve_exec_mode
+
+    window = _window()
+    try:
+        window.load_scenario(scenario_path)
+        window.mode_combo.setCurrentText("Triggers")
+        if not window.scenario.trigger_read_supported:
+            pytest.skip(f"{scenario_path.name}: triggers do not parse")
+        panel = window.trigger_panel
+        display = list(panel._manager().trigger_display_order)
+        mode = resolve_exec_mode(exec_order_value(window.scenario), None)[0]
+        assert _header(panel) == panel._POSITION_HEADERS[mode][0]
+
+        seen = 0
+        for i in range(panel.tree.topLevelItemCount()):
+            top = panel.tree.topLevelItem(i)
+            for item in [top] + [top.child(c) for c in range(top.childCount())]:
+                index = item.data(0, Qt.UserRole)
+                if index is None:
+                    assert item.text(panel._COL_POS) == ""
+                    continue
+                assert item.text(panel._COL_POS) == str(display.index(index))
+                seen += 1
+        assert seen == len(display)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_no_reorder_or_move_triggers_call_is_introduced() -> None:
     """Reordering here means permuting trigger_display_order only -- ids are
     never renumbered. A tests/test_private_api_guard.py-style source scan, so
@@ -1440,17 +1731,22 @@ def _select_an_effect(panel):
 def test_the_trigger_column_fits_its_names_instead_of_the_whole_pane() -> None:
     """It was pinned at MIN_USEFUL_WIDTH (340) while the longest name needed
     246, so a list of short names always carried a horizontal scrollbar with
-    nothing to scroll to. Two columns now: ID is asserted with >=, not ==,
-    since ResizeToContents sizes a section to the header's own hint too, and
-    "ID" is wider than a one-digit fixture value -- sizeHintForColumn() looks
-    at row content only. Trigger keeps strict equality, unchanged from before
-    the ID column existed."""
+    nothing to scroll to. Three columns now: position and ID are asserted
+    with >=, not ==, since ResizeToContents sizes a section to the header's
+    own hint too, and both headers are wider than a one-digit fixture value --
+    sizeHintForColumn() looks at row content only. Trigger keeps strict
+    equality, unchanged from before the numeric columns existed."""
     window = _triggers_window()
     try:
-        tree = window.trigger_panel.tree
-        assert tree.columnWidth(0) >= tree.sizeHintForColumn(0)
-        assert tree.columnWidth(1) == tree.sizeHintForColumn(1)
-        if tree.sizeHintForColumn(0) + tree.sizeHintForColumn(1) <= tree.viewport().width():
+        panel = window.trigger_panel
+        tree = panel.tree
+        numeric = (panel._COL_POS, panel._COL_ID)
+        for column in numeric:
+            assert tree.columnWidth(column) >= tree.sizeHintForColumn(column)
+        assert tree.columnWidth(panel._COL_NAME) == tree.sizeHintForColumn(panel._COL_NAME)
+        if sum(tree.columnWidth(c) for c in numeric) + tree.sizeHintForColumn(
+            panel._COL_NAME
+        ) <= tree.viewport().width():
             assert not tree.horizontalScrollBar().isVisible(), (
                 "names that fit must not produce a scrollbar"
             )
@@ -1475,10 +1771,10 @@ def test_the_id_column_shows_each_row_s_stable_list_index() -> None:
             item = tree.topLevelItem(i)
             index = item.data(0, Qt.UserRole)
             assert index is not None, "the shipped fixture is flat -- no synthetic header expected"
-            assert int(item.text(0)) == index
+            assert int(item.text(window.trigger_panel._COL_ID)) == index
 
         panel = window.trigger_panel
-        needle = tree.topLevelItem(0).text(0)
+        needle = tree.topLevelItem(0).text(panel._COL_ID)
         panel.filter_edit.setText(needle)
         assert all(tree.topLevelItem(i).isHidden() for i in range(tree.topLevelItemCount())), (
             "an id-shaped needle must not match by id -- the filter only reads the name column"
@@ -1683,7 +1979,7 @@ def test_panel_populates_and_filters_a_real_scenario(scenario_path) -> None:
         from PyQt5.QtCore import Qt
 
         real = next(item for item in all_items if item.data(0, Qt.UserRole) is not None)
-        panel.filter_edit.setText(real.text(1))
+        panel.filter_edit.setText(real.text(panel._COL_NAME))
         assert not real.isHidden()
     finally:
         window.edit_history.mark_saved()
@@ -1906,7 +2202,8 @@ def test_opening_a_grouped_real_scenario_selects_a_trigger_not_the_synthetic_hea
         if first.data(0, Qt.UserRole) is not None:
             pytest.skip(f"{scenario_path.name}: no leading run before the first divider")
 
-        assert first.text(0) == "", "the synthetic header is not a trigger and has no id to show"
+        assert first.text(panel._COL_ID) == "", "the synthetic header is not a trigger and has no id to show"
+        assert first.text(panel._COL_POS) == "", "nor a display position"
         assert panel.current_trigger_index() is not None
         assert panel.tree.currentItem() is first.child(0)
     finally:
@@ -1953,6 +2250,521 @@ def test_browsing_a_grouped_real_scenario_saves_byte_identically(scenario_path, 
         out = tmp_path / scenario_path.name
         write_scenario(window.scenario, out, triggers=window.trigger_edits)
         assert out.read_bytes() == scenario_path.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- XS script fields (P5-a) -------------------------------------------------
+
+
+def _script_call_id(window, kind: str) -> int:
+    from descape import library_compat
+
+    vocabulary = library_compat.load_vocabulary(window.scenario.scenario_version)
+    entries = vocabulary.conditions if kind == "condition" else vocabulary.effects
+    return next(e.id for e in entries.values() if e.name == "script_call")
+
+
+def _plant_script_call(window, kind: str, stored: str) -> str:
+    """Add a script_call to trigger 0 of the parsed manager, pre-model, holding
+    `stored`, and select it. Returns the XS field's name. Not routed through
+    the model on purpose: the assertion is that browsing it builds none."""
+    panel = window.trigger_panel
+    trigger = panel._manager().triggers[0]
+    field = "xs_function" if kind == "condition" else "message"
+    if kind == "condition":
+        trigger._add_condition(_script_call_id(window, kind))
+        entries = trigger.conditions
+    else:
+        trigger._add_effect(_script_call_id(window, kind))
+        entries = trigger.effects
+    setattr(entries[-1], field, stored)
+    panel.select_trigger(0)
+    panel.refresh_entries(select=(kind, len(entries) - 1))
+    return field
+
+
+@pytest.mark.parametrize("kind", ["condition", "effect"])
+def test_a_script_call_field_is_a_multi_line_editor_with_its_lines(kind: str) -> None:
+    from descape.trigger_panel import XsTextEdit
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        field = _plant_script_call(window, kind, "void f()\r{\r  int a = 0;\r}")
+        widget = _row_widget(panel, field)
+        assert isinstance(widget, XsTextEdit)
+        assert widget.toPlainText() == "void f()\n{\n  int a = 0;\n}"
+        assert widget.document().blockCount() == 4
+        assert window.trigger_edits is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("stored", ["a\rb", "a\r\nb", "a\nb"], ids=["CR", "CRLF", "LF"])
+def test_an_untouched_xs_focus_out_records_nothing_whatever_the_separator(stored: str) -> None:
+    """CRLF and LF are the cases _changed()'s equality check alone would miss:
+    they display as "a\\nb" and translate back to "a\\rb", which differs from
+    what is stored. Only the latch keeps a bare focus-out a no-op."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        field = _plant_script_call(window, "effect", stored)
+        _row_widget(panel, field).editingFinished.emit()
+        assert window.trigger_edits is None
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_typing_into_an_xs_field_records_nothing_until_focus_out() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        field = _plant_script_call(window, "effect", "a\rb")
+        widget = _row_widget(panel, field)
+        widget.appendPlainText("c")
+        widget.appendPlainText("d")
+        assert window.trigger_edits is None, "an edit must wait for editingFinished"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_editing_an_xs_field_writes_cr_separated_bytes(tmp_path: Path) -> None:
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        window.entry_structural_edit("new", 0, "effect", -1, _script_call_id(window, "effect"))
+        effect_index = len(window.trigger_edits.manager().triggers[0].effects) - 1
+        panel.select_trigger(0)
+        panel.refresh_entries(select=("effect", effect_index))
+        steps = window.edit_history.cursor
+
+        widget = _row_widget(panel, "message")
+        widget.setPlainText("void f()\n{\n  // a comment\n  int a = 0;\n}")
+        widget.editingFinished.emit()
+        assert window.edit_history.cursor == steps + 1
+        widget.editingFinished.emit()
+        assert window.edit_history.cursor == steps + 1, "a second focus-out is not a second edit"
+
+        out = tmp_path / "xs.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        reloaded = parse_triggers(load_map_and_units(out))
+        assert reloaded.triggers[0].effects[effect_index].message == (
+            "void f()\r{\r  // a comment\r  int a = 0;\r}"
+        )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_locked_xs_field_renders_its_lines() -> None:
+    from PyQt5.QtWidgets import QLabel
+
+    from descape.trigger_fields import STR, XS, FieldSpec
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_script_call(window, "effect", "a\rb")
+        spec = FieldSpec("message", STR, sentinel=None, read_only=True, multiline=XS)
+        label = panel._build_widget(spec, "effect", 0, panel._current_entry()[2])
+        assert isinstance(label, QLabel)
+        assert label.text() == "a\nb"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- prose fields ------------------------------------------------------------
+
+# One long line with no newline in it: the dominant real shape of
+# display_instructions.message, and what the XS widget renders as a single
+# line behind a horizontal scrollbar.
+_LONG_LINE = (
+    "Defend the town centre until the timer runs out, then escort the "
+    "relic cart to the monastery on the far side of the river before "
+    "Attila's cavalry reaches the ford."
+)
+
+
+def _effect_id(window, name: str) -> int:
+    from descape import library_compat
+
+    vocabulary = library_compat.load_vocabulary(window.scenario.scenario_version)
+    return next(e.id for e in vocabulary.effects.values() if e.name == name)
+
+
+def _plant_prose_effect(window, stored: str, name: str = "display_instructions") -> int:
+    """Add a prose-message effect to trigger 0 of the parsed manager,
+    pre-model, holding `stored`, and select it. Same deliberate no-model route
+    as _plant_script_call()."""
+    panel = window.trigger_panel
+    trigger = panel._manager().triggers[0]
+    trigger._add_effect(_effect_id(window, name))
+    trigger.effects[-1].message = stored
+    panel.select_trigger(0)
+    panel.refresh_entries(select=("effect", len(trigger.effects) - 1))
+    return len(trigger.effects) - 1
+
+
+def _plant_trigger_description(window, stored: str) -> None:
+    """The trigger's own description, which flows through the same
+    _build_widget/_changed path as an effect field."""
+    panel = window.trigger_panel
+    panel._manager().triggers[0].description = stored
+    panel.select_trigger(0)
+    panel.refresh_entries()
+
+
+def _plant_prose(window, where: str, stored: str):
+    if where == "effect message":
+        return _plant_prose_effect(window, stored)
+    _plant_trigger_description(window, stored)
+    return None
+
+
+_PROSE_WHERE = ["effect message", "trigger description"]
+_PROSE_FIELD = {"effect message": "message", "trigger description": "description"}
+
+
+@pytest.mark.parametrize("where", _PROSE_WHERE)
+def test_a_prose_field_is_a_wrapping_multi_line_editor(where: str) -> None:
+    """The assertion the XS tests deliberately do not make: a value with no
+    newline at all still occupies several visual lines, with no horizontal
+    scrollbar. GH #38 is exactly that case."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.trigger_panel import ProseTextEdit
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_prose(window, where, _LONG_LINE)
+        widget = _row_widget(panel, _PROSE_FIELD[where])
+        assert isinstance(widget, ProseTextEdit)
+        assert widget.toPlainText() == _LONG_LINE
+        QApplication.processEvents()
+        assert widget.document().blockCount() == 1, "one paragraph, wrapped -- not split"
+        assert widget.document().firstBlock().layout().lineCount() > 1, "did not wrap"
+        # The policy, not isVisible(): every widget of a never-shown window
+        # answers isVisible() False, so that assertion would hold for the
+        # NoWrap widget too and prove nothing.
+        assert widget.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+        assert window.trigger_edits is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("where", _PROSE_WHERE)
+def test_a_prose_field_shows_its_stored_lines(where: str) -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_prose(window, where, "first line\r\nsecond line\r\nthird line")
+        widget = _row_widget(panel, _PROSE_FIELD[where])
+        assert widget.toPlainText() == "first line\nsecond line\nthird line"
+        assert widget.document().blockCount() == 3
+        assert widget.newline_token == "\r\n"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    "stored", ["a\rb", "a\r\nb", "a\nb", "one line"], ids=["CR", "CRLF", "LF", "none"]
+)
+@pytest.mark.parametrize("where", _PROSE_WHERE)
+def test_an_untouched_prose_focus_out_records_nothing(where: str, stored: str) -> None:
+    """CR and CRLF display as "a\\nb", which differs from what is stored, so
+    _changed()'s equality check alone would record a phantom undo step."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_prose(window, where, stored)
+        _row_widget(panel, _PROSE_FIELD[where]).editingFinished.emit()
+        assert window.trigger_edits is None
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    "stored,token",
+    [("a\rb", "\r"), ("a\r\nb", "\r\n"), ("a\nb", "\n"), ("one line", "\n")],
+    ids=["CR", "CRLF", "LF", "none"],
+)
+def test_an_edited_prose_field_keeps_its_own_newline_token(
+    tmp_path: Path, stored: str, token: str
+) -> None:
+    """The behaviour the XS path deliberately does not have: XS forces every
+    separator to CR, which is right for a script body and would silently
+    rewrite (and widen the save diff of) a description stored with LF."""
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        effect_index = _plant_prose_effect(window, stored)
+        widget = _row_widget(panel, "message")
+        widget.setPlainText("edited\nacross\nthree lines")
+        widget.editingFinished.emit()
+        assert window.edit_history.is_dirty
+
+        out = tmp_path / "prose.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        reloaded = parse_triggers(load_map_and_units(out))
+        assert reloaded.triggers[0].effects[effect_index].message == token.join(
+            ("edited", "across", "three lines")
+        )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_second_prose_focus_out_is_not_a_second_edit() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_prose_effect(window, "a\rb")
+        widget = _row_widget(panel, "message")
+        widget.setPlainText("rewritten")
+        widget.editingFinished.emit()
+        steps = window.edit_history.cursor
+        widget.editingFinished.emit()
+        assert window.edit_history.cursor == steps
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_name_field_stays_one_line() -> None:
+    """The other half of the set-membership decision: every *_name message is
+    an identifier under 30 characters, not prose."""
+    from PyQt5.QtWidgets import QLineEdit
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_prose_effect(window, "Gatehouse", name="change_object_name")
+        assert isinstance(_row_widget(panel, "message"), QLineEdit)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_trigger_s_own_name_stays_one_line() -> None:
+    from PyQt5.QtWidgets import QLineEdit
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_trigger_description(window, "a description")
+        assert isinstance(_row_widget(panel, "name"), QLineEdit)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_locked_prose_field_renders_its_lines() -> None:
+    from PyQt5.QtWidgets import QLabel
+
+    from descape.trigger_fields import PROSE, STR, FieldSpec
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _plant_prose_effect(window, "a\r\nb")
+        spec = FieldSpec("message", STR, sentinel=None, read_only=True, multiline=PROSE)
+        label = panel._build_widget(spec, "effect", 0, panel._current_entry()[2])
+        assert isinstance(label, QLabel)
+        assert label.text() == "a\nb"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- retyping an existing condition or effect (GH #37) -----------------------
+
+
+def _select_first_effect(panel) -> int:
+    """Select the first effect the fixture carries, and return its trigger
+    index. Asserts rather than skips, for _select_first_condition's reason."""
+    for i in range(panel.tree.topLevelItemCount()):
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(i))
+        effects = _group(panel, "effect")
+        if effects.childCount():
+            panel.entry_tree.setCurrentItem(effects.child(0))
+            return i
+    raise AssertionError("the fixture carries no effects, so retype tests cannot run")
+
+
+def _effects_of(window, trigger_index: int):
+    manager = window.trigger_panel._manager()
+    return manager.triggers[trigger_index].effects
+
+
+def test_the_retype_picker_offers_one_kind_and_opens_on_the_current_type() -> None:
+    """Cross-kind retyping is not offered -- conditions and effects are
+    separate lists -- and the picker opens where the user already is."""
+    from PyQt5.QtCore import Qt
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        trigger_index = _select_first_effect(panel)
+        current_type = _effects_of(window, trigger_index)[0].effect_type
+
+        panel._request_entry_op("retype")
+        assert panel.detail_stack.currentIndex() == 1
+        assert panel.picker_tree.topLevelItemCount() == 1
+        assert "Effects" in panel.picker_tree.topLevelItem(0).text(0)
+        assert panel.picker_add_button.text() == "Change"
+
+        picked = panel.picker_tree.currentItem()
+        assert picked is not None, "the retype picker opened with nothing selected"
+        assert picked.data(0, Qt.UserRole) == ("effect", current_type)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_opening_and_cancelling_the_retype_picker_records_nothing(tmp_path: Path) -> None:
+    from descape.scenario_write import write_scenario
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_first_effect(panel)
+        panel._request_entry_op("retype")
+        _pick(panel, "effect", "send chat")
+        panel.picker_filter.setText("chat")
+        panel._close_picker()
+
+        assert panel.detail_stack.currentIndex() == 0
+        assert panel._picker_entry_ref is None, "the entry latch outlived the picker"
+        assert window.trigger_edits is None, "opening the picker must not build an edit model"
+        assert not window.edit_history.is_dirty
+
+        out = tmp_path / "cancelled.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        assert out.read_bytes() == TRIGGER_FIXTURE.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_picking_the_type_the_entry_already_has_records_nothing() -> None:
+    """commit_trigger_edit() pushes unconditionally, so _accept_pick() is the
+    only place a no-op retype can be stopped."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _select_first_effect(panel)
+        panel._request_entry_op("retype")
+        # The picker already opened on the current type, so accept as-is.
+        panel._accept_pick()
+
+        assert panel.detail_stack.currentIndex() == 0
+        assert window.trigger_edits is None
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_retype_targets_the_entry_latched_at_open() -> None:
+    """The detail tree stays live behind the picker in Add mode; in Change mode
+    a selection change in between must not move the target."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        trigger_index = _select_first_effect(panel)
+        effects = _effects_of(window, trigger_index)
+        if len(effects) < 2:
+            for i in range(panel.tree.topLevelItemCount()):
+                panel.tree.setCurrentItem(panel.tree.topLevelItem(i))
+                if _group(panel, "effect").childCount() >= 2:
+                    trigger_index = i
+                    break
+            effects = _effects_of(window, trigger_index)
+        assert len(effects) >= 2, "the fixture has no trigger with two effects"
+        panel.entry_tree.setCurrentItem(_group(panel, "effect").child(0))
+
+        before = [e.effect_type for e in effects]
+        panel._request_entry_op("retype")
+        # Move the detail selection to the *second* effect while the picker is
+        # up. The tree is hidden there, but a programmatic selection still
+        # fires _on_entry_selected, and the latch is what has to survive it --
+        # re-reading the selection at accept time would retype the wrong entry.
+        panel.entry_tree.setCurrentItem(_group(panel, "effect").child(1))
+        _pick(panel, "effect", "send chat")
+        panel._accept_pick()
+
+        after = [e.effect_type for e in window.trigger_edits.manager().triggers[trigger_index].effects]
+        assert after[0] != before[0], "the latched entry was not retyped"
+        assert after[1:] == before[1:], "a retype moved off the entry latched at open"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_retype_keeps_the_entry_in_place_and_re_anchors_its_uuid() -> None:
+    """Build-then-replace, not append: the index, the list length and the
+    display-order array all have to come out unchanged, and UuidList.__setitem__
+    is what re-anchors the fresh object to the document."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        trigger_index = _select_first_effect(panel)
+        effects = _effects_of(window, trigger_index)
+        before_len = len(effects)
+        before_order = list(
+            panel._manager().triggers[trigger_index].effect_order
+        )
+
+        window.entry_structural_edit("retype", trigger_index, "effect", 0, 3)
+
+        trigger = window.trigger_edits.manager().triggers[trigger_index]
+        assert len(trigger.effects) == before_len, "a retype changed the list length"
+        assert trigger.effects[0].effect_type == 3
+        assert list(trigger.effect_order) == before_order, "a retype rewrote the display order"
+        assert trigger.effects[0]._uuid == trigger._uuid, "the fresh entry was never re-anchored"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_retype_carries_the_shared_fields_and_reports_the_rest() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        # Trigger 0's effect is display_instructions, whose message/source_player
+        # send_chat also lists, and whose display_time it does not.
+        trigger_index = _select_first_effect(panel)
+        effect = _effects_of(window, trigger_index)[0]
+        effect.message = "carried"
+        effect.source_player = 2
+        effect.display_time = 15
+
+        window.entry_structural_edit("retype", trigger_index, "effect", 0, 3)
+
+        fresh = window.trigger_edits.manager().triggers[trigger_index].effects[0]
+        assert fresh.effect_type == 3
+        assert fresh.message == "carried"
+        assert fresh.source_player == 2
+        assert "display time" in window.status_log.toPlainText()
     finally:
         window.edit_history.mark_saved()
         window.close()

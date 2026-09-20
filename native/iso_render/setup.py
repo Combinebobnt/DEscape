@@ -6,9 +6,9 @@ from this directory with the project's own venv:
     ../../.venv/bin/python setup.py build_ext --inplace
 """
 
-from setuptools import setup, Extension
-from Cython.Build import cythonize
 import numpy
+from Cython.Build import cythonize
+from setuptools import Extension, setup
 
 # -O3 explicitly, since setuptools/sysconfig's default CFLAGS only give -O2 --
 # a free, zero-effort win worth including before comparing against numpy

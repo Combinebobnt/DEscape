@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -24,13 +25,7 @@ _PICK_ELEVATION = 3
 def _edit_window():
     """Loads the blank template and switches to Terrain mode with Eyedropper
     active. Caller must edit_history.mark_saved() + close()."""
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Terrain")
+    window = conftest.terrain_edit_window()
     window.eyedropper_action.setChecked(True)
     return window
 

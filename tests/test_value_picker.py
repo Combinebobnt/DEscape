@@ -13,13 +13,14 @@ import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 
-import conftest
 from descape.value_picker import (
     PickerItem,
     ValueBrowseDialog,
     ValueLineEdit,
     ValuePickerView,
 )
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -355,6 +356,15 @@ def test_set_value_none_clears_the_field() -> None:
     widget.set_value(None)
     assert widget.value() is None
     assert widget.line_edit.text() == ""
+
+
+def test_set_value_shows_the_start_of_a_long_label() -> None:
+    """A narrow field showed the tail of "unknown (9999)" after a commit."""
+    widget = _line_edit(show_values=True)
+    widget.line_edit.setText("9999")
+    widget.line_edit.editingFinished.emit()
+    assert widget.line_edit.text() == "unknown (9999)"
+    assert widget.line_edit.cursorPosition() == 0
 
 
 def test_typing_a_bare_label_commits_its_value() -> None:

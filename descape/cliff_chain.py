@@ -253,9 +253,9 @@ class ChainStroke:
         that no longer matches the lattice the adjacency math assumes."""
         span_x, span_y = self._span
         return (
-            0 <= tile_x
+            tile_x >= 0
             and tile_x + span_x <= self._map_width
-            and 0 <= tile_y
+            and tile_y >= 0
             and tile_y + span_y <= self._map_height
         )
 

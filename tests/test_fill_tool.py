@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -47,13 +48,7 @@ def _edit_window(tool: str = "fill"):
     """Loads the blank template, switches to Terrain mode with `tool` active,
     and selects _FILL_TERRAIN on terrain_combo. Caller must
     edit_history.mark_saved() + close()."""
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Terrain")
+    window = conftest.terrain_edit_window()
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
     # This file tests Paint Can's own mechanics, not descape/terrain_units.py
@@ -81,13 +76,6 @@ def _shown_flat(window) -> None:
     window.terrain_style_combo.setCurrentText("Flat")
     window.show()
     QApplication.processEvents()
-
-
-def _mouse_event(kind, pos, button, buttons):
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QMouseEvent
-
-    return QMouseEvent(kind, pos, button, buttons, Qt.NoModifier)
 
 
 def test_fill_registered_as_keybind_and_toolbar_action() -> None:
@@ -197,17 +185,17 @@ def test_drag_after_click_fills_only_once() -> None:
         map_view = window.map_view
 
         press_pos = conftest.viewport_pos(map_view, 0, 0)
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, press_pos, Qt.LeftButton, Qt.LeftButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press_pos, Qt.LeftButton, Qt.LeftButton))
         assert len(window.edit_history.records) == 1
         assert map_view._stroke_active is False
 
         for tx, ty in [(1, 0), (2, 0), (0, 1)]:
             move_pos = conftest.viewport_pos(map_view, tx, ty)
-            map_view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, move_pos, Qt.NoButton, Qt.LeftButton))
+            map_view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, move_pos, Qt.NoButton, Qt.LeftButton))
             assert len(window.edit_history.records) == 1
 
         map_view.mouseReleaseEvent(
-            _mouse_event(QEvent.MouseButtonRelease, press_pos, Qt.LeftButton, Qt.NoButton)
+            conftest.mouse_event(QEvent.MouseButtonRelease, press_pos, Qt.LeftButton, Qt.NoButton)
         )
         assert len(window.edit_history.records) == 1
         assert map_view._stroke_active is False
@@ -225,7 +213,7 @@ def test_right_click_is_inert() -> None:
         map_view = window.map_view
         pos = conftest.viewport_pos(map_view, 0, 0)
 
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton))
 
         assert window.edit_history.records == []
         assert map_view._stroke_active is False
@@ -282,7 +270,7 @@ def test_mid_drag_tool_switch_to_fill_does_not_wedge_history() -> None:
         map_view = window.map_view
         mm = window.scenario.map_manager
         pos = conftest.viewport_pos(map_view, 0, 0)
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
         assert map_view._stroke_active is True
         assert mm.terrain[0].terrain_id == _FILL_TERRAIN  # the Draw stroke actually painted (0, 0)
 

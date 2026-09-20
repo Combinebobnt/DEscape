@@ -13,6 +13,7 @@ vacuously against a corpus that happened not to exercise it.
 from __future__ import annotations
 
 import struct
+from itertools import pairwise
 
 import pytest
 
@@ -87,7 +88,7 @@ def test_offsets_are_distinct_and_dont_overlap() -> None:
     spans = [(fo.offset, fo.length) for fo in stance_offsets(loaded).values()]
     spans += [(fo.offset, fo.length) for fo in allied_victory_offsets(loaded).values()]
     spans.sort()
-    for (off_a, len_a), (off_b, _len_b) in zip(spans, spans[1:]):
+    for (off_a, len_a), (off_b, _len_b) in pairwise(spans):
         assert off_a + len_a <= off_b
 
 

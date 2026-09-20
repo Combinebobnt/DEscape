@@ -37,8 +37,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from test_sloped_pick import _edit_and_bbox
 
-from descape import asset_source, iso_geometry as ig, render, settings, terrain_palette, unit_pick, unit_sprites
+from descape import asset_source, render, settings, terrain_palette, unit_pick, unit_sprites
+from descape import iso_geometry as ig
 from descape.render import (
     _dirty_screen_bbox,
     dirty_screen_bbox_sloped,
@@ -50,7 +52,7 @@ from descape.render import (
 from descape.render_cache import SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit.fakes import FakeScenario, SyntheticTile
-from test_sloped_pick import _edit_and_bbox
+
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 
@@ -215,10 +217,10 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
 
     # Now give the same unit a real sprite and recover the implied rise from
     # its own anchor y: ay = round(origin_y + (fy-fx)*half_h - rise_px) + half_h,
-    # with fx/fy the FOOTPRINT CENTRE (own tile's centre for a span (1, 1)
-    # unit -- _span_start(coord, 1) == int(coord)), not the unit's own exact
-    # sub-tile position -- see sprite_draws_by_anchor's own fx/fy vs
-    # own_fx/own_fy distinction.
+    # with fx/fy where the footprint PAINTS. For a span (1, 1) unit that is now
+    # the unit's own exact coordinate: free placement's Stage 1 replaced
+    # `_span_start(coord, 1) + 0.5` (which quantized 60.3 to 60.5) with the
+    # coordinate itself, which is the whole point of that stage.
     unit.unit_const = CONST
     sprites = render.sprite_draws_by_anchor(
         scenario, proj, elevations, corner_rise=corner_rise, with_farms=False
@@ -226,7 +228,7 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
     assert sprites.by_anchor, "fixture painted nothing -- the sprite never resolved"
     (_draw, _ax, ay), = next(iter(sprites.by_anchor.values()))
     half_h = proj.half_h
-    fx, fy = ux + 0.5, uy + 0.5
+    fx, fy = unit.x, unit.y
     implied_rise = round(proj.origin_y + (fy - fx) * half_h) + half_h - ay
     assert implied_rise == mark_rise
 
@@ -286,8 +288,7 @@ def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_
     mm_w = mm_h = 20
     tiles = []
     for y in range(mm_h):
-        for x in range(mm_w):
-            tiles.append(SyntheticTile(x=x, y=y, elevation=0 if (x, y) == (9, 9) else 1))
+        tiles.extend(SyntheticTile(x=x, y=y, elevation=0 if (x, y) == (9, 9) else 1) for x in range(mm_w))
     scenario = FakeScenario(mm_w, mm_h, tiles, [[]] * 1 + [[Unit(10.5, 10.5, FARM_CONST)]] + [[]] * 7)
     elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
     tile_px = tile_pixels_for_map(mm_w, mm_h)

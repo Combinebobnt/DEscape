@@ -70,7 +70,7 @@ def test_unit_rise_px_matches_painted_surface_across_all_corner_configs(tile_px)
         fx, fy, rise = _measured_rise(tile_px, combo)
         corner_rise = np.array([[combo[0], combo[1]], [combo[2], combo[3]]], dtype=np.int64)
         preds = np.array(
-            [ig.unit_rise_px(corner_rise, 0, 0, float(a), float(b)) for a, b in zip(fx.tolist(), fy.tolist())]
+            [ig.unit_rise_px(corner_rise, 0, 0, float(a), float(b)) for a, b in zip(fx.tolist(), fy.tolist(), strict=True)]
         )
         diff = int(np.abs(preds - rise).max())
         if diff > worst:

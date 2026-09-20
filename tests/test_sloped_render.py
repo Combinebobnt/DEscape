@@ -65,7 +65,7 @@ def test_coverage_on_sloped_map():
     # the +-1-elevation-between-neighbors invariant real maps use.
     for tile in mm.terrain:
         tile.elevation = 1 if tile.x >= mm.map_width // 2 else 0
-    img, elevations, _corner_rise, proj = render_terrain_sloped_with_proj(scenario, with_units=False)
+    img, _elevations, _corner_rise, proj = render_terrain_sloped_with_proj(scenario, with_units=False)
     corners = ig.ground_outline_corners(mm.map_width, mm.map_height, proj)
     xs = [c[0] for c in corners]
     ys = [c[1] for c in corners]

@@ -56,7 +56,7 @@ def test_sloped_quad_indices_delegates_at_equal_corners():
     for value in (0, 5, -3, 17):
         got = ig.sloped_quad_indices(tile_px, value, value, value, value)
         assert len(got) == 5, "the sloped contract is a 5-tuple, flat path included"
-        for a, b in zip(got[:4], base):
+        for a, b in zip(got[:4], base, strict=True):
             assert a is b, "the flat path must hand back diamond_indices' own arrays"
         assert got[4] is ig._identity_uv_idx(tile_px), "the fifth must be the cached no-op gather"
 
@@ -73,7 +73,7 @@ def test_sloped_tile_edge_indices_delegates_at_equal_corners():
         for value in (0, 5, -3, 17):
             got = ig.sloped_tile_edge_indices(tile_px, side, value, value, value, value)
             assert len(got) == 2
-            for a, b in zip(got, base):
+            for a, b in zip(got, base, strict=True):
                 assert np.array_equal(a, b)
 
 
@@ -333,10 +333,10 @@ def test_sloped_tile_edge_indices_are_a_subset_of_the_quads_own_pixels(tile_px, 
     painted would slip through the delegation check above (equal corners
     only) but not this one."""
     quad_dst_y, quad_dst_x, _sy, _sx, _uv = ig.sloped_quad_indices(tile_px, *corners)
-    quad_pixels = set(zip(quad_dst_y.tolist(), quad_dst_x.tolist()))
+    quad_pixels = set(zip(quad_dst_y.tolist(), quad_dst_x.tolist(), strict=True))
     for side in ("left", "right", "up_left", "up_right"):
         edge_dst_y, edge_dst_x = ig.sloped_tile_edge_indices(tile_px, side, *corners)
-        edge_pixels = set(zip(edge_dst_y.tolist(), edge_dst_x.tolist()))
+        edge_pixels = set(zip(edge_dst_y.tolist(), edge_dst_x.tolist(), strict=True))
         assert edge_pixels, f"side={side} produced no pixels at all at tile_px={tile_px}, corners={corners}"
         assert edge_pixels <= quad_pixels, (
             f"side={side} strokes a pixel the tile's own quad never painted "
@@ -775,11 +775,11 @@ def test_sloped_output_stays_on_canvas_on_real_maps(corpus_files, pct):
                 base_x, base_y = ig.tile_screen_origin(x, y, 0, proj)
                 base_y -= d_min  # the offset sloped_quad_indices' docstring requires
                 assert gapless, f"column hole at {path.name} tile ({x},{y}) pct={pct}"
-                assert 0 <= base_y + dy0 and base_y + dy1 < proj.canvas_h, (
+                assert base_y + dy0 >= 0 and base_y + dy1 < proj.canvas_h, (
                     f"{path.name} tile ({x},{y}) pct={pct}: rows "
                     f"{base_y + dy0}..{base_y + dy1} escape canvas_h={proj.canvas_h}"
                 )
-                assert 0 <= base_x + dx0 and base_x + dx1 < proj.canvas_w, (
+                assert base_x + dx0 >= 0 and base_x + dx1 < proj.canvas_w, (
                     f"{path.name} tile ({x},{y}) pct={pct}: cols "
                     f"{base_x + dx0}..{base_x + dx1} escape canvas_w={proj.canvas_w}"
                 )

@@ -86,6 +86,10 @@ def test_union_contains_every_contributor(tile_px):
                                 boxes.append(ext(iso_geometry.shadow_quad_indices, tile_px, ur, "up_right"))
                             if diag:
                                 boxes.append(ext(iso_geometry.shadow_apex_indices, tile_px, diag))
+                            if ul:
+                                boxes.append(ext(iso_geometry.shadow_tip_indices, tile_px, ul, "up_left"))
+                            if ur:
+                                boxes.append(ext(iso_geometry.shadow_tip_indices, tile_px, ur, "up_right"))
                             for box in boxes:
                                 if box is None:
                                     empty_seen = True
@@ -96,7 +100,7 @@ def test_union_contains_every_contributor(tile_px):
 
 
 class _Tile:
-    __slots__ = ("x", "y", "terrain_id")
+    __slots__ = ("terrain_id", "x", "y")
 
     def __init__(self, x, y, terrain_id):
         self.x, self.y, self.terrain_id = x, y, terrain_id

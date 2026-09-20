@@ -69,7 +69,7 @@ def _differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     assert len(before) == len(after)
     ranges: list[tuple[int, int]] = []
     start = None
-    for i, (a, b) in enumerate(zip(before, after)):
+    for i, (a, b) in enumerate(zip(before, after, strict=True)):
         if a != b and start is None:
             start = i
         elif a == b and start is not None:
@@ -503,6 +503,58 @@ def test_a_bypassed_reorder_is_refused_rather_than_mis_spliced() -> None:
         model.serialize()
 
 
+# -- write-time coherence validator ------------------------------------------
+#
+# One test per _validate_coherence() guard, each building the violating state
+# directly. The negative corpus test at the bottom is the guard against a
+# "legacy implies identity display order" rule, which real files disprove.
+
+
+def test_a_bypassed_reorder_is_refused_by_the_coherence_validator(monkeypatch) -> None:
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.manager().reorder_triggers([1, 0, 2, 3])
+    calls = []
+    original = TriggerEditModel._validate_coherence
+    monkeypatch.setattr(
+        TriggerEditModel,
+        "_validate_coherence",
+        lambda self, manager: (calls.append(True), original(self, manager)),
+    )
+    with pytest.raises(RuntimeError, match="bypassed structural_edit"):
+        model.serialize()
+    assert calls, "serialize() must route through _validate_coherence()"
+
+
+def test_a_display_order_of_the_wrong_length_is_refused_by_count() -> None:
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.manager().trigger_display_order = [0, 1, 2]
+    with pytest.raises(RuntimeError, match="has 3 entries for 4 triggers"):
+        model.serialize()
+
+
+def test_a_display_order_that_is_not_a_permutation_names_the_bad_indices() -> None:
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.manager().trigger_display_order = [0, 0, 1, 2]
+    with pytest.raises(RuntimeError, match=r"duplicated: \[0\], missing: \[3\]"):
+        model.serialize()
+
+
+def test_a_pending_exec_order_on_a_file_storing_no_flag_is_refused() -> None:
+    """Unreachable through set_exec_order() (its gate implies an offset), so
+    the state is built by hand: no stored flag, and a pending value anyway."""
+    import dataclasses
+
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.regions = dataclasses.replace(model.regions, exec_order_offset=None)
+    model._exec_order = 1
+    with pytest.raises(TriggerEditsUnavailableError, match="stores no such flag"):
+        model.serialize()
+
+
 # -- 3b. content-mutating structural operations ------------------------------
 #
 # A 4b.1 regression, found by the 4b.3 review and fixed with the
@@ -816,6 +868,28 @@ def test_clean_serialize_is_verbatim_across_the_corpus(scenario_path: Path) -> N
 
 
 @pytest.mark.corpus
+@pytest.mark.parametrize(
+    "name", ["atilla_1_scn_resaved", "R4_LeLoi_4", "F7_2_Dos Pilas (648)"]
+)
+def test_a_legacy_file_with_a_custom_display_order_serializes_cleanly(name: str) -> None:
+    """The measurement that ruled out a "legacy implies identity display
+    order" coherence rule. If this starts failing, someone added it."""
+    from descape.trigger_model import exec_order_value
+
+    path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
+    if not path.exists():
+        pytest.skip(f"{path.name} is not in this corpus")
+    loaded = load_map_and_units(path)
+    if parse_triggers(loaded) is None or not loaded.trigger_write_supported:
+        pytest.skip(f"{path.name}: triggers are not writable")
+    model = TriggerEditModel(loaded)
+    order = list(model.manager().trigger_display_order)
+    assert exec_order_value(loaded) == 1, "corpus assumption: legacy mode"
+    assert order != sorted(order), "corpus assumption: non-identity display order"
+    assert model.serialize() == _section_bytes(loaded)
+
+
+@pytest.mark.corpus
 def test_display_order_survives_an_unrelated_trigger_save_across_the_corpus(
     scenario_path: Path, tmp_path: Path
 ) -> None:
@@ -908,6 +982,77 @@ def test_a_new_condition_and_effect_match_each_files_own_vocabulary(
     assert len(reloaded.triggers) == len(manager.triggers)
     assert reloaded.triggers[0].conditions[-1].condition_type == condition_id
     assert reloaded.triggers[0].effects[-1].effect_type == effect_id
+
+
+@pytest.mark.corpus
+def test_retyping_an_effect_keeps_its_place_and_survives_the_write_path(
+    scenario_path: Path, tmp_path: Path
+) -> None:
+    """GH #37's retype, across the version spread its predecessor above covers.
+
+    Same reason that one is corpus-marked: retype_entry() builds through the
+    library's module-level default_attributes, which are rewritten per load, so
+    "the fresh entry is this version's send_chat" is a property of the spread
+    rather than of one fixture. The entry's index and the trigger's effect
+    display order both have to come out unchanged, since the whole point of
+    retyping rather than Delete + New is keeping the position.
+    """
+    from descape import library_compat, trigger_fields
+
+    loaded = load_map_and_units(scenario_path)
+    manager = parse_triggers(loaded)
+    if manager is None or not loaded.trigger_write_supported:
+        pytest.skip(f"{scenario_path.name}: triggers are not editable")
+    if not library_compat.vocabulary_is_available(loaded.scenario_version):
+        pytest.skip(f"{scenario_path.name}: no shipped vocabulary for this version")
+    target = next((i for i, t in enumerate(manager.triggers) if t.effects), None)
+    if target is None:
+        pytest.skip(f"{scenario_path.name}: no trigger carries an effect")
+
+    vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+    effect_id = next(e.id for e in vocabulary.effects.values() if e.name == "send_chat")
+    model = TriggerEditModel(loaded)
+    trigger = model.manager().triggers[target]
+    before_types = [e.effect_type for e in trigger.effects]
+    before_order = list(trigger.effect_order)
+    if before_types[0] == effect_id:
+        pytest.skip(f"{scenario_path.name}: the first effect is already a send_chat")
+
+    carried = trigger_fields.retype_carryover(
+        trigger.effects[0],
+        vocabulary.effects.get(before_types[0]),
+        vocabulary.effects[effect_id],
+        "effect_type",
+    )[0]
+    dropped = trigger_fields.retype_entry(
+        trigger, "effect", 0, effect_id, vocabulary.effects, "effect_type"
+    )
+    model.mark_dirty(target)
+
+    fresh = trigger.effects[0]
+    definition = vocabulary.effects[effect_id]
+    for attribute in definition.attributes:
+        if attribute in carried:
+            assert getattr(fresh, attribute) == carried[attribute], (
+                f"{scenario_path.name}: a carried {attribute} did not reach the fresh entry"
+            )
+        else:
+            assert getattr(fresh, attribute) == definition.default_attributes[attribute], (
+                f"{scenario_path.name} (v{loaded.scenario_version}): retyped send_chat's "
+                f"{attribute} is not this version's vocabulary default"
+            )
+    assert not set(dropped) & set(carried), "a field was reported both carried and dropped"
+    assert len(trigger.effects) == len(before_types), "a retype changed the list length"
+    assert list(trigger.effect_order) == before_order, "a retype rewrote the display order"
+
+    out = tmp_path / "retyped.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+    reloaded = parse_triggers(load_map_and_units(out))
+    assert reloaded is not None
+    reloaded_types = [e.effect_type for e in reloaded.triggers[target].effects]
+    assert reloaded_types == [effect_id, *before_types[1:]], (
+        f"{scenario_path.name}: the retype did not survive the splice in place"
+    )
 
 
 @pytest.mark.corpus

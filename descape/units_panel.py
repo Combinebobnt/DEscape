@@ -53,7 +53,8 @@ _FIELD_CONDITIONALS = {"rotation_is_angle": unit_rotation.rotation_is_angle}
 _ROTATION_TOOLTIP = (
     "Rotation is shown raw, in radians. It is editable only for units whose "
     "rotation is a real facing -- for most GAIA objects, walls and gates it "
-    "is a graphic-variant index, not an angle."
+    "is a graphic-variant index, not an angle. Trees, plants and scenery can "
+    "change variant with Edit > Cycle Variant."
 )
 
 # The in-game editor's own Units-tab selection panel set (docs/

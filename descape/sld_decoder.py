@@ -201,7 +201,7 @@ class SLDFile:
         self._walk()
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "SLDFile":
+    def from_file(cls, path: str | Path) -> SLDFile:
         return cls(Path(path).read_bytes())
 
     @property

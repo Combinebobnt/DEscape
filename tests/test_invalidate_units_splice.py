@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
 from descape import render, unit_sprites
 from descape.render import (
@@ -31,7 +32,7 @@ from descape.render import (
 from descape.render_cache import IsoChunkCache, SlopedChunkCache, UnitSplice, _splice_eligible
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
-from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
+
 from test_unit_sprites import CONST as SPRITE_CONST
 
 MILL_CONST = 68  # BUILDING_TILE_SPANS[68] == (2, 2) -- a real multi-tile building
@@ -323,5 +324,74 @@ def test_sprite_bearing_unit_move_splices_and_matches_a_fresh_render(style, spri
     assert counts == {"building_bboxes": 0, "sprites": 0}, (
         "a resident, already-spliced level should not re-rebuild on repaint"
     )
+    full = _oracle(style, scenario, sprites=True)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+def _sprite_layer(cache):
+    """The cache's live SpriteLayer -- per mip level on Stepped, one on Sloped."""
+    return cache._level(0).sprites if hasattr(cache, "_level") else cache.sprites
+
+
+@pytest.fixture
+def slotted_composite_install(tmp_path, monkeypatch):
+    """MILL_CONST as a two-piece composite whose pieces carry their own depth
+    slots, so one spliced unit owns TWO by_anchor keys rather than one. Same
+    oversized canvas and pinned reach constants as sprite_install, and for the
+    same reasons (that fixture's own docstring)."""
+    from test_sprite_edit_bbox import REACH_NAMES, SPRITE_CANVAS
+
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    from test_unit_sprites import FILE_NAME, build_sld
+
+    (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(1, canvas=SPRITE_CANVAS))
+
+    def piece(slot, dy):
+        return {"unit_id": MILL_CONST, "file_name": FILE_NAME, "angle_count": 1,
+                "frame_count": 1, "dx": 0, "dy": dy, "parent": slot == [1, 0], "slot": slot}
+
+    monkeypatch.setattr(
+        unit_sprites, "graphic_map",
+        lambda: {MILL_CONST: {
+            "graphic_id": 1, "file_name": FILE_NAME, "angle_count": 1,
+            "mirroring_mode": 0, "frame_count": 1,
+            "pieces": [piece([1, 0], -96), piece([0, 1], 96)],
+        }},
+    )
+    for name in REACH_NAMES:
+        monkeypatch.setattr(unit_sprites, name, SPRITE_CANVAS // 2)
+    from descape import asset_source
+
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_slotted_composite_move_splices_every_one_of_its_anchors(
+    style, slotted_composite_install, monkeypatch
+):
+    """A composite contributes to one by_anchor key per depth slot, all inside
+    its footprint. Clearing only sprite_anchor_tile(old_tiles) would leave the
+    other slot's pieces stranded on the pre-move tile -- visible as a ghost of
+    half the building, and invisible to every sprites=False splice test."""
+    scenario = _scenario()
+    unit = _place(scenario, 1, MILL_CONST, *ELSEWHERE_TILE)
+    cache = _make_cache(style, scenario, sprites=True)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    layer = _sprite_layer(cache)
+    assert len(layer.by_anchor) == 2, "the fixture is not producing two slots"
+    counts = _call_counts(monkeypatch)
+
+    splice = _move_splice(scenario, 1, 0, unit, *MOVED_TILE)
+    assert _splice_eligible(cache.units_by_tile, splice), "fixture is not testing the splice path"
+    _apply(cache, splice)
+
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    assert len(_sprite_layer(cache).by_anchor) == 2, "the moved composite left a stale anchor behind"
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
     full = _oracle(style, scenario, sprites=True)
     assert np.array_equal(stitched, full[:canvas_h, :canvas_w])

@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import settings, viewer_common
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -54,7 +55,19 @@ _EXPECTED_PARAM = {t.tool_id: (t.param_widget or None) for t in _TERRAIN_MODE_TO
 # Brush size/shape is orthogonal to _EXPECTED_PARAM above -- Set Elevation
 # shows both a level AND a brush, Elevate shows a brush with no
 # _EXPECTED_PARAM entry at all. See settings.ToolDef.supports_brush.
-_EXPECTED_BRUSH = {t.tool_id: t.supports_brush for t in _TERRAIN_MODE_TOOLS}
+#
+# Read through viewer_common.brush_applicable() rather than off
+# ToolDef.supports_brush directly: Draw Rectangle supports a brush but hides
+# it in Filled mode, and that carve-out has exactly one home. Taking the
+# window's own live Fill/Outline state keeps this generated rather than
+# pinned to whichever default the combo happens to ship with.
+def _expected_brush(tool_id: str, window) -> bool:
+    return viewer_common.brush_applicable(tool_id, rect_filled=window._rect_filled())
+
+# Free placement's own orthogonal group (D2's toggle). Derived, not asserted
+# flat-False, so that if a Terrain-mode tool ever sets supports_free_place
+# this file starts checking it instead of silently contradicting it.
+_EXPECTED_FREE_PLACE = {t.tool_id: t.supports_free_place for t in _TERRAIN_MODE_TOOLS}
 
 
 def test_tool_visibility_matches_mode_applicability() -> None:
@@ -83,7 +96,8 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
     try:
         window._on_tool_selected(tool)
         expected = _EXPECTED_PARAM[tool]
-        expected_brush = _EXPECTED_BRUSH[tool]
+        expected_brush = _expected_brush(tool, window)
+        expected_free = _EXPECTED_FREE_PLACE[tool]
 
         assert window.terrain_param_combo_action.isVisible() == (expected == "terrain")
         assert window.terrain_param_label_action.isVisible() == (expected == "terrain")
@@ -92,10 +106,14 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
         assert window.brush_size_spin_action.isVisible() == expected_brush
         assert window.brush_shape_combo_action.isVisible() == expected_brush
         assert window.brush_param_label_action.isVisible() == expected_brush
+        assert window.free_place_param_action.isVisible() == expected_free
         # Elevate has no _EXPECTED_PARAM entry (expected is None) but DOES
-        # have a brush -- the separator must track either group, not just
-        # the single-valued param.
-        assert window.tool_param_separator_action.isVisible() == (expected is not None or expected_brush)
+        # have a brush -- the separator must track EVERY group, not just the
+        # single-valued param. A new group that forgets to join the roll-up
+        # `or` chain shows its own widget beside a hidden separator.
+        assert window.tool_param_separator_action.isVisible() == (
+            expected is not None or expected_brush or expected_free
+        )
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -176,6 +194,148 @@ def test_tool_params_hidden_in_view_mode() -> None:
         assert not window.terrain_param_combo_action.isVisible()
         assert not window.brush_size_spin_action.isVisible()
         assert not window.tool_param_separator_action.isVisible()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_rectangle_fill_toggle_shows_only_for_draw_rectangle() -> None:
+    """Not covered by the parametrization above, which asserts on the two
+    single-valued params and the brush group only."""
+    window = conftest.terrain_edit_window()
+    try:
+        for tool in _EXPECTED_PARAM:
+            window._on_tool_selected(tool)
+            assert window.rect_fill_param_action.isVisible() == (tool == "draw_rect"), tool
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_rectangle_brush_params_follow_the_fill_toggle() -> None:
+    """Flag A of the Draw Line/Rectangle plan, as a test: a filled rectangle
+    would be dilated past its own previewed bounds by a brush, so the brush
+    params hide in Filled mode and return in Outline mode. The discriminating
+    half is that MapView's brush is reset alongside them -- without that the
+    hover preview would keep dilating while the widgets were hidden."""
+    window = conftest.terrain_edit_window()
+    try:
+        window._on_tool_selected("draw_rect")
+        window.brush_size_spin.setValue(5)
+
+        window.rect_fill_combo.setCurrentText("Outline")
+        assert window.brush_size_spin_action.isVisible()
+        assert window.brush_shape_combo_action.isVisible()
+        assert window.map_view._brush_size == 5
+
+        window.rect_fill_combo.setCurrentText("Filled")
+        assert not window.brush_size_spin_action.isVisible()
+        assert not window.brush_shape_combo_action.isVisible()
+        assert window.map_view._brush_size == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- auto beach (2026-08-31 water/beach plan, Stage 3) ------------------------
+
+_WATER_DEEP = 22
+_GRASS_1 = 0
+
+
+def _select_terrain(window, terrain_id: int) -> None:
+    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(terrain_id))
+
+
+def test_auto_beach_shows_only_for_draw() -> None:
+    """Paint Can shares param_widget == "terrain", so without the
+    `== "draw"` term in the gate the checkbox would appear for Fill and do
+    nothing. The shape tools are excluded for the same reason: their commit
+    path is on_shape_commit, not the Draw stroke branch the ring hangs off."""
+    window = conftest.terrain_edit_window()
+    try:
+        _select_terrain(window, _WATER_DEEP)
+        for tool in _EXPECTED_PARAM:
+            window._on_tool_selected(tool)
+            assert window.auto_beach_param_action.isVisible() == (tool == "draw"), tool
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_auto_beach_is_live_only_for_a_water_terrain() -> None:
+    window = conftest.terrain_edit_window()
+    try:
+        window._on_tool_selected("draw")
+        _select_terrain(window, _WATER_DEEP)
+        assert window.auto_beach_check.isEnabled()
+        _select_terrain(window, _GRASS_1)
+        assert not window.auto_beach_check.isEnabled()
+        assert "water terrain" in window.auto_beach_check.toolTip()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_switching_the_terrain_regates_the_checkbox() -> None:
+    """terrain_combo had no change signal wired at all before this feature;
+    without one the checkbox would keep whatever state the last tool switch
+    left it in."""
+    window = conftest.terrain_edit_window()
+    try:
+        window._on_tool_selected("draw")
+        _select_terrain(window, _GRASS_1)
+        assert not window.auto_beach_check.isEnabled()
+        _select_terrain(window, _WATER_DEEP)
+        assert window.auto_beach_check.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_beach_combo_and_width_follow_the_checkbox() -> None:
+    window = conftest.terrain_edit_window()
+    try:
+        window._on_tool_selected("draw")
+        _select_terrain(window, _WATER_DEEP)
+        assert not window.beach_param_action.isVisible()
+        assert not window.beach_width_param_action.isVisible()
+        window.auto_beach_check.setChecked(True)
+        assert window.beach_param_action.isVisible()
+        assert window.beach_width_param_action.isVisible()
+        assert window.beach_combo.isEnabled()
+        assert window.beach_width_spin.isEnabled()
+        # Ticked but then switched to land: the whole group goes away again,
+        # so a hidden setting can never sit live.
+        _select_terrain(window, _GRASS_1)
+        assert not window.beach_param_action.isVisible()
+        assert not window.beach_combo.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_beach_combo_offers_auto_plus_every_beach_terrain() -> None:
+    from descape import terrain_classes
+
+    window = conftest.terrain_edit_window()
+    try:
+        assert window.beach_combo.itemData(0) is None  # "Auto"
+        offered = [window.beach_combo.itemData(i) for i in range(1, window.beach_combo.count())]
+        assert offered == list(terrain_classes.beach_terrains())
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_beach_width_defaults_to_one() -> None:
+    """The perf gate is stated on the default, not the worst case: width 1
+    projects to ~1.1x a plain Draw stroke, width 3 to ~2.4x."""
+    window = conftest.terrain_edit_window()
+    try:
+        assert window.beach_width_spin.value() == 1
+        assert window.beach_width_spin.minimum() == 1
+        assert window.beach_width_spin.maximum() == 3
     finally:
         window.edit_history.mark_saved()
         window.close()

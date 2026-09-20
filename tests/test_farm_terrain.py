@@ -175,7 +175,7 @@ def _synthetic_textures(monkeypatch) -> int:
         tid: np.full((tile_px, tile_px, 3), color, dtype=np.uint8)
         for tid, color in TEXTURE_COLORS.items()
     }
-    monkeypatch.setattr(asset_source, "get_terrain_texture_array", lambda tid: textures.get(tid))
+    monkeypatch.setattr(asset_source, "get_terrain_texture_array", textures.get)
     return tile_px
 
 

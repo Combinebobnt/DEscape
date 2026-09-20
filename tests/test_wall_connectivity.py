@@ -130,7 +130,7 @@ def test_wall_connector_consts_has_104_members():
 
 
 def test_wall_connector_consts_is_a_strict_superset_of_the_old_hand_kept_set():
-    assert _OLD_HAND_CONNECTOR_CONSTS < unit_sprites.wall_connector_consts()
+    assert unit_sprites.wall_connector_consts() > _OLD_HAND_CONNECTOR_CONSTS
 
 
 def test_wall_connector_consts_equals_walls_union_gate_groups_flattened():
@@ -299,13 +299,13 @@ def rotation_spy(monkeypatch):
     no-sprite behaviour, and only the call log matters."""
     calls: dict[str, list[tuple[int, float]]] = {"sprite_pieces_for": [], "icon_for": []}
 
-    def fake_sprite_pieces_for(unit_const, rotation, team_index, half_w):
+    def fake_sprite_pieces_for(unit_const, rotation, team_index, half_w, tree_scale=1.0):
         calls["sprite_pieces_for"].append((unit_const, rotation))
         return []
 
     def fake_icon_for(unit_const, rotation, team_index, footprint_w, footprint_h):
         calls["icon_for"].append((unit_const, rotation))
-        return None
+        return
 
     monkeypatch.setattr(unit_sprites, "sprite_pieces_for", fake_sprite_pieces_for)
     monkeypatch.setattr(unit_sprites, "icon_for", fake_icon_for)

@@ -23,21 +23,28 @@ screen_to_tile() returns None -- it does not simply tolerate mismatches.
 
 from __future__ import annotations
 
-
 import numpy as np
 import pytest
 
+from descape import iso_geometry, render, unit_pick
+from descape.scenario_io import load_map_and_units
+from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
+from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
+from descape.unit_pick import (
+    build_index,
+    pick_unit,
+    stack_groups,
+    stack_scan,
+    unit_key,
+    unit_polygons,
+    unit_rise_px_for,
+    units_in_rect,
+)
 from testkit.fakes import (
     FakeScenario,
     SyntheticTile,
     SyntheticUnit,
 )
-
-from descape import iso_geometry, render
-from descape.scenario_io import load_map_and_units
-from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
-from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
-from descape.unit_pick import build_index, pick_unit, unit_key, unit_rise_px_for, units_in_rect, unit_polygons
 
 RNG_SEED = 20260819
 SAMPLE_PIXELS = 4000
@@ -172,18 +179,41 @@ def test_off_map_units_are_dropped() -> None:
 # --- the ID-plane oracle ----------------------------------------------
 
 
+def _paint_offset(unit) -> tuple[float, float]:
+    """How far off its own tile a unit's mark paints, in continuous tile
+    units -- free placement's Stage 1.
+
+    Re-derived here rather than calling render.unit_paint_offset(), matching
+    how _unit_rise() re-derives the rise below and for the same reason: an
+    oracle that reused the code under test could not catch the renderer and
+    the picker agreeing on a wrong shift. Zero on a span > 1 axis (buildings
+    stay half-tile-quantized slabs) and `coord - int(coord) - 0.5` otherwise,
+    which is 0.0 for the 88.0% of corpus units sitting at an exact `.5`.
+    """
+    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    dx = unit.x - int(unit.x) - 0.5 if span_x <= 1 else 0.0
+    dy = unit.y - int(unit.y) - 0.5 if span_y <= 1 else 0.0
+    return dx, dy
+
+
 def _flat_id_plane(scn, index, tile_px: int) -> np.ndarray:
     """Re-runs composite_rect_flat()'s effective unit loop painting order+1.
 
     Flat blits opaque rects in ascending index order, so painting in the
     same order and letting later writes win reproduces exactly what's
-    visible.
+    visible. Each rect carries _paint_offset()'s shift (free placement,
+    Stage 1), which is zero for every building and for every unit at an
+    exact `.5`.
     """
     plane = np.zeros((MAP_H * tile_px, MAP_W * tile_px), dtype=np.int32)
     for entry in index.entries:
         bounds = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
         tx0, tx1, ty0, ty1 = bounds
-        plane[ty0 * tile_px : ty1 * tile_px, tx0 * tile_px : tx1 * tile_px] = entry.order + 1
+        dx, dy = _paint_offset(entry.unit)
+        ox, oy = round(dx * tile_px), round(dy * tile_px)
+        y0, y1 = max(0, ty0 * tile_px + oy), max(0, ty1 * tile_px + oy)
+        x0, x1 = max(0, tx0 * tile_px + ox), max(0, tx1 * tile_px + ox)
+        plane[y0:y1, x0:x1] = entry.order + 1
     return plane
 
 
@@ -198,6 +228,9 @@ def _stepped_id_plane(scn, index, tile_px: int, elevations, proj, map_w=None, ma
     but at the UNIT'S OWN tile's elevation -- a multi-tile building is still
     one flat slab at a single height (asymmetry 1), it just no longer paints
     that whole slab at its own tile's moment in the walk.
+
+    Since free placement's Stage 1 the diamond is positioned by its CENTRE
+    whenever _paint_offset() is nonzero, matching render._draw_unit_iso.
 
     Skirts are deliberately not painted. pick_unit() treats a
     screen_to_tile()-None pixel (which is what a skirt pixel is) as
@@ -221,14 +254,21 @@ def _stepped_id_plane(scn, index, tile_px: int, elevations, proj, map_w=None, ma
         ok = (yy >= 0) & (yy < canvas_h) & (xx >= 0) & (xx < canvas_w)
         plane[yy[ok], xx[ok]] = value
 
-    for x, y in iso_geometry.depth_order(map_w, map_h):
-        x, y = int(x), int(y)
+    for raw_x, raw_y in iso_geometry.depth_order(map_w, map_h):
+        x, y = int(raw_x), int(raw_y)
         e = int(elevations[y, x])
         bx, by = iso_geometry.tile_screen_origin(x, y, e, proj)
         paint(bx, by, 0)
         for entry in by_footprint_tile.get((x, y), ()):
             ue = int(elevations[entry.own_y, entry.own_x])
-            ox, oy = iso_geometry.tile_screen_origin(x, y, ue, proj)
+            dx, dy = _paint_offset(entry.unit)
+            if dx or dy:
+                cx, cy = iso_geometry.map_point_to_screen(
+                    x + 0.5 + dx, y + 0.5 + dy, ue * proj.elev_step, proj
+                )
+                ox, oy = cx - proj.half_w, cy - proj.half_h
+            else:
+                ox, oy = iso_geometry.tile_screen_origin(x, y, ue, proj)
             paint(ox, oy, entry.order + 1)
     return plane
 
@@ -281,14 +321,16 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
     Three differences from the Stepped oracle, all load-bearing. Terrain
     clears its WARPED quad (sloped_quad_indices, based at
     tile_screen_origin(x, y, 0) - d_min, the placement convention
-    _render_tile_sloped documents), not a uniform diamond. A 1x1 unit's
-    marker is painted through that SAME warped-quad call, at its own
+    _render_tile_sloped documents), not a uniform diamond. A CENTRED 1x1
+    unit's marker is painted through that SAME warped-quad call, at its own
     tile's corners (Track C6) -- so the split is encoded here too, not
     just in the real renderer, which is what makes this an oracle for the
     conforming-marker fix rather than a restatement of the pre-C6 shape. A
     multi-tile unit's diamond still sits at its own PIXEL rise -- one
     height for the whole footprint, painted at each covering tile's own
-    screen position.
+    screen position -- and since free placement's Stage 1 an OFF-CENTRE 1x1
+    unit joins it there, at its own shifted centre rather than at its tile's
+    warped quad (a conforming quad cannot express a sub-tile position).
 
     No skirts to leave out, unlike the Stepped oracle: Sloped paints none,
     so this plane has no pixel where the pick is allowed to disagree.
@@ -309,8 +351,8 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
         ok = (yy >= 0) & (yy < canvas_h) & (xx >= 0) & (xx < canvas_w)
         plane[yy[ok], xx[ok]] = value
 
-    for x, y in iso_geometry.depth_order(map_w, map_h):
-        x, y = int(x), int(y)
+    for raw_x, raw_y in iso_geometry.depth_order(map_w, map_h):
+        x, y = int(raw_x), int(raw_y)
         corners = (
             int(corner_rise[y, x]),
             int(corner_rise[y, x + 1]),
@@ -322,10 +364,19 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
         paint(bx, by - min(corners), s_dst_y, s_dst_x, 0)
         for entry in by_footprint_tile.get((x, y), ()):
             span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
-            if span_x <= 1 and span_y <= 1:
+            dx, dy = _paint_offset(entry.unit)
+            if span_x <= 1 and span_y <= 1 and (dx, dy) == (0.0, 0.0):
                 paint(bx, by - min(corners), s_dst_y, s_dst_x, entry.order + 1)
             else:
-                paint(bx, by - _unit_rise(entry, corner_rise), d_dst_y, d_dst_x, entry.order + 1)
+                rise = _unit_rise(entry, corner_rise)
+                if dx or dy:
+                    # map_point_to_screen already subtracts the rise, so this
+                    # base is the diamond's bbox top-left outright -- unlike
+                    # the unshifted branch, which subtracts it by hand.
+                    cx, cy = iso_geometry.map_point_to_screen(x + 0.5 + dx, y + 0.5 + dy, rise, proj)
+                    paint(cx - proj.half_w, cy - proj.half_h, d_dst_y, d_dst_x, entry.order + 1)
+                else:
+                    paint(bx, by - rise, d_dst_y, d_dst_x, entry.order + 1)
     return plane
 
 
@@ -347,7 +398,7 @@ def test_flat_pick_agrees_with_the_id_plane() -> None:
     rng = np.random.default_rng(RNG_SEED)
     ys = rng.integers(0, plane.shape[0], SAMPLE_PIXELS)
     xs = rng.integers(0, plane.shape[1], SAMPLE_PIXELS)
-    for sx, sy in zip(xs.tolist(), ys.tolist()):
+    for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         got = pick_unit(index, "flat", sx, sy, tile_px, MAP_W, MAP_H)
         expected = int(plane[sy, sx])
         assert (0 if got is None else got.order + 1) == expected, f"flat pick disagreed at ({sx}, {sy})"
@@ -367,7 +418,7 @@ def test_stepped_pick_agrees_with_the_id_plane(elevated: bool) -> None:
 
     disagreements = 0
     hits = 0
-    for sx, sy in zip(xs.tolist(), ys.tolist()):
+    for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         got = pick_unit(index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
         expected = int(plane[sy, sx])
         actual = 0 if got is None else got.order + 1
@@ -409,7 +460,7 @@ def test_stepped_pick_takes_an_already_resolved_terrain_tile() -> None:
 
     hits = 0
     revealed = 0
-    for sx, sy in zip(xs.tolist(), ys.tolist()):
+    for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         default = pick_unit(index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
         threaded = pick_unit(
             index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj,
@@ -501,7 +552,7 @@ def test_stepped_pick_agrees_with_the_id_plane_on_a_real_file(scenario_path) -> 
     xs = rng.integers(0, proj.canvas_w, SAMPLE_PIXELS)
 
     hits = 0
-    for sx, sy in zip(xs.tolist(), ys.tolist()):
+    for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         expected = int(plane[sy, sx])
         got = pick_unit(index, "stepped", sx, sy, tile_px, w, h, elevations, proj)
         actual = 0 if got is None else got.order + 1
@@ -541,7 +592,7 @@ def test_sloped_pick_agrees_with_the_id_plane(kwargs) -> None:
     xs = rng.integers(0, plane.shape[1], SAMPLE_PIXELS)
 
     hits = 0
-    for sx, sy in zip(xs.tolist(), ys.tolist()):
+    for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         tile_id = int(terrain[sy, sx])
         tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
         got = pick_unit(
@@ -797,7 +848,7 @@ def test_stepped_pick_never_returns_a_filtered_unit() -> None:
     rng = np.random.default_rng(RNG_SEED)
     ys = rng.integers(0, proj.canvas_h, 1500)
     xs = rng.integers(0, proj.canvas_w, 1500)
-    for sx, sy in zip(xs.tolist(), ys.tolist()):
+    for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         got = pick_unit(index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
         assert got is None or got.unit.unit_const != _TREE_CONST
 
@@ -1109,3 +1160,139 @@ def test_flat_unit_polygons_still_covers_the_full_rect() -> None:
     x0, y0 = _GATE_BBOX0 * tile_px, _GATE_BBOX0 * tile_px
     x1, y1 = (_GATE_BBOX0 + 4) * tile_px, (_GATE_BBOX0 + 4) * tile_px
     assert polygons == [[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]]
+
+
+# --- stacked units --------------------------------------------------------
+
+
+def _stack_scenario(*placements) -> FakeScenario:
+    """One player's units, in paint order, from (x, y, unit_const) triples;
+    reference_id is the 1-based position."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [
+        SyntheticUnit(x=x, y=y, unit_const=const, reference_id=i + 1) for i, (x, y, const) in enumerate(placements)
+    ]
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+def _group_refs(groups, tile) -> list[int]:
+    return [e.unit.reference_id for e in groups[tile]]
+
+
+def test_two_units_at_an_identical_point_are_a_stack_listed_top_first() -> None:
+    groups = stack_groups(build_index(_stack_scenario((6.5, 6.5, _PLAIN_CONST), (6.5, 6.5, _PLAIN_CONST))))
+    assert list(groups) == [(6, 6)]
+    assert _group_refs(groups, (6, 6)) == [2, 1]
+
+
+def test_two_units_on_one_tile_at_different_sub_tile_points_are_not_stacked() -> None:
+    assert stack_groups(build_index(_stack_scenario((6.25, 6.25, _PLAIN_CONST), (6.75, 6.75, _PLAIN_CONST)))) == {}
+
+
+def test_a_unit_under_a_building_is_stacked_and_one_over_it_is_not() -> None:
+    under = stack_groups(build_index(_stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))))
+    assert _group_refs(under, (9, 9)) == [2, 1]
+    over = stack_groups(build_index(_stack_scenario((10.5, 10.5, _BUILDING_CONST), (9.5, 9.5, _PLAIN_CONST))))
+    assert over == {}
+
+
+def test_a_building_carrying_three_stacks_yields_three_separate_groups() -> None:
+    scn = _stack_scenario(
+        (9.5, 9.5, _PLAIN_CONST), (10.5, 11.5, _PLAIN_CONST), (12.5, 12.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST)
+    )
+    groups = stack_groups(build_index(scn))
+    assert sorted(groups) == [(9, 9), (10, 11), (12, 12)]
+    assert all(len(members) == 2 for members in groups.values())
+
+
+def test_a_filtered_out_unit_is_in_no_group() -> None:
+    scn = _stack_scenario((6.5, 6.5, _PLAIN_CONST), (6.5, 6.5, _PLAIN_CONST))
+    assert stack_groups(build_index(scn, UnitFilter(players=frozenset({2})))) == {}
+
+
+@pytest.mark.parametrize("gate_const", [_GATE_CONST, _N_GATE_CONST])
+def test_a_unit_on_a_diagonal_gate_gap_tile_is_not_a_phantom_stack(gate_const) -> None:
+    gap = next(
+        (_GATE_BBOX0 + i, _GATE_BBOX0 + j) for i in range(4) for j in range(4) if (i, j) not in BUILDING_TILE_OFFSETS[gate_const]
+    )
+    scn = _stack_scenario((gap[0] + 0.5, gap[1] + 0.5, _PLAIN_CONST), (_GATE_X, _GATE_Y, gate_const))
+    assert stack_groups(build_index(scn)) == {}
+
+
+def test_identical_buildings_stack_and_a_merely_overlapping_neighbour_is_excluded() -> None:
+    scn = _stack_scenario(
+        (10.5, 10.5, _BUILDING_CONST), (10.5, 10.5, _BUILDING_CONST), (12.5, 10.5, _BUILDING_CONST)
+    )
+    groups = stack_groups(build_index(scn))
+    own = (10, 10)
+    assert list(groups) == [own]
+    # Unit 3 overlaps tile (10, 10)'s bucket but coincides with nothing.
+    assert _group_refs(groups, own) == [2, 1]
+
+
+def test_hidden_count_is_not_member_count_minus_one() -> None:
+    scn = _stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST), (10.5, 9.5, _BUILDING_CONST))
+    (members, hidden), = stack_scan(build_index(scn)).values()
+    assert (len(members), hidden) == (3, 1)
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped"])
+def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) -> None:
+    scn = _stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    if style == "flat":
+        sx, sy = 9 * tile_px + tile_px // 2, 9 * tile_px + tile_px // 2
+    else:
+        sx, sy = _tile_center(9, 9, proj)
+    args = (index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
+    entry, cover = unit_pick.pick_unit_cover(*args)
+    assert entry is pick_unit(*args)
+    assert entry.unit.reference_id == 2
+    assert cover == (9, 9)
+
+
+# Per file, (groups, hidden units), re-measured rather than trusted. Summed over
+# the full corpus: 831 groups / 1152 hidden = the sizing plan's 826 / 1147 plus
+# its 5 duplicate-building cases, which that plan counted separately.
+_STACKS_PER_FILE = {
+    "0_June_Event_Scenario.aoe2scenario": (14, 14),
+    "2_Joan_coop_1_v0_13.aoe2scenario": (13, 14),
+    "2_Joan_coop_2_v0_15.aoe2scenario": (8, 8),
+    "2_Joan_coop_3_v0_14.aoe2scenario": (5, 5),
+    "2_Joan_coop_4_v0_13.aoe2scenario": (3, 3),
+    "2_Joan_coop_5_v0_13.aoe2scenario": (38, 44),
+    "2_Joan_coop_6_v0_14.aoe2scenario": (21, 25),
+    "C2_ElCid_coop_1_v0_16.aoe2scenario": (90, 92),
+    "C2_ElCid_coop_2_v0_13.aoe2scenario": (19, 19),
+    "C2_ElCid_coop_3_v0_12.aoe2scenario": (14, 26),
+    "C2_ElCid_coop_4_v0_13.aoe2scenario": (53, 53),
+    "C2_ElCid_coop_5_v0_14.aoe2scenario": (18, 18),
+    "C2_ElCid_coop_6_v0_13.aoe2scenario": (17, 21),
+    "F7_2_Dos Pilas (648).aoe2scenario": (91, 102),
+    "F7_3_York (865).aoe2scenario": (85, 93),
+    "R4_LeLoi_4.aoe2scenario": (162, 402),
+    "atilla_1_scn_resaved.aoe2scenario": (82, 95),
+    "blank_map.aoe2scenario": (0, 0),
+    "old-allies-final-v2.aoe2scenario": (98, 118),
+    "ring75_v0_scx_resaved.aoe2scenario": (0, 0),
+}
+
+
+def test_the_per_file_stack_table_sums_to_the_sizing_measurement() -> None:
+    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5
+    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5
+
+
+@pytest.mark.corpus
+def test_stack_groups_match_the_measured_corpus_counts(corpus_files) -> None:
+    measured = {}
+    for path in corpus_files:
+        if path.name not in _STACKS_PER_FILE:
+            continue
+        groups = stack_scan(build_index(load_map_and_units(path)))
+        measured[path.name] = (len(groups), sum(hidden for _members, hidden in groups.values()))
+    assert measured, "no corpus file from the measured table is present"
+    assert measured == {name: _STACKS_PER_FILE[name] for name in measured}

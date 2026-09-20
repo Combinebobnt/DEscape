@@ -8,19 +8,27 @@ from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).parent
 
-# The six JSON files descape/ actually reads at runtime (not
-# descape/versions/DE/v1.21/structure.json -- nothing constructs a path to
-# it; it's a schema reference cited only in comments and a CLI tool arg).
-DESCAPE_DATA_JSON = [
-    "object_catalog.json",
-    "unit_graphic_map.json",
-    "unit_render_data.json",
-    "terrain_texture_map.json",
-    "tree_unit_ids.json",
-    "terrain_unit_map.json",
-]
+DESCAPE_DIR = ROOT / "descape"
 
-datas = [(str(ROOT / "descape" / name), "descape") for name in DESCAPE_DATA_JSON]
+# Enumerated from the source tree rather than hand-listed: a hand list silently
+# went stale three times (GH #72), and a data file missing from the bundle is
+# an unconditional crash the moment its reader runs.
+# Excluded on purpose: a schema reference cited only in comments and a CLI tool
+# arg, with nothing in descape/ constructing a path to it.
+DESCAPE_DATA_JSON_EXCLUDED = {"versions/DE/v1.21/structure.json"}
+
+_json_paths = sorted(DESCAPE_DIR.rglob("*.json"))
+_json_rel = {p.relative_to(DESCAPE_DIR).as_posix(): p for p in _json_paths}
+# Fail the build on a stale exclusion rather than let the comment above rot.
+_stale = DESCAPE_DATA_JSON_EXCLUDED - _json_rel.keys()
+if _stale:
+    raise SystemExit(f"descape.spec: DESCAPE_DATA_JSON_EXCLUDED names missing files: {sorted(_stale)}")
+
+datas = [
+    (str(path), (Path("descape") / rel).parent.as_posix())
+    for rel, path in sorted(_json_rel.items())
+    if rel not in DESCAPE_DATA_JSON_EXCLUDED
+]
 datas.append((str(ROOT / "descape" / "templates"), "descape/templates"))
 datas.append((str(ROOT / "descape" / "app_icon.png"), "descape"))
 

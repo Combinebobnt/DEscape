@@ -55,7 +55,7 @@ edge cases).
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from PyQt5.QtGui import QColor, QIcon, QPixmap
 from PyQt5.QtWidgets import (
@@ -547,6 +547,19 @@ class DiplomacyPanel(QWidget):
         """Raw value per cell_id, as currently shown for the selected
         player."""
         return dict(self._values)
+
+    def refresh_player_swatches(self, loaded) -> None:
+        """Re-icon the player combo from `loaded`'s current player_colors,
+        after a colour edit re-derived them -- PlayersPanel's counterpart,
+        same `same_document` reasoning (see its own docstring). Indexed
+        through _active_players, which is not assumed contiguous from 1.
+        """
+        if loaded is None or self.player_combo.count() == 0:
+            return
+        for i, player_id in enumerate(self._active_players):
+            if i >= self.player_combo.count():
+                break
+            self.player_combo.setItemIcon(i, _swatch_icon(loaded.player_colors[player_id]))
 
 
 def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:

@@ -28,6 +28,8 @@ elevation_tools is used standalone.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 
 from descape.batch_api import _ORTHOGONAL_OFFSETS, set_terrain
@@ -101,3 +103,38 @@ def flood_fill_terrain(mm: MapManager, x: int, y: int, terrain_id: int) -> list[
     for i in region:
         set_terrain(terrain[i], terrain_id)
     return region
+
+
+def connected_regions(mm: MapManager, passable: Callable[[int], bool]) -> list[list[int]]:
+    """Every 4-connected region of tiles whose flat index satisfies
+    `passable(i)`, each as a list of flat indices. The sibling of
+    contiguous_region() for a predicate rather than exact terrain_id
+    equality, which other callers depend on and so stays unbent. Same
+    push-time visited marking and explicit bounds checks; reads only."""
+    width, height = mm.map_width, mm.map_height
+    visited = bytearray(width * height)
+    regions: list[list[int]] = []
+    for start in range(width * height):
+        if visited[start]:
+            continue
+        visited[start] = 1
+        if not passable(start):
+            continue
+        stack = [start]
+        region: list[int] = []
+        while stack:
+            i = stack.pop()
+            region.append(i)
+            cy, cx = divmod(i, width)
+            for dx, dy in _ORTHOGONAL_OFFSETS:
+                nx, ny = cx + dx, cy + dy
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                j = ny * width + nx
+                if visited[j]:
+                    continue
+                visited[j] = 1
+                if passable(j):
+                    stack.append(j)
+        regions.append(region)
+    return regions

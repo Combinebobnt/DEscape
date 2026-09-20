@@ -14,9 +14,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import conftest
 from descape import ruler, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -67,26 +68,19 @@ def _viewport_pos(map_view, tile_x: int, tile_y: int):
     return QPointF(map_view.mapFromScene(polygon.boundingRect().center()))
 
 
-def _mouse_event(kind, pos, button, buttons):
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QMouseEvent
-
-    return QMouseEvent(kind, pos, button, buttons, Qt.NoModifier)
-
-
 def _drag(map_view, a: tuple[int, int], b: tuple[int, int]) -> None:
     """A full press, move, release with the left button, through MapView's own
     handlers rather than the session, so the routing is what is under test."""
     from PyQt5.QtCore import QEvent, Qt
 
     map_view.mousePressEvent(
-        _mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, *a), Qt.LeftButton, Qt.LeftButton)
+        conftest.mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, *a), Qt.LeftButton, Qt.LeftButton)
     )
     map_view.mouseMoveEvent(
-        _mouse_event(QEvent.MouseMove, _viewport_pos(map_view, *b), Qt.NoButton, Qt.LeftButton)
+        conftest.mouse_event(QEvent.MouseMove, _viewport_pos(map_view, *b), Qt.NoButton, Qt.LeftButton)
     )
     map_view.mouseReleaseEvent(
-        _mouse_event(QEvent.MouseButtonRelease, _viewport_pos(map_view, *b), Qt.LeftButton, Qt.NoButton)
+        conftest.mouse_event(QEvent.MouseButtonRelease, _viewport_pos(map_view, *b), Qt.LeftButton, Qt.NoButton)
     )
 
 
@@ -258,7 +252,7 @@ def test_press_out_in_the_overscroll_void_starts_nothing() -> None:
     try:
         map_view = window.map_view
         void = QPointF(map_view.mapFromScene(QPointF(-500.0, -500.0)))
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, void, Qt.LeftButton, Qt.LeftButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, void, Qt.LeftButton, Qt.LeftButton))
         assert map_view._ruler.endpoints is None
         assert map_view._ruler_line_item is None
     finally:
@@ -320,7 +314,7 @@ def test_the_measurement_is_cleared_by_every_documented_gesture(clear_by: str) -
         elif clear_by == "right_click":
             pos = _viewport_pos(map_view, 15, 15)
             map_view.mousePressEvent(
-                _mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton)
+                conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton)
             )
         elif clear_by == "tool_change":
             window._on_tool_selected("pan")
@@ -330,6 +324,10 @@ def test_the_measurement_is_cleared_by_every_documented_gesture(clear_by: str) -
         assert map_view._ruler.endpoints is None
         assert map_view._ruler_line_item is None
         assert map_view._ruler_label_item is None
+        assert map_view._ruler_glow_items == []
+        # The glow's pulse must stop with it: a timer still ticking after
+        # scene().clear() would setOpacity() on a destroyed C++ object.
+        assert not map_view._pulse_timer.isActive()
         assert window.ruler_status_label.text() == ""
     finally:
         window.edit_history.mark_saved()
@@ -363,10 +361,10 @@ def test_the_status_bar_shows_the_live_measurement_mid_drag() -> None:
     try:
         map_view = window.map_view
         map_view.mousePressEvent(
-            _mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, 10, 10), Qt.LeftButton, Qt.LeftButton)
+            conftest.mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, 10, 10), Qt.LeftButton, Qt.LeftButton)
         )
         map_view.mouseMoveEvent(
-            _mouse_event(QEvent.MouseMove, _viewport_pos(map_view, 30, 24), Qt.NoButton, Qt.LeftButton)
+            conftest.mouse_event(QEvent.MouseMove, _viewport_pos(map_view, 30, 24), Qt.NoButton, Qt.LeftButton)
         )
         assert map_view._ruler.state == ruler.STATE_PENDING
         assert ruler.format_measurement(map_view._ruler.measurement) in window.ruler_status_label.text()
@@ -385,6 +383,10 @@ def test_close_then_resize_does_not_touch_deleted_items() -> None:
         _drag(map_view, (10, 10), (30, 24))
         window.close_scenario()
         assert map_view._ruler_line_item is None
+        assert map_view._ruler_glow_items == []
+        assert not map_view._pulse_timer.isActive()
+        # The crash guard itself: a tick after the items are gone.
+        map_view._on_pulse_tick()
         assert map_view._ruler.endpoints is None
         assert window.ruler_status_label.text() == ""
         window.resize(820, 620)
@@ -475,8 +477,8 @@ def test_a_pending_measurement_is_not_logged() -> None:
     try:
         map_view = window.map_view
         pos = _viewport_pos(map_view, 10, 10)
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
-        map_view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        map_view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
         assert not [line for line in _status_lines(window) if line.startswith("Ruler:")]
     finally:
         window.edit_history.mark_saved()
@@ -493,14 +495,14 @@ def test_dragging_logs_once_not_once_per_frame() -> None:
     try:
         map_view = window.map_view
         map_view.mousePressEvent(
-            _mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, 5, 5), Qt.LeftButton, Qt.LeftButton)
+            conftest.mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, 5, 5), Qt.LeftButton, Qt.LeftButton)
         )
         for tile_x in range(6, 20):
             map_view.mouseMoveEvent(
-                _mouse_event(QEvent.MouseMove, _viewport_pos(map_view, tile_x, 5), Qt.NoButton, Qt.LeftButton)
+                conftest.mouse_event(QEvent.MouseMove, _viewport_pos(map_view, tile_x, 5), Qt.NoButton, Qt.LeftButton)
             )
         map_view.mouseReleaseEvent(
-            _mouse_event(
+            conftest.mouse_event(
                 QEvent.MouseButtonRelease, _viewport_pos(map_view, 19, 5), Qt.LeftButton, Qt.NoButton
             )
         )
@@ -520,7 +522,7 @@ def test_starting_a_new_measurement_does_not_relog_the_old_one() -> None:
         map_view = window.map_view
         _drag(map_view, (10, 10), (30, 24))
         map_view.mousePressEvent(
-            _mouse_event(
+            conftest.mouse_event(
                 QEvent.MouseButtonPress, _viewport_pos(map_view, 2, 2), Qt.LeftButton, Qt.LeftButton
             )
         )
@@ -543,9 +545,9 @@ def test_a_void_click_after_a_measurement_does_not_relog_it() -> None:
         map_view = window.map_view
         _drag(map_view, (10, 10), (30, 24))
         void = QPointF(map_view.mapFromScene(QPointF(-500.0, -500.0)))
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, void, Qt.LeftButton, Qt.LeftButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, void, Qt.LeftButton, Qt.LeftButton))
         map_view.mouseReleaseEvent(
-            _mouse_event(QEvent.MouseButtonRelease, void, Qt.LeftButton, Qt.NoButton)
+            conftest.mouse_event(QEvent.MouseButtonRelease, void, Qt.LeftButton, Qt.NoButton)
         )
         assert len([line for line in _status_lines(window) if line.startswith("Ruler:")]) == 1
     finally:
@@ -620,6 +622,126 @@ def test_hard_scrolling_leaves_no_stale_label_fragments() -> None:
         scrolled = _label_ink_bbox(map_view)
         assert scrolled[0] <= clean[0] + 2, f"label ink smeared horizontally: {clean} -> {scrolled}"
         assert scrolled[1] <= clean[1] + 2, f"label ink smeared vertically: {clean} -> {scrolled}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- the endpoint pulse-glow ---------------------------------------------
+
+
+def _tile_interior_mean(map_view, tile: tuple[int, int]) -> float:
+    """Mean channel value over an inset patch of a tile's own interior.
+
+    Inset so the static endpoint outline contributes nothing, and a mean over
+    a region rather than one pixel so antialiasing noise cannot decide the
+    result. The glow shares the ruler's orange, so an ink-colour test like
+    _label_ink_bbox cannot separate it from the outline."""
+    from PyQt5.QtCore import QRect
+    from PyQt5.QtGui import QImage
+
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    polygon = map_view._tile_polygon(*tile)
+    rect = map_view.mapFromScene(polygon).boundingRect()
+    inset = QRect(rect).adjusted(rect.width() // 4, rect.height() // 4, -rect.width() // 4, -rect.height() // 4)
+    image = map_view.viewport().grab().toImage().convertToFormat(QImage.Format_RGB888)
+    patch = qimage_rgb888_to_array(image)[inset.top() : inset.bottom() + 1, inset.left() : inset.right() + 1]
+    assert patch.size, "the inset patch fell outside the viewport"
+    return float(patch.mean())
+
+
+def test_a_completed_measurement_has_two_glow_items_that_breathe() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        assert len(map_view._ruler_glow_items) == 2
+        assert map_view._pulse_timer.isActive(), "the glow must run the pulse even under a non-edit tool"
+
+        seen = []
+        for phase in (0.75, 0.0, 0.25):  # sin = -1, 0, +1
+            map_view._pulse_phase_ms = phase * map_view.HIGHLIGHT_PULSE_PERIOD_MS
+            map_view._apply_ruler_glow_opacity()
+            seen.append(map_view._ruler_glow_items[0].opacity())
+        assert seen[0] < seen[1] < seen[2]
+        assert seen[0] == pytest.approx(map_view.RULER_PULSE_MIN_ALPHA)
+        assert seen[2] == pytest.approx(map_view.RULER_PULSE_MAX_ALPHA)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_glow_reaches_pixels_and_brightens_with_the_phase() -> None:
+    """The render check: opacity alone could be set on an item that never
+    paints (wrong Z, empty polygon, no brush)."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        means = []
+        for phase in (0.75, 0.0, 0.25):
+            map_view._pulse_phase_ms = phase * map_view.HIGHLIGHT_PULSE_PERIOD_MS
+            map_view._apply_ruler_glow_opacity()
+            QApplication.processEvents()
+            means.append(_tile_interior_mean(map_view, (10, 10)))
+        assert means[0] < means[1] < means[2], means
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_glow_follows_the_endpoints_during_a_drag() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        for i in range(2):
+            assert (
+                map_view._ruler_glow_items[i].polygon() == map_view._ruler_end_items[i].polygon()
+            ), i
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_recoloured_ruler_recolours_its_glow() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        settings.set_overlay_color("ruler_line", "#123456")
+        map_view.apply_overlay_colors()
+        assert map_view._ruler_glow_items[0].brush().color().name() == "#123456"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_phase_free_runs_with_nothing_to_show() -> None:
+    """A wall-clock animation: the phase advances even with no highlight fill
+    and no glow, so a new overlay joins the breath already in progress."""
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        before = map_view._pulse_phase_ms
+        map_view._on_pulse_tick()
+        assert map_view._pulse_phase_ms != before
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_edit_tool_still_starts_the_timer_and_pan_without_a_measurement_stops_it() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        window._on_tool_selected("draw")
+        assert map_view._pulse_timer.isActive()
+        window._on_tool_selected("pan")
+        assert not map_view._pulse_timer.isActive()
     finally:
         window.edit_history.mark_saved()
         window.close()

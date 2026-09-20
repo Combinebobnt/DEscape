@@ -1,0 +1,660 @@
+{
+  "_comment": "terrain_id -> {raw is_water byte, family, climate}. Pure factual classification extracted from the game's own data table via genieutils-py, not game asset content itself. family is one of medium_water/deep_water/shallow_water/shallows/beach/land/obsolete; climate is temperate/ice/snow. Regenerate with tools/gen_terrain_classes.py.",
+  "classes": {
+    "0": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "1": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "10": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "100": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "101": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "102": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "103": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "104": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "105": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "106": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "107": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "108": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "109": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "11": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "110": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "111": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "112": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "113": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "114": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "115": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "116": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "117": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "118": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "119": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "12": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "120": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "121": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "122": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "123": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "124": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "125": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "126": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "127": {
+      "climate": "ice",
+      "family": "land",
+      "raw": 96
+    },
+    "128": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "129": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "13": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "130": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "14": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "15": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "16": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "17": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "18": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "19": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "2": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "20": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "21": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "22": {
+      "climate": "temperate",
+      "family": "deep_water",
+      "raw": 2
+    },
+    "23": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "24": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "25": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "26": {
+      "climate": "ice",
+      "family": "shallows",
+      "raw": 72
+    },
+    "27": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "28": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "29": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "3": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "30": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "31": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "32": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "33": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "34": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "35": {
+      "climate": "ice",
+      "family": "land",
+      "raw": 96
+    },
+    "36": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "37": {
+      "climate": "ice",
+      "family": "beach",
+      "raw": 80
+    },
+    "38": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "39": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "4": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "40": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "41": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "42": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "43": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "44": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "45": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "46": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "47": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "48": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "49": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "5": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "50": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "51": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "52": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "53": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "54": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "55": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "56": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "57": {
+      "climate": "temperate",
+      "family": "deep_water",
+      "raw": 2
+    },
+    "58": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "59": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "6": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "60": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "61": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "62": {
+      "climate": "temperate",
+      "family": "obsolete",
+      "raw": 0
+    },
+    "63": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "64": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "65": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "66": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "67": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "68": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "69": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "7": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "70": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "71": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "72": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "73": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "74": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "75": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "76": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "77": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "78": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "79": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "8": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "80": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "81": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "82": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "83": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "84": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "85": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "86": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "87": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "88": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "89": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "9": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "90": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "91": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "92": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "93": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "94": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "95": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "96": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "97": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "98": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "99": {
+      "climate": "temperate",
+      "family": "deep_water",
+      "raw": 2
+    }
+  }
+}

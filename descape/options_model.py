@@ -30,15 +30,22 @@ TriggerEditModel.serialize()'s tail rather than byte-patched here.
 OptionsEditModel, at the bottom of this module, is the write half built on
 those offsets: one in-place byte patch per changed scalar, no offset shift,
 and nothing at all for a document that was only browsed.
+
+It also carries four additive field sets that are not offset-walked here at
+all, each behind its own independent gate: the Diplomacy grid, the Players
+mode rows, Number of Players, and -- the one exception to "no offset shift"
+-- the per-player disable lists, which are variable-length and so ride a
+region splice (serialize_disables_resize()) rather than serialize_patches().
+See descape/disables_fields.py.
 """
 
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
-from descape import player_fields
+from descape import disables_fields, player_fields
 from descape.diplomacy_fields import (
     allied_victory_offsets,
     stance_offsets,
@@ -70,6 +77,15 @@ _ANCHOR_ATTR = {
 _ANCHOR_EXCLUDES_TAIL = {
     "Map": ("terrain_data",),
 }
+
+
+# Everything OptionsEditModel stores in its flat _original/_pending dicts.
+# int for every fixed-width scalar, str for tribe_name's c256 buffer, and
+# tuple[int, ...] for a per-player disable list -- the one entry set whose
+# write is a region splice rather than a byte patch, which is why its value
+# is a sequence at all. OptionsDiffRecord's before/after carry the same
+# union, so undo/redo needs no per-kind branch.
+OptionValue = int | str | tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -254,6 +270,24 @@ def player_count_write_supported(loaded: LoadedScenario) -> bool:
     return player_fields.verify_player_count_block(loaded)
 
 
+def disables_write_supported(loaded: LoadedScenario) -> bool:
+    """Whether the per-player disable lists (Buildings/Units/Techs) can be
+    written back.
+
+    A *fifth* gate, independent of the four above for exactly the reason
+    diplomacy_write_supported()'s docstring gives: a disables failure must
+    not grey out a single Map Options row, a Diplomacy cell or a Players
+    mode field, and none of their failures must grey out the Disabled
+    Objects dialog either.
+
+    Unlike the other four, this one gates a *splice* rather than a
+    fixed-offset patch, which is why the check it delegates to is an
+    identity round-trip through the very encoder the write path uses --
+    see disables_fields.verify_disables_block().
+    """
+    return disables_fields.verify_disables_block(loaded)
+
+
 class OptionsEditModel:
     """Per-document map-option edit state: which scalars the user changed, and
     the byte patches that writes them back.
@@ -289,7 +323,7 @@ class OptionsEditModel:
         self._offsets: dict[str, FieldOffset] = {}
         self._packers: dict[str, struct.Struct] = {}
         self._specs: dict[str, OptionFieldSpec] = {}
-        self._original: dict[str, int | str] = {}
+        self._original: dict[str, OptionValue] = {}
         for spec, fo in offsets.items():
             retriever = loaded._scenario.sections[spec.section].retriever_map[spec.retriever]
             packer = pack_struct_for(retriever)
@@ -367,11 +401,27 @@ class OptionsEditModel:
                 )
                 self._player_field_ids |= {player_fields.PLAYER_COUNT_FIELD_ID}
 
+        # The per-player disable lists: a fifth additive entry set, under
+        # synthetic ids ("disabled:buildings:3"), gated by
+        # disables_write_supported() rather than any of the four above --
+        # same independence reasoning as the Diplomacy block. Deliberately
+        # gets NO _offsets/_packers entry: these lists are variable-length,
+        # so an edit is a region splice, and a packer would drag them into
+        # serialize_patches(), which asserts a fixed length. The value type
+        # is tuple[int, ...] rather than int | str, which is why set_value()
+        # branches on this set before it ever reaches the _offsets lookup.
+        self._disables_field_ids: frozenset[str] = frozenset()
+        if disables_write_supported(loaded):
+            for field_id in disables_fields.all_field_ids():
+                category, player_id = disables_fields.parse_disables_field_id(field_id)
+                self._original[field_id] = disables_fields.current_ids(loaded, category, player_id)
+            self._disables_field_ids = frozenset(disables_fields.all_field_ids())
+
         # field_id -> the value the user set, present only while it differs
         # from what the file holds. Setting a field back to its original value
         # removes it, so a change made and undone leaves has_edits False rather
         # than merely producing identical bytes through the patch path.
-        self._pending: dict[str, int | str] = {}
+        self._pending: dict[str, OptionValue] = {}
 
     # -- state ---------------------------------------------------------------
 
@@ -410,18 +460,35 @@ class OptionsEditModel:
         save, and to know it must patch header_bytes as well as the body."""
         return player_fields.PLAYER_COUNT_FIELD_ID in self._pending
 
-    def original_value(self, field_id: str) -> int | str:
+    @property
+    def disables_supported(self) -> bool:
+        """Whether this model was seeded with the per-player disable lists
+        at all -- what a caller checks before reading current_value() for a
+        disables id, which would otherwise KeyError on a file whose gate
+        failed. The gate itself (disables_write_supported) answers the same
+        question about the file; this answers it about the model."""
+        return bool(self._disables_field_ids)
+
+    @property
+    def has_disables_edits(self) -> bool:
+        """Whether any pending edit is a disable list -- the signal
+        scenario_write.py needs to re-run disables_write_supported() on
+        save, for the same reason has_diplomacy_edits' docstring gives.
+        Also the gate on whether the region is spliced at all."""
+        return any(field_id in self._disables_field_ids for field_id in self._pending)
+
+    def original_value(self, field_id: str) -> OptionValue:
         return self._original[field_id]
 
-    def current_value(self, field_id: str) -> int | str:
+    def current_value(self, field_id: str) -> OptionValue:
         return self._pending.get(field_id, self._original[field_id])
 
-    def pending_values(self) -> dict[str, int | str]:
+    def pending_values(self) -> dict[str, OptionValue]:
         """Only the fields that differ from the file, for the panel's `values`
         override. Empty for a document nothing has been changed in."""
         return dict(self._pending)
 
-    def set_value(self, field_id: str, value: int | str) -> None:
+    def set_value(self, field_id: str, value: OptionValue) -> None:
         """Record `field_id` as set to raw `value`. Must be wrapped in an undo
         record by the caller -- a model that is dirty while the history is not
         closes the document with no save prompt.
@@ -446,6 +513,21 @@ class OptionsEditModel:
                 self._pending.pop(field_id, None)
             else:
                 self._pending[field_id] = value
+            return
+
+        if field_id in self._disables_field_ids:
+            # Before the _offsets lookup below, like the _player_targets
+            # branch: a disables id has no offset and no packer, so falling
+            # through would report it as "not a writable map option".
+            # coerce_ids() normalizes to a deduped tuple *before* the
+            # revert comparison, because [1, 2] == (1, 2) is False -- an
+            # un-normalized list would leave a phantom pending entry and
+            # keep has_edits True after an edit was undone by hand.
+            ids = disables_fields.coerce_ids(value)
+            if ids == self._original[field_id]:
+                self._pending.pop(field_id, None)
+            else:
+                self._pending[field_id] = ids
             return
 
         if field_id in self._player_targets:
@@ -490,6 +572,12 @@ class OptionsEditModel:
         riding this method unchanged."""
         patches: list[tuple[int, bytes]] = []
         for field_id, value in self._pending.items():
+            if field_id in self._disables_field_ids:
+                # Variable-length: rides serialize_disables_resize() instead.
+                # Skipped explicitly rather than by relying on this chain's
+                # ordering -- these ids are in neither _offsets nor
+                # _player_targets, so the final `else` would KeyError.
+                continue
             if field_id == player_fields.PLAYER_COUNT_FIELD_ID:
                 # Nine locations from one edit: the eight `active` flags
                 # here, plus FileHeader.player_count via header_patch(),
@@ -498,6 +586,7 @@ class OptionsEditModel:
                     zip(
                         (t.offset for t in self._player_count_targets),
                         player_fields.encode_player_count(self._player_count_targets, value),
+                        strict=True,
                     )
                 )
             elif field_id in self._player_targets:
@@ -563,3 +652,29 @@ class OptionsEditModel:
             return []
         result = player_fields.player_data_1_splice(self.loaded, edits, body)
         return [] if result is None else [result]
+
+    def serialize_disables_resize(self) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) for the whole per-player disables
+        region, or None for a model with no pending disable-list edit.
+
+        Deliberately NOT folded into serialize_resizes(): that method's one
+        region is applied by scenario_write._patch_player_data_1(), which
+        runs *after* the Messages splice, and this region has to be spliced
+        *before* it -- Options sits downstream of Messages in the body, so
+        the two must be applied in descending offset order (see
+        scenario_write.py's module docstring). One method per ordering slot
+        is what keeps that rule expressible.
+
+        Takes no `body` argument, unlike serialize_resizes(): nothing else
+        this write path does patches inside the disables region, so the
+        region is rebuilt from the parsed values alone and
+        _patch_disables() asserts that assumption before splicing.
+        """
+        if not self.has_disables_edits:
+            return None
+        edits: dict[tuple[str, int], tuple[int, ...]] = {}
+        for field_id, value in self._pending.items():
+            if field_id not in self._disables_field_ids:
+                continue
+            edits[disables_fields.parse_disables_field_id(field_id)] = value
+        return disables_fields.disables_splice(self.loaded, edits)

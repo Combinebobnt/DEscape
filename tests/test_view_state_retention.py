@@ -140,8 +140,9 @@ def test_reset_view_false_survives_a_graphics_quality_change() -> None:
     different part of the map after the change even though relative_scale is
     preserved -- the fraction-of-map_rect form this pins is what makes the
     restored center track the map itself instead of a stale coordinate."""
-    import descape.settings as settings_module
     from PyQt5.QtWidgets import QApplication
+
+    import descape.settings as settings_module
 
     window = _window("Flat", False)
     try:

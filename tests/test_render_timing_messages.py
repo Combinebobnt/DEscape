@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import debug_log, perf_trace
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -26,10 +27,7 @@ pytestmark = [
 
 
 def _window():
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    return ViewerWindow()
+    return conftest.blank_window(load=False)
 
 
 def test_load_message_reports_total_with_parse_and_prepare_breakdown():
@@ -286,7 +284,7 @@ def test_two_loads_each_get_exactly_one_first_paint_line():
         loaded_idx = [i for i, line in enumerate(lines) if line.startswith("Loaded ")]
         paint_idx = [i for i, line in enumerate(lines) if "First paint composited in " in line]
         assert len(loaded_idx) == 2 and len(paint_idx) == 2, lines
-        for load_i, paint_i, next_load_i in zip(loaded_idx, paint_idx, loaded_idx[1:] + [len(lines)]):
+        for load_i, paint_i, next_load_i in zip(loaded_idx, paint_idx, [*loaded_idx[1:], len(lines)], strict=True):
             assert load_i < paint_i < next_load_i, lines
     finally:
         window.edit_history.mark_saved()

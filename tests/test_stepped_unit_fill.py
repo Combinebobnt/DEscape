@@ -16,20 +16,15 @@ tools/verify_iso_units.py.
 
 from __future__ import annotations
 
-
 import numpy as np
 
+from descape import iso_geometry, render
+from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from testkit.fakes import (
     FakeScenario,
     SyntheticTile,
     SyntheticUnit,
 )
-
-from descape import iso_geometry, render
-from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
-
-
-
 
 # The SPAN is fixed; only the const answering to it is looked up, so this
 # doesn't silently stop testing anything if the .dat's data changes shape.

@@ -1,10 +1,8 @@
-"""Map mirroring (symmetry generator) for the Terrain/Elevation half of the
-feature (Stage 1). Units are Stage 2, blocked on phase 3.5 (a Units write
-path and a fourth EditHistory record type don't exist yet); this module
-never touches them.
+"""Map mirroring (symmetry generator): plan_mirror() for terrain and
+elevation (Stage 1), plan_mirror_units() for the units on top of it (Stage 2).
 
-Follows fill_tools.py/brush.py's shape: pure index math, no PyQt5, no
-descape.settings, and no AoE2ScenarioParser import either -- duck-typed on
+Follows fill_tools.py/brush.py's shape: pure index math, no PyQt5, and no
+AoE2ScenarioParser import either -- duck-typed on
 mm.map_width/map_height/terrain and each tile's
 terrain_id/elevation/layer, so a plain fake object works for tests the same
 way tests/test_fill_tools.py's FakeMapManager does. Square maps only (the
@@ -27,10 +25,13 @@ from __future__ import annotations
 import itertools
 import math
 from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable
+from functools import cache, lru_cache
 
+from descape import gate_orientation, render, unit_sprites
 from descape.edit_history import TileState, tile_state
+from descape.terrain_palette import tile_span
 
 # --------------------------------------------------------------------------
 # The eight (x, y, n) -> (x, y) transforms, D4 acting on an n x n lattice.
@@ -338,3 +339,359 @@ def plan_mirror(mm, mode_id: int, slice_index: int, do_terrain: bool, do_elevati
                         elevation_violations.append((idx, n_idx))
 
     return MirrorPlan(changes, frozenset(source_indices), elevation_violations)
+
+
+# --------------------------------------------------------------------------
+# Stage 2: units.
+#
+# Imports render (Qt-free, numpy only) for the footprint geometry -- span
+# parity and the diagonal gates' sparse tile sets live there, and a second
+# copy here would be a silent drift source. The module's own "no PyQt5, no
+# AoE2ScenarioParser" rule is unaffected; units are duck-typed here too.
+# --------------------------------------------------------------------------
+
+
+# Continuous counterparts of TRANSFORMS, acting on a unit's float position
+# rather than on a tile index: a tile t spans [t, t+1), so the reflection that
+# sends tile t to tile n-1-t sends coordinate X to n-X. Every element is the
+# same permutation of the lattice either way -- only the "-1" differs, and it
+# is the tile-index convention, not part of the geometry.
+POSITION_TRANSFORMS: dict[str, Callable[[float, float, int], tuple[float, float]]] = {
+    "id": lambda x, y, n: (x, y),
+    "r": lambda x, y, n: (n - y, x),
+    "r2": lambda x, y, n: (n - x, n - y),
+    "r3": lambda x, y, n: (y, n - x),
+    "mx": lambda x, y, n: (n - x, y),
+    "my": lambda x, y, n: (x, n - y),
+    "d": lambda x, y, n: (y, x),
+    "a": lambda x, y, n: (n - y, n - x),
+}
+
+# The four elements that exchange the x and y axes. A footprint whose span is
+# not square cannot be expressed under one of these (no const carries the
+# swapped shape), and a wall's stored run-direction index has to swap with
+# them -- Resolution 1's "axis-swapping class".
+AXIS_SWAPPING = frozenset({"r", "r3", "d", "a"})
+
+# Wall variant indices, from unit_sprites.wall_variant_from_neighbours: 0 is a
+# run along +-x, 1 a run along +-y. 2 (tower/corner/junction) is fixed by
+# every element, and 3/4 have no mask correspondence at all, so both pass
+# through -- the same measured decision wall_variant_from_neighbours makes by
+# returning None for mask 0.
+_WALL_AXIS_SWAP = {0.0: 1.0, 1.0: 0.0}
+_WALL_ANGLE_COUNT = 5
+
+
+@lru_cache(maxsize=1)
+def _element_names() -> dict[tuple[tuple[int, int], ...], str]:
+    """Lookup from an element's action on a fixed probe lattice to its name,
+    so composition and inversion are derived from TRANSFORMS themselves rather
+    than from a second hand-typed multiplication table."""
+    probes = [(0, 0), (1, 0), (0, 1), (2, 1)]
+    return {tuple(fn(x, y, 5) for x, y in probes): name for name, fn in TRANSFORMS.items()}
+
+
+def compose(after: str, before: str) -> str:
+    """The single D4 element equal to `after` applied to `before`'s result."""
+    probes = [(0, 0), (1, 0), (0, 1), (2, 1)]
+    signature = tuple(TRANSFORMS[after](*TRANSFORMS[before](x, y, 5), 5) for x, y in probes)
+    return _element_names()[signature]
+
+
+def invert(name: str) -> str:
+    """`name`'s inverse in D4 -- every reflection is its own, the rotations pair up."""
+    return next(other for other in TRANSFORMS if compose(name, other) == "id")
+
+
+# A gate's four orientations by RUN DIRECTION, in gate_orientation's own cycle
+# order (A, C, B, D = 0, 45, 90, 135 degrees in tile space). Direction is mod
+# 180 degrees -- a gate runs along a line, it does not point along it.
+_RUN_DIRECTIONS = ((1, 0), (1, 1), (0, 1), (-1, 1))
+
+
+def _linear_part(name: str) -> Callable[[int, int], tuple[int, int]]:
+    """`name`'s action on a direction vector: the transform minus its own
+    translation, measured from TRANSFORMS rather than hand-typed."""
+    fn = TRANSFORMS[name]
+    n = 16
+    ox, oy = fn(0, 0, n)
+
+    def apply(dx: int, dy: int) -> tuple[int, int]:
+        x, y = fn(dx, dy, n)
+        return (x - ox, y - oy)
+
+    return apply
+
+
+@cache
+def gate_orientation_map(name: str) -> tuple[int, ...]:
+    """Where `name` sends each gate orientation index (0 ne, 1 e, 2 se, 3 n).
+
+    Derived from TRANSFORMS' own linear action on the four run directions, so
+    it cannot drift from the transforms the positions use. Reflections come
+    out as transpositions rather than cyclic shifts, which is why
+    gate_orientation.cycle_const() cannot express them.
+    """
+    linear = _linear_part(name)
+    mapped = []
+    for dx, dy in _RUN_DIRECTIONS:
+        vx, vy = linear(dx, dy)
+        if (vx, vy) not in _RUN_DIRECTIONS:
+            vx, vy = -vx, -vy  # same line, opposite sense
+        mapped.append(_RUN_DIRECTIONS.index((vx, vy)))
+    return tuple(mapped)
+
+
+def reorient_gate_const(unit_const: int, name: str) -> int:
+    """The orientation sibling a gate becomes under D4 element `name`.
+
+    Raises for a non-gate, matching gate_orientation.cycle_const()'s
+    loud-refusal contract. The six 1x1 corner groups pass through verbatim:
+    all four of their siblings share one graphic and a 1x1 footprint is
+    invariant under every element, so remapping would churn the stored const
+    for no visual effect.
+    """
+    siblings = gate_orientation.orientation_siblings(unit_const)
+    if siblings is None:
+        raise ValueError(f"unit_const {unit_const} is not a gate: it has no orientation siblings")
+    if all(tile_span(c, render.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
+        return unit_const
+    return siblings[gate_orientation_map(name)[siblings.index(unit_const)]]
+
+
+@dataclass(frozen=True)
+class UnitImage:
+    """One unit to create: a source unit's image under `element`."""
+    source: object
+    element: str
+    player: int
+    unit_const: int
+    x: float
+    y: float
+    rotation: float
+
+
+@dataclass
+class UnitMirrorPlan:
+    # New units to add, in emit order, and the destination-slice units to
+    # remove first. Both empty when the map is already symmetric.
+    images: list[UnitImage]
+    removals: list[object]
+    # Refusal lists. Any non-empty one means "do not apply" -- the caller
+    # reports them rather than repairing, exactly as Stage 1's elevation seam
+    # check does, since every repair would break the symmetry that was asked
+    # for.
+    garrisoned_blockers: list[object]
+    straddling: list[object]
+    # Report-only: a source unit whose footprint is not square cannot be
+    # reflected under an axis-swapping element, because no const carries the
+    # swapped shape. Its image keeps the original footprint orientation.
+    # Gates are the one family that CAN (their four orientations are four
+    # consts), so they are reoriented rather than listed here.
+    unsquare_spans: list[object]
+    # Report-only: gates whose image carries a different orientation const
+    # than its source (Stage 2b).
+    gates: list[object]
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.garrisoned_blockers or self.straddling)
+
+
+def _key(x: float, y: float) -> tuple[int, int]:
+    """Position identity for orbit dedup. Rounded rather than compared raw:
+    positions are float32-derived, and an on-axis unit's image must land on
+    itself exactly."""
+    return (round(x * 1e6), round(y * 1e6))
+
+
+def _image_position(
+    unit_const: int, x: float, y: float, n: int, element: str, new_const: int | None = None
+) -> tuple[float, float]:
+    """Where `element` sends a unit at (x, y).
+
+    A span-1x1 unit transforms continuously, keeping its arbitrary sub-tile
+    position. Anything larger is a building, whose anchor is derived from the
+    reflected footprint's own low corner instead -- the same span_low_corner/
+    span_anchor round trip UnitEditModel.set_unit_const() uses, and the only
+    correct treatment of the diagonal gates' sparse footprints.
+
+    `new_const` is the reoriented gate sibling (Stage 2b), whose span is the
+    one the anchor has to satisfy: ne is (4, 1) and se is (1, 4), so reusing
+    the source's span would leave the image half a footprint off its tiles.
+    """
+    span_x, span_y = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    if span_x == 1 and span_y == 1:
+        image_x, image_y = POSITION_TRANSFORMS[element](x, y, n)
+        # A tile spans [t, t+1), so a coordinate sitting exactly ON a tile
+        # boundary (2.5% of 1x1 corpus placements) reflects onto the far
+        # boundary, which int() reads as the NEXT tile along. Snapping it back
+        # is what keeps the image's tile the reflection of the source's --
+        # without it a mirrored forest sits one tile off its own terrain, and
+        # mirroring twice drifts.
+        tile_x, tile_y = TRANSFORMS[element](int(x), int(y), n)
+        return (
+            image_x - 1.0 if int(image_x) != tile_x else image_x,
+            image_y - 1.0 if int(image_y) != tile_y else image_y,
+        )
+    fn = TRANSFORMS[element]
+    low_x = render._span_start(x, span_x)
+    low_y = render._span_start(y, span_y)
+    corners = [fn(low_x, low_y, n), fn(low_x + span_x - 1, low_y + span_y - 1, n)]
+    target_span = tile_span(unit_const if new_const is None else new_const, render.NON_BUILDING_SPAN)
+    return render.span_anchor(
+        min(c[0] for c in corners), min(c[1] for c in corners), *target_span
+    )
+
+
+def _image_rotation(unit, element: str, file_radian: bool) -> float:
+    """A wall's stored run-direction index swaps with the axis, in a file that
+    encodes it as a literal index; every other rotation passes through
+    verbatim.
+
+    In a radian-encoded file the stored value carries no shape information
+    (measured: mask 1100 splits 142/101/79/85/82 across the five indices), and
+    both DEscape and the game derive the shape from connectivity there, so
+    there is nothing meaningful to permute. Non-wall rotations are verbatim
+    because nothing has measured what a mirror should do to a real facing
+    angle: a mirrored archer keeps the direction it faced, which is a known
+    Stage 2 gap rather than a derived answer.
+    """
+    rotation = float(unit.rotation)
+    if element not in AXIS_SWAPPING or file_radian:
+        return rotation
+    if not unit_sprites.rotation_variant_eligible(unit.unit_const):
+        return rotation
+    index = float(unit_sprites.variant_index(rotation, _WALL_ANGLE_COUNT))
+    return _WALL_AXIS_SWAP.get(index, rotation)
+
+
+def _rotated_owner(player: int, player_ids: Sequence[int], steps: int) -> int:
+    """`player` advanced `steps` positions along the scenario's own defined
+    player list. GAIA (0) is fixed, and so is any owner outside that list --
+    rotating one would invent a player the file does not define."""
+    if steps == 0 or player == 0 or player not in player_ids:
+        return player
+    return player_ids[(player_ids.index(player) + steps) % len(player_ids)]
+
+
+def plan_mirror_units(
+    mm,
+    mode_id: int,
+    slice_index: int,
+    units_by_player: Sequence[Sequence],
+    source_indices: frozenset[int],
+    player_ids: Sequence[int] = (),
+    ownership_steps: int = 0,
+    referencing: Callable[[object], Sequence] | None = None,
+) -> UnitMirrorPlan:
+    """Computes (but does not apply) the unit half of a mirror.
+
+    `source_indices` is plan_mirror()'s own output, passed in rather than
+    recomputed: the two halves must agree about which tiles are the source,
+    and a second derivation could disagree on a degenerate orbit.
+
+    A unit belongs to the source slice by its ANCHOR tile ((int(x), int(y))),
+    matching region_clipboard's convention -- a footprint-based test would let
+    one building belong to two slices at once, which makes "one unit, one
+    orbit" ill-defined. A building anchored just outside the slice whose
+    footprint spills in is caught by the straddle sweep instead.
+
+    Every unit outside the source slice is removed and re-created from the
+    source, so the destination slices end up an exact copy rather than a
+    merge. `referencing` is UnitEditModel.referencing: a removal it refuses
+    (a garrisoned unit) is reported, never forced.
+    """
+    mode = MODE_BY_ID[mode_id]
+    n = mm.map_width
+    width, height = mm.map_width, mm.map_height
+    source_element = mode.group[slice_index]
+    # The element that carries a SOURCE unit onto each destination slice:
+    # destination slice h is sourced through h . source^-1, which is the whole
+    # group again but re-indexed, so a non-zero slice_index still yields
+    # identity first (a source unit's own position).
+    inverse_source = invert(source_element)
+    elements = [compose(h, inverse_source) for h in mode.group]
+
+    sources: list[object] = []
+    removals: list[object] = []
+    for units in units_by_player:
+        for unit in units:
+            tx, ty = int(unit.x), int(unit.y)
+            if not (0 <= tx < width and 0 <= ty < height):
+                continue  # already off-map; nothing this operation can place
+            (sources if ty * width + tx in source_indices else removals).append(unit)
+
+    garrisoned_blockers = []
+    if referencing is not None:
+        kept = {id(unit) for unit in sources}
+        garrisoned_blockers.extend(
+            unit for unit in removals if any(id(other) in kept for other in referencing(unit))
+        )
+
+    eligible_rotations = [
+        float(unit.rotation)
+        for units in units_by_player
+        for unit in units
+        if unit_sprites.rotation_variant_eligible(unit.unit_const)
+    ]
+    file_radian = unit_sprites.file_is_radian(eligible_rotations, _WALL_ANGLE_COUNT)
+
+    source_tiles: set[tuple[int, int]] = set()
+    for unit in sources:
+        source_tiles.update(render.unit_occupied_tiles(unit, width, height) or ())
+
+    images: list[UnitImage] = []
+    straddling: list[object] = []
+    unsquare_spans: list[object] = []
+    gates: list[object] = []
+    for unit in sources:
+        span_x, span_y = tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+        is_gate = gate_orientation.is_gate(unit.unit_const)
+        seen = {_key(unit.x, unit.y)}
+        reported_span = False
+        for index, element in enumerate(elements):
+            # Stage 2b: a gate's orientation lives in its const, so the image
+            # gets the sibling the element maps it to -- and its anchor comes
+            # from that sibling's own span, which is why the const is resolved
+            # before the position.
+            new_const = reorient_gate_const(unit.unit_const, element) if is_gate else unit.unit_const
+            x, y = _image_position(unit.unit_const, unit.x, unit.y, n, element, new_const)
+            if _key(x, y) in seen and new_const == unit.unit_const:
+                continue  # a degenerate orbit: this element maps the unit onto itself
+            seen.add(_key(x, y))
+            if new_const != unit.unit_const and unit not in gates:
+                gates.append(unit)
+            if span_x != span_y and element in AXIS_SWAPPING and not is_gate and not reported_span:
+                unsquare_spans.append(unit)
+                reported_span = True
+            tiles = render.occupied_tiles_for(new_const, x, y, width, height)
+            if tiles and source_tiles.intersection(tiles):
+                # An image overlapping a KEPT source unit means the source's
+                # own footprint crosses the symmetry axis: dedup cannot catch
+                # it (the two anchors genuinely differ), and no repair exists
+                # that preserves the symmetry. Reported once per unit however
+                # many of its images overlap.
+                if unit not in straddling:
+                    straddling.append(unit)
+                continue
+            images.append(
+                UnitImage(
+                    source=unit,
+                    element=element,
+                    player=_rotated_owner(unit.player, player_ids, index * ownership_steps),
+                    unit_const=new_const,
+                    x=x,
+                    y=y,
+                    rotation=_image_rotation(unit, element, file_radian),
+                )
+            )
+
+    return UnitMirrorPlan(
+        images=images,
+        removals=removals,
+        garrisoned_blockers=garrisoned_blockers,
+        straddling=straddling,
+        unsquare_spans=unsquare_spans,
+        gates=gates,
+    )

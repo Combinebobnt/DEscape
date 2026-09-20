@@ -30,9 +30,9 @@ a string from scenario version 1.56 on (see resolve_civilization_name()).
 from __future__ import annotations
 
 import struct
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Mapping, Sequence
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, CivilizationOld, StartingAge
 from AoE2ScenarioParser.datasets.players import ColorId
@@ -277,11 +277,12 @@ def specs_for(loaded: LoadedScenario) -> tuple[PlayerFieldSpec, ...]:
     "0 bytes" and both mean "not on this file".
     """
     out = []
-    for spec in _SPECS:
-        if _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field):
-            out.append(spec)
-        elif spec.fallback is not None and _retriever_present(loaded, *spec.fallback):
-            out.append(spec)
+    out.extend(
+        spec
+        for spec in _SPECS
+        if _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field)
+        or (spec.fallback is not None and _retriever_present(loaded, *spec.fallback))
+    )
     return tuple(out)
 
 

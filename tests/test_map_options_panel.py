@@ -38,16 +38,7 @@ def _window():
     """A shown, fixed-size offscreen ViewerWindow -- show() + processEvents()
     is load-bearing for the splitter assertions, see test_trigger_panel.py's
     own copy of this helper for why."""
-    from PyQt5.QtWidgets import QApplication
-
-    from descape.viewer import ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    window.resize(1500, 900)
-    window.show()
-    QApplication.processEvents()
-    return window
+    return conftest.shown_window(1500, 900)
 
 
 def _close(window) -> None:
@@ -71,7 +62,7 @@ def _shown_value(panel, spec) -> int:
     if isinstance(widget, QComboBox):
         return widget.currentData()
     if isinstance(widget, QDoubleSpinBox):
-        return int(round(widget.value() * spec.scale))
+        return round(widget.value() * spec.scale)
     if isinstance(widget, QLabel):
         return int(widget.text())
     assert isinstance(widget, QSpinBox), f"{spec.field_id} built a {type(widget).__name__}"
@@ -303,9 +294,9 @@ def test_every_row_shows_the_files_own_value() -> None:
             raw = int(option_fields.current_value(window.scenario, spec))
             shown = _shown_value(panel, spec)
             assert shown == raw, f"{spec.field_id} shows {shown}, file holds {raw}"
-        # 11, not 15: the four Diplomacy-group scalars moved to
+        # 15, not 19: the four Diplomacy-group scalars moved to
         # DiplomacyPanel (step 5) and no longer count here.
-        assert len(panel._specs) == 11, f"{len(panel._specs)} rows -- the spec list changed"
+        assert len(panel._specs) == 15, f"{len(panel._specs)} rows -- the spec list changed"
     finally:
         _close(window)
 
@@ -325,8 +316,8 @@ def test_a_scaled_field_shows_file_units_divided_by_its_scale() -> None:
     """
     from PyQt5.QtWidgets import QDoubleSpinBox
 
-    from descape.scenario_io import load_map_and_units
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(BLANK_FIXTURE)
@@ -360,8 +351,8 @@ def test_a_scaled_edit_reports_file_units_not_display_units() -> None:
     OptionManager.victory_years' own `floor(value * 10)` setter, so a value
     round-trips through the library's accessor unchanged."""
     from descape import option_fields
-    from descape.scenario_io import load_map_and_units
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(BLANK_FIXTURE)
@@ -400,8 +391,8 @@ def test_a_value_its_editor_could_not_show_truthfully_is_shown_as_stored() -> No
     field_id, stored = "villager_force_drop", 90
     from PyQt5.QtWidgets import QLabel
 
-    from descape.scenario_io import load_map_and_units
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(BLANK_FIXTURE)
@@ -467,9 +458,9 @@ def test_browsing_a_sentinel_score_saves_byte_identically(name, tmp_path) -> Non
     """
     from PyQt5.QtWidgets import QSpinBox
 
-    from tests.conftest import ROOT
     from descape.scenario_io import load_map_and_units
     from descape.scenario_write import write_scenario
+    from tests.conftest import ROOT
 
     path = ROOT / "examples" / name
     if not path.is_file():
@@ -519,9 +510,9 @@ def test_setting_a_sentinel_score_writes_the_real_value(name, tmp_path, monkeypa
     """
     from PyQt5.QtWidgets import QFileDialog
 
-    from tests.conftest import ROOT
     from descape import option_fields
     from descape.scenario_io import load_map_and_units
+    from tests.conftest import ROOT
 
     path = ROOT / "examples" / name
     if not path.is_file():
@@ -794,8 +785,8 @@ def test_pending_values_override_the_files_own(tmp_path) -> None:
     """show_scenario(values=...) is how the window repopulates a panel whose
     edits live in a model: neither write path mutates a retriever, so
     re-reading the file would show every pending edit reverted."""
-    from descape.scenario_io import load_map_and_units
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(TRIGGER_FIXTURE)
@@ -1036,8 +1027,8 @@ def test_the_status_line_stays_short_enough_to_leave_the_form_visible() -> None:
     """
     from PyQt5.QtWidgets import QApplication
 
-    from descape.scenario_io import load_map_and_units, parse_triggers
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units, parse_triggers
     from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
@@ -1057,8 +1048,12 @@ def test_the_status_line_stays_short_enough_to_leave_the_form_visible() -> None:
             loaded,
             editable_fields=["collide_and_correct"],
             read_only_reasons={"legacy_exec_order": ViewerWindow._EXEC_ORDER_READ_ONLY},
-            notes=["Trigger execution order is read-only for this file: its Triggers "
-                   "section failed the alignment gate that a save would splice through."],
+            notes=[
+                (
+                    "Trigger execution order is read-only for this file: its Triggers "
+                    "section failed the alignment gate that a save would splice through."
+                )
+            ],
         )
         panel.show()
         QApplication.processEvents()
@@ -1087,8 +1082,8 @@ def test_every_group_renders_at_the_height_its_layout_asks_for() -> None:
     """
     from PyQt5.QtWidgets import QApplication, QGroupBox
 
-    from descape.scenario_io import load_map_and_units, parse_triggers
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units, parse_triggers
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(TRIGGER_FIXTURE)
@@ -1208,8 +1203,8 @@ def test_a_read_only_reason_never_displaces_an_as_stored_explanation() -> None:
     reconstruct from anywhere else."""
     from PyQt5.QtWidgets import QLabel
 
-    from descape.scenario_io import load_map_and_units
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(TRIGGER_FIXTURE)
@@ -1232,8 +1227,8 @@ def test_a_read_only_reason_never_displaces_an_as_stored_explanation() -> None:
 
 
 def test_a_fully_read_only_file_reports_it_once_rather_than_per_row(monkeypatch) -> None:
-    from descape.scenario_io import load_map_and_units
     from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
 
     conftest.ensure_qapp()
     loaded = load_map_and_units(TRIGGER_FIXTURE)
@@ -1275,8 +1270,8 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
         assert panel._loaded is window.scenario
 
         # Map's collide_and_correct / no_waves_on_shore, Options' all_techs
-        # and Global Victory's three live fields (mode,
-        # required_score_for_score_victory, time_for_timed_game_...) exist in
+        # and Global Victory's seven fields (mode, the score and time limit,
+        # and the four custom-victory amounts) exist in
         # every version the corpus carries, so a file with fewer rows than
         # that has lost something rather than merely predating a field. The
         # rest are version-gated: villager_force_drop (>= 1.37),
@@ -1289,8 +1284,8 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
         # this environment carries), not a guess: the six C2_ElCid_coop_*
         # files and 0_June_Event_Scenario lose all four version-gated rows
         # at once (ai_map_type, lock_coop_alliances, secondary_game_modes,
-        # legacy_exec_order), landing at exactly 11 - 4 = 7.
-        assert len(panel._specs) >= 7, (
+        # legacy_exec_order), landing at exactly 15 - 4 = 11.
+        assert len(panel._specs) >= 11, (
             f"{scenario_path.name} built only {len(panel._specs)} rows"
         )
         for spec in panel._specs:
@@ -1317,7 +1312,10 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
             # and the label is what stops a save writing 1 over its stored 90.
             if isinstance(widget, QLabel):
                 continue
-            assert widget.isEnabled() is (spec.field_id in panel._editable_fields), (
+            expected_enabled = spec.field_id in panel._editable_fields
+            if spec.field_id in MapOptionsPanel._CUSTOM_VICTORY_FIELDS:
+                expected_enabled &= panel.current_values()["victory_condition"] == 4
+            assert widget.isEnabled() is expected_enabled, (
                 f"{scenario_path.name}: {spec.field_id} disagrees with its gate"
             )
 
@@ -1380,5 +1378,124 @@ def test_browsing_map_options_leaves_the_document_clean(scenario_path, tmp_path)
             window.scenario, browsed, triggers=window.trigger_edits, options=window.option_edits
         )
         assert browsed.read_bytes() == baseline.read_bytes(), scenario_path.name
+    finally:
+        _close(window)
+
+
+# --- the Custom-victory gate --------------------------------------------------
+
+_CUSTOM_FIELDS = ("custom_conquest", "custom_explored_percent", "custom_relics", "custom_all_conditions")
+
+
+def _gv_mode_panel(mode: int):
+    """A standalone, fully editable panel over the trigger fixture with its
+    stored victory mode forced to `mode`. Returns (panel, reported, restore)."""
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    retriever = loaded._scenario.sections["GlobalVictory"].retriever_map["mode"]
+    original = retriever.data
+    retriever.data = mode
+    panel, reported = _editable_panel(loaded)
+
+    def restore():
+        retriever.data = original
+        panel.deleteLater()
+
+    return panel, reported, restore
+
+
+@pytest.mark.parametrize("mode, applies", [(4, True), (1, False), (0, False)])
+def test_custom_victory_rows_are_listed_always_and_enabled_only_under_custom(mode, applies) -> None:
+    from PyQt5.QtWidgets import QLabel
+
+    from descape.map_options_panel import MapOptionsPanel
+
+    panel, _reported, restore = _gv_mode_panel(mode)
+    try:
+        assert set(_CUSTOM_FIELDS) <= panel._editable_fields
+        for field_id in _CUSTOM_FIELDS:
+            widget = panel.widget_for(field_id)
+            assert widget is not None and not isinstance(widget, QLabel), field_id
+            assert widget.isEnabled() is applies, field_id
+            assert panel._row_labels[field_id].isEnabled() is applies, field_id
+            expected_tip = "" if applies else MapOptionsPanel._CUSTOM_ONLY_TOOLTIP
+            assert widget.toolTip() == expected_tip, field_id
+        assert ("Custom-victory only" in panel.status.text()) is (not applies)
+    finally:
+        restore()
+
+
+def test_switching_to_custom_enables_the_rows_without_a_repopulate() -> None:
+    """setEnabled on the live widgets, not a rebuild: the combo whose handler
+    is running must survive, and so must every custom row."""
+    panel, reported, restore = _gv_mode_panel(0)
+    try:
+        combo = panel.widget_for("victory_condition")
+        rows = {f: panel.widget_for(f) for f in _CUSTOM_FIELDS}
+        assert not any(w.isEnabled() for w in rows.values())
+
+        combo.setCurrentIndex(combo.findData(4))
+        assert reported == [("victory_condition", 4)]
+        assert panel.widget_for("victory_condition") is combo
+        for field_id, widget in rows.items():
+            assert panel.widget_for(field_id) is widget, f"{field_id} was rebuilt"
+            assert widget.isEnabled(), field_id
+            assert panel._row_labels[field_id].isEnabled(), field_id
+        assert "Custom-victory only" not in panel.status.text()
+
+        combo.setCurrentIndex(combo.findData(1))
+        assert not any(w.isEnabled() for w in rows.values())
+        assert "Custom-victory only" in panel.status.text()
+    finally:
+        restore()
+
+
+def test_a_write_gated_row_stays_greyed_under_custom_and_keeps_its_reason() -> None:
+    """Greying off Custom must not displace the write-gate tooltip, and Custom
+    must not enable a row the window refused."""
+    from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    retriever = loaded._scenario.sections["GlobalVictory"].retriever_map["mode"]
+    original = retriever.data
+    panel = MapOptionsPanel()
+    try:
+        for mode in (4, 1):
+            retriever.data = mode
+            panel.show_scenario(
+                loaded,
+                editable_fields=["victory_condition"],
+                read_only_reasons={"custom_relics": ViewerWindow._SCALARS_READ_ONLY},
+            )
+            widget = panel.widget_for("custom_relics")
+            assert not widget.isEnabled()
+            assert widget.toolTip() == ViewerWindow._SCALARS_READ_ONLY
+    finally:
+        retriever.data = original
+        panel.deleteLater()
+
+
+@pytest.mark.corpus
+def test_a_stored_custom_value_under_conquest_is_still_shown() -> None:
+    """The case that ruled out hiding the rows: 2_Joan_coop_2_v0_15 stores
+    all_custom_conditions_required=1 under Conquest (mode 1)."""
+    from tests.conftest import ROOT
+
+    path = ROOT / "examples" / "2_Joan_coop_2_v0_15.aoe2scenario"
+    if not path.is_file():
+        pytest.skip(f"{path.name} not present")
+    window = _options_window(path)
+    try:
+        panel = window.map_options_panel
+        assert panel.current_values()["victory_condition"] == 1
+        # Listed (a real combo, not dropped), not merely present in the file.
+        widget = panel.widget_for("custom_all_conditions")
+        assert widget is not None
+        assert widget.currentData() == 1
+        assert not widget.isEnabled()
     finally:
         _close(window)

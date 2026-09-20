@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-import conftest
 from descape.scenario_io import (
     BLANK_TEMPLATE_PATH,
     BLANK_TEMPLATE_SIZES,
@@ -45,6 +44,8 @@ from descape.scenario_new import (
     STANDARD_MAP_SIZES,
 )
 from descape.scenario_write import WriteBlockedError, write_scenario
+
+import conftest
 
 
 @pytest.mark.parametrize("tiles", BLANK_TEMPLATE_SIZES)

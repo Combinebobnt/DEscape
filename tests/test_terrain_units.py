@@ -68,9 +68,9 @@ def test_tree_doodad_partition_covers_every_terrain_unit_const():
     terrains = json.loads(_TERRAIN_UNIT_MAP_PATH.read_text())["terrains"]
     consts = {spec["id"] for units in terrains.values() for spec in units}
 
-    assert terrain_units.TREE_CONSTS <= tree_ids
-    assert terrain_units.TREE_CONSTS | terrain_units.DOODAD_CONSTS == consts
-    assert terrain_units.TREE_CONSTS & terrain_units.DOODAD_CONSTS == frozenset()
+    assert tree_ids >= terrain_units.TREE_CONSTS
+    assert consts == terrain_units.TREE_CONSTS | terrain_units.DOODAD_CONSTS
+    assert frozenset() == terrain_units.TREE_CONSTS & terrain_units.DOODAD_CONSTS
 
 
 def test_is_tree_terrain_matches_terrain_ids_own_tree_terrains():

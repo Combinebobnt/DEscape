@@ -30,6 +30,7 @@ from descape.unit_model import UnitEditModel
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
+_REF_TREE_OAK = 100
 _REF_WALL = 102
 _REF_HOUSE = 200
 _REF_ARCHER_P1 = 201
@@ -108,6 +109,23 @@ def test_undo_restores_rotation_on_the_live_unit_too(tmp_path: Path) -> None:
     assert out.read_bytes() == FIXTURE_PATH.read_bytes()
 
 
+def test_undo_restores_a_cycled_variant_on_the_live_unit(tmp_path: Path) -> None:
+    loaded, model, history = _open()
+    oak = _unit(loaded, _REF_TREE_OAK)
+    original = oak.rotation
+
+    model.begin_unit_edit([0])
+    model.set_variant(oak, 12.0)
+    model.commit_unit_edit("Cycle unit variant", history)
+
+    history.undo([], None, None, model)
+
+    assert oak.rotation == original
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()
+
+
 def test_undo_restores_a_cycled_gates_const_and_anchor_on_the_live_unit(tmp_path: Path) -> None:
     """The other half of the UnitState widening. A gate cycle changes the
     const AND the coordinates (each orientation has its own span), so an undo
@@ -161,7 +179,7 @@ def test_a_unit_record_without_a_model_raises_before_moving_the_cursor() -> None
 
 def test_add_then_undo_restores_next_unit_id() -> None:
     """Plan verification item 19."""
-    loaded, model, history = _open()
+    _loaded, model, history = _open()
     before_next = model.next_unit_id
 
     model.begin_unit_edit([2])

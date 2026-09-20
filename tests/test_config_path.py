@@ -47,17 +47,19 @@ def test_missing_parent_directory_is_created_on_write(tmp_path, monkeypatch):
     assert yaml.safe_load(other_deep_path.read_text())["aoe2de_install"] == str(install)
 
 
-def test_resolver_uses_xdg_config_home_when_set(monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/fake-xdg-home")
+def test_resolver_uses_xdg_config_home_when_set(monkeypatch, tmp_path):
+    fake_xdg = tmp_path / "fake-xdg-home"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
     path = asset_source._default_config_path()
-    assert path == asset_source.Path("/tmp/fake-xdg-home") / "DEscape" / "config.yaml"
+    assert path == asset_source.Path(fake_xdg) / "DEscape" / "config.yaml"
 
 
-def test_resolver_falls_back_to_dot_config_when_xdg_unset(monkeypatch):
+def test_resolver_falls_back_to_dot_config_when_xdg_unset(monkeypatch, tmp_path):
+    fake_home = tmp_path / "fake-home"
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setenv("HOME", "/tmp/fake-home")
+    monkeypatch.setenv("HOME", str(fake_home))
     path = asset_source._default_config_path()
-    assert path == asset_source.Path("/tmp/fake-home") / ".config" / "DEscape" / "config.yaml"
+    assert path == asset_source.Path(fake_home) / ".config" / "DEscape" / "config.yaml"
 
 
 def test_resolver_pins_the_platformdirs_argument_set(monkeypatch):

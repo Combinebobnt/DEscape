@@ -154,8 +154,8 @@ def test_chunk_local_pick_agrees_with_the_whole_canvas_plane():
     full = _full_canvas_ids(scenario, corner_rise, proj, tile_px)
     map_w = scenario.map_manager.map_width
 
-    for sx, sy in zip(*_sample_pixels(proj)):
-        sx, sy = int(sx), int(sy)
+    for raw_sx, raw_sy in zip(*_sample_pixels(proj), strict=True):
+        sx, sy = int(raw_sx), int(raw_sy)
         expected_id = int(full[sy, sx])
         expected = None if expected_id == PICK_ID_NONE else (expected_id % map_w, expected_id // map_w)
         assert cache.pick_tile(sx, sy) == expected, f"disagreement at ({sx}, {sy})"
@@ -209,8 +209,8 @@ def test_uniform_elevation_delegates_to_screen_to_tile():
     cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=128)
 
     checked = 0
-    for sx, sy in zip(*_sample_pixels(proj, n=1500)):
-        sx, sy = int(sx), int(sy)
+    for raw_sx, raw_sy in zip(*_sample_pixels(proj, n=1500), strict=True):
+        sx, sy = int(raw_sx), int(raw_sy)
         expected = iso_geometry.screen_to_tile(sx, sy, elevations, proj)
         if expected is None:
             continue

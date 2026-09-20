@@ -24,11 +24,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import conftest
 from descape import iso_geometry as ig
-from descape import render
-from descape import settings
+from descape import render, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,

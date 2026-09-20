@@ -76,12 +76,36 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
         minimum=0, maximum=100_000, scale=10.0,
     ),
 
-    # -- Global Victory (custom-victory fields): DEFERRED --------------------
-    # conquest_required, artifacts_required, explored_percent_of_map_required
-    # and all_custom_conditions_required only apply when victory_condition is
-    # Custom, so unlike every other group in this panel they want show/hide
-    # behaviour rather than a flat form of always-on rows -- a design question,
-    # not a row-set addition.
+    # -- Global Victory (custom-victory fields) ------------------------------
+    # These four only apply when victory_condition is Custom. Always listed,
+    # greyed off Custom by the panel: 2_Joan_coop_2_v0_15 stores
+    # all_custom_conditions_required=1 under Conquest, so hiding them would
+    # conceal a real stored value. Labels follow the in-game Custom Victory
+    # menu (docs/INGAME_EDITOR_REFERENCE.md). The file stores only amounts,
+    # no separate Exploration/Relics enable toggle: 0 means off.
+    OptionFieldSpec(
+        "custom_conquest", "Conquest", "Global Victory",
+        "GlobalVictory", "conquest_required", CHECKBOX,
+    ),
+    OptionFieldSpec(
+        "custom_explored_percent", "Exploration, % of map", "Global Victory",
+        "GlobalVictory", "explored_percent_of_map_required", SPINBOX,
+        # A percentage, so >100 is meaningless and falls to as-stored.
+        minimum=0, maximum=100,
+    ),
+    OptionFieldSpec(
+        "custom_relics", "Relics", "Global Victory",
+        "GlobalVictory", "artifacts_required", SPINBOX,
+        # A count, not a flag: C2_ElCid_coop_1/_3 store 20. A UI bound on a
+        # u32; anything above renders as-stored.
+        minimum=0, maximum=9999,
+    ),
+    OptionFieldSpec(
+        "custom_all_conditions", "Conditions needed", "Global Victory",
+        "GlobalVictory", "all_custom_conditions_required", COMBO,
+        # The in-game Any One / All switch, not a bare flag.
+        choices=((0, "Any one"), (1, "All")),
+    ),
 
     # -- Teams (rendered on the Diplomacy panel, not Map Options -- see
     # OptionFieldSpec.panel's docstring; `section` stays "Diplomacy" since
@@ -116,6 +140,9 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "villager_force_drop", "Villager force drop", "Map",
         "Map", "villager_force_drop", CHECKBOX,
+        # Stays as-stored on the six 1.41 C2_ElCid_coop_* files (90/119/167/
+        # 255): the byte was never a flag there, so a checkbox would overwrite
+        # different semantics. _is_representable() is what enforces that.
     ),
     OptionFieldSpec(
         "lock_coop_alliances", "Block humanity team change", "Map",

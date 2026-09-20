@@ -9,13 +9,14 @@ once and written straight through to disk on change.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-from descape import asset_source, edge_ticks, iso_geometry
+from descape import asset_source, edge_ticks, grid_overlay, iso_geometry, view_layers
 from descape.asset_source import CONFIG_PATH
 
 _zoom_centered_on_cursor: bool | None = None
@@ -75,6 +76,38 @@ def set_graphics_quality(value: int) -> None:
     config = _load_config()
     config["graphics_quality"] = value
     config.pop("potato_mode", None)  # fully migrated once set through the new control
+    _save_config(config)
+
+
+# Held-key pan speed, in VIEWPORT px/s -- matching middle-drag's pixel deltas,
+# so a fixed speed covers proportionally fewer tiles the further you zoom in.
+PAN_SPEED_MIN = 200
+PAN_SPEED_MAX = 2000
+PAN_SPEED_DEFAULT = 700
+
+_pan_speed: int | None = None
+
+
+def get_pan_speed() -> int:
+    """Viewport px/s for the view_pan_* held-key pan, clamped into
+    [PAN_SPEED_MIN, PAN_SPEED_MAX] and falling back to PAN_SPEED_DEFAULT if
+    never set or malformed."""
+    global _pan_speed
+    if _pan_speed is None:
+        raw = _load_config().get("pan_speed", PAN_SPEED_DEFAULT)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = PAN_SPEED_DEFAULT
+        _pan_speed = max(PAN_SPEED_MIN, min(PAN_SPEED_MAX, value))
+    return _pan_speed
+
+
+def set_pan_speed(value: int) -> None:
+    global _pan_speed
+    _pan_speed = max(PAN_SPEED_MIN, min(PAN_SPEED_MAX, int(value)))
+    config = _load_config()
+    config["pan_speed"] = _pan_speed
     _save_config(config)
 
 
@@ -239,6 +272,167 @@ def set_distance_tick_interval(value: int) -> None:
     _save_config(config)
 
 
+# View > Show Stacked-Unit Badges: the count badge over every spot where a
+# unit is hidden under another. Persisted like Distance Ticks (passive
+# chrome), but on by default: a hidden unit is otherwise unreachable.
+_stack_badges: bool | None = None
+
+
+def get_stack_badges() -> bool:
+    global _stack_badges
+    if _stack_badges is None:
+        _stack_badges = bool(_load_config().get("stack_badges", True))
+    return _stack_badges
+
+
+def set_stack_badges(enabled: bool) -> None:
+    global _stack_badges
+    _stack_badges = enabled
+    config = _load_config()
+    config["stack_badges"] = enabled
+    _save_config(config)
+
+
+# View > Grid and its two Settings > Appearance sliders. Persisted like
+# Distance Ticks: a grid adds and hides nothing, so it is passive chrome, and
+# a tuned slider that reset every launch would just be broken.
+_grid_overlay: bool | None = None
+_grid_follow_elevation: bool | None = None
+
+# View > Footprint Outlines: an outline around every unit footprint in scope,
+# persisted for the same passive-chrome reason as the two above.
+_footprint_outlines: bool | None = None
+_footprint_scope: str | None = None
+_grid_blend: int | None = None
+_grid_thickness: int | None = None
+
+
+def get_grid_overlay() -> bool:
+    global _grid_overlay
+    if _grid_overlay is None:
+        _grid_overlay = bool(_load_config().get("grid_overlay", False))
+    return _grid_overlay
+
+
+def set_grid_overlay(enabled: bool) -> None:
+    global _grid_overlay
+    _grid_overlay = enabled
+    config = _load_config()
+    config["grid_overlay"] = enabled
+    _save_config(config)
+
+
+def get_grid_follow_elevation() -> bool:
+    """Whether the grid drapes over the terrain instead of lying on the
+    elevation-0 ground plane. On by default: draping is the more obviously
+    correct rendering, and the flat lattice stays available because the Ruler
+    and the Distance Ticks are both anchored at elevation 0."""
+    global _grid_follow_elevation
+    if _grid_follow_elevation is None:
+        _grid_follow_elevation = bool(_load_config().get("grid_follow_elevation", True))
+    return _grid_follow_elevation
+
+
+def set_grid_follow_elevation(enabled: bool) -> None:
+    global _grid_follow_elevation
+    _grid_follow_elevation = enabled
+    config = _load_config()
+    config["grid_follow_elevation"] = enabled
+    _save_config(config)
+
+
+def get_footprint_outlines() -> bool:
+    global _footprint_outlines
+    if _footprint_outlines is None:
+        _footprint_outlines = bool(_load_config().get("footprint_outlines", False))
+    return _footprint_outlines
+
+
+def set_footprint_outlines(enabled: bool) -> None:
+    global _footprint_outlines
+    _footprint_outlines = enabled
+    config = _load_config()
+    config["footprint_outlines"] = enabled
+    _save_config(config)
+
+
+def get_footprint_scope() -> str:
+    """Which units carry an outline, always one of
+    unit_pick.FOOTPRINT_SCOPES. Membership-gated like
+    get_distance_tick_interval: an off-list value is nonsense, not a near
+    miss, so it falls back to the default."""
+    from descape import unit_pick  # deferred: unit_pick -> render -> settings
+
+    global _footprint_scope
+    if _footprint_scope is None:
+        raw = _load_config().get("footprint_scope")
+        _footprint_scope = (
+            raw if raw in unit_pick.FOOTPRINT_SCOPES else unit_pick.FOOTPRINT_SCOPE_DEFAULT
+        )
+    return _footprint_scope
+
+
+def set_footprint_scope(value: str) -> None:
+    from descape import unit_pick  # deferred: unit_pick -> render -> settings
+
+    if value not in unit_pick.FOOTPRINT_SCOPES:
+        raise ValueError(
+            f"footprint_scope must be one of {list(unit_pick.FOOTPRINT_SCOPES)}, got {value!r}"
+        )
+    global _footprint_scope
+    _footprint_scope = value
+    config = _load_config()
+    config["footprint_scope"] = value
+    _save_config(config)
+
+
+def get_grid_blend() -> int:
+    """Always within grid_overlay's blend range; an out-of-range integer
+    clamps, anything else falls back to the default. A config predating this
+    slider carries the retired `grid_lightness` key instead, which is read
+    once through blend_for_lightness() rather than being ignored; it is never
+    written back, so the first slider drag retires it."""
+    global _grid_blend
+    if _grid_blend is None:
+        config = _load_config()
+        raw = config.get("grid_blend")
+        legacy = config.get("grid_lightness")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            _grid_blend = grid_overlay.clamp_blend(raw)
+        elif isinstance(legacy, int) and not isinstance(legacy, bool):
+            _grid_blend = grid_overlay.blend_for_lightness(legacy)
+        else:
+            _grid_blend = grid_overlay.BLEND_DEFAULT
+    return _grid_blend
+
+
+def set_grid_blend(value: int) -> None:
+    global _grid_blend
+    _grid_blend = grid_overlay.clamp_blend(value)
+    config = _load_config()
+    config["grid_blend"] = _grid_blend
+    config.pop("grid_lightness", None)  # migrated above; drop the dead key
+    _save_config(config)
+
+
+def get_grid_thickness() -> int:
+    """Device pixels, always one of grid_overlay.THICKNESS_STOPS."""
+    global _grid_thickness
+    if _grid_thickness is None:
+        raw = _load_config().get("grid_thickness")
+        valid = isinstance(raw, int) and not isinstance(raw, bool)
+        _grid_thickness = grid_overlay.snap_thickness(raw) if valid else grid_overlay.THICKNESS_DEFAULT
+    return _grid_thickness
+
+
+def set_grid_thickness(value: int) -> None:
+    global _grid_thickness
+    _grid_thickness = grid_overlay.snap_thickness(value)
+    config = _load_config()
+    config["grid_thickness"] = _grid_thickness
+    _save_config(config)
+
+
 # Stepped rendering mode's elev_step, as a percent of half_h -- see
 # iso_geometry.canvas_size_and_origin's elev_step_pct param and
 # ELEV_STEP_DEFAULT_PCT's own comment for why headroom above the default is
@@ -328,6 +522,8 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_hover", "Unit hover outline", "#ffffff"),
     ("unit_select", "Selection outline", "#50aaff"),
     ("unit_select_fill", "Selection fill", "#50aaff"),
+    ("unit_stack", "Stacked-unit badge", "#ffd24a"),
+    ("footprint_outline", "Footprint outlines", "#e65ae6"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
     ("ruler_label", "Label text", "#ffbe6e"),
     ("ruler_label_outline", "Label outline", "#000000"),
@@ -362,10 +558,9 @@ def _load_overlay_colors() -> dict[str, str]:
         for color_id, value in persisted.items():
             if color_id not in _DEFAULT_OVERLAY_COLORS:
                 continue
-            try:
+            # malformed -- this id keeps its default, others unaffected
+            with contextlib.suppress(ValueError):
                 _overlay_colors[color_id] = _normalize_hex(value)
-            except ValueError:
-                pass  # malformed -- this id keeps its default, others unaffected
     return _overlay_colors
 
 
@@ -461,6 +656,63 @@ def set_distance_tick_font_px(value: int) -> None:
     _distance_tick_font_px = value
     config = _load_config()
     config["distance_tick_font_px"] = value
+    _save_config(config)
+
+
+# DEscape's own UI font, Settings > Appearance -- app chrome only, the way
+# dark_mode is. This module stays Qt-free, so there is no QFont or family
+# validation here: the getters hand back raw values and
+# viewer_dialogs.apply_ui_font() owns the fallback.
+UI_FONT_SIZE_MIN = 7
+UI_FONT_SIZE_MAX = 20
+
+_ui_font_family: str | None = None
+_ui_font_size: int | None = None
+
+
+def get_ui_font_family() -> str:
+    """Persisted UI font family, or "" for "let Qt use the platform
+    default". get_log_height's shape, not get_window_size's: there is no
+    hardcoded default family to quote, and "" is the unset *value* rather
+    than the not-loaded sentinel, so no collision."""
+    global _ui_font_family
+    if _ui_font_family is None:
+        raw = _load_config().get("ui_font_family")
+        _ui_font_family = raw if isinstance(raw, str) else ""
+    return _ui_font_family
+
+
+def set_ui_font_family(family: str) -> None:
+    global _ui_font_family
+    _ui_font_family = family
+    config = _load_config()
+    config["ui_font_family"] = family
+    _save_config(config)
+
+
+def get_ui_font_size() -> int | None:
+    """Persisted UI font point size, or None for the platform default.
+    None is the honest return here, exactly as get_log_height documents --
+    the default is whatever Qt picked, not a number this file knows. An
+    out-of-range or malformed value falls back to None, the way
+    get_window_size rejects a below-minimum stored size. Inherits
+    get_log_height's quirk that the sentinel and the unset value are both
+    None, so config is re-read while unset."""
+    global _ui_font_size
+    if _ui_font_size is None:
+        raw = _load_config().get("ui_font_size")
+        if isinstance(raw, int) and not isinstance(raw, bool) and UI_FONT_SIZE_MIN <= raw <= UI_FONT_SIZE_MAX:
+            _ui_font_size = raw
+    return _ui_font_size
+
+
+def set_ui_font_size(size: int | None) -> None:
+    global _ui_font_size
+    if size is not None and not UI_FONT_SIZE_MIN <= size <= UI_FONT_SIZE_MAX:
+        raise ValueError(f"ui_font_size must be {UI_FONT_SIZE_MIN}-{UI_FONT_SIZE_MAX} or None, got {size!r}")
+    _ui_font_size = size
+    config = _load_config()
+    config["ui_font_size"] = size
     _save_config(config)
 
 
@@ -657,6 +909,22 @@ class ToolDef:
     # semantics stay exactly as they are. Paint Can is click_only and never
     # sets this: one flood fill per click has no brush to speak of.
     supports_brush: bool = False
+    # "" | "line" | "rect" | "wall" -- press-drag-preview-commit-once tools,
+    # the third routing shape after the plain drag stroke and click_only. A
+    # stroke cannot un-paint, so a rubber band that shrinks back toward its
+    # anchor needs the whole edit deferred to release; see
+    # viewer_common.SHAPE_TOOLS and MapView's own shape branches. "wall"
+    # defers for a second reason on top of that one: a wall's shape is
+    # derived from its neighbours, which aren't known until the path ends.
+    drag_shape: str = ""
+    # Whether this tool offers the free (non-snapped) placement checkbox --
+    # D2's toggle, free placement's Stage 3. Orthogonal to param_widget for
+    # exactly the reason supports_brush is: param_widget is single-valued
+    # ("" | "terrain" | "level" | ...), and Place Unit already spends it on
+    # nothing while needing this. Session-only in the UI (tool options are
+    # deliberately not persisted), so there is no settings getter/setter pair
+    # behind it -- this field only says which tool grows the checkbox.
+    supports_free_place: bool = False
     # Which mode(s) this tool's toolbar button shows in; empty means every
     # mode. Drives viewer_common.tool_applicable() and
     # ViewerWindow._update_tool_enabled()'s per-mode visibility loop --
@@ -681,6 +949,27 @@ TOOLS: list[ToolDef] = [
     ToolDef(
         "set_level", "Set Elevation", stroke_label="Set elevation", default_key="L",
         param_widget="level", supports_brush=True, modes=("terrain",),
+    ),
+    # Draw Line / Draw Rectangle: terrain only, one undo record per drag,
+    # committed at release rather than per entered tile (drag_shape's own
+    # comment says why). Placed here so the Terrain block stays contiguous
+    # -- _build_keybinds_tab only compares against the previous row, so a
+    # gap would emit a second "Terrain" header. Both ship unbound: every
+    # bare letter is taken, and a duplicate QKeySequence silently kills
+    # BOTH actions (see _migrate_elevate_off_r).
+    ToolDef(
+        "draw_line", "Draw Line", stroke_label="Draw line", default_key="",
+        param_widget="terrain", supports_brush=True, drag_shape="line",
+        modes=("terrain",),
+    ),
+    # supports_brush=True, but only honoured in Outline mode -- in Filled
+    # mode a brush would dilate the rectangle past its own previewed
+    # bounds, so the brush params hide there. viewer_common.brush_applicable()
+    # is the single place that carve-out lives.
+    ToolDef(
+        "draw_rect", "Draw Rectangle", stroke_label="Draw rectangle", default_key="",
+        param_widget="terrain", supports_brush=True, drag_shape="rect",
+        modes=("terrain",),
     ),
     # Track B Stage 1+2 of the 2026-09-05 cliffs plan. Terrain-mode, like the
     # four tools above. Shipped click_only for Stage 1 (one cliff per click),
@@ -729,7 +1018,7 @@ TOOLS: list[ToolDef] = [
     # shared QKeySequence does -- fires NEITHER action, silently).
     ToolDef(
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
-        click_only=True, modes=("units",),
+        click_only=True, modes=("units",), supports_free_place=True,
     ),
     # Phase 3.5b's b2.5 (D3): a brush, not a click-once tool, so it reuses
     # the generic stroke mechanism (begin/tile/end) every brush tool already
@@ -739,6 +1028,22 @@ TOOLS: list[ToolDef] = [
     ToolDef(
         "convert", "Convert", stroke_label="Convert units", default_key="",
         param_widget="convert", supports_brush=True, modes=("units",),
+    ),
+    # The 2026-09-19 wall-runs plan (GH #31/#50). Units-mode, and inside this
+    # block so the Keybinds tab doesn't grow a second "Units" header.
+    # drag_shape="wall" is a third value alongside "line"/"rect": one undo
+    # record per drag, committed at release, because a wall's variant index
+    # is derived from its neighbours and a node's neighbour set isn't
+    # complete until the path is.
+    #
+    # supports_brush=False and supports_free_place=False for that same
+    # reason -- an off-centre or brush-dilated wall piece has no derivable
+    # shape. Unbound by default like every other tool added since Elevate:
+    # every short letter is taken, and a duplicate QKeySequence silently
+    # kills BOTH actions.
+    ToolDef(
+        "wall_run", "Wall Run", stroke_label="Place wall run", default_key="",
+        param_widget="wall", drag_shape="wall", modes=("units",),
     ),
 ]
 
@@ -778,7 +1083,16 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # and the collision would fail test_settings.py's default-tier check.
     ("edit_select_all", "Select All", "Ctrl+A"),
     ("edit_deselect", "Deselect", "Ctrl+Shift+A"),
+    # Unbound by default, like edit_settings below: both are dialog openers,
+    # and the clipboard history is reached by menu rather than by reflex.
+    ("edit_clipboard_history", "Clipboard History…", ""),
     ("edit_settings", "Settings…", ""),
+    # GH #57's Disabled Objects dialog. Unbound by default, like
+    # edit_clipboard_history and edit_settings above: another dialog opener,
+    # reached by menu rather than by reflex. Kept inside the contiguous
+    # edit_* run -- _build_keybinds_tab only compares against the previous
+    # row, so a stray prefix here would emit a second "Edit" header.
+    ("edit_disables", "Disabled Objects…", ""),
     # Map mirroring (Stage 1: terrain + elevation). Unbound like
     # view_distance_ticks below -- no default suggested, just user-bindable.
     # Kept here (between Edit and View) to match the menu bar's own
@@ -794,6 +1108,41 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_distance_ticks", "Distance Ticks", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_show_sprites", "Show Sprites", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_stack_badges", "Stacked-Unit Badges", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_grid_overlay", "Grid Overlay", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_grid_follow", "Grid Follows Elevation", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_footprint_outlines", "Footprint Outlines", ""),
+] + [
+    # View > Layers, generated from the registry the way the tool_* rows
+    # below are generated from TOOLS, so the table stays single-source.
+    # Spliced HERE, still inside the contiguous view_* run, or
+    # _build_keybinds_tab emits a second "View" header. All ship unbound,
+    # same reasoning as view_distance_ticks above.
+    (f"view_layer_{spec.layer_id}", spec.keybind_label, "")
+    for spec in view_layers.LAYERS
+] + [
+    # Held-key smooth pan. Kept contiguous with the view_* rows above so
+    # _build_keybinds_tab does not emit a second "View" header.
+    #
+    # These four are the only REBINDABLE_ACTIONS rows whose key never reaches
+    # a QAction: a shortcut consumes the press and never reports the release,
+    # which a hold timer needs, so apply_keybind routes them to MapView's own
+    # key handlers instead (see its pan branch).
+    #
+    # The arrow defaults are shared with Units mode's fixed nudge keys, which
+    # win whenever the nudge applies -- see MapView.keyPressEvent.
+    ("view_pan_up", "Pan Up", "Up"),
+    ("view_pan_down", "Pan Down", "Down"),
+    ("view_pan_left", "Pan Left", "Left"),
+    ("view_pan_right", "Pan Right", "Right"),
+    # Tools > Map Analysis. "analysis_", not "tools_": the Keybinds tab
+    # titles a section by prefix and "tool" already means the toolbar tools.
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("analysis_run", "Map Analysis", ""),
     ("help_about", "About", ""),
     ("help_debug_log", "Debug Log", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
@@ -823,6 +1172,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # not-persisted toggles, and no default was requested for them.
     ("filter_show_gaia", "Show GAIA", ""),
     ("filter_show_trees", "Show Trees", ""),
+    ("filter_show_walls", "Show Walls", ""),
+    ("filter_show_eye_candy", "Show Eye Candy", ""),
     ("filter_all_players", "All Players", ""),
     ("filter_no_players", "No Players", ""),
     ("filter_show_all", "Show All (Filters)", ""),
@@ -847,6 +1198,12 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("unit_rotate_cw", "Rotate Unit Clockwise", "."),
     ("unit_rotate_ccw_coarse", "Rotate Unit Anticlockwise (Quarter Turn)", "<"),
     ("unit_rotate_cw_coarse", "Rotate Unit Clockwise (Quarter Turn)", ">"),
+    # Cycle Variant (trees, doodads, scenery). "[" / "]" belong to
+    # adjust_*; "\\" was rejected because QKeySequence("\\").toString() is
+    # empty, i.e. a silently dead shortcut.
+    ("unit_variant_prev", "Cycle Unit Variant Backward", ";"),
+    ("unit_variant_next", "Cycle Unit Variant Forward", "'"),
+    ("unit_variant_random", "Randomize Unit Variant", "-"),
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
@@ -1009,3 +1366,124 @@ def keybind_holder(key_sequence: str, exclude: str = "") -> str | None:
         if action_id != exclude and keybinds.get(action_id, "") == key_sequence:
             return action_id
     return None
+
+
+# -- Settings > Saving ------------------------------------------------------
+#
+# Autosave writes its own rotating slot, never the user's real file, which is
+# what makes default-on safe here in a way it would not be for the main write
+# path: a bug can cost a recovery snapshot, never a scenario.
+
+AUTOSAVE_INTERVAL_CHOICES = (1, 2, 5, 10, 15, 30)
+AUTOSAVE_INTERVAL_DEFAULT = 5
+AUTOSAVE_RETENTION_CHOICES = (1, 2, 3, 5, 10)
+AUTOSAVE_RETENTION_DEFAULT = 3
+AUTOSAVE_LOCATION_CHOICES = ("central", "sidecar")
+AUTOSAVE_LOCATION_DEFAULT = "central"
+
+_autosave_enabled: bool | None = None
+_autosave_interval_min: int | None = None
+_autosave_retention: int | None = None
+_autosave_location: str | None = None
+_backups_enabled: bool | None = None
+
+
+def get_autosave_enabled() -> bool:
+    global _autosave_enabled
+    if _autosave_enabled is None:
+        _autosave_enabled = bool(_load_config().get("autosave_enabled", True))
+    return _autosave_enabled
+
+
+def set_autosave_enabled(enabled: bool) -> None:
+    global _autosave_enabled
+    _autosave_enabled = enabled
+    config = _load_config()
+    config["autosave_enabled"] = enabled
+    _save_config(config)
+
+
+def get_autosave_interval_min() -> int:
+    """Minutes between autosave ticks, always one of
+    AUTOSAVE_INTERVAL_CHOICES. Membership-gated like get_graphics_quality:
+    an off-list value is nonsense rather than a near miss, so it falls back
+    to the default on read while the setter refuses it outright."""
+    global _autosave_interval_min
+    if _autosave_interval_min is None:
+        raw = _load_config().get("autosave_interval_min")
+        _autosave_interval_min = raw if raw in AUTOSAVE_INTERVAL_CHOICES else AUTOSAVE_INTERVAL_DEFAULT
+    return _autosave_interval_min
+
+
+def set_autosave_interval_min(value: int) -> None:
+    if value not in AUTOSAVE_INTERVAL_CHOICES:
+        raise ValueError(
+            f"autosave_interval_min must be one of {list(AUTOSAVE_INTERVAL_CHOICES)}, got {value!r}"
+        )
+    global _autosave_interval_min
+    _autosave_interval_min = value
+    config = _load_config()
+    config["autosave_interval_min"] = value
+    _save_config(config)
+
+
+def get_autosave_retention() -> int:
+    """How many slots to keep per document, always one of
+    AUTOSAVE_RETENTION_CHOICES -- same membership gate as the interval."""
+    global _autosave_retention
+    if _autosave_retention is None:
+        raw = _load_config().get("autosave_retention")
+        _autosave_retention = raw if raw in AUTOSAVE_RETENTION_CHOICES else AUTOSAVE_RETENTION_DEFAULT
+    return _autosave_retention
+
+
+def set_autosave_retention(value: int) -> None:
+    if value not in AUTOSAVE_RETENTION_CHOICES:
+        raise ValueError(
+            f"autosave_retention must be one of {list(AUTOSAVE_RETENTION_CHOICES)}, got {value!r}"
+        )
+    global _autosave_retention
+    _autosave_retention = value
+    config = _load_config()
+    config["autosave_retention"] = value
+    _save_config(config)
+
+
+def get_autosave_location() -> str:
+    """"central" (beside config.yaml) or "sidecar" (beside the source file).
+    Sidecar falls back to central per document where it cannot be served --
+    see descape/autosave.py's slot_path()."""
+    global _autosave_location
+    if _autosave_location is None:
+        raw = _load_config().get("autosave_location")
+        _autosave_location = raw if raw in AUTOSAVE_LOCATION_CHOICES else AUTOSAVE_LOCATION_DEFAULT
+    return _autosave_location
+
+
+def set_autosave_location(value: str) -> None:
+    if value not in AUTOSAVE_LOCATION_CHOICES:
+        raise ValueError(
+            f"autosave_location must be one of {list(AUTOSAVE_LOCATION_CHOICES)}, got {value!r}"
+        )
+    global _autosave_location
+    _autosave_location = value
+    config = _load_config()
+    config["autosave_location"] = value
+    _save_config(config)
+
+
+def get_backups_enabled() -> bool:
+    """The switch for the .bak/.orig pair a real save writes -- GUI only,
+    never batch_api, which keeps its own explicit default."""
+    global _backups_enabled
+    if _backups_enabled is None:
+        _backups_enabled = bool(_load_config().get("backups_enabled", True))
+    return _backups_enabled
+
+
+def set_backups_enabled(enabled: bool) -> None:
+    global _backups_enabled
+    _backups_enabled = enabled
+    config = _load_config()
+    config["backups_enabled"] = enabled
+    _save_config(config)

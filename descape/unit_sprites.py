@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import math
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -257,11 +258,17 @@ class SpritePiece:
     """One piece of a composite building's sprite (a town centre's back/main/
     center/front, a pasture's corner posts), ready to paste at an offset from
     the unit's own anchor. dx/dy are in the same scaled canvas-pixel space as
-    SpriteDraw's hotspot -- see sprite_pieces_for()."""
+    SpriteDraw's hotspot -- see sprite_pieces_for().
+
+    `slot` is unit_graphic_map.json's per-piece depth slot: the footprint tile
+    whose moment in the depth walk paints this piece, as an offset from the
+    footprint's low corner. None on every gate, wall and plain unit, which
+    paint at the unit's own single anchor tile as before."""
 
     draw: SpriteDraw
     dx: int
     dy: int
+    slot: tuple[int, int] | None = None
 
 
 class _LRU(OrderedDict):
@@ -503,13 +510,15 @@ _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
 # equals terrain_palette.OBJECT_TILE_SPANS' key set -- generated from the same
 # class_ == 34 gate -- rather than trusting the ranges written here.
 _CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
-    list(range(264, 273))
-    + [1339, 1340, 1341, 1342, 1344, 1346]
-    + list(range(1849, 1867))
-    + list(range(2069, 2078))
-    + list(range(2178, 2187))
-    + list(range(2190, 2226))
-    + list(range(2651, 2660))
+    [
+        *range(264, 273),
+        1339, 1340, 1341, 1342, 1344, 1346,
+        *range(1849, 1867),
+        *range(2069, 2078),
+        *range(2178, 2187),
+        *range(2190, 2226),
+        *range(2651, 2660),
+    ]
 )
 
 
@@ -563,6 +572,44 @@ def wall_connector_consts() -> frozenset[int]:
 
 
 WEST, EAST, NORTH, SOUTH = 1, 2, 4, 8
+# The four corner-touching neighbours, for wall_variant_from_neighbours8()'s
+# diagonal-run cases. NORTH is -y and EAST is +x, matching the four bits
+# above, so NE is (tx + 1, ty - 1).
+NE, SE, SW, NW = 16, 32, 64, 128
+ORTHOGONAL_MASK = WEST | EAST | NORTH | SOUTH
+
+# (dx, dy, bit), orthogonals first so `mask & ORTHOGONAL_MASK` is exactly the
+# 4-bit mask wall_variant_from_neighbours() was calibrated on.
+NEIGHBOUR_OFFSETS: tuple[tuple[int, int, int], ...] = (
+    (-1, 0, WEST),
+    (1, 0, EAST),
+    (0, -1, NORTH),
+    (0, 1, SOUTH),
+    (1, -1, NE),
+    (1, 1, SE),
+    (-1, 1, SW),
+    (-1, -1, NW),
+)
+
+
+def neighbour_mask(
+    tx: int, ty: int, connector_tiles, *, diagonals: bool = False
+) -> int:
+    """Which of (tx, ty)'s neighbours are in `connector_tiles`, as a bit mask.
+
+    One shared implementation for the read side
+    (render.wall_variant_rotation_overrides(), diagonals off) and the write
+    side (wall_run.plan_wall_run(), diagonals on). Extracted rather than
+    written twice because the two would then be free to disagree about which
+    bit means which direction, and a sign convention that diverges between
+    deriving a shape and storing one fails silently.
+    """
+    mask = 0
+    offsets = NEIGHBOUR_OFFSETS if diagonals else NEIGHBOUR_OFFSETS[:4]
+    for dx, dy, bit in offsets:
+        if (tx + dx, ty + dy) in connector_tiles:
+            mask |= bit
+    return mask
 
 
 def wall_variant_from_neighbours(mask: int) -> int | None:
@@ -583,6 +630,46 @@ def wall_variant_from_neighbours(mask: int) -> int | None:
         return 0
     if mask == NORTH | SOUTH:
         return 1
+    return 2
+
+
+def wall_variant_from_neighbours8(mask: int) -> int | None:
+    """The diagonal-aware superset of wall_variant_from_neighbours(), for the
+    write side (2026-09-19 wall-runs plan). A SEPARATE function, not a change
+    to the 4-bit one: the render side and its pinned zero-changed-tiles corpus
+    guard keep calling that one, untouched by this.
+
+    Any orthogonal bit set defers to the 4-bit function verbatim, so the
+    superset property holds by construction rather than by agreement. The
+    diagonal cases below cover the 21.4% of corpus walls that have no
+    orthogonal neighbour at all (1756 of 8193), which the 4-bit function
+    answers None for. Measured over the integer-encoded corpus files, the
+    only ones whose stored values carry shape information at all (the same
+    file_is_radian() split render.py makes; the radian rows are flat noise
+    across all five indices, 102/72/62/73/71 and 38/24/24/33/35):
+
+    - exactly {NE, SW} (interior of a diagonal run) -> 4 -- 608 of 609
+    - exactly {NW, SE}                              -> 3 -- 359 of 359
+    - any other diagonal-only mask                  -> 2 -- 179 of 179,
+      being run ends (72 + 53) and diagonal bends (30), plus the 24
+      neighbourless pieces measured at 2 that this function still answers
+      None for, per the next paragraph. A run end is a tower, mirroring the
+      4-bit function's own single-orthogonal-bit case.
+    - no neighbours at all (mask 0) -> None
+
+    Mask 0 stays None even though 24 of 24 isolated corpus walls store 2,
+    so this function's contract is identical to the 4-bit one at every mask
+    -- which is what a later render-side adoption needs. "A lone wall is a
+    tower" is a caller's policy; wall_run.plan_wall_run() supplies the 2.
+    """
+    if mask & ORTHOGONAL_MASK:
+        return wall_variant_from_neighbours(mask & ORTHOGONAL_MASK)
+    if mask == 0:
+        return None
+    if mask == NE | SW:
+        return 4
+    if mask == NW | SE:
+        return 3
     return 2
 
 
@@ -629,6 +716,15 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     return entry is not None and int(entry["angle_count"]) == 5
 
 
+def wall_family_consts() -> tuple[int, ...]:
+    """The wall consts the Wall Run tool offers, ascending: exactly those
+    rotation_variant_eligible() accepts, which is exactly
+    UnitEditModel.set_wall_variant()'s own scope -- so the family picker can
+    never offer something the model would refuse. Gates are not here: their
+    orientation lives in the const, not in `rotation`."""
+    return tuple(sorted(c for c in _ROTATION_VARIANT_CONSTS if rotation_variant_eligible(c)))
+
+
 def is_literal_variant_index(rotation: float, angle_count: int) -> bool:
     """True when `rotation` is already a literal stored index rather than a
     radian encoding of one -- the same closeness test variant_index() applies,
@@ -636,6 +732,21 @@ def is_literal_variant_index(rotation: float, angle_count: int) -> bool:
     doesn't duplicate the 1e-6 window."""
     nearest = round(rotation)
     return abs(rotation - nearest) < 1e-6 and 0 <= nearest < angle_count
+
+
+def file_is_radian(rotations: Iterable[float], angle_count: int) -> bool:
+    """Whether a scenario file encodes its wall variants as radians rather
+    than as literal indices -- a per-FILE classification, never per unit (see
+    rotation_variant_eligible()'s precondition-3 note and
+    render.wall_variant_rotation_overrides()). One non-literal value is
+    enough: the two conventions agree only at index 0, so a file that uses
+    the radian form anywhere carries no shape information in a literal-looking
+    0.0 either.
+
+    Pure, and here rather than in render.py, so mirror_tools can reuse the
+    same classification without importing the painting module.
+    """
+    return any(not is_literal_variant_index(rotation, angle_count) for rotation in rotations)
 
 
 def variant_index(rotation: float, angle_count: int, variant_count: int | None = None) -> int:
@@ -894,7 +1005,8 @@ def _frame_for(
 
 
 def _draw_for_entry(
-    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int
+    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
+    tree_scale: float = 1.0,
 ) -> SpriteDraw | None:
     """The tinted, scaled sprite `entry` (one graphic_map() record) resolves
     to, or None on any of the failure paths sprite_for()'s docstring lists.
@@ -909,15 +1021,26 @@ def _draw_for_entry(
     tint), not a player_id -- a scenario's stored color override can put any
     player on any tint, so the caller resolves player_id -> team_index
     itself (see scenario_io.LoadedScenario.team_indices) before calling
-    here."""
+    here.
+
+    `tree_scale` (View > Layers > Small Trees) multiplies into the projection
+    scale BEFORE the rounding below, so there is one resize and one hotspot
+    scaling rather than a second decimation pass over an already-shrunk
+    frame. Scaling the rgba and the hotspot by the same factor is what makes
+    this a scale about the sprite's own ground-contact point: a tree's
+    hotspot sits at its trunk base, so the trunk stays put and the canopy
+    shrinks toward it. The caller decides which consts it applies to."""
     index = _frame_for(unit_const, entry, rotation)
 
-    scale = sprite_scale(half_w)
+    scale = sprite_scale(half_w) * tree_scale
     team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
     # Keyed on team_index, not player_id: two scenarios' player 1 can resolve
     # to different stored colors, and this cache is a process-global LRU that
     # would otherwise serve one scenario's tinted sprite to the other's.
-    key = (entry["file_name"], index, team_index % len(TEAM_COLORS), half_w)
+    # tree_scale is in the key for the same reason half_w is: this LRU is a
+    # process global shared across windows and tests, so without it full-size
+    # art leaks into a shrunk render and vice versa.
+    key = (entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale)
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
@@ -961,7 +1084,7 @@ def sprite_for(
 
 
 def sprite_pieces_for(
-    unit_const: int, rotation: float, team_index: int, half_w: int
+    unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -971,7 +1094,10 @@ def sprite_pieces_for(
     need two code paths for a composite vs. a plain unit.
 
     A non-parent piece that fails to resolve is skipped rather than failing
-    the whole composite -- strictly better than today, never worse. Each
+    the whole composite -- strictly better than today, never worse. The
+    parent is the piece unit_graphic_map.json marks `"parent": true`, never
+    inferred: every piece of a wall or a direct-delta gate shares unit_id ==
+    unit_const, and a palisade flag legitimately fails at 4 of 5 variants. Each
     piece resolves through its OWN resolving unit_id (unit_graphic_map.json's
     per-piece "unit_id" -- this const itself for the parent's own piece, an
     annex's unit_id otherwise), never unit_const for every piece: a piece's
@@ -979,30 +1105,37 @@ def sprite_pieces_for(
     and pieces can carry a different angle_count/rotation-dispatch than their
     parent even though every currently-composited piece is angle-index-based
     like its parent today.
+
+    `tree_scale` is _draw_for_entry()'s own factor (View > Layers > Small
+    Trees), applied to the piece offsets by the same combined scale as the
+    art itself -- a composite whose dx/dy kept the full-size scale would fly
+    apart as its pieces shrank. No tree is a composite today; the invariant
+    holds anyway rather than depending on that staying true.
     """
     entry = graphic_map().get(unit_const)
     if entry is None:
         return []
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        draw = _draw_for_entry(unit_const, entry, rotation, team_index, half_w)
+        draw = _draw_for_entry(unit_const, entry, rotation, team_index, half_w, tree_scale)
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
 
-    scale = sprite_scale(half_w)
+    scale = sprite_scale(half_w) * tree_scale
     result: list[SpritePiece] = []
     for piece in pieces_data:
-        draw = _draw_for_entry(piece["unit_id"], piece, rotation, team_index, half_w)
+        draw = _draw_for_entry(piece["unit_id"], piece, rotation, team_index, half_w, tree_scale)
         if draw is None:
-            # The parent's own piece (unit_id == unit_const) is identified by
-            # identity, not list position -- depth order can (and for a town
-            # centre's back piece, does) place it anywhere but index 0.
-            if piece["unit_id"] == unit_const:
+            # Marked, not positional: depth order can (and for a town centre's
+            # back piece, does) place the parent anywhere but index 0.
+            if piece.get("parent"):
                 return []
             continue
+        slot = piece.get("slot")
         result.append(SpritePiece(
             draw=draw,
             dx=round(piece["dx"] * scale),
             dy=round(piece["dy"] * scale),
+            slot=None if slot is None else (int(slot[0]), int(slot[1])),
         ))
     return result
 
@@ -1048,7 +1181,7 @@ def _native_pieces_for(
     unit_const: int, entry: dict, rotation: float, team,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
 ) -> list[SpritePiece]:
-    """sprite_pieces_for()'s walk at native scale: same parent-by-identity
+    """sprite_pieces_for()'s walk at native scale: same marked-parent
     rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
 
     `angle_offset_deg` reaches each piece's own _frame_for() rather than being
@@ -1072,9 +1205,8 @@ def _native_pieces_for(
     for piece in pieces_data:
         draw = _native_piece(piece["unit_id"], piece, rotation, team, angle_offset_deg)
         if draw is None:
-            # Parent identified by identity, not list position -- see
-            # sprite_pieces_for()'s own note on why.
-            if piece["unit_id"] == unit_const:
+            # Marked parent, not list position -- see sprite_pieces_for().
+            if piece.get("parent"):
                 return []
             continue
         result.append(SpritePiece(draw=draw, dx=int(piece["dx"]), dy=int(piece["dy"])))
@@ -1102,7 +1234,7 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     ox = min(r[0] for r in rects)
     oy = min(r[1] for r in rects)
     out = np.zeros((max(r[3] for r in rects) - oy, max(r[2] for r in rects) - ox, 4), dtype=np.uint8)
-    for piece, (x0, y0, _x1, _y1) in zip(pieces, rects):
+    for piece, (x0, y0, _x1, _y1) in zip(pieces, rects, strict=True):
         _source_over(out, y0 - oy, x0 - ox, piece.draw.rgba)
     return out
 

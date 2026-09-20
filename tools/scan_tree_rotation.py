@@ -121,7 +121,7 @@ def main() -> None:
     for path in files:
         try:
             per_const = scan_file(path)
-        except Exception as exc:  # noqa: BLE001 -- a scan tool, not production code
+        except Exception as exc:
             print(f"{path.name}: FAILED: {exc}", file=sys.stderr)
             continue
         for const, counter in per_const.items():

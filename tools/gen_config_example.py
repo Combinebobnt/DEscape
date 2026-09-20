@@ -25,15 +25,25 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, edge_ticks, iso_geometry, settings  # noqa: E402
+from descape import (
+    asset_source,
+    edge_ticks,
+    grid_overlay,
+    iso_geometry,
+    settings,
+    unit_pick,
+)
 
 OUT_PATH = ROOT / "config.example.yaml"
 
 _QUALITY_LABELS = ", ".join(f"{n}={label}" for n, label in sorted(settings.GRAPHICS_QUALITY_LABELS.items()))
+_AUTOSAVE_INTERVALS = ", ".join(str(n) for n in settings.AUTOSAVE_INTERVAL_CHOICES)
+_AUTOSAVE_RETENTIONS = ", ".join(str(n) for n in settings.AUTOSAVE_RETENTION_CHOICES)
 
 _ELEV_STEP_STOP_COUNT = len(settings.ELEV_STEP_PCT_STOPS)
 
 _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
+_FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 
 
 def render() -> str:
@@ -86,6 +96,13 @@ graphics_quality: {settings.GRAPHICS_QUALITY_DEFAULT}
 # Default: {iso_geometry.ELEV_STEP_DEFAULT_PCT}.
 elev_step_pct: {iso_geometry.ELEV_STEP_DEFAULT_PCT}
 
+# Held-key pan speed for the Pan Up/Down/Left/Right keybinds, in viewport
+# pixels per second, Settings > Appearance. Measured in screen pixels like
+# the middle-drag pan, so a fixed speed covers fewer tiles the further you
+# zoom in. Clamped to {settings.PAN_SPEED_MIN}-{settings.PAN_SPEED_MAX} on read.
+# Default: {settings.PAN_SPEED_DEFAULT}.
+pan_speed: {settings.PAN_SPEED_DEFAULT}
+
 # Anchor mouse-wheel zoom under the cursor (true) or the view center
 # (false). Default: true.
 zoom_centered_on_cursor: true
@@ -108,6 +125,35 @@ distance_ticks: false
 # Every {edge_ticks.MAJORS_PER_MINOR}th minor is a major and carries a tile number.
 # Default: {edge_ticks.TICK_INTERVAL_DEFAULT}.
 distance_tick_interval: {edge_ticks.TICK_INTERVAL_DEFAULT}
+
+# In Units mode, a count badge over every spot where a unit is hidden under
+# another, View > Show Stacked-Unit Badges. Default: true.
+stack_badges: true
+
+# A line on every tile boundary, View > Grid. Default: false.
+grid_overlay: false
+
+# Whether the grid drapes over the terrain rather than lying on the flat
+# elevation-0 ground plane, View > Grid > Follow Terrain Elevation. No effect
+# in Flat. Default: true.
+grid_follow_elevation: true
+
+# An outline around every unit footprint in scope, View > Footprint Outlines.
+# Default: false.
+footprint_outlines: false
+
+# Which units carry one: {_FOOTPRINT_SCOPES}. Anything else falls back to the
+# default on read. Default: {unit_pick.FOOTPRINT_SCOPE_DEFAULT}.
+footprint_scope: {unit_pick.FOOTPRINT_SCOPE_DEFAULT}
+
+# How strongly the grid lines blend into the terrain, Settings > Appearance:
+# {grid_overlay.BLEND_MIN} is solid black lines, 0 is invisible, {grid_overlay.BLEND_MAX} is solid white ones.
+# Out-of-range values clamp. Default: {grid_overlay.BLEND_DEFAULT}.
+grid_blend: {grid_overlay.BLEND_DEFAULT}
+
+# Grid line width in screen pixels, Settings > Appearance. Snaps to the
+# nearest of {list(grid_overlay.THICKNESS_STOPS)}. Default: {grid_overlay.THICKNESS_DEFAULT}.
+grid_thickness: {grid_overlay.THICKNESS_DEFAULT}
 
 # Main window size in pixels, [width, height]. Persisted automatically on
 # resize -- not something you normally set by hand.
@@ -145,15 +191,50 @@ keybinds:
 ruler_label_font_px: {settings.RULER_LABEL_FONT_PX_DEFAULT}
 
 # Pixel size of the map-edge distance ruler's major-tick numbers, Settings >
-# Appearance. Only {settings.DISTANCE_TICK_FONT_PX_MIN}-{settings.DISTANCE_TICK_FONT_PX_MAX} are legal; anything else falls back to the default.
+# Appearance. Only {settings.DISTANCE_TICK_FONT_PX_MIN}-{settings.DISTANCE_TICK_FONT_PX_MAX} are
+# legal; anything else falls back to the default.
 # Default: {settings.DISTANCE_TICK_FONT_PX_DEFAULT}.
 distance_tick_font_px: {settings.DISTANCE_TICK_FONT_PX_DEFAULT}
+
+# DEscape's own UI font, Settings > Appearance -- app chrome only (menus,
+# dialogs, panels, the status log); the map view's overlay text keeps its
+# own fixed sizes. "" means the platform default family.
+ui_font_family: ""
+
+# Point size for the same, {settings.UI_FONT_SIZE_MIN}-{settings.UI_FONT_SIZE_MAX}; anything else (or null) means
+# the platform default size.
+ui_font_size: null
 
 # Every tool overlay color (Settings > Appearance), shown here at its
 # default -- see settings.OVERLAY_COLORS for the full id/label/default list.
 # RGB only, as "#rrggbb"; omit an entry to leave that element at its default.
 overlay_colors:
 {overlay_colors_block}
+
+# Settings > Saving. Autosave writes its own rotating recovery slot on a
+# timer, never the file you have open, and never clears the unsaved-changes
+# marker -- File > Recover from Autosave... is how you open one back up.
+# Default: true.
+autosave_enabled: true
+
+# Minutes between autosave ticks. Only {_AUTOSAVE_INTERVALS} are legal;
+# anything else falls back to the default. Default: {settings.AUTOSAVE_INTERVAL_DEFAULT}.
+autosave_interval_min: {settings.AUTOSAVE_INTERVAL_DEFAULT}
+
+# How many autosave slots to keep per document before the oldest is deleted.
+# Only {_AUTOSAVE_RETENTIONS} are legal; anything else falls back to the
+# default. Default: {settings.AUTOSAVE_RETENTION_DEFAULT}.
+autosave_retention: {settings.AUTOSAVE_RETENTION_DEFAULT}
+
+# Where autosave slots go: "central" (an autosave/ folder beside this config
+# file) or "sidecar" (beside the scenario itself). Sidecar falls back to
+# central for any document it cannot serve -- an untitled one, a Steam
+# Workshop/Proton path, or a shipped template. Default: "{settings.AUTOSAVE_LOCATION_DEFAULT}".
+autosave_location: {settings.AUTOSAVE_LOCATION_DEFAULT}
+
+# Whether a real save also writes the .bak (previous contents) and .orig
+# (one-time pristine snapshot) pair beside the file. Default: true.
+backups_enabled: true
 """
 
 

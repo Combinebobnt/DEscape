@@ -21,12 +21,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from AoE2ScenarioParser.objects.aoe2_object import AoE2Object
 from AoE2ScenarioParser.objects.data_objects.condition import Condition
 from AoE2ScenarioParser.objects.data_objects.effect import Effect
 from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.data_objects.variable import Variable
-from AoE2ScenarioParser.objects.aoe2_object import AoE2Object
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 from AoE2ScenarioParser.objects.managers.trigger_manager import (
     TriggerManager,
@@ -291,3 +291,20 @@ def test_scenario_units_section_exposes_sections_retriever_map_and_byte_length()
         unit_count_retriever = section.retriever_map["unit_count"]
         assert isinstance(unit_count_retriever, Retriever)
         assert isinstance(unit_count_retriever.data, int)
+
+
+def test_xs_attachment_retrievers_are_reachable() -> None:
+    """scenario_io.xs_attachment() reads Map.script_name at load and
+    Files.script_file_content once parse_triggers() has walked past Triggers
+    into Files -- both through retriever_map, neither via a public manager."""
+    fixture = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+    s = load_map_and_units(fixture)
+    script_name = s._scenario.sections["Map"].retriever_map["script_name"]
+    assert isinstance(script_name, Retriever)
+    assert isinstance(script_name.data, str)
+
+    assert "Files" not in s._scenario.sections
+    assert parse_triggers(s) is not None
+    content = s._scenario.sections["Files"].retriever_map["script_file_content"]
+    assert isinstance(content, Retriever)
+    assert isinstance(content.data, str)

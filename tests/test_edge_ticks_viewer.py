@@ -25,13 +25,15 @@ close(); see tests/test_fill_tool.py's module docstring for why.
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 
 import numpy as np
 import pytest
 
-import conftest
 from descape import edge_ticks, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -69,7 +71,7 @@ def _bare_scene(
     return scene, item
 
 
-def _paint_at(item, scale_x: float, scale_y: float = None, rotate_deg: float = 0.0):
+def _paint_at(item, scale_x: float, scale_y: float | None = None, rotate_deg: float = 0.0):
     """Drives exactly ONE paint() at a chosen world transform and hands back
     item.stats. Calls paint() directly: TickPaintStats records the last paint
     only, and Qt is free to split a scene render into several."""
@@ -105,8 +107,8 @@ def test_tick_length_is_constant_in_device_pixels() -> None:
     trivially countable. A major is twice a minor."""
     from PyQt5.QtCore import QRectF
 
-    from testkit.qt_capture import scene_rect_to_array
     from descape.viewer_canvas import EdgeTickItem
+    from testkit.qt_capture import scene_rect_to_array
 
     scene, _item = _bare_scene()
     # Above the y0 edge, which sits at scene y == 0, so the ticks run up into
@@ -159,7 +161,7 @@ def test_the_tick_length_does_not_follow_the_zoom(zoom: int) -> None:
     scene, _item = _bare_scene()
     rect = QRectF(-4, -40, 120, 44)
     pixels = _render_zoomed(scene, rect, zoom)
-    column = int(round((edge_ticks.TICK_INTERVAL_DEFAULT * TILE_PX - rect.left()) * zoom))
+    column = round((edge_ticks.TICK_INTERVAL_DEFAULT * TILE_PX - rect.left()) * zoom)
     run = _column_run(pixels, column, EdgeTickItem.MINOR_PEN.color().getRgb()[:3])
     assert run == pytest.approx(edge_ticks.MINOR_TICK_PX, abs=1)
 
@@ -183,7 +185,7 @@ def test_paint_leaves_the_painter_transform_untouched() -> None:
 # that the outward-running y0/x0 ticks land inside it.
 _CULL_IMG_PX = 400
 _CULL_ORIGIN = 100.0
-_CULL_CASES = ("interior", "tick_tips", "labels_only")
+_CULL_CASES = ("interior", "tick_tips", "labels_only", "axis_letter_only")
 
 
 class _ExposedOption:
@@ -232,6 +234,7 @@ def _cull_rect(name: str):
         "interior": QRectF(30, -34, 60, 60),
         "tick_tips": QRectF(-10, -12, 200, 9),
         "labels_only": QRectF(-10, -32, 200, 14),
+        "axis_letter_only": QRectF(60, -68, 40, 20),
     }[name]
 
 
@@ -271,6 +274,18 @@ def test_labels_survive_an_exposure_that_misses_their_own_tick() -> None:
     clip = _cull_rect("labels_only")
     _pixels, stats = _paint_exposed(item, clip, clip)
     assert stats.labels_drawn > 0
+
+
+def test_the_axis_letter_survives_an_exposure_past_every_number() -> None:
+    """`axis_letter_only` sits beyond every numeric label's reach, around
+    the y0 run's middle anchor (tile 10, scene x 80), so only the letter can
+    paint there and the cull margin must still keep its anchor."""
+    _scene, item = _bare_scene()
+    clip = _cull_rect("axis_letter_only")
+    assert clip.bottom() < -edge_ticks.label_reach_px(edge_ticks.LABEL_FONT_PX)
+    pixels, stats = _paint_exposed(item, clip, clip)
+    assert stats.axis_labels_drawn >= 1
+    assert pixels.any()
 
 
 def test_a_real_view_paint_narrows_the_exposed_rect_and_culls() -> None:
@@ -330,8 +345,8 @@ def test_the_ladder_drops_labels_before_minors_as_the_view_zooms_out() -> None:
         seen.append((lod.draw_edge, lod.draw_minors, lod.draw_labels))
     assert seen[0] == (True, True, True)
     # Monotone: nothing ever comes back as the view zooms further out.
-    for earlier, later in zip(seen, seen[1:]):
-        assert all(b <= a for a, b in zip(earlier, later))
+    for earlier, later in pairwise(seen):
+        assert all(b <= a for a, b in zip(earlier, later, strict=True))
     assert seen[-1][0] is False
 
 
@@ -341,6 +356,15 @@ def test_a_dropped_edge_draws_nothing_at_all() -> None:
     assert all(not lod.draw_edge for lod in stats.lod.values())
     assert stats.ticks_drawn == 0
     assert stats.labels_drawn == 0
+    assert stats.axis_labels_drawn == 0
+
+
+def test_the_axis_letter_drops_out_with_the_numbers() -> None:
+    _scene, item = _bare_scene()
+    stats, _t, _r = _paint_at(item, 0.1)
+    assert stats.lod["y0"].draw_labels is False
+    assert stats.labels_drawn == 0
+    assert stats.axis_labels_drawn == 0
 
 
 def test_only_majors_survive_once_minors_are_dropped() -> None:
@@ -357,6 +381,7 @@ def test_every_tick_is_drawn_when_there_is_room() -> None:
     stats, _t, _r = _paint_at(item, 4.0)
     assert stats.ticks_drawn == sum(len(run.anchors) for run in item._runs)
     assert stats.labels_drawn == sum(sum(run.majors) for run in item._runs)
+    assert stats.axis_labels_drawn == len(item._runs) == 4
 
 
 def test_an_anisotropic_transform_gives_each_edge_its_own_verdict() -> None:
@@ -534,7 +559,7 @@ def test_the_toggle_is_off_by_default_and_hides_the_item() -> None:
 def test_the_interval_reaches_the_live_item() -> None:
     window = _window()
     try:
-        other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+        other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
         window.map_view.set_edge_tick_interval(other)
         assert window.map_view._edge_tick_item._interval == other
     finally:
@@ -590,7 +615,7 @@ def test_the_tick_state_survives_a_terrain_style_round_trip() -> None:
 
     window = _window()
     try:
-        other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+        other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
         window.map_view.set_edge_tick_interval(other)
         window.terrain_style_combo.setCurrentText("Flat")
         QApplication.processEvents()
@@ -664,7 +689,7 @@ def test_the_menu_opens_at_the_persisted_state(monkeypatch) -> None:
     persist to disk from a test."""
     from descape import settings
 
-    other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+    other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
     monkeypatch.setattr(settings, "_distance_ticks", True)
     monkeypatch.setattr(settings, "_distance_tick_interval", other)
     window = _plain_window()
@@ -697,7 +722,7 @@ def test_switching_interval_calls_the_handler_exactly_once() -> None:
     try:
         calls: list[int] = []
         window._on_distance_tick_interval = calls.append
-        other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+        other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
         window.distance_tick_interval_actions[other].setChecked(True)
         assert calls == [other]
     finally:
@@ -708,7 +733,7 @@ def test_switching_interval_calls_the_handler_exactly_once() -> None:
 def test_the_interval_actions_are_mutually_exclusive() -> None:
     window = _plain_window()
     try:
-        other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+        other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
         window.distance_tick_interval_actions[other].setChecked(True)
         checked = [n for n, a in window.distance_tick_interval_actions.items() if a.isChecked()]
         assert checked == [other]
@@ -738,7 +763,7 @@ def test_the_interval_choice_persists_and_reaches_the_view() -> None:
 
     window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
     try:
-        other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+        other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
         window.distance_tick_interval_actions[other].setChecked(True)
         assert settings.get_distance_tick_interval() == other
         assert window.map_view._edge_tick_item._interval == other

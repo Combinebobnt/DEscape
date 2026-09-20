@@ -549,7 +549,8 @@ def _diamond_column_edges(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndar
     side tips land mid-column, not at the bounding box's own edge columns)
     -- callers MUST filter on `used`, since `np.argmax`/reverse-argmax
     return 0 for an all-False column, which would otherwise silently
-    produce a spurious edge at row 0.
+    produce a spurious edge at row 0. Those two columns are still darkened,
+    at inner corners only, by shadow_tip_indices(), which owns them.
 
     This is what skirt_quad_indices() and shadow_quad_indices() below build
     their per-column edges from, replacing skirt_quad_indices' own former
@@ -746,7 +747,9 @@ def shadow_quad_indices(
 
 
 @lru_cache(maxsize=256)
-def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def shadow_apex_indices(
+    tile_px: int, rise_px: int, sides: str = "both"
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """The contact-shadow band's two APEX columns (half_w - 1 and half_w),
     as their own once-per-tile pass, in shadow_quad_indices' own frame and
     four-array (dst_y, dst_x, depth, span) format.
@@ -783,8 +786,8 @@ def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndar
     columns, and the caster's own top face covers everything from row 0
     down, leaving exactly that many rows visible above the apex. Returning
     the full exposure rather than a pre-capped strip keeps this module to
-    geometry and leaves falloff to render.py's CONTACT_RAMP_DIVISOR, the
-    same split shadow_quad_indices already documents. In practice the ramp
+    geometry and leaves falloff to render.py's _contact_ramp, the same
+    split shadow_quad_indices already documents. In practice the ramp
     reaches an exact 1.0 no-op after a few rows, so most of a tall wedge is
     an inert multiply rather than visible darkening.
 
@@ -798,7 +801,22 @@ def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndar
     depth is 0 at the row touching the caster's apex and grows upward;
     0 <= depth < span holds elementwise, as for the band. dst_y is always
     negative (above the caster's own diamond), so callers MUST clip, same
-    as the band."""
+    as the band.
+
+    `sides` narrows the wedge to the flank(s) whose direct back neighbour is
+    lower: "up_left" keeps dst_x <= half_w, "up_right" keeps
+    dst_x >= half_w - 1, "both" keeps everything. The full wedge spans both
+    flanks of the apex, so on a straight run where only one side casts, the
+    other flank drew a 1px spur at the opposite slope to the contour, a
+    short perpendicular tick at every tile apex. The two apex columns are
+    SHARED by both halves, not partitioned: a strict half_w split was
+    measured to reopen a 1px hole at the junction. "both" is exactly the
+    union of the two halves.
+
+    The diamond's two tip columns (0 and 2*half_w - 1) are unused here and
+    in every other darkening pass, since they hold no diamond pixels."""
+    if sides not in ("up_left", "up_right", "both"):
+        raise ValueError(f"sides must be 'up_left', 'up_right' or 'both', got {sides!r}")
     if rise_px <= 0:
         raise ValueError(f"rise_px must be positive, got {rise_px}")
     _half_w, half_h = half_dims(tile_px)
@@ -822,6 +840,10 @@ def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndar
     # band's own claimed columns, which need tops[c] > rise_px, so the two
     # passes cannot overlap and cannot double-darken.
     adjacent = used & (2 * tops <= rise_px)
+    if sides == "up_left":
+        adjacent &= cols <= _half_w
+    elif sides == "up_right":
+        adjacent &= cols >= _half_w - 1
     edge_x = cols[adjacent]
     if edge_x.size == 0:
         empty = np.zeros(0, dtype=np.int64)
@@ -831,6 +853,70 @@ def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndar
     dst_x = np.repeat(edge_x, avail).astype(np.int64)
     dst_y = (np.repeat(tops[edge_x] - 1, avail) - depth).astype(np.int64)
     span = np.full(dst_x.size, avail, dtype=np.int64)
+    return dst_y, dst_x, depth, span
+
+
+@lru_cache(maxsize=256)
+def shadow_tip_indices(
+    tile_px: int, rise_px: int, side: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """One of the caster's two diamond TIP columns, as its own contact-shadow
+    pass at inner corners, in shadow_quad_indices' own frame and four-array
+    (dst_y, dst_x, depth, span) format. "up_right" is column 2*half_w - 1,
+    "up_left" is column 0.
+
+    WHY THIS EXISTS. _diamond_column_edges marks columns 0 and 2*half_w - 1
+    unused (the tips are single points), so no other darkening pass claims
+    them. Two casters one screen-row apart, A = (x, y) and B = (x+1, y+1),
+    therefore leave a 2-column bare stripe: A's column 2*half_w - 1 and B's
+    column 0, adjacent canvas columns. On a straight run the contour jogs
+    past it unseen. At an INNER corner, where A and B both cast onto
+    N = (x+1, y), both bands converge into that stripe and it reads as a
+    break at the vertex. Widening a seam cannot close it: the caster has no
+    diamond pixels there. `used` does not apply here for the same reason.
+
+    The stripe is N's own two apex columns, rows 1 .. 2*half_h - rise_px - 1
+    of N. Each caster darkens only its OWN tip column ("up_right" for A onto
+    N, "up_left" for B onto N), so the two halves are disjoint and no pixel
+    darkens twice. Owning both columns from A was tried and put column
+    2*half_w one past A's bounding box, which chunked rendering selects tiles
+    by: verify_iso_chunks measured 8-96 px mismatches on real files. Row 0 of
+    N is never claimed, so this cannot collide with N's seam_apex_indices.
+
+    NOT the regress a prior design pass ruled out: the extent depends only
+    on the caster's own diamond and rise_px, so nothing here can taper. The
+    other caster's and N's elevations are the caller's GATE, never an input
+    to the size, the same discipline shadow_apex_indices keeps.
+
+    dst_y in [rise_px - half_h + 1, half_h - 1]: the band's own row range
+    plus one row at the bottom, derived from _diamond_column_edges. depth is
+    0 at the bottom row and grows upward; span is the row count, so
+    0 <= depth < span holds elementwise. Empty once rise_px >= 2*half_h - 1,
+    between the band's empty threshold and the apex wedge's; callers must
+    tolerate size-0 arrays and must clip."""
+    if side not in ("up_left", "up_right"):
+        raise ValueError(f"side must be 'up_left' or 'up_right', got {side!r}")
+    if rise_px <= 0:
+        raise ValueError(f"rise_px must be positive, got {rise_px}")
+    half_w, half_h = half_dims(tile_px)
+    tops, _bottoms, _used = _diamond_column_edges(tile_px)
+    # Top: one row below N's apex top edge, mapped into our frame (N sits
+    # half_h - rise_px higher). Bottom: our own top edge in the used column
+    # next to the tip, one row below the band's contact row there.
+    if side == "up_right":
+        column, apex_col, inner_col = 2 * half_w - 1, half_w - 1, 2 * half_w - 2
+    else:
+        column, apex_col, inner_col = 0, half_w, 1
+    top = int(tops[apex_col]) + 1 - half_h + rise_px
+    bottom = int(tops[inner_col])
+    avail = bottom - top + 1
+    if avail <= 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty.copy(), empty.copy(), empty.copy()
+    depth = np.arange(avail, dtype=np.int64)
+    dst_x = np.full(avail, column, dtype=np.int64)
+    dst_y = (bottom - depth).astype(np.int64)
+    span = np.full(avail, avail, dtype=np.int64)
     return dst_y, dst_x, depth, span
 
 
@@ -1285,6 +1371,188 @@ def unit_rise_px(corner_rise: np.ndarray, x: int, y: int, fx: float, fy: float) 
     return int(_round_div(rise.numerator, rise.denominator))
 
 
+def map_point_to_screen(
+    mx: float, my: float, rise_px: int, proj: IsoProjection
+) -> tuple[int, int]:
+    """The canvas pixel a CONTINUOUS map point (mx, my) sits on, already
+    raised by `rise_px` -- the ground point a sprite's hotspot lands on, and
+    the forward half of the pair `screen_to_map_point()` inverts.
+
+    Lifted verbatim out of render._resolve_unit_sprite(), which is the only
+    reason this expression is trustworthy: it is measured, and two details in
+    it are load-bearing rather than cosmetic.
+
+    **The trailing `+ half_h` is not a fudge, and leaving it out is what made
+    every sprite float exactly half a tile above its ground** (reported from a
+    live window 2026-08-24). `origin + ((mx+my)*half_w, (my-mx)*half_h)` maps
+    integer tile coords to tile_screen_origin's convention, which is the
+    diamond's BOUNDING-BOX TOP-LEFT, not its centre. Feed that map a tile's
+    four continuous corners and you get a diamond centred half_h ABOVE the one
+    actually painted; the x term is centred for free (the two +0.5s add), the y
+    term is not (they cancel). Only y needs it, and that was established by
+    measurement -- a visual "the base lands on its footprint diamond" check
+    passed while this was wrong, because half a tile reads as plausible contact
+    shadow.
+
+    **`rise_px` stays INSIDE the round()** (Track P3-g6): pulling it out can
+    differ by 1px from _paint_tile_and_units_sloped's own rounding, and would
+    break the flat-map byte-identity oracle this expression is required to
+    reduce to exactly. That is latent while `rise_px` is an int (the two
+    roundings then agree for every value, so no test can distinguish them) and
+    stops being latent the moment a caller passes a float, which is why the
+    annotation is `int` rather than a permissive numeric.
+
+    Continuous in both arguments on purpose. A span-1 axis passes the unit's
+    own coordinate straight through, so a unit at 35.2 and a unit at 35.9 no
+    longer land on the same pixel (they did until 2026-09-17: render._span_start
+    returned int(coord) for a span-1 axis, so both anchored at 35.5)."""
+    ax = round(proj.origin_x + (mx + my) * proj.half_w)
+    ay = round(proj.origin_y + (my - mx) * proj.half_h - rise_px) + proj.half_h
+    return ax, ay
+
+
+def _sloped_map_point(
+    sx: int, sy: int, x: int, y: int, corner_rise: np.ndarray, proj: IsoProjection
+) -> tuple[float, float] | None:
+    """The fractional point inside tile (x, y) that map_point_to_screen() maps
+    to (sx, sy) on Sloped's point-placement surface, or None.
+
+    The "Sloped has no analytic inverse" claim is true, and it is about the
+    TERRAIN surface -- sloped_quad_indices' per-screen-column integer
+    resample. A unit is not placed on that surface. It is placed on
+    unit_rise_px()'s two-triangle piecewise-planar one, which inverts in one
+    division:
+
+    - `sx` fixes `mx + my` outright, with no elevation term at all, so
+      `c = fx + fy` is known before anything else is.
+    - The triangle split is `fx + fy = 1`, i.e. a constant-`c` line, so a
+      constant-`sx` line lies wholly in ONE triangle. `sx` picks the branch;
+      there is no candidate enumeration here.
+    - Substituting `fy = c - fx` makes `rise` affine in `fx` with the SAME
+      slope `(ne - sw)` in both triangles, so `sy` is affine in `fx` with
+      slope `-(2*half_h + ne - sw)`. One division gives `fx`; `fy = c - fx`.
+
+    Returns None on a zero or wrong-signed denominator rather than a wrong
+    answer. That is reachable, not theoretical: half_w = 2*half_h and
+    elev_step = max(1, round(half_h * pct / 100)), so at pct = 200 one level
+    of drop from sw to ne gives exactly ne - sw = -2*half_h -- the same stop
+    at which _sloped_column_runs' max(raw_len, 1) clamp becomes reachable.
+
+    Caller validates by round-trip; see screen_to_map_point()."""
+    half_w, half_h = proj.half_w, proj.half_h
+    nw = int(corner_rise[y, x])
+    ne = int(corner_rise[y, x + 1])
+    sw = int(corner_rise[y + 1, x])
+    se = int(corner_rise[y + 1, x + 1])
+
+    denom = 2 * half_h + ne - sw
+    if denom <= 0:
+        return None
+
+    c = (sx - proj.origin_x) / half_w - x - y
+    row = proj.origin_y + (y - x + c) * half_h
+    if c <= 1:
+        k = row - nw - c * (sw - nw)
+    else:
+        k = row + se - sw - ne - c * (se - ne)
+    fx = (k - (sy - half_h)) / denom
+    return fx, c - fx
+
+
+def screen_to_map_point(
+    sx: int,
+    sy: int,
+    style: str,
+    proj: IsoProjection | None = None,
+    tile_px: int | None = None,
+    elevations: np.ndarray | None = None,
+    corner_rise: np.ndarray | None = None,
+    tile: tuple[int, int] | None = None,
+) -> tuple[float, float] | None:
+    """The CONTINUOUS map point under canvas pixel (sx, sy), or None --
+    map_point_to_screen()'s inverse, one branch per render style. Free
+    placement's Stage 2: the thing that lets a click put a unit exactly where
+    the cursor is instead of at the centre of whatever tile it fell in.
+
+    `tile` is Sloped's already-resolved terrain tile, from
+    render_cache.SlopedChunkCache.pick_tile() -- the same parameter and the
+    same reason as unit_pick.pick_unit()'s `terrain_tile`: the id plane is
+    integer-indexed and lives in a cache, and passing the answer in keeps this
+    module cache-free. None there means nothing is under the pixel.
+
+    **The answer is validated by round-trip, and that is not ceremony.** Per
+    unit_rise_px()'s own contract the rise formula may be written in exactly
+    one place, so the solve is fed back through unit_rise_px() and
+    map_point_to_screen() and accepted only if it reproduces (sx, sy) within
+    1px. Two reasons: it stops paint and pick drifting apart, and the terrain
+    surface and the point-placement surface genuinely differ by up to 1px
+    (tests/test_sloped_unit_placement.py asserts exactly that bound), so the
+    pick-plane tile can be one off near an edge. When fx or fy lands outside
+    [0, 1] the solve is retried once against the neighbour in the overflow
+    direction before giving up.
+
+    Flat and Stepped are nearly free. Flat is a division. Stepped's
+    screen_to_tile() already computes the continuous solve and then floors it;
+    this returns the floats, offset by the same half-tile centre shift that
+    map_point_to_screen's trailing + half_h mirrors."""
+    if style == "flat":
+        if tile_px is None:
+            return None
+        return sx / tile_px, sy / tile_px
+
+    if proj is None:
+        return None
+
+    if style == "stepped":
+        if elevations is None:
+            return None
+        found = screen_to_tile(sx, sy, elevations, proj)
+        if found is None:
+            return None
+        x, y = found
+        e = int(elevations[y, x])
+        u = sx - proj.origin_x - proj.half_w
+        v = (sy - proj.origin_y - proj.half_h) + e * proj.elev_step
+        cx = (u / proj.half_w - v / proj.half_h) / 2
+        cy = (u / proj.half_w + v / proj.half_h) / 2
+        return cx + 0.5, cy + 0.5
+
+    if style != "sloped":
+        raise ValueError(f"unknown terrain style {style!r}")
+    if corner_rise is None or tile is None:
+        return None
+
+    h1, w1 = corner_rise.shape
+    x, y = tile
+    for _attempt in (0, 1):
+        if not (0 <= x < w1 - 1 and 0 <= y < h1 - 1):
+            return None
+        solved = _sloped_map_point(sx, sy, x, y, corner_rise, proj)
+        if solved is None:
+            return None
+        fx, fy = solved
+        # Clamped BEFORE the round-trip, not after: (sx, sy) is an integer
+        # pixel, so a point painted at an exact tile edge routinely solves to
+        # a hair outside [0, 1], and treating that as an overflow would send a
+        # perfectly good edge click off to a neighbour that cannot match it.
+        # The round-trip below is what decides whether the clamp was honest.
+        cfx, cfy = min(max(fx, 0.0), 1.0), min(max(fy, 0.0), 1.0)
+        rise = unit_rise_px(corner_rise, x, y, cfx, cfy)
+        rx, ry = map_point_to_screen(x + cfx, y + cfy, rise, proj)
+        if abs(rx - sx) <= 1 and abs(ry - sy) <= 1:
+            return x + cfx, y + cfy
+        # One retry, against the neighbour the solve overflowed into. The
+        # pick plane's tile and the point-placement surface differ by up to
+        # 1px near an edge (tests/test_sloped_unit_placement.py's own bound),
+        # so being one tile off there is expected, not a bug to swallow.
+        step_x = -1 if fx < 0.0 else (1 if fx > 1.0 else 0)
+        step_y = -1 if fy < 0.0 else (1 if fy > 1.0 else 0)
+        if not (step_x or step_y):
+            return None
+        x, y = x + step_x, y + step_y
+    return None
+
+
 @lru_cache(maxsize=1024)
 def sloped_quad_indices(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
@@ -1480,8 +1748,8 @@ def index_extent(producer, *key) -> tuple[int, int, int, int] | None:
     arrays are globally sorted. skirt, shadow and sloped all emit
     column-major, and shadow's dst_y descends within a column.
 
-    maxsize 8192 covers the sum of the producers' own caches (8 + 256*5 +
-    1024 + 4096 = 6664), so an extent can never outlive its arrays' cache
+    maxsize 8192 covers the sum of the producers' own caches (8 + 256*6 +
+    1024 + 4096 = 6920), so an extent can never outlive its arrays' cache
     slot by more than the eviction order.
 
     sloped_quad_indices' equal-corner branch hands back diamond_indices'
@@ -1544,6 +1812,12 @@ def iso_tile_extent(
         boxes.append(index_extent(shadow_quad_indices, tile_px, rise_ur, "up_right"))
     if rise_diag > 0:
         boxes.append(index_extent(shadow_apex_indices, tile_px, rise_diag))
+    # The tip passes, unioned without their inner-corner gates for the same
+    # reason as the apex. Both stay inside the diamond's own bounding box.
+    if rise_ul > 0:
+        boxes.append(index_extent(shadow_tip_indices, tile_px, rise_ul, "up_left"))
+    if rise_ur > 0:
+        boxes.append(index_extent(shadow_tip_indices, tile_px, rise_ur, "up_right"))
     boxes = [b for b in boxes if b is not None]
     if not boxes:
         return None
@@ -1595,6 +1869,65 @@ def sloped_tile_outline(
     # top ends at the rightmost column's right edge and the reversed bottom
     # starts there, leaving one vertical edge at each end of the tile.
     return tuple(top + bottom[::-1])
+
+
+@lru_cache(maxsize=1024)
+def sloped_tile_edge_outline(
+    tile_px: int, side: str, d_nw: int, d_ne: int, d_sw: int, d_se: int
+) -> tuple[tuple[int, int], ...]:
+    """ONE side of sloped_tile_outline()'s ring, as (x, y) points in the same
+    tile-local, -d_min-normalized frame -- so a caller places it at the very
+    base_x/base_y that function's own points go to. Lets a multi-tile boundary
+    (the Select region's marching ants) emit only the edges facing outside the
+    region, instead of adding whole diamonds and stroking every interior seam.
+
+    Same `side` vocabulary and grid-neighbor pairing as tile_edge_indices and
+    sloped_tile_edge_indices -- "left" faces (x-1, y), "right" faces (x, y+1),
+    "up_left" faces (x, y-1), "up_right" faces (x+1, y).
+
+    Points are ordered to chain screen-clockwise, so consecutive sides of a
+    walk join end-to-start with no reversal at the call site: the two top
+    sides run left to right (up_left then up_right, W->N->E) and the two
+    bottom sides run right to left (right then left, E->S->W).
+
+    Uses sloped_tile_edge_indices' own `in_side` split VERBATIM (`cols <=
+    half_w` for left/up_left, `cols >= half_w` for right/up_right), so the two
+    sides of each pair overlap at the apex column on purpose. A strict
+    partition looks tidier and is wrong: `cols` runs 1 .. 2*half_w - 2, so
+    each staircase is already inset one column per side, and splitting
+    strictly leaves a 1px horizontal gap between consecutive tiles rather than
+    the vertical connector the ring needs. The overlap costs a 1px backtrack
+    at the apex, which the 2px cosmetic pen hides. Do not assert vertex-level
+    continuity for Sloped anywhere.
+
+    Takes sloped_tile_outline's EXCLUSIVE `y0 + run_len` for the bottom edge,
+    not sloped_tile_edge_indices' inclusive `- 1`: this is a polygon boundary
+    like that function's, not a pixel row to paint.
+
+    maxsize=1024, 4x sloped_tile_outline's 256, for the one reason that
+    function's own key set is multiplied here -- one entry per side."""
+    if side not in ("left", "right", "up_left", "up_right"):
+        raise ValueError(f"side must be one of left/right/up_left/up_right, got {side!r}")
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+    nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    half_w, _half_h = half_dims(tile_px)
+    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
+    in_side = (cols <= half_w) if side in ("left", "up_left") else (cols >= half_w)
+    edge_cols = cols[in_side].tolist()
+    if not edge_cols:
+        return ()
+    points: list[tuple[int, int]] = []
+    if side in ("up_left", "up_right"):
+        for c in edge_cols:
+            y0 = int(run_start[c])
+            points.append((c, y0))
+            points.append((c + 1, y0))
+    else:
+        for c in reversed(edge_cols):
+            y1 = int(run_start[c]) + int(run_len[c])
+            points.append((c + 1, y1))
+            points.append((c, y1))
+    return tuple(points)
 
 
 def sloped_tile_outline_coarse(
@@ -1745,6 +2078,27 @@ def tile_screen_bounds_swept(x, y, proj: IsoProjection):
     # blend can put a corner up to one elev_step above this tile's own
     # elevation, which shadow/skirt reach alone doesn't account for.
     y0 = y0 - elev_span - half_h - proj.corner_headroom_px
+    return x0, y0, x1, y1
+
+
+def tile_screen_bounds_over(x, y, lo, hi, proj: IsoProjection):
+    """tile_screen_bounds_swept() over the elevation range [lo, hi] rather
+    than the whole legal one. Elementwise like that function.
+
+    [lo, hi] must already include every elevation the tile's painted extent
+    depends on, not just its own: a Stepped skirt hangs down to its "left"/
+    "right" neighbour's height, and a Sloped corner takes its 3x3
+    neighbourhood's. With that given, the bottom edge needs no second
+    elev_span for the skirt drop, since the drop ends at `lo`.
+
+    y0 keeps the same retained elev_span slack tile_screen_bounds_swept()
+    carries (see its comment): it is not part of the sweep."""
+    half_w, half_h = proj.half_w, proj.half_h
+    elev_span = (proj.max_elev - proj.min_elev) * proj.elev_step
+    x0, y_hi = tile_screen_origin(x, y, hi, proj)
+    x1 = x0 + 2 * half_w
+    y1 = y_hi + (hi - lo) * proj.elev_step + 2 * half_h
+    y0 = y_hi - elev_span - half_h - proj.corner_headroom_px
     return x0, y0, x1, y1
 
 

@@ -65,7 +65,7 @@ def _differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     assert len(before) == len(after)
     ranges: list[tuple[int, int]] = []
     start = None
-    for i, (a, b) in enumerate(zip(before, after)):
+    for i, (a, b) in enumerate(zip(before, after, strict=True)):
         if a != b and start is None:
             start = i
         elif a == b and start is not None:

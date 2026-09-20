@@ -88,7 +88,8 @@ FIELDS = {
 # centres, pastures) -- see gen_unit_graphic_map.py's "Composite buildings"
 # section. Each piece carries its own file_name/angle_count/frame_count (a
 # sibling graphic can have a different frame_count than its parent) plus a
-# native-pixel (dx, dy) offset from the parent's own anchor.
+# native-pixel (dx, dy) offset from the parent's own anchor. Exactly one piece
+# per entry additionally carries `"parent": true`, checked per entry, not here.
 PIECE_FIELDS = {
     "unit_id": int,
     "file_name": str,
@@ -97,6 +98,12 @@ PIECE_FIELDS = {
     "dx": int,
     "dy": int,
 }
+# A _COMPOSITE_SCOPE piece also carries its raw annex misplacement, the depth-slot
+# input. Two exact shapes rather than a subset check, so a stray field still fails.
+COMPOSITE_PIECE_FIELDS = {**PIECE_FIELDS, "mx": float, "my": float, "slot": list}
+
+# Mirrors tools/gen_unit_graphic_map.py's _COMPOSITE_SCOPE (town centres, pastures).
+COMPOSITE_SCOPE_CONSTS = frozenset({71, 109, 141, 142, 2275, 2276, 2277, 1889, 1890, 2079, 2080})
 
 # unit_const -> depth-sorted piece file_names, read off the real .dat
 # (2026-08-29) via tools/gen_unit_graphic_map.py's annex walk. 109 is the
@@ -182,6 +189,37 @@ def test_decoration_shells_resolve_to_the_body_not_the_overlay(graphics):
             "animation; a wall body is a single static frame per shape"
         )
         assert entry["angle_count"] == 5, unit_const
+        # The flag is not lost, it moved: a non-parent piece after the body.
+        # Without this the test would stay green whether or not it ever came back.
+        names = [piece["file_name"] for piece in entry["pieces"]]
+        assert names[-1] == PALISADE_FLAG_SHELL and not entry["pieces"][-1].get("parent"), unit_const
+
+
+# unit_const -> (file_name, dx, dy, is_parent) per piece, read off the real .dat
+# 2026-09-02: deltas in .dat list order, then the flag shell last.
+KNOWN_WALL_PIECES = {
+    72: [("b_dark_wall_palisade_x1", 0, 0, True), (PALISADE_FLAG_SHELL, 0, 0, False)],
+    119: [("b_scen_wall_palisade_fortified_x1", 0, 0, True), (PALISADE_FLAG_SHELL, 0, 0, False)],
+    788: [
+        ("b_scen_wall_sea_underwater_x1", 0, 0, False),
+        ("b_scen_wall_sea_x1", 0, 0, True),
+        (PALISADE_FLAG_SHELL, 0, 0, False),
+    ],
+}
+
+
+def test_decoration_shell_walls_carry_their_flag_and_base_as_pieces(graphics):
+    for unit_const, expected in KNOWN_WALL_PIECES.items():
+        pieces = graphics[str(unit_const)]["pieces"]
+        got = [(p["file_name"], p["dx"], p["dy"], bool(p.get("parent"))) for p in pieces]
+        assert got == expected, f"unit_const {unit_const}: {got}"
+        for piece in pieces:
+            # Mirrors the generator's angle_count == 5 guard, without a real .dat.
+            assert piece["angle_count"] == 5, (unit_const, piece["file_name"])
+            assert piece["unit_id"] == unit_const, (unit_const, piece["file_name"])
+            # 90-frame flag vs 1-frame bodies: stops a retarget onto some other overlay passing.
+            want_frames = 90 if piece["file_name"] == PALISADE_FLAG_SHELL else 1
+            assert piece["frame_count"] == want_frames, (unit_const, piece["file_name"])
 
 
 def test_farm_family_has_no_sld_entry(graphics):
@@ -208,7 +246,7 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
     assert graphics, "table is empty"
     for key, entry in graphics.items():
         assert key.isdigit(), f"key {key!r} is not a unit_const"
-        fields = set(entry) - {"pieces", "rotation_is_variant"}
+        fields = set(entry) - {"pieces", "rotation_is_variant", "variant_count"}
         assert fields == set(FIELDS), f"unit_const {key} has fields {sorted(entry)}"
         for field, kind in FIELDS.items():
             assert isinstance(entry[field], kind), f"unit_const {key}.{field}"
@@ -217,13 +255,27 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
                 f"unit_const {key}: rotation_is_variant is omitted when false, "
                 f"never written as false"
             )
+        if "variant_count" in entry:
+            # Only beside rotation_is_variant, and only when the .sld was
+            # readable at generation time -- the edit path's cycle modulus.
+            assert entry.get("rotation_is_variant") is True, (
+                f"unit_const {key}: variant_count belongs only on a variant-indexed graphic"
+            )
+            assert isinstance(entry["variant_count"], int) and entry["variant_count"] >= 1, (
+                f"unit_const {key}.variant_count"
+            )
         if "pieces" in entry:
             assert isinstance(entry["pieces"], list) and len(entry["pieces"]) >= 2, (
                 f"unit_const {key}: pieces must be the whole composite, parent included"
             )
+            parents = [p for p in entry["pieces"] if "parent" in p]
+            assert len(parents) == 1 and parents[0]["parent"] is True, (
+                f"unit_const {key}: exactly one piece must be marked parent, got {len(parents)}"
+            )
+            shape = COMPOSITE_PIECE_FIELDS if int(key) in COMPOSITE_SCOPE_CONSTS else PIECE_FIELDS
             for i, piece in enumerate(entry["pieces"]):
-                assert set(piece) == set(PIECE_FIELDS), f"unit_const {key} piece {i}: {sorted(piece)}"
-                for field, kind in PIECE_FIELDS.items():
+                assert set(piece) - {"parent"} == set(shape), f"unit_const {key} piece {i}: {sorted(piece)}"
+                for field, kind in shape.items():
                     assert isinstance(piece[field], kind), f"unit_const {key} piece {i}.{field}"
 
 
@@ -272,6 +324,108 @@ def test_town_centre_pieces_cancel_to_zero_but_pasture_pieces_do_not(graphics):
         entry = graphics[str(unit_const)]
         nonzero = [p for p in entry["pieces"] if (p["dx"], p["dy"]) != (0, 0)]
         assert len(nonzero) >= 2, f"pasture {unit_const} should have real corner-post offsets"
+
+
+def test_the_parent_piece_is_the_entrys_own_graphic_wherever_it_sorts(graphics):
+    """sprite_pieces_for() drops the whole composite when the marked parent
+    fails, so the marker must sit on the piece a non-composite consumer draws:
+    the entry's own top-level graphic. Pinned positions: a town centre's own
+    back piece sorts to index 1, and an X-state gate's parent is its corner
+    pillar at index 0, not the middle span (see the generator's gate branch)."""
+    for key, entry in graphics.items():
+        for piece in entry.get("pieces", ()):
+            if piece.get("parent"):
+                assert piece["file_name"] == entry["file_name"], key
+    assert [i for i, p in enumerate(graphics["109"]["pieces"]) if p.get("parent")] == [1]
+    assert graphics["487"]["pieces"][0].get("parent") is True
+    assert graphics["487"]["pieces"][0]["file_name"] == "b_west_gate_stone_corner_x1"
+
+
+def test_composite_pieces_carry_their_raw_misplacement(graphics):
+    """Read off the real .dat 2026-09-02 (depth-slots plan, finding 1). A town
+    centre's dx/dy all cancel to (0, 0), so this is the only record of where
+    each piece really sits."""
+    tc = [(p["file_name"], p["mx"], p["my"]) for p in graphics["109"]["pieces"]]
+    assert tc == [
+        ("b_dark_town_center_age1_main_x1", 1.0, -1.0),
+        ("b_dark_town_center_age1_back_x1", 0.0, 0.0),
+        ("b_dark_town_center_age1_center_x1", -0.5, 0.5),
+        ("b_dark_town_center_age1_front_x1", -1.0, 1.0),
+    ]
+    pasture = [(p["mx"], p["my"]) for p in graphics["1889"]["pieces"]]
+    assert pasture == [(2.0, -2.0), (0.0, 0.0), (2.0, 2.0), (-2.0, -2.0), (-2.0, 2.0)]
+
+
+# unit_const -> each piece's [sx, sy] depth slot, in piece order, measured by
+# tools/measure_piece_slots.py against the real art (see the corpus test below,
+# which re-runs it). A town centre's `main` slots three tiles earlier than the
+# rest; a pasture's four corner posts each land on their own tile.
+KNOWN_SLOTS = {
+    109: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    1889: [[3, 0], [0, 3], [0, 2], [0, 1], [0, 3]],
+}
+
+
+def test_composite_pieces_carry_their_measured_depth_slot(graphics):
+    for unit_const, slots in KNOWN_SLOTS.items():
+        assert [p["slot"] for p in graphics[str(unit_const)]["pieces"]] == slots, unit_const
+
+
+def test_every_slot_lies_inside_its_parents_own_footprint(graphics):
+    """Invariant 1: a piece anchored outside the building would let terrain
+    beyond it paint over the piece's feet."""
+    from descape.terrain_palette import tile_span
+
+    for unit_const in COMPOSITE_SCOPE_CONSTS:
+        entry = graphics.get(str(unit_const))
+        if entry is None:
+            continue
+        span_x, span_y = tile_span(unit_const, (1, 1))
+        for piece in entry["pieces"]:
+            sx, sy = piece["slot"]
+            assert 0 <= sx < span_x and 0 <= sy < span_y, (unit_const, piece["file_name"])
+
+
+def test_only_composite_scope_entries_carry_a_slot(graphics):
+    """Gates and decoration-shell walls deliberately have none: their pieces
+    paint at the unit's single anchor tile, which render.py must keep
+    supporting (see tests/test_sprite_chunks.py's no-slot fallback pin)."""
+    slotted = {int(k) for k, e in graphics.items()
+               if any("slot" in p for p in e.get("pieces", ()))}
+    assert slotted == {c for c in COMPOSITE_SCOPE_CONSTS if str(c) in graphics}
+
+
+@pytest.mark.corpus
+def test_the_committed_slots_still_match_the_real_art(request):
+    """`_PIECE_SLOTS` is measured, not derived: the generator cannot compute it
+    without decoding .sld art. This is the only check that it still describes
+    the installed game, modelled on
+    tests/test_sprite_edit_bbox.py's reach test -- same env-var-only install
+    route, same assert-it-read-something-first non-vacuity guard."""
+    from descape import asset_source
+
+    import conftest
+
+    if asset_source.get_install_path() is None:
+        pytest.skip(
+            "no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH to one. The "
+            "install configured in config.yaml does NOT count here: "
+            "conftest._isolated_settings redirects CONFIG_PATH for every test"
+        )
+    measure = conftest.load_verify_module("measure_piece_slots")
+    generator = measure._generator_module()
+
+    measured = {}
+    for unit_const in sorted(generator._COMPOSITE_SCOPE):
+        result = measure.measure(unit_const)
+        if result is not None:
+            measured[unit_const] = [list(row["slot"]) for row in result["rows"]]
+    assert measured, "no composite piece art was readable, so this proves nothing"
+    for unit_const, slots in measured.items():
+        assert generator._PIECE_SLOTS[unit_const] == slots, (
+            f"unit_const {unit_const}: the real art now wants {slots}. Re-run "
+            f"tools/measure_piece_slots.py and commit its table"
+        )
 
 
 def test_counts_are_positive(graphics):
@@ -342,5 +496,10 @@ def test_non_gate_composite_scope_is_unaffected_by_the_gate_rule(graphics):
     """Regression guard on the Dock shell path (and every other ordinary
     legacy-shell resolution): the class-39 "every modern delta" rule must
     stay scoped to class 39 and never leak a "pieces" key onto an unrelated
-    single-graphic entry."""
+    single-graphic entry. `pieces` outside class 39 is exactly the town
+    centre/pasture scope plus the three decoration-shell walls."""
     assert "pieces" not in graphics["45"]  # Dock, resolved via its own shell delta
+    non_gate = {
+        int(k) for k, e in graphics.items() if "pieces" in e and "_gate_" not in e["file_name"]
+    }
+    assert non_gate == COMPOSITE_SCOPE_CONSTS | set(KNOWN_WALL_PIECES)

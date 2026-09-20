@@ -66,9 +66,11 @@ def _check_desktop_file(appdir: Path) -> list[str]:
     if "Desktop Entry" not in parser:
         return ["DEscape.desktop has no [Desktop Entry] section"]
     section = parser["Desktop Entry"]
-    for key in REQUIRED_DESKTOP_KEYS:
-        if key not in section or not section[key].strip():
-            errors.append(f"DEscape.desktop missing key {key!r}")
+    errors.extend(
+        f"DEscape.desktop missing key {key!r}"
+        for key in REQUIRED_DESKTOP_KEYS
+        if key not in section or not section[key].strip()
+    )
     return errors
 
 

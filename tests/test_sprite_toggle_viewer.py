@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import asset_source, render_cache, unit_sprites, viewer
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 pytestmark = [

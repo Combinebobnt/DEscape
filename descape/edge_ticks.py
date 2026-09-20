@@ -66,11 +66,58 @@ def label_center_px(font_px: int) -> float:
     return MAJOR_TICK_PX + LABEL_GAP_PX + label_box_px(font_px)[1] / 2.0
 
 
-def device_reach_px(font_px: int) -> float:
-    """The furthest any drawn pixel can land from its anchor: the label
-    box's own far corner. Every other mark is strictly nearer, which is
-    what makes this the single number scene_pad() has to cover."""
+def label_reach_px(font_px: int) -> float:
+    """How far out a major's numeric label box's own far corner can land."""
     return label_center_px(font_px) + math.hypot(*label_box_px(font_px)) / 2.0
+
+
+# Clearance between a numeric label's reach and the axis letter's reach.
+AXIS_LABEL_GAP_PX = 3.0
+
+
+def axis_letter(edge: str) -> str:
+    """The game-engine axis an edge's numbers measure. The y0/y1 edges are
+    the ones along which x varies, per EdgeRun, and AoE2:DE calls that the X
+    axis (see AoE2ScenarioParser's docs/images/map_coordinates_explained.png,
+    drawn on a real DE editor screenshot)."""
+    if edge in ("y0", "y1"):
+        return "X"
+    if edge in ("x0", "x1"):
+        return "Y"
+    raise ValueError(f"unknown edge {edge!r}")
+
+
+def axis_label_box_px(font_px: int) -> tuple[float, float]:
+    """The square box one axis letter is centered in, the height of a
+    numeric label box. Multiply-before-divide for the same exactness."""
+    side = font_px * 16.0 / 12.0
+    return side, side
+
+
+def axis_label_center_px(font_px: int) -> float:
+    """How far out along the outward ray the axis letter's box center sits.
+
+    Measured past both boxes' half-diagonals rather than their half-heights:
+    the outward ray is diagonal in every iso view, so an axis-aligned number
+    box reaches along it by up to its half-diagonal, and a letter placed off
+    half-heights overlaps a neighbouring major's number."""
+    return (
+        label_reach_px(font_px)
+        + AXIS_LABEL_GAP_PX
+        + math.hypot(*axis_label_box_px(font_px)) / 2.0
+    )
+
+
+def axis_label_reach_px(font_px: int) -> float:
+    return axis_label_center_px(font_px) + math.hypot(*axis_label_box_px(font_px)) / 2.0
+
+
+def device_reach_px(font_px: int) -> float:
+    """The furthest any drawn pixel can land from its anchor: the larger of
+    the numeric label's and the axis letter's far corners. Every other mark
+    is strictly nearer, which is what makes this the single number
+    scene_pad() has to cover."""
+    return max(label_reach_px(font_px), axis_label_reach_px(font_px))
 
 # Multiplier on the scene-space pad, and NOT a round-number fudge. Under
 # Flat's scale(1, 0.5) then rotate(-45) the transform's smallest singular

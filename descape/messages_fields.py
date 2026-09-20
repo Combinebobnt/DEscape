@@ -4,14 +4,21 @@ the two pure functions descape/messages_model.py's read/write path builds
 on, mirroring descape/diplomacy_fields.py's split from its panel.
 
 Newlines are the one real gotcha here, confirmed against the corpus: a
-stored field uses a lone `\r` *or* a lone `\n` as its line separator, never
-`\r\n`, and the choice varies
+stored Messages field uses a lone `\r` *or* a lone `\n` as its line
+separator, and the choice varies
 per field within one file (2_Joan_coop_3 has `\r\r` hints and `\n\n`
 scouts). QPlainTextEdit.setPlainText()/toPlainText() round-trips a lone `\r`
 1:1 to `\n` and back, so normalize_for_display()/encode_for_write() just
 track which token a field originally used and substitute on the way back
 out -- never mixing tokens across fields, and never touching a field with
 no newline at all.
+
+`\r\n` is a third token, absent from all 132 Messages values in the 22-file
+corpus but present in trigger `description`, whose prose editor
+(descape/trigger_panel.py's ProseTextEdit) shares these two functions. That
+field is why substitute_newlines() exists as a str -> str helper: a trigger
+field is stored as a str on the entry, and the <H length prefix and NUL
+guard encode_for_write() adds belong to the Messages block alone.
 """
 
 from __future__ import annotations
@@ -48,15 +55,22 @@ MESSAGE_FIELDS: tuple[MessageFieldSpec, ...] = (
 
 def normalize_for_display(text: str) -> tuple[str, str | None]:
     """Maps a field's stored text to what QPlainTextEdit should show, plus
-    which newline token the field originally used ("\\r", "\\n", or None for
-    a field with no newline at all -- distinct from "\\n" so a clean field's
-    round trip through encode_for_write() reproduces the original bytes
-    exactly rather than silently adopting "\\n" as this field's convention).
+    which newline token the field originally used ("\\r\\n", "\\r", "\\n", or
+    None for a field with no newline at all -- distinct from "\\n" so a clean
+    field's round trip through encode_for_write() reproduces the original
+    bytes exactly rather than silently adopting "\\n" as this field's
+    convention).
 
-    A field may not mix `\\r` and `\\n` -- not seen in the corpus, but if it
-    somehow does, `\\r` is treated as this field's token, an over-cautious
-    default rather than a raise on a never-observed shape.
+    `\\r\\n` is tested before the bare `\\r`, or a CRLF field would latch
+    `\\r`, display a phantom blank line per break and write back doubled.
+
+    A field may not mix its separators -- not seen in the corpus for any of
+    these fields, but if it somehow does, the first token matched is treated
+    as this field's, an over-cautious default rather than a raise on a
+    never-observed shape.
     """
+    if "\r\n" in text:
+        return text.replace("\r\n", "\n"), "\r\n"
     if "\r" in text:
         return text.replace("\r", "\n"), "\r"
     if "\n" in text:
@@ -64,10 +78,21 @@ def normalize_for_display(text: str) -> tuple[str, str | None]:
     return text, None
 
 
+def substitute_newlines(display: str, newline_token: str | None) -> str:
+    """Inverse of normalize_for_display(): substitutes `display`'s `\\n` back
+    to `newline_token`, defaulting to `\\n` when the field had none.
+
+    Carries no NUL or length guard: those are encode_for_write()'s, and they
+    belong to the Messages block's <H length prefix rather than to every
+    caller (descape/trigger_panel.py's prose fields store a str on a trigger
+    or effect, with no such prefix in the way).
+    """
+    token = newline_token if newline_token is not None else "\n"
+    return display.replace("\n", token) if token != "\n" else display
+
+
 def encode_for_write(display: str, newline_token: str | None) -> bytes:
-    """Inverse of normalize_for_display(): substitutes `display`'s `\\n`
-    back to `newline_token` (defaulting to `\\n` when the field had none),
-    then UTF-8 encodes.
+    """substitute_newlines(), then UTF-8 encode, for the Messages block.
 
     Raises ValueError on a NUL character (the game's strings are C-style;
     the library's del_str_trail would silently eat one on the next read) or
@@ -75,9 +100,7 @@ def encode_for_write(display: str, newline_token: str | None) -> bytes:
     """
     if "\x00" in display:
         raise ValueError("message text cannot contain a NUL character")
-    token = newline_token if newline_token is not None else "\n"
-    raw = display.replace("\n", token) if token != "\n" else display
-    encoded = raw.encode("utf-8")
+    encoded = substitute_newlines(display, newline_token).encode("utf-8")
     if len(encoded) > MAX_FIELD_BYTES:
         raise ValueError(
             f"message text is {len(encoded)} UTF-8 bytes, over the {MAX_FIELD_BYTES}-byte field limit"

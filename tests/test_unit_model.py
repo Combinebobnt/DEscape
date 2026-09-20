@@ -21,7 +21,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
@@ -178,6 +177,27 @@ def test_set_rotation_refuses_a_non_angle_const(reference_id, unit_const) -> Non
         unit.unit_const = unit_const
     with pytest.raises(ValueError):
         model.set_rotation(unit, 1.0)
+    assert not model.has_edits
+    assert model.serialize() == before
+
+
+def test_set_variant_dirties_only_the_cycled_tree() -> None:
+    loaded, model = _open()
+    oak = _unit(loaded, _REF_TREE_OAK)
+    model.set_variant(oak, 8.0)
+    assert oak.rotation == 8.0
+    assert model.has_edits
+    dirty = [blob is None for blobs in model._blobs for blob in blobs]
+    assert sum(dirty) == 1
+
+
+@pytest.mark.parametrize("reference_id", [_REF_WALL, _REF_ARCHER_P1, _REF_HOUSE])
+def test_set_variant_refuses_a_non_cyclable_const(reference_id) -> None:
+    """A wall (neighbour-derived variant), an ANGLE archer and an INERT house."""
+    loaded, model = _open()
+    before = model.serialize()
+    with pytest.raises(ValueError):
+        model.set_variant(_unit(loaded, reference_id), 1.0)
     assert not model.has_edits
     assert model.serialize() == before
 
@@ -352,13 +372,13 @@ def test_add_reserves_ids_above_every_existing_reference_id() -> None:
 def test_add_rotation_is_a_verbatim_pass_through() -> None:
     """AGENTS.md's hard rule: rotation is a variant index for many GAIA
     objects, not an angle. add() must never validate or normalize it."""
-    loaded, model = _open()
+    _loaded, model = _open()
     unit = model.add(player=0, unit_const=349, x=1.5, y=1.5, z=0.0, rotation=41.0)
     assert unit.rotation == 41.0
 
 
 def test_add_rejects_an_out_of_range_player() -> None:
-    loaded, model = _open()
+    _loaded, model = _open()
     with pytest.raises(ValueError):
         model.add(player=9, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
 
@@ -372,7 +392,7 @@ def test_add_depoisons_before_constructing_unit() -> None:
     1.58, so the real value must land after the fix, not a None sentinel --
     that's what discriminates this fix from the rejected None-sentinel
     variant."""
-    loaded, model = _open()
+    _loaded, model = _open()
     _poison_unit_caption_fields()
     try:
         unit = model.add(player=0, unit_const=83, x=1.5, y=1.5, z=0.0, rotation=0.0)
@@ -405,7 +425,7 @@ def test_add_many_places_units_with_contiguous_reference_ids() -> None:
 def test_add_many_rotation_and_frame_pass_through_verbatim() -> None:
     """Same hard rule as add()'s own verbatim-pass-through test: rotation is
     a variant index here, never validated or normalized."""
-    loaded, model = _open()
+    _loaded, model = _open()
     spec = UnitAddSpec(x=1.5, y=1.5, unit_const=349, rotation=41.0, initial_animation_frame=41)
     unit = model.add_many(player=0, specs=[spec])[0]
     assert unit.rotation == 41.0
@@ -416,10 +436,10 @@ def test_add_many_matches_add_for_equivalent_placements() -> None:
     """The batch path must place the same shape of unit add() does -- this
     guards against add_many() drifting onto a different set of Unit
     defaults (z, status, garrisoned_in_id, caption) than add()'s own."""
-    loaded_a, model_a = _open()
+    _loaded_a, model_a = _open()
     single = model_a.add(player=1, unit_const=349, x=3.5, y=3.5, z=0.0, rotation=2.0, initial_animation_frame=2)
 
-    loaded_b, model_b = _open()
+    _loaded_b, model_b = _open()
     spec = UnitAddSpec(x=3.5, y=3.5, unit_const=349, rotation=2.0, initial_animation_frame=2)
     batched = model_b.add_many(player=1, specs=[spec])[0]
 
@@ -430,7 +450,7 @@ def test_add_many_matches_add_for_equivalent_placements() -> None:
 
 
 def test_add_many_rejects_an_out_of_range_player() -> None:
-    loaded, model = _open()
+    _loaded, model = _open()
     spec = UnitAddSpec(x=1.5, y=1.5, unit_const=83, rotation=0.0, initial_animation_frame=0)
     with pytest.raises(ValueError):
         model.add_many(player=9, specs=[spec])
@@ -440,7 +460,7 @@ def test_add_many_depoisons_before_constructing_units() -> None:
     """Same regression as test_add_depoisons_before_constructing_unit: the
     identical caption-field assignment sits in add_many()'s own Unit(...)
     construction (unit_model.py's Paint Can-only batch path)."""
-    loaded, model = _open()
+    _loaded, model = _open()
     _poison_unit_caption_fields()
     try:
         spec = UnitAddSpec(x=1.5, y=1.5, unit_const=83, rotation=0.0, initial_animation_frame=0)
@@ -480,7 +500,7 @@ def test_remove_many_deletes_every_unit() -> None:
 
 
 def test_remove_many_of_an_empty_list_is_a_no_op() -> None:
-    loaded, model = _open()
+    _loaded, model = _open()
     model.remove_many([])
     assert not model.has_edits
 
@@ -544,7 +564,7 @@ def test_an_operation_on_an_untracked_unit_raises() -> None:
     bypassing add()) must not be silently accepted."""
     from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-    loaded, model = _open()
+    _loaded, model = _open()
     stray = Unit(
         player=0, x=0, y=0, z=0, reference_id=99999, unit_const=4, status=2,
         rotation=0, initial_animation_frame=0,
@@ -562,6 +582,10 @@ def _mutate_set_position(loaded, model) -> None:
 
 def _mutate_set_rotation(loaded, model) -> None:
     model.set_rotation(_unit(loaded, _REF_ARCHER_P1), 1.5)
+
+
+def _mutate_set_variant(loaded, model) -> None:
+    model.set_variant(_unit(loaded, _REF_TREE_OAK), 8.0)
 
 
 def _mutate_set_unit_const(loaded, model) -> None:
@@ -594,6 +618,7 @@ def _mutate_remove(loaded, model) -> None:
     [
         _mutate_set_position,
         _mutate_set_rotation,
+        _mutate_set_variant,
         _mutate_set_unit_const,
         _mutate_reassign,
         _mutate_add,
@@ -604,6 +629,7 @@ def _mutate_remove(loaded, model) -> None:
     ids=[
         "set_position",
         "set_rotation",
+        "set_variant",
         "set_unit_const",
         "reassign",
         "add",
@@ -638,7 +664,7 @@ def test_a_direct_list_append_does_not_bump_unit_gen() -> None:
     invalidated."""
     from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-    loaded, model = _open()
+    loaded, _model = _open()
     gen0 = loaded.unit_gen
     loaded.unit_manager.units[0].append(
         Unit(player=0, x=0, y=0, z=0, reference_id=88888, unit_const=4, status=2, rotation=0, initial_animation_frame=0)
@@ -679,7 +705,7 @@ def test_check_alignment_catches_a_stale_position_entry() -> None:
 
 def test_check_alignment_catches_a_leaked_position_entry() -> None:
     """The id() reuse hazard: an entry left behind for a removed unit."""
-    loaded, model = _open()
+    _loaded, model = _open()
     stray = object()
     model._pos[id(stray)] = (0, 0)
 
@@ -730,7 +756,7 @@ def test_referencing_matches_the_flat_scan_it_replaces() -> None:
         expected = flat_scan(unit)
         actual = model.referencing(unit)
         assert len(actual) == len(expected)
-        assert all(a is b for a, b in zip(actual, expected))
+        assert all(a is b for a, b in zip(actual, expected, strict=True))
 
     assert model.referencing(self_ref) == []
     assert [u.reference_id for u in model.referencing(_unit(loaded, _REF_HOUSE))] == [_REF_VILLAGER_P1]
@@ -773,7 +799,7 @@ def test_removing_a_garrison_holder_keeps_the_map_answering() -> None:
 def test_check_alignment_catches_a_drifted_highest_reference_id() -> None:
     """A cache claiming to be fresh while sitting above (or below) the real
     maximum would hand the next add() an id a full rescan never would."""
-    loaded, model = _open()
+    _loaded, model = _open()
     model._highest_ref_id += 5
     model._highest_ref_id_stale = False
 

@@ -13,8 +13,8 @@ that's sufficient.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 # Characters that read as a divider rule when repeated. Fitted against 1570
 # trigger names across 16 examples/ scenarios; re-measured against a much

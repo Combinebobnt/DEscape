@@ -22,10 +22,10 @@ install is configured never survives past that point.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
 
 from AoE2ScenarioParser.datasets.buildings import BuildingInfo
 from AoE2ScenarioParser.datasets.heroes import HeroInfo
@@ -218,6 +218,20 @@ def object_name(id_: int) -> str:
     otherwise supply.
     """
     return resolve_name(id_, "", _dat_entry("objects", id_))
+
+
+def tech_name(id_: int) -> str:
+    """Display name for any tech id, including ones `techs()`' TechInfo enum
+    omits -- the tech-side mirror of object_name(), and for the same reason:
+    a scenario's disable lists can legitimately carry an id no enum covers,
+    and that must read as a known gap rather than blank.
+
+    Object ids and tech ids are separate id spaces that collide freely on the
+    same number, which is why this is its own function rather than a
+    `section` argument to object_name(): resolving a tech through the objects
+    table would name it after an unrelated unit.
+    """
+    return resolve_name(id_, "", _dat_entry("techs", id_))
 
 
 # -- document-scoped references: TriggerId, VariableId -----------------------

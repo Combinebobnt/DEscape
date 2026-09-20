@@ -355,3 +355,34 @@ def test_every_diffrecord_subclass_accepts_the_four_parameter_shape() -> None:
         for name in ("require_target", "undo", "redo"):
             params = list(inspect.signature(getattr(cls, name)).parameters)
             assert "units" in params, f"{cls.__name__}.{name} has no `units` parameter: {params}"
+
+
+def test_a_push_that_strands_the_saved_marker_reads_dirty() -> None:
+    """Undo, then make a DIFFERENT edit: _push()'s truncation destroys the
+    record the saved marker pointed at, so leaving the marker alone would let
+    is_dirty read clean at a cursor that no longer reconstructs the file on
+    disk. A region move is undo-then-push by construction, which is what makes
+    this reachable in one gesture (save right after a paste, then drag it)."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.mark_saved()
+    assert not hist.is_dirty
+    hist.undo(tiles)
+    hist.apply("paint again", tiles, _paint(tiles, 0, 9))
+    assert hist.is_dirty
+
+
+def test_a_push_at_the_tip_leaves_the_saved_marker_alone() -> None:
+    """The no-false-positive half: nothing was truncated, so the marker still
+    names a live record and only the cursor moving off it makes us dirty."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.mark_saved()
+    saved = hist.saved_at_cursor
+    hist.apply("paint again", tiles, _paint(tiles, 0, 9))
+    assert hist.saved_at_cursor == saved
+    assert hist.is_dirty
+    hist.undo(tiles)
+    assert not hist.is_dirty, "undoing back onto the saved cursor is clean again"

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from descape import edge_ticks, iso_geometry, settings
+from descape import edge_ticks, grid_overlay, iso_geometry, settings
 
 
 def _write_config(tmp_path: Path, text: str) -> None:
@@ -101,9 +101,11 @@ def test_set_elev_step_pct_migrates_away_legacy_divisor(tmp_path: Path) -> None:
 def test_elev_step_stops_span_min_to_max() -> None:
     assert settings.ELEV_STEP_PCT_STOPS[0] == settings.ELEV_STEP_PCT_MIN
     assert settings.ELEV_STEP_PCT_STOPS[-1] == settings.ELEV_STEP_PCT_MAX
+    # strict=False: a list against its own tail is ragged by construction, and
+    # the one-shorter right operand is what makes this the pairwise check.
     assert all(
         b - a == settings.ELEV_STEP_PCT_STEP
-        for a, b in zip(settings.ELEV_STEP_PCT_STOPS, settings.ELEV_STEP_PCT_STOPS[1:])
+        for a, b in zip(settings.ELEV_STEP_PCT_STOPS, settings.ELEV_STEP_PCT_STOPS[1:], strict=False)
     )
 
 
@@ -223,6 +225,88 @@ def test_distance_ticks_round_trips_through_the_file(tmp_path: Path, monkeypatch
     assert settings.get_distance_ticks() is True
 
 
+def test_grid_overlay_defaults_off_at_the_default_appearance(tmp_path: Path) -> None:
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_grid_overlay() is False
+    assert settings.get_grid_blend() == grid_overlay.BLEND_DEFAULT
+    assert settings.get_grid_thickness() == grid_overlay.THICKNESS_DEFAULT
+
+
+def test_grid_keys_read_from_config(tmp_path: Path) -> None:
+    _write_config(tmp_path, "grid_overlay: true\ngrid_blend: 60\ngrid_thickness: 3\n")
+    assert settings.get_grid_overlay() is True
+    assert settings.get_grid_blend() == 60
+    assert settings.get_grid_thickness() == 3
+
+
+def test_grid_appearance_clamps_or_snaps_an_out_of_range_value(tmp_path: Path) -> None:
+    _write_config(tmp_path, "grid_blend: -500\ngrid_thickness: 0\n")
+    assert settings.get_grid_blend() == grid_overlay.BLEND_MIN
+    assert settings.get_grid_thickness() == grid_overlay.THICKNESS_STOPS[0]
+
+
+@pytest.mark.parametrize("raw", ["banana", "true", "[1, 2]"])
+def test_grid_appearance_falls_back_on_a_malformed_value(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"grid_blend: {raw}\ngrid_thickness: {raw}\n")
+    assert settings.get_grid_blend() == grid_overlay.BLEND_DEFAULT
+    assert settings.get_grid_thickness() == grid_overlay.THICKNESS_DEFAULT
+
+
+def test_a_legacy_grid_lightness_is_read_as_a_blend(tmp_path: Path) -> None:
+    """A config written before the blend slider keeps roughly its look
+    instead of opening invisible."""
+    _write_config(tmp_path, "grid_lightness: 30\n")
+    assert settings.get_grid_blend() == grid_overlay.blend_for_lightness(30)
+
+
+def test_grid_blend_wins_over_a_legacy_grid_lightness(tmp_path: Path) -> None:
+    _write_config(tmp_path, "grid_blend: -40\ngrid_lightness: 240\n")
+    assert settings.get_grid_blend() == -40
+
+
+def test_setting_a_blend_does_not_write_the_legacy_key_back(tmp_path: Path) -> None:
+    _write_config(tmp_path, "grid_lightness: 30\n")
+    settings.set_grid_blend(-40)
+    text = (tmp_path / "config.yaml").read_text()
+    assert "grid_blend: -40" in text
+    assert "grid_lightness" not in text
+
+
+def test_grid_keys_round_trip_through_the_file(tmp_path: Path, monkeypatch) -> None:
+    settings.set_grid_overlay(True)
+    settings.set_grid_blend(90)
+    settings.set_grid_thickness(4)
+    for name in ("_grid_overlay", "_grid_blend", "_grid_thickness"):
+        monkeypatch.setattr(settings, name, None)
+    assert settings.get_grid_overlay() is True
+    assert settings.get_grid_blend() == 90
+    assert settings.get_grid_thickness() == 4
+
+
+def test_grid_keys_tolerate_malformed_yaml(tmp_path: Path) -> None:
+    _write_config(tmp_path, "not: valid: yaml: [unterminated\n")
+    assert settings.get_grid_overlay() is False
+    assert settings.get_grid_blend() == grid_overlay.BLEND_DEFAULT
+
+
+def test_stack_badges_default_on(tmp_path: Path) -> None:
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_stack_badges() is True
+
+
+def test_stack_badges_reads_false_from_config(tmp_path: Path) -> None:
+    _write_config(tmp_path, "stack_badges: false\n")
+    assert settings.get_stack_badges() is False
+
+
+def test_stack_badges_round_trips_independently_of_distance_ticks(tmp_path: Path, monkeypatch) -> None:
+    settings.set_stack_badges(False)
+    monkeypatch.setattr(settings, "_stack_badges", None)
+    monkeypatch.setattr(settings, "_distance_ticks", None)
+    assert settings.get_stack_badges() is False
+    assert settings.get_distance_ticks() is False
+
+
 def test_a_missing_interval_falls_back_to_the_default(tmp_path: Path) -> None:
     assert settings.get_distance_tick_interval() == edge_ticks.TICK_INTERVAL_DEFAULT
 
@@ -256,7 +340,7 @@ def test_a_rejected_interval_writes_nothing(tmp_path: Path) -> None:
 
 
 def test_the_interval_round_trips_through_the_file(tmp_path: Path, monkeypatch) -> None:
-    other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+    other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
     settings.set_distance_tick_interval(other)
     monkeypatch.setattr(settings, "_distance_tick_interval", None)
     assert settings.get_distance_tick_interval() == other
@@ -266,7 +350,7 @@ def test_the_two_tick_keys_are_independent(tmp_path: Path, monkeypatch) -> None:
     """Writing one must not clear the other. Both go through _load_config,
     so a set() that rebuilt the dict instead of updating it would."""
     settings.set_distance_ticks(True)
-    other = [n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT][0]
+    other = next(n for n in edge_ticks.TICK_INTERVALS if n != edge_ticks.TICK_INTERVAL_DEFAULT)
     settings.set_distance_tick_interval(other)
     monkeypatch.setattr(settings, "_distance_ticks", None)
     monkeypatch.setattr(settings, "_distance_tick_interval", None)
@@ -280,37 +364,9 @@ def test_malformed_yaml_leaves_both_tick_keys_at_their_defaults(tmp_path: Path) 
     assert settings.get_distance_tick_interval() == edge_ticks.TICK_INTERVAL_DEFAULT
 
 
-# --- the memoized-globals list itself --------------------------------------
-
-
-def test_every_memoized_global_is_listed_in_conftest() -> None:
-    """conftest._SETTINGS_MEMOIZED_GLOBALS is hand-maintained, and a global
-    missing from it leaks one test's value into every later test in the same
-    process: silent contamination, not a failure. Reflective rather than a
-    second hand-written list, which would only move the same hazard.
-
-    Reads annotations rather than live values: by the time this runs, an
-    earlier test in the same process may already have populated a memo, so
-    "its value is None" is not a test-order-independent question. Every
-    memoized setting is written as `_name: T | None = None`, which IS
-    order-independent, and the second assertion below stops that convention
-    from quietly decaying. Deliberately not a fresh importlib exec of
-    settings.py either: that would rebind the real CONFIG_PATH, outside the
-    isolation conftest sets up.
-    """
-    import conftest
-
-    listed = set(conftest._SETTINGS_MEMOIZED_GLOBALS)
-    annotations = getattr(settings, "__annotations__", {})
-    nullable = {
-        name
-        for name, annotation in annotations.items()
-        if name.startswith("_") and str(annotation).replace(" ", "").endswith("|None")
-    }
-    assert nullable == listed, "a memoized settings global is missing from conftest's reset list"
-    # _DEFAULT_KEYBINDS is the near miss this guards: underscore-prefixed and
-    # module-level, but neither nullable nor memoized.
-    assert "_DEFAULT_KEYBINDS" not in listed
+# The memoized-globals list itself moved to testkit.settings_isolation, shared
+# with the tools/ capture scripts; its drift test went with it, to
+# tests/test_settings_isolation.py.
 
 
 def test_a_config_predating_the_ruler_moves_elevate_off_r(tmp_path: Path) -> None:
@@ -425,3 +481,83 @@ def test_keybind_holder_ignores_a_stale_action_id_not_in_rebindable_actions(tmp_
     entry would produce a refusal with no UI row to resolve it."""
     _write_config(tmp_path, "keybinds:\n  some_removed_action: F5\n")
     assert settings.keybind_holder("F5") is None
+
+
+# -- Settings > Saving ------------------------------------------------------
+
+
+def test_the_saving_keys_default_when_the_config_is_empty(tmp_path: Path) -> None:
+    assert settings.get_autosave_enabled() is True
+    assert settings.get_autosave_interval_min() == settings.AUTOSAVE_INTERVAL_DEFAULT
+    assert settings.get_autosave_retention() == settings.AUTOSAVE_RETENTION_DEFAULT
+    assert settings.get_autosave_location() == settings.AUTOSAVE_LOCATION_DEFAULT
+    assert settings.get_backups_enabled() is True
+
+
+def test_each_saving_key_round_trips_through_disk(tmp_path: Path) -> None:
+    settings.set_autosave_enabled(False)
+    settings.set_autosave_interval_min(15)
+    settings.set_autosave_retention(10)
+    settings.set_autosave_location("sidecar")
+    settings.set_backups_enabled(False)
+
+    on_disk = (tmp_path / "config.yaml").read_text()
+    assert "autosave_enabled: false" in on_disk
+    assert "autosave_interval_min: 15" in on_disk
+    assert "autosave_retention: 10" in on_disk
+    assert "autosave_location: sidecar" in on_disk
+    assert "backups_enabled: false" in on_disk
+
+
+@pytest.mark.parametrize("key, getter", [
+    ("autosave_interval_min: 7\n", "get_autosave_interval_min"),
+    ("autosave_retention: 4\n", "get_autosave_retention"),
+    ("autosave_location: elsewhere\n", "get_autosave_location"),
+])
+def test_an_off_list_saving_value_falls_back_on_read(tmp_path: Path, key: str, getter: str) -> None:
+    _write_config(tmp_path, key)
+    default = {
+        "get_autosave_interval_min": settings.AUTOSAVE_INTERVAL_DEFAULT,
+        "get_autosave_retention": settings.AUTOSAVE_RETENTION_DEFAULT,
+        "get_autosave_location": settings.AUTOSAVE_LOCATION_DEFAULT,
+    }[getter]
+    assert getattr(settings, getter)() == default
+
+
+def test_the_membership_gated_setters_refuse_an_off_list_value() -> None:
+    """The setter raises rather than falling back: a value the read path
+    would silently ignore must never reach disk in the first place."""
+    with pytest.raises(ValueError):
+        settings.set_autosave_interval_min(7)
+    with pytest.raises(ValueError):
+        settings.set_autosave_retention(4)
+    with pytest.raises(ValueError):
+        settings.set_autosave_location("elsewhere")
+
+
+def test_pan_speed_defaults_and_round_trips(tmp_path: Path) -> None:
+    assert settings.get_pan_speed() == settings.PAN_SPEED_DEFAULT
+    settings.set_pan_speed(1234)
+    assert settings.get_pan_speed() == 1234
+    assert "pan_speed: 1234" in (tmp_path / "config.yaml").read_text()
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("pan_speed: 10\n", settings.PAN_SPEED_MIN),
+    ("pan_speed: 99999\n", settings.PAN_SPEED_MAX),
+    ("pan_speed: fast\n", settings.PAN_SPEED_DEFAULT),
+    ("pan_speed:\n", settings.PAN_SPEED_DEFAULT),
+])
+def test_an_out_of_range_or_malformed_pan_speed_falls_back_on_read(
+    tmp_path: Path, raw: str, expected: int
+) -> None:
+    """Clamped rather than refused, unlike the membership-gated setters
+    above: the range is continuous, so an out-of-range number has an obvious
+    nearest legal value where an off-list enum does not."""
+    _write_config(tmp_path, raw)
+    assert settings.get_pan_speed() == expected
+
+
+def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> None:
+    settings.set_pan_speed(settings.PAN_SPEED_MAX + 500)
+    assert settings.get_pan_speed() == settings.PAN_SPEED_MAX

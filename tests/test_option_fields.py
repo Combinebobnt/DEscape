@@ -27,7 +27,7 @@ class _StubRetriever:
         return self._raw
 
 
-def _stub_loaded(overrides: dict[tuple[str, str], "_StubRetriever"] = None):
+def _stub_loaded(overrides: dict[tuple[str, str], _StubRetriever] | None = None):
     """A LoadedScenario stand-in exposing only what specs_for()/current_value()
     touch: `_scenario.sections[name].retriever_map[name]`. Every spec in
     option_fields._SPECS gets a present, non-empty (4-byte) stub by default;

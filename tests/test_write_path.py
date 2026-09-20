@@ -194,7 +194,7 @@ def _check_history_invariants(path: Path) -> tuple[bool, str]:
         return False, f"unexpected can_undo/can_redo after undoing both ops: {hist.can_undo}/{hist.can_redo}"
     undone_states = [tile_state(t) for t in tiles]
     if undone_states != original_states:
-        n = sum(1 for a, b in zip(undone_states, original_states) if a != b)
+        n = sum(1 for a, b in zip(undone_states, original_states, strict=True) if a != b)
         return False, f"undo-to-start didn't match a fresh load: {n} tiles differ"
 
     # -- redo both; must match the post-edit snapshot taken above --
@@ -204,7 +204,7 @@ def _check_history_invariants(path: Path) -> tuple[bool, str]:
         return False, "still redoable after redoing every record"
     redone_states = [tile_state(t) for t in tiles]
     if redone_states != post_edit_states:
-        n = sum(1 for a, b in zip(redone_states, post_edit_states) if a != b)
+        n = sum(1 for a, b in zip(redone_states, post_edit_states, strict=True) if a != b)
         return False, f"redo-to-end didn't match the post-edit state: {n} tiles differ"
 
     # -- redo-tail truncation: undo once, apply a new op, old redo must be gone --

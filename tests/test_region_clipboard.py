@@ -13,13 +13,14 @@ see elevation_targets()'s own docstring.
 from __future__ import annotations
 
 import pytest
-
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-from descape import library_compat
+from descape import library_compat, region_clipboard
 from descape.elevation_tools import set_tiles_elevation
 from descape.region_clipboard import (
+    RegionBlock,
+    RegionUnit,
     copy_region,
     elevation_targets,
     normalize_region,
@@ -32,6 +33,46 @@ from descape.unit_model import UnitEditModel
 
 def _load():
     return load_map_and_units(BLANK_TEMPLATE_PATH)
+
+
+def _add_raw_unit(loaded, player: int, x: float, y: float, reference_id: int, garrisoned_in_id: int, unit_const: int = 83) -> Unit:
+    """Appends a Unit with a caller-chosen reference_id, bypassing
+    UnitEditModel.add()'s own id generator -- needed to construct the -1
+    sentinel and duplicate-reference_id cases, neither of which add() can
+    produce."""
+    unit = Unit(
+        player=player,
+        x=x,
+        y=y,
+        z=0.0,
+        reference_id=reference_id,
+        unit_const=unit_const,
+        status=2,
+        rotation=0.0,
+        initial_animation_frame=0,
+        garrisoned_in_id=garrisoned_in_id,
+        caption_string_id=-1,
+        caption_string="",
+        uuid=loaded._scenario.uuid,
+    )
+    loaded.unit_manager.units[player].append(unit)
+    return unit
+
+
+def _ru(dx: float, dy: float, garrison_slot: int, unit_const: int = 83) -> RegionUnit:
+    return RegionUnit(
+        player=0,
+        unit_const=unit_const,
+        dx=dx,
+        dy=dy,
+        z=0.0,
+        rotation=0.0,
+        status=2,
+        initial_animation_frame=0,
+        caption_string_id=-1,
+        caption_string="",
+        garrison_slot=garrison_slot,
+    )
 
 
 # -- normalize_region ---------------------------------------------------
@@ -197,8 +238,7 @@ def test_unit_paste_targets_translates_and_drops_off_map() -> None:
 
     on_map = unit_paste_targets(block, 50, 50, loaded.map_manager.map_width, loaded.map_manager.map_height)
     assert len(on_map) == 1
-    _, x, y = on_map[0]
-    assert (x, y) == (50.5, 50.5)
+    assert (on_map[0].x, on_map[0].y) == (50.5, 50.5)
 
     off_map = unit_paste_targets(
         block, loaded.map_manager.map_width - 0, 0, loaded.map_manager.map_width, loaded.map_manager.map_height
@@ -214,8 +254,122 @@ def test_rotation_is_never_transformed_by_copy_or_paste() -> None:
     edits.add(player=0, unit_const=349, x=30.5, y=30.5, z=0.0, rotation=37.0)
     block = copy_region(loaded.map_manager, loaded.unit_manager, 30, 30, 31, 31)
     assert block.units[0].rotation == 37.0
-    [(unit, _x, _y)] = unit_paste_targets(block, 40, 40, 120, 120)
-    assert unit.rotation == 37.0
+    [target] = unit_paste_targets(block, 40, 40, 120, 120)
+    assert target.unit.rotation == 37.0
+
+
+# -- garrison remap: copy_region()'s slot resolution ------------------------
+
+
+def test_copy_region_resolves_garrison_slot_for_intra_region_holder() -> None:
+    loaded = _load()
+    edits = UnitEditModel(loaded)
+    holder = edits.add(player=1, unit_const=79, x=10.5, y=10.5, z=0.0, rotation=0.0)
+    edits.add(player=1, unit_const=4, x=10.5, y=10.5, z=0.0, rotation=0.0, garrisoned_in_id=holder.reference_id)
+    block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11)
+
+    holder_ru = next(u for u in block.units if u.unit_const == 79)
+    occupant_ru = next(u for u in block.units if u.unit_const == 4)
+    assert occupant_ru.garrison_slot == block.units.index(holder_ru)
+
+
+def test_copy_region_holder_outside_rect_gives_minus_one() -> None:
+    loaded = _load()
+    edits = UnitEditModel(loaded)
+    holder = edits.add(player=1, unit_const=79, x=5.5, y=5.5, z=0.0, rotation=0.0)
+    edits.add(player=1, unit_const=4, x=10.5, y=10.5, z=0.0, rotation=0.0, garrisoned_in_id=holder.reference_id)
+    block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11)
+
+    assert len(block.units) == 1
+    assert block.units[0].garrison_slot == -1
+
+
+def test_copy_region_ungarrisoned_unit_ignores_minus_one_sentinel_collision() -> None:
+    loaded = _load()
+    # Unit A's own reference_id is the -1 junk sentinel -- a naive dict
+    # lookup on garrisoned_in_id == -1 would match it. Unit B is plainly
+    # ungarrisoned and must resolve to -1 without ever consulting that entry.
+    _add_raw_unit(loaded, player=0, x=10.5, y=10.5, reference_id=-1, garrisoned_in_id=-1)
+    _add_raw_unit(loaded, player=0, x=10.5, y=10.5, reference_id=100, garrisoned_in_id=-1)
+    block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11)
+
+    assert len(block.units) == 2
+    assert all(u.garrison_slot == -1 for u in block.units)
+
+
+def test_copy_region_duplicate_reference_id_among_captured_gives_minus_one() -> None:
+    loaded = _load()
+    _add_raw_unit(loaded, player=0, x=10.5, y=10.5, reference_id=555, garrisoned_in_id=-1)
+    _add_raw_unit(loaded, player=0, x=10.5, y=10.5, reference_id=555, garrisoned_in_id=-1)
+    _add_raw_unit(loaded, player=0, x=10.5, y=10.5, reference_id=200, garrisoned_in_id=555)
+    block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11)
+
+    occupant_ru = block.units[2]  # the unit constructed with garrisoned_in_id=555
+    assert occupant_ru.garrison_slot == -1
+
+
+def test_copy_region_cross_player_garrison_resolves() -> None:
+    loaded = _load()
+    edits = UnitEditModel(loaded)
+    holder = edits.add(player=1, unit_const=79, x=10.5, y=10.5, z=0.0, rotation=0.0)
+    edits.add(player=0, unit_const=83, x=10.5, y=10.5, z=0.0, rotation=0.0, garrisoned_in_id=holder.reference_id)
+    block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11)
+
+    holder_ru = next(u for u in block.units if u.unit_const == 79)
+    occupant_ru = next(u for u in block.units if u.unit_const == 83)
+    assert occupant_ru.garrison_slot == block.units.index(holder_ru)
+
+
+def test_copy_region_two_occupants_share_one_holder() -> None:
+    loaded = _load()
+    edits = UnitEditModel(loaded)
+    holder = edits.add(player=1, unit_const=79, x=10.5, y=10.5, z=0.0, rotation=0.0)
+    edits.add(player=1, unit_const=4, x=10.5, y=10.5, z=0.0, rotation=1.0, garrisoned_in_id=holder.reference_id)
+    edits.add(player=1, unit_const=4, x=10.5, y=10.5, z=0.0, rotation=2.0, garrisoned_in_id=holder.reference_id)
+    block = copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11)
+
+    holder_slot = block.units.index(next(u for u in block.units if u.unit_const == 79))
+    occupant_slots = {u.garrison_slot for u in block.units if u.unit_const == 4}
+    assert occupant_slots == {holder_slot}
+
+
+# -- garrison remap: unit_paste_targets()'s ordering -------------------------
+
+
+def test_unit_paste_targets_orders_holder_before_occupant_three_deep_chain() -> None:
+    a = _ru(dx=0, dy=0, garrison_slot=1)  # in B
+    b = _ru(dx=0, dy=0, garrison_slot=2)  # in C
+    c = _ru(dx=0, dy=0, garrison_slot=-1)
+    block = RegionBlock(width=1, height=1, terrain_ids=(0,), elevations=(0,), layers=(-1,), units=(a, b, c))
+
+    targets = unit_paste_targets(block, 0, 0, 10, 10)
+    assert [t.slot for t in targets] == [2, 1, 0]
+    by_slot = {t.slot: t.holder_slot for t in targets}
+    assert by_slot == {2: -1, 1: 2, 0: 1}
+
+
+def test_unit_paste_targets_breaks_mutual_cycle_to_minus_one() -> None:
+    a = _ru(dx=0, dy=0, garrison_slot=1)
+    b = _ru(dx=0, dy=0, garrison_slot=0)
+    block = RegionBlock(width=1, height=1, terrain_ids=(0,), elevations=(0,), layers=(-1,), units=(a, b))
+
+    targets = unit_paste_targets(block, 0, 0, 10, 10)
+    assert {t.slot for t in targets} == {0, 1}
+    assert all(t.holder_slot == -1 for t in targets)
+
+
+def test_unit_paste_targets_holder_slot_minus_one_when_holder_clipped_but_occupant_isnt() -> None:
+    # Impossible on a real file (measured: occupant always shares the
+    # holder's exact tile) -- only reachable via a hand-built RegionBlock.
+    holder = _ru(dx=0, dy=0, garrison_slot=-1)
+    occupant = _ru(dx=10, dy=0, garrison_slot=0)
+    block = RegionBlock(
+        width=11, height=1, terrain_ids=(0,) * 11, elevations=(0,) * 11, layers=(-1,) * 11, units=(holder, occupant)
+    )
+
+    targets = unit_paste_targets(block, -5, 0, 20, 20)
+    assert [t.slot for t in targets] == [1]
+    assert targets[0].holder_slot == -1
 
 
 # -- elevation: verification step 4 (the plan's design gate) ---------------
@@ -270,3 +424,31 @@ def test_elevation_paste_matches_source_plateau_including_pit() -> None:
                 if 0 <= nx < mm.map_width and 0 <= ny < mm.map_height:
                     ne = mm.get_tile(nx, ny).elevation
                     assert abs(e - ne) <= 1, f"illegal jump between ({x}, {y}) and ({nx}, {ny}): {e} vs {ne}"
+
+
+# -- translated_region (the move overlay's rect) -----------------------------
+
+
+def test_translated_region_shifts_in_both_directions() -> None:
+    assert region_clipboard.translated_region((2, 3, 6, 7), 4, 5, 40, 40) == (6, 8, 10, 12)
+    assert region_clipboard.translated_region((6, 8, 10, 12), -4, -5, 40, 40) == (2, 3, 6, 7)
+
+
+@pytest.mark.parametrize(
+    ("dx", "dy", "expected"),
+    [
+        (-4, 0, (0, 3, 2, 7)),  # clipped at the west edge
+        (0, -5, (2, 0, 6, 2)),  # north
+        (36, 0, (38, 3, 40, 7)),  # east
+        (0, 35, (2, 38, 6, 40)),  # south
+    ],
+)
+def test_translated_region_clamps_by_intersection_at_each_edge(dx, dy, expected) -> None:
+    """Clamped rather than refused, exactly as normalize_region() clamps: a
+    move legitimately drags off the map edge."""
+    assert region_clipboard.translated_region((2, 3, 6, 7), dx, dy, 40, 40) == expected
+
+
+@pytest.mark.parametrize(("dx", "dy"), [(-10, 0), (0, -10), (40, 0), (0, 40)])
+def test_translated_region_is_none_when_fully_off_map(dx, dy) -> None:
+    assert region_clipboard.translated_region((2, 3, 6, 7), dx, dy, 40, 40) is None

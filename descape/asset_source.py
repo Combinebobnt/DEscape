@@ -132,6 +132,10 @@ def set_install_path_override(path: Path | None) -> None:
     get_terrain_texture_path.cache_clear()
     get_terrain_average_color.cache_clear()
     get_terrain_texture_array.cache_clear()
+    # Path-keyed rather than id-keyed, so a changed install that resolves to
+    # a same-named file under a different root would otherwise keep serving
+    # the old swatch.
+    _terrain_thumbnail_for_path.cache_clear()
     _string_table.cache_clear()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
@@ -265,15 +269,51 @@ def get_terrain_average_color(terrain_id: int) -> tuple[int, int, int] | None:
     from PIL import Image
 
     with Image.open(path) as img:
-        img = img.convert("RGB")
+        rgb = img.convert("RGB")
         # Sampling is plenty for an average -- these textures are large (2048x2048).
-        small = img.resize((32, 32))
+        small = rgb.resize((32, 32))
         pixels = list(small.getdata())
     n = len(pixels)
     r = sum(p[0] for p in pixels) // n
     g = sum(p[1] for p in pixels) // n
     b = sum(p[2] for p in pixels) // n
     return (r, g, b)
+
+
+# A browser swatch is one tile at default graphics quality, so it matches
+# render.SMALL_MAP_TILE_PIXELS. Not imported from render.py: this module is
+# below it in the import order and has no other reason to depend on it.
+TERRAIN_THUMBNAIL_PX = 64
+
+
+@lru_cache(maxsize=256)
+def _terrain_thumbnail_for_path(path: Path, px: int):
+    """The open+resize half of get_terrain_thumbnail, keyed on the FILE, not
+    on a terrain_id. 131 terrains share only 85 textures -- g_for.dds alone
+    backs 12 of them -- so an id-keyed cache would decode the same .dds a
+    dozen times over."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(path) as img:
+        return np.array(img.convert("RGB").resize((px, px)))
+
+
+def get_terrain_thumbnail(terrain_id: int, px: int = TERRAIN_THUMBNAIL_PX):
+    """A (px, px, 3) uint8 array of terrain_id's real texture, or None when
+    no install is configured or the id has no mapped texture -- the same
+    degradation contract every other function here has, so a caller falls
+    back to terrain_palette.color_for_terrain_id.
+
+    Deliberately NOT built from get_terrain_texture_array(): that cache
+    holds a 512x512x3 array per id and evicts nothing at 131 < 256, so
+    filling a browser would warm ~103MB in the renderer's own cache for
+    textures the open map may never touch. At 64px the whole catalog is
+    ~1.6MB, and only the 85 distinct files are ever decoded."""
+    path = get_terrain_texture_path(terrain_id)
+    if path is None:
+        return None
+    return _terrain_thumbnail_for_path(path, px)
 
 
 @lru_cache(maxsize=256)
@@ -291,5 +331,5 @@ def get_terrain_texture_array(terrain_id: int):
     from PIL import Image
 
     with Image.open(path) as img:
-        img = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
-        return np.array(img)
+        rgb = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
+        return np.array(rgb)

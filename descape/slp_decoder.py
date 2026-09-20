@@ -67,7 +67,7 @@ class SLPFile:
             off += FRAME_ENTRY_SIZE
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "SLPFile":
+    def from_file(cls, path: str | Path) -> SLPFile:
         return cls(Path(path).read_bytes())
 
     @property
@@ -129,7 +129,7 @@ class SLPFile:
             if color is not None:
                 for i in range(amount):
                     if 0 <= x + i < w:
-                        px[x + i, y] = color + (255,)
+                        px[x + i, y] = (*color, 255)
             x += amount
 
         while y < h:
@@ -146,7 +146,7 @@ class SLPFile:
                         x = left_boundaries[y]
                         pos = command_offsets[y]
                 continue
-            elif fourbit == 0x06:
+            if fourbit == 0x06:
                 amount = (opcode >> 4) or get_byte()
                 for _ in range(amount):
                     draw(1, player_color(get_byte()))

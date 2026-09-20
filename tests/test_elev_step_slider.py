@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape import settings
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -26,12 +27,7 @@ pytestmark = [
 ]
 
 
-def _dialog_and_window():
-    from descape.viewer import SettingsDialog, ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    return SettingsDialog(window), window
+_dialog_and_window = conftest.dialog_and_window
 
 
 def test_slider_range_is_the_stop_indices_not_the_pct_range() -> None:

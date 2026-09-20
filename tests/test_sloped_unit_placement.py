@@ -19,19 +19,17 @@ asserts d_min > 0 so the mismatch has something to be wrong by.
 
 from __future__ import annotations
 
-
 import numpy as np
 import pytest
 
+from descape import iso_geometry as ig
+from descape import render
+from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from testkit.fakes import (
     FakeScenario,
     SyntheticTile,
     SyntheticUnit,
 )
-
-from descape import iso_geometry as ig
-from descape import render
-from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 
 MAP_W = MAP_H = 16
 _PLAYER = 1
@@ -72,16 +70,74 @@ def _diamond_pixel_nearest(tile_px: int, fx: float, fy: float) -> int:
     return int(np.argmin((pfx - fx) ** 2 + (pfy - fy) ** 2))
 
 
-@pytest.mark.parametrize("want_fx, want_fy", [(0.5, 0.5), (0.25, 0.75), (0.8, 0.6), (0.15, 0.2)])
-def test_a_sloped_unit_lands_on_the_terrain_pixels_actually_painted(want_fx, want_fy) -> None:
-    """Track C6 supersedes this test's original premise for a 1x1 unit: it
-    no longer sits at a sub-tile-dependent PIXEL RISE at all -- its marker
-    paints through the exact same call as its own tile's terrain
+def _ramp_corners(corner_rise, ux: int, uy: int):
+    d_nw = int(corner_rise[uy, ux])
+    d_ne = int(corner_rise[uy, ux + 1])
+    d_sw = int(corner_rise[uy + 1, ux])
+    d_se = int(corner_rise[uy + 1, ux + 1])
+    assert min(d_nw, d_ne, d_sw, d_se) > 0, (
+        "fixture sits at rise 0 -- the d_min convention could be dropped and still pass"
+    )
+    assert len({d_nw, d_ne, d_sw, d_se}) > 1, "fixture tile is planar -- the (fx, fy) term proves nothing"
+    return d_nw, d_ne, d_sw, d_se
+
+
+def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted() -> None:
+    """Track C6 superseded this test's original premise for a CENTRED 1x1
+    unit: it does not sit at a sub-tile-dependent PIXEL RISE at all -- its
+    marker paints through the exact same call as its own tile's terrain
     (render._sloped_tile_quad), so there is no separate placement to drift
-    from the terrain's. want_fx/want_fy are kept as parameters (rather than
-    dropped) precisely to pin that this is now true regardless of where on
-    the tile the unit sits -- the old test's whole point, restated for the
-    model that replaced it.
+    from the terrain's.
+
+    **Centred, and only centred, since free placement's Stage 1
+    (2026-09-18).** A conforming quad has no position term to shift, so it
+    cannot express a sub-tile position; C6's model and a mark that shows
+    where the unit stands are mutually exclusive for the same unit. The
+    split is by offset, not by span: the 88.0% of units at an exact
+    (0.5, 0.5) keep C6's quad exactly as it was, and the off-centre tail
+    takes the plain diamond instead (the test below). That is what keeps
+    render_terrain_sloped byte-identical to render_terrain_iso on a flat
+    map, which the test after it pins and which is the harder invariant of
+    the two.
+    """
+    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    ux, uy = 9, 8
+
+    scn = _ramp_scenario(ux + 0.5, uy + 0.5)
+    img, _elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn)
+    color = PLAYER_COLORS[_PLAYER % len(PLAYER_COLORS)]
+    d_nw, d_ne, d_sw, d_se = _ramp_corners(corner_rise, ux, uy)
+
+    # The unit's own tile's WHOLE warped footprint -- not a diamond -- must
+    # show the unit's colour.
+    s_dst_y, s_dst_x, _sy, _sx, _uv = ig.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    base_x_t, base_y_t = ig.tile_screen_origin(ux, uy, 0, proj)
+    rows, cols = base_y_t - min(d_nw, d_ne, d_sw, d_se) + s_dst_y, base_x_t + s_dst_x
+    assert np.all(np.all(img[rows, cols] == color, axis=1)), (
+        "a centred unit did not paint every one of its own tile's warped terrain pixels "
+        "its own colour -- the marker has drifted from the tile"
+    )
+
+
+@pytest.mark.parametrize("want_fx, want_fy", [(0.25, 0.75), (0.8, 0.6), (0.15, 0.2)])
+def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy) -> None:
+    """Free placement's Stage 1: the off-centre tail leaves C6's conforming
+    quad and takes the plain diamond at its own continuous point.
+
+    Two assertions, because either alone is weak. Most of the diamond at
+    map_point_to_screen(unit.x, unit.y, unit_rise_px(...)) must carry the
+    unit's colour -- that is where the unit stands. And the tile's warped
+    footprint must NOT be wholly the unit's colour -- without that, the test
+    would pass just as happily on the old conforming behaviour, which is
+    exactly the regression direction that matters here.
+
+    **Most, not all, and the shortfall is the plan's own logged
+    consequence:** a straddling mark is partly painted over by a tile that
+    comes later in depth_order, since _paint_tile_and_units_sloped
+    interleaves units at their own tile's moment. Measured 59% / 79% / 93%
+    across these three fixtures. The exhaustive positional claim is made
+    where it can be made correctly -- against an ID plane that reproduces
+    the depth walk -- in tests/test_free_placement.py.
     """
     tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
     ux, uy = 9, 8
@@ -93,23 +149,25 @@ def test_a_sloped_unit_lands_on_the_terrain_pixels_actually_painted(want_fx, wan
     scn = _ramp_scenario(ux + fx, uy + fy)
     img, _elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn)
     color = PLAYER_COLORS[_PLAYER % len(PLAYER_COLORS)]
+    d_nw, d_ne, d_sw, d_se = _ramp_corners(corner_rise, ux, uy)
 
-    d_nw = int(corner_rise[uy, ux])
-    d_ne = int(corner_rise[uy, ux + 1])
-    d_sw = int(corner_rise[uy + 1, ux])
-    d_se = int(corner_rise[uy + 1, ux + 1])
-    d_min = min(d_nw, d_ne, d_sw, d_se)
-    assert d_min > 0, "fixture sits at rise 0 -- the d_min convention could be dropped and still pass"
-    assert len({d_nw, d_ne, d_sw, d_se}) > 1, "fixture tile is planar -- the (fx, fy) term proves nothing"
+    rise = ig.unit_rise_px(corner_rise, ux, uy, fx, fy)
+    cx, cy = ig.map_point_to_screen(ux + fx, uy + fy, rise, proj)
+    dst_y, dst_x, _sy, _sx = ig.diamond_indices(tile_px)
+    rows, cols = (cy - proj.half_h) + dst_y, (cx - proj.half_w) + dst_x
+    covered = float(np.all(img[rows, cols] == color, axis=1).mean())
+    assert covered > 0.5, (
+        f"unit at sub-tile ({fx:.3f}, {fy:.3f}) covered only {covered:.0%} of the diamond at its "
+        "own point -- more than depth-walk overpaint can account for"
+    )
 
-    # The unit's own tile's WHOLE warped footprint -- not a diamond, and not
-    # scoped to (fx, fy) -- must now show the unit's colour, unconditionally.
-    s_dst_y, s_dst_x, _sy, _sx, _uv = ig.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    s_dst_y, s_dst_x, _s2, _s3, _uv = ig.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
     base_x_t, base_y_t = ig.tile_screen_origin(ux, uy, 0, proj)
-    rows, cols = base_y_t - d_min + s_dst_y, base_x_t + s_dst_x
-    assert np.all(np.all(img[rows, cols] == color, axis=1)), (
-        f"unit at sub-tile ({fx:.3f}, {fy:.3f}) did not paint every one of its own tile's "
-        "warped terrain pixels its own colour -- the marker has drifted from the tile"
+    t_rows = base_y_t - min(d_nw, d_ne, d_sw, d_se) + s_dst_y
+    t_cols = base_x_t + s_dst_x
+    assert not np.all(np.all(img[t_rows, t_cols] == color, axis=1)), (
+        "the off-centre mark still covers its whole tile -- it is back on C6's conforming quad, "
+        "which cannot show a sub-tile position at all"
     )
 
 

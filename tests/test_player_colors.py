@@ -20,9 +20,15 @@ import numpy as np
 import pytest
 
 from descape import asset_source, render, unit_sprites
-from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
-from descape.terrain_palette import PLAYER_COLORS, resolve_player_colors
+from descape.options_model import OptionsEditModel
+from descape.player_fields import parse_player_field_id, player_field_id
+from descape.render import tile_pixels_for_map
+from descape.render_cache import FlatChunkCache
+from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units, refresh_player_colors
+from descape.terrain_palette import PLAYER_COLOR_BY_ID, PLAYER_COLORS, resolve_player_colors
+from descape.unit_model import UnitEditModel
 from descape.unit_sprites import TEAM_COLORS
+
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 IDENTITY_IDS = [0, 1, 2, 3, 4, 5, 6, 7]
@@ -148,7 +154,7 @@ class _Scenario:
         self.map_manager = _MapManager(tiles)
         self.unit_manager = _UnitManager(units_by_player)
         self.player_colors = tuple(PLAYER_COLORS)
-        self.team_indices = (0, team_index_for_player_1) + tuple(range(2, 9))
+        self.team_indices = (0, team_index_for_player_1, *range(2, 9))
 
 
 @pytest.fixture
@@ -214,3 +220,127 @@ def test_corpus_still_has_wrong_default_colors_on_most_files(corpus_files):
         f"only {non_identity}/{len(corpus_files)} corpus files have a non-default "
         "color assignment -- expected at least ~85% per the maintainer doc"
     )
+
+
+# --- a colour edit reaching the render (scenario_io.refresh_player_colors) ---
+#
+# Three gaps had to close for a Players-tab colour edit to appear on the map:
+# the derived tuples were computed once at load and never again, nothing
+# invalidated the render caches for a Players-mode edit, and both panels'
+# swatch combos are built behind a `same_document` guard that is True on
+# every edit. These pin the first, plus the recompute-before-invalidate
+# ordering the second depends on.
+
+
+def _blank_with_options():
+    loaded = load_map_and_units(BLANK_TEMPLATE_PATH)
+    return loaded, OptionsEditModel(loaded)
+
+
+def _pending_colors(model) -> dict[int, int]:
+    """viewer._pending_player_values()["color"], rebuilt here so these stay
+    Qt-free -- same parse, one field."""
+    out = {}
+    for key, value in model.pending_values().items():
+        if key.startswith("player:"):
+            field_id, player_id = parse_player_field_id(key)
+            if field_id == "color":
+                out[player_id] = value
+    return out
+
+
+def test_a_colour_edit_re_derives_both_tuples_and_undoing_it_reverts_them():
+    loaded, model = _blank_with_options()
+    before_dots, before_teams = loaded.player_colors, loaded.team_indices
+    assert before_dots[1] == PLAYER_COLOR_BY_ID[0]
+
+    model.set_value(player_field_id("color", 1), 5)
+    assert refresh_player_colors(loaded, _pending_colors(model)) is True
+    assert loaded.player_colors[1] == PLAYER_COLOR_BY_ID[5]
+    # team_indices is GAIA-first, so the sprite tint index is the id + 1 --
+    # asserting only player_colors would pass on a half-fix that left every
+    # unit's sprite tinted with the pre-edit colour.
+    assert loaded.team_indices[1] == 6
+    assert loaded.player_colors[2:] == before_dots[2:]
+
+    # Undo, as the model sees it: the edit drops back out of pending_values()
+    # once the field is set back to what the file stores.
+    model.set_value(player_field_id("color", 1), 0)
+    assert refresh_player_colors(loaded, _pending_colors(model)) is True
+    assert loaded.player_colors == before_dots
+    assert loaded.team_indices == before_teams
+
+
+def test_a_non_colour_player_edit_reports_no_change():
+    """What gates the invalidate: set_player_field() runs this tail for gold,
+    wood, lock_personality and the rest, and _move_history()'s "options"
+    branch fires for Map Options and Diplomacy edits too. Reporting a change
+    there would evict the whole canvas on a gold-amount edit."""
+    loaded, model = _blank_with_options()
+    model.set_value(player_field_id("gold", 1), 1234)
+    assert refresh_player_colors(loaded, _pending_colors(model)) is False
+
+
+def test_an_out_of_range_pending_id_falls_back_rather_than_raising():
+    loaded, _model = _blank_with_options()
+    refresh_player_colors(loaded, {1: 99})
+    assert loaded.player_colors[1] == PLAYER_COLORS[1]
+    assert loaded.team_indices[1] == 1
+
+
+def _flat_cache_pixels(loaded, sprites: bool):
+    mm = loaded.map_manager
+    tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+    cache = FlatChunkCache(loaded, tile_px, sprites=sprites)
+    w, h = cache.canvas_dims()
+    return cache, cache.render_rect(0, 0, w, h).copy()
+
+
+def _recolour_and_recomposite(cache, loaded, model, sprites: bool):
+    """The exact order viewer._after_player_color_change() uses: recompute
+    first, THEN invalidate. FlatChunkCache.invalidate_units() is the eager-
+    rebuild override, so swapping these two lines re-derives the draws from
+    the stale tuples and bakes the pre-edit colour straight back in -- this
+    helper is what the ordering assertion below rides on."""
+    refresh_player_colors(loaded, _pending_colors(model))
+    cache.invalidate_units()
+    w, h = cache.canvas_dims()
+    cache.invalidate_region((0, 0, w, h))
+    return cache.render_rect(0, 0, w, h).copy()
+
+
+def test_a_colour_edit_repaints_the_flat_unit_dots():
+    """The load-bearing one. A green model-level test is not evidence of a
+    fix here: the unit-mutation version of this same bug shipped with a
+    green tier because nothing asserted on pixels
+    (viewer._after_unit_mutation()'s own docstring). No ViewerWindow and no
+    gui marker, deliberately -- a test that can skip is the worst possible
+    shape for the one assertion pinning this ordering."""
+    loaded, model = _blank_with_options()
+    UnitEditModel(loaded).add(1, CONST, 4.0, 4.0)
+    old_rgb, new_rgb = PLAYER_COLOR_BY_ID[0], PLAYER_COLOR_BY_ID[5]
+
+    cache, before = _flat_cache_pixels(loaded, sprites=False)
+    assert np.any(np.all(before == old_rgb, axis=-1))
+
+    model.set_value(player_field_id("color", 1), 5)
+    after = _recolour_and_recomposite(cache, loaded, model, sprites=False)
+
+    assert np.any(np.all(after == new_rgb, axis=-1))
+    assert not np.any(np.all(after == old_rgb, axis=-1))
+
+
+def test_a_colour_edit_repaints_the_flat_sprite_tint(sprite_install):
+    """The sprite half of the same pixel assertion: the icon layer reads
+    team_indices, the dots read player_colors, and they are separate
+    readers -- a fix that re-derived only player_colors passes the dot test
+    above while leaving every sprite tinted with the pre-edit colour."""
+    loaded, model = _blank_with_options()
+    UnitEditModel(loaded).add(1, CONST, 4.0, 4.0)
+
+    cache, before = _flat_cache_pixels(loaded, sprites=True)
+
+    model.set_value(player_field_id("color", 1), 5)
+    after = _recolour_and_recomposite(cache, loaded, model, sprites=True)
+
+    assert not np.array_equal(before, after)

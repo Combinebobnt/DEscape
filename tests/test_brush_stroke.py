@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape.brush import BRUSH_SHAPE_CIRCLE, BRUSH_SHAPE_SQUARE
-from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -28,13 +28,7 @@ _TERRAIN = 15  # GRASS_1, distinct from the blank template's own terrain_id=0
 
 
 def _edit_window(tool: str = "draw"):
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Terrain")
+    window = conftest.terrain_edit_window()
     window._on_tool_selected(tool)
     window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_TERRAIN))
     # This file tests brush/stroke mechanics, not descape/terrain_units.py --
@@ -56,13 +50,6 @@ def _shown_flat(window) -> None:
     window.terrain_style_combo.setCurrentText("Flat")
     window.show()
     QApplication.processEvents()
-
-
-def _mouse_event(kind, pos, button, buttons):
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QMouseEvent
-
-    return QMouseEvent(kind, pos, button, buttons, Qt.NoModifier)
 
 
 def _stroke(window, cx: int, cy: int, modifiers: int = 0) -> None:
@@ -139,16 +126,16 @@ def test_elevate_drag_raises_each_tile_at_most_once_per_stroke() -> None:
 
         cx, cy = 10, 10
         press_pos = conftest.viewport_pos(map_view, cx, cy)
-        map_view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, press_pos, Qt.LeftButton, Qt.LeftButton))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press_pos, Qt.LeftButton, Qt.LeftButton))
 
         # Drag right one cursor tile at a time -- each step's 3x3 footprint
         # overlaps the previous step's by two columns.
         for step in range(1, 5):
             move_pos = conftest.viewport_pos(map_view, cx + step, cy)
-            map_view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, move_pos, Qt.NoButton, Qt.LeftButton))
+            map_view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, move_pos, Qt.NoButton, Qt.LeftButton))
 
         map_view.mouseReleaseEvent(
-            _mouse_event(QEvent.MouseButtonRelease, press_pos, Qt.LeftButton, Qt.NoButton)
+            conftest.mouse_event(QEvent.MouseButtonRelease, press_pos, Qt.LeftButton, Qt.NoButton)
         )
 
         touched = [
@@ -327,6 +314,39 @@ def test_hover_preview_matches_the_stroke_footprint() -> None:
         window.close()
 
 
+@pytest.mark.parametrize("style", ["Flat", "Stepped"])
+def test_every_highlight_subpath_is_closed_so_every_tile_edge_strokes(style: str) -> None:
+    """QPainterPath.addPolygon() leaves the subpath OPEN, so the outline pen
+    stroked 3 of each tile's 4 edges. Same defect tests/
+    test_unit_selection_viewer.py's own subpath check pins for the unit cues,
+    found there first; this path survived it because _update_highlight paints
+    a fill over the very same path, which hides the missing edge.
+
+    Counted (MoveTo + 3 LineTo + the close = 5 elements per tile) rather than
+    eyeballed, and at a brush size > 1 so several subpaths have to close, not
+    just the one.
+    """
+    window = _edit_window("draw")
+    try:
+        window.brush_size_spin.setValue(3)
+        if style == "Flat":
+            _shown_flat(window)
+        else:
+            window.terrain_style_combo.setCurrentText(style)
+        map_view = window.map_view
+        map_view._update_highlight(40, 40)
+        path = map_view._highlight_outline_item.path()
+        moves = sum(1 for i in range(path.elementCount()) if path.elementAt(i).type == 0)
+        assert moves > 1, f"{style}: expected several subpaths at brush size 3, got {moves}"
+        assert path.elementCount() == 5 * moves, (
+            f"{style}: unclosed subpath. {path.elementCount()} elements for {moves} "
+            f"tile polygon(s), expected {5 * moves}"
+        )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_brush_size_change_refreshes_preview_without_a_mouse_move() -> None:
     window = _edit_window("draw")
     try:
@@ -368,19 +388,11 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
 # -- the highlight pulse's stroke gate (perf batch B, step B3) ---------------
 
 
-def _viewport_pos(map_view, tile_x: int, tile_y: int):
-    from PyQt5.QtCore import QPointF
-
-    polygon = map_view._tile_polygon(tile_x, tile_y)
-    assert polygon is not None, f"no footprint for ({tile_x}, {tile_y})"
-    return QPointF(map_view.mapFromScene(polygon.boundingRect().center()))
-
-
 def _press(map_view, tile: tuple[int, int]) -> None:
     from PyQt5.QtCore import QEvent, Qt
 
     map_view.mousePressEvent(
-        _mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, *tile), Qt.LeftButton, Qt.LeftButton)
+        conftest.mouse_event(QEvent.MouseButtonPress, conftest.polygon_viewport_pos(map_view, *tile), Qt.LeftButton, Qt.LeftButton)
     )
 
 
@@ -388,7 +400,7 @@ def _release(map_view, tile: tuple[int, int]) -> None:
     from PyQt5.QtCore import QEvent, Qt
 
     map_view.mouseReleaseEvent(
-        _mouse_event(QEvent.MouseButtonRelease, _viewport_pos(map_view, *tile), Qt.LeftButton, Qt.NoButton)
+        conftest.mouse_event(QEvent.MouseButtonRelease, conftest.polygon_viewport_pos(map_view, *tile), Qt.LeftButton, Qt.NoButton)
     )
 
 
@@ -438,6 +450,203 @@ def test_a_highlight_rebuilt_mid_stroke_is_not_left_fully_opaque() -> None:
         map_view._pulse_phase_ms = map_view.HIGHLIGHT_PULSE_PERIOD_MS // 4
         map_view._on_pulse_tick()
         assert map_view._highlight_fill_item.opacity() != opacity
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- auto beach (2026-08-31 water/beach plan, Stage 4) ------------------------
+
+_WATER_DEEP = 22
+_BEACH = 2
+_BEACH_WET = 107
+
+
+def _beach_window(beach_id=_BEACH, width: int = 1, enabled: bool = True):
+    """_edit_window with Draw on a water terrain and auto-beach configured."""
+    window = _edit_window("draw")
+    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_WATER_DEEP))
+    window.auto_beach_check.setChecked(enabled)
+    if beach_id is None:
+        window.beach_combo.setCurrentIndex(0)  # "Auto"
+    else:
+        window.beach_combo.setCurrentIndex(window.beach_combo.findData(beach_id))
+    window.beach_width_spin.setValue(max(width, 1))
+    if width == 0:
+        window.auto_beach_check.setChecked(False)
+    return window
+
+
+def _grid(window):
+    mm = window.scenario.map_manager
+    return {
+        (x, y): mm.get_tile(x, y).terrain_id
+        for y in range(mm.map_height)
+        for x in range(mm.map_width)
+    }
+
+
+def _tiles_with(window, terrain_id: int) -> set[tuple[int, int]]:
+    return {tile for tile, tid in _grid(window).items() if tid == terrain_id}
+
+
+def test_auto_beach_rings_a_single_touch() -> None:
+    window = _beach_window()
+    try:
+        _stroke(window, 20, 20)
+        water = _tiles_with(window, _WATER_DEEP)
+        beach = _tiles_with(window, _BEACH)
+        assert water == {(20, 20)}
+        assert beach == {
+            (19, 19), (20, 19), (21, 19),
+            (19, 20), (21, 20),
+            (19, 21), (20, 21), (21, 21),
+        }
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_drag_leaves_no_beach_inside_the_water() -> None:
+    """Hazard 1, the highest-value assertion in the plan and otherwise a
+    silent bug: if ring tiles ever reached _stroke_painted, a tile beached by
+    an earlier touch would be filtered out when the brush advanced over it
+    and never become water, stranding beach inside the water body."""
+    window = _beach_window()
+    try:
+        window.on_edit_stroke_start()
+        for x in range(18, 24):
+            window.on_edit_stroke_tile(x, 20, 0)
+        window.on_edit_stroke_end()
+
+        cores = {(x, 20) for x in range(18, 24)}
+        grid = _grid(window)
+        assert {tile for tile in cores if grid[tile] != _WATER_DEEP} == set()
+        # And the shoreline runs the length of the stroke on both sides.
+        for x in range(18, 24):
+            assert grid[(x, 19)] == _BEACH
+            assert grid[(x, 21)] == _BEACH
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_one_auto_beach_drag_is_one_undo_record() -> None:
+    window = _beach_window()
+    try:
+        before = len(window.edit_history.records)
+        window.on_edit_stroke_start()
+        for x in range(18, 22):
+            window.on_edit_stroke_tile(x, 20, 0)
+        window.on_edit_stroke_end()
+        assert len(window.edit_history.records) == before + 1
+
+        window.undo()
+        assert _tiles_with(window, _WATER_DEEP) == set()
+        assert _tiles_with(window, _BEACH) == set()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_checkbox_off_reproduces_a_plain_draw_stroke() -> None:
+    plain = _edit_window("draw")
+    plain.terrain_combo.setCurrentIndex(plain.terrain_combo.findData(_WATER_DEEP))
+    beached = _beach_window(enabled=False)
+    try:
+        for window in (plain, beached):
+            _stroke(window, 20, 20)
+        assert _grid(plain) == _grid(beached)
+    finally:
+        for window in (plain, beached):
+            window.edit_history.mark_saved()
+            window.close()
+
+
+def test_repainting_water_over_water_pushes_no_phantom_undo_step() -> None:
+    window = _beach_window()
+    try:
+        _stroke(window, 20, 20)
+        after_first = len(window.edit_history.records)
+        _stroke(window, 20, 20)
+        assert len(window.edit_history.records) == after_first
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_right_button_stroke_beaches_identically() -> None:
+    """_touch_tile ORs ShiftModifier in for right-button drags, so this pins
+    that the auto-beach path ignores `modifiers`, exactly as Draw does."""
+    from PyQt5.QtCore import Qt
+
+    left = _beach_window()
+    right = _beach_window()
+    try:
+        _stroke(left, 20, 20, 0)
+        _stroke(right, 20, 20, Qt.ShiftModifier)
+        assert _grid(left) == _grid(right)
+    finally:
+        for window in (left, right):
+            window.edit_history.mark_saved()
+            window.close()
+
+
+def test_toggling_the_checkbox_mid_stroke_does_not_half_apply() -> None:
+    """Hazard 2: the checkbox, combo and width are live widgets, so reading
+    them per touch would split one undo record across two settings. They are
+    snapshotted at on_edit_stroke_start instead."""
+    window = _beach_window(enabled=True)
+    try:
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(18, 20, 0)
+        window.auto_beach_check.setChecked(False)  # mid-stroke change
+        window.on_edit_stroke_tile(19, 20, 0)
+        window.on_edit_stroke_end()
+        grid = _grid(window)
+        # The second touch still beaches: the stroke uses its own snapshot.
+        assert grid[(20, 19)] == _BEACH
+        assert grid[(20, 21)] == _BEACH
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_explicit_beach_terrain_is_used_instead_of_auto() -> None:
+    window = _beach_window(beach_id=_BEACH_WET)
+    try:
+        _stroke(window, 20, 20)
+        assert _tiles_with(window, _BEACH_WET)
+        assert _tiles_with(window, _BEACH) == set()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_wider_ring_paints_a_wider_shoreline() -> None:
+    window = _beach_window(width=3)
+    try:
+        _stroke(window, 20, 20)
+        beach = _tiles_with(window, _BEACH)
+        assert len(beach) == 7 * 7 - 1
+        assert (17, 17) in beach
+        assert (16, 20) not in beach
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_ring_follows_the_brush_footprint() -> None:
+    window = _beach_window()
+    try:
+        window.brush_size_spin.setValue(3)
+        _stroke(window, 20, 20)
+        water = _tiles_with(window, _WATER_DEEP)
+        assert water == {(x, y) for y in range(19, 22) for x in range(19, 22)}
+        beach = _tiles_with(window, _BEACH)
+        assert (18, 18) in beach
+        assert (20, 18) in beach
+        assert not (beach & water)
     finally:
         window.edit_history.mark_saved()
         window.close()

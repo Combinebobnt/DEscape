@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import time
 from contextlib import nullcontext
+from typing import Self
 
 from descape import debug_log
 
@@ -61,7 +62,7 @@ class _PhaseTimer:
     def __init__(self, name: str) -> None:
         self._name = name
 
-    def __enter__(self) -> "_PhaseTimer":
+    def __enter__(self) -> Self:
         self._t0 = time.perf_counter()
         return self
 

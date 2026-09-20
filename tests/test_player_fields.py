@@ -50,7 +50,7 @@ def _default_entries_for(section_name: str, retriever_name: str):
     ]
 
 
-def _stub_loaded(overrides: dict[tuple[str, str], "_StubRetriever"] = None):
+def _stub_loaded(overrides: dict[tuple[str, str], _StubRetriever] | None = None):
     """A LoadedScenario stand-in exposing only what specs_for()/current_value()
     touch. Every primary (section, retriever) pair in player_fields._SPECS
     gets a present, non-empty, repeat-16 stub of P1..P8-then-GAIA-shaped data
@@ -372,7 +372,7 @@ def test_civilization_choices_is_civilization_old_int_below_1_56() -> None:
     loaded = _civ_stub_loaded("u32", sample=14)
     choices = player_fields.civilization_choices(loaded)
     assert choices, "no choices returned"
-    values, labels = zip(*choices)
+    values, labels = zip(*choices, strict=True)
     assert all(isinstance(v, int) for v in values)
     assert set(values) == {m.value for m in CivilizationOld if m.name != "GAIA"}
     assert list(labels) == sorted(labels), "choices must be sorted by label"
@@ -384,7 +384,7 @@ def test_civilization_choices_is_civilization_str_from_1_56() -> None:
     loaded = _civ_stub_loaded("str16", sample="HUN-CIV")
     choices = player_fields.civilization_choices(loaded)
     assert choices, "no choices returned"
-    values, labels = zip(*choices)
+    values, labels = zip(*choices, strict=True)
     assert all(isinstance(v, str) for v in values)
     assert set(values) == {m.value for m in Civilization if m.name != "GAIA"}
     assert "GAIA" not in values

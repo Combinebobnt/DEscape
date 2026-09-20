@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import pytest
 
-import conftest
 from descape.edit_history import CompositeDiffRecord
-from descape.scenario_io import BLANK_TEMPLATE_PATH
 from descape.unit_model import UnitEditModel
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,
@@ -23,13 +23,7 @@ _TERRAIN_A, _TERRAIN_B = 2, 15  # BEACH, GRASS_1 -- present in every DE version
 def _window():
     """The blank template loaded, Terrain mode, Select active. Caller must
     edit_history.mark_saved() + close()."""
-    conftest.ensure_qapp()
-    from descape.viewer import ViewerWindow
-
-    window = ViewerWindow()
-    window.load_scenario(BLANK_TEMPLATE_PATH)
-    assert window.scenario is not None, "blank template failed to load"
-    window.mode_combo.setCurrentText("Terrain")
+    window = conftest.terrain_edit_window()
     window._on_tool_selected("select")
     return window
 
@@ -204,6 +198,78 @@ def test_multi_owner_regions_undo_restores_every_owners_list() -> None:
         # begin_unit_edit() would only snapshot one list.
         assert len(window.scenario.unit_manager.units[1]) == 1
         assert len(window.scenario.unit_manager.units[2]) == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_paste_remaps_garrison_link_to_the_pasted_holders_new_id() -> None:
+    window = _window()
+    try:
+        unit_edits = window._ensure_unit_edits()
+        assert isinstance(unit_edits, UnitEditModel)
+        holder = unit_edits.add(player=1, unit_const=79, x=0.5, y=0.5, z=0.0, rotation=0.0)
+        unit_edits.add(
+            player=1, unit_const=4, x=0.5, y=0.5, z=0.0, rotation=0.0, garrisoned_in_id=holder.reference_id
+        )
+        window.edit_history.reset()
+
+        window._on_tool_selected("select")
+        window.on_region_selected((0, 0, 1, 1))
+        window.copy_region()
+
+        window.paste_terrain_check.setChecked(False)
+        window.paste_elevation_check.setChecked(False)
+        window.paste_units_check.setChecked(True)
+        window.on_hover((30, 30))
+        window.paste_region()
+
+        pasted = [
+            u
+            for player_units in window.scenario.unit_manager.units
+            for u in player_units
+            if int(u.x) == 30 and int(u.y) == 30
+        ]
+        pasted_holder = next(u for u in pasted if u.unit_const == 79)
+        pasted_occupant = next(u for u in pasted if u.unit_const == 4)
+        assert pasted_occupant.garrisoned_in_id == pasted_holder.reference_id
+        assert pasted_occupant.garrisoned_in_id != -1
+        assert pasted_occupant.garrisoned_in_id != holder.reference_id
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_garrison_remap_leaves_the_reverse_map_spliced_after_undo() -> None:
+    """The discriminating regression test: a post-hoc `set_garrisoned_in_id()`
+    patch pass (the design the plan explicitly rejects) would splice a unit's
+    garrison link without going through add()'s own warm-map maintenance, so
+    a warm _garrison would drift. serialize() and restore() both run
+    _check_alignment() -> _check_derived(), which raises RuntimeError on a
+    drifted map -- this must pass clean."""
+    window = _window()
+    try:
+        unit_edits = window._ensure_unit_edits()
+        assert isinstance(unit_edits, UnitEditModel)
+        holder = unit_edits.add(player=1, unit_const=79, x=0.5, y=0.5, z=0.0, rotation=0.0)
+        unit_edits.add(
+            player=1, unit_const=4, x=0.5, y=0.5, z=0.0, rotation=0.0, garrisoned_in_id=holder.reference_id
+        )
+        window.edit_history.reset()
+
+        window._on_tool_selected("select")
+        window.on_region_selected((0, 0, 1, 1))
+        window.copy_region()
+
+        window.paste_terrain_check.setChecked(False)
+        window.paste_elevation_check.setChecked(False)
+        window.paste_units_check.setChecked(True)
+        window.on_hover((30, 30))
+
+        unit_edits.warm_garrison_map()
+        window.paste_region()
+        window.undo()
+        unit_edits.serialize()  # must not raise
     finally:
         window.edit_history.mark_saved()
         window.close()

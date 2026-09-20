@@ -52,18 +52,35 @@ def _self_check() -> int:
         try:
             importlib.import_module(name)
         except Exception as exc:  # noqa: BLE001 -- report every failure, don't stop at the first
-            failures.append(f"import {name}: {exc!r}")
+            # A module that reads a data file at import time fails here rather
+            # than in the path scan below, and FileNotFoundError's repr drops
+            # the name -- append it so the culprit file is still identifiable.
+            filename = getattr(exc, "filename", None)
+            detail = f"{exc!r} [{filename}]" if filename else f"{exc!r}"
+            failures.append(f"import {name}: {detail}")
 
-    from descape import asset_source, library_compat, object_catalog, scenario_io, unit_sprites
-    from descape.terrain_palette import _TREE_UNIT_IDS_PATH
+    from descape import asset_source, library_compat
 
-    checked_paths = {
-        "object_catalog._CATALOG_JSON_PATH": object_catalog._CATALOG_JSON_PATH,
-        "unit_sprites.GRAPHIC_MAP_PATH": unit_sprites.GRAPHIC_MAP_PATH,
-        "terrain_palette._TREE_UNIT_IDS_PATH": _TREE_UNIT_IDS_PATH,
-        "scenario_io.TEMPLATE_DIR": scenario_io.TEMPLATE_DIR,
-    }
-    for label, path in checked_paths.items():
+    # Derived from the imported code, never from a hand-maintained list: GH #72
+    # shipped because a file absent from the spec's list was also absent from
+    # this check, so the check could not possibly catch it. Every module-level
+    # Path pointing inside descape/ is a data path the app resolves at runtime.
+    package_dir = Path(descape.__path__[0]).resolve()
+    checked_paths: dict[Path, str] = {}
+    for module_name, module in sorted(sys.modules.items()):
+        if module_name != "descape" and not module_name.startswith("descape."):
+            continue
+        for attr_name, value in sorted(vars(module).items()):
+            if not isinstance(value, Path):
+                continue
+            resolved = value.resolve()
+            if resolved.is_relative_to(package_dir):
+                checked_paths.setdefault(resolved, f"{module_name}.{attr_name}")
+
+    if not checked_paths:
+        failures.append("discovered no bundled data paths -- this check itself is broken")
+
+    for path, label in sorted(checked_paths.items()):
         if not path.exists():
             failures.append(f"missing bundled path for {label}: {path}")
         else:

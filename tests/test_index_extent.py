@@ -2,7 +2,7 @@
 
 Two separate bars here, and the second one is the reason this file exists.
 
-The first is that one shared memo is legal for all nine index producers:
+The first is that one shared memo is legal for all ten index producers:
 every one of them returns dst_y as element 0 and dst_x as element 1,
 whatever trails behind (src arrays, depth/span, uv_idx). Every unpack site
 in render.py reads them that way (`dst_y, dst_x, ... =
@@ -54,26 +54,27 @@ EDGE_SIDES = ("left", "right", "up_left", "up_right")
 
 
 def _producer_keys() -> list[tuple[object, tuple]]:
-    """(producer, key) for all nine producers over a real key spread."""
+    """(producer, key) for all ten producers over a real key spread."""
     pairs: list[tuple[object, tuple]] = []
     for tile_px in TILE_PX:
         pairs.append((iso_geometry.diamond_indices, (tile_px,)))
         pairs.append((iso_geometry.seam_apex_indices, (tile_px,)))
         for side in ("left", "right"):
-            for drop_px in DROP_PX:
-                pairs.append((iso_geometry.skirt_quad_indices, (tile_px, drop_px, side)))
+            pairs.extend((iso_geometry.skirt_quad_indices, (tile_px, drop_px, side)) for drop_px in DROP_PX)
         for side in ("up_left", "up_right"):
             pairs.append((iso_geometry.seam_edge_indices, (tile_px, side)))
-            for rise_px in RISE_PX:
-                pairs.append((iso_geometry.shadow_quad_indices, (tile_px, rise_px, side)))
+            pairs.extend((iso_geometry.shadow_quad_indices, (tile_px, rise_px, side)) for rise_px in RISE_PX)
         for rise_px in RISE_PX:
             pairs.append((iso_geometry.shadow_apex_indices, (tile_px, rise_px)))
+            for sides in ("up_left", "up_right"):
+                pairs.append((iso_geometry.shadow_apex_indices, (tile_px, rise_px, sides)))
+                pairs.append((iso_geometry.shadow_tip_indices, (tile_px, rise_px, sides)))
         for side in EDGE_SIDES:
             pairs.append((iso_geometry.tile_edge_indices, (tile_px, side)))
-            for corners in CORNERS:
-                pairs.append((iso_geometry.sloped_tile_edge_indices, (tile_px, side, *corners)))
-        for corners in CORNERS:
-            pairs.append((iso_geometry.sloped_quad_indices, (tile_px, *corners)))
+            pairs.extend(
+                (iso_geometry.sloped_tile_edge_indices, (tile_px, side, *corners)) for corners in CORNERS
+            )
+        pairs.extend((iso_geometry.sloped_quad_indices, (tile_px, *corners)) for corners in CORNERS)
     return pairs
 
 
@@ -88,19 +89,20 @@ PRODUCER_IDS = [_pair_id(p) for p in PRODUCER_KEYS]
 
 @pytest.mark.parametrize("pair", PRODUCER_KEYS, ids=PRODUCER_IDS)
 def test_elements_0_and_1_are_the_dst_index_arrays(pair):
-    """The invariant that makes ONE shared memo legal for nine producers.
+    """The invariant that makes ONE shared memo legal for ten producers.
 
     Establishing grep, run against descape/render.py: every unpack site is
     `dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(...)`,
     `... = iso_geometry.skirt_quad_indices(...)`, `s_dst_y, s_dst_x,
     _depth, _span = iso_geometry.shadow_quad_indices(...)`, `a_dst_y,
-    a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(...)`,
+    a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(...)`, `t_dst_y,
+    t_dst_x, _depth, _span = iso_geometry.shadow_tip_indices(...)`,
     `seam_dst_y, seam_dst_x = iso_geometry.seam_edge_indices(...)`,
     `apex_dst_y, apex_dst_x = iso_geometry.seam_apex_indices(...)`,
     `dst_y, dst_x = iso_geometry.tile_edge_indices(...)`, `dst_y, dst_x,
     _src_y, _src_x, _uv_idx = iso_geometry.sloped_quad_indices(...)` and
     `edge_dst_y, edge_dst_x = iso_geometry.sloped_tile_edge_indices(...)`.
-    Destination y first, destination x second, in all nine."""
+    Destination y first, destination x second, in all ten."""
     producer, key = pair
     out = producer(*key)
     dst_y, dst_x = out[0], out[1]
@@ -150,9 +152,10 @@ def test_extent_is_not_read_off_the_array_ends():
         dst_y, dst_x = producer(*key)[:2]
         if dst_y.size == 0:
             continue
-        if (int(dst_y[0]), int(dst_y[-1])) != (int(dst_y.min()), int(dst_y.max())):
-            disagreements += 1
-        elif (int(dst_x[0]), int(dst_x[-1])) != (int(dst_x.min()), int(dst_x.max())):
+        if (int(dst_y[0]), int(dst_y[-1])) != (int(dst_y.min()), int(dst_y.max())) or (
+            int(dst_x[0]),
+            int(dst_x[-1]),
+        ) != (int(dst_x.min()), int(dst_x.max())):
             disagreements += 1
     assert disagreements > 0
 
@@ -169,6 +172,8 @@ EQUIV_KEYS = [
     (iso_geometry.shadow_quad_indices, (64, 8, "up_left")),
     (iso_geometry.shadow_quad_indices, (32, 3, "up_right")),
     (iso_geometry.shadow_apex_indices, (64, 8)),
+    (iso_geometry.shadow_apex_indices, (64, 8, "up_right")),
+    (iso_geometry.shadow_tip_indices, (64, 8, "up_left")),
     (iso_geometry.seam_edge_indices, (32, "up_left")),
     (iso_geometry.seam_edge_indices, (64, "up_right")),
     (iso_geometry.seam_apex_indices, (32,)),

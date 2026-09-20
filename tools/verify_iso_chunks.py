@@ -359,7 +359,7 @@ def check_composite_rect_iso_elevations_untouched(files: list[Path]) -> tuple[bo
     from descape.render import _building_bboxes_iso, _units_by_tile
 
     units_by_tile = _units_by_tile(scenario)
-    building_bboxes = _building_bboxes_iso(units_by_tile, mm.map_width, mm.map_height, proj, elevations)
+    building_bboxes = _building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations)
     canvas_w, canvas_h = proj.canvas_w, proj.canvas_h + (proj.max_elev - proj.min_elev) * proj.elev_step
     composite_rect_iso(
         scenario, 0, 0, min(1024, canvas_w), min(1024, canvas_h), elevations, proj, tile_px, units_by_tile, building_bboxes

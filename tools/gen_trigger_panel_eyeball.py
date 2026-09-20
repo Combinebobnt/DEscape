@@ -25,6 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from testkit import settings_isolation
+
 OUT_DIR = ROOT / "build" / "trigger_panel_eyeball"
 
 PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
@@ -49,38 +51,10 @@ def _ensure_qapp() -> None:
     _QAPP = QApplication.instance() or QApplication(sys.argv[:1])
 
 
-def _isolate_config(tmp_dir: Path) -> None:
-    """Redirect CONFIG_PATH before any ViewerWindow exists, or
-    closeEvent()'s unconditional settings.set_window_size() writes straight
-    through to this developer's real config.yaml -- the exact trap
-    tests/conftest.py's _isolated_settings fixture exists to close, which a
-    standalone tool doesn't get for free. See descape/settings.py's
-    _SETTINGS_MEMOIZED_GLOBALS-shaped module globals: they must be reset too,
-    since a prior import may have already memoized real values."""
-    import descape.asset_source as asset_source_module
-    import descape.settings as settings_module
-
-    fake_config_path = tmp_dir / "config.yaml"
-    asset_source_module.CONFIG_PATH = fake_config_path
-    settings_module.CONFIG_PATH = fake_config_path
-    for name in (
-        "_zoom_centered_on_cursor",
-        "_graphics_quality",
-        "_dark_mode",
-        "_elev_step_pct",
-        "_window_size",
-        "_split_sizes",
-        "_log_height",
-        "_distance_ticks",
-        "_distance_tick_interval",
-        "_keybinds",
-    ):
-        setattr(settings_module, name, None)
-
-
 def _open_window(path: Path):
-    from descape.viewer import ViewerWindow
     from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer import ViewerWindow
 
     window = ViewerWindow()
     window.show()
@@ -256,12 +230,168 @@ def _capture_reference_states(out_dir: Path) -> list[Path]:
     return written
 
 
+def _capture_enum_states(out_dir: Path) -> list[Path]:
+    """Large-ENUM picker: a converted enum row, its flat browse dialog, an
+    out-of-vocabulary value, a read-only converted enum, and a small enum
+    still rendering as a combo as the control. All on "Fixture: armour split"
+    (list index 1)."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.value_picker import ValueBrowseDialog, ValueLineEdit
+
+    written: list[Path] = []
+    window = _open_window(TRIGGER_FIXTURE)
+    panel = window.trigger_panel
+    try:
+        # converted: object_attributes = 8 (ObjectAttribute, 147 members),
+        # beside operation (Operation, 5 members) still a combo.
+        _select_effect(panel, 1, 0, scroll_to="object_attributes")
+        path = out_dir / "enum_picker.png"
+        _grab(window, path)
+        written.append(path)
+
+        _select_effect(panel, 1, 0, scroll_to="operation")
+        path = out_dir / "enum_small_combo.png"
+        _grab(window, path)
+        written.append(path)
+
+        # flat browse dialog, opened on the converted row's own items.
+        _select_effect(panel, 1, 0, scroll_to="object_attributes")
+        picker = next(w for s, _k, _i, w in panel._rows if s.name == "object_attributes")
+        assert isinstance(picker, ValueLineEdit)
+        dialog = ValueBrowseDialog(picker._items, show_values=True, title=picker._browse_title)
+        dialog.select(picker.value())
+        dialog.show()
+        QApplication.processEvents()
+        path = out_dir / "enum_browse_dialog.png"
+        dialog.grab().save(str(path))
+        dialog.close()
+        written.append(path)
+
+        # out of vocabulary: typed through the raw-integer escape hatch.
+        _select_effect(panel, 1, 0, scroll_to="armour_attack_class")
+        widget = next(w for s, _k, _i, w in panel._rows if s.name == "armour_attack_class")
+        widget.line_edit.setText("9999")
+        widget.line_edit.editingFinished.emit()
+        QApplication.processEvents()
+        path = out_dir / "enum_out_of_vocabulary.png"
+        _grab(window, path)
+        written.append(path)
+
+        # read-only: the second effect locks armour_attack_class.
+        _select_effect(panel, 1, 1, scroll_to="armour_attack_class")
+        path = out_dir / "enum_read_only.png"
+        _grab(window, path)
+        written.append(path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written
+
+
+XS_FILE = ROOT / "examples" / "2_Joan_coop_2_v0_15.aoe2scenario"
+
+
+def _capture_xs_states(out_dir: Path) -> list[Path]:
+    """P5-a: a real Script Call effect's XS body in the multi-line editor,
+    then the same row on a read-only file, where it is a label."""
+    from PyQt5.QtWidgets import QApplication
+
+    written: list[Path] = []
+    window = _open_window(XS_FILE)
+    panel = window.trigger_panel
+    try:
+        # Tall enough that the whole six-line band and its scrollbar fit the
+        # property pane, instead of the fold cutting the editor off.
+        window.resize(1500, 1100)
+        QApplication.processEvents()
+        manager = panel._manager()
+        list_index, effect_index = next(
+            (t, e)
+            for t, trigger in enumerate(manager.triggers)
+            for e, effect in enumerate(trigger.effects)
+            if effect.effect_type == 55
+        )
+        print(f"{XS_FILE.name}: script_call at trigger list index {list_index}, effect {effect_index}")
+        _select_effect(panel, list_index, effect_index, scroll_to="message")
+        path = out_dir / "xs_editor.png"
+        _grab(window, path)
+        written.append(path)
+
+        window.scenario.trigger_write_supported = False
+        panel.show_scenario(window.scenario)
+        _select_effect(panel, list_index, effect_index, scroll_to="message")
+        QApplication.processEvents()
+        path = out_dir / "xs_read_only.png"
+        _grab(window, path)
+        written.append(path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written
+
+
+def _capture_retype_states(out_dir: Path) -> list[Path]:
+    """GH #37: the detail pane squeezed to MIN_USEFUL_WIDTH with a fourth
+    entry button in the row, and the picker in Change mode.
+
+    4b.6b note 2 measured that three buttons fit the 340 px pane and five do
+    not, and note 4 records two defects that only a screenshot of this panel
+    caught, so the button widths are printed here rather than eyeballed: a
+    clipped label reads as a plausible short one in a PNG.
+    """
+    from PyQt5.QtGui import QFontMetrics
+    from PyQt5.QtWidgets import QApplication
+
+    written: list[Path] = []
+    window = _open_window(TRIGGER_FIXTURE)
+    panel = window.trigger_panel
+    try:
+        window.resize(1500, 1100)
+        sizes = panel.splitter.sizes()
+        panel.splitter.setSizes([sizes[0], panel.MIN_USEFUL_WIDTH])
+        QApplication.processEvents()
+
+        _select_effect(panel, 0, 0)
+        path = out_dir / "retype_button_row.png"
+        _grab(window, path)
+        written.append(path)
+
+        print(f"entry button row at {panel.detail_stack.width()} px "
+              f"(MIN_USEFUL_WIDTH is {panel.MIN_USEFUL_WIDTH}):")
+        for button in (
+            panel.entry_new_button,
+            panel.entry_copy_button,
+            panel.entry_delete_button,
+            panel.entry_retype_button,
+        ):
+            needed = QFontMetrics(button.font()).horizontalAdvance(button.text())
+            verdict = "CLIPPED" if needed > button.width() - 12 else "fits"
+            print(f"  {button.text():8s} width={button.width():4d} text={needed:3d}  {verdict}")
+
+        panel._request_entry_op("retype")
+        QApplication.processEvents()
+        path = out_dir / "retype_picker.png"
+        _grab(window, path)
+        written.append(path)
+        print(f"  picker button reads {panel.picker_add_button.text()!r}, "
+              f"{panel.picker_tree.topLevelItemCount()} group(s)")
+        panel._close_picker()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written
+
+
 def generate(out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for prefix, filename, expected_sections in TARGETS:
         written += _capture_one(prefix, filename, expected_sections, out_dir)
     written += _capture_reference_states(out_dir)
+    written += _capture_enum_states(out_dir)
+    written += _capture_xs_states(out_dir)
+    written += _capture_retype_states(out_dir)
     return written
 
 
@@ -277,7 +407,7 @@ def main() -> None:
 
     _ensure_qapp()
     with tempfile.TemporaryDirectory() as tmp:
-        _isolate_config(Path(tmp))
+        settings_isolation.isolate_settings(Path(tmp))
         written = generate(args.out_dir)
 
     for path in written:

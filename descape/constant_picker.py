@@ -15,7 +15,7 @@ decides what that means.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from PyQt5.QtCore import Qt
@@ -62,7 +62,7 @@ def _composite_pieces(pieces: list[unit_sprites.SpritePiece]) -> np.ndarray | No
 
     canvas = np.empty((max_y - min_y, max_x - min_x, 3), dtype=np.uint8)
     canvas[:, :] = _PREVIEW_BG
-    for piece, (x0, y0, _x1, _y1) in zip(pieces, boxes):
+    for piece, (x0, y0, _x1, _y1) in zip(pieces, boxes, strict=True):
         oy, ox = y0 - min_y, x0 - min_x
         rgba = piece.draw.rgba
         height, width = rgba.shape[:2]

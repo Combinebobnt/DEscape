@@ -100,3 +100,37 @@ def test_the_five_variants_are_five_distinct_shapes(unit_const):
         f"unit_const {unit_const} resolved {len(set(shapes))} distinct shapes across its "
         f"five variants ({shapes}) -- two rotations are collapsing onto one frame"
     )
+
+
+# Decoration-shell walls (_BODY_GRAPHIC_OVERRIDES) -> piece count per variant.
+# The flag has art only at variant 2, the tall tower it sits on.
+SHELL_WALL_PIECE_COUNTS = {72: (1, 1, 2, 1, 1), 119: (1, 1, 2, 1, 1), 788: (2, 2, 3, 2, 2)}
+
+
+@pytest.mark.parametrize("unit_const", sorted(SHELL_WALL_PIECE_COUNTS))
+def test_a_shell_walls_composite_paints_at_every_variant_with_the_flag_only_on_the_tower(unit_const):
+    """The composite must not reintroduce the palisade bug: every wall piece
+    shares unit_id 72/119/788, so an inferred parent would bail on the flag's
+    legitimate miss at 4 of 5 variants and draw nothing there."""
+    _require_install()
+    got = tuple(len(unit_sprites.sprite_pieces_for(unit_const, float(v), 1, 48)) for v in range(5))
+    assert got == SHELL_WALL_PIECE_COUNTS[unit_const]
+
+
+@pytest.mark.parametrize("unit_const", [72, 119])
+def test_a_palisade_towers_player_colour_comes_from_its_flag(unit_const):
+    """The user-visible payoff: palisade bodies carry no PLAYERCOLOR layer, so
+    before the flag came back as a piece these walls showed no team colour."""
+    _require_install()
+    entry = unit_sprites.graphic_map()[unit_const]
+
+    def has_player_colour(piece):
+        index = unit_sprites._frame_for(unit_const, piece, 2.0)
+        native = unit_sprites._native_frame(piece["file_name"], index)
+        assert native is not None, piece["file_name"]
+        playercolor = native[1]
+        return playercolor is not None and bool(playercolor.any())
+
+    body, flag = entry["pieces"]
+    assert not has_player_colour(body), "non-vacuity: the body alone must carry no player colour"
+    assert has_player_colour(flag)

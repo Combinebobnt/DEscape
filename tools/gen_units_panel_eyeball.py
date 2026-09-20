@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Screenshots UnitsPanel (the units-sidebar-catalog work) for a manual
 eyeball pass -- always writes PNGs, never pass/fail. Modelled on
-tools/gen_trigger_panel_eyeball.py, including its _isolate_config() trap:
-redirect CONFIG_PATH before any ViewerWindow exists, or closeEvent()'s
-unconditional settings.set_window_size() writes straight through to this
-developer's real config.yaml.
+tools/gen_trigger_panel_eyeball.py, including the trap
+testkit.settings_isolation exists for: redirect CONFIG_PATH before any
+ViewerWindow exists, or closeEvent()'s unconditional
+settings.set_window_size() writes straight through to this developer's real
+config.yaml.
 
 Captures, at MIN_USEFUL_WIDTH and a comfortable width:
 1. Nothing selected -- "No unit selected", stats block hidden.
@@ -32,6 +33,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+from testkit import settings_isolation
 
 OUT_DIR = ROOT / "build" / "units_panel_eyeball"
 
@@ -66,30 +69,6 @@ def _ensure_qapp() -> None:
     _QAPP = QApplication.instance() or QApplication(sys.argv[:1])
 
 
-def _isolate_config(tmp_dir: Path) -> None:
-    """See tools/gen_trigger_panel_eyeball.py's own docstring for why every
-    one of these resets is load-bearing, not just CONFIG_PATH itself."""
-    import descape.asset_source as asset_source_module
-    import descape.settings as settings_module
-
-    fake_config_path = tmp_dir / "config.yaml"
-    asset_source_module.CONFIG_PATH = fake_config_path
-    settings_module.CONFIG_PATH = fake_config_path
-    for name in (
-        "_zoom_centered_on_cursor",
-        "_graphics_quality",
-        "_dark_mode",
-        "_elev_step_pct",
-        "_window_size",
-        "_split_sizes",
-        "_log_height",
-        "_distance_ticks",
-        "_distance_tick_interval",
-        "_keybinds",
-    ):
-        setattr(settings_module, name, None)
-
-
 @dataclass
 class _SyntheticUnit:
     x: float
@@ -102,9 +81,10 @@ class _SyntheticUnit:
 
 
 def _open_window():
+    from PyQt5.QtWidgets import QApplication
+
     from descape.scenario_io import BLANK_TEMPLATE_PATH
     from descape.viewer import ViewerWindow
-    from PyQt5.QtWidgets import QApplication
 
     window = ViewerWindow()
     window.show()
@@ -229,7 +209,7 @@ def main() -> None:
 
     _ensure_qapp()
     with tempfile.TemporaryDirectory() as tmp:
-        _isolate_config(Path(tmp))
+        settings_isolation.isolate_settings(Path(tmp))
         written = generate(args.out_dir)
 
     for path in written:

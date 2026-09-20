@@ -6,6 +6,8 @@ tests/test_cliff_tool_viewer.py).
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from descape import cliff_catalog, cliff_chain, cliff_connectivity, terrain_palette
@@ -74,7 +76,7 @@ def test_a_straight_drag_steps_one_footprint_at_a_time():
     assert [n.bounds for n in nodes] == [
         (10, 13, 10, 13), (10, 13, 13, 16), (10, 13, 16, 19), (10, 13, 19, 22), (10, 13, 22, 25)
     ]
-    for earlier, later in zip(nodes, nodes[1:]):
+    for earlier, later in pairwise(nodes):
         assert cliff_connectivity.adjacency_dir(earlier.bounds, later.bounds) == (0, 1)
 
 

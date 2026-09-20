@@ -170,6 +170,14 @@ Useful Hotkeys
 - **Extend Map**: checkbox + New Map Size + Map Offset (N/S/E/W) to expand an existing map.
 - **Script Filename**: names an XS script file used by the map.
 
+**Coordinate axes.** Tile `(0, 0)` is the west (leftmost) tip of the map
+diamond. X grows up and to the right, along the upper-left edge; Y grows down
+and to the right, along the lower-left edge. So the upper-left and lower-right
+edges measure X, and the lower-left and upper-right edges measure Y. Source:
+AoE2ScenarioParser's `docs/images/map_coordinates_explained.png`, drawn on a
+real DE editor screenshot, which matches `descape/iso_geometry.py`'s own
+projection. DEscape's View > Distance Ticks letters each edge this way.
+
 ## 2. Global Victory
 
 - **Standard**: win by defeating all enemies, holding 5 relics for 200 years, or holding a wonder for 200 years.

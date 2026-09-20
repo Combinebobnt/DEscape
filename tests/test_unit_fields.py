@@ -18,7 +18,7 @@ def test_every_field_has_a_unique_id():
 
 
 def test_fields_by_id_mirrors_fields():
-    assert unit_fields.FIELDS_BY_ID == {spec.field_id: spec for spec in unit_fields.FIELDS}
+    assert {spec.field_id: spec for spec in unit_fields.FIELDS} == unit_fields.FIELDS_BY_ID
 
 
 def test_only_xyz_owner_and_rotation_are_editable():

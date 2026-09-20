@@ -21,10 +21,11 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-import conftest
 from descape import asset_source, iso_geometry, unit_pick, unit_sprites
 from descape.elevation_tools import set_tile_elevation
 from descape.render_cache import FlatChunkCache, IsoChunkCache
+
+import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 pytestmark = [
@@ -221,8 +222,17 @@ def test_picking_a_unit_in_flat_iso_hits_the_same_unit_the_iso_geometry_draws() 
         window._render_current(reset_view=False)
 
         index = unit_pick.build_index(window.scenario)
-        ox, oy = iso_geometry.tile_screen_origin(UNIT_X, UNIT_Y, 0, window._iso_proj)
-        sx, sy = ox + window._iso_proj.half_w, oy + window._iso_proj.half_h
+        # Probed at the MARK's own centre, not at the tile's. UNIT_X/UNIT_Y are
+        # integers, and an integer coordinate is a grid vertex: since free
+        # placement's Stage 1 the mark for a unit standing there sits half a
+        # tile up-left of its tile's centre, which is the renderer being right.
+        unit = window.scenario.unit_manager.units[1][-1]
+        # A quarter tile INTO the unit's own tile, not the mark's dead centre:
+        # the centre here is a grid vertex shared by four tiles, and the one
+        # that paints last in depth_order covers it, so the centre pixel is
+        # genuinely not visible. That is the documented consequence of a mark
+        # straddling a tile boundary, not a pick bug -- pick and paint agree.
+        sx, sy = iso_geometry.map_point_to_screen(unit.x + 0.25, unit.y + 0.25, 0, window._iso_proj)
 
         resolved_tile = iso_geometry.screen_to_tile(sx, sy, window._iso_elevations, window._iso_proj)
         assert resolved_tile == (UNIT_X, UNIT_Y), "fixture assumption: the probed pixel must land on the unit's own tile"

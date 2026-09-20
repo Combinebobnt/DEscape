@@ -28,10 +28,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import conftest
 from descape import asset_source, render, unit_sprites
 from descape.elevation_tools import set_tile_elevation
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+import conftest
 
 pytestmark = [
     pytest.mark.corpus,

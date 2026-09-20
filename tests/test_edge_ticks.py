@@ -136,6 +136,71 @@ def test_each_edge_labels_the_coordinate_that_varies_along_it() -> None:
     assert runs["x0"].tiles == runs["x1"].tiles == tuple(range(0, h + 1, interval))
 
 
+def test_the_x_letter_goes_on_the_edges_that_run_along_screen_up_right() -> None:
+    """Tied to geometry, not the naming table: AoE2:DE's X axis runs from the
+    west tip up and to the right along the upper-left edge, in both the iso
+    projection and Flat's own scene space. A swapped axis_letter mapping
+    passes a name lookup and fails this."""
+    w, h, interval = 40, 24, 4
+    for run in edge_ticks.edge_runs(w, h, interval, proj=_proj(w, h)):
+        step_x, step_y = run.minor_step
+        if edge_ticks.axis_letter(run.edge) == "X":
+            assert step_x > 0 and step_y < 0
+        else:
+            assert step_x > 0 and step_y > 0
+    y0 = edge_ticks.edge_runs(w, h, interval, proj=_proj(w, h))[0]
+    assert edge_ticks.axis_letter(y0.edge) == "X"
+    # The upper-left edge: starts at the west tip and climbs.
+    assert y0.anchors[0] == edge_ticks.iso_corner(0, 0, _proj(w, h))
+    assert y0.anchors[-1][1] < y0.anchors[0][1]
+
+    tile_px = 8
+    for run in edge_ticks.edge_runs(w, h, interval, tile_px=tile_px):
+        expected = (float(tile_px * interval), 0.0) if edge_ticks.axis_letter(run.edge) == "X" else (
+            0.0, float(tile_px * interval))
+        assert run.minor_step == expected
+
+
+def test_axis_letter_rejects_an_unknown_edge() -> None:
+    with pytest.raises(ValueError):
+        edge_ticks.axis_letter("z0")
+
+
+# Device directions every shipped view produces: (outward, minor step) for
+# the 2:1 iso diamond (Stepped/Sloped, and Flat under Isometric View) and
+# for plain Flat.
+_DEVICE_RUN_DIRECTIONS = (
+    ((-1.0, -0.5), (1.0, -0.5)),
+    ((1.0, 0.5), (1.0, -0.5)),
+    ((-1.0, 0.5), (1.0, 0.5)),
+    ((1.0, -0.5), (1.0, 0.5)),
+    ((0.0, -1.0), (1.0, 0.0)),
+    ((-1.0, 0.0), (0.0, 1.0)),
+)
+
+
+@pytest.mark.parametrize("font_px", range(8, 25))
+def test_the_axis_letter_never_overlaps_any_numeric_label(font_px: int) -> None:
+    """Box-intersection check against every nearby major's number, at every
+    major spacing from the label LOD floor up. The letter sits at the run's
+    middle anchor, and in iso the outward ray is diagonal to the edge."""
+    label_w, label_h = edge_ticks.label_box_px(font_px)
+    axis_w, axis_h = edge_ticks.axis_label_box_px(font_px)
+    label_center = edge_ticks.label_center_px(font_px)
+    axis_center = edge_ticks.axis_label_center_px(font_px)
+    floor = edge_ticks.MIN_LABEL_SPACING_PX / edge_ticks.MAJORS_PER_MINOR
+    for outward, step in _DEVICE_RUN_DIRECTIONS:
+        ux, uy = (c / math.hypot(*outward) for c in outward)
+        sx, sy = (c / math.hypot(*step) for c in step)
+        ax, ay = ux * axis_center, uy * axis_center
+        for spacing in (floor, floor * 1.5, floor * 2, floor * 4):
+            for k in range(-60, 61):
+                lx = k * spacing * sx + ux * label_center
+                ly = k * spacing * sy + uy * label_center
+                overlaps = abs(ax - lx) < (label_w + axis_w) / 2.0 and abs(ay - ly) < (label_h + axis_h) / 2.0
+                assert not overlaps, (outward, spacing, k)
+
+
 # --- tick indices and major classification ---------------------------------
 
 
@@ -238,6 +303,8 @@ def test_device_reach_dominates_every_mark_the_item_draws(font_px: int) -> None:
     assert reach >= edge_ticks.MINOR_TICK_PX
     assert reach >= edge_ticks.MAJOR_TICK_PX
     assert reach >= label_far_corner
+    axis_w, axis_h = edge_ticks.axis_label_box_px(font_px)
+    assert reach >= edge_ticks.axis_label_center_px(font_px) + math.hypot(axis_w, axis_h) / 2.0
     assert edge_ticks.MAJOR_TICK_PX > edge_ticks.MINOR_TICK_PX
     # The gap is a real gap: the label box's NEAR edge clears the major tick.
     # approx, not ==: label_center and box_h are each their own independent
@@ -263,7 +330,10 @@ def test_label_box_and_derived_geometry_are_exact_at_every_font_px_no_drift() ->
     # byte-identical to current behaviour.
     assert edge_ticks.label_box_px(12) == (40.0, 16.0)
     assert edge_ticks.label_center_px(12) == 23.0
-    assert edge_ticks.device_reach_px(12) == 23.0 + math.hypot(40.0, 16.0) / 2.0
+    assert edge_ticks.label_reach_px(12) == 23.0 + math.hypot(40.0, 16.0) / 2.0
+    assert edge_ticks.axis_label_box_px(12) == (16.0, 16.0)
+    # The axis letter sits outboard of the numbers, so it is now the reach.
+    assert edge_ticks.device_reach_px(12) == edge_ticks.axis_label_reach_px(12)
 
 
 # --- obligation 3: the LOD ladder ------------------------------------------

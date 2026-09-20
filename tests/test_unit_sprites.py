@@ -76,18 +76,27 @@ def _layer(kind: int, blocks: list[bytes], box) -> bytes:
 
 
 def build_sld(frame_count: int, *, playercolor: bool = True, layout_tag: int = 16,
-              magic: bytes = MAGIC, canvas: int = CANVAS) -> bytes:
+              magic: bytes = MAGIC, canvas: int = CANVAS,
+              empty_frames: frozenset[int] = frozenset(), colour_base: int = 0) -> bytes:
     """A file of `frame_count` identical frames, each a solid MAIN block grid
     plus (optionally) a full-coverage PLAYERCOLOR mask. The hotspot sits at the
-    canvas centre, as it does on every real frame."""
+    canvas centre, as it does on every real frame. `empty_frames` carry no
+    layers at all, like a palisade flag's art at the four non-tower variants.
+    `colour_base` shifts the per-frame colour so two files can be told apart in
+    a rendered image."""
     n_blocks = (canvas // 4) ** 2
     hotspot = canvas // 2
     out = bytearray(_HEADER.pack(magic, 4, frame_count, 0, layout_tag, 0))
     for i in range(frame_count):
+        if i in empty_frames:
+            out += _FRAME_HEADER.pack(canvas, canvas, hotspot, hotspot, 0, 0, i)
+            continue
         ftype = MAIN | (PLAYERCOLOR if playercolor else 0)
         out += _FRAME_HEADER.pack(canvas, canvas, hotspot, hotspot, ftype, 0, i)
         # Frame index varies the colour so a wrong frame is detectable.
-        out += _layer(MAIN, [bc1_solid(0x0800 * (i % 30 + 1))] * n_blocks, (0, 0, canvas, canvas))
+        out += _layer(
+            MAIN, [bc1_solid(0x0800 * ((i + colour_base) % 30 + 1))] * n_blocks, (0, 0, canvas, canvas)
+        )
         out += bytes([0xAA]) * ((4 - len(out)) % 4)
         if playercolor:
             out += _layer(PLAYERCOLOR, [bc4_solid()] * n_blocks, (0, 0, canvas, canvas))
@@ -117,7 +126,10 @@ def install(tmp_path, monkeypatch):
         """`pieces` is a list of unit_graphic_map.json-shaped piece dicts
         (unit_id/file_name/angle_count/frame_count/dx/dy). The first is
         emitted as `const`'s own five fields too, matching the generator's
-        own contract that the parent's own piece IS the entry's own graphic."""
+        own contract that the parent's own piece IS the entry's own graphic.
+        It also gets `"parent": true` unless a caller already marked one."""
+        if not any(p.get("parent") for p in pieces):
+            pieces = [dict(pieces[0], parent=True), *pieces[1:]]
         parent = pieces[0]
         monkeypatch.setattr(
             unit_sprites, "graphic_map",
@@ -416,6 +428,105 @@ def test_the_real_wall_consts_are_gated_onto_the_variant_path():
 )
 def test_wall_variant_from_neighbours(mask, expected):
     assert unit_sprites.wall_variant_from_neighbours(mask) == expected
+
+
+# --- the 8-bit superset (2026-09-19 wall-runs plan) -------------------
+
+
+@pytest.mark.parametrize("mask", range(256))
+def test_wall_variant_from_neighbours8_is_a_superset_of_the_4_bit_function(mask):
+    """The property that lets the write side use the 8-bit function while
+    the render side keeps calling the 4-bit one: wherever the orthogonal
+    nibble says anything at all, the two agree exactly."""
+    orthogonal = mask & unit_sprites.ORTHOGONAL_MASK
+    if not orthogonal:
+        return
+    assert unit_sprites.wall_variant_from_neighbours8(mask) == (
+        unit_sprites.wall_variant_from_neighbours(orthogonal)
+    )
+
+
+@pytest.mark.parametrize(
+    ("mask", "expected"),
+    [
+        # The two diagonal-run interiors -- the indices no code in this tree
+        # could previously derive. Measured 608/609 and 359/359 over the
+        # integer-encoded corpus.
+        (unit_sprites.NE | unit_sprites.SW, 4),
+        (unit_sprites.NW | unit_sprites.SE, 3),
+        # Diagonal run ends: a tower, mirroring the 4-bit function's own
+        # single-orthogonal-bit case. Measured 72/72 and 53/53.
+        (unit_sprites.NE, 2),
+        (unit_sprites.SW, 2),
+        (unit_sprites.NW, 2),
+        (unit_sprites.SE, 2),
+        # A bend in diagonal space, 30/30.
+        (unit_sprites.NE | unit_sprites.NW, 2),
+        (unit_sprites.NE | unit_sprites.SE, 2),
+        # Three or four diagonals: no measured row, and "other" is 2.
+        (unit_sprites.NE | unit_sprites.SW | unit_sprites.NW, 2),
+        (unit_sprites.NE | unit_sprites.SE | unit_sprites.SW | unit_sprites.NW, 2),
+    ],
+)
+def test_wall_variant_from_neighbours8_resolves_the_diagonal_only_masks(mask, expected):
+    assert unit_sprites.wall_variant_from_neighbours8(mask) == expected
+
+
+def test_wall_variant_from_neighbours8_leaves_mask_zero_underivable():
+    """Deliberately None rather than the 2 that 24 of 24 isolated corpus
+    walls store: that keeps this function's contract identical to the 4-bit
+    one at every mask. "A lone wall is a tower" is wall_run's policy."""
+    assert unit_sprites.wall_variant_from_neighbours8(0) is None
+
+
+def test_an_orthogonal_neighbour_outranks_a_diagonal_one():
+    """The discriminating case: a diagonal-run interior mask that ALSO has
+    an orthogonal neighbour must answer the 4-bit table's 2, not 4 -- the
+    diagonal rows were measured only on walls with no orthogonal neighbour
+    at all."""
+    mask = unit_sprites.NE | unit_sprites.SW | unit_sprites.WEST
+    assert unit_sprites.wall_variant_from_neighbours8(mask) == 2
+    run = unit_sprites.NE | unit_sprites.SW | unit_sprites.WEST | unit_sprites.EAST
+    assert unit_sprites.wall_variant_from_neighbours8(run) == 0
+
+
+# --- the shared mask builder ------------------------------------------
+
+
+def test_neighbour_mask_orthogonal_bits_match_the_sign_convention():
+    """NORTH is -y and EAST is +x -- pinned here because render.py's read
+    side and wall_run.py's write side now share this one function, and a
+    convention that drifted between them would fail silently."""
+    tiles = {(5, 4), (4, 5), (6, 5), (5, 6)}
+    mask = unit_sprites.neighbour_mask(5, 5, tiles)
+    assert mask == (
+        unit_sprites.NORTH | unit_sprites.WEST | unit_sprites.EAST | unit_sprites.SOUTH
+    )
+    assert unit_sprites.neighbour_mask(5, 5, {(5, 4)}) == unit_sprites.NORTH
+    assert unit_sprites.neighbour_mask(5, 5, {(6, 5)}) == unit_sprites.EAST
+
+
+def test_neighbour_mask_diagonal_bits_match_the_sign_convention():
+    assert unit_sprites.neighbour_mask(5, 5, {(6, 4)}, diagonals=True) == unit_sprites.NE
+    assert unit_sprites.neighbour_mask(5, 5, {(6, 6)}, diagonals=True) == unit_sprites.SE
+    assert unit_sprites.neighbour_mask(5, 5, {(4, 6)}, diagonals=True) == unit_sprites.SW
+    assert unit_sprites.neighbour_mask(5, 5, {(4, 4)}, diagonals=True) == unit_sprites.NW
+
+
+def test_neighbour_mask_ignores_diagonals_by_default():
+    """The default is exactly the 4-bit mask the render side was calibrated
+    on, so switching render.py onto this helper cannot change its answer."""
+    corners = {(4, 4), (6, 4), (4, 6), (6, 6)}
+    assert unit_sprites.neighbour_mask(5, 5, corners) == 0
+    assert unit_sprites.neighbour_mask(5, 5, corners, diagonals=True) == (
+        unit_sprites.NE | unit_sprites.SE | unit_sprites.SW | unit_sprites.NW
+    )
+
+
+def test_wall_family_consts_is_the_eight_eligible_walls():
+    consts = unit_sprites.wall_family_consts()
+    assert consts == (72, 117, 119, 155, 370, 788, 1062, 2678)
+    assert all(unit_sprites.rotation_variant_eligible(c) for c in consts)
 
 
 @pytest.mark.parametrize(
@@ -718,6 +829,91 @@ def test_the_hotspot_scales_with_the_sprite(install):
     )
 
 
+# --- tree_scale (View > Layers > Small Trees) --------------------------
+# Exercised through sprite_pieces_for(), the only entry point the map render
+# reaches: sprite_for() and icon_for() deliberately take no factor.
+
+
+def _piece_draw(*args, **kwargs):
+    pieces = unit_sprites.sprite_pieces_for(*args, **kwargs)
+    assert len(pieces) == 1, "fixture resolved to no sprite -- the test would be vacuous"
+    return pieces[0].draw
+
+
+def test_tree_scale_shrinks_the_art_about_its_own_hotspot(install):
+    """**The trunk-stays-put assertion**, stated exactly rather than as a
+    ratio: art and hotspot take the SAME factor, so this is a scale about the
+    sprite's own ground-contact point. Real tree consts put the hotspot at
+    the trunk base (hotspot_y / height measures 0.97 on 349/350/399), so the
+    canopy shrinks toward the trunk instead of the whole sprite sliding.
+
+    A 96px canvas rather than this module's default 8px one, and a half_w
+    where sprite_scale() is exactly 1.0, so the expected sizes are the
+    factor itself and not a rounding artefact stacked on the projection's."""
+    canvas = 96
+    install.write(build_sld(4, canvas=canvas))
+    install.register()
+    half_w = unit_sprites.NATIVE_TILE_W // 2
+    assert unit_sprites.sprite_scale(half_w) == 1.0
+
+    full = _piece_draw(CONST, 0.0, 1, half_w)
+    small = _piece_draw(CONST, 0.0, 1, half_w, 0.6)
+
+    assert full.rgba.shape[:2] == (canvas, canvas)
+    assert (full.hotspot_x, full.hotspot_y) == (canvas // 2, canvas // 2)
+    assert small.rgba.shape[:2] == (round(canvas * 0.6), round(canvas * 0.6))
+    assert small.hotspot_x == round(canvas // 2 * 0.6)
+    assert small.hotspot_y == round(canvas // 2 * 0.6)
+
+
+def test_tree_scale_of_one_is_byte_identical_to_omitting_it(install):
+    """The gate: a default render must not move a single pixel, which is
+    what makes this layer strictly additive."""
+    install.write(build_sld(4, canvas=96))
+    install.register()
+    omitted = _piece_draw(CONST, 0.0, 1, 32)
+    passed = _piece_draw(CONST, 0.0, 1, 32, 1.0)
+    assert np.array_equal(omitted.rgba, passed.rgba)
+    assert (omitted.hotspot_x, omitted.hotspot_y) == (passed.hotspot_x, passed.hotspot_y)
+
+
+def test_two_tree_scales_do_not_collide_in_the_scaled_cache(install):
+    """_scaled_cache is a PROCESS-global LRU shared across windows and
+    tests, so a key without tree_scale would serve full-size art into a
+    shrunk render and vice versa -- as a cache HIT, which nothing
+    downstream could notice."""
+    install.write(build_sld(4, canvas=96))
+    install.register()
+    small = _piece_draw(CONST, 0.0, 1, 32, 0.6)
+    full = _piece_draw(CONST, 0.0, 1, 32)
+    small_again = _piece_draw(CONST, 0.0, 1, 32, 0.6)
+
+    assert small.rgba.shape != full.rgba.shape
+    assert small_again.rgba.shape == small.rgba.shape
+    assert np.array_equal(small_again.rgba, small.rgba)
+
+
+def test_a_composites_piece_offsets_shrink_with_its_art(install):
+    """No tree is a composite today; the invariant holds anyway rather than
+    depending on that staying true. Offsets left on the full-size scale
+    would make a shrinking composite fly apart."""
+    install.write(build_sld(1, canvas=32))
+    install.write(build_sld(1, canvas=32, colour_base=7), name="t_annex_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1, "frame_count": 1,
+         "dx": 0, "dy": 0, "parent": True},
+        {"unit_id": CONST + 1, "file_name": "t_annex_x1", "angle_count": 1,
+         "frame_count": 1, "dx": 40, "dy": -20},
+    ])
+    half_w = unit_sprites.NATIVE_TILE_W // 2
+
+    full = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w)
+    small = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, 0.6)
+    assert len(full) == len(small) == 2
+    assert (full[1].dx, full[1].dy) == (40, -20)
+    assert (small[1].dx, small[1].dy) == (round(40 * 0.6), round(-20 * 0.6))
+
+
 # --- caching ----------------------------------------------------------
 
 
@@ -860,18 +1056,35 @@ def test_a_composite_scales_its_offsets_with_the_projection(install):
 
 
 def test_a_failing_parent_piece_drops_the_whole_composite(install):
-    """The parent piece is identified by unit_id == unit_const, not list
+    """The parent piece is the one marked `"parent": true`, not list
     position -- depth order can put it anywhere in the list (a town centre's
     own back piece sorts to index 1, not 0), so this must not regress to an
-    index check."""
+    index check. Both pieces share unit_id so identity can't stand in either."""
     install.write(build_sld(1), name="t_piece_b_x1")  # only the non-parent file exists
     install.register_composite(CONST, [
-        {"unit_id": 999, "file_name": "t_piece_b_x1", "angle_count": 1,
+        {"unit_id": CONST, "file_name": "t_piece_b_x1", "angle_count": 1,
          "frame_count": 1, "dx": 5, "dy": 5},
         {"unit_id": CONST, "file_name": "t_missing_x1", "angle_count": 1,
-         "frame_count": 1, "dx": 0, "dy": 0},
+         "frame_count": 1, "dx": 0, "dy": 0, "parent": True},
     ])
     assert unit_sprites.sprite_pieces_for(CONST, 0.0, 0, 32) == []
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is None
+
+
+def test_a_failing_non_parent_piece_sharing_the_parents_unit_id_is_skipped(install):
+    """The X-state gate / wall shape (e.g. const 487, 72): every piece carries
+    unit_id == unit_const. Only the marked parent's failure is fatal, so the
+    surviving pieces still draw, in both the tile-scale and Flat icon walks."""
+    install.write(build_sld(1), name="t_piece_a_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": "t_missing_x1", "angle_count": 1,
+         "frame_count": 1, "dx": 5, "dy": 5},
+        {"unit_id": CONST, "file_name": "t_piece_a_x1", "angle_count": 1,
+         "frame_count": 1, "dx": 0, "dy": 0, "parent": True},
+    ])
+    pieces = unit_sprites.sprite_pieces_for(CONST, 0.0, 0, 32)
+    assert [(p.dx, p.dy) for p in pieces] == [(0, 0)]
+    assert unit_sprites.icon_for(CONST, 0.0, 0, 32, 32) is not None
 
 
 def test_a_failing_non_parent_piece_is_skipped_not_fatal(install):

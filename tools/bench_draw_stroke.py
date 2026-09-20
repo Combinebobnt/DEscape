@@ -36,6 +36,13 @@ a cause instead of guessed at:
   composite        the residual: the real _composite_rect() call's own
                     time, minus the bystander figure above.
 
+--edit elevation swaps the terrain-paint stroke for Elevate's +1 raise
+(elevation_tools.set_tiles_elevation, propagation included), Stepped/Sloped
+only, square maps only. It adds a diff-floor column: the y-extent of the
+pixels that actually changed inside the bbox, read as the cache's unpatched
+chunks before patch() and its patched chunks after. bbox-w/bbox-h are
+reported separately because only y carries the elevation sweep.
+
 ms/step is felt latency, the number to optimize. ms/dirty-tile divides by
 the count that matters for the cost model: stroke_dirty_indices dedupes the
 stroke's own footprint, so a one-tile cursor advance at brush 9 adds only
@@ -51,12 +58,16 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from descape import iso_geometry, render
+from descape.beach_edges import apply_beach_ring
 from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
 from descape.edit_history import EditHistory, tile_state
+from descape.elevation_tools import set_tiles_elevation
 from descape.render import (
     dirty_screen_bbox_iso,
     dirty_screen_bbox_sloped,
@@ -75,6 +86,8 @@ FILES = [
 STROKE_LEN = 15
 BRUSH_SIZES = (1, 9)
 TERRAIN_IDS = [0, 5, 10, 2]
+# WATER_DEEP -- what --beach-width paints, so the ring has something to ring.
+BEACH_WATER_ID = 22
 
 
 def _ms(seconds: float) -> float:
@@ -184,9 +197,19 @@ def _patch_phased(cache, style: str, bbox, elevation_changed: set | None = None)
     return phases
 
 
-def _run_stroke(path: Path, style: str, brush_size: int, sprites: bool) -> str:
+def _diff_y_extent(before, after) -> int:
+    """Row span of the pixels that differ between two same-shaped crops, 0 if none."""
+    rows = np.flatnonzero((before != after).any(axis=2).any(axis=1))
+    return int(rows[-1] - rows[0] + 1) if rows.size else 0
+
+
+def _run_stroke(
+    path: Path, style: str, brush_size: int, sprites: bool, edit: str = "paint", beach_width: int = 0
+) -> str:
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
+    if edit == "elevation" and (style == "flat" or mm.map_width != mm.map_height):
+        return f"  {path.name:32s} style={style:7s} skipped (elevation mode needs Stepped/Sloped and a square map)"
     cache, elevations, proj, tile_px = _make_cache(style, scenario, sprites)
 
     # Realize the chunks covering the whole canvas at mip 0 first -- see
@@ -201,6 +224,7 @@ def _run_stroke(path: Path, style: str, brush_size: int, sprites: bool) -> str:
     cx, cy = mm.map_width // 2, mm.map_height // 2
 
     scan_ms, bbox_ms, dirty_counts, bbox_areas = [], [], [], []
+    bbox_ws, bbox_hs, floor_hs = [], [], []
     phase_totals = {"refresh_sources": [], "level_rebuild": [], "bystander_scan": [], "composite": []}
 
     for step in range(STROKE_LEN):
@@ -213,10 +237,24 @@ def _run_stroke(path: Path, style: str, brush_size: int, sprites: bool) -> str:
         ]
         if not footprint:
             continue
-        for tx, ty in footprint:
-            tile = mm.get_tile(tx, ty)
-            tile.terrain_id = TERRAIN_IDS[step % len(TERRAIN_IDS)]
-            tile.layer = -1
+        if edit == "elevation":
+            set_tiles_elevation(
+                mm, [(tx, ty, min(iso_geometry.MAX_ELEVATION, mm.get_tile(tx, ty).elevation + 1)) for tx, ty in footprint]
+            )
+        else:
+            # beach_width > 0 paints a single WATER terrain rather than
+            # cycling TERRAIN_IDS: the shoreline only exists around water,
+            # and a cycling paint would lay a ring one step and none the
+            # next, averaging two different features together.
+            paint_id = BEACH_WATER_ID if beach_width else TERRAIN_IDS[step % len(TERRAIN_IDS)]
+            for tx, ty in footprint:
+                tile = mm.get_tile(tx, ty)
+                tile.terrain_id = paint_id
+                tile.layer = -1
+            if beach_width:
+                apply_beach_ring(mm, footprint, paint_id, None, beach_width)
+        # The CORE only, never the ring -- see the water/beach plan's hazard
+        # 1, and ViewerWindow.on_edit_stroke_tile, which this mirrors.
         stroke_painted.update(footprint)
 
         t0 = time.perf_counter()
@@ -234,7 +272,7 @@ def _run_stroke(path: Path, style: str, brush_size: int, sprites: bool) -> str:
             rects = [(px * tile_px, py * tile_px, (px + 1) * tile_px, (py + 1) * tile_px) for px, py in coords]
             bbox_ms.append(_ms(time.perf_counter() - t0))
             bbox_areas.append(sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects))
-            phases = {k: 0.0 for k in phase_totals}
+            phases = dict.fromkeys(phase_totals, 0.0)
             for rect in rects:
                 step_phases = _patch_phased(cache, style, rect)
                 for k in phase_totals:
@@ -250,13 +288,19 @@ def _run_stroke(path: Path, style: str, brush_size: int, sprites: bool) -> str:
             bbox_ms.append(_ms(time.perf_counter() - t0))
             if bbox is None:
                 bbox_areas.append(0)
-                phases = {k: 0.0 for k in phase_totals}
+                phases = dict.fromkeys(phase_totals, 0.0)
             else:
                 bbox_areas.append((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
+                bbox_ws.append(bbox[2] - bbox[0])
+                bbox_hs.append(bbox[3] - bbox[1])
+                # Unpatched resident chunks still hold the pre-edit pixels.
+                before = cache.render_rect(*bbox, mip=0).copy() if edit == "elevation" else None
                 phases = _patch_phased(cache, style, bbox, elevation_changed)
+                if before is not None:
+                    floor_hs.append(_diff_y_extent(before, cache.render_rect(*bbox, mip=0)))
 
-        for k in phase_totals:
-            phase_totals[k].append(phases[k])
+        for k, totals in phase_totals.items():
+            totals.append(phases[k])
 
     n = len(scan_ms)
 
@@ -275,7 +319,9 @@ def _run_stroke(path: Path, style: str, brush_size: int, sprites: bool) -> str:
     return (
         f"  {path.name:32s} style={style:7s} brush={brush_size} sprites={sprites!s:5s} "
         f"ms/step={mean_step:7.2f} ms/dirty-tile={ms_per_tile:6.3f} dirty-tiles={mean_dirty:5.1f} "
-        f"bbox-px={mean(bbox_areas):9.0f} | "
+        f"bbox-px={mean(bbox_areas):9.0f} bbox-w={mean(bbox_ws):6.0f} bbox-h={mean(bbox_hs):6.0f} "
+        + (f"diff-floor-h={mean(floor_hs):6.0f} " if edit == "elevation" else "")
+        + "| "
         f"scan={mean(scan_ms):5.2f} bbox={mean(bbox_ms):5.2f} "
         f"refresh_sources={mean(phase_totals['refresh_sources']):6.2f} "
         f"level_rebuild={mean(phase_totals['level_rebuild']):6.2f} "
@@ -290,10 +336,19 @@ def main() -> None:
         "scenario_dir", type=Path, nargs="?", default=ROOT / "examples", help="Directory of .aoe2scenario files"
     )
     parser.add_argument("--styles", default="stepped,sloped,flat", help="Comma-separated: stepped,sloped,flat")
+    parser.add_argument("--edit", choices=("paint", "elevation"), default="paint", help="Stroke kind")
+    parser.add_argument(
+        "--beach-width",
+        type=int,
+        default=0,
+        help="Auto-beach ring width (0 = plain Draw, the baseline to compare against)",
+    )
+    parser.add_argument("--files", help="Comma-separated file names, overriding the built-in list")
     args = parser.parse_args()
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
 
-    for name in FILES:
+    names = [n.strip() for n in args.files.split(",")] if args.files else FILES
+    for name in names:
         path = args.scenario_dir / name
         if not path.exists():
             print(f"  {name:32s} skipped (not found in {args.scenario_dir})")
@@ -301,7 +356,10 @@ def main() -> None:
         for brush_size in BRUSH_SIZES:
             for sprites in (False, True):
                 for style in styles:
-                    print(_run_stroke(path, style, brush_size, sprites))
+                    print(
+                        _run_stroke(path, style, brush_size, sprites, args.edit, args.beach_width),
+                        flush=True,
+                    )
 
 
 if __name__ == "__main__":

@@ -607,7 +607,9 @@ def test_bc4_narrow_mode_reserves_index_six_for_transparent_and_seven_for_full()
 
 
 def test_bc4_indices_split_into_two_three_byte_groups_of_eight():
-    indices = [7, 0, 0, 0, 0, 0, 0, 0] + [0, 0, 0, 0, 0, 0, 0, 7]
+    # The `+` is the point: it shows the two groups of eight this test is
+    # named for. Merged into one 16-list they stop reading as groups at all.
+    indices = [7, 0, 0, 0, 0, 0, 0, 0] + [0, 0, 0, 0, 0, 0, 0, 7]  # noqa: RUF005
     out = decode_bc4_blocks(np.frombuffer(bc4_block(255, 0, indices), dtype=np.uint8).reshape(1, 8))
 
     assert int(out[0, 0, 0]) == (1 * 255 + 6 * 0) // 7
@@ -662,13 +664,13 @@ def _delta_chain(depth: int, *, kind: LayerKind = LayerKind.MAIN, block: bytes |
     """Frame 0 draws one block; every later frame skips it as a delta."""
     block = block if block is not None else solid_bc1()
     frames = [Frame([Layer(kind, box=(0, 0, 4, 4), commands=[(0, 1)], blocks=[block])], canvas=(4, 4))]
-    for _ in range(depth):
-        frames.append(
-            Frame(
-                [Layer(kind, box=(0, 0, 4, 4), flag0=0x80, commands=[(1, 0)], blocks=[])],
-                canvas=(4, 4),
-            )
+    frames.extend(
+        Frame(
+            [Layer(kind, box=(0, 0, 4, 4), flag0=0x80, commands=[(1, 0)], blocks=[])],
+            canvas=(4, 4),
         )
+        for _ in range(depth)
+    )
     return build_sld(frames)
 
 
@@ -708,13 +710,13 @@ def test_the_same_kind_predecessor_is_not_always_the_previous_frame():
             canvas=(4, 4),
         )
     ]
-    for _ in range(3):
-        frames.append(
-            Frame(
-                [Layer(LayerKind.SHADOW, box=(0, 0, 4, 4), commands=[(0, 1)], blocks=[solid_bc4(30)])],
-                canvas=(4, 4),
-            )
+    frames.extend(
+        Frame(
+            [Layer(LayerKind.SHADOW, box=(0, 0, 4, 4), commands=[(0, 1)], blocks=[solid_bc4(30)])],
+            canvas=(4, 4),
         )
+        for _ in range(3)
+    )
     frames.append(
         Frame(
             [Layer(LayerKind.MAIN, box=(0, 0, 4, 4), flag0=0x80, commands=[(1, 0)], blocks=[])],

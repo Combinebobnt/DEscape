@@ -29,21 +29,10 @@ BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120
 
 
 def _window():
-    from PyQt5.QtWidgets import QApplication
-
-    from descape.viewer import ViewerWindow
-
-    conftest.ensure_qapp()
-    window = ViewerWindow()
-    window.resize(1500, 900)
-    window.show()
-    QApplication.processEvents()
-    return window
+    return conftest.shown_window(1500, 900)
 
 
-def _close(window) -> None:
-    window.edit_history.mark_saved()
-    window.close()
+_close = conftest.close_window
 
 
 def _shown_value(panel, spec):
@@ -768,9 +757,8 @@ def test_the_count_reports_a_real_change_once() -> None:
 
 
 def test_populating_the_count_reports_nothing() -> None:
-    from descape.scenario_io import load_map_and_units
-
     from descape.player_fields import PLAYER_COUNT_FIELD_ID
+    from descape.scenario_io import load_map_and_units
 
     loaded = load_map_and_units(BLANK_FIXTURE)
     panel, reported = _count_panel(loaded)

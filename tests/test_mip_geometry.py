@@ -27,7 +27,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import conftest
 from descape import iso_geometry, render
 from descape.edit_history import EditHistory
 from descape.render import (
@@ -43,6 +42,8 @@ from descape.render_cache import (
 )
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
+
+import conftest
 
 # ---------------------------------------------------------------------------
 # Layer 1: pure geometry, no scenario load at all.
@@ -282,7 +283,7 @@ def test_building_bboxes_are_genuinely_per_level(corpus_files) -> None:
             b0 = level0_bboxes[shared_key]
             b1 = level_minus1_bboxes[shared_key]
             t0, t1 = cache.tile_px, cache.mip_tile_px(-1)
-            for v0, v1 in zip(b0, b1):
+            for v0, v1 in zip(b0, b1, strict=True):
                 assert v1 * t0 == v0 * t1
         return
     pytest.skip("no corpus file in this run has both a real building and an enumerated level -1")
@@ -331,9 +332,14 @@ def test_patch_rebuilds_only_resident_levels(corpus_files, monkeypatch) -> None:
         toggle_paint()
         dirty = hist.commit_stroke("terrain paint", mm.terrain)
         if not dirty:
+            # Undo before looping: leaving `counting` installed makes the next
+            # iteration's `real_fn` read it back, and `counting` calls `real_fn`
+            # through the same cell -- a self-call, i.e. RecursionError.
+            monkeypatch.undo()
             continue
         bbox = dirty_screen_bbox_iso(scenario, dirty, cache.elevations, proj, with_units=True)
         if bbox is None:
+            monkeypatch.undo()
             continue
         calls.clear()
         cache.patch(bbox)

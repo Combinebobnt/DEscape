@@ -24,8 +24,9 @@ from pathlib import Path
 import pytest
 from PyQt5.QtCore import Qt
 
-import conftest
 from descape import cliff_catalog
+
+import conftest
 
 pytestmark = [
     pytest.mark.gui,

@@ -29,6 +29,7 @@ import pytest
 from descape import asset_source, level_warm, render, unit_sprites
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import PLAYER_COLORS
+
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 MAP_W = MAP_H = 12

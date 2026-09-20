@@ -400,3 +400,83 @@ def test_only_mode_9_needs_disambiguation_suffixes() -> None:
             assert needs_suffix
         else:
             assert not needs_suffix, mode.mode_id
+
+
+# --- Stage 2b: gate reorientation ---------------------------------------------
+#
+# The whole design rests on one measured claim: a gate's occupied tiles,
+# reflected by a D4 element, are exactly its target sibling's tiles modulo
+# translation -- including the two DIAGONAL orientations, whose footprints are
+# sparse 6-tile sets inside a 4x4 box rather than solid runs. This runs it as
+# a default-tier test rather than as a throwaway probe, and it applies the real
+# TRANSFORMS functions rather than a table re-typed here, so it pins the
+# transforms against drift too.
+
+
+def _gate_shape(unit_const: int, n: int = 40):
+    from descape import render
+
+    tiles = render.occupied_tiles_for(unit_const, *render.span_anchor(10, 10, *_gate_span(unit_const)), n, n)
+    return _normalized(tiles)
+
+
+def _gate_span(unit_const: int):
+    from descape import render
+    from descape.terrain_palette import tile_span
+
+    return tile_span(unit_const, render.NON_BUILDING_SPAN)
+
+
+def _normalized(tiles):
+    min_x = min(t[0] for t in tiles)
+    min_y = min(t[1] for t in tiles)
+    return sorted((x - min_x, y - min_y) for x, y in tiles)
+
+
+def test_every_gate_orientation_reflects_onto_the_sibling_reorient_picks():
+    from descape import gate_orientation
+    from descape.mirror_tools import TRANSFORMS, reorient_gate_const
+
+    n = 40
+    checked = 0
+    for siblings in gate_orientation.groups().values():
+        if all(_gate_span(const) == (1, 1) for const in siblings):
+            continue  # the 1x1 corner groups: nothing to reflect, see below
+        for const in siblings:
+            tiles = _gate_shape(const, n)
+            for name, fn in TRANSFORMS.items():
+                reflected = _normalized([fn(x, y, n) for x, y in tiles])
+                target = reorient_gate_const(const, name)
+                assert reflected == _gate_shape(target, n), (
+                    f"const {const} under {name}: reflected tiles are not {target}'s shape"
+                )
+                checked += 1
+    assert checked == 576, f"expected 24 groups x 4 orientations x 8 elements, checked {checked}"
+
+
+def test_the_1x1_corner_gates_pass_through_verbatim():
+    """Measured decision, not a gap: all four siblings of a corner group share
+    one graphic, and a 1x1 footprint is invariant under every element, so a
+    remap would churn the stored const for no visual effect."""
+    from descape import gate_orientation
+    from descape.mirror_tools import TRANSFORMS, reorient_gate_const
+
+    corners = [
+        const
+        for siblings in gate_orientation.groups().values()
+        if all(_gate_span(c) == (1, 1) for c in siblings)
+        for const in siblings
+    ]
+    assert len(corners) == 24, f"expected six 1x1 groups, found {len(corners) // 4}"
+    for const in corners:
+        for name in TRANSFORMS:
+            assert reorient_gate_const(const, name) == const
+
+
+def test_reorient_refuses_a_non_gate():
+    import pytest
+
+    from descape.mirror_tools import reorient_gate_const
+
+    with pytest.raises(ValueError):
+        reorient_gate_const(117, "d")  # a wall
