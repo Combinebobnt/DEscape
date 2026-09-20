@@ -58,6 +58,11 @@ pytestmark = [
 
 
 def _v121_files() -> list[Path]:
+    # Runs at import time, inside the parametrize decorator below, so it fires
+    # before pytestmark's skipif can. An absent corpus is a skip, not a
+    # collection error; an empty one on this machine is still a hard failure.
+    if not WORKSHOP_DIR.is_dir():
+        return []
     return collect_files([WORKSHOP_DIR], pytest.fail)
 
 
