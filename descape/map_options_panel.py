@@ -29,6 +29,24 @@ from descape.scenario_io import (
 from descape.viewer_common import _fit_combo_width, _make_spinbox
 
 
+class _FitHost(QWidget):
+    """The scroll area's inner widget, reporting its own final width.
+
+    MapOptionsPanel.resizeEvent does not fire when only this widget is resized,
+    and the scroll area resizes it once more after deciding it needs a vertical
+    scrollbar. That last narrowing is the one that re-wraps the rows, so it is
+    the only width worth fitting to.
+    """
+
+    def __init__(self, on_resize) -> None:
+        super().__init__()
+        self._on_resize = on_resize
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._on_resize()
+
+
 class MapOptionsPanel(QWidget):
     """Scenario-wide settings: victory conditions, diplomacy, map flags, and
     the trigger execution-order mode (the Map Options mode's left page).
@@ -53,6 +71,10 @@ class MapOptionsPanel(QWidget):
     # widest row this panel actually builds -- see
     # tests/test_map_options_panel.py's width check.
     MIN_USEFUL_WIDTH = 300
+
+    # Two settles it in practice (fit, scrollbar appears, refit); the third is
+    # headroom against a width that oscillates around the scrollbar threshold.
+    _FIT_PASSES = 3
 
     # Rows that only apply under a Custom victory. Greyed here rather than
     # dropped from editable_fields: "not applicable right now" is not "this
@@ -143,7 +165,7 @@ class MapOptionsPanel(QWidget):
         ownership of the widget it is given, so the previous host is deleted
         by setWidget().
         """
-        self.host = QWidget()
+        self.host = _FitHost(self._refit)
         self.host_layout = QVBoxLayout(self.host)
         self.host_layout.setContentsMargins(6, 6, 6, 6)
         self.area.setWidget(self.host)
@@ -329,7 +351,7 @@ class MapOptionsPanel(QWidget):
         # Absorbs the leftover height so the groups stay stacked at the top
         # instead of spreading out over a tall pane.
         self.host_layout.addStretch(1)
-        self._fit_host_height()
+        self._refit()
 
     def _fit_host_height(self) -> None:
         """Give each group box the height its wrapped rows actually need.
@@ -338,11 +360,10 @@ class MapOptionsPanel(QWidget):
         through a different door. WrapLongRows makes a row's height depend on
         the width it is given, but a QGroupBox reports a sizeHint computed as if
         nothing wrapped, so host_layout hands the box that unwrapped height and
-        the addStretch(1) below absorbs the surplus instead. The last rows then
+        the addStretch(1) above absorbs the surplus instead. The last rows then
         draw outside the box while box width, scrollbar state and field widths
         all still measure correct. Global Victory is the live case: its four
-        custom-victory rows wrap at MIN_USEFUL_WIDTH, and at UI font sizes above
-        the default the group wants ~25 px more than it renders.
+        custom-victory rows wrap at MIN_USEFUL_WIDTH.
 
         Raising the host's own minimum is not enough on its own -- that only
         lengthens the scroll range, and the stretch takes the extra. The
@@ -368,27 +389,26 @@ class MapOptionsPanel(QWidget):
         self.host.setMinimumHeight(height)
 
     def _refit(self) -> None:
-        # The guard is for the resize that setMinimumHeight itself provokes.
+        """Re-measure until the viewport width settles, at most a few passes.
+
+        Raising the minimums is itself what makes the vertical scrollbar
+        appear, and that takes ~20 px off the viewport and re-wraps the rows at
+        the narrower width. Measuring once leaves the boxes fitted to the
+        pre-scrollbar width, which is how this first shipped: correct at some
+        UI font sizes and ~24 px short at others, purely by where the wrap
+        point happened to land.
+        """
         if self._fitting:
             return
         self._fitting = True
         try:
-            self._fit_host_height()
+            for _ in range(self._FIT_PASSES):
+                before = self.area.viewport().width()
+                self._fit_host_height()
+                if self.area.viewport().width() == before:
+                    break
         finally:
             self._fitting = False
-
-    def resizeEvent(self, event) -> None:
-        # The wrap point moves with width, so a narrower pane needs re-measuring
-        # or the clip comes back on a drag.
-        super().resizeEvent(event)
-        self._refit()
-
-    def showEvent(self, event) -> None:
-        # _build_groups() can run on a panel that has never been laid out, where
-        # every box is still 0 px wide and heightForWidth has nothing to answer
-        # for. This is the first moment the real widths exist.
-        super().showEvent(event)
-        self._refit()
 
     def _build_widget(self, spec) -> QWidget:
         # int() once, up front: a u8 retriever can parse as a bool, and both
