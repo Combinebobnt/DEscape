@@ -114,6 +114,7 @@ class MapOptionsPanel(QWidget):
         # The window's status notes, kept so a mode flip can refresh the summary.
         self._notes: tuple[str, ...] = ()
         self._populating = False
+        self._fitting = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -328,6 +329,66 @@ class MapOptionsPanel(QWidget):
         # Absorbs the leftover height so the groups stay stacked at the top
         # instead of spreading out over a tall pane.
         self.host_layout.addStretch(1)
+        self._fit_host_height()
+
+    def _fit_host_height(self) -> None:
+        """Give each group box the height its wrapped rows actually need.
+
+        Same failure TriggerPanel._fit_property_height() documents, reached here
+        through a different door. WrapLongRows makes a row's height depend on
+        the width it is given, but a QGroupBox reports a sizeHint computed as if
+        nothing wrapped, so host_layout hands the box that unwrapped height and
+        the addStretch(1) below absorbs the surplus instead. The last rows then
+        draw outside the box while box width, scrollbar state and field widths
+        all still measure correct. Global Victory is the live case: its four
+        custom-victory rows wrap at MIN_USEFUL_WIDTH, and at UI font sizes above
+        the default the group wants ~25 px more than it renders.
+
+        Raising the host's own minimum is not enough on its own -- that only
+        lengthens the scroll range, and the stretch takes the extra. The
+        per-box minimum is what redirects it.
+
+        activate() first, or this measures the *previous* form: the rows were
+        added moments ago and Qt has not laid them out yet.
+        """
+        self.host_layout.activate()
+        for box in self.host.findChildren(QGroupBox):
+            form = box.layout()
+            if form is None or box.width() <= 0 or not form.hasHeightForWidth():
+                continue
+            form.activate()
+            box.setMinimumHeight(
+                max(box.minimumSizeHint().height(), form.heightForWidth(box.width()))
+            )
+        self.host_layout.activate()
+        height = self.host_layout.minimumSize().height()
+        width = self.area.viewport().width()
+        if width > 0 and self.host_layout.hasHeightForWidth():
+            height = max(height, self.host_layout.heightForWidth(width))
+        self.host.setMinimumHeight(height)
+
+    def _refit(self) -> None:
+        # The guard is for the resize that setMinimumHeight itself provokes.
+        if self._fitting:
+            return
+        self._fitting = True
+        try:
+            self._fit_host_height()
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event) -> None:
+        # The wrap point moves with width, so a narrower pane needs re-measuring
+        # or the clip comes back on a drag.
+        super().resizeEvent(event)
+        self._refit()
+
+    def showEvent(self, event) -> None:
+        # _build_groups() can run on a panel that has never been laid out, where
+        # every box is still 0 px wide and heightForWidth has nothing to answer
+        # for. This is the first moment the real widths exist.
+        super().showEvent(event)
+        self._refit()
 
     def _build_widget(self, spec) -> QWidget:
         # int() once, up front: a u8 retriever can parse as a bool, and both

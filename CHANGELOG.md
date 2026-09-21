@@ -182,6 +182,12 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Map Options group boxes no longer clip their last rows at larger UI font
+  sizes.** A group whose rows wrap in a narrow pane reported the height it
+  would need if nothing wrapped, so Global Victory drew its custom-victory
+  rows outside its own box. It now measures each group at the width it is
+  actually given, and scrolls instead of clipping.
+
 - **The trigger editor's message boxes fit real dialogue** (GH #38). The
   trigger's own Description and Short Description, and the message on Display
   Instructions, Send Chat, Display Timer, Change Object Description and Change
