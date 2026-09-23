@@ -12,7 +12,7 @@ dnf -y install \
     python3.11 python3.11-libs python3.11-pip \
     mesa-libGL mesa-libEGL libxkbcommon libxkbcommon-x11 \
     libxcb xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil \
-    libX11 libX11-xcb libXext libXrender fontconfig freetype zlib \
+    libX11 libX11-xcb libXext libXrender libXcomposite fontconfig freetype zlib \
     binutils curl file desktop-file-utils
 
 python3.11 -m pip install --upgrade pip
