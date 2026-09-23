@@ -34,7 +34,7 @@ def _copy(window, sx0, sy0, sx1, sy1, terrain_id):
     """Paints a distinct terrain over the rect, selects it and copies, so each
     history entry is a genuinely different block rather than a repeat."""
     window._on_tool_selected("draw")
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(terrain_id))
+    window.terrain_panel.set_terrain(terrain_id)
     for y in range(sy0, sy1):
         for x in range(sx0, sx1):
             window.on_edit_stroke_start()

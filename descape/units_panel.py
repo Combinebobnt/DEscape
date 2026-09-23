@@ -11,7 +11,7 @@ double-click or Enter should ask the window to place something.
 
 Dumb and callback-driven like TriggerPanel/PlayersPanel: it never touches
 EditHistory or a UnitEditModel itself, reporting "the user set field X of
-the (single) selected unit to raw value V" or "the user asked to place
+the selected unit(s) to raw value V" or "the user asked to place
 object N" through the callbacks it is constructed with. Selection itself --
 which unit(s) show here at all -- and the write path stay entirely on
 ViewerWindow: see its own _refresh_selection_view() docstring for why that
@@ -23,13 +23,18 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
+    QSpinBox,
     QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -51,10 +56,11 @@ _FIELD_CONDITIONALS = {"rotation_is_angle": unit_rotation.rotation_is_angle}
 # const's rotation genuinely isn't a real angle -- see
 # _apply_conditional_fields.
 _ROTATION_TOOLTIP = (
-    "Rotation is shown raw, in radians. It is editable only for units whose "
-    "rotation is a real facing -- for most GAIA objects, walls and gates it "
-    "is a graphic-variant index, not an angle. Trees, plants and scenery can "
-    "change variant with Edit > Cycle Variant."
+    "Rotation is shown as a facing number, 0 to one less than the unit's "
+    "direction count, stored in radians (hover the field). For most GAIA "
+    "objects, walls and gates it is a graphic-variant index instead, shown "
+    "raw and not editable. Trees, plants and scenery can change variant with "
+    "Edit > Cycle Variant."
 )
 
 # The in-game editor's own Units-tab selection panel set (docs/
@@ -77,6 +83,26 @@ _STATS_NOTE_FULL = (
     "upgrades or trigger effects applied."
 )
 
+_MIXED_TEXT = "(mixed)"
+
+# Four rows plus the header, measured at the test font: the corpus never puts
+# more than 6 units in one host, and a taller list would push Add/Delete below
+# the fold of an inspector pane that already scrolls.
+_GARRISON_TREE_MAX_PX = 120
+
+_GARRISON_OVER_CAPACITY = (
+    "This file puts {count} units in a host the game gives {capacity} places. "
+    "Shown as it is; DEscape never changes it."
+)
+_GARRISON_WRONG_TYPE = "{count} of these cannot garrison here in game. Shown as it is; DEscape never changes it."
+
+# Group-mode wording of unit_rotation_note: {skipped} of {total} selected.
+_GROUP_ROTATION_NOTE = (
+    "{skipped} of {total} selected won't rotate: their rotation is a "
+    "graphic-variant index or has only one frame (trees, walls, gates, "
+    "scenery), so a typed Rotation leaves them unchanged."
+)
+
 
 class UnitsPanel(QWidget):
     # Measured at MIN_USEFUL_WIDTH: 64 px sprite preview + ~16 px scrollbar +
@@ -85,14 +111,24 @@ class UnitsPanel(QWidget):
     # pass for confirmation; adjust there; not by argument.
     MIN_USEFUL_WIDTH = 380
 
-    def __init__(self, on_unit_field=None, on_place_requested=None):
+    def __init__(
+        self,
+        on_unit_field=None,
+        on_place_requested=None,
+        on_garrison_add=None,
+        on_garrison_delete=None,
+        on_garrison_navigate=None,
+    ):
         super().__init__()
         # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel/PlayersPanel's
         # callbacks have.
         self._on_unit_field = on_unit_field or (lambda *args: None)
         self._on_place_requested = on_place_requested or (lambda *args: None)
-        # True while show_unit()/clear() are populating widgets
+        self._on_garrison_add = on_garrison_add or (lambda *args: None)
+        self._on_garrison_delete = on_garrison_delete or (lambda *args: None)
+        self._on_garrison_navigate = on_garrison_navigate or (lambda *args: None)
+        # True while show_unit()/show_group()/clear() are populating widgets
         # programmatically -- suppresses _field_changed() the same way
         # PlayersPanel._changed()'s own _populating guard does, so a
         # populate never looks like a user edit and never records a phantom
@@ -233,11 +269,15 @@ class UnitsPanel(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         self.unit_field_labels: dict[str, QLabel] = {}
         self.unit_field_editors: dict[str, QWidget] = {}
+        self.unit_field_captions: dict[str, QLabel] = {}
+        # Group mode's "(mixed)" spinbox value: one step below the spec minimum.
+        self._mixed_sentinels: dict[str, float] = {}
         for row, spec in enumerate(unit_fields.FIELDS):
             caption = QLabel(f"{spec.label}:")
             grid.addWidget(caption, row, 0)
+            self.unit_field_captions[spec.field_id] = caption
             if spec.field_id == "rotation":
-                # The "shown raw, in radians" half of the old always-visible
+                # The "shown as a facing" half of the old always-visible
                 # note, made always-accessible for zero vertical cost
                 # instead -- see unit_rotation_note below for the other half.
                 caption.setToolTip(_ROTATION_TOOLTIP)
@@ -265,12 +305,22 @@ class UnitsPanel(QWidget):
                 )
                 grid.addWidget(combo, row, 1)
                 self.unit_field_editors[spec.field_id] = combo
+            elif spec.kind == unit_fields.FACING:
+                # GH #61: whole facings, one per wheel notch, wrapping n-1 -> 0.
+                # The per-const range is set by _apply_conditional_fields.
+                spin = QSpinBox()
+                spin.setWrapping(True)
+                spin.setKeyboardTracking(False)  # see the FLOAT branch below
+                spin.valueChanged.connect(
+                    lambda value, s=spec: self._field_changed(s, value)
+                )
+                grid.addWidget(spin, row, 1)
+                self.unit_field_editors[spec.field_id] = spin
+                self._mixed_sentinels[spec.field_id] = -1
             else:  # FLOAT
                 spin = QDoubleSpinBox()
                 spin.setDecimals(spec.decimals)
                 spin.setRange(spec.minimum, spec.maximum)
-                if spec.field_id == "rotation":
-                    spin.setSuffix(" rad")
                 # setKeyboardTracking(False) is load-bearing the same way
                 # viewer_common._make_spinbox's own comment explains: without
                 # it, typing a multi-digit value over an old one fires
@@ -282,6 +332,7 @@ class UnitsPanel(QWidget):
                 )
                 grid.addWidget(spin, row, 1)
                 self.unit_field_editors[spec.field_id] = spin
+                self._mixed_sentinels[spec.field_id] = spec.minimum - spin.singleStep()
         self.inspector_layout.addWidget(self.unit_inspector_grid)
 
         # Conditional (only for a const whose rotation isn't a real angle) --
@@ -326,6 +377,44 @@ class UnitsPanel(QWidget):
         self.unit_stats_note.setToolTip(_STATS_NOTE_FULL)
         self.inspector_layout.addWidget(self.unit_stats_note)
 
+        # A third separate grid (GH #42), on Base stats' own pattern and for
+        # the same reason: a garrison is a list of OTHER units, not a field of
+        # the selected one. The panel stays model-free -- show_garrison() is
+        # handed finished rows by the viewer, which owns the model.
+        self.garrison_header = QLabel("<b>Garrison</b>")
+        self.inspector_layout.addWidget(self.garrison_header)
+
+        self.garrison_tree = QTreeWidget()
+        self.garrison_tree.setHeaderLabels(["Unit", "Owner"])
+        self.garrison_tree.setRootIsDecorated(False)
+        self.garrison_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.garrison_tree.setMaximumHeight(_GARRISON_TREE_MAX_PX)
+        self.garrison_tree.setToolTip(
+            "Units inside this one. They are hidden on the map unless "
+            "Filters > Show Garrisoned Units is on; double-click a row to select one"
+        )
+        self.garrison_tree.itemSelectionChanged.connect(self._garrison_selection_changed)
+        self.garrison_tree.itemDoubleClicked.connect(self._garrison_double_clicked)
+        self.inspector_layout.addWidget(self.garrison_tree)
+
+        self.garrison_note = QLabel("")
+        self.garrison_note.setWordWrap(True)
+        self.inspector_layout.addWidget(self.garrison_note)
+
+        self.garrison_buttons = QWidget()
+        button_row = QHBoxLayout(self.garrison_buttons)
+        button_row.setContentsMargins(0, 0, 0, 0)
+        self.garrison_add_button = QPushButton("Add...")
+        self.garrison_add_button.clicked.connect(lambda *_: self._on_garrison_add())
+        self.garrison_delete_button = QPushButton("Delete")
+        self.garrison_delete_button.setEnabled(False)
+        self.garrison_delete_button.clicked.connect(lambda *_: self._garrison_delete_clicked())
+        button_row.addWidget(self.garrison_add_button)
+        button_row.addWidget(self.garrison_delete_button)
+        button_row.addStretch(1)
+        self.inspector_layout.addWidget(self.garrison_buttons)
+        self.hide_garrison()
+
         self.inspector_layout.addStretch(1)
         self.inspector_area.setWidget(self.inspector_host)
         return self.inspector_area
@@ -344,14 +433,25 @@ class UnitsPanel(QWidget):
         blanks and hides the grid for None -- the "nothing selected" state.
         Never touches unit_inspector_empty's text; pair a None call with
         show_selection_count() when the caller has a count to report."""
+        # Undo any group-mode state first: the "(mixed)" combo item, the
+        # widened spin ranges, the hidden per-unit rows and the reworded note.
+        self._populating = True
+        try:
+            self._leave_group_mode()
+        finally:
+            self._populating = False
         if entry is None:
             self._show_inspector_fields(False)
             for label in self.unit_field_labels.values():
                 label.setText("")
             self._apply_stats(None)
+            self.hide_garrison()
             self._fit_inspector_height()
             return
         unit = entry.unit
+        # The viewer follows a show_unit() with show_garrison() when the
+        # const is a host; anything else leaves the block hidden.
+        self.hide_garrison()
         texts = {
             "name": object_catalog.display_name(unit.unit_const),
             "unit_const": str(unit.unit_const),
@@ -372,46 +472,169 @@ class UnitsPanel(QWidget):
             self.unit_field_editors["x"].setValue(unit.x)
             self.unit_field_editors["y"].setValue(unit.y)
             self.unit_field_editors["z"].setValue(getattr(unit, "z", 0.0))
-            self._apply_conditional_fields(unit)
+            self._apply_conditional_fields([unit])
         finally:
             self._populating = False
         self._apply_stats(unit.unit_const)
         self._show_inspector_fields(True)
         self._fit_inspector_height()
 
-    def _apply_conditional_fields(self, unit) -> None:
+    def show_group(self, entries) -> None:
+        """2+ selected units (GH #71): the same grid, each field showing the
+        members' common value or "(mixed)". A typed value then applies to
+        every member (ViewerWindow._on_unit_field_changed). Reference ID and
+        Garrisoned in are per-unit only, so their rows are hidden."""
+        # A garrison is per-host, so the block has nothing to say about a
+        # 2+ selection (GH #42), like Reference ID and Garrisoned in.
+        self.hide_garrison()
+        units = [entry.unit for entry in entries]
+        consts = {unit.unit_const for unit in units}
+        common_const = next(iter(consts)) if len(consts) == 1 else None
+        if common_const is None:
+            self.unit_field_labels["name"].setText(_MIXED_TEXT)
+            self.unit_field_labels["unit_const"].setText(_MIXED_TEXT)
+        else:
+            self.unit_field_labels["name"].setText(object_catalog.display_name(common_const))
+            self.unit_field_labels["unit_const"].setText(str(common_const))
+        self.unit_field_labels["reference_id"].setText("")
+        self.unit_field_labels["garrisoned_in_id"].setText("")
+        coords = {
+            "x": [unit.x for unit in units],
+            "y": [unit.y for unit in units],
+            "z": [getattr(unit, "z", 0.0) for unit in units],
+        }
+        self._populating = True
+        try:
+            self._set_group_owner({entry.player_id for entry in entries})
+            for field_id, values in coords.items():
+                self._set_group_spin(field_id, values)
+            self._apply_conditional_fields(units)
+        finally:
+            self._populating = False
+        self._apply_stats(common_const)
+        self._show_inspector_fields(True)
+        for field_id in ("reference_id", "garrisoned_in_id"):
+            self.unit_field_captions[field_id].setVisible(False)
+            self.unit_field_labels[field_id].setVisible(False)
+        # _show_inspector_fields(True) hid the count line; group mode keeps it.
+        self.unit_inspector_empty.setText(f"{len(entries)} units selected")
+        self.unit_inspector_empty.setVisible(True)
+        self._fit_inspector_height()
+
+    def _leave_group_mode(self) -> None:
+        """Restores single-unit state. Caller holds the populating guard:
+        setRange clamping off the sentinel and removeItem both emit."""
+        combo = self.unit_field_editors["player"]
+        if combo.count() and combo.itemData(0) is None:
+            combo.removeItem(0)
+        for field_id in self._mixed_sentinels:
+            self._set_spin_mixed(field_id, False)
+        for field_id in ("reference_id", "garrisoned_in_id"):
+            self.unit_field_captions[field_id].setVisible(True)
+            self.unit_field_labels[field_id].setVisible(True)
+        self.unit_rotation_note.setText(_ROTATION_TOOLTIP)
+
+    def _set_group_owner(self, players: set[int]) -> None:
+        combo = self.unit_field_editors["player"]
+        has_mixed_item = combo.count() and combo.itemData(0) is None
+        if len(players) == 1:
+            if has_mixed_item:
+                combo.removeItem(0)
+            combo.setCurrentIndex(max(combo.findData(next(iter(players))), 0))
+            return
+        if not has_mixed_item:
+            combo.insertItem(0, _MIXED_TEXT, None)
+        combo.setCurrentIndex(0)
+
+    def _set_spin_mixed(self, field_id: str, mixed: bool) -> None:
+        """"(mixed)" is the special value text, shown only at minimum(), so
+        the range widens down to the sentinel and the value parks there."""
+        spec = unit_fields.FIELDS_BY_ID[field_id]
+        spin = self.unit_field_editors[field_id]
+        # A facing's maximum is per-const (set by _apply_conditional_fields),
+        # so only its minimum toggles here.
+        facing = spec.kind == unit_fields.FACING
+        minimum = 0 if facing else spec.minimum
+        maximum = spin.maximum() if facing else spec.maximum
+        if mixed:
+            spin.setRange(self._mixed_sentinels[field_id], maximum)
+            spin.setSpecialValueText(_MIXED_TEXT)
+            spin.setValue(self._mixed_sentinels[field_id])
+        else:
+            # Cleared too: special text would otherwise show for a real 0.
+            spin.setSpecialValueText("")
+            spin.setRange(minimum, maximum)
+
+    def _set_group_spin(self, field_id: str, values: list[float]) -> None:
+        # Compared at the spinbox's own decimals: raw == would read units
+        # rotated or moved by different paths as "(mixed)" forever.
+        spec = unit_fields.FIELDS_BY_ID[field_id]
+        decimals = 0 if spec.kind == unit_fields.FACING else spec.decimals
+        if len({round(value, decimals) for value in values}) == 1:
+            self._set_spin_mixed(field_id, False)
+            self.unit_field_editors[field_id].setValue(values[0])
+        else:
+            self._set_spin_mixed(field_id, True)
+
+    def _apply_conditional_fields(self, units) -> None:
         """Swaps each conditional field between its editor and its read-only
-        label for THIS unit's const -- today only Rotation, whose rule is
-        unit_rotation.rotation_is_angle. Also owns unit_rotation_note's
-        visibility (shown only when the const's rotation is NOT a real
-        angle): the caveat appears exactly on the consts where the value is
-        a lie-in-waiting, rather than always.
+        label for the selected unit(s) -- today only Rotation, whose rule is
+        unit_rotation.rotation_is_angle. The editor shows if ANY unit's const
+        admits it; unit_rotation_note shows if any unit's does not, so the
+        caveat appears exactly where a typed value would skip something.
 
         Only ever called with the populating guard already held: it sets an
         editor's value, and the resulting valueChanged must not record a
         phantom undo step.
 
-        The value is normalized through rotate_step(..., 0) on the way in
-        rather than handed to setValue raw. An angle const can still carry a
-        stored value outside [0, 2*pi) (7.0 appears 574 times in the corpus),
-        and the spinbox would silently CLAMP that to its own maximum -- i.e.
-        display a number the file does not contain.
+        Rotation shows as a facing (GH #61). rotation_to_facing wraps a junk
+        stored value like 7.0 (574 corpus placements) onto its own frame, and
+        the range is set before the value, or the value would clamp to the
+        previous selection's maximum. A group whose members differ in
+        direction count edits on the finest grid (unit_rotation.facing_scale).
         """
+        group = len(units) > 1
         for spec in unit_fields.FIELDS:
             if not spec.conditional:
                 continue
-            allowed = _FIELD_CONDITIONALS[spec.conditional](unit.unit_const)
+            rule = _FIELD_CONDITIONALS[spec.conditional]
+            admitted = [unit for unit in units if rule(unit.unit_const)]
+            allowed = bool(admitted)
             editor = self.unit_field_editors[spec.field_id]
             editor.setVisible(allowed)
-            self.unit_field_labels[spec.field_id].setVisible(not allowed)
-            if spec.field_id == "rotation":
-                self.unit_rotation_note.setVisible(not allowed)
-            if allowed and spec.field_id == "rotation":
-                editor.setValue(
-                    unit_rotation.rotate_step(
-                        unit.rotation, unit_rotation.angle_count_for(unit.unit_const), 0
-                    )
+            label = self.unit_field_labels[spec.field_id]
+            label.setVisible(not allowed)
+            if spec.field_id != "rotation":
+                continue
+            skipped = len(units) - len(admitted)
+            self.unit_rotation_note.setVisible(skipped > 0)
+            if group:
+                self.unit_rotation_note.setText(
+                    _GROUP_ROTATION_NOTE.format(skipped=skipped, total=len(units))
                 )
+                if not allowed:
+                    label.setText("(n/a)")
+            if allowed:
+                scale = unit_rotation.facing_scale(unit.unit_const for unit in admitted)
+                editor.setRange(editor.minimum(), scale - 1)
+                values = [unit_rotation.rotation_to_facing(unit.rotation, scale) for unit in admitted]
+                self._set_group_spin(spec.field_id, values)
+                editor.setToolTip(self._facing_tooltip(admitted, scale))
+
+    @staticmethod
+    def _facing_tooltip(units, scale: int) -> str:
+        if len(units) == 1:
+            unit = units[0]
+            facing = unit_rotation.rotation_to_facing(unit.rotation, scale)
+            return f"Facing {facing} of {scale} (stored: {unit.rotation:.4f} rad)"
+        counts = sorted({unit_rotation.angle_count_for(unit.unit_const) for unit in units})
+        if len(counts) == 1:
+            return f"Facing 0 to {scale - 1} of {scale} for every selected unit"
+        others = ", ".join(str(count) for count in counts[:-1])
+        return (
+            f"Facing on a {scale}-direction scale. Units with fewer directions "
+            f"({others}) turn to their nearest frame."
+        )
 
     def _apply_stats(self, unit_const: int | None) -> None:
         """Shows/hides each Base stats row against key presence in
@@ -439,9 +662,9 @@ class UnitsPanel(QWidget):
         self.show_unit(None)
 
     def show_selection_count(self, count: int) -> None:
-        """0 or 2+ selected units: hides the field grids (never call this
-        for exactly 1 -- show_unit() shows its real fields instead) and
-        shows a "No unit selected" / "N units selected" readout."""
+        """Hides the field grids and shows a "No unit selected" / "N units
+        selected" readout. The viewer calls it only for an empty selection:
+        one unit goes to show_unit(), 2+ to show_group()."""
         self.show_unit(None)
         self.unit_inspector_empty.setText(f"{count} units selected" if count else "No unit selected")
 
@@ -466,9 +689,67 @@ class UnitsPanel(QWidget):
         super().resizeEvent(event)
         self._fit_inspector_height()
 
+    # -- garrison block (GH #42) ---------------------------------------------
+
+    def show_garrison(self, rows, capacity: int, wrong_type: int = 0) -> None:
+        """The Garrison block for the one selected host.
+
+        `rows` is a sequence of (label, owner, reference_id) the viewer built
+        from the model -- this panel never reads a model itself. `capacity` is
+        the base .dat figure, and `wrong_type` counts occupants the game
+        itself would not admit; both are reported, never corrected, since a
+        file is shown as it is.
+        """
+        rows = list(rows)
+        self.garrison_header.setText(f"<b>Garrison ({len(rows)} / {capacity})</b>")
+        self.garrison_tree.clear()
+        for label, owner, reference_id in rows:
+            item = QTreeWidgetItem([label, owner])
+            item.setData(0, Qt.UserRole, reference_id)
+            self.garrison_tree.addTopLevelItem(item)
+        notes = []
+        if len(rows) > capacity:
+            notes.append(_GARRISON_OVER_CAPACITY.format(count=len(rows), capacity=capacity))
+        if wrong_type:
+            notes.append(_GARRISON_WRONG_TYPE.format(count=wrong_type))
+        self.garrison_note.setText(" ".join(notes))
+        self.garrison_note.setVisible(bool(notes))
+        self.garrison_add_button.setEnabled(len(rows) < capacity)
+        self.garrison_add_button.setToolTip(
+            "" if len(rows) < capacity else f"Full: the game gives this one {capacity} places"
+        )
+        self.garrison_delete_button.setEnabled(False)
+        for widget in (self.garrison_header, self.garrison_tree, self.garrison_buttons):
+            widget.setVisible(True)
+        self._fit_inspector_height()
+
+    def hide_garrison(self) -> None:
+        """Whenever the selection isn't a single unit that can hold one."""
+        self.garrison_tree.clear()
+        for widget in (self.garrison_header, self.garrison_tree, self.garrison_note, self.garrison_buttons):
+            widget.setVisible(False)
+
+    def garrison_selection(self) -> list[int]:
+        """The reference_ids of the selected occupant rows."""
+        return [item.data(0, Qt.UserRole) for item in self.garrison_tree.selectedItems()]
+
+    def _garrison_selection_changed(self) -> None:
+        self.garrison_delete_button.setEnabled(bool(self.garrison_tree.selectedItems()))
+
+    def _garrison_delete_clicked(self) -> None:
+        selected = self.garrison_selection()
+        if selected:
+            self._on_garrison_delete(selected)
+
+    def _garrison_double_clicked(self, item, _column: int) -> None:
+        self._on_garrison_navigate(item.data(0, Qt.UserRole))
+
     # -- reporting an edit ---------------------------------------------------
 
     def _field_changed(self, spec: unit_fields.UnitFieldSpec, value) -> None:
         if self._populating:
+            return
+        # Landing on a group-mode "(mixed)" placeholder is not an edit.
+        if value is None or value == self._mixed_sentinels.get(spec.field_id):
             return
         self._on_unit_field(spec, value)

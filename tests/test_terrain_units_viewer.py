@@ -25,11 +25,11 @@ FOREST_OAK_CONST = 411
 
 def _window(tool: str = "draw"):
     """The blank template loaded, Terrain mode, `tool` active, FOREST_OAK
-    selected on terrain_combo. Caller must edit_history.mark_saved() +
+    selected in the terrain panel. Caller must edit_history.mark_saved() +
     close()."""
     window = conftest.terrain_edit_window()
     window._on_tool_selected(tool)
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(FOREST_OAK))
+    window.terrain_panel.set_terrain(FOREST_OAK)
     return window
 
 
@@ -205,7 +205,7 @@ def test_paint_can_confirm_is_skipped_with_both_checkboxes_off(monkeypatch) -> N
         window.close()
 
 
-def test_checkbox_visibility_follows_the_terrain_combo() -> None:
+def test_checkbox_visibility_follows_the_terrain_param() -> None:
     window = _window("draw")
     try:
         assert window.paint_trees_param_action.isVisible()

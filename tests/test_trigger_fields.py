@@ -152,11 +152,19 @@ def test_an_unknown_presentation_is_read_only_not_guessed() -> None:
     assert spec.read_only is True
 
 
-def test_quantity_float_is_display_only() -> None:
-    """It is derived and has no public setter."""
+def test_quantity_float_is_a_float_field_backed_by_quantity() -> None:
+    """Effect has no public quantity_float: a setattr on that name lands on a
+    dead instance attribute serialization ignores. Its read-only flag comes
+    from the cluster rule, not from DISPLAY_ONLY."""
     entry = _entry(["quantity_float"], {"quantity_float": -1})
     spec = trigger_fields.field_specs(entry, {"quantity_float": ""}, "effect_type")[0]
-    assert spec.read_only is True
+    assert spec.kind == trigger_fields.FLOAT
+    assert spec.attribute == "quantity"
+    assert spec.read_only is False
+
+
+def test_a_spec_s_attribute_defaults_to_its_name() -> None:
+    assert FieldSpec("timer", trigger_fields.INT).attribute == "timer"
 
 
 def test_sentinels_belong_only_to_numeric_kinds() -> None:
@@ -272,60 +280,153 @@ def test_document_references_are_the_two_intra_document_presentations() -> None:
 
 
 def test_unit_presentations_are_neither_catalog_nor_document_references() -> None:
-    """Unit/Unit[] are placed-unit reference_ids, deferred to phase 3.5b, so
-    TriggerPanel._build_widget() must keep falling through to the plain
-    spinbox for them -- checked here by confirming neither dispatch table
-    claims them, which is what that fallthrough depends on."""
+    """Unit/Unit[] are placed-unit reference_ids, resolved against the open
+    document and picked from the map, so TriggerPanel._build_widget() must
+    keep falling through to its spinbox (Unit) and line edit (Unit[]) for
+    them -- checked here by confirming neither dispatch table claims them,
+    which is what that fallthrough depends on."""
     for presentation in ("Unit", "Unit[]"):
         assert presentation in trigger_fields._REFERENCE_DATASETS
         assert presentation not in trigger_fields.CATALOG_PRESENTATIONS
         assert presentation not in trigger_fields.DOCUMENT_REFERENCES
 
 
-# -- the armour/attack rule --------------------------------------------------
+# -- the quantity cluster ----------------------------------------------------
+
+_ARMOR, _ATTACK, _HIT_POINTS = 8, 9, 0
+_MODIFY_ATTRIBUTE, _MODIFY_ATTRIBUTE_BY_VARIABLE, _DISPLAY_INSTRUCTIONS = 51, 79, 20
 
 
 class _FakeEffect:
+    """Raw fields set under their private names too, as the library stores
+    them, since cluster_fixup() and cluster_incoherence() read those."""
+
     def __init__(self, **values):
         for key, value in values.items():
             setattr(self, key, value)
+            if key in ("quantity", "armour_attack_quantity", "armour_attack_class"):
+                setattr(self, f"_{key}", value)
 
 
-_AA_SPECS = (
+_CLUSTER_SPECS = (
     FieldSpec("quantity", trigger_fields.INT),
+    FieldSpec("quantity_float", trigger_fields.FLOAT, attribute="quantity"),
     FieldSpec("armour_attack_quantity", trigger_fields.INT),
     FieldSpec("armour_attack_class", trigger_fields.INT),
 )
+_LISTED = ("effect_type", "object_attributes", "quantity", "quantity_float",
+           "armour_attack_quantity", "armour_attack_class")
 
 
-def test_armour_attack_source_reads_the_parsed_values() -> None:
-    aa = _FakeEffect(armour_attack_quantity=3, armour_attack_class=4, quantity=[])
-    plain = _FakeEffect(armour_attack_quantity=[], armour_attack_class=[], quantity=7)
-    assert trigger_fields.armour_attack_source(aa) == "armour_attack"
-    assert trigger_fields.armour_attack_source(plain) == "quantity"
+def _loaded_effects():
+    """The fixture's armour-split trigger. Loading also initialises the
+    library's module-global vocabulary, which its float gate reads."""
+    from pathlib import Path
+
+    from descape.scenario_io import load_map_and_units, parse_triggers
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+    return parse_triggers(load_map_and_units(fixture)).triggers[1].effects
 
 
-def test_armour_attack_rule_locks_the_inert_side() -> None:
-    """Writing the non-authoritative slot emits IncorrectArmorAttackUsageWarning
-    and can corrupt the other, so the UI must not offer it."""
-    aa = _FakeEffect(armour_attack_quantity=3, armour_attack_class=4, quantity=[])
-    locked = {
-        spec.name: spec.read_only for spec in trigger_fields.apply_armour_attack_rule(_AA_SPECS, aa)
-    }
-    assert locked == {"quantity": True, "armour_attack_quantity": False, "armour_attack_class": False}
-
-    plain = _FakeEffect(armour_attack_quantity=[], armour_attack_class=[], quantity=7)
-    locked = {
-        spec.name: spec.read_only
-        for spec in trigger_fields.apply_armour_attack_rule(_AA_SPECS, plain)
-    }
-    assert locked == {"quantity": False, "armour_attack_quantity": True, "armour_attack_class": True}
+def test_live_quantity_slot_asks_the_library_gate_not_the_values() -> None:
+    """The old value-sniffing rule answered wrong in exactly the corrupted
+    state an attribute switch creates: pair still set, object_attributes gone."""
+    aa = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_ARMOR)
+    plain = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_HIT_POINTS,
+                        armour_attack_quantity=2, armour_attack_class=3)
+    var = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE_BY_VARIABLE, object_attributes=_ATTACK)
+    assert trigger_fields.live_quantity_slot(aa) == trigger_fields.ARMOUR_ATTACK
+    assert trigger_fields.live_quantity_slot(plain) == trigger_fields.QUANTITY
+    assert trigger_fields.live_quantity_slot(var) == trigger_fields.VARIABLE
 
 
-def test_armour_attack_rule_is_a_no_op_without_both_sides() -> None:
+def test_live_quantity_slot_sees_a_float_attribute() -> None:
+    effect = _loaded_effects()[1]
+    effect.object_attributes = 13  # WORK_RATE
+    assert trigger_fields.live_quantity_slot(effect) == trigger_fields.QUANTITY_FLOAT
+
+
+def _locked(effect) -> dict:
+    return {spec.name: spec.read_only for spec in trigger_fields.apply_quantity_cluster_rule(_CLUSTER_SPECS, effect)}
+
+
+def test_the_cluster_rule_leaves_only_the_live_slot_editable() -> None:
+    aa = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_ARMOR)
+    assert _locked(aa) == {"quantity": True, "quantity_float": True,
+                           "armour_attack_quantity": False, "armour_attack_class": False}
+    plain = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_HIT_POINTS)
+    assert _locked(plain) == {"quantity": False, "quantity_float": True,
+                              "armour_attack_quantity": True, "armour_attack_class": True}
+    var = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE_BY_VARIABLE, object_attributes=_ARMOR)
+    assert _locked(var) == {"quantity": True, "quantity_float": True,
+                            "armour_attack_quantity": True, "armour_attack_class": False}
+
+
+def test_the_cluster_rule_unlocks_quantity_float_on_a_float_attribute() -> None:
+    effect = _loaded_effects()[1]
+    effect.object_attributes = 13
+    assert _locked(effect) == {"quantity": True, "quantity_float": False,
+                               "armour_attack_quantity": True, "armour_attack_class": True}
+
+
+def test_the_cluster_rule_leaves_other_fields_alone() -> None:
     specs = (FieldSpec("quantity", trigger_fields.INT), FieldSpec("timer", trigger_fields.INT))
-    effect = _FakeEffect(quantity=5)
-    assert trigger_fields.apply_armour_attack_rule(specs, effect) == specs
+    effect = _FakeEffect(effect_type=_DISPLAY_INSTRUCTIONS, object_attributes=-1)
+    assert trigger_fields.apply_quantity_cluster_rule(specs, effect) == specs
+
+
+_AA, _Q, _QF, _VAR = (trigger_fields.ARMOUR_ATTACK, trigger_fields.QUANTITY,
+                      trigger_fields.QUANTITY_FLOAT, trigger_fields.VARIABLE)
+
+
+@pytest.mark.parametrize(
+    "raw,before,after,expected",
+    [
+        # Same slot, including ARMOR -> ATTACK: nothing to re-establish.
+        ({"armour_attack_quantity": 2, "armour_attack_class": 3}, _AA, _AA, ()),
+        # Leaving the pair carries the amount, never the packed 196610.
+        ({"armour_attack_quantity": 2, "armour_attack_class": 3}, _AA, _Q,
+         (("quantity", 2), ("armour_attack_quantity", None), ("armour_attack_class", None))),
+        ({"armour_attack_quantity": 2, "armour_attack_class": 3}, _AA, _QF,
+         (("quantity", 2.0), ("armour_attack_quantity", None), ("armour_attack_class", None))),
+        # Entering it carries the amount and drops the class to 0.
+        ({"quantity": 45}, _Q, _AA, (("armour_attack_quantity", 45), ("armour_attack_class", 0))),
+        ({"quantity": 2.5}, _QF, _AA, (("armour_attack_quantity", 2), ("armour_attack_class", 0))),
+        # Both quantity slots are Effect.quantity, but the kind must follow.
+        ({"quantity": 2.5}, _QF, _Q, (("quantity", 2),)),
+        ({"quantity": 7}, _Q, _QF, (("quantity", 7.0),)),
+        # A non-number carries as the unset sentinel.
+        ({"quantity": None}, _Q, _AA, (("armour_attack_quantity", -1), ("armour_attack_class", 0))),
+        ({"armour_attack_quantity": []}, _AA, _Q,
+         (("quantity", -1), ("armour_attack_quantity", None), ("armour_attack_class", None))),
+        # The variable slot: nothing to carry, variable itself untouched.
+        ({"quantity": 5}, _Q, _VAR, (("armour_attack_class", 0),)),
+        ({"armour_attack_class": 4}, _VAR, _Q, (("quantity", -1), ("armour_attack_class", None))),
+    ],
+)
+def test_cluster_fixup_re_establishes_the_invariant(raw, before, after, expected) -> None:
+    effect = _FakeEffect(**raw)
+    assert trigger_fields.cluster_fixup(effect, before, after, _LISTED) == expected
+
+
+def test_cluster_fixup_writes_only_listed_fields() -> None:
+    """The *_BY_VARIABLE types list armour_attack_class and variable only."""
+    effect = _FakeEffect(armour_attack_class=4)
+    listed = ("effect_type", "object_attributes", "armour_attack_class", "variable")
+    assert trigger_fields.cluster_fixup(effect, _VAR, _Q, listed) == (("armour_attack_class", None),)
+
+
+def test_cluster_incoherence_names_an_empty_live_slot() -> None:
+    broken = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_ARMOR,
+                         armour_attack_quantity=None, armour_attack_class=None, quantity=45)
+    assert "armour_attack_quantity=None" in trigger_fields.cluster_incoherence(broken)
+    fine = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_HIT_POINTS, quantity=45)
+    assert trigger_fields.cluster_incoherence(fine) == ""
+    floaty = _FakeEffect(effect_type=_MODIFY_ATTRIBUTE, object_attributes=_HIT_POINTS, quantity=2.5)
+    assert "quantity=2.5" in trigger_fields.cluster_incoherence(floaty)
+    fixed_slot = _FakeEffect(effect_type=_DISPLAY_INSTRUCTIONS, object_attributes=-1, quantity=None)
+    assert trigger_fields.cluster_incoherence(fixed_slot) == ""
 
 
 # -- int lists ---------------------------------------------------------------
@@ -416,7 +517,7 @@ def test_the_trigger_s_own_prose_fields_are_prose_and_its_name_is_not() -> None:
     assert modes["name"] == ""
 
 
-def test_the_armour_attack_rule_keeps_the_multiline_mode() -> None:
+def test_the_cluster_rule_keeps_the_multiline_mode() -> None:
     specs = (
         FieldSpec("quantity", trigger_fields.INT),
         FieldSpec("armour_attack_quantity", trigger_fields.INT),
@@ -424,10 +525,10 @@ def test_the_armour_attack_rule_keeps_the_multiline_mode() -> None:
     )
 
     class _Entry:
-        quantity = 5
-        armour_attack_quantity = None
+        effect_type = _MODIFY_ATTRIBUTE
+        object_attributes = _HIT_POINTS
 
-    ruled = trigger_fields.apply_armour_attack_rule(specs, _Entry())
+    ruled = trigger_fields.apply_quantity_cluster_rule(specs, _Entry())
     assert [spec.read_only for spec in ruled] == [False, True, False]
     assert ruled[2].multiline == trigger_fields.XS
 
@@ -577,3 +678,68 @@ def test_an_unreadable_field_is_simply_not_carried() -> None:
     applied, dropped = trigger_fields.retype_carryover(entry, old, new, "effect_type")
     assert applied == {"source_player": 2}
     assert dropped == ()
+
+
+# -- intersecting several entries' forms (GH #60) ----------------------------
+
+
+def test_shared_specs_intersects_by_spec_not_by_name() -> None:
+    """The same name can be a different field on two types (INT here,
+    INT_LIST there), and the cluster rule locks a name on one entry but not
+    the other. A name-keyed intersection would put one widget over both."""
+    from dataclasses import replace
+
+    plain = FieldSpec("quantity", trigger_fields.INT)
+    listed = FieldSpec("quantity", trigger_fields.INT_LIST)
+    locked = replace(plain, read_only=True)
+    shared = FieldSpec("source_player", trigger_fields.INT)
+
+    assert trigger_fields.shared_specs([(plain, shared), (listed, shared)]) == (shared,)
+    assert trigger_fields.shared_specs([(plain, shared), (locked, shared)]) == (shared,)
+    assert trigger_fields.shared_specs([(plain, shared), (plain, shared)]) == (plain, shared)
+
+
+def test_shared_specs_keeps_the_first_entrys_order() -> None:
+    a = FieldSpec("a", trigger_fields.INT)
+    b = FieldSpec("b", trigger_fields.INT)
+    c = FieldSpec("c", trigger_fields.INT)
+    assert trigger_fields.shared_specs([(a, b, c), (c, b, a)]) == (a, b, c)
+    assert trigger_fields.shared_specs([(c, b, a), (a, b), (b, a, c)]) == (b, a)
+
+
+def test_shared_specs_of_one_entry_is_that_entrys_own_form() -> None:
+    """N = 1 goes through the same code as N > 1."""
+    specs = (FieldSpec("a", trigger_fields.INT), FieldSpec("b", trigger_fields.STR))
+    assert trigger_fields.shared_specs([specs]) == specs
+    assert trigger_fields.shared_specs([]) == ()
+
+
+def test_shared_value_is_mixed_only_when_the_values_differ() -> None:
+    agreeing = [_FakeEffect(quantity=5), _FakeEffect(quantity=5), _FakeEffect(quantity=5)]
+    differing = [_FakeEffect(quantity=5), _FakeEffect(quantity=5), _FakeEffect(quantity=6)]
+    assert trigger_fields.shared_value(agreeing, "quantity") == 5
+    assert trigger_fields.shared_value(differing, "quantity") is trigger_fields.MIXED
+    assert trigger_fields.shared_value([], "quantity") is trigger_fields.MIXED
+    # UNSET and None are real stored values, never MIXED.
+    assert trigger_fields.shared_value([_FakeEffect(q=-1), _FakeEffect(q=-1)], "q") == trigger_fields.UNSET
+
+
+def test_shared_value_compares_lists_by_value() -> None:
+    """Equal-but-distinct lists agree; identity would call them MIXED and blank
+    a field that could then never be group-set."""
+    same = [_FakeEffect(ids=[1, 2]), _FakeEffect(ids=[1, 2])]
+    other = [_FakeEffect(ids=[1, 2]), _FakeEffect(ids=[2, 1])]
+    assert trigger_fields.shared_value(same, "ids") == [1, 2]
+    assert trigger_fields.shared_value(other, "ids") is trigger_fields.MIXED
+
+
+def test_shared_value_reads_through_a_version_tolerant_getattr() -> None:
+    """The library's version-gated properties raise rather than being absent."""
+
+    class _Gated:
+        @property
+        def gated(self):
+            raise RuntimeError("unsupported on this version")
+
+    assert trigger_fields.shared_value([_Gated(), _Gated()], "gated") is None
+    assert trigger_fields.shared_value([_FakeEffect(x=1)], "x", reader=lambda e, a: 7) == 7

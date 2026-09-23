@@ -65,7 +65,7 @@ def line_tiles(
 def wall_path_tiles(
     x0: int, y0: int, x1: int, y1: int, map_width: int, map_height: int
 ) -> list[tuple[int, int]]:
-    """The Wall Run tool's path from (x0, y0) to (x1, y1) inclusive, clipped
+    """A wall run's path from (x0, y0) to (x1, y1) inclusive, clipped
     to the map, in draw order from the anchor outward -- same clip-after-
     rasterize contract line_tiles() documents, and for the same reason.
 
@@ -101,7 +101,7 @@ def wall_path_tiles(
 
 
 def snap_wall_delta(dx: int, dy: int) -> tuple[int, int]:
-    """Shift on Wall Run: the drag snaps to one of the 8 primitive
+    """Shift on a wall-run drag: the drag snaps to one of the 8 primitive
     directions (4 axis-aligned, 4 diagonal), keeping its own length along
     that direction.
 

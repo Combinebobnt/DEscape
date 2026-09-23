@@ -1,5 +1,5 @@
-"""Pins descape.unit_kind's two derived const sets -- GH #65's Show Walls /
-Show Eye Candy.
+"""Pins descape.unit_kind's three derived const sets -- GH #65's Show Walls /
+Show Eye Candy and GH #53's Show Invisible Objects.
 
 Both sets are derived from the committed .dat tables rather than transcribed,
 so the thing worth testing is not their contents but their BOUNDARIES: that
@@ -101,7 +101,7 @@ def test_eye_candy_consts_excludes_trees_resources_and_cliffs() -> None:
     from pathlib import Path
 
     candy = unit_kind.eye_candy_consts()
-    assert len(candy) == 395
+    assert len(candy) == 387
     assert candy.isdisjoint(TREE_UNIT_IDS), "show_trees owns those"
 
     objects = json.loads((Path(unit_kind.__file__).parent / "object_catalog.json").read_text())["objects"]
@@ -140,6 +140,44 @@ def test_the_two_sets_are_non_empty_and_disjoint() -> None:
     candy = unit_kind.eye_candy_consts()
     assert walls and candy
     assert walls.isdisjoint(candy)
+
+
+# GH #53: every non-hidden member of invisible_consts(), by category.
+INVISIBLE_OBJECTS = {1291, 2551, 2553, 2555, 2563}  # Invisible Object A-E, class 38
+MAP_REVEALERS = {837, 1774, 1775}  # Map Revealer / Medium / Giant, class 30
+BLOCKERS = {1776, 2423, 2424}  # Blocker, Blocker 1x3, Blocker 3x1, class 14
+FARM = 50  # no unit_graphic_map.json entry, but real art in the game
+FLARE4 = 697
+FLAME4 = 1336
+
+
+def test_invisible_consts_holds_the_objects_revealers_and_blockers() -> None:
+    invisible = unit_kind.invisible_consts()
+    assert invisible >= INVISIBLE_OBJECTS | MAP_REVEALERS | BLOCKERS
+    assert len(invisible) == 84
+
+
+def test_invisible_consts_is_no_dat_graphic_not_no_map_entry() -> None:
+    """FARM, FLARE4 and FLAME4 have no unit_graphic_map.json entry, but the
+    .dat gives each a standing graphic: they are art gaps, not invisible."""
+    import json
+    from pathlib import Path
+
+    graphics = json.loads((Path(unit_kind.__file__).parent / "unit_graphic_map.json").read_text())["graphics"]
+    invisible = unit_kind.invisible_consts()
+    for const in (FARM, FLARE4, FLAME4):
+        assert str(const) not in graphics, f"{const} gained a map entry; pick another counterexample"
+        assert const not in invisible
+
+
+def test_invisible_consts_is_disjoint_from_walls_and_eye_candy() -> None:
+    """Blockers are type 10, so they would be eye candy too without the
+    subtraction; the disjointness keeps _filter_summary()'s wording honest."""
+    invisible = unit_kind.invisible_consts()
+    assert invisible.isdisjoint(unit_kind.eye_candy_consts())
+    assert invisible.isdisjoint(unit_kind.wall_consts())
+    assert invisible.isdisjoint(TREE_UNIT_IDS)
+    assert GRASS_GREEN in unit_kind.eye_candy_consts()
 
 
 def test_the_module_stays_a_stdlib_only_leaf() -> None:
@@ -236,3 +274,34 @@ def test_the_eye_candy_set_hides_decoratives_and_keeps_resources(corpus_files) -
     # Resources are type 10 too and must survive the subtraction.
     for resource in (GOLD_MINE, STONE_MINE, BERRY_BUSH):
         assert resource not in candy
+
+
+@pytest.mark.corpus
+def test_the_invisible_set_matches_its_measured_corpus_placements(corpus_files, request) -> None:
+    """Re-measures the GH #53 plan's placement table (2026-09-21, 20 files)
+    rather than trusting it. The exact counts need --corpus-full; the quick
+    default subset only checks no unexpected invisible const is placed."""
+    from collections import Counter
+
+    from descape.scenario_io import load_map_and_units
+
+    invisible = unit_kind.invisible_consts()
+    placed: Counter[int] = Counter()
+    files: Counter[int] = Counter()
+    for path in corpus_files:
+        loaded = load_map_and_units(path)
+        seen = {u.unit_const for u in loaded.unit_manager.get_all_units() if u.unit_const in invisible}
+        for unit in loaded.unit_manager.get_all_units():
+            if unit.unit_const in invisible:
+                placed[unit.unit_const] += 1
+        files.update(seen)
+
+    assert set(placed) <= INVISIBLE_OBJECTS | MAP_REVEALERS | BLOCKERS | {EMPTY_TC_ANNEX}, placed
+    if not request.config.getoption("--corpus-full"):
+        assert placed, "the quick corpus carries revealers; this test would prove nothing"
+        return
+    assert placed[837] == 459 and files[837] == 8
+    assert placed[1774] == 50 and placed[1775] == 3
+    assert placed[1776] == 36 and placed[2424] == 21 and placed[2423] == 16
+    assert placed[1291] == 17 and files[1291] == 9
+    assert placed[EMPTY_TC_ANNEX] == 10

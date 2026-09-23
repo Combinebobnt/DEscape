@@ -411,3 +411,57 @@ def test_a_unit_edit_made_outside_units_mode_still_reaches_the_outlines() -> Non
         assert view._footprint_item.path().elementCount() > before
     finally:
         conftest.close_window(window)
+
+
+_FARM = 50
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_show_sprites_toggle_resyncs_draped_farm_outlines_in_sloped() -> None:
+    """A Sloped farm drapes over its tiles only while sprites are on, so the
+    outline changes shape on the toggle with no index or elevation event.
+    Checked against freshly recomputed geometry both ways, on a ramp so the
+    draped and diamond shapes cannot coincide."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        for tile in window.scenario.map_manager.terrain:
+            tile.elevation = max(0, min(4, tile.x - 18))
+        window.scenario.unit_manager.units[1].append(_Unit(21.5, 21.5, _FARM, reference_id=401))
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.refresh_map()
+        QApplication.processEvents()
+        window.footprint_action.setChecked(True)
+        view = window.map_view
+        view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
+        assert render._terrain_overlay_for(_FARM) is not None, "not a farm to the render path"
+
+        def drawn():
+            path = view._footprint_item.path()
+            return {
+                (round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3))
+                for i in range(path.elementCount())
+            }
+
+        def expected():
+            points = set()
+            for entry in unit_pick.footprint_entries(view._unit_index, view._footprint_scope):
+                for polygon in view._unit_polygons_for(entry) or []:
+                    points |= {(round(x, 3), round(y, 3)) for x, y in polygon}
+            return points
+
+        assert window.show_sprites_action.isChecked(), "sprites ship on; this test toggles off first"
+        before = drawn()
+        assert before == expected() and before
+        for on in (False, True):
+            window.show_sprites_action.setChecked(on)
+            cache = view._sloped_cache()
+            assert cache is not None and cache.with_units and cache.sprites_enabled is on
+            assert drawn() == expected(), f"sprites {'on' if on else 'off'}: outline is stale"
+            if not on:
+                assert drawn() != before, "the toggle did not change any outline"
+        assert drawn() == before
+    finally:
+        conftest.close_window(window)

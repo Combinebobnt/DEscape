@@ -183,6 +183,68 @@ def test_touched_players_is_the_owner_plus_every_rewritten_walls_owner():
     assert wall_run.touched_players(1, plan) == [1]
 
 
+# --- Wall Rectangle's ring (2026-09-21 wall enclosure plan) -------------
+
+
+def _ring(x0, y0, x1, y1, size=60):
+    from descape import shape_tools
+
+    return shape_tools.rect_perimeter_tiles(x0, y0, x1, y1, size, size)
+
+
+def test_a_ring_has_towers_at_corners_and_runs_along_its_edges():
+    plan = _plan(_ring(5, 10, 13, 14))
+    by_tile = {(int(n.x), int(n.y)): n.variant for n in plan.nodes}
+    assert len(by_tile) == 2 * 9 + 2 * 3
+    for corner in ((5, 10), (13, 10), (5, 14), (13, 14)):
+        assert by_tile[corner] == 2
+    for x in range(6, 13):
+        assert by_tile[(x, 10)] == by_tile[(x, 14)] == 0
+    for y in range(11, 14):
+        assert by_tile[(5, y)] == by_tile[(13, y)] == 1
+
+
+def test_a_one_wide_ring_is_a_straight_run():
+    from descape import shape_tools
+
+    ring = _plan(_ring(5, 10, 13, 10))
+    run = _plan(shape_tools.wall_path_tiles(5, 10, 13, 10, 60, 60))
+    as_map = lambda plan: {(n.x, n.y): n.variant for n in plan.nodes}  # noqa: E731
+    assert as_map(ring) == as_map(run)
+
+
+def test_a_one_by_one_ring_is_one_isolated_piece():
+    plan = _plan(_ring(7, 7, 7, 7))
+    assert [n.variant for n in plan.nodes] == [wall_run.ISOLATED_VARIANT]
+
+
+def test_a_ring_sharing_an_edge_with_existing_walls_skips_and_rewrites_them():
+    """An existing 3-piece y run lying on the ring's left side: its three
+    tiles are skipped, and its two ends become run interior (2 -> 1), a
+    reshape that rides in the plan. Its middle piece already stores 1."""
+    existing = [_wall_at(5, 11, 2.0), _wall_at(5, 12, 1.0), _wall_at(5, 13, 2.0)]
+    plan = _plan(_ring(5, 10, 13, 14), existing)
+    assert plan.skipped == 3
+    assert len(plan.nodes) == 24 - 3
+    assert [(unit, variant) for _p, unit, variant in plan.rewrites] == [
+        (existing[0], 1),
+        (existing[2], 1),
+    ]
+    by_tile = {(int(n.x), int(n.y)): n.variant for n in plan.nodes}
+    assert by_tile[(5, 10)] == by_tile[(5, 14)] == 2
+
+
+def test_a_ring_clipped_at_the_map_edge_is_an_open_three_sided_run():
+    plan = _plan(_ring(-3, 10, 5, 14))
+    by_tile = {(int(n.x), int(n.y)): n.variant for n in plan.nodes}
+    assert min(x for x, _y in by_tile) == 0
+    # The open ends at x=0 have one neighbour each, so they are run ends.
+    assert by_tile[(0, 10)] == by_tile[(0, 14)] == 2
+    assert by_tile[(2, 10)] == 0
+    assert by_tile[(5, 12)] == 1
+    assert (0, 12) not in by_tile
+
+
 def test_a_path_wholly_on_existing_walls_plans_nothing_new():
     existing = [_wall_at(x, 10) for x in range(5, 11)]
     plan = _plan([(x, 10) for x in range(5, 11)], existing)

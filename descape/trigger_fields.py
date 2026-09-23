@@ -37,6 +37,11 @@ from enum import Enum
 from typing import Any
 
 from AoE2ScenarioParser.datasets import buildings, players, techs, trigger_lists, units
+from AoE2ScenarioParser.datasets.effects import EffectId
+from AoE2ScenarioParser.objects.data_objects.effect import (
+    _get_armour_attack_source,
+    _is_float_quantity_effect,
+)
 
 from . import object_catalog
 from .library_compat import VocabularyEntry
@@ -44,6 +49,7 @@ from .library_compat import VocabularyEntry
 # -- kinds -------------------------------------------------------------------
 
 INT = "int"
+FLOAT = "float"
 BOOL = "bool"
 STR = "str"
 ENUM = "enum"
@@ -63,8 +69,27 @@ PROSE = "prose"
 # field. A spinbox shows it as "(unset)" at its minimum rather than as -1.
 UNSET = -1
 
-# Derived and has no public setter, so it is shown but never written.
-DISPLAY_ONLY = frozenset({"quantity_float"})
+
+class _Mixed:
+    """MIXED's type, so a stray one reads as MIXED in a traceback."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "MIXED"
+
+
+# "The selected entries disagree on this field" (GH #60). Unlike UNSET and
+# None, never a stored value, so it is never written back.
+MIXED = _Mixed()
+
+# Shown but never written. quantity_float left this set: it is editable exactly
+# when it is the live cluster slot (apply_quantity_cluster_rule()).
+DISPLAY_ONLY: frozenset[str] = frozenset()
+
+# Fields whose library attribute differs from the vocabulary name. Effect has
+# no public quantity_float; its value lives in Effect.quantity.
+_ATTRIBUTE_ALIASES: Mapping[str, str] = {"quantity_float": "quantity"}
 
 # Small enums that fit a combo box. Measured across every shipped
 # versions/DE/v*/ JSON, not just the version this repo's fixture uses.
@@ -100,8 +125,8 @@ _ENUM_TYPES: Mapping[str, type[Enum]] = {
 # open document (see DOCUMENT_REFERENCES and object_catalog.py's
 # trigger_choices()/variable_choices()); UnitInfo/BuildingInfo/TechInfo get a
 # real picker (see CATALOG_PRESENTATIONS); Unit/Unit[] are placed-unit
-# reference_ids, not type constants, so a picker for them is map-selection
-# integration, deferred to phase 3.5b -- they stay a plain spinbox.
+# reference_ids, not type constants: resolved by descape/unit_references.py
+# against the open document and picked from the map, never from a dataset.
 # None here just marks "no library Enum for from_id()", not "no picker".
 _REFERENCE_DATASETS: Mapping[str, type[Enum] | None] = {
     "TriggerId": None,
@@ -154,7 +179,9 @@ class FieldSpec:
     """One editable field of a condition, effect, or trigger.
 
     `choices` is (label, value) pairs for ENUM only. `sentinel` is the value
-    meaning "unset", or None for kinds that have no such value. `multiline`
+    meaning "unset", or None for kinds that have no such value. `attribute`
+    is the library attribute read and written, when it differs from `name`
+    ("" means the same). `multiline`
     is XS, PROSE or "" -- a mode rather than a bool, since the two multi-line
     kinds need different widgets (monospace and un-wrapped vs. proportional
     and wrapping) and different newline handling, while `if spec.multiline:`
@@ -168,6 +195,11 @@ class FieldSpec:
     presentation: str = ""
     read_only: bool = False
     multiline: str = ""
+    attribute: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.attribute:
+            object.__setattr__(self, "attribute", self.name)
 
     @property
     def label(self) -> str:
@@ -317,6 +349,10 @@ def field_specs(
             continue
         default = entry.default_attributes.get(attribute)
         kind, presentation = _kind_for(attribute, default, presentation_map.get(attribute, ""))
+        if attribute == "quantity_float":
+            # By name: its version-JSON default is an int -1, so _kind_for()
+            # cannot tell it from an INT.
+            kind = FLOAT
         specs.append(
             FieldSpec(
                 name=attribute,
@@ -326,6 +362,7 @@ def field_specs(
                 presentation=presentation,
                 read_only=attribute in DISPLAY_ONLY or kind == UNSUPPORTED,
                 multiline=_multiline_mode(entry.name, attribute, kind),
+                attribute=_ATTRIBUTE_ALIASES.get(attribute, attribute),
             )
         )
     return tuple(specs)
@@ -358,6 +395,43 @@ def _live_value(entry: Any, attribute: str):
         return getattr(entry, attribute, None)
     except Exception:  # noqa: BLE001 -- see docstring
         return None
+
+
+# -- editing several entries at once (GH #60) --------------------------------
+
+
+def shared_specs(spec_lists: Sequence[Sequence[FieldSpec]]) -> tuple[FieldSpec, ...]:
+    """The fields every entry in a selection genuinely shares, in the first
+    entry's order.
+
+    By FieldSpec equality, never by field name: `quantity` is INT on most
+    effects and INT_LIST on the armour ones, `message` is PROSE on some types
+    and STR on others, and apply_quantity_cluster_rule() locks different
+    cluster fields on two effects of the same type. One widget over two
+    fields that only share a name would write the wrong kind of value.
+    """
+    lists = [tuple(specs) for specs in spec_lists]
+    if not lists:
+        return ()
+    others = [set(specs) for specs in lists[1:]]
+    return tuple(spec for spec in lists[0] if all(spec in other for other in others))
+
+
+def shared_value(
+    entries: Sequence[Any],
+    attribute: str,
+    reader: Callable[[Any, str], Any] = _live_value,
+):
+    """The value every entry holds for `attribute`, or MIXED when they
+    differ (or there are none). Compared with ==, so lists compare by value.
+    `reader` is the caller's version-tolerant getattr."""
+    if not entries:
+        return MIXED
+    first = reader(entries[0], attribute)
+    for entry in entries[1:]:
+        if reader(entry, attribute) != first:
+            return MIXED
+    return first
 
 
 def retype_carryover(
@@ -459,53 +533,173 @@ def retype_entry(
     fresh = entries.pop(len(entries) - 1)
     # After construction, never before: object_attributes has a setter that
     # recomputes the armour/attack flag.
+    before = live_quantity_slot(fresh) if kind == "effect" else ""
     for name, value in applied.items():
         setattr(fresh, name, value)
+    if kind == "effect":
+        # A carried object_attributes can flip the fresh entry's live slot onto
+        # one its own construction never populated.
+        listed = definitions[type_id].attributes
+        for name, value in cluster_fixup(fresh, before, live_quantity_slot(fresh), listed):
+            setattr(fresh, name, value)
     # Through UuidList.__setitem__, which re-anchors the fresh object's _uuid.
     entries[entry_index] = fresh
     return dropped
 
 
-# -- the armour/attack live-value rule ---------------------------------------
+# -- the quantity cluster ----------------------------------------------------
+#
+# The library packs three logical fields into one file field and picks the
+# packing at runtime from (effect_type, object_attributes). Whichever slot it
+# will serialize must hold a number, and the others must be cleared.
+
+ARMOUR_ATTACK = "armour_attack"
+VARIABLE = "variable"
+QUANTITY = "quantity"
+QUANTITY_FLOAT = "quantity_float"
 
 _ARMOUR_ATTACK_FIELDS = ("armour_attack_quantity", "armour_attack_class")
+_CLUSTER_FIELDS = ("quantity", "quantity_float", *_ARMOUR_ATTACK_FIELDS)
+
+# The vocabulary fields each live slot makes editable. `variable` is live in
+# both of its states and is not a cluster field.
+_LIVE_FIELDS: Mapping[str, frozenset[str]] = {
+    ARMOUR_ATTACK: frozenset(_ARMOUR_ATTACK_FIELDS),
+    VARIABLE: frozenset({"armour_attack_class"}),
+    QUANTITY: frozenset({"quantity"}),
+    QUANTITY_FLOAT: frozenset({"quantity_float"}),
+}
 
 
-def armour_attack_source(entry: Any) -> str:
-    """Which slot the library treats as authoritative for this effect,
-    "armour_attack" or "quantity".
+def live_quantity_slot(entry: Any) -> str:
+    """Which of the cluster's fields the library will actually serialize:
+    ARMOUR_ATTACK, VARIABLE, QUANTITY_FLOAT or QUANTITY.
 
-    For effect types listing both, writing the wrong one emits
-    IncorrectArmorAttackUsageWarning and can corrupt the other, and the library
-    decides at runtime rather than by type. Its own `_armour_attack_source` is
-    private, so this reads the parsed values instead: an int in either
-    armour/attack field means that pair is the source, [] or None means
-    `quantity` is.
+    Asks the library's own gates rather than sniffing values, since the values
+    are exactly what is wrong after an object_attributes switch. Naming
+    inversion: the library's 'quantity' source means the armour/attack pair is
+    live and packs into the quantity slot.
     """
-    for name in _ARMOUR_ATTACK_FIELDS:
-        value = getattr(entry, name, None)
-        if isinstance(value, int) and not isinstance(value, bool):
-            return "armour_attack"
-    return "quantity"
+    effect_type = getattr(entry, "effect_type", None)
+    object_attributes = getattr(entry, "object_attributes", None)
+    source = _get_armour_attack_source(effect_type, object_attributes)
+    if source == "quantity":
+        return ARMOUR_ATTACK
+    if source == "variable":
+        return VARIABLE
+    if _is_float_quantity_effect(effect_type, object_attributes):
+        return QUANTITY_FLOAT
+    return QUANTITY
 
 
-def apply_armour_attack_rule(specs: Sequence[FieldSpec], entry: Any) -> tuple[FieldSpec, ...]:
-    """Mark whichever of the quantity / armour-attack pair is not authoritative
-    read-only. A no-op for every type that does not list both."""
-    names = {spec.name for spec in specs}
-    if "quantity" not in names or not names.intersection(_ARMOUR_ATTACK_FIELDS):
-        return tuple(specs)
-    inert = (
-        _ARMOUR_ATTACK_FIELDS
-        if armour_attack_source(entry) == "quantity"
-        else ("quantity",)
-    )
+def apply_quantity_cluster_rule(specs: Sequence[FieldSpec], entry: Any) -> tuple[FieldSpec, ...]:
+    """Mark every cluster field read-only except the live slot's. Writing an
+    inert one emits IncorrectArmorAttackUsageWarning or lands where
+    serialization never reads it."""
+    live = _LIVE_FIELDS[live_quantity_slot(entry)]
     return tuple(
         replace(spec, read_only=True)
-        if spec.name in inert
+        if spec.name in _CLUSTER_FIELDS and spec.name not in live
         else spec
         for spec in specs
     )
+
+
+def _as_number(value: Any, slot: str) -> int | float:
+    """The coercion rule, one place: an int slot takes int(), the float slot
+    float(), and anything that is not a number becomes -1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        value = UNSET
+    return float(value) if slot == QUANTITY_FLOAT else int(value)
+
+
+def cluster_fixup(
+    entry: Any, before: str, after: str, listed: Sequence[str]
+) -> tuple[tuple[str, Any], ...]:
+    """The ordered (attribute, value) writes that re-establish the cluster
+    invariant after a live-slot change from `before` to `after`. Pure.
+
+    Call after object_attributes (or the type) is already assigned. Carries the
+    amount and drops the armour class; never the merged packed value. Reads raw
+    fields, since on a broken pair the public quantity getter is what raises.
+    Only fields in `listed` (the entry type's per-version attributes) are ever
+    written. Entering writes come before clears: setting a newly live field is
+    what must not warn, and a clear to None never does.
+    """
+    if before == after:
+        return ()
+    if before == ARMOUR_ATTACK:
+        amount = getattr(entry, "_armour_attack_quantity", None)
+    elif before in (QUANTITY, QUANTITY_FLOAT):
+        amount = getattr(entry, "_quantity", None)
+    else:
+        amount = None
+
+    writes: list[tuple[str, Any]] = []
+    if after == ARMOUR_ATTACK:
+        writes += [("armour_attack_quantity", _as_number(amount, after)), ("armour_attack_class", 0)]
+    elif after == VARIABLE:
+        writes.append(("armour_attack_class", 0))
+    elif after in (QUANTITY, QUANTITY_FLOAT):
+        writes.append(("quantity", _as_number(amount, after)))
+
+    if before == ARMOUR_ATTACK and after != ARMOUR_ATTACK:
+        writes.append(("armour_attack_quantity", None))
+        if after != VARIABLE:
+            writes.append(("armour_attack_class", None))
+    elif before == VARIABLE and after not in (VARIABLE, ARMOUR_ATTACK):
+        writes.append(("armour_attack_class", None))
+
+    # Effect.quantity backs both quantity rows, so either listed name counts.
+    names = set(listed)
+    if names & {"quantity", "quantity_float"}:
+        names.add("quantity")
+    return tuple((name, value) for name, value in writes if name in names)
+
+
+# The effect types whose live slot object_attributes can switch. Every other
+# type's slot is fixed by its type, so construction always populates it.
+_SLOT_SWITCHING_EFFECTS = frozenset(
+    int(effect)
+    for effect in (
+        EffectId.MODIFY_ATTRIBUTE,
+        EffectId.MODIFY_ATTRIBUTE_FOR_CLASS,
+        EffectId.MODIFY_OBJECT_ATTRIBUTE,
+        EffectId.MODIFY_ATTRIBUTE_BY_VARIABLE,
+        EffectId.MODIFY_VARIABLE_BY_ATTRIBUTE,
+        EffectId.MODIFY_OBJECT_ATTRIBUTE_BY_VARIABLE,
+    )
+)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def cluster_incoherence(effect: Any) -> str:
+    """Why this effect's live cluster slot cannot serialize, or "". Reads the
+    raw fields: on a broken pair the public quantity getter itself raises."""
+    if getattr(effect, "effect_type", None) not in _SLOT_SWITCHING_EFFECTS:
+        return ""
+    slot = live_quantity_slot(effect)
+    if slot == ARMOUR_ATTACK:
+        raw = {name: getattr(effect, f"_{name}", None) for name in _ARMOUR_ATTACK_FIELDS}
+    elif slot == VARIABLE:
+        raw = {"armour_attack_class": getattr(effect, "_armour_attack_class", None)}
+    else:
+        raw = {"quantity": getattr(effect, "_quantity", None)}
+    for name, value in raw.items():
+        # [] is the library's own marker for a field this version stores with
+        # zero repeat; it serializes, so it is not refused here.
+        if value == []:
+            continue
+        if slot == QUANTITY_FLOAT:
+            ok = _is_int(value) or isinstance(value, float)
+        else:
+            ok = _is_int(value)
+        if not ok:
+            return f"its live {slot.replace('_', ' ')} slot holds {name}={value!r}"
+    return ""
 
 
 # -- int-list formatting -----------------------------------------------------

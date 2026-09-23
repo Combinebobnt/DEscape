@@ -43,8 +43,8 @@ module is where the bool is defined; unit_sprites wants only the float."""
 @dataclass(frozen=True)
 class LayerState:
     """An immutable "render these layers" state, whose defaults are each row's
-    own LayerSpec.default (on for the two visibility rows, off for the
-    Small Trees size row).
+    own LayerSpec.default (on for the two visibility rows and Hero Glow, off
+    for the Small Trees size row).
 
     Frozen for exactly the reason UnitFilter is: it is stored on a chunk
     cache and compared BY VALUE to decide whether a change needs the cache
@@ -61,6 +61,7 @@ class LayerState:
     terrain_textures: bool = True
     farm_overlay: bool = True
     small_trees: bool = False
+    hero_glow: bool = True
 
     @property
     def tree_scale(self) -> float:
@@ -153,6 +154,23 @@ LAYERS: tuple[LayerSpec, ...] = (
         # mark is already tile-sized.
         requires_sprites=True,
         keybind_label="Small Trees Layer",
+    ),
+    LayerSpec(
+        layer_id="hero_glow",
+        label="&Hero Glow",
+        tooltip=(
+            "Draw a gold outline round hero units, like the glow the game "
+            "draws round them. Turn it off to see a hero's own sprite edge."
+        ),
+        # On, for parity with the game, which always draws it.
+        default=True,
+        # Flat's icons go through unit_sprites.icon_for, a separate path and
+        # cache this ring does not reach.
+        styles=frozenset(terrain_style.ELEVATED_STYLES),
+        # The ring is baked into the sprite the caches store, which they only
+        # build with sprites enabled.
+        requires_sprites=True,
+        keybind_label="Hero Glow Layer",
     ),
 )
 

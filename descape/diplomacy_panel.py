@@ -57,7 +57,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
-from PyQt5.QtGui import QColor, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -82,7 +81,7 @@ from descape.diplomacy_fields import (
 from descape.map_options_panel import MapOptionsPanel
 from descape.player_fields import defined_player_ids
 from descape.scenario_io import LoadedScenario
-from descape.viewer_common import _make_spinbox
+from descape.viewer_common import _make_spinbox, _swatch_icon
 
 # (label, value) pairs for Ally/Neutral/Enemy, reused rather than redefined
 # -- see module docstring. trigger_fields.enum_choices() returns the raw
@@ -125,6 +124,11 @@ class DiplomacyPanel(QWidget):
     # (see viewer.py's _diplomacy_read_only_reasons()); this covers a panel
     # built directly, e.g. by a test, with no reasons supplied.
     _READ_ONLY_REASON = "Read-only for this file."
+    _STANCE_TOOLTIP = (
+        "Player {me}'s stance toward Player {other}. One direction only: Player {other}'s "
+        "stance back is set on its own page."
+    )
+    _ALLIED_VICTORY_TOOLTIP = "Player {me} can win together with its allies."
 
     def __init__(self, on_diplomacy_field=None, on_option_field=None):
         super().__init__()
@@ -379,7 +383,12 @@ class DiplomacyPanel(QWidget):
             editable = cell_id in self._editable_fields
             widget = self._build_stance_row(cell_id, value, editable)
             if not widget.toolTip():
-                widget.setToolTip(self._read_only_reasons.get(cell_id, self._READ_ONLY_REASON))
+                # Why the row can't be edited wins over what it does, as on the Teams rows.
+                widget.setToolTip(
+                    self._STANCE_TOOLTIP.format(me=self._player_id, other=opponent)
+                    if editable
+                    else self._read_only_reasons.get(cell_id, self._READ_ONLY_REASON)
+                )
             self._widgets[cell_id] = widget
             form.addRow(f"Toward Player {opponent}", widget)
 
@@ -393,6 +402,7 @@ class DiplomacyPanel(QWidget):
             allied_widget.toggled.connect(
                 lambda checked, cid=allied_id: self._changed(cid, int(checked))
             )
+            allied_widget.setToolTip(self._ALLIED_VICTORY_TOOLTIP.format(me=self._player_id))
         else:
             allied_widget.setToolTip(self._read_only_reasons.get(allied_id, self._READ_ONLY_REASON))
         self._widgets[allied_id] = allied_widget
@@ -560,9 +570,3 @@ class DiplomacyPanel(QWidget):
             if i >= self.player_combo.count():
                 break
             self.player_combo.setItemIcon(i, _swatch_icon(loaded.player_colors[player_id]))
-
-
-def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:
-    pixmap = QPixmap(16, 16)
-    pixmap.fill(QColor(*rgb))
-    return QIcon(pixmap)

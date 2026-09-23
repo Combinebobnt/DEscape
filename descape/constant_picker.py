@@ -179,6 +179,7 @@ class CatalogLineEdit(ValueLineEdit):
         catalog: Sequence[object_catalog.CatalogEntry],
         default_category: str = "",
         parent=None,
+        placeholder: str = "(unset)",
     ):
         self._catalog = catalog
         self._default_category = default_category
@@ -189,6 +190,7 @@ class CatalogLineEdit(ValueLineEdit):
             hidden_label=HIDDEN_LABEL,
             preview=catalog_preview,
             browse_title="Browse",
-            placeholder="(unset)",
+            # A parameter so a multi-entry form can say "(differs)" (GH #60).
+            placeholder=placeholder,
             parent=parent,
         )

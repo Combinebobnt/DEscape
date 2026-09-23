@@ -1,4 +1,5 @@
-"""Planner for the Wall Run tool (2026-09-19 wall-runs plan, GH #31/#50).
+"""Planner for wall runs (2026-09-19 wall-runs plan, GH #31/#50), placed by
+Place Unit with a wall const picked since GH #98 folded the Wall Run tool in.
 
 Qt-free and scenario-shaped, the same split cliff_chain.py has: everything a
 wall drag will write is decided here, and viewer.py's _commit_wall_run() only

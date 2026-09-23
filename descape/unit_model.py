@@ -185,10 +185,10 @@ def _raw_unit_blobs(loaded: LoadedScenario, players_units) -> list[list[bytes]]:
             player_blobs.append(loaded.decompressed_body[offset : offset + entry.byte_length])
             offset += entry.byte_length
         blobs.append(player_blobs)
-    if offset != loaded.units_section_end:
+    if offset != loaded.players_units_end:
         raise UnitEditsUnavailableError(
-            f"Units section walk landed at {offset}, expected units_section_end "
-            f"{loaded.units_section_end} -- refusing to construct an edit model"
+            f"Units section walk landed at {offset}, expected players_units_end "
+            f"{loaded.players_units_end} -- refusing to construct an edit model"
         )
     return blobs
 
@@ -618,7 +618,8 @@ class UnitEditModel:
 
     def set_wall_variant(self, unit: Unit, index: int) -> None:
         """Writes a wall's neighbour-derived shape index to `rotation`, for
-        the Wall Run tool's junction rewrites (2026-09-19 wall-runs plan).
+        Place Unit's wall-run junction rewrites (2026-09-19 wall-runs plan,
+        folded into Place Unit by GH #98).
 
         The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
         and the reason it is allowed at all: the game re-derives a wall's

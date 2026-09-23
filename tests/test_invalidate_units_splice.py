@@ -29,9 +29,10 @@ from descape.render import (
     sloped_elevations_and_proj,
     tile_pixels_for_map,
 )
-from descape.render_cache import IsoChunkCache, SlopedChunkCache, UnitSplice, _splice_eligible
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice, _splice_eligible
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
+from descape.unit_filter import UnitFilter
 
 from test_unit_sprites import CONST as SPRITE_CONST
 
@@ -98,15 +99,17 @@ def _delete_splice(scenario, player_id: int, index: int, unit) -> UnitSplice:
     return UnitSplice(player_id, index, unit, old_own, None, old_tiles, ())
 
 
-def _make_cache(style: str, scenario, sprites: bool = False):
+def _make_cache(style: str, scenario, sprites: bool = False, unit_filter: UnitFilter = UnitFilter()):
     mm = scenario.map_manager
     tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
         elevations, proj = elevations_and_proj(scenario)
-        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites, unit_filter=unit_filter)
     else:
         elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
-        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites)
+        cache = SlopedChunkCache(
+            scenario, elevations, corner_rise, proj, tile_px, sprites=sprites, unit_filter=unit_filter
+        )
     cache.render_rect(0, 0, *cache.canvas_dims(0), mip=0)
     return cache
 
@@ -395,3 +398,271 @@ def test_a_slotted_composite_move_splices_every_one_of_its_anchors(
     stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
     full = _oracle(style, scenario, sprites=True)
     assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+# --- Convert's reassign splice (convert-and-flat-unit-splice plan, Step 1) ---
+
+
+def _reassign_splice(scenario, source: int, destination: int, unit) -> UnitSplice:
+    """What UnitEditModel.reassign() does to the lists (delete by identity,
+    append to the destination), plus the splice the Convert stroke builds."""
+    own, tiles = _own_tile(unit), _occupied(scenario, unit)
+    units = scenario.unit_manager.units
+    index = next(i for i, u in enumerate(units[source]) if u is unit)
+    del units[source][index]
+    units[destination].append(unit)
+    return UnitSplice(
+        destination, len(units[destination]) - 1, unit, own, own, tiles, tiles, old_player_id=source
+    )
+
+
+def _fresh_render(style: str, scenario, sprites: bool, unit_filter: UnitFilter) -> np.ndarray:
+    cache = _make_cache(style, scenario, sprites=sprites, unit_filter=unit_filter)
+    return cache.render_rect(0, 0, *cache.canvas_dims(0), mip=0)
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_lone_building_reassign_splices_and_recolours(style, monkeypatch):
+    scenario = _scenario()
+    _place(scenario, 1, MILL_CONST, *MILL_TILE)  # stays behind, so the source list reorders
+    unit = _place(scenario, 1, MILL_CONST, *ELSEWHERE_TILE)
+    cache = _make_cache(style, scenario)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    before = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0).copy()
+    counts = _call_counts(monkeypatch)
+
+    splice = _reassign_splice(scenario, 1, 2, unit)
+    assert _splice_eligible(cache.units_by_tile, splice), "fixture is not testing the splice path"
+    _apply(cache, splice)
+
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert not np.array_equal(stitched, before), "the reassign did not recolour anything"
+    full = _oracle(style, scenario)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_sprite_bearing_reassign_retints_and_matches_a_fresh_render(style, sprite_install, monkeypatch):  # noqa: F811
+    """The sprite is team-tinted, so a reassign really dirties it: the splice
+    re-resolves it under the destination's team index."""
+    scenario = _scenario()
+    unit = _place(scenario, 1, SPRITE_CONST, *ELSEWHERE_TILE)
+    assert scenario.team_indices[1] != scenario.team_indices[2], "players 1 and 2 share a tint"
+    cache = _make_cache(style, scenario, sprites=True)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    before = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0).copy()
+    counts = _call_counts(monkeypatch)
+
+    splice = _reassign_splice(scenario, 1, 2, unit)
+    assert _splice_eligible(cache.units_by_tile, splice)
+    _apply(cache, splice)
+
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert not np.array_equal(stitched, before), "the reassign did not retint the sprite"
+    full = _oracle(style, scenario, sprites=True)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize(("shown", "visible_after"), [({1}, False), ({2}, True)])
+def test_a_reassign_across_the_player_filter_matches_a_fresh_cache(style, shown, visible_after, monkeypatch):
+    """Destination hidden (the unit vanishes) and source hidden (it appears)."""
+    scenario = _scenario()
+    unit = _place(scenario, 1, MILL_CONST, *ELSEWHERE_TILE)
+    unit_filter = UnitFilter(players=frozenset(shown))
+    cache = _make_cache(style, scenario, unit_filter=unit_filter)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    counts = _call_counts(monkeypatch)
+
+    splice = _reassign_splice(scenario, 1, 2, unit)
+    assert _splice_eligible(cache.units_by_tile, splice)
+    _apply(cache, splice)
+
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    in_tiles = any(e[0] is unit for t in splice.new_tiles for e in cache.units_by_tile.get(t, ()))
+    assert in_tiles == visible_after
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert np.array_equal(stitched, _fresh_render(style, scenario, False, unit_filter))
+
+
+# --- Flat's row splice (convert-and-flat-unit-splice plan, Step 2) ----------
+
+FLAT_MIPS = (0, 1)
+
+
+def _flat_cache(scenario, sprites: bool = False, unit_filter: UnitFilter = UnitFilter()) -> FlatChunkCache:
+    """A Flat cache with FLAT_MIPS resident: every level painted once, so each
+    holds draws (and icons, with sprites) the splice must keep in step."""
+    mm = scenario.map_manager
+    cache = FlatChunkCache(
+        scenario, tile_pixels_for_map(mm.map_width, mm.map_height), sprites=sprites, unit_filter=unit_filter
+    )
+    _flat_renders(cache)
+    return cache
+
+
+def _flat_counts(monkeypatch):
+    """Counts the two wholesale Flat walks. _flat_unit_draws and
+    _flat_icon_layer both go through these, so zero means no rebuild at all."""
+    counts = {"rows": 0, "icons": 0}
+    real_rows, real_icons = render._flat_unit_rows, render._flat_icon_layer_sliced
+
+    def counted_rows(*args, **kwargs):
+        counts["rows"] += 1
+        return real_rows(*args, **kwargs)
+
+    def counted_icons(*args, **kwargs):
+        counts["icons"] += 1
+        return real_icons(*args, **kwargs)
+
+    monkeypatch.setattr(render, "_flat_unit_rows", counted_rows)
+    monkeypatch.setattr(render, "_flat_icon_layer_sliced", counted_icons)
+    return counts
+
+
+FLAT_VIEW_TILES = (8, 48)  # every Flat fixture unit sits inside this square of tiles
+
+
+def _flat_renders(cache) -> list[np.ndarray]:
+    lo, hi = FLAT_VIEW_TILES
+    renders = []
+    for mip in FLAT_MIPS:
+        tp = cache.mip_tile_px(mip)
+        renders.append(cache.render_rect(lo * tp, lo * tp, hi * tp, hi * tp, mip=mip))
+    return renders
+
+
+def _assert_flat_matches_fresh(cache, scenario, sprites: bool, unit_filter: UnitFilter = UnitFilter()) -> None:
+    fresh = _flat_cache(scenario, sprites=sprites, unit_filter=unit_filter)
+    assert np.array_equal(cache._row_uid, fresh._row_uid)
+    assert np.array_equal(cache._row_player, fresh._row_player)
+    for mip, got, want in zip(FLAT_MIPS, _flat_renders(cache), _flat_renders(fresh), strict=True):
+        assert np.array_equal(got, want), f"mip {mip} differs from a fresh cache"
+
+
+def _flat_scenario(const: int):
+    """Three player-1 units, one each for GAIA and players 2 and 3, all on
+    distinct tiles, so every block has neighbours on both sides."""
+    scenario = _scenario()
+    for i, player in enumerate((0, 1, 1, 1, 2, 3)):
+        _place(scenario, player, const, 12.5 + 4 * i, 30.5)
+    return scenario
+
+
+def _flat_edit(op: str, scenario, const: int) -> list[UnitSplice]:
+    units = scenario.unit_manager.units
+    target = units[1][1]
+    if op == "move":
+        return [_move_splice(scenario, 1, 1, target, 40.5, 44.5)]
+    if op == "add":
+        return [_add_splice(scenario, 2, _place(scenario, 2, const, 44.5, 20.5))]
+    if op == "delete":
+        return [_delete_splice(scenario, 1, 1, target)]
+    # To player 2, not 3: the synthetic sprite's team 1 and 3 tints are pixel-identical.
+    return [_reassign_splice(scenario, 1, 2, target)]
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("op", ["move", "add", "delete", "reassign"])
+def test_a_flat_row_splice_matches_a_fresh_cache_at_every_resident_level(op, sprites, request, monkeypatch):
+    if sprites:
+        request.getfixturevalue("sprite_install")
+    const = SPRITE_CONST if sprites else MILL_CONST
+    scenario = _flat_scenario(const)
+    cache = _flat_cache(scenario, sprites=sprites)
+    before = [r.copy() for r in _flat_renders(cache)]
+    if sprites:
+        assert all(len(cache._level_icon_layers[mip]) == 6 for mip in FLAT_MIPS), "icons are not resolving"
+    counts = _flat_counts(monkeypatch)
+
+    splices = _flat_edit(op, scenario, const)
+    assert cache._flat_splice_eligible(splices), "fixture is not testing the splice path"
+    _apply(cache, splices[0])
+
+    after = _flat_renders(cache)
+    assert counts == {"rows": 0, "icons": 0}, "the splice path rebuilt a whole walk"
+    assert not np.array_equal(after[0], before[0]), "the edit changed nothing on screen"
+    _assert_flat_matches_fresh(cache, scenario, sprites)
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_a_multi_player_reassign_batch_keeps_the_row_table_exact(sprites, request, monkeypatch):
+    """Destinations both below and above their sources, several per block, one
+    unit hidden by the filter on each side: the side table and every level's
+    draws must equal a fresh walk exactly, row for row."""
+    if sprites:
+        request.getfixturevalue("sprite_install")
+    const = SPRITE_CONST if sprites else MILL_CONST
+    scenario = _scenario()
+    for player in (1, 3, 5, 6):
+        for i in range(3):
+            _place(scenario, player, const, 10.5 + 4 * player, 10.5 + 4 * i)
+    unit_filter = UnitFilter(players=frozenset({1, 3, 5}))
+    cache = _flat_cache(scenario, sprites=sprites, unit_filter=unit_filter)
+    counts = _flat_counts(monkeypatch)
+    units = scenario.unit_manager.units
+
+    splices = [
+        _reassign_splice(scenario, 3, 1, units[3][0]),   # down
+        _reassign_splice(scenario, 3, 5, units[3][0]),   # up, and 3's list shifted under it
+        _reassign_splice(scenario, 1, 5, units[1][1]),
+        _reassign_splice(scenario, 5, 1, units[5][0]),
+        _reassign_splice(scenario, 6, 1, units[6][2]),   # hidden source, visible destination
+        _reassign_splice(scenario, 1, 6, units[1][0]),   # visible source, hidden destination
+    ]
+    assert cache._flat_splice_eligible(splices)
+    cache.invalidate_units(splices)
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)))  # as _apply() does
+    assert counts == {"rows": 0, "icons": 0}
+
+    for mip in FLAT_MIPS:
+        bboxes, colors, row_uid, row_player = render._flat_unit_rows(scenario, cache.mip_tile_px(mip), unit_filter)
+        got_bboxes, got_colors = cache._level_unit_draws(mip)
+        assert np.array_equal(got_bboxes, bboxes) and np.array_equal(got_colors, colors), f"mip {mip}"
+        assert np.array_equal(cache._row_uid, row_uid) and np.array_equal(cache._row_player, row_player)
+        if sprites:
+            icons, rows = render._flat_icon_layer(scenario, cache.mip_tile_px(mip), unit_filter)
+            assert sorted(cache._level_icon_layers[mip]) == sorted(icons) and rows == len(row_uid)
+    _assert_flat_matches_fresh(cache, scenario, sprites, unit_filter)
+
+
+def test_a_flat_splice_refuses_an_in_flight_warm(sprite_install, monkeypatch):  # noqa: F811
+    scenario = _flat_scenario(SPRITE_CONST)
+    mm = scenario.map_manager
+    cache = FlatChunkCache(scenario, tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+    cache.render_rect(0, 0, *cache.canvas_dims(0), mip=0)
+    job = cache.level_warm_job(1)
+    assert job is not None
+
+    splices = _flat_edit("move", scenario, SPRITE_CONST)
+    assert cache._flat_splice_eligible(splices)
+    cache.invalidate_units(splices)
+
+    assert job.install(render._drain(job.gen)) is False
+    assert not cache.is_level_resident(1)
+
+
+@pytest.mark.parametrize("case", ["wall", "duplicate", "off_map"])
+def test_ineligible_flat_batches_fall_back_to_wholesale(case, monkeypatch):
+    scenario = _flat_scenario(MILL_CONST)
+    units = scenario.unit_manager.units
+    if case == "wall":
+        _place(scenario, 1, WALL_CONST, 14.5, 40.5)
+    cache = _flat_cache(scenario)
+    counts = _flat_counts(monkeypatch)
+
+    if case == "wall":
+        splices = [_move_splice(scenario, 1, 3, units[1][3], 20.5, 40.5)]
+    elif case == "duplicate":
+        first = _move_splice(scenario, 1, 1, units[1][1], 40.5, 44.5)
+        splices = [first, _move_splice(scenario, 1, 1, units[1][1], 41.5, 44.5)]
+    else:
+        splices = [_move_splice(scenario, 1, 1, units[1][1], -40.0, -40.0)]
+    assert not cache._flat_splice_eligible(splices)
+    cache.invalidate_units(splices)
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+
+    assert counts["rows"] >= 1, "an ineligible batch should have rebuilt the rows"
+    _assert_flat_matches_fresh(cache, scenario, False)

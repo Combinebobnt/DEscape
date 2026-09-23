@@ -98,6 +98,14 @@ def _self_check() -> int:
     except Exception as exc:  # noqa: BLE001 -- report, don't stop the rest of the checks
         failures.append(f"asset_source._terrain_texture_map(): {exc!r}")
 
+    # The one structure this repo ships itself (scenario_io.REPO_VERSIONS_DIR).
+    from descape import scenario_io
+
+    if scenario_io._repo_structure_path("1.21") is None:
+        failures.append("repo structure for scenario 1.21 is missing")
+    else:
+        print("OK  repo structure for scenario 1.21")
+
     for version in _EXPECTED_VERSIONS:
         if not library_compat.vocabulary_is_available(version):
             failures.append(f"vocabulary_is_available({version!r}) is False")

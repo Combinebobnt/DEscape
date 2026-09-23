@@ -22,21 +22,30 @@ test isn't a gate. See requirements-dev.txt.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUFF = ROOT / ".venv" / "bin" / "ruff"
+VENV_RUFF = ROOT / ".venv" / "bin" / "ruff"
+
+
+def _ruff() -> str:
+    """The venv's ruff (the local dev layout), else one on PATH (CI)."""
+    if VENV_RUFF.is_file():
+        return str(VENV_RUFF)
+    found = shutil.which("ruff")
+    if found is None:
+        raise AssertionError(
+            f"ruff not found at {VENV_RUFF} or on PATH -- see requirements-dev.txt "
+            "('.venv/bin/python3 -m pip install ruff')"
+        )
+    return found
 
 
 def test_ruff_check():
-    if not RUFF.is_file():
-        raise AssertionError(
-            f"ruff not found at {RUFF} -- see requirements-dev.txt "
-            "('.venv/bin/python3 -m pip install ruff')"
-        )
     result = subprocess.run(
-        [str(RUFF), "check", "--output-format=concise", "."],
+        [_ruff(), "check", "--output-format=concise", "."],
         cwd=ROOT,
         check=False,  # the assert below is the check, and wants ruff's output
         capture_output=True,

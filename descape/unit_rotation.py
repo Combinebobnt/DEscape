@@ -142,11 +142,44 @@ def rotate_step(rotation: float, angle_count: int, steps: int) -> float:
     exactly one step regardless. Per unit_sprites' own measurement, AoE2
     rotation grows clockwise on screen, so positive `steps` rotates clockwise.
 
-    Also the normalizer for a typed inspector value -- steps=0 wraps a stored
-    junk value (7.0 appears 574 times in the corpus) into range without moving
-    it off its own frame.
+    steps=0 wraps a stored junk value (7.0 appears 574 times in the corpus)
+    into range without moving it off its own frame.
     """
     if angle_count <= 1:
         raise ValueError(f"angle_count must be > 1 to rotate, got {angle_count}")
     turn = 2 * math.pi
     return (rotation + steps * turn / angle_count) % turn
+
+
+def rotation_to_facing(rotation: float, angle_count: int) -> int:
+    """The whole facing (0 .. angle_count - 1) nearest a stored `rotation`,
+    the inspector's display unit (GH #61). Offset-free like rotate_step():
+    unit_sprites.angle_index() adds ANGLE_ZERO_OFFSET_DEG, a render mapping,
+    and would put facing 0 at a non-zero radian. floor(x + 0.5) for the
+    reason quarter_turn_steps() records; junk like 7.0 wraps first."""
+    if angle_count <= 1:
+        raise ValueError(f"angle_count must be > 1 for a facing, got {angle_count}")
+    turn = 2 * math.pi
+    wrapped = rotation % turn
+    return math.floor(wrapped * angle_count / turn + 0.5) % angle_count
+
+
+def facing_to_rotation(facing: int, angle_count: int) -> float:
+    """Stored radians for whole `facing`, wrapped: facing k is k*2pi/n."""
+    if angle_count <= 1:
+        raise ValueError(f"angle_count must be > 1 for a facing, got {angle_count}")
+    return (facing % angle_count) * 2 * math.pi / angle_count
+
+
+def facing_scale(unit_consts) -> int:
+    """The facing scale a selection of ANGLE consts is edited on: their shared
+    direction count, or the largest one when they differ (each member then
+    lands on its own nearest frame via snap_facing)."""
+    return max(angle_count_for(const) for const in unit_consts)
+
+
+def snap_facing(facing: int, from_count: int, to_count: int) -> int:
+    """`facing` on a `from_count` grid, as the nearest facing on a `to_count`
+    grid. A mixed-direction-count group edits on its finest grid, and each
+    member lands on its own nearest frame through this."""
+    return rotation_to_facing(facing_to_rotation(facing, from_count), to_count)

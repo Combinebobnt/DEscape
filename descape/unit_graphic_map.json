@@ -707,7 +707,7 @@
           "angle_count": 5,
           "frame_count": 90,
           "dx": 0,
-          "dy": 0
+          "dy": -40
         }
       ]
     },
@@ -1397,7 +1397,7 @@
           "angle_count": 5,
           "frame_count": 90,
           "dx": 0,
-          "dy": 0
+          "dy": -60
         }
       ]
     },
@@ -6708,7 +6708,7 @@
           "angle_count": 5,
           "frame_count": 90,
           "dx": 0,
-          "dy": 0
+          "dy": -60
         }
       ]
     },
@@ -16141,6 +16141,390 @@
       "mirroring_mode": 6,
       "frame_count": 60
     },
+    "1893": {
+      "graphic_id": 13130,
+      "file_name": "b_dark_pasture_x1",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": -96,
+          "mx": 2.0,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            3,
+            0
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -34,
+          "dy": -79,
+          "mx": 1.3,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            3,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 34,
+          "dy": -79,
+          "mx": 2.0,
+          "my": -1.3,
+          "seeded": true,
+          "slot": [
+            3,
+            0
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -65,
+          "dy": -64,
+          "mx": 0.65,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            2,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 65,
+          "dy": -64,
+          "mx": 2.0,
+          "my": -0.65,
+          "seeded": true,
+          "slot": [
+            3,
+            1
+          ]
+        },
+        {
+          "unit_id": 2079,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -96,
+          "dy": -48,
+          "mx": 0.0,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            1,
+            0
+          ]
+        },
+        {
+          "unit_id": 2080,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 96,
+          "dy": -48,
+          "mx": 2.0,
+          "my": 0.0,
+          "seeded": true,
+          "slot": [
+            3,
+            2
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -127,
+          "dy": -32,
+          "mx": -0.65,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            1,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 127,
+          "dy": -32,
+          "mx": 2.0,
+          "my": 0.65,
+          "seeded": true,
+          "slot": [
+            3,
+            2
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -158,
+          "dy": -17,
+          "mx": -1.3,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 158,
+          "dy": -17,
+          "mx": 2.0,
+          "my": 1.3,
+          "seeded": true,
+          "slot": [
+            3,
+            3
+          ]
+        },
+        {
+          "unit_id": 1890,
+          "file_name": "b_dark_pasture_x1",
+          "angle_count": 1,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "mx": 0.0,
+          "my": 0.0,
+          "parent": true,
+          "slot": [
+            1,
+            2
+          ]
+        },
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 192,
+          "dy": 0,
+          "mx": 2.0,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            2
+          ]
+        },
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": -192,
+          "dy": 0,
+          "mx": -2.0,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            1
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 158,
+          "dy": 17,
+          "mx": 1.3,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            2
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -158,
+          "dy": 17,
+          "mx": -2.0,
+          "my": -1.3,
+          "seeded": true,
+          "slot": [
+            0,
+            1
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 127,
+          "dy": 32,
+          "mx": 0.65,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -127,
+          "dy": 32,
+          "mx": -2.0,
+          "my": -0.65,
+          "seeded": true,
+          "slot": [
+            0,
+            2
+          ]
+        },
+        {
+          "unit_id": 2079,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 96,
+          "dy": 48,
+          "mx": 0.0,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 2080,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -96,
+          "dy": 48,
+          "mx": -2.0,
+          "my": 0.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 65,
+          "dy": 64,
+          "mx": -0.65,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -65,
+          "dy": 64,
+          "mx": -2.0,
+          "my": 0.65,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 34,
+          "dy": 79,
+          "mx": -1.3,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -34,
+          "dy": 79,
+          "mx": -2.0,
+          "my": 1.3,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 96,
+          "mx": -2.0,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        }
+      ]
+    },
     "1895": {
       "graphic_id": 13102,
       "file_name": "u_sie_rocket_cart_heavy_idleA_x1",
@@ -16156,6 +16540,390 @@
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 60
+    },
+    "1897": {
+      "graphic_id": 13130,
+      "file_name": "b_dark_pasture_x1",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": -96,
+          "mx": 2.0,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            3,
+            0
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -34,
+          "dy": -79,
+          "mx": 1.3,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            3,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 34,
+          "dy": -79,
+          "mx": 2.0,
+          "my": -1.3,
+          "seeded": true,
+          "slot": [
+            3,
+            0
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -65,
+          "dy": -64,
+          "mx": 0.65,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            2,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 65,
+          "dy": -64,
+          "mx": 2.0,
+          "my": -0.65,
+          "seeded": true,
+          "slot": [
+            3,
+            1
+          ]
+        },
+        {
+          "unit_id": 2079,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -96,
+          "dy": -48,
+          "mx": 0.0,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            1,
+            0
+          ]
+        },
+        {
+          "unit_id": 2080,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 96,
+          "dy": -48,
+          "mx": 2.0,
+          "my": 0.0,
+          "seeded": true,
+          "slot": [
+            3,
+            2
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -127,
+          "dy": -32,
+          "mx": -0.65,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            1,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 127,
+          "dy": -32,
+          "mx": 2.0,
+          "my": 0.65,
+          "seeded": true,
+          "slot": [
+            3,
+            2
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -158,
+          "dy": -17,
+          "mx": -1.3,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            0
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 158,
+          "dy": -17,
+          "mx": 2.0,
+          "my": 1.3,
+          "seeded": true,
+          "slot": [
+            3,
+            3
+          ]
+        },
+        {
+          "unit_id": 1890,
+          "file_name": "b_dark_pasture_x1",
+          "angle_count": 1,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "mx": 0.0,
+          "my": 0.0,
+          "parent": true,
+          "slot": [
+            1,
+            2
+          ]
+        },
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 192,
+          "dy": 0,
+          "mx": 2.0,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            2
+          ]
+        },
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": -192,
+          "dy": 0,
+          "mx": -2.0,
+          "my": -2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            1
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 158,
+          "dy": 17,
+          "mx": 1.3,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            2
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -158,
+          "dy": 17,
+          "mx": -2.0,
+          "my": -1.3,
+          "seeded": true,
+          "slot": [
+            0,
+            1
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 127,
+          "dy": 32,
+          "mx": 0.65,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -127,
+          "dy": 32,
+          "mx": -2.0,
+          "my": -0.65,
+          "seeded": true,
+          "slot": [
+            0,
+            2
+          ]
+        },
+        {
+          "unit_id": 2079,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 96,
+          "dy": 48,
+          "mx": 0.0,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 2080,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -96,
+          "dy": 48,
+          "mx": -2.0,
+          "my": 0.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 65,
+          "dy": 64,
+          "mx": -0.65,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -65,
+          "dy": 64,
+          "mx": -2.0,
+          "my": 0.65,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1885,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesA_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": 34,
+          "dy": 79,
+          "mx": -1.3,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1886,
+          "file_name": "b_dark_pasture_broken_perimeter_fencesB_x1",
+          "angle_count": 6,
+          "frame_count": 1,
+          "dx": -34,
+          "dy": 79,
+          "mx": -2.0,
+          "my": 1.3,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        },
+        {
+          "unit_id": 1888,
+          "file_name": "b_dark_pasture_corner_posts_x1",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 96,
+          "mx": -2.0,
+          "my": 2.0,
+          "seeded": true,
+          "slot": [
+            0,
+            3
+          ]
+        }
+      ]
     },
     "1899": {
       "graphic_id": 13124,

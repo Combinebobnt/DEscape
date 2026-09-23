@@ -30,7 +30,7 @@ _TERRAIN = 15  # GRASS_1, distinct from the blank template's own terrain_id=0
 def _edit_window(tool: str = "draw"):
     window = conftest.terrain_edit_window()
     window._on_tool_selected(tool)
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_TERRAIN))
+    window.terrain_panel.set_terrain(_TERRAIN)
     # This file tests brush/stroke mechanics, not descape/terrain_units.py --
     # Trees defaults on and would otherwise pop an unpatched large-fill
     # confirm QMessageBox for the whole-map fills below, hanging offscreen.
@@ -465,7 +465,7 @@ _BEACH_WET = 107
 def _beach_window(beach_id=_BEACH, width: int = 1, enabled: bool = True):
     """_edit_window with Draw on a water terrain and auto-beach configured."""
     window = _edit_window("draw")
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_WATER_DEEP))
+    window.terrain_panel.set_terrain(_WATER_DEEP)
     window.auto_beach_check.setChecked(enabled)
     if beach_id is None:
         window.beach_combo.setCurrentIndex(0)  # "Auto"
@@ -551,7 +551,7 @@ def test_one_auto_beach_drag_is_one_undo_record() -> None:
 
 def test_the_checkbox_off_reproduces_a_plain_draw_stroke() -> None:
     plain = _edit_window("draw")
-    plain.terrain_combo.setCurrentIndex(plain.terrain_combo.findData(_WATER_DEEP))
+    plain.terrain_panel.set_terrain(_WATER_DEEP)
     beached = _beach_window(enabled=False)
     try:
         for window in (plain, beached):

@@ -105,6 +105,60 @@ def test_rotating_an_inert_graphic_raises():
         unit_rotation.rotate_step(0.0, 1, 1)
 
 
+@pytest.mark.parametrize("angle_count", [2, 6, 8, 16, 32])
+def test_every_facing_round_trips_through_radians(angle_count):
+    for facing in range(angle_count):
+        rotation = unit_rotation.facing_to_rotation(facing, angle_count)
+        assert unit_rotation.rotation_to_facing(rotation, angle_count) == facing
+
+
+def test_facing_zero_is_rotation_zero_and_one_facing_is_one_frame():
+    assert unit_rotation.facing_to_rotation(0, 16) == 0.0
+    assert unit_rotation.facing_to_rotation(4, 16) == pytest.approx(math.pi / 2)
+    assert unit_rotation.facing_to_rotation(1, 16) == pytest.approx(
+        unit_rotation.rotate_step(0.0, 16, 1)
+    )
+
+
+def test_facing_n_wraps_to_zero():
+    assert unit_rotation.facing_to_rotation(16, 16) == 0.0
+    assert unit_rotation.facing_to_rotation(-1, 16) == pytest.approx(15 * 2 * math.pi / 16)
+
+
+def test_a_half_frame_tie_rounds_up_not_to_even():
+    step = 2 * math.pi / 16
+    assert unit_rotation.rotation_to_facing(0.5 * step, 16) == 1
+    assert unit_rotation.rotation_to_facing(2.5 * step, 16) == 3
+    # The top half-frame rounds up to n, which wraps to 0.
+    assert unit_rotation.rotation_to_facing(15.5 * step, 16) == 0
+
+
+def test_the_junk_sentinel_wraps_before_rounding():
+    # 7.0 - 2pi = 0.7168 rad = 1.825 frames at 16.
+    assert unit_rotation.rotation_to_facing(7.0, 16) == 2
+
+
+def test_off_grid_stored_values_show_their_nearest_facing():
+    """Const 2607 (angle_count 6) holds 16-grid values in the corpus."""
+    assert unit_rotation.rotation_to_facing(3 * math.pi / 4, 6) == 2  # 2.25 frames
+    assert unit_rotation.rotation_to_facing(5 * math.pi / 4, 6) == 4  # 3.75 frames
+
+
+def test_snap_facing_maps_a_fine_grid_facing_onto_a_coarser_one():
+    assert unit_rotation.snap_facing(8, 32, 16) == 4
+    assert unit_rotation.snap_facing(9, 32, 16) == 5  # the half-frame tie rounds up
+    assert unit_rotation.snap_facing(4, 16, 16) == 4
+    assert unit_rotation.snap_facing(4, 16, 6) == 2  # pi/2 = 1.5 frames at 6
+
+
+@pytest.mark.parametrize("angle_count", [0, 1])
+def test_facing_conversions_raise_for_a_single_frame_graphic(angle_count):
+    with pytest.raises(ValueError):
+        unit_rotation.rotation_to_facing(0.0, angle_count)
+    with pytest.raises(ValueError):
+        unit_rotation.facing_to_rotation(0, angle_count)
+
+
 @pytest.mark.corpus
 def test_the_whitelist_has_zero_counterexamples_on_real_files(corpus_files):
     """The discriminator itself, re-measured rather than trusted.
@@ -197,3 +251,10 @@ def test_rotating_changes_the_rendered_sprite_and_leaves_its_neighbour_alone():
 
     assert after[archer_anchor] != before[archer_anchor], "the rotated unit draws the same frame"
     assert after[villager_anchor] == before[villager_anchor], "an untouched neighbour changed too"
+
+
+def test_facing_scale_is_the_shared_count_or_the_finest_when_mixed():
+    archer, trebuchet = 4, 42
+    assert unit_rotation.angle_count_for(trebuchet) == 32
+    assert unit_rotation.facing_scale([archer, archer]) == 16
+    assert unit_rotation.facing_scale([archer, trebuchet]) == 32

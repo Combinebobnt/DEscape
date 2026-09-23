@@ -737,6 +737,22 @@ def stack_groups(index: UnitIndex) -> dict[tuple[int, int], list[UnitEntry]]:
     return {tile: members for tile, (members, _hidden) in stack_scan(index).items()}
 
 
+def stack_cycle_step(members, picked, previous: int | None):
+    """(entry, index) for one click on a stack: `picked` itself and its own
+    index when `previous` is None (a fresh stack), else the member below
+    `previous`, wrapping. index is -1 when `picked` is not a member. Shared by
+    Units-mode selection and trigger Pick from map, so both walk a stack alike."""
+    if not members:
+        return picked, -1
+    if previous is not None:
+        index = (previous + 1) % len(members)
+    else:
+        keys = [unit_key(m.player_id, m.unit) for m in members]
+        picked_key = unit_key(picked.player_id, picked.unit)
+        index = keys.index(picked_key) if picked_key in keys else -1
+    return (picked if index == -1 else members[index]), index
+
+
 # View > Footprint Outlines' scope, an exclusive submenu choice like
 # edge_ticks.TICK_INTERVALS.
 FOOTPRINT_SCOPE_MULTITILE = "multitile"

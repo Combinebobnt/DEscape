@@ -422,3 +422,121 @@ def test_the_wall_connectivity_override_is_resolved_once_per_drag() -> None:
         assert len(scans) == 1
     finally:
         _close(window)
+
+
+# --- GH #75: a group drag ghosts every member ------------------------------
+
+
+def _group(window, tiles):
+    """Villagers for player 1 centred on `tiles`, selected as one group."""
+    occupied = {(int(u.x), int(u.y)) for units in window.scenario.unit_manager.units for u in units}
+    assert not occupied & set(tiles), "the fixture already holds a unit on a test tile"
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [1]):
+        units = [model.add(1, 83, tx + 0.5, ty + 0.5) for tx, ty in tiles]
+    keys = [(1, u.reference_id) for u in units]
+    window._selection = list(keys)
+    window._refresh_selection_view()
+    return keys, units
+
+
+def test_a_group_drag_draws_one_ghost_per_member_at_its_destination() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        tiles = [(62, 62), (65, 64)]
+        _keys, units = _group(window, tiles)
+        _drag(window, None, tiles[0], (68, 66), release=False)
+
+        item = view._unit_ghost_item
+        assert item is not None
+        assert len(item._marks) == 2
+        tp = view._tile_pixels
+        expected = QRectF(68 * tp, 66 * tp, tp, tp).united(QRectF(71 * tp, 68 * tp, tp, tp))
+        assert item.sceneBoundingRect() == expected
+        assert [(u.x, u.y) for u in units] == [(62.5, 62.5), (65.5, 64.5)], "a preview writes nothing"
+    finally:
+        _close(window)
+
+
+def test_past_the_cap_only_the_grabbed_unit_is_ghosted_and_the_status_says_so(monkeypatch) -> None:
+    from descape import viewer
+
+    window = _window()
+    try:
+        monkeypatch.setattr(viewer, "GROUP_GHOST_CAP", 1)
+        logged = []
+        real_log = window._log_status
+        window._log_status = lambda text, *a, **k: (logged.append(text), real_log(text, *a, **k))
+        tiles = [(62, 62), (65, 64)]
+        _group(window, tiles)
+        view = window.map_view
+        _drag(window, None, tiles[0], (68, 66), release=False)
+        view.mouseMoveEvent(
+            conftest.mouse_event(QEvent.MouseMove, _viewport_pos(window, 69, 66), Qt.NoButton, Qt.LeftButton)
+        )
+
+        assert len(view._unit_ghost_item._marks) == 1
+        assert sum("Moving 2 units" in line for line in logged) == 1, "logged once per drag, not per move"
+    finally:
+        _close(window)
+
+
+def test_escape_mid_group_drag_clears_every_ghost_and_writes_nothing() -> None:
+    from PyQt5.QtGui import QKeyEvent
+
+    window = _window()
+    try:
+        view = window.map_view
+        tiles = [(62, 62), (65, 64)]
+        keys, units = _group(window, tiles)
+        cursor = window.edit_history.cursor
+        move = _drag(window, None, tiles[0], (68, 66), release=False)
+        assert view._unit_ghost_item is not None
+
+        view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        assert view._unit_ghost_item is None
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, move, Qt.LeftButton, Qt.NoButton))
+
+        assert [(u.x, u.y) for u in units] == [(62.5, 62.5), (65.5, 64.5)]
+        assert window.edit_history.cursor == cursor
+        assert window._selection == keys, "a cancelled drag does not collapse the group either"
+    finally:
+        _close(window)
+
+
+def test_a_group_ghost_follows_the_cursor_off_the_map_clamped_at_the_edge() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        w = window.scenario.map_manager.map_width
+        tiles = [(w - 6, 60), (w - 4, 60)]
+        _group(window, tiles)
+        _drag(window, None, tiles[0], (w + 8, 60), release=False)
+
+        item = view._unit_ghost_item
+        assert item is not None, "the single-unit path clears off-map; a group clamps instead"
+        tp = view._tile_pixels
+        assert item.sceneBoundingRect() == QRectF((w - 3) * tp, 60 * tp, tp, tp).united(
+            QRectF((w - 1) * tp, 60 * tp, tp, tp)
+        )
+    finally:
+        _close(window)
+
+
+def test_a_group_drag_scans_each_members_list_index_once_not_per_frame() -> None:
+    window = _window()
+    try:
+        tiles = [(62, 62), (65, 64)]
+        _group(window, tiles)
+        index = window.map_view._unit_index
+        entries = [index.entry_for_key(k) for k in window._selection]
+        scans = []
+        real = window._unit_list_index
+        window._unit_list_index = lambda pid, unit: (scans.append(pid), real(pid, unit))[1]
+        for _ in range(4):
+            for entry in entries:
+                window._ghost_rotation_override(entry)
+        assert len(scans) == 2
+    finally:
+        _close(window)

@@ -52,6 +52,7 @@ from AoE2ScenarioParser.objects.managers.trigger_manager import (
     get_trigger_referencing_ce,
 )
 
+from descape import trigger_fields
 from descape.edit_history import EditHistory, TriggerDiffRecord
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -340,6 +341,75 @@ def moved_display_order(order: Sequence[int], trigger_index: int, delta: int) ->
         )
     moved[slot], moved[target] = moved[target], moved[slot]
     return moved
+
+
+def moved_display_order_block(order: Sequence[int], indices: Sequence[int], delta: int) -> list[int]:
+    """A new trigger_display_order with every trigger at list `indices` moved
+    one display slot by `delta` (+1 = Move Down, -1 = Move Up), keeping their
+    relative order. The selection may be non-contiguous.
+
+    Members are visited front-to-back for -1 and back-to-front for +1. One
+    whose neighbour in that direction is also selected and did not move, or
+    which sits at the boundary, stays put, so a block pressed against an end
+    compresses rather than wrapping. Raises IndexError when an index is not in
+    `order`, like moved_display_order(); button enablement is the guard.
+    """
+    moved = list(order)
+    wanted = set(indices)
+    for index in wanted:
+        if index not in moved:
+            raise IndexError(f"trigger {index} is not in the display order")
+    slots = sorted(moved.index(index) for index in wanted)
+    if delta > 0:
+        slots.reverse()
+    blocked: set[int] = set()
+    for slot in slots:
+        target = slot + delta
+        if not 0 <= target < len(moved) or target in blocked:
+            blocked.add(slot)
+            continue
+        moved[slot], moved[target] = moved[target], moved[slot]
+    return moved
+
+
+def display_order_moved_to_slot(
+    order: Sequence[int], indices: Sequence[int], target_slot: int
+) -> list[int]:
+    """A new trigger_display_order with the triggers at list `indices` moved,
+    as one contiguous block in their current display order, to `target_slot`.
+
+    `target_slot` is in pre-move coordinates: the block lands immediately
+    before whatever occupies it now, `len(order)` meaning the end. Raises
+    ValueError when an index is absent from `order`, IndexError when the
+    target is outside 0..len(order).
+    """
+    if not 0 <= target_slot <= len(order):
+        raise IndexError(f"display slot {target_slot} is outside 0..{len(order)}")
+    wanted = set(indices)
+    missing = wanted.difference(order)
+    if missing:
+        raise ValueError(f"triggers {sorted(missing)} are not in the display order")
+    block = [index for index in order if index in wanted]
+    rest = [index for index in order if index not in wanted]
+    # Every block member sitting before the target shifts it left by one.
+    at = target_slot - sum(1 for slot in range(target_slot) if order[slot] in wanted)
+    rest[at:at] = block
+    return rest
+
+
+def display_order_with_block_inserted(
+    before_order: Sequence[int], new_indices: Sequence[int], anchor_index: int | None
+) -> list[int]:
+    """trigger_display_order after a paste appended `new_indices`.
+
+    No identity translation: import_triggers(index=-1) renumbers nothing, so
+    `before_order` is still valid. The block lands contiguous directly after
+    `anchor_index`'s display slot, or at the end when it is None.
+    """
+    order = list(before_order)
+    at = len(order) if anchor_index is None else order.index(anchor_index) + 1
+    order[at:at] = list(new_indices)
+    return order
 
 
 class TriggerEditModel:
@@ -925,6 +995,19 @@ class TriggerEditModel:
                 f"The trigger list is incoherent: trigger_display_order is not a "
                 f"permutation of 0..{count - 1} (duplicated: {duplicated}, missing: {missing})"
             )
+
+        # Dirty triggers only: a clean one splices its original bytes. Catches a
+        # write that bypassed set_entry_field()'s cluster_fixup().
+        for index, blob in enumerate(self._blobs):
+            if blob is not None:
+                continue
+            for effect_index, effect in enumerate(manager.triggers[index].effects):
+                problem = trigger_fields.cluster_incoherence(effect)
+                if problem:
+                    raise RuntimeError(
+                        f"The trigger list is incoherent: trigger {index} effect "
+                        f"{effect_index} cannot be saved, {problem}"
+                    )
 
     def _check_alignment(self, manager: TriggerManager) -> None:
         """Refuses to serialize if the blob list no longer describes the live

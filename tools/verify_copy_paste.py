@@ -136,7 +136,7 @@ def _check_terrain_round_trip(window: ViewerWindow, mm, problems: list[str]) -> 
     sx0, sy0, sx1, sy1 = 0, 0, 2, 2
     dx0, dy0 = 6, 0
     new_terrain_id = _pick_different_terrain(mm.get_tile(sx0, sy0).terrain_id)
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(new_terrain_id))
+    window.terrain_panel.set_terrain(new_terrain_id)
     for y in range(sy0, sy1):
         for x in range(sx0, sx1):
             window.on_edit_stroke_start()
@@ -374,8 +374,8 @@ def _check_one_undo_step_for_a_mixed_paste(window: ViewerWindow, mm, problems: l
     sx0, sy0 = 2, 8
     dx0, dy0 = mm.map_width - 4, mm.map_height - 4
     window._on_tool_selected("draw")
-    window.terrain_combo.setCurrentIndex(
-        window.terrain_combo.findData(_pick_different_terrain(mm.get_tile(sx0, sy0).terrain_id))
+    window.terrain_panel.set_terrain(
+        _pick_different_terrain(mm.get_tile(sx0, sy0).terrain_id)
     )
     window.on_edit_stroke_start()
     window.on_edit_stroke_tile(sx0, sy0, 0)

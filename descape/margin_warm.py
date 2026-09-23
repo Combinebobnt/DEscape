@@ -10,7 +10,8 @@ from LevelWarmer, stated here so it doesn't get "fixed" back into a budget
 later.** LevelWarmer's BUDGET_MS bound holds because its unit of work (one
 sliced generator step) is a few microseconds; a margin chunk's unit of work
 is one get_chunk() call, measured at 39.5-117ms for Stepped
-and under 25ms for Flat -- both far past
+and under 25ms for Flat (Sloped, at its only level 0: ~12ms median, ~16ms
+p90, ~25ms max, per tools/bench_preload.py --per-chunk) -- all far past
 what a "bounded overrun" framing could honestly claim, and get_chunk() is
 atomic (it cannot be resumed mid-composite the way a sprite walk's `yield`
 can). Admitting one into a budget-checked tick() would make LevelWarmer's

@@ -60,7 +60,29 @@ MEMOIZED_GLOBALS = (
     "_autosave_retention",
     "_autosave_location",
     "_backups_enabled",
+    "_selection_by_owner",
+    "_range_rings",
+    "_camera_markers",
+    "_trigger_overlay",
 )
+
+
+def pin_install_path() -> Path | None:
+    """Resolve the AoE2:DE install through the real config (read only) and pin it
+    into AOE2DE_INSTALL_PATH, returning it, or None if no install is visible.
+
+    Call before `isolate_settings()`: afterwards `get_install_path()` reads the
+    throwaway config and finds nothing. The env var outranks the config, so the
+    pinned path survives the redirect while every write still goes to the fake.
+    """
+    import os
+
+    import descape.asset_source as asset_source_module
+
+    install = asset_source_module.get_install_path()
+    if install is not None:
+        os.environ["AOE2DE_INSTALL_PATH"] = str(install)
+    return install
 
 
 def isolate_settings(config_dir: Path, *, redirect_asset_source: bool = True) -> Path:

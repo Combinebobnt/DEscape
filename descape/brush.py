@@ -77,3 +77,30 @@ def brush_tiles(
         for dx, dy in brush_offsets(size, shape)
         if 0 <= cx + dx < map_width and 0 <= cy + dy < map_height
     ]
+
+
+def line_tiles(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+    """The 4-connected (supercover) tile path from (x0, y0) to (x1, y1),
+    excluding the start tile and including the end: exactly |dx| + |dy|
+    tiles, each one edge-step from the last. Used to fill the cursor-tile
+    gaps Qt's motion compression leaves in a slow drag stroke; 4-connected
+    because a real cursor crosses tile edges, not corners.
+
+    Integer-only: step x while the next x edge is no farther along the
+    tile-centre line than the next y edge. At an exact corner tie x steps
+    first, so the path is deterministic."""
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx = 1 if x1 > x0 else -1
+    sy = 1 if y1 > y0 else -1
+    x, y = x0, y0
+    ix = iy = 0
+    path = []
+    for _ in range(dx + dy):
+        if iy == dy or (ix < dx and (2 * ix + 1) * dy <= (2 * iy + 1) * dx):
+            x += sx
+            ix += 1
+        else:
+            y += sy
+            iy += 1
+        path.append((x, y))
+    return path

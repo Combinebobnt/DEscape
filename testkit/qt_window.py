@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from pathlib import Path
 
 PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
 
@@ -74,9 +75,43 @@ def ensure_qapp() -> None:
     if not PYQT5_AVAILABLE or _QAPP is not None:
         return
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # Hard-set, not setdefault: a developer's HiDPI shell must not leak in.
+    os.environ["QT_FONT_DPI"] = os.environ.get(FONT_DPI_OVERRIDE_ENV, str(DEFAULT_FONT_DPI))
     from PyQt5.QtWidgets import QApplication
 
-    _QAPP = QApplication.instance() or QApplication(["descape"])
+    app = QApplication.instance() or QApplication(["descape"])
+    _pin_bundled_font(app)
+    _QAPP = app
+
+
+# Only the DPI sweep (tests/test_font_dpi_sweep.py) sets this.
+FONT_DPI_OVERRIDE_ENV = "DESCAPE_TEST_FONT_DPI"
+DEFAULT_FONT_DPI = 96
+BUNDLED_FONT = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
+# The local offscreen default before the pin, so existing layout numbers hold.
+PINNED_POINT_SIZE = 12
+
+
+class FontPinError(RuntimeError):
+    """The bundled test font could not be loaded or did not take effect."""
+
+
+def _pin_bundled_font(app) -> None:
+    """Make the app font the bundled DejaVu Sans at a fixed size, so text
+    metrics no longer depend on the machine's fontconfig. CI's resolved
+    family was ~4% wider than local, which clipped Global Victory by 24 px.
+    Raises rather than falling back: a silent fallback is the exact failure
+    this pin exists to remove."""
+    from PyQt5.QtGui import QFont, QFontDatabase, QFontInfo
+
+    font_id = QFontDatabase.addApplicationFont(str(BUNDLED_FONT))
+    if font_id < 0:
+        raise FontPinError(f"could not load the bundled test font {BUNDLED_FONT}")
+    family = QFontDatabase.applicationFontFamilies(font_id)[0]
+    app.setFont(QFont(family, PINNED_POINT_SIZE))
+    resolved = QFontInfo(app.font()).family()
+    if resolved != family:
+        raise FontPinError(f"app font resolved to {resolved!r}, not the bundled {family!r}")
 
 
 def show_and_settle(window, size: int | None = None) -> None:

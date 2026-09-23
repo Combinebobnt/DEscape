@@ -78,7 +78,8 @@ def test_pick_loads_terrain_and_elevation() -> None:
 
         window.pick_tile_value(0, 0, 0)
 
-        assert window.terrain_combo.currentData() == _PICK_TERRAIN
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window.terrain_panel.view.current_value() == _PICK_TERRAIN
         assert window.elevation_level_spin.value() == _PICK_ELEVATION
     finally:
         window.edit_history.mark_saved()
@@ -100,21 +101,20 @@ def test_pick_mutates_nothing() -> None:
         window.close()
 
 
-def test_pick_out_of_enum_terrain_leaves_combo_unchanged() -> None:
-    """The corruption guard: findData() returns -1 for a terrain id the
-    picker doesn't list, and setCurrentIndex(-1) would blank the combo,
-    making currentData() return None -- which Draw/Fill would then write
-    straight into a tile's terrain_id."""
+def test_pick_out_of_enum_terrain_leaves_the_picker_unchanged() -> None:
+    """The corruption guard: a terrain id the picker doesn't list must leave
+    the chosen terrain alone, never blank it to None, which Draw/Fill would
+    then write straight into a tile's terrain_id."""
     window = _edit_window()
     try:
         mm = window.scenario.map_manager
         mm.terrain[0].terrain_id = 9999
-        before = window.terrain_combo.currentData()
+        before = window.terrain_panel.terrain_id()
 
         window.pick_tile_value(0, 0, 0)
 
-        assert window.terrain_combo.currentData() == before
-        assert window.terrain_combo.currentData() is not None
+        assert window.terrain_panel.terrain_id() == before
+        assert window.terrain_panel.terrain_id() is not None
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -139,11 +139,12 @@ def test_pick_out_of_range_elevation_leaves_spin_unchanged() -> None:
 
 def test_both_param_widgets_visible_while_eyedropper_active() -> None:
     """The one place the obvious implementation silently defeats the
-    feature: param_widget == "" would otherwise hide both Terrain type and
-    Level right when the tool writes into them."""
+    feature: param_widget == "" would otherwise hide Level right when the
+    tool writes into it. The terrain half lands in the always-visible
+    Terrain-mode sidebar page (GH #56)."""
     window = _edit_window()
     try:
-        assert window.terrain_param_combo_action.isVisible()
+        assert window.left_stack.currentWidget() is window.terrain_panel
         assert window.level_param_spin_action.isVisible()
     finally:
         window.edit_history.mark_saved()
@@ -222,7 +223,8 @@ def test_one_pick_sets_both_widgets() -> None:
 
         window.on_click_edit(0, 0, 0)  # real MapView dispatch entry point
 
-        assert window.terrain_combo.currentData() == _PICK_TERRAIN
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window.terrain_panel.view.current_value() == _PICK_TERRAIN
         assert window.elevation_level_spin.value() == _PICK_ELEVATION
     finally:
         window.edit_history.mark_saved()

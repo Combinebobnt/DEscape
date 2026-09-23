@@ -16,6 +16,7 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject no-apex-wedge
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject notch-inject
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject no-tip
+.venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --replica 1   # 2nd clean copy
 .venv/bin/python3 tools/gen_review_pack.py --check      # deterministic, writes nothing
 ```
 
@@ -57,6 +58,12 @@ not vacuous.
 7. **Re-word one check and you have re-run the whole pack.** The checks share a
    `REVIEW.md` and the reviewer reads all of it, so a verdict measured before an
    unrelated check was re-worded does not carry forward. Re-run every run.
+8. **Run the clean pack three times** (`--replica 1` and `--replica 2` give the
+   second and third copies their own opaque directories). A check whose three
+   clean answers disagree is logged `UNSTABLE`, never `PASS`, whatever the
+   majority says. Three agreeing answers show the verdict is stable within that
+   round only. A later round can still come back the other way, so a clean 3/3
+   is not proof across rounds.
 
 ## What a verdict may not close
 
@@ -115,6 +122,19 @@ Three rules the pilot learned the hard way:
   that the defect is a thin detached line of near-uniform darkness while the
   taper is a graded wedge attached to the line. Measure the discriminator before
   writing it into the question.
+- **Write a check's answer options against the injects' measured masks**, not
+  against the symptom's name. The corner check's `GAP` option described bare
+  ground at the vertex, but its matching inject opens a 2-column slot through a
+  dark mass and changes nothing else. So the re-posed options are `SPLIT` /
+  `WHOLE`: is that mass cut through, full depth. `--check` asserts the mask
+  topology each option rests on (clean corner 1 component, `no-tip` 2), so a
+  render change that stops the inject producing its symptom fails loudly
+  instead of quietly emptying the check.
+- **A frame can carry a feature from a pass the control does not switch off.**
+  The band's raw and control frames both keep the seam line, which is continuous
+  under every inject. A break question asked of the raw frames can be answered
+  off that line alone. Ask it of the diff frames, and exclude by name any line
+  that also appears in the switched-off frame.
 - **Every pack brings at least two injects, and they must differ in size.** A
   coarse one proves the reviewer is looking at the right frame; a localized one
   proves it resolves defects at the size actually under review. `--check`
@@ -125,7 +145,7 @@ Three rules the pilot learned the hard way:
   reproduces the exact symptom that check asks about, so a clean-run verdict is
   trustworthy rather than merely recorded. `no-tip` is the pilot's: it gates the
   inner-corner tip pass off, which is literally the pre-`4bd5f07` render, and it
-  is the only inject in the pack that reopens a GAP rather than adding a mark.
+  is the only inject in the pack that cuts into a mass rather than adding a mark.
   Its size is the real defect's size, not a number this tool picked.
 - **Measure each inject's reach; do not argue it from geometry.** `--check`
   prints, per inject, every frame it touched and by how much. The pilot's
@@ -133,13 +153,17 @@ Three rules the pilot learned the hard way:
   the corner frames, and that was simply false - `no-apex-wedge` changes 68 px
   there. An off-diagonal cell predicted from an unmeasured reach is a guess.
 
-## What two runs of the pilot actually found
+## What the pilot's rounds actually found
 
-Both 2026-09-18 against the contact-shadow band: a pilot of three runs, then a
-second round of four after two of its checks were reworked.
+All against the contact-shadow band. On 2026-09-18 there was a pilot of three
+runs, then a second round of four after two of its checks were reworked. On
+2026-09-22 a six-run test followed, on clean frames only, of why one verdict
+moved between those rounds. Round 3 came the same day: six runs (clean x3 and
+the three injects) after the corner and band checks were re-posed.
 
-- The **specificity control held in all seven runs** - no false marks on flat
-  ground - so no positive verdict in either round is noise.
+- The **specificity control held in every run to date** (the pilot's seven,
+  the priming test's six, round 3's six) - no false marks on flat ground - so no positive verdict
+  in any round is noise.
 - **A reworked check went from vacuous to discriminating.** The straight-edge
   check returned the same verdict on the clean render and on its own inject in
   round 1, and the full pre-registered row in round 2 once its closed question
@@ -160,13 +184,36 @@ second round of four after two of its checks were reworked.
   unit-drag preview that the pack, rendering with `with_units=False`, never
   reaches. The only edit a reviewer could see was a *neighbouring* check's
   wording, and the round-2 answers reach for the vocabulary that edit
-  introduced. Treat the checks in a pack as coupled: re-wording one can move
-  another's verdict, so a single run's answer is weaker evidence than it looks.
+  introduced. That priming hypothesis was then tested directly, and **did not
+  hold** (2026-09-22). Six clean runs were made: three with round 2's exact
+  `REVIEW.md` and three with only the neighbouring question put back to round
+  1's. All six answered `FAIL`. The neighbour's wording did move its own check
+  as expected (`PASS` x3 against `FAIL` x3), but not this one. So round 2's
+  exact document, on the same frames, returned `PASS` three times in one round
+  and `FAIL` three times in another. The verdict varies from round to round, and
+  within a round it can agree with itself. Rule 7 stays anyway, because it is
+  cheap. Rule 8 exists because of this.
 - **One check returned the same verdict on all three runs** in round 1, which
   means it has no demonstrated resolution as phrased, whatever its clean-run
   answer says. That is a bug in the pack, and it is the single most useful thing
   the first round produced: without the inject runs, that check's clean-run
   `FAIL` would have been read as a finding.
+- **Answer options written against measured masks resolved both re-posed
+  checks** (round 3). The corner check became `SPLIT` / `WHOLE` on new diff
+  frames, and the band check became broken-or-not on the diff frames with the
+  seam line excluded. Each returned its full pre-registered row. The matching
+  inject was the only run to flip it, and the three clean replicas agreed 3/3.
+  29 of 30 cells matched. Reviewers placed the defects where they were
+  measured: the corner slot at x=740-760 against a measured 740-759, and the
+  band gaps at 40-90 px against 40 px and 72 px or more. The coarse inject
+  breaks the thin lines in the corner frames, and both corner checks still said
+  `WHOLE` there, so the named exclusion held.
+- **The one miss was a low-confidence cell, and it went the informative way.**
+  The raw-frame corner check was predicted `WHOLE` on `no-tip`, because the
+  slot is only about 1.2 sigma of ground texture at pct 100. It came back
+  `SPLIT`, with `WHOLE` on all three clean replicas. So a reviewer sees a slot
+  at texture-noise level at 10x, unamplified. At 10x that is still not a 1:1
+  answer. It is logged as evidence, and it closes nothing.
 
 The lesson generalizes: **a verdict is worth what its control is worth.** Run
 the injects, or do not report the verdict. Round 2 adds the corollary: a control

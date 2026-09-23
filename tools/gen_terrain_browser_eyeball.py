@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Screenshots TerrainBrowseDialog for a manual eyeball pass, and measures
-the one thing a screenshot cannot settle: that the swatches are actually
-different textures rather than 131 identical green squares.
+"""Screenshots the Terrain-mode sidebar picker page (TerrainPanel, GH #56) in
+a real ViewerWindow for a manual eyeball pass, at the panel's
+MIN_USEFUL_WIDTH and a wider width, and measures what a screenshot cannot
+settle: that the swatches are actually different textures rather than 131
+identical green squares, and the page's layout numbers (tree column vs
+viewport width, note wrap, hover line height).
 
 Run outside pytest deliberately. tests/conftest.py's _isolated_settings
 hides the configured AoE2DE install, which is the right default for the
 test suite (the no-install fallback is what it pins) but means the real
-.dds swatches -- the whole point of this browser -- are never exercised
-there. This tool is where they are.
+.dds swatches are never exercised there. This tool is where they are;
+--no-install captures the fallback path instead.
 
 Writes build/terrain_browser_eyeball/, gitignored. No golden images.
 """
@@ -43,35 +46,100 @@ def _ensure_qapp() -> None:
     _QAPP = QApplication.instance() or QApplication(sys.argv[:1])
 
 
-def _capture(out_dir: Path, terrain_id: int) -> list[Path]:
+_WIDER_WIDTH = 460
+# A far-corner tile (3-digit coordinates) for the longest plausible hover string.
+_HOVER_TILE = (119, 119)
+_LONGEST_NAME_TERRAIN = 81  # BEACH_NON_NAVIGABLE_WET_GRAVEL
+
+
+def _open_window():
     from PyQt5.QtWidgets import QApplication
 
-    from descape.terrain_browser import TerrainBrowseDialog
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+    from descape.viewer import ViewerWindow
 
+    window = ViewerWindow()
+    window.resize(1400, 900)
+    window.show()
+    window.load_scenario(BLANK_TEMPLATE_PATH)
+    if window.scenario is None:
+        window.close()
+        raise SystemExit("blank template failed to load")
+    window.mode_combo.setCurrentText("Terrain")
+    window._on_tool_selected("draw")
+    mm = window.scenario.map_manager
+    x, y = (min(c, mm.map_width - 1) for c in _HOVER_TILE)
+    # The catalog's longest name under the hover tile, so the one-line readout has something to elide.
+    mm.terrain[y * mm.map_width + x].terrain_id = _LONGEST_NAME_TERRAIN
+    window.on_hover((x, y))
+    QApplication.processEvents()
+    return window
+
+
+def _set_left_width(window, width: int) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    sizes = window.content_splitter.sizes()
+    total = sum(sizes) or (width + 800)
+    window.content_splitter.setSizes([width, total - width])
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+
+def _layout_report(window, label: str) -> None:
+    panel = window.terrain_panel
+    tree = panel.view.tree
+    line = panel.hover_label.fontMetrics().lineSpacing()
+    print(
+        f"  [{label}] panel width={panel.width()} tree column={tree.header().sectionSize(0)} "
+        f"viewport={tree.viewport().width()} hscroll={'shown' if tree.horizontalScrollBar().isVisible() else 'hidden'} "
+        f"note height={panel.note_label.height()} (line {line}) hover height={panel.hover_label.height()} "
+        f"hover text={panel.hover_label.text()!r}"
+    )
+
+
+def _capture(out_dir: Path) -> list[Path]:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _open_window()
     written: list[Path] = []
-    dialog = TerrainBrowseDialog(terrain_id)
-    dialog.resize(520, 560)
+    panel = window.terrain_panel
     try:
-        QApplication.processEvents()
-        path = out_dir / "opened_on_current.png"
-        dialog.grab().save(str(path))
-        written.append(path)
+        print(f"TerrainPanel.MIN_USEFUL_WIDTH={panel.MIN_USEFUL_WIDTH}, default terrain id={panel.terrain_id()}")
+        for width in (panel.MIN_USEFUL_WIDTH, _WIDER_WIDTH):
+            _set_left_width(window, width)
+            panel.view.filter_edit.setText("")
+            if panel.view.show_hidden_checkbox is not None:
+                panel.view.show_hidden_checkbox.setChecked(False)
+            QApplication.processEvents()
+            _layout_report(window, f"w{width} opened")
+            path = out_dir / f"w{width}_1_opened_on_default.png"
+            panel.grab().save(str(path))
+            written.append(path)
 
-        dialog.filter_edit.setText("snow")
-        QApplication.processEvents()
-        path = out_dir / "filtered_snow.png"
-        dialog.grab().save(str(path))
-        written.append(path)
+            panel.view.filter_edit.setText("snow")
+            QApplication.processEvents()
+            path = out_dir / f"w{width}_2_filtered_snow.png"
+            panel.grab().save(str(path))
+            written.append(path)
 
-        dialog.filter_edit.setText("")
-        dialog.show_hidden_checkbox.setChecked(True)
-        dialog.tree.expandAll()
-        QApplication.processEvents()
-        path = out_dir / "all_expanded_with_unused.png"
-        dialog.grab().save(str(path))
+            panel.view.filter_edit.setText("")
+            panel.view.show_hidden_checkbox.setChecked(True)
+            panel.view.tree.expandAll()
+            QApplication.processEvents()
+            _layout_report(window, f"w{width} all expanded")
+            path = out_dir / f"w{width}_3_all_expanded_with_unused.png"
+            panel.grab().save(str(path))
+            written.append(path)
+            panel.view.tree.collapseAll()
+
+        _set_left_width(window, panel.MIN_USEFUL_WIDTH)
+        path = out_dir / "window_terrain_draw.png"
+        window.grab().save(str(path))
         written.append(path)
     finally:
-        dialog.close()
+        window.edit_history.mark_saved()
+        window.close()
     return written
 
 
@@ -127,15 +195,16 @@ def _measure(out_dir: Path) -> int:
     for i, a in enumerate(categories):
         for b in categories[i + 1 :]:
             if all(abs(x - y) < 2 for x, y in zip(means[a], means[b], strict=True)):
-                print(f"  COLLISION: {a} and {b} are the same colour")
-                failures += 1
+                # With no install these are README's hand-guessed flat colours, which do repeat.
+                print(f"  COLLISION: {a} and {b} are the same colour{'' if expect_detail else ' (guessed palette, not counted)'}")
+                failures += expect_detail
     return failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--terrain-id", type=int, default=0, help="terrain the dialog opens on (default GRASS_1)"
+        "--no-install", action="store_true", help="hide the AoE2DE install: capture the flat-colour fallback"
     )
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
@@ -149,9 +218,11 @@ def main() -> int:
         # redirect_asset_source=False: get_install_path() reads asset_source's
         # own CONFIG_PATH, and the real install is where the .dds swatches
         # this tool exists to look at come from.
-        settings_isolation.isolate_settings(Path(tmp), redirect_asset_source=False)
+        if args.no_install:
+            os.environ.pop("AOE2DE_INSTALL_PATH", None)
+        settings_isolation.isolate_settings(Path(tmp), redirect_asset_source=args.no_install)
         _ensure_qapp()
-        for path in _capture(args.out, args.terrain_id):
+        for path in _capture(args.out):
             print(f"wrote {path}")
         print("category swatch means:")
         collisions = _measure(args.out)

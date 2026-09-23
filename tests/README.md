@@ -11,6 +11,7 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 ./run_all_tests.sh                                  # default tier -- ~19 min for 5318 tests, no corpus needed (Linux/Mac)
 run_all_tests.bat                                   # same, for Windows
 .venv/bin/python3 -m pytest                         # same thing, invoked directly
+bash tools/ci_parity.sh [tag]                       # same tier as CI sees it (corpus, install, examples/ hidden); run before every tag
 
 ./run_corpus_quick.sh                                # corpus/gui tier, QUICK_CORPUS_NAMES only -- ~11 min, the default
 .venv/bin/python3 -m pytest -m "corpus or slow"      # same thing, invoked directly (no flag needed)
@@ -18,7 +19,7 @@ run_all_tests.bat                                   # same, for Windows
 ./run_corpus_stress.sh                               # corpus/gui tier, the FULL corpus -- ~27 min
 .venv/bin/python3 -m pytest -m "corpus or slow" --corpus-full
 
-.venv/bin/python3 -m pytest --scenario-dir /path/to/other/examples -m "corpus or slow" [--corpus-full]
+.venv/bin/python3 -m pytest --scenario-dir=/path/to/other/examples -m "corpus or slow" [--corpus-full]
 ```
 
 `run_all_tests.sh` / `run_all_tests.bat` (repo root) are thin wrappers
@@ -54,7 +55,8 @@ expensive enough that running it after every routine change was its own
 problem. `conftest.py`'s `QUICK_CORPUS_NAMES` (`2_Joan_coop_1`,
 `C2_ElCid_coop_1`, `F7_2_Dos Pilas` -- a small cross-section of real
 map-size bands, including the 480x480 outlier that dominates full-corpus
-runtime the most) is what `-m "corpus or slow"` runs **by default now**,
+runtime the most -- plus the 200x200 scenario-1.37 `0_June_Event_Scenario`,
+the only file the Number of Players gate refuses) is what `-m "corpus or slow"` runs **by default now**,
 with no flag needed. `F7_3_York` (220x220) was dropped from this set
 2026-08-13; runtime dropped to about 11 minutes (measured: 11m02s), down
 from the old ~15 min (13m40s) figure. Pass `--corpus-full` for the
@@ -75,11 +77,26 @@ assuming the full corpus needs re-running.
 | `corpus` | needs the real `examples/` corpus | deselected; `-m "corpus or slow"` to opt in, restricted to `QUICK_CORPUS_NAMES` (~11 min) unless `--corpus-full` (~27 min) is also passed |
 | `slow` | full-render comparisons, O(pixels) sweeps | deselected (unused so far -- no Phase 1 entry needed it) |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
+| `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
 
 `test_lint.py` (`ruff check .`, see `ruff.toml`) runs in the default tier
 alongside these, unmarked, since it's not a corpus/gui/slow concern. It stays
 a fast static check despite the breadth of the ruleset: a cold `--no-cache`
 run over all 348 linted files takes well under a second.
+
+The default tier is meant to give the same result on any machine.
+`testkit/qt_window.ensure_qapp()` pins the app font to the bundled
+`testkit/fonts/DejaVuSans.ttf` at 12pt and hard-sets `QT_FONT_DPI` to 96, so
+a shell's own `QT_FONT_DPI` has no effect; only `DESCAPE_TEST_FONT_DPI`
+(which the sweep sets) overrides it. The session header prints the resolved
+font, DPI and one reference string's advance. Two guard tests back this up:
+`test_collection_env.py` collects the whole suite with `HOME`,
+`XDG_CONFIG_HOME` and `AOE2DE_INSTALL_PATH` hidden and an empty
+`--scenario-dir`, and fails on any collection error, and
+`test_font_dpi_sweep.py` runs the `font_sensitive` checks across DPIs.
+Pass `--scenario-dir` in its `=` form when the path is outside the repo and
+no test path follows: otherwise the bare directory becomes pytest's rootdir
+and the option goes unrecognised.
 
 A `pytest_terminal_summary` hook in `conftest.py` prints how much of the
 run was deselected/skipped, so an empty `examples/` or a default `-m` run
@@ -139,7 +156,14 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   and regenerating it is expected rather than forbidden.
   `tests/test_trigger_fixture.py` pins the committed bytes against a fresh
   generator run, so a drifting generator shows up as a failure rather than
-  silently.
+  silently. Trigger 3 also carries the map coordinates
+  `tests/test_trigger_geometry.py` reads: a condition area, a patrol (area +
+  location), a location-only effect, a half-set area and a whole-map area.
+  After those come the placed-unit references `tests/test_unit_references.py`
+  resolves, backed by three Player 1 units (two archers and a house, ids
+  500-502): a Destroy Object on the house, a Task Object whose selection and
+  location object name the three, a Patrol with a selection and no location,
+  and a Destroy Object naming id 999, which nothing carries.
   Four triggers, chosen for what each exercises rather than for volume:
   trigger-to-trigger references (so a reorder/delete has something to remap),
   an armour effect whose quantity is bit-split across
@@ -152,7 +176,8 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   whole-section re-serialization (verified by mutation, both ways).
 - `tests/fixtures/units_120x120.aoe2scenario` -- the default tier's only
   scenario with a non-trivial Units section, for the same reason the trigger
-  fixture above exists: every other tracked fixture is unit-free, and a
+  fixture above exists: every other tracked fixture is unit-free (bar the
+  trigger fixture's three, which only back its unit references), and a
   unit-free file passes every phase 3.5a write-path claim trivially.
   Generated from the 120x120 donor by `tools/gen_units_fixture.py`;
   regenerate with `.venv/bin/python3 tools/gen_units_fixture.py` and commit

@@ -46,6 +46,7 @@ from descape.messages_fields import STRING_ID_UNSET
 from descape.player_fields import defined_player_ids
 from descape.render import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
+from descape.unit_references import all_units, build_reference_index, references_in
 
 Severity = Literal["error", "warning", "info"]
 
@@ -55,7 +56,6 @@ STRANDED_REGION_TILES = 25
 MAX_FINDINGS_PER_CHECK = 200
 
 _TRIGGERS_UNAVAILABLE = "triggers could not be parsed for this file"
-_UNIT_REFERENCE_PRESENTATIONS = frozenset({"Unit", "Unit[]"})
 
 
 @dataclass(frozen=True)
@@ -107,9 +107,7 @@ def _capped(label: str, findings: list[Finding]) -> CheckResult:
 def _all_units(loaded: LoadedScenario):
     """(player_id, unit) over the raw nine lists, index 0 = GAIA. Never
     unit_pick.build_index(), which drops off-map units by design."""
-    for player_id, units in enumerate(loaded.unit_manager.units):
-        for unit in units:
-            yield player_id, unit
+    return all_units(loaded)
 
 
 def _read(obj, attribute: str):
@@ -235,7 +233,7 @@ def check_unit_references(loaded: LoadedScenario) -> CheckResult:
     if not library_compat.vocabulary_is_available(loaded.scenario_version):
         return CheckResult(label, unavailable="no trigger vocabulary for this scenario version")
     vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
-    ids = {unit.reference_id for _, unit in _all_units(loaded)}
+    index = build_reference_index(loaded)
     kinds = (
         ("condition", "conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
         ("effect", "effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
@@ -247,13 +245,9 @@ def check_unit_references(loaded: LoadedScenario) -> CheckResult:
                 definition = entries.get(_read(ce, type_attribute))
                 if definition is None:
                     continue
-                for attribute in definition.attributes:
-                    if presentation.get(attribute) not in _UNIT_REFERENCE_PRESENTATIONS:
-                        continue
-                    value = _read(ce, attribute)
-                    values = value if isinstance(value, (list, tuple)) else [value]
-                    for ref in values:
-                        if ref is None or ref == -1 or ref in ids:
+                for attribute, refs in references_in(ce, definition, presentation).items():
+                    for ref in refs:
+                        if ref in index.by_id:
                             continue
                         findings.append(
                             Finding(
@@ -262,6 +256,30 @@ def check_unit_references(loaded: LoadedScenario) -> CheckResult:
                                 "warning",
                             )
                         )
+    return _capped(label, findings)
+
+
+def check_garrison_links(loaded: LoadedScenario) -> CheckResult:
+    """A unit garrisoned inside a reference_id no unit carries (GH #42).
+
+    Worth reporting because such a unit is invisible under the default
+    filter -- it is hidden as garrisoned, but there is no host to find it
+    inside. Legal on disk and accepted by the in-game editor, so a warning,
+    never an error.
+    """
+    label = "Dangling garrison links"
+    ids = {unit.reference_id for _player_id, unit in _all_units(loaded)}
+    findings = [
+        Finding(
+            f"Player {player_id} unit {unit.unit_const} (id {unit.reference_id}) is garrisoned in "
+            f"unit id {_read(unit, 'garrisoned_in_id')}, which is not placed on the map",
+            "warning",
+            tile=(int(unit.x), int(unit.y)),
+            unit_key=(player_id, unit.reference_id),
+        )
+        for player_id, unit in _all_units(loaded)
+        if (host_id := _read(unit, "garrisoned_in_id")) not in (None, -1, unit.reference_id) and host_id not in ids
+    ]
     return _capped(label, findings)
 
 
@@ -385,6 +403,7 @@ CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("trigger_display_order", check_trigger_display_order),
     ("trigger_references", check_trigger_references),
     ("unit_references", check_unit_references),
+    ("garrison_links", check_garrison_links),
     ("players_without_units", check_players_without_units),
     ("stranded_units", check_stranded_units),
     ("instructions", check_instructions),
@@ -394,3 +413,39 @@ CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
 
 def analyze(loaded: LoadedScenario) -> AnalysisReport:
     return AnalysisReport(tuple(check(loaded) for _, check in CHECKS))
+
+
+# -- map markers ----------------------------------------------------------------
+
+_SEVERITY_RANK: dict[str, int] = {"info": 0, "warning": 1, "error": 2}
+
+MarkerAnchor = tuple[tuple[int, int], Severity, int]
+
+
+def marker_tile(finding: Finding, map_w: int, map_h: int) -> tuple[int, int] | None:
+    """The tile a finding's map marker sits on: its own tile clamped to the
+    map, the way ViewerWindow._navigate_to_finding clamps. Unit-only findings
+    (off-map units) have no tile and so no marker."""
+    if finding.tile is None or map_w <= 0 or map_h <= 0:
+        return None
+    x, y = finding.tile
+    return max(0, min(map_w - 1, int(x))), max(0, min(map_h - 1, int(y)))
+
+
+def marker_anchors(report: AnalysisReport, map_w: int, map_h: int) -> list[MarkerAnchor]:
+    """One (tile, worst severity, finding count) per located tile, in the
+    order each tile first appears in the report."""
+    anchors: dict[tuple[int, int], tuple[Severity, int]] = {}
+    for result in report.results:
+        for finding in result.findings:
+            tile = marker_tile(finding, map_w, map_h)
+            if tile is None:
+                continue
+            if tile not in anchors:
+                anchors[tile] = (finding.severity, 1)
+                continue
+            worst, count = anchors[tile]
+            if _SEVERITY_RANK.get(finding.severity, 0) > _SEVERITY_RANK.get(worst, 0):
+                worst = finding.severity
+            anchors[tile] = (worst, count + 1)
+    return [(tile, severity, count) for tile, (severity, count) in anchors.items()]

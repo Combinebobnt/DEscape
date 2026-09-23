@@ -477,8 +477,8 @@ class CompositeDiffRecord(DiffRecord):
 
 class EditHistory:
     """A cursor into a list of DiffRecords, not a pop-stack -- undo/redo move
-    the cursor rather than destroying data, which is what keeps "jump to
-    history entry N" (a later, explicitly out-of-v2-scope UI) just a matter of
+    the cursor rather than destroying data, which is what made "jump to
+    history entry N" (GH #30's History window, jump_to() below) a matter of
     replaying records between the current cursor and N, instead of a redesign.
     """
 
@@ -486,6 +486,12 @@ class EditHistory:
         self.max_records = max_records
         self.records: list[DiffRecord] = []
         self.cursor = 0
+        # Fired after every mutation of this object (push, undo, redo, jump,
+        # reset, mark_saved) so the History window can repaint without the
+        # ~30 viewer push sites growing a hand-added refresh call each. Stays
+        # a plain attribute rather than a Qt signal -- this module is
+        # deliberately Qt-free (see the module docstring).
+        self.on_change: Callable[[], None] | None = None
         # Cursor position at the last successful save. None means "the saved
         # state has fallen off the front of a capped history" -- see apply()
         # -- i.e. no cursor position can currently reconstruct it, so treat
@@ -501,6 +507,11 @@ class EditHistory:
         self.cursor = 0
         self.saved_at_cursor = 0
         self._stroke_before = None
+        self._notify()
+
+    def _notify(self) -> None:
+        if self.on_change is not None:
+            self.on_change()
 
     @property
     def can_undo(self) -> bool:
@@ -519,6 +530,13 @@ class EditHistory:
         save -- the on-disk file didn't change, so the dirty state shouldn't
         either."""
         self.saved_at_cursor = self.cursor
+        self._notify()
+
+    @property
+    def in_stroke(self) -> bool:
+        """True between begin_stroke() and its commit_stroke()/
+        build_stroke_record()/abort_stroke()."""
+        return self._stroke_before is not None
 
     def begin_stroke(self, tiles: Sequence) -> None:
         """Snapshots current tile state. Must be paired with exactly one of
@@ -624,6 +642,7 @@ class EditHistory:
                     # must read as dirty until the next save regardless of
                     # where the cursor lands.
                     self.saved_at_cursor = None
+        self._notify()
 
     def push_trigger_record(self, record: TriggerDiffRecord) -> None:
         """The trigger side's way in. Deliberately a plain push rather than a
@@ -715,7 +734,9 @@ class EditHistory:
         record = self.records[self.cursor - 1]
         record.require_target(tiles, triggers, options, units, messages)  # must raise before the cursor moves
         self.cursor -= 1
-        return record.undo(tiles, triggers, options, units, messages)
+        dirty = record.undo(tiles, triggers, options, units, messages)
+        self._notify()
+        return dirty
 
     def redo(
         self,
@@ -730,4 +751,72 @@ class EditHistory:
         record = self.records[self.cursor]
         record.require_target(tiles, triggers, options, units, messages)  # must raise before the cursor moves
         self.cursor += 1
-        return record.redo(tiles, triggers, options, units, messages)
+        dirty = record.redo(tiles, triggers, options, units, messages)
+        self._notify()
+        return dirty
+
+    def span_records(self, target: int) -> list[DiffRecord]:
+        """The records between the cursor and `target`, in the order a
+        jump_to(target) would apply them. Empty when target == cursor."""
+        if not 0 <= target <= len(self.records):
+            raise ValueError(f"history target {target} out of range 0..{len(self.records)}")
+        if target < self.cursor:
+            return list(reversed(self.records[target : self.cursor]))
+        return list(self.records[self.cursor : target])
+
+    def span_kinds(self, target: int) -> frozenset[str]:
+        """Every domain a jump_to(target) would touch, readable *before* the
+        move -- the multi-record counterpart of peek_undo().kinds(), so the
+        viewer knows which panel refreshes to run afterwards."""
+        span = self.span_records(target)
+        if not span:
+            return frozenset()
+        return frozenset().union(*(r.kinds() for r in span))
+
+    def jump_to(
+        self,
+        target: int,
+        tiles: Sequence,
+        triggers: TriggerEditModel | None = None,
+        options: OptionsEditModel | None = None,
+        units: UnitEditModel | None = None,
+        messages: MessagesEditModel | None = None,
+    ) -> list[int]:
+        """Undo or redo every record between the cursor and `target`, as one
+        gesture. Returns the union of the tile indices the span touched, with
+        duplicates removed (a tile repainted by three records in the span is
+        one repaint, and _apply_dirty() branches on the count).
+
+        `target` is a cursor position, not a record index: 0 means "back to
+        the freshly-opened file", len(records) means "all the way forward".
+
+        require_target() runs over the whole span before anything moves, so a
+        span containing one unrestorable record leaves the cursor exactly
+        where it was -- the same all-or-nothing contract undo()/redo() have,
+        applied to a multi-step move.
+
+        saved_at_cursor is deliberately untouched: the saved state is a cursor
+        position, so jumping onto it makes the document clean and jumping off
+        it makes it dirty, with no bookkeeping of its own.
+
+        Loops over the records directly rather than calling undo()/redo() in a
+        loop, so on_change fires once for the whole jump instead of once per
+        step.
+        """
+        span = self.span_records(target)
+        if not span:
+            return []
+        for record in span:
+            record.require_target(tiles, triggers, options, units, messages)
+        touched: list[int] = []
+        seen: set[int] = set()
+        backward = target < self.cursor
+        for record in span:
+            self.cursor += -1 if backward else 1
+            move = record.undo if backward else record.redo
+            for index in move(tiles, triggers, options, units, messages):
+                if index not in seen:
+                    seen.add(index)
+                    touched.append(index)
+        self._notify()
+        return touched

@@ -204,6 +204,29 @@ def mouse_event(kind, pos, button, buttons):
     return QMouseEvent(kind, pos, button, buttons, Qt.NoModifier)
 
 
+_FONT_REFERENCE_TEXT = "Global Victory: Standard"
+
+
+def pytest_report_header(config) -> str | None:
+    """Records the resolved test font metrics in every run's header, so a CI
+    log shows them. Also fires the font/DPI pin at session start, ahead of
+    any fixture."""
+    if not PYQT5_AVAILABLE:
+        return None
+    ensure_qapp()
+    from PyQt5.QtGui import QFontInfo, QFontMetrics
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    info = QFontInfo(app.font())
+    dpi = app.primaryScreen().logicalDotsPerInch()
+    advance = QFontMetrics(app.font()).horizontalAdvance(_FONT_REFERENCE_TEXT)
+    return (
+        f"test font: {info.family()} {info.pointSize()}pt, logical DPI {dpi:g}, "
+        f"{_FONT_REFERENCE_TEXT!r} = {advance} px"
+    )
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--scenario-dir",
@@ -235,9 +258,12 @@ def pytest_addoption(parser):
 # files sorted", so it stays a real cross-section rather than an arbitrary
 # prefix if examples/ gains or loses files. Update by hand if that
 # cross-section stops feeling representative -- there's no formula
-# generating this list.
+# generating this list. It also carries one old scenario version: the 1.37
+# file is the only one corpus-wide that the Number of Players gate refuses,
+# which test_verify_player_count_block_across_the_corpus needs.
 QUICK_CORPUS_NAMES = frozenset(
     {
+        "0_June_Event_Scenario.aoe2scenario",  # 200x200, scenario 1.37
         "2_Joan_coop_1_v0_13.aoe2scenario",  # 144x144
         "C2_ElCid_coop_1_v0_16.aoe2scenario",  # 120x120
         "F7_2_Dos Pilas (648).aoe2scenario",  # 480x480, the stress outlier

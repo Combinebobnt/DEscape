@@ -13,9 +13,9 @@ DESCAPE_DIR = ROOT / "descape"
 # Enumerated from the source tree rather than hand-listed: a hand list silently
 # went stale three times (GH #72), and a data file missing from the bundle is
 # an unconditional crash the moment its reader runs.
-# Excluded on purpose: a schema reference cited only in comments and a CLI tool
-# arg, with nothing in descape/ constructing a path to it.
-DESCAPE_DATA_JSON_EXCLUDED = {"versions/DE/v1.21/structure.json"}
+# Nothing excluded today. versions/DE/v1.21/structure.json used to be (then
+# only a schema reference); scenario_io.REPO_VERSIONS_DIR now loads it.
+DESCAPE_DATA_JSON_EXCLUDED: set[str] = set()
 
 _json_paths = sorted(DESCAPE_DIR.rglob("*.json"))
 _json_rel = {p.relative_to(DESCAPE_DIR).as_posix(): p for p in _json_paths}
@@ -44,6 +44,11 @@ a = Analysis(
     hiddenimports=[],
     excludes=["tkinter", "pytest", "pytest-qt", "cython"],
 )
+# Host-supplied by design: a bundled libstdc++ shadows the host's and breaks a
+# newer host Mesa dlopened through libGL. tools/check_portability.py guards both halves.
+HOST_SUPPLIED = {"libstdc++.so.6", "libgcc_s.so.1"}
+a.binaries = [e for e in a.binaries if Path(e[0]).name not in HOST_SUPPLIED]
+
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

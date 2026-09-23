@@ -299,11 +299,12 @@ def rotation_spy(monkeypatch):
     no-sprite behaviour, and only the call log matters."""
     calls: dict[str, list[tuple[int, float]]] = {"sprite_pieces_for": [], "icon_for": []}
 
-    def fake_sprite_pieces_for(unit_const, rotation, team_index, half_w, tree_scale=1.0):
+    def fake_sprite_pieces_for(unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None,
+                               hero_glow=False):
         calls["sprite_pieces_for"].append((unit_const, rotation))
         return []
 
-    def fake_icon_for(unit_const, rotation, team_index, footprint_w, footprint_h):
+    def fake_icon_for(unit_const, rotation, team_index, footprint_w, footprint_h, seed=None):
         calls["icon_for"].append((unit_const, rotation))
         return
 

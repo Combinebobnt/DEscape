@@ -180,3 +180,90 @@ def test_changed_pixels_stay_inside_the_bbox(request, style, sprites, edit_id, b
         f"changed pixels {dx0, dy0, dx1, dy1} escape bbox {bbox}"
     )
     assert np.array_equal(patched, fresh), "patched cache differs from a fresh render"
+
+
+# --- One-level edits (bbox-y0-slack plan, Step 2). The smallest rise is the
+# worst case for the upward shadow reach, where the 0<->15 jumps above empty
+# the band and wedge entirely. Regression insurance only: the ramp shows the
+# wedge 1 row above its caster, so these cannot tell half_h from the true
+# bound. test_contact_shadow's shadow_reach tests are the discriminating guard.
+
+ONE_LEVEL_BASE = 7
+
+
+def _raise_one(mm):
+    ex, ey = EDIT
+    mm.get_tile(ex, ey).elevation = ONE_LEVEL_BASE + 1
+
+
+def _lower_one(mm):
+    """A 2x2 block for the same reason as _lower: Sloped's "max" corner rule."""
+    ex, ey = EDIT
+    for dx in (0, 1):
+        for dy in (0, 1):
+            mm.get_tile(ex + dx, ey + dy).elevation = ONE_LEVEL_BASE - 1
+
+
+def _propagated_one(mm):
+    set_tile_elevation(mm, *EDIT, ONE_LEVEL_BASE + 1)
+
+
+ONE_LEVEL_EDITS = [("raise_1", _raise_one), ("lower_1", _lower_one), ("propagated_1", _propagated_one)]
+
+
+def _one_level_case(monkeypatch, style, pct, edit, mip):
+    from descape import settings
+
+    # Never the setter: it writes the real ini.
+    monkeypatch.setattr(settings, "_elev_step_pct", pct)
+    scenario = _scenario(ONE_LEVEL_BASE, "none")
+    mm = scenario.map_manager
+    cache, elevations, proj = _make_cache(style, scenario, False)
+    assert proj.elev_step == max(1, round(proj.half_h * pct / 100)), "pct did not reach the projection"
+    ref_window = _window(proj, cache.canvas_dims(), WINDOW_RADIUS)
+    wx0, wy0, wx1, wy1 = cache._bbox_to_level(mip, ref_window)
+    before = cache.render_rect(wx0, wy0, wx1, wy1, mip=mip).copy()
+
+    before_state = [(int(t.elevation), int(t.terrain_id)) for t in mm.terrain]
+    edit(mm)
+    dirty = _dirty(mm, before_state)
+    assert dirty, "fixture edit changed nothing"
+    bbox_fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    elevation_changed: set = set()
+    bbox = bbox_fn(scenario, dirty, elevations, proj, with_units=True, elevation_changed=elevation_changed)
+    assert bbox is not None
+    cache.patch(bbox, elevation_changed)
+    patched = cache.render_rect(wx0, wy0, wx1, wy1, mip=mip)
+
+    fresh_cache, _elev, _proj = _make_cache(style, scenario, False)
+    fresh = fresh_cache.render_rect(wx0, wy0, wx1, wy1, mip=mip)
+
+    changed = (before != fresh).any(axis=2)
+    ys, xs = np.nonzero(changed)
+    assert ys.size, "the edit changed no pixels in the window -- fixture is vacuous"
+    dx0, dy0 = int(xs.min()) + wx0, int(ys.min()) + wy0
+    dx1, dy1 = int(xs.max()) + wx0 + 1, int(ys.max()) + wy0 + 1
+    assert dx0 > wx0 and dy0 > wy0 and dx1 < wx1 and dy1 < wy1, (
+        f"diff {dx0, dy0, dx1, dy1} touches window {wx0, wy0, wx1, wy1}; widen the window radius"
+    )
+    bx0, by0, bx1, by1 = cache._bbox_to_level(mip, bbox)
+    assert bx0 <= dx0 and by0 <= dy0 and bx1 >= dx1 and by1 >= dy1, (
+        f"changed pixels {dx0, dy0, dx1, dy1} escape bbox {bx0, by0, bx1, by1} at mip {mip}"
+    )
+    assert np.array_equal(patched, fresh), f"patched cache differs from a fresh render at mip {mip}"
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("pct", [25, 50, 200])
+@pytest.mark.parametrize("edit_id, edit", ONE_LEVEL_EDITS, ids=[e[0] for e in ONE_LEVEL_EDITS])
+def test_one_level_edit_stays_inside_the_bbox(monkeypatch, style, pct, edit_id, edit):
+    _one_level_case(monkeypatch, style, pct, edit, 0)
+
+
+@pytest.mark.parametrize("pct", [25, 50])
+@pytest.mark.parametrize("mip", [-2, 1])
+@pytest.mark.parametrize("edit_id, edit", ONE_LEVEL_EDITS[:2], ids=[e[0] for e in ONE_LEVEL_EDITS[:2]])
+def test_one_level_edit_at_a_non_reference_mip(monkeypatch, pct, mip, edit_id, edit):
+    """_bbox_to_level scales the reference bbox; with the 120px margin gone,
+    a rounding mismatch at another level would show up here."""
+    _one_level_case(monkeypatch, "stepped", pct, edit, mip)

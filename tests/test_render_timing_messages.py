@@ -97,7 +97,7 @@ def test_fill_message_says_applied_in_not_prepared_in():
         assert window.scenario is not None, "blank template failed to load"
         window.mode_combo.setCurrentText("Terrain")
         window._on_tool_selected("fill")
-        window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(15))  # GRASS_1
+        window.terrain_panel.set_terrain(15)  # GRASS_1
         # Not testing descape/terrain_units.py -- Trees defaults on and would
         # otherwise pop an unpatched large-fill confirm QMessageBox for this
         # whole-map fill, hanging offscreen.

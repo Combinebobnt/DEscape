@@ -22,6 +22,180 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [0.8] - 2026-09-23
+
+### Added
+
+- **File > Recover from Autosave can be given a keyboard shortcut** in
+  Settings > Keybinds > File. Ships unbound.
+- **Copy and paste multiple triggers** (GH #27, #28). The trigger list is
+  multi-select (Ctrl/Shift-click); Copy, Delete and Move Up/Down act on the
+  whole selection as one undo step. Edit > Copy Triggers / Paste Triggers
+  (Ctrl+C / Ctrl+V in Triggers mode) and a Paste button paste the block below
+  the current trigger, with links inside the block pointing at the pasted
+  copies. A right-click menu offers Select Section and Select Tag.
+- **Wall Rectangle tool** in Units mode: drag to place an outline ring of the
+  wall picked in the Units catalog, one undo step per drag. Shift makes a
+  square.
+- **Tooltips on every Map Options and Diplomacy row** and on the Elevation
+  View combo; Block humanity team change's tooltip says it locks co-op
+  alliances (GH #43, #55).
+- **`tools/ci_parity.sh [tag]`**: a CI-equivalent local run (release-tag
+  check, then the default test tier with the Workshop corpus, DE install and
+  `examples/` hidden) to run before every tag.
+- **Trigger tags and sections are editable.** Rename tag… renames a leading
+  `[tag]` on every trigger carrying it (merging into an existing tag after a
+  confirm), and Remove tag… strips it. New Section…, Rename Section… and Move
+  to Section work on `--- Section ---` dividers, and a new header copies the
+  divider style the scenario already uses. Each action is one undo step.
+- **A Sections menu in Triggers mode** offers Collapse All, Expand All and a
+  jump to any section. Collapsed sections stay collapsed across edits, and a
+  filter opens sections that hold a match.
+- **The unit inspector edits a multi-unit selection** (GH #71): Owner, X, Y, Z
+  and Rotation show the shared value or "(mixed)", and a typed value applies
+  to every selected unit in one undo step. Rotation skips trees, walls, gates
+  and scenery.
+- **Drag a multi-unit selection to move the whole group** (GH #75), with a
+  preview of every unit, stopping at the map edge with its shape intact. New
+  Edit > Select Whole Stack (Ctrl+K) selects everything stacked with a
+  selected unit.
+- **Filters > Show Invisible Objects** hides Invisible Objects, Map Revealers
+  and Blockers (GH #53). With sprites on, they now draw as owner-coloured
+  editor-only markers instead of a plain box; revealers use the game's eye
+  icon.
+- **Hero units draw with a thin gold outline**, like the game's hero glow, in
+  Stepped and Sloped (GH #39). Toggle it with View > Layers > Hero Glow.
+- **Mirror Map gains 3-way rotational, 6-way rotational and 6-way reflective
+  modes** for 3- and 6-player layouts. Corner tiles with no in-map source are
+  left untouched and counted, and Elevation starts unticked for these modes.
+- **Create Objects tool** in Triggers mode (GH #59): pick a Create Object
+  effect, then click the map to add one copy of it per tile under the brush,
+  one undo step per click. Tiles already holding that object are skipped.
+- **DE 1.21 scenarios open natively** (older Steam Workshop coop mods):
+  terrain, elevation and units load, render and save. Header editing and
+  Players mode stay read-only, and their triggers can't be read yet.
+- **Garrison editing in the unit inspector** (GH #42): a Garrison block lists
+  a host's occupants, with Add restricted to what the game admits, and Delete.
+  Garrisoned units are hidden by default behind a Filters toggle, and a moved
+  or deleted host carries them. Map Analysis flags units garrisoned in a host
+  that isn't on the map.
+- **Range ring around a selected building** (GH #49): View > Show Range Rings
+  draws its attack range, measured from the footprint edge. Off by default;
+  the colour lives in Settings > Appearance.
+- **Edit > Scatter Units in Region…**: fill a Select-tool region with
+  randomized copies of the Units panel's object, restricted by water or
+  terrain and sized by count or density, with seed, jitter and spacing, as one
+  undo step.
+- **Edit > History…** (GH #30): a window listing every recorded edit, current
+  in bold and undone entries greyed. Double-click an entry to undo or redo the
+  whole span in one step.
+- **Multi-select conditions and effects** in Triggers mode (GH #60):
+  Ctrl/Shift-click several entries of one trigger and edit them as a group.
+  Shared fields show their value, differing ones read "(differs)" and are only
+  written once changed. Copy and Delete act on the whole selection as one undo
+  step, and right-click > Select Same Type selects every entry of that type.
+- **Point of View buttons and player camera markers** (GH #22): Set View, Go to
+  View and Reset View in Players mode, and View > Show Player Cameras marks each
+  player's starting camera in their colour. Hidden on DE 1.41 files.
+- **Paste triggers into another scenario** of the same version (GH #3). Links
+  to uncopied triggers and placed-object references are cleared, as the
+  in-game copy does, and named variables carry their names. The status log
+  says what was cleared.
+- **Select All / Deselect in Triggers mode**: Ctrl+A selects every visible
+  trigger, collapsed sections included, and Ctrl+Shift+A clears the selection.
+- **Map Analysis marks each located finding on the map** while its results
+  dialog is open, with a severity glyph (`!!`, `!`, `i`, plus `xN` for shared
+  tiles). The selected row's marker gets a ring; the colour is in Settings >
+  Appearance.
+- **The selected trigger is drawn on the map** (GH #41): its areas are outlined
+  and tinted, following the ground in Stepped and Sloped, its locations are
+  marked, and an entry with both (Patrol, Attack Move and the like) gets a line
+  labelled with the Ruler's distance. The selected condition or effect is drawn
+  strongest. View > Show Trigger Overlay (on by default); colours in Settings >
+  Appearance.
+- **Trigger fields that name a placed unit show which unit it is**, with its
+  name, player and tile (or that the id is not on the map), and a **Pick**
+  button sets the field by clicking a unit on the map; for a unit list, click
+  to add or remove, then Esc. With the trigger overlay on, referenced units are
+  outlined, and a run line goes from an entry's units to its location object.
+
+### Changed
+
+- **Linux builds run on older distros**: they are now built on AlmaLinux 8 and
+  target glibc 2.28 (Ubuntu 20.04, Debian 10, RHEL 8 or later), down from
+  v0.7's 2.35.
+- **Wall Run is folded into Place Unit** (GH #98): pick a wall in the Units
+  catalog and drag to place a run. A single wall click gets its real shape
+  and reshapes its neighbours, and GAIA walls are allowed. The saved Wall Run
+  keybind is dropped.
+- **Placed Pastures draw like the game's** (GH #66): the tent in the middle, a
+  post on each corner and broken fences along every side. Each pasture keeps
+  its own mix of post and fence shapes across save and reload.
+- **The selection highlight takes each owner's player colour** over a dark
+  under-stroke, with View > Colour Selection by Owner (on by default). GAIA
+  and the marquee keep the configured Selection colour.
+- **Show Eye Candy no longer hides Blockers**; they belong to Show Invisible
+  Objects now (GH #53).
+- **Messages boxes behave like the trigger text fields**: Tab now moves to the
+  next box and saves the edit, and opening a right-click menu or switching
+  windows no longer saves it early.
+- **Deleting a multi-unit selection no longer stalls on large maps**: a
+  1000-unit delete on an 11k-unit map drops from ~640ms to ~7ms of model work.
+- **The unit inspector's Rotation is a whole facing number** (GH #61), 0 to one
+  less than the unit's direction count, wrapping on the scroll wheel with the
+  stored radians in its tooltip. Mixed-count groups edit on the finest grid.
+- **View mode shows a per-player breakdown** behind a player drop-down (GH #5):
+  placements, units, buildings, trees, eye candy and triggers naming that
+  player, replacing the old per-player unit list. Tools > Map Analysis now
+  refreshes it instead of leaving it stale.
+- **A scenario version DEscape cannot read now names the version and the
+  cause** in place of the parsing library's raw error.
+- **The terrain picker lives in Terrain mode's sidebar** (GH #56), always
+  visible, with grouped swatches, a filter, a preview and a one-line hover
+  readout. The toolbar's Terrain type drop-down and "…" browse window are gone,
+  and map statistics show in View mode only.
+- **Elevation edits repaint a smaller region**, sized to how far the terrain
+  shading actually reaches: about 45% less height per single-tile edit at
+  default settings.
+- **The Convert brush, and Move/Place/Delete of units in Flat, update the map
+  faster**: only the edited units are redrawn instead of every unit on the
+  map. A 20-unit Convert on a large map drops from about 220-990ms to 10-100ms.
+
+### Fixed
+
+- **Fast brush drags no longer leave gaps.** Draw, Elevate and Set Elevation
+  fill in every tile the cursor crossed between mouse moves, so a quick drag
+  paints a continuous stroke instead of a dotted one, most visibly at small
+  brush sizes.
+- **The unit list of nine trigger effects is a list editor again** (Task
+  Object, Build Object, Change Object Caption and six more). It showed as a
+  number box reading "(unset)" even when units were stored, and an edit there
+  would have replaced the list with one number.
+- **View > Grid no longer draws over buildings and units.** With Follow
+  Terrain Elevation on (the default), and always in Flat, the grid is now part
+  of the map image, drawn under unit sprites, and nearer raised ground hides
+  the lines behind it. Grid thickness now scales with zoom, like the terrain.
+  Follow Terrain Elevation off still draws the flat ground-level grid on top.
+- **Palisade, Fortified Palisade and Sea Wall banners stand on top of their
+  tower** instead of hanging across the middle of the wall (GH #51).
+- **The Map Options and Triggers panels widen with the app font**, so at 150%
+  display scaling the status line no longer crowds out the form and trigger
+  fields no longer overflow into a horizontal scrollbar.
+- **Switching a Modify Attribute effect to or from Armor/Attack no longer
+  crashes the next save**, and neither does retyping onto one of those
+  effects. On a float attribute (e.g. Work Rate) Quantity Float is editable.
+- **Moving or renaming triggers in a sectioned list, or switching Display/File
+  order, no longer drops an unsaved Execution order change** from the position
+  header and status line.
+- **Footprint Outlines update right away when Show sprites is toggled in
+  Sloped**, so draped farm outlines follow the switch.
+- **Mirror Map turns units with a real facing** (soldiers, villagers, siege,
+  ships) to the mirrored direction instead of keeping the original's. Trees,
+  rocks and other variant-indexed objects are still copied as they are.
+- **A terrain edit that fails partway no longer makes every later edit fail**
+  (for example Draw on a non-square map). What it had already painted is kept
+  as one undo step.
+
 ## [0.7] - 2026-09-20
 
 ### Added
@@ -286,9 +460,20 @@ content, link the doc instead of summarizing it.
   before any texture work. A size-9 brush stroke with sprites on drops from
   about 62 ms to 51 ms a step in Sloped and 40 ms to 31 ms in Stepped on a
   large map. Rendering output is unchanged, pixel for pixel.
+- **Mouse-wheel zoom steps once per whole wheel notch**, so a
+  high-resolution wheel or trackpad no longer zooms on every small scroll
+  event, and one hard flick crosses at most one zoom level.
+- **The first zoom after a stroke, paste or undo no longer stalls for
+  seconds.** Neighbouring zoom levels are rebuilt in the background after
+  every edit, not only after opening a file.
+- **The tile highlight holds steady instead of pulsing while a stroke is in
+  progress**, leaving those frames to the edit itself.
 
 ### Fixed
 
+- **A pure horizontal wheel tilt no longer zooms out one step.**
+- **The first unit edit of a file shows a wait cursor** instead of appearing
+  to hang while unit editing is set up.
 - **Place Unit, Paint Can fill, and Save no longer crash on a scenario older
   than version 1.55, or on any scenario opened after an older one earlier in
   the same session.** A caption-field compatibility shim could leave the

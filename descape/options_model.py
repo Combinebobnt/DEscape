@@ -66,7 +66,7 @@ _ANCHOR_ATTR = {
 }
 
 # Map's anchor is not the section's true end: terrain_block_offset is where
-# terrain_data *starts* (map_section_end - TERRAIN_STRUCT_SIZE * w * h, per
+# terrain_data *starts* (map_section_end - its parsed length, per
 # scenario_io.py), because terrain_data gets its own, stricter verification
 # path (scenario_io._verify_terrain_block()). Every other anchored section's
 # stored offset really is one past its own last retriever, so only Map needs

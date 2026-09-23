@@ -15,12 +15,14 @@ from functools import lru_cache
 
 import numpy as np
 
-from descape import asset_source, iso_geometry, settings, terrain_style, unit_sprites
+from descape import asset_source, grid_overlay, iso_geometry, settings, terrain_style, unit_sprites
+from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
     BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
     FOUNDATION_TERRAIN,
+    HERO_GLOW_CONSTS,
     PLAYER_COLORS,
     RESOURCE_COLORS,
     TREE_COLOR,
@@ -184,7 +186,9 @@ def _tile_block(tile, tile_px: int, textures: bool = True) -> np.ndarray:
     return np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
 
-def render_tile(img: np.ndarray, tile, tile_px: int) -> None:
+def render_tile(
+    img: np.ndarray, tile, tile_px: int, grid: GridBake = DEFAULT_GRID, map_dims: tuple[int, int] | None = None
+) -> None:
     """Paints one tile's tile_px x tile_px block into img, in place. The
     per-tile body shared by render_terrain() (full-map render) and
     refresh_tiles() (incremental, edit-driven redraw) -- kept as one function
@@ -197,9 +201,11 @@ def render_tile(img: np.ndarray, tile, tile_px: int) -> None:
     Plain terrain color/texture only."""
     px0, py0 = tile.x * tile_px, tile.y * tile_px
     img[py0 : py0 + tile_px, px0 : px0 + tile_px] = _tile_block(tile, tile_px)
+    if grid.paints and map_dims is not None:
+        _paint_grid_flat(img, tile.x, tile.y, tile_px, map_dims[0], map_dims[1], py0, px0, grid)
 
 
-def render_terrain(scenario: LoadedScenario) -> np.ndarray:
+def render_terrain(scenario: LoadedScenario, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
     """Terrain rendered at tile_pixels_for_map()-per-tile resolution
     (adaptive on map size -- see that function). Uses a real per-tile
     texture crop when an AoE2DE install is configured
@@ -212,7 +218,7 @@ def render_terrain(scenario: LoadedScenario) -> np.ndarray:
     img = np.zeros((h * tile_px, w * tile_px, 3), dtype=np.uint8)
 
     for tile in mm.terrain:
-        render_tile(img, tile, tile_px)
+        render_tile(img, tile, tile_px, grid, (w, h))
     return img
 
 
@@ -667,6 +673,167 @@ def _clipped_paint_rgba(img: np.ndarray, base_y: int, base_x: int, rgba: np.ndar
     dst[...] = ((block[..., :3].astype(np.uint16) * alpha + dst.astype(np.uint16) * (255 - alpha)) // 255).astype(np.uint8)
 
 
+def _clipped_lerp(
+    img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, target_rgb, alpha, *, extent=None
+) -> None:
+    """img[base_y+dst_y, base_x+dst_x] lerped towards target_rgb by alpha/255,
+    in place and clipped like _clipped_darken. target_rgb and alpha broadcast
+    per pixel as (n, 3) and (n, 1), or as a constant."""
+    if extent is not None:
+        y_lo, y_hi, x_lo, x_hi = extent
+        h, w = img.shape[0], img.shape[1]
+        if base_y + y_lo >= 0 and base_y + y_hi < h and base_x + x_lo >= 0 and base_x + x_hi < w:
+            ay = base_y + dst_y
+            ax = base_x + dst_x
+            img[ay, ax] = ((target_rgb * alpha + img[ay, ax] * (255 - alpha)) // 255).astype(np.uint8)
+            return
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
+    ay = base_y + dst_y
+    ax = base_x + dst_x
+    in_bounds = (ay >= 0) & (ay < img.shape[0]) & (ax >= 0) & (ax < img.shape[1])
+    if not np.all(in_bounds):
+        ay, ax = ay[in_bounds], ax[in_bounds]
+        if np.ndim(target_rgb) == 2:
+            target_rgb = target_rgb[in_bounds]
+        if np.ndim(alpha) == 2:
+            alpha = alpha[in_bounds]
+    # Integer math, same reason as _clipped_paint_rgba: a float round-trip can
+    # land a pixel one off and quietly break the byte-identity oracles.
+    img[ay, ax] = ((target_rgb * alpha + img[ay, ax] * (255 - alpha)) // 255).astype(np.uint8)
+
+
+# Grid edge -> tile_edge_indices side: x-low faces (x-1, y), y-low (x, y-1),
+# x-high (x+1, y), y-high (x, y+1).
+_ISO_GRID_SIDES = {"x_low": "left", "y_low": "up_left", "x_high": "up_right", "y_high": "right"}
+
+
+def _grid_stamp(pieces, grid: GridBake):
+    """(dst_y, dst_x, target (n, 3), alpha (n, 1), extent) from per-edge
+    (ys, xs, major) pixel sets, each pixel once and a major winning a tie, so
+    no pixel is lerped twice where two edges or two thickness rows meet."""
+    empty = np.zeros(0, dtype=np.int64)
+    if not pieces:
+        return empty, empty, None, None, None
+    ys = np.concatenate([p[0] for p in pieces]).astype(np.int64)
+    xs = np.concatenate([p[1] for p in pieces]).astype(np.int64)
+    major = np.concatenate([np.full(p[0].size, p[2], dtype=bool) for p in pieces])
+    if ys.size == 0:
+        return empty, empty, None, None, None
+    order = np.argsort(~major, kind="stable")
+    ys, xs, major = ys[order], xs[order], major[order]
+    key = (ys - ys.min()) * (int(xs.max()) + 1) + xs
+    _, first = np.unique(key, return_index=True)
+    ys, xs, major = ys[first], xs[first], major[first]
+    rgba = np.where(major[:, None], np.array(grid.major, dtype=np.uint16), np.array(grid.minor, dtype=np.uint16))
+    keep = rgba[:, 3] > 0
+    ys, xs, rgba = ys[keep], xs[keep], rgba[keep]
+    if ys.size == 0:
+        return empty, empty, None, None, None
+    extent = (int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max()))
+    return ys, xs, np.ascontiguousarray(rgba[:, :3]), np.ascontiguousarray(rgba[:, 3:4]), extent
+
+
+@lru_cache(maxsize=4096)
+def _grid_stamp_iso(tile_px: int, edges: tuple, grid: GridBake, corners: tuple | None = None):
+    """One tile's baked grid pixels in its own diamond's frame (Stepped) or
+    sloped quad's frame (Sloped, `corners` normalized to d_min 0).
+
+    A thickness of N stamps each 1px edge N times, offset vertically INWARD
+    (about 0.89N perpendicular on a 2:1 edge) and clipped to this tile's own
+    columns. Outward would spill into a neighbour whose later fill eats it, so
+    a thick line sits wholly on the owning side of a shared edge instead of
+    straddling it; Stepped and Sloped do it identically, keeping their
+    flat-map equality."""
+    if corners is None:
+        def producer(side):
+            return iso_geometry.tile_edge_indices(tile_px, side)
+    else:
+        def producer(side):
+            return iso_geometry.sloped_tile_edge_indices(tile_px, side, *corners)
+    tops = [producer("up_left"), producer("up_right")]
+    bottoms = [producer("left"), producer("right")]
+    ncol = int(max(p[1].max() for p in (*tops, *bottoms))) + 1
+    top = np.full(ncol, np.iinfo(np.int64).max, dtype=np.int64)
+    bottom = np.full(ncol, np.iinfo(np.int64).min, dtype=np.int64)
+    for ey, ex in tops:
+        top[ex] = ey
+    for ey, ex in bottoms:
+        bottom[ex] = ey
+    rows = np.arange(grid.thickness, dtype=np.int64)
+    pieces = []
+    for edge, major in edges:
+        side = _ISO_GRID_SIDES[edge]
+        ey, ex = producer(side)
+        step = -1 if side in ("left", "right") else 1
+        ys = (ey[None, :] + step * rows[:, None]).ravel()
+        xs = np.broadcast_to(ex, (rows.size, ex.size)).ravel()
+        keep = (ys >= top[xs]) & (ys <= bottom[xs])
+        pieces.append((ys[keep], xs[keep], major))
+    return _grid_stamp(pieces, grid)
+
+
+@lru_cache(maxsize=256)
+def _grid_stamp_flat(tile_px: int, edges: tuple, grid: GridBake):
+    """Flat's counterpart to _grid_stamp_iso: each edge is an N-px strip along
+    the inside of the tile's own square block."""
+    n = min(grid.thickness, tile_px)
+    along, across = np.meshgrid(np.arange(tile_px, dtype=np.int64), np.arange(n, dtype=np.int64))
+    along, across = along.ravel(), across.ravel()
+    pieces = []
+    for edge, major in edges:
+        if edge == "x_low":
+            pieces.append((along, across, major))
+        elif edge == "x_high":
+            pieces.append((along, tile_px - 1 - across, major))
+        elif edge == "y_low":
+            pieces.append((across, along, major))
+        else:
+            pieces.append((tile_px - 1 - across, along, major))
+    return _grid_stamp(pieces, grid)
+
+
+@lru_cache(maxsize=64)
+def _grid_lod_edges_filter(minor_spacing_px: float) -> tuple[bool, bool]:
+    lod = grid_overlay.bake_lod(minor_spacing_px)
+    return lod.draw_grid, lod.draw_minors
+
+
+def _grid_edges(tx: int, ty: int, map_w: int, map_h: int, minor_spacing_px: float, elevations=None) -> tuple:
+    draw_grid, draw_minors = _grid_lod_edges_filter(minor_spacing_px)
+    if not draw_grid:
+        return ()
+    edges = grid_overlay.owned_edges(tx, ty, map_w, map_h, elevations)
+    return edges if draw_minors else tuple(e for e in edges if e[1])
+
+
+def _paint_grid_iso(
+    img, tx: int, ty: int, tile_px: int, map_w: int, map_h: int, base_y: int, base_x: int,
+    grid: GridBake, elevations=None, corners=None,
+) -> None:
+    """One tile's baked grid, drawn at the base its own terrain painted at.
+    Stepped passes `elevations` (cliff-lip edges), Sloped passes `corners`."""
+    edges = _grid_edges(tx, ty, map_w, map_h, tile_px / 2, elevations)
+    if not edges:
+        return
+    dst_y, dst_x, target, alpha, extent = _grid_stamp_iso(tile_px, edges, grid, corners)
+    if extent is not None:
+        _clipped_lerp(img, base_y, base_x, dst_y, dst_x, target, alpha, extent=extent)
+
+
+def _paint_grid_flat(img, tx: int, ty: int, tile_px: int, map_w: int, map_h: int, base_y: int, base_x: int,
+                     grid: GridBake) -> None:
+    """Shared by render_tile() and composite_rect_flat(): only this per-tile
+    step is shared, like _tile_block, so the full render stays an independent
+    oracle for the chunk path."""
+    edges = _grid_edges(tx, ty, map_w, map_h, tile_px)
+    if not edges:
+        return
+    dst_y, dst_x, target, alpha, extent = _grid_stamp_flat(tile_px, edges, grid)
+    if extent is not None:
+        _clipped_lerp(img, base_y, base_x, dst_y, dst_x, target, alpha, extent=extent)
+
+
 def _render_tile_iso(
     img: np.ndarray,
     tile,
@@ -917,7 +1084,7 @@ def _render_tile_iso(
             _clipped_darken(img, base_y, base_x, t_dst_y, t_dst_x, factors, extent=extent)
 
 
-def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True) -> np.ndarray:
+def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
     """The Stepped-mode counterpart to render_terrain(): real per-tile
     vertical displacement via iso_geometry's projection primitives, instead
     of render_terrain()'s flat screen position (neither mode applies any
@@ -938,7 +1105,7 @@ def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True) -> np.
     for the version Phase 3's viewer uses, which also returns the elevations
     array and IsoProjection screen_to_tile() needs (Risk #6: those two must
     never drift from what actually got painted)."""
-    img, _elevations, _proj = render_terrain_iso_with_proj(scenario, with_units=with_units)
+    img, _elevations, _proj = render_terrain_iso_with_proj(scenario, with_units=with_units, grid=grid)
     return img
 
 
@@ -969,7 +1136,7 @@ def elevations_and_proj(scenario: LoadedScenario) -> tuple[np.ndarray, iso_geome
 
 
 def render_terrain_iso_with_proj(
-    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False
+    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False, grid: GridBake = DEFAULT_GRID
 ) -> tuple[np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_iso()'s real body, additionally returning the (h, w)
     elevations array and IsoProjection the render was actually computed
@@ -1007,10 +1174,15 @@ def render_terrain_iso_with_proj(
     # always rendered; P3-g4's measurement is what decides whether sprites
     # become the default. Opting in here is what gives the stitched-chunk
     # check a full-render ground truth to compare against.
-    sprites = sprite_draws_by_anchor(scenario, proj, elevations) if (with_units and with_sprites) else None
+    # hero_glow follows the caches' default layer state, so stitched-vs-full stays exact on heroes.
+    sprites = (
+        sprite_draws_by_anchor(scenario, proj, elevations, hero_glow=DEFAULT_LAYERS.hero_glow)
+        if (with_units and with_sprites)
+        else None
+    )
     for x, y in iso_geometry.depth_order(w, h):
         _paint_tile_and_units_iso(
-            img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites
+            img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites, grid=grid
         )
     return img, elevations, proj
 
@@ -1731,6 +1903,7 @@ def composite_rect_iso(
     sprites: SpriteLayer | None = None,
     bystander_grid: BystanderGrid | None = None,
     layers: LayerState = DEFAULT_LAYERS,
+    grid: GridBake = DEFAULT_GRID,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -1813,7 +1986,7 @@ def composite_rect_iso(
         tile = mm.terrain[cy * w + cx]
         _paint_tile_and_units_iso(
             scratch, tile, units_by_tile, tile_px, proj, elevations, w, h,
-            offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures,
+            offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
         )
     return scratch
 
@@ -2210,6 +2383,7 @@ def _paint_tile_and_units_sloped(
     offset: tuple[int, int] = (0, 0),
     sprites: SpriteLayer | None = None,
     textures: bool = True,
+    grid: GridBake = DEFAULT_GRID,
 ) -> None:
     """Sloped's counterpart to _paint_tile_and_units_iso -- same
     "terrain then this tile's own units, interleaved in depth_order" step
@@ -2304,6 +2478,13 @@ def _paint_tile_and_units_sloped(
                 iso_geometry.sloped_tile_edge_indices, tile_px, side, d_nw, d_ne, d_sw, d_se
             )
             _clipped_paint(img, base_y, base_x, edge_dst_y, edge_dst_x, values, extent=extent)
+    if grid.paints:
+        # Same slot and reasoning as Stepped's. _sloped_tile_quad's base, not
+        # tile_screen_origin's, and corners normalized the way its frame is.
+        gx, gy, *_ = _sloped_tile_quad(tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset)
+        d_min = min(d_nw, d_ne, d_sw, d_se)
+        corners = (d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min)
+        _paint_grid_iso(img, tile.x, tile.y, tile_px, map_w, map_h, gy, gx, grid, corners=corners)
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
@@ -2385,7 +2566,7 @@ def sloped_elevations_and_proj(
 
 
 def render_terrain_sloped_with_proj(
-    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False
+    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False, grid: GridBake = DEFAULT_GRID
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_sloped()'s real body, additionally returning the
     (h, w) elevations array, the (h+1, w+1) corner_rise array, and the
@@ -2429,24 +2610,26 @@ def render_terrain_sloped_with_proj(
 
     units_by_tile = _units_by_tile(scenario) if with_units else {}
     sprites = (
-        sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
+        sprite_draws_by_anchor(
+            scenario, proj, elevations, corner_rise=corner_rise, hero_glow=DEFAULT_LAYERS.hero_glow
+        )
         if (with_units and with_sprites)
         else None
     )
     for x, y in iso_geometry.depth_order(w, h):
         _paint_tile_and_units_sloped(
-            img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites
+            img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid
         )
     return img, elevations, corner_rise, proj
 
 
-def render_terrain_sloped(scenario: LoadedScenario, with_units: bool = True) -> np.ndarray:
+def render_terrain_sloped(scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
     """Sloped mode's top-level renderer -- the Phase 6 counterpart to
     render_terrain_iso(). Thin wrapper around
     render_terrain_sloped_with_proj() for callers that only need the
     pixels (render_scenario(), tools/dump_scenario.py,
     tools/gen_elevation_reference.py's own reference renders)."""
-    img, _elevations, _corner_rise, _proj = render_terrain_sloped_with_proj(scenario, with_units=with_units)
+    img, _elevations, _corner_rise, _proj = render_terrain_sloped_with_proj(scenario, with_units=with_units, grid=grid)
     return img
 
 
@@ -2465,6 +2648,7 @@ def composite_rect_sloped(
     sprites: SpriteLayer | None = None,
     bystander_grid: BystanderGrid | None = None,
     layers: LayerState = DEFAULT_LAYERS,
+    grid: GridBake = DEFAULT_GRID,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -2506,7 +2690,7 @@ def composite_rect_sloped(
         tile = mm.terrain[cy * w + cx]
         _paint_tile_and_units_sloped(
             scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h,
-            offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures,
+            offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
         )
     return scratch
 
@@ -2594,11 +2778,42 @@ def _flat_unit_draws(
     REQUIRED to be precomputed by the caller (once per FlatChunkCache
     construction) rather than recomputed per chunk -- walking every unit
     (~11k on this project's bigger real files) would dominate a single
-    chunk's cost otherwise."""
+    chunk's cost otherwise.
+
+    A thin wrapper over _flat_unit_rows(), which also returns each row's unit
+    identity and owner for FlatChunkCache's row splice."""
+    bboxes, colors, _row_uid, _row_player = _flat_unit_rows(scenario, tile_px, unit_filter)
+    return bboxes, colors
+
+
+def _flat_unit_bbox(bounds: tuple[int, int, int, int], unit, tile_px: int) -> tuple[int, int, int, int]:
+    """One unit's pixel-space rect from its unit_tile_bounds() result, shifted
+    the same way _draw_unit() shifts it, so the chunked path and the
+    full-canvas one draw every unit identically."""
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    dx, dy = unit_paint_offset(unit)
+    off_x, off_y = round(dx * tile_px), round(dy * tile_px)
+    return (
+        tile_x0 * tile_px + off_x, tile_y0 * tile_px + off_y,
+        tile_x1 * tile_px + off_x, tile_y1 * tile_px + off_y,
+    )
+
+
+def _flat_unit_rows(
+    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter()
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """_flat_unit_draws()' walk, plus two side columns per row: row_uid,
+    id(unit) as int64, and row_player, the owning player as int8. Rows are in
+    player order, so row_player is non-decreasing, which is what lets
+    FlatChunkCache.invalidate_units() find the end of a player's block with
+    one searchsorted. One walk, so the side columns can't disagree with the
+    bboxes about which units have rows."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     bboxes = []
     colors = []
+    row_uid = []
+    row_player = []
     for player_id, units in enumerate(scenario.unit_manager.units):
         player_color = scenario.player_colors[player_id]
         for unit in units:
@@ -2607,19 +2822,19 @@ def _flat_unit_draws(
             bounds = unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
-            tile_x0, tile_x1, tile_y0, tile_y1 = bounds
-            # The same shift _draw_unit() applies, so the chunked path and the
-            # full-canvas one still draw every unit identically.
-            dx, dy = unit_paint_offset(unit)
-            off_x, off_y = round(dx * tile_px), round(dy * tile_px)
-            bboxes.append((
-                tile_x0 * tile_px + off_x, tile_y0 * tile_px + off_y,
-                tile_x1 * tile_px + off_x, tile_y1 * tile_px + off_y,
-            ))
+            bboxes.append(_flat_unit_bbox(bounds, unit, tile_px))
             colors.append(_unit_color(unit, player_color))
+            row_uid.append(id(unit))
+            row_player.append(player_id)
     if not bboxes:
-        return np.zeros((0, 4), dtype=np.int32), np.zeros((0, 3), dtype=np.uint8)
-    return np.array(bboxes, dtype=np.int32), np.array(colors, dtype=np.uint8)
+        return (
+            np.zeros((0, 4), dtype=np.int32), np.zeros((0, 3), dtype=np.uint8),
+            np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int8),
+        )
+    return (
+        np.array(bboxes, dtype=np.int32), np.array(colors, dtype=np.uint8),
+        np.array(row_uid, dtype=np.int64), np.array(row_player, dtype=np.int8),
+    )
 
 
 def _flat_icon_layer(
@@ -2676,25 +2891,43 @@ def _flat_icon_layer_sliced(
             bounds = unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
-            tile_x0, tile_x1, tile_y0, tile_y1 = bounds
-            rotation = stored_rotation(player_id, unit)
-            # A wall/gate's shape isn't always recoverable from its own
-            # stored rotation -- see wall_variant_rotation_overrides()'s
-            # docstring. `i` is the unit's position in the PLAYER'S full unit
-            # list (this loop's own enumerate), not `row`, which only
-            # advances past units unit_filter keeps.
-            rotation = overrides.get((player_id, i), rotation)
-            draw = unit_sprites.icon_for(
-                unit.unit_const,
-                rotation,
-                team_index,
-                (tile_x1 - tile_x0) * tile_px,
-                (tile_y1 - tile_y0) * tile_px,
-            )
+            # `i` is the unit's position in the PLAYER'S full unit list (this
+            # loop's own enumerate), not `row`, which only advances past units
+            # unit_filter keeps.
+            draw = _flat_unit_icon(unit, player_id, i, overrides, team_index, bounds, tile_px)
             if draw is not None:
                 icons[row] = draw
             row += 1
     return icons, row
+
+
+def _flat_unit_icon(
+    unit,
+    player_id: int,
+    index: int,
+    overrides: dict[tuple[int, int], float],
+    team_index: int,
+    bounds: tuple[int, int, int, int],
+    tile_px: int,
+) -> unit_sprites.SpriteDraw | None:
+    """One unit's Flat icon, the per-unit body of _flat_icon_layer_sliced()
+    and of FlatChunkCache's row splice, shared so the two cannot drift. index
+    is the unit's position in its player's full list, the key `overrides`
+    (wall_variant_rotation_overrides()) uses. Footprint size comes from the
+    CLAMPED bounds, matching the rect _flat_unit_bbox() paints."""
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    rotation = stored_rotation(player_id, unit)
+    # A wall/gate's shape isn't always recoverable from its own stored
+    # rotation; see wall_variant_rotation_overrides()'s docstring.
+    rotation = overrides.get((player_id, index), rotation)
+    return unit_sprites.icon_for(
+        unit.unit_const,
+        rotation,
+        team_index,
+        (tile_x1 - tile_x0) * tile_px,
+        (tile_y1 - tile_y0) * tile_px,
+        getattr(unit, "reference_id", None),
+    )
 
 
 def composite_rect_flat(
@@ -2708,6 +2941,7 @@ def composite_rect_flat(
     with_units: bool = True,
     icons: dict[int, unit_sprites.SpriteDraw] | None = None,
     layers: LayerState = DEFAULT_LAYERS,
+    grid: GridBake = DEFAULT_GRID,
 ) -> np.ndarray:
     """Composites the half-open canvas rect [x0, x1) x [y0, y1) for Flat
     mode in isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8
@@ -2780,6 +3014,7 @@ def composite_rect_flat(
     tx0, ty0 = max(x0 // tile_px, 0), max(y0 // tile_px, 0)
     tx1 = min(-(-x1 // tile_px), tile_w)  # ceil division, clipped to map bounds
     ty1 = min(-(-y1 // tile_px), tile_h)
+    paint_grid = grid.paints
     for ty in range(ty0, ty1):
         for tx in range(tx0, tx1):
             tile = mm.get_tile(tx, ty)
@@ -2787,6 +3022,11 @@ def composite_rect_flat(
                 out, _tile_block(tile, tile_px, layers.terrain_textures),
                 tx * tile_px - x0, ty * tile_px - y0,
             )
+            # Units are a separate pass below, so anywhere in this loop is
+            # "between terrain and units". Into `out`, never the block: it is
+            # a view of the cached texture.
+            if paint_grid:
+                _paint_grid_flat(out, tx, ty, tile_px, tile_w, tile_h, ty * tile_px - y0, tx * tile_px - x0, grid)
 
     if with_units and unit_draws is not None:
         bboxes, colors = unit_draws
@@ -3059,6 +3299,7 @@ def unit_sprite_draws_at(
     unit,
     rotation_override: float | None = None,
     tree_scale: float = 1.0,
+    hero_glow: bool = False,
 ) -> list[tuple[object, int, int]]:
     """Every sprite piece `unit` would paint at its own stored position, as
     (draw, px, py) triples in canvas pixels, ordered the way the composite
@@ -3080,11 +3321,11 @@ def unit_sprite_draws_at(
 
     tree_scale must be the WINDOW's current View > Layers value: a ghost left
     on the default 1.0 would drag a tree at full size and snap it small on
-    drop."""
+    drop. hero_glow likewise, or a hero would lose its ring mid-drag."""
     overrides = {} if rotation_override is None else {(player_id, 0): rotation_override}
     contribution = _resolve_unit_sprite(
         scenario, proj, elevations, UnitFilter(), corner_rise, overrides, False,
-        player_id, 0, unit, tree_scale,
+        player_id, 0, unit, tree_scale, hero_glow,
     )
     if contribution is None:
         return []
@@ -3647,6 +3888,12 @@ _FARM_EDGE_BITS = (
 )
 
 
+# Consts whose foundation terrain drapes UNDER their sprite rather than
+# instead of it: placed Pastures, whose annex-tree art (GH #66) is a hut,
+# posts and fences standing on the pasture ground, not a ground cover itself.
+DRAPED_SPRITE_CONSTS: frozenset[int] = frozenset({1893, 1897})
+
+
 def _terrain_overlay_for(unit_const: int) -> int | None:
     """The terrain id `unit_const` draws as instead of a coloured mark, or
     None. A real .sld always wins over a terrain override -- most consts
@@ -3658,8 +3905,9 @@ def _terrain_overlay_for(unit_const: int) -> int | None:
     success, so behavior stays deterministic across installs: a const
     whose .sld happens to be unreadable on THIS install must still fall
     back to the coloured mark, never silently pick up a terrain override
-    instead."""
-    if unit_const in unit_sprites.graphic_map():
+    instead. DRAPED_SPRITE_CONSTS are the exception: their drape is
+    unconditional, so it is just as deterministic."""
+    if unit_const in unit_sprites.graphic_map() and unit_const not in DRAPED_SPRITE_CONSTS:
         return None
     return FOUNDATION_TERRAIN.get(unit_const)
 
@@ -3672,6 +3920,7 @@ def sprite_draws_by_anchor(
     corner_rise: np.ndarray | None = None,
     with_farms: bool = True,
     tree_scale: float = 1.0,
+    hero_glow: bool = False,
 ) -> SpriteLayer:
     """Resolves every visible unit to a real .sld sprite or a farm-terrain
     override, or leaves it to the coloured mark.
@@ -3703,9 +3952,14 @@ def sprite_draws_by_anchor(
     tree_scale < 1.0 (View > Layers > Small Trees) draws TREE_UNIT_IDS art
     at that fraction of its usual size. bboxes follow it for free: they are
     derived from each piece's own rgba shape and hotspot, so a shrunk sprite
-    reports a shrunk box."""
+    reports a shrunk box.
+
+    hero_glow=True (View > Layers > Hero Glow) rings HERO_GLOW_CONSTS art in
+    gold. Off by default here, so a caller that never names it stays
+    byte-identical; the chunk caches pass their LayerState's own value, which
+    defaults on. The bboxes widen with the ring the same way."""
     return _drain(sprite_draws_by_anchor_sliced(
-        scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale
+        scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow
     ))
 
 
@@ -3717,6 +3971,7 @@ class _SpriteContribution:
     (by_anchor, farm_tiles) is ever non-empty: a unit resolves to a real sprite,
     a farm-terrain override, or (returned as None by the resolver, never as
     an instance of this class) nothing at all -- see _resolve_unit_sprite().
+    The one exception is DRAPED_SPRITE_CONSTS (pastures), which carry both.
 
     by_anchor/bboxes are keyed per PIECE depth slot, so a composite building
     contributes to more than one anchor tile (a town centre's `main` paints
@@ -3742,6 +3997,7 @@ def _resolve_unit_sprite(
     i: int,
     unit,
     tree_scale: float = 1.0,
+    hero_glow: bool = False,
 ) -> _SpriteContribution | None:
     """Resolves ONE unit to its sprite or farm-terrain-override contribution
     -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
@@ -3759,7 +4015,8 @@ def _resolve_unit_sprite(
     consts -- the same set Filters' Show Trees owns, reused rather than
     re-derived, and deliberately not terrain_units.TREE_CONSTS, which is that
     set intersected with the auto-place table and so a strict subset. This is
-    where the "which consts" decision lives; unit_sprites just takes a float."""
+    where the "which consts" decision lives; unit_sprites just takes a float.
+    `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39)."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     half_w = proj.half_w
@@ -3774,15 +4031,16 @@ def _resolve_unit_sprite(
     pieces = unit_sprites.sprite_pieces_for(
         unit.unit_const, rotation, team_index, half_w,
         tree_scale if unit.unit_const in TREE_UNIT_IDS else 1.0,
+        getattr(unit, "reference_id", None),
+        hero_glow=hero_glow and unit.unit_const in HERO_GLOW_CONSTS,
     )
-    if not pieces:
-        terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
-        if terrain_id is None:
-            return None
+    # A pasture (DRAPED_SPRITE_CONSTS) carries both: its drape plus its annex-tree art.
+    farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+    terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
+    if terrain_id is not None and (not pieces or unit.unit_const in DRAPED_SPRITE_CONSTS):
         player_color = scenario.player_colors[player_id]
         color = _unit_color(unit, player_color)
         tile_x0, tile_x1, tile_y0, tile_y1 = bounds
-        farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
         for ty in range(tile_y0, tile_y1):
             for tx in range(tile_x0, tile_x1):
                 mask = 0
@@ -3795,6 +4053,9 @@ def _resolve_unit_sprite(
                 if tx == tile_x1 - 1:
                     mask |= EDGE_UP_RIGHT
                 farm_tiles[(tx, ty)] = (terrain_id, color, mask)
+    if not pieces:
+        if not farm_tiles:
+            return None
         return _SpriteContribution(
             skip_id=id(unit), by_anchor={}, bboxes={}, farm_tiles=farm_tiles
         )
@@ -3855,7 +4116,7 @@ def _resolve_unit_sprite(
             max(bbox[3], piece_bbox[3]),
         )
     return _SpriteContribution(
-        skip_id=id(unit), by_anchor=by_anchor, bboxes=bboxes, farm_tiles={}
+        skip_id=id(unit), by_anchor=by_anchor, bboxes=bboxes, farm_tiles=farm_tiles
     )
 
 
@@ -3867,6 +4128,7 @@ def sprite_draws_by_anchor_sliced(
     corner_rise: np.ndarray | None = None,
     with_farms: bool = True,
     tree_scale: float = 1.0,
+    hero_glow: bool = False,
 ) -> Generator[None, None, SpriteLayer]:
     """sprite_draws_by_anchor() as a resumable generator -- one yield per
     unit, so level_warm.LevelWarmer can advance it a few milliseconds at a
@@ -3896,7 +4158,7 @@ def sprite_draws_by_anchor_sliced(
             yield
             contribution = _resolve_unit_sprite(
                 scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                player_id, i, unit, tree_scale,
+                player_id, i, unit, tree_scale, hero_glow,
             )
             if contribution is None:
                 continue
@@ -3905,8 +4167,6 @@ def sprite_draws_by_anchor_sliced(
                 # happen in-game, but a scenario file can contain them, and a
                 # byte-identity test needs a deterministic answer.
                 farm_by_tile.update(contribution.farm_tiles)
-                skip_ids.add(contribution.skip_id)
-                continue
             for key, piece_draws in contribution.by_anchor.items():
                 by_anchor.setdefault(key, []).extend(piece_draws)
                 own = contribution.bboxes[key]
@@ -3966,6 +4226,7 @@ def _paint_tile_and_units_iso(
     offset: tuple[int, int] = (0, 0),
     sprites: SpriteLayer | None = None,
     textures: bool = True,
+    grid: GridBake = DEFAULT_GRID,
 ) -> None:
     """Terrain, then that tile's own units -- the single per-tile step both
     render_terrain_iso_with_proj()'s full loop and refresh_region_iso()'s
@@ -4020,6 +4281,14 @@ def _paint_tile_and_units_iso(
             values = np.broadcast_to(color_arr, (dst_y.size, 3))
             extent = iso_geometry.index_extent(iso_geometry.tile_edge_indices, tile_px, side)
             _clipped_paint(img, base_y, base_x, dst_y, dst_x, values, extent=extent)
+    if grid.paints:
+        # After this tile's terrain, before its units: a sprite paints at the
+        # footprint tile LAST in depth_order (unit_sprites.sprite_anchor_tile),
+        # so no grid edge under a building can land on top of it.
+        gx, gy = iso_geometry.tile_screen_origin(tile.x, tile.y, int(elevations[tile.y, tile.x]), proj)
+        _paint_grid_iso(
+            img, tile.x, tile.y, tile_px, map_w, map_h, gy - offset[1], gx - offset[0], grid, elevations=elevations
+        )
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
@@ -4119,6 +4388,7 @@ def _flat_icon_for_unit(
         team_index,
         (tile_x1 - tile_x0) * tile_px,
         (tile_y1 - tile_y0) * tile_px,
+        getattr(unit, "reference_id", None),
     )
 
 
@@ -4206,7 +4476,11 @@ def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, t
 
 
 def render_scenario(
-    scenario: LoadedScenario, with_units: bool = True, isometric: bool = False, style: str | None = None
+    scenario: LoadedScenario,
+    with_units: bool = True,
+    isometric: bool = False,
+    style: str | None = None,
+    grid: GridBake = DEFAULT_GRID,
 ) -> np.ndarray:
     """isometric=True renders Stepped mode (render_terrain_iso) instead of
     Flat (render_terrain). with_units applies in every mode now (Phase 5 for
@@ -4229,11 +4503,11 @@ def render_scenario(
             expected = ", ".join(repr(s) for s in terrain_style.TERRAIN_STYLES)
             raise ValueError(f"style must be one of {expected}, got {style!r}")
         if style == "sloped":
-            return render_terrain_sloped(scenario, with_units=with_units)
+            return render_terrain_sloped(scenario, with_units=with_units, grid=grid)
         isometric = style == "stepped"
     if isometric:
-        return render_terrain_iso(scenario, with_units=with_units)
-    img = render_terrain(scenario)
+        return render_terrain_iso(scenario, with_units=with_units, grid=grid)
+    img = render_terrain(scenario, grid=grid)
     if with_units:
         img = overlay_units(img, scenario)
     return img

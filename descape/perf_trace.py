@@ -11,6 +11,11 @@ Aggregated per STROKE, not per step: at 60 steps/sec a per-step line fills
 debug_log's 1000-line ring buffer in seconds. flush() emits one line per
 drag on mouse release.
 
+A step is one mouse event that entered new tiles. Through v0.8 it was one
+cursor tile; after it, an event's gap-filled cursor path (Draw, Elevate,
+Set Elevation) is one step, so ms/step can read higher than older logs at
+the same per-tile cost. Compare per-tile cost across that change with care.
+
 repaint is tracked separately from the step-nested phases (pick, highlight,
 stroke_scan, bbox, patch, invalidate): Qt's paint() fires on a paint event
 AFTER invalidate_region() schedules one, not synchronously inside

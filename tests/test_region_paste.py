@@ -34,7 +34,7 @@ def _make_region(window, sx0: int, sy0: int, sx1: int, sy1: int, terrain_id: int
     value -- see tests/test_region_clipboard.py's own fixture-construction
     comment on why), then copies it. Returns the RegionBlock."""
     window._on_tool_selected("draw")
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(terrain_id))
+    window.terrain_panel.set_terrain(terrain_id)
     for y in range(sy0, sy1):
         for x in range(sx0, sx1):
             window.on_edit_stroke_start()

@@ -195,15 +195,19 @@ def test_saving_with_no_trigger_model_is_byte_identical(tmp_path: Path) -> None:
 # suite and fail here.
 
 _OPERATIONS = [
-    ("new trigger", lambda w: w.trigger_structural_edit("new", -1)),
-    ("copy trigger", lambda w: w.trigger_structural_edit("copy", 0)),
+    ("new trigger", lambda w: w.trigger_structural_edit("new", ())),
+    ("copy trigger", lambda w: w.trigger_structural_edit("copy", [0])),
     # Trigger 2 is "Fixture: references", whose effects activate and deactivate
     # two other triggers. Deleting a referenced trigger is what makes
     # remove_triggers() reset a surviving ce.trigger_id to -1, so this is the
     # case that exercises restore()'s trap 3 rather than only its membership
     # restore. Deleting the referencing trigger itself covers the other side.
-    ("delete referenced trigger", lambda w: w.trigger_structural_edit("delete", 0)),
-    ("delete referencing trigger", lambda w: w.trigger_structural_edit("delete", 2)),
+    ("delete referenced trigger", lambda w: w.trigger_structural_edit("delete", [0])),
+    ("delete referencing trigger", lambda w: w.trigger_structural_edit("delete", [2])),
+    # GH #27: N triggers in one funnel call, still one record. Deleting 0 and
+    # 2 together removes a referenced trigger and its referencer at once.
+    ("delete two triggers", lambda w: w.trigger_structural_edit("delete", [0, 2])),
+    ("copy two triggers", lambda w: w.trigger_structural_edit("copy", [0, 2])),
     ("new condition", lambda w: w.entry_structural_edit("new", 0, "condition", -1, 3)),
     ("new effect", lambda w: w.entry_structural_edit("new", 0, "effect", -1, 55)),
     ("copy condition", lambda w: w.entry_structural_edit("copy", 0, "condition", 0, -1)),
@@ -212,7 +216,7 @@ _OPERATIONS = [
     ("delete effect", lambda w: w.entry_structural_edit("delete", 0, "effect", 0, -1)),
     # An activate-trigger effect is a reference the id remap has to follow, so
     # adding one and undoing it is the content-edit half of the same trap.
-    ("new activate-trigger effect", lambda w: w.entry_structural_edit("new", 0, "effect", -1, 53)),
+    ("new activate-trigger effect", lambda w: w.entry_structural_edit("new", 0, "effect", -1, 8)),
     # Retype (GH #37). Trigger 0's effect is display_instructions (20) and its
     # condition is timer (10); the targets share some fields and not others, so
     # both the carried and the dropped half of the rule run here.
@@ -228,6 +232,55 @@ _OPERATIONS = [
         lambda w: w.entry_structural_edit("retype", 2, "effect", 0, 20),
     ),
 ]
+
+
+def test_one_undo_restores_every_field_an_attribute_switch_rewrote(tmp_path: Path) -> None:
+    """Trigger 1's first effect is Modify Attribute on ARMOR. Moving it to
+    HIT_POINTS rewrites three cluster fields in one funnel call; one undo step
+    has to restore all of them, not just object_attributes."""
+    from descape.scenario_write import write_scenario
+    from descape.trigger_fields import INT, FieldSpec
+
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Triggers")
+        window.set_entry_field(1, "effect", 0, FieldSpec("object_attributes", INT), 0)
+        effect = window.trigger_edits.manager().triggers[1].effects[0]
+        assert (effect.quantity, effect.armour_attack_quantity) == (2, None)
+
+        window.undo()
+        assert not window.edit_history.is_dirty
+        effect = window.trigger_edits.manager().triggers[1].effects[0]
+        assert (effect.object_attributes, effect.armour_attack_quantity, effect.armour_attack_class) == (8, 2, 3)
+        out = tmp_path / "undone.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        assert out.read_bytes() == TRIGGER_FIXTURE.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_one_undo_restores_a_two_trigger_move(tmp_path: Path) -> None:
+    """A block move permutes display order only; the shared table's
+    save/reload half cannot see it, so it is checked here."""
+    from descape.scenario_write import write_scenario
+
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_structural_edit("move_down", [0, 1])
+        assert list(window.trigger_edits.manager().trigger_display_order) == [2, 0, 1, 3]
+        window.undo()
+        assert not window.edit_history.is_dirty
+        assert list(window.trigger_edits.manager().trigger_display_order) == [0, 1, 2, 3]
+        out = tmp_path / "undone.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        assert out.read_bytes() == TRIGGER_FIXTURE.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
 
 
 @pytest.mark.parametrize("label,operate", _OPERATIONS, ids=[label for label, _ in _OPERATIONS])
@@ -330,7 +383,7 @@ def test_copying_a_trigger_through_the_window_preserves_a_custom_display_order()
         manager.trigger_display_order = list(custom)
         before_triggers = list(manager.triggers)
 
-        window.trigger_structural_edit("copy", 0)
+        window.trigger_structural_edit("copy", [0])
 
         after_manager = window.trigger_edits.manager()
         after_order = list(after_manager.trigger_display_order)

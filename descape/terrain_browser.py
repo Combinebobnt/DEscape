@@ -1,5 +1,5 @@
 """The visual terrain picker: a category-grouped tree of terrain swatches,
-opened from the "…" button beside the Terrain type combo.
+living in the Terrain-mode sidebar page (descape/terrain_panel.py).
 
 A thin adapter over descape/value_picker.py, the same shape
 constant_picker.py's CatalogBrowseDialog is. (The plan for this called for a
@@ -11,23 +11,23 @@ What this module adds on top is the one piece of domain knowledge
 value_picker.py has none of: a terrain swatch, as both the side preview and
 a per-row icon. The icons are what make this a browser rather than a second
 list of names, so they are populated per category on expand rather than
-decoding 85 .dds files the moment the dialog opens.
+decoding 85 .dds files the moment the view is built.
 """
 
 from __future__ import annotations
 
 from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QIcon, QImage, QPixmap
-from PyQt5.QtWidgets import QApplication, QLabel, QTreeWidgetItem
+from PyQt5.QtWidgets import QApplication, QTreeWidgetItem
 
 from descape import asset_source, terrain_catalog, terrain_palette
-from descape.value_picker import PickerItem, ValueBrowseDialog
+from descape.value_picker import PickerItem, ValuePickerView
 
 HIDDEN_LABEL = "Show unused / moddable terrains"
 SWATCH_PX = asset_source.TERRAIN_THUMBNAIL_PX
 ROW_ICON_PX = 32
 
-# Stated in the dialog rather than only in the code: 131 terrains share 85
+# Stated in the picker page rather than only in the code: 131 terrains share 85
 # textures, and the thing that really distinguishes FOREST_OAK from
 # FOREST_PINE is the trees scattered on the tile, which DEscape does not
 # draw in the map render either. So a bare swatch IS what painting this
@@ -99,14 +99,19 @@ def _category_of(terrain_id: int | None) -> str:
     return ""
 
 
-class TerrainBrowseDialog(ValueBrowseDialog):
+class TerrainPickerView(ValuePickerView):
     """Pick a terrain by sight. Grouped by category, filterable, with the
-    junk terrains behind the "show unused" box."""
+    junk terrains behind the "show unused" box.
+
+    A plain always-visible widget, not a dialog: TerrainPanel embeds one as
+    the Terrain-mode sidebar page. Being long-lived is what refresh_swatches()
+    below exists for.
+    """
 
     def __init__(self, current_id: int | None = None, parent=None):
         # default_group is load-bearing, not a nicety: ValuePickerView
         # expands EVERY group when it is empty, and an all-expanded tree
-        # decodes all 85 distinct textures on open -- measured at 2.8s cold,
+        # decodes all 85 distinct textures at once -- measured at 2.8s cold,
         # which is the stall the per-category population exists to avoid.
         # Opening on the current terrain's own category collapses the other
         # nine and lands the user where they already are.
@@ -115,7 +120,6 @@ class TerrainBrowseDialog(ValueBrowseDialog):
             default_group=_category_of(current_id),
             hidden_label=HIDDEN_LABEL,
             preview=_terrain_preview,
-            title="Browse terrains",
             parent=parent,
         )
         self.tree.setIconSize(QSize(ROW_ICON_PX, ROW_ICON_PX))
@@ -139,11 +143,25 @@ class TerrainBrowseDialog(ValueBrowseDialog):
         if current_id is not None:
             self.select(current_id)
 
-        self.note_label = QLabel(SHARED_TEXTURE_NOTE)
-        self.note_label.setWordWrap(True)
-        # Index 1, between the picker view and the Ok/Cancel row the base
-        # class already added.
-        self.layout().insertWidget(1, self.note_label)
+    def refresh_swatches(self) -> None:
+        """Drop every row icon and redecode the expanded groups.
+
+        Needed only because this view outlives an install-path change:
+        _populate_icons skips any row that already has an icon, so without
+        the clear the tree would keep showing the flat fallback colours (or
+        the previous install's textures) forever. The side preview is
+        rebuilt too, since it is a separate pixmap that only refreshes when
+        the current row changes.
+        """
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            for c in range(group.childCount()):
+                group.child(c).setIcon(0, QIcon())
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            if group.isExpanded():
+                self._populate_icons(group)
+        self._update_preview()
 
     def _populate_icons(self, group: QTreeWidgetItem) -> None:
         pending = [
@@ -164,6 +182,3 @@ class TerrainBrowseDialog(ValueBrowseDialog):
                 child.setIcon(0, QIcon(swatch_pixmap(child.data(0, Qt.UserRole), ROW_ICON_PX)))
         finally:
             QApplication.restoreOverrideCursor()
-
-    def selected_id(self) -> int | None:
-        return self.selected_value()

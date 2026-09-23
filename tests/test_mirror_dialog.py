@@ -425,3 +425,109 @@ def test_the_dialogs_own_units_path_previews_and_auto_undoes() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# --- angular modes (6-way / 3-fold) ------------------------------------------
+
+
+def test_the_angular_modes_are_offered_after_a_disabled_header() -> None:
+    """The silent-drop trap: angular modes have an empty `group`, so the
+    length buckets alone would never add them."""
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window)
+        combo = dialog.mode_combo
+        ids = [combo.itemData(i) for i in range(combo.count()) if combo.itemData(i) is not None]
+        assert ids == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        header = next(i for i in range(combo.count()) if combo.itemText(i).startswith("Approximate"))
+        assert not combo.model().item(header).isEnabled()
+        assert combo.itemData(header) is None
+        assert combo.currentData() == 1
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_mode_12_draws_three_mirror_axes_and_the_rotations_none() -> None:
+    import math
+
+    from descape.mirror_tools import MODE_BY_ID
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window)
+        window.map_view._terrain_style = "flat"
+        n = window.scenario.map_manager.map_width
+        size = n * window.map_view._tile_pixels
+        assert dialog._axis_lines(MODE_BY_ID[10], n) == []
+        assert dialog._axis_lines(MODE_BY_ID[11], n) == []
+        lines = dialog._axis_lines(MODE_BY_ID[12], n)
+        assert len(lines) == 3
+        exact_a = dialog._axis_lines(MODE_BY_ID[1], n)[0]
+        assert any((p.x(), p.y(), q.x(), q.y()) == (exact_a[0].x(), exact_a[0].y(), exact_a[1].x(), exact_a[1].y())
+                   for p, q in lines)
+        angles = []
+        for p, q in lines:
+            assert abs((p.x() + q.x()) / 2 - size / 2) < 1e-6 and abs((p.y() + q.y()) / 2 - size / 2) < 1e-6
+            for point in (p, q):  # clipped onto the square's own boundary
+                assert min(point.x(), point.y(), size - point.x(), size - point.y()) == pytest.approx(0, abs=1e-6)
+            angles.append(round(math.degrees(math.atan2(q.y() - p.y(), q.x() - p.x())) % 180, 6))
+        assert sorted(angles) == [15.0, 75.0, 135.0]
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_angular_modes_default_elevation_off_and_report_unreachable_corners() -> None:
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window)
+        assert dialog.elevation_checkbox.isChecked()
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(11))
+        assert not dialog.elevation_checkbox.isChecked()
+        plan = plan_mirror(window.scenario.map_manager, 11, 0, True, False)
+        assert plan.unreachable
+        assert f"{len(plan.unreachable)} corner tile(s)" in dialog.summary_label.text()
+        dialog.elevation_checkbox.setChecked(True)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(12))
+        assert dialog.elevation_checkbox.isChecked(), "a user choice survives a switch within angular modes"
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(1))
+        assert dialog.elevation_checkbox.isChecked()
+        assert "corner tile" not in dialog.summary_label.text()
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_six_way_mirror_with_units_is_one_undo_step() -> None:
+    from descape.edit_history import CompositeDiffRecord, tile_state
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        _paint_asymmetric_tiles(window)
+        _place(window, 349, 77.5, 70.5, player=0)  # an oak inside mode 11's wedge 0
+        before_tiles = [tile_state(t) for t in mm.terrain]
+        before_units = len(_units(window))
+
+        dialog = MirrorDialog(window)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(11))
+        dialog.units_checkbox.setChecked(True)
+        dialog._on_apply()
+        assert isinstance(window.edit_history.peek_undo(), CompositeDiffRecord)
+        assert len(_units(window)) == before_units + 5
+        window.undo()
+        assert [tile_state(t) for t in mm.terrain] == before_tiles
+        assert len(_units(window)) == before_units
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

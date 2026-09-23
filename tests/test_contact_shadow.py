@@ -738,3 +738,77 @@ def test_tip_pass_leaves_a_straight_run_byte_identical(axis, monkeypatch):
     img, _elev, _proj = render.render_terrain_iso_with_proj(scenario, with_units=False)
     bare, _ = _render_without_tip(scenario, monkeypatch)
     assert np.array_equal(img, bare), "the tip pass drew on a straight run"
+
+
+# --- shadow_reach_px: the upward term _dirty_screen_bbox sizes from. The pixel
+# diff tests cannot guard it: _shadow_factors' ramp makes rows past it a uint8
+# no-op, so a half_h bound leaves no stale pixel today. These are the guard.
+
+REACH_TILE_PX = [8, 16, 32, 64, 128]
+
+
+def _pass_reaches(tile_px, rise_px):
+    """Rows above the caster's own top row each upward pass's index extent reaches."""
+    boxes = {
+        "band_up_left": ig.index_extent(ig.shadow_quad_indices, tile_px, rise_px, "up_left"),
+        "band_up_right": ig.index_extent(ig.shadow_quad_indices, tile_px, rise_px, "up_right"),
+        "apex": ig.index_extent(ig.shadow_apex_indices, tile_px, rise_px),
+        "tip_up_left": ig.index_extent(ig.shadow_tip_indices, tile_px, rise_px, "up_left"),
+        "tip_up_right": ig.index_extent(ig.shadow_tip_indices, tile_px, rise_px, "up_right"),
+    }
+    return {name: (0 if box is None else max(0, -box[0])) for name, box in boxes.items()}
+
+
+def _proj(tile_px, pct):
+    return ig.canvas_size_and_origin(8, 8, tile_px, ig.MIN_ELEVATION, ig.MAX_ELEVATION, elev_step_pct=pct)
+
+
+@pytest.mark.parametrize("tile_px", REACH_TILE_PX)
+def test_shadow_reach_covers_every_pass_at_every_legal_rise(tile_px):
+    """Every pass's reach, at every rise_px a real delta can produce, stays
+    within shadow_reach_px, and each pass's reach never grows with rise (the
+    helper reads only the smallest rise, so that is load-bearing).
+
+    Revert-and-recheck (2026-09-23): with tile_screen_bounds_over's term set
+    back to half_h, the sibling bounds test below went red at every tile_px
+    (reach exceeds half_h at each stop below pct 100), while
+    test_bbox_elev_sweep's one-level pixel cases, mip -2 and 1 included,
+    stayed green: the ramp shows the wedge only 1 row above its caster."""
+    from descape import settings
+
+    for pct in settings.ELEV_STEP_PCT_STOPS:
+        step = _proj(tile_px, pct).elev_step
+        reach = ig.shadow_reach_px(tile_px, step)
+        prev = None
+        seen = 0
+        for delta in range(1, ig.MAX_ELEVATION - ig.MIN_ELEVATION + 1):
+            got = _pass_reaches(tile_px, delta * step)
+            where = f"tile_px={tile_px} pct={pct} delta={delta}"
+            for name, r in got.items():
+                assert r <= reach, f"{where}: {name} reaches {r} rows, shadow_reach_px is {reach}"
+                if prev is not None:
+                    assert r <= prev[name], f"{where}: {name} grew from {prev[name]} to {r}"
+            seen = max(seen, *got.values())
+            prev = got
+        assert seen == reach, f"tile_px={tile_px} pct={pct}: bound {reach} is looser than the reach {seen}"
+
+
+@pytest.mark.parametrize("tile_px", REACH_TILE_PX)
+def test_bounds_over_top_edge_clears_every_shadow_pixel(tile_px):
+    """tile_screen_bounds_over's y0 sits at or above every shadow pixel the
+    tile can cast from any elevation in [lo, hi], onto any lower neighbour."""
+    from descape import settings
+
+    x, y = 3, 4
+    for pct in settings.ELEV_STEP_PCT_STOPS:
+        proj = _proj(tile_px, pct)
+        for lo, hi in ((1, 1), (1, 2), (3, 9), (0, 15), (15, 15)):
+            y0 = ig.tile_screen_bounds_over(x, y, lo, hi, proj)[1]
+            for e in range(lo, hi + 1):
+                _ox, oy = ig.tile_screen_origin(x, y, e, proj)
+                for delta in range(1, e - ig.MIN_ELEVATION + 1):
+                    for name, r in _pass_reaches(tile_px, delta * proj.elev_step).items():
+                        assert oy - r >= y0, (
+                            f"tile_px={tile_px} pct={pct} [{lo}, {hi}] e={e} delta={delta}: "
+                            f"{name} reaches row {oy - r}, above y0 {y0}"
+                        )

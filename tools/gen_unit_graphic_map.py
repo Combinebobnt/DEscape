@@ -51,6 +51,8 @@ resolves to a named graphic:
                                   -- offset from its low corner, whose depth
                                   -- moment paints this piece (_PIECE_SLOTS).
                                   -- Absent: paint at the unit's own anchor.
+         "seeded": true,        -- OPTIONAL, _ANNEX_TREE_SCOPE only: the frame is a
+                                  -- shape variant picked per placed unit.
          "parent": true},       -- OPTIONAL, on exactly ONE piece per entry:
                                   -- the piece whose failure to resolve drops
                                   -- the whole composite to the coloured mark.
@@ -120,7 +122,10 @@ real .dat and a real install rather than assumed:
   tile blend, not a unit sprite, and standing_graphic is a vestigial
   pointer left over from a pre-terrain-farm engine version. No unit .sld
   can supply this; consts that resolve this way are omitted rather than
-  entered under a filename that will never exist on any install.
+  entered under a filename that will never exist on any install. The one
+  exception is the placed Pasture (1893/1897): its own graphic is this shell,
+  but its annex TREE reaches modern art, so it gets an entry via
+  `_resolve_annex_tree` (see "Pasture annex tree" below). 1894/1898 stay out.
 
 **Composite buildings.** A town centre (and a pasture) is drawn from several
 co-located graphics, not one -- e.g. RTWC's own standing_graphic is
@@ -141,10 +146,20 @@ at their real, uncancelled offsets.
 annexes resolve" -- gate consts also resolve their corner-pillar annexes
 through this exact mechanism (confirmed 2026-08-29), but are built by a
 separate function (`_resolve_gate_pieces`, see "Gates" below), not folded
-into this allowlist. Three pasture-named consts (1893, 1897, 2078) never
-reach the pieces walk at all because their OWN standing_graphic is an
-unresolvable Farm-family legacy shell -- they get no base entry, same as
-before this feature.
+into this allowlist. 2078 (Pasture Annex Fences) never reaches the pieces
+walk because its OWN standing_graphic is an unresolvable Farm-family legacy
+shell; 1893/1897 have the same shell but are handled by the annex-tree walk.
+
+**Pasture annex tree.** A placed Pasture (`_ANNEX_TREE_SCOPE`, 1893/1897) is a
+two-level annex tree, not one level of annexes: root -> 1890 (hut, plus 4x
+1888 posts at (+-2, +-2)) and root -> 2078 -> 2x 2079 at (0, +-2) and 2x 2080
+at (+-2, 0), each with 4 fence annexes (1885/1886) at +-0.65 and +-1.3 along
+its edge. `_resolve_annex_tree` walks it depth-first, summing misplacement,
+and emits every node whose own graphic resolves: 25 pieces. The hut is the
+parent and supplies the top-level fields, unlike a town centre whose parent
+is its own art. Posts and fences are marked `seeded`: their frames are shape
+variants, and the renderer picks one per placed unit rather than from the
+root's rotation.
 
 **Gates.** A gate (`class_ == 39`) is a 2-5 piece composite: a middle span
 plus, on a real gate rather than a bare corner pillar, two corner towers and
@@ -169,8 +184,9 @@ unit's single anchor tile.
 
 **Decoration-shell walls.** The three `_BODY_GRAPHIC_OVERRIDES` consts keep
 the body as their top-level graphic but also carry `pieces`: the shell's
-modern deltas in .dat list order, then the flag shell itself, all at (0, 0),
-with the body marked parent. See `_resolve_wall_pieces`.
+modern deltas in .dat list order at their own offsets, with the flag shell
+itself at its `graphic_id == -1` delta's slot and offset, and the body marked
+parent. See `_resolve_wall_pieces`.
 """
 
 from __future__ import annotations
@@ -353,10 +369,9 @@ _GATE_CLASS = 39
 # resolve", which also catches gate consts (their corner-pillar annexes
 # resolve through this same _resolve_modern_graphic walk too, confirmed while
 # building this table; that is deliberately a separate follow-on, not built
-# here). 1893/1897/2078 are farm-family legacy shells with no modern
-# replacement for their OWN standing_graphic, so they never reach the pieces
-# walk regardless of scope membership -- listed in
-# tests/test_unit_graphic_map.py's FARM_FAMILY_CONSTS, not here.
+# here). 2078 is a farm-family legacy shell with no modern replacement for its
+# OWN standing_graphic, so it never reaches the pieces walk; 1893/1897 have the
+# same shell but reach modern art through _ANNEX_TREE_SCOPE below.
 _COMPOSITE_SCOPE: frozenset[int] = frozenset({
     71, 109, 141, 142, 2275, 2276, 2277,  # town centres (all ages/civs)
     1889, 1890, 2079, 2080,               # pastures
@@ -380,6 +395,13 @@ _PIECE_SLOTS: dict[int, list[list[int]]] = {
     2275: [[1, 2], [0, 3], [0, 3], [0, 3]],
     2276: [[1, 2], [0, 3], [0, 3], [0, 3]],
     2277: [[1, 2], [0, 3], [0, 3], [0, 3]],
+    # 1893/1897: _ANNEX_TREE_SCOPE, identical trees on a [4, 4] footprint.
+    1893: [[3, 0], [3, 0], [3, 0], [2, 0], [3, 1], [1, 0], [3, 2], [1, 0], [3, 2], [0, 0], [3, 3],
+           [1, 2], [0, 2], [0, 1], [0, 2], [0, 1], [0, 3], [0, 2], [0, 3], [0, 3], [0, 3], [0, 3],
+           [0, 3], [0, 3], [0, 3]],
+    1897: [[3, 0], [3, 0], [3, 0], [2, 0], [3, 1], [1, 0], [3, 2], [1, 0], [3, 2], [0, 0], [3, 3],
+           [1, 2], [0, 2], [0, 1], [0, 2], [0, 1], [0, 3], [0, 2], [0, 3], [0, 3], [0, 3], [0, 3],
+           [0, 3], [0, 3], [0, 3]],
 }
 
 # Native-pixel iso half-dimensions, mirroring descape.unit_sprites.
@@ -476,6 +498,89 @@ def _resolve_pieces(
     return result
 
 
+# HAND-VERIFIED against the real .dat (2026-09-21, GH #66): the placeable
+# Pasture consts, whose own standing_graphic is the Farm-family FARM0NNG shell
+# but whose annex TREE carries the hut, posts and fences. See _resolve_annex_tree.
+_ANNEX_TREE_SCOPE: frozenset[int] = frozenset({1893, 1897})
+
+# The hut (1890's own graphic) supplies the entry's top-level fields.
+_ANNEX_TREE_PARENT_UNIT = 1890
+
+# Pieces an in-scope root must yield: hut + 4 posts + 4 edges x 5 fences.
+_ANNEX_TREE_PIECE_COUNT = 25
+
+
+def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
+    """(parent_graphic, pieces) for an _ANNEX_TREE_SCOPE const, pieces
+    depth-sorted like _resolve_pieces().
+
+    A DFS over building.annexes, summing misplacement down the tree: every
+    node whose OWN standing_graphic resolves modern emits a piece at the summed
+    misplacement; a legacy node (the root, 2078) emits nothing but its annexes
+    still walk. Unlike a town centre, the parent is an annex's art (1890's
+    hut), not the const's own. Every piece but the hut is `seeded`: its
+    variant is picked per placed unit, not by the root's rotation."""
+    found: list[tuple[int, float, float, object]] = []
+
+    def walk(uid: int, mx: float, my: float, path: frozenset[int]) -> None:
+        unit = units[uid]
+        if unit is None:
+            return
+        if uid != unit_const:
+            standing = unit.standing_graphic
+            graphic = _resolve_modern_graphic(graphics, standing[0] if standing else -1)
+            if graphic is not None:
+                found.append((uid, round(mx, 6), round(my, 6), graphic))
+        if unit.building is None:
+            return
+        for annex in unit.building.annexes:
+            child = annex.unit_id
+            # Per-path guard: identical sibling annexes (four 1888 posts) must all walk.
+            if not (0 <= child < len(units)) or child in path:
+                continue
+            walk(child, mx + annex.misplacement_x, my + annex.misplacement_y, path | {child})
+
+    walk(unit_const, 0.0, 0.0, frozenset({unit_const}))
+    if len(found) != _ANNEX_TREE_PIECE_COUNT:
+        raise SystemExit(
+            f"_ANNEX_TREE_SCOPE const {unit_const} yields {len(found)} pieces, not "
+            f"{_ANNEX_TREE_PIECE_COUNT} -- re-verify its annex tree against the .dat"
+        )
+    parents = [f for f in found if f[0] == _ANNEX_TREE_PARENT_UNIT]
+    if len(parents) != 1:
+        raise SystemExit(
+            f"_ANNEX_TREE_SCOPE const {unit_const} has {len(parents)} "
+            f"{_ANNEX_TREE_PARENT_UNIT} hut pieces, expected exactly 1"
+        )
+    pieces = []
+    for uid, mx, my, graphic in found:
+        dx, dy = _piece_screen_offset(mx, my, graphic)
+        is_parent = uid == _ANNEX_TREE_PARENT_UNIT
+        pieces.append((my - mx, {
+            "unit_id": uid,
+            "file_name": graphic.file_name,
+            "angle_count": graphic.angle_count,
+            "frame_count": graphic.frame_count,
+            "dx": dx,
+            "dy": dy,
+            "mx": float(mx),
+            "my": float(my),
+            **({"parent": True} if is_parent else {"seeded": True}),
+        }))
+    pieces.sort(key=lambda dp: dp[0])
+    result = [p for _, p in pieces]
+    slots = _PIECE_SLOTS.get(unit_const)
+    if slots is None or len(slots) != len(result):
+        raise SystemExit(
+            f"_PIECE_SLOTS has {'no' if slots is None else len(slots)} slot(s) for "
+            f"_ANNEX_TREE_SCOPE const {unit_const}, which emits {len(result)} pieces -- "
+            f"re-run tools/measure_piece_slots.py and commit its table"
+        )
+    for piece, slot in zip(result, slots, strict=True):
+        piece["slot"] = list(slot)
+    return parents[0][3], result
+
+
 # unit_const -> the delta graphic_id that holds the real BODY, for consts whose
 # standing_graphic is a modern-named DECORATION rather than the structure
 # itself. _resolve_modern_graphic below only guards against LEGACY shells: it
@@ -522,16 +627,33 @@ def _resolve_wall_pieces(
     graphics: list, unit_const: int, shell, body_id: int
 ) -> list[dict[str, object]]:
     """The composite pieces for a _BODY_GRAPHIC_OVERRIDES const: every modern
-    delta of the decoration shell in .dat list order at its own offset, then
-    the shell itself (the flag) last at (0, 0). Measured 2026-09-02: 72/119
-    give body -> flag, 788 gives underwater -> body -> flag, all at (0, 0).
+    delta of the decoration shell in .dat list order at its own offset, with
+    the shell itself (the flag) placed by its `graphic_id == -1` delta, the
+    engine's slot for the parent graphic. 72 gives body -> flag at (0, -40),
+    119 the same at (0, -60), 788 underwater -> body -> flag at (0, -60).
+    At (0, 0) the flag's pole base sits on the ground anchor, mid-wall (GH #51).
 
     Not the gate helpers: their one-piece-per-offset dedupe would collapse
-    every wall piece, since all of them sit at (0, 0). unit_id is unit_const
-    on every piece, so the parent is marked on the body explicitly."""
+    the body pieces, which all sit at (0, 0). unit_id is unit_const on every
+    piece, so the parent is marked on the body explicitly."""
+    shell_piece = {
+        "unit_id": unit_const,
+        "file_name": shell.file_name,
+        "angle_count": shell.angle_count,
+        "frame_count": shell.frame_count,
+    }
+    slots = [d for d in shell.deltas if d.graphic_id == -1]
+    if len(slots) != 1:
+        raise SystemExit(
+            f"decoration shell {shell.file_name!r} (unit_const {unit_const}) has "
+            f"{len(slots)} graphic_id -1 deltas, expected exactly 1 to place it by"
+        )
     pieces: list[dict[str, object]] = []
     for delta in shell.deltas:
         dg_id = delta.graphic_id
+        if dg_id == -1:
+            pieces.append({**shell_piece, "dx": delta.offset_x, "dy": delta.offset_y})
+            continue
         if dg_id is None or not (0 <= dg_id < len(graphics)):
             continue
         dg = graphics[dg_id]
@@ -546,14 +668,6 @@ def _resolve_wall_pieces(
             "dy": delta.offset_y,
             **({"parent": True} if dg_id == body_id else {}),
         })
-    pieces.append({
-        "unit_id": unit_const,
-        "file_name": shell.file_name,
-        "angle_count": shell.angle_count,
-        "frame_count": shell.frame_count,
-        "dx": 0,
-        "dy": 0,
-    })
     for piece in pieces:
         # Same guard as the gate branch's angle_count == 1, inverted: a wall
         # piece that stops being a 5-shape variant graphic is a real .dat change.
@@ -597,6 +711,7 @@ def main() -> None:
     skipped = Counter()
     composited: set[int] = set()
     gate_composited: set[int] = set()
+    tree_composited: set[int] = set()
 
     for unit_const, unit in enumerate(units):
         if unit is None:
@@ -645,6 +760,19 @@ def main() -> None:
                 ],
             }
             gate_composited.add(unit_const)
+            continue
+
+        if unit_const in _ANNEX_TREE_SCOPE:
+            hut, tree_pieces = _resolve_annex_tree(units, graphics, unit_const)
+            entries[str(unit_const)] = {
+                "graphic_id": hut.id,
+                "file_name": hut.file_name,
+                "angle_count": hut.angle_count,
+                "mirroring_mode": hut.mirroring_mode,
+                "frame_count": hut.frame_count,
+                "pieces": tree_pieces,
+            }
+            tree_composited.add(unit_const)
             continue
 
         if graphic_id is None or graphic_id < 0 or graphic_id >= len(graphics):
@@ -734,6 +862,7 @@ def main() -> None:
     not_composited = sorted(_COMPOSITE_SCOPE - composited)
     if not_composited:
         print(f"    in scope but no entry (expected -- legacy shell): {not_composited}")
+    print(f"  annex-tree entries: {sorted(tree_composited)}")
     gate_piece_counts = Counter(len(entries[str(c)]["pieces"]) for c in gate_composited)
     print(f"  gate (class {_GATE_CLASS}) composite entries: {len(gate_composited)}")
     print(f"    piece-count histogram: {dict(sorted(gate_piece_counts.items()))}")

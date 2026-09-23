@@ -587,6 +587,169 @@ def test_switching_players_preserves_pending_edits_on_the_other_player() -> None
         _close(window)
 
 
+# --- Point of View buttons (GH #22) ---------------------------------------
+
+
+def _pov_panel(loaded, editable: bool = True):
+    """A standalone panel recording every GH #22 callback, in the same
+    shape _editable_panel() uses for the field one."""
+    from descape.player_fields import specs_for
+    from descape.players_panel import PlayersPanel
+
+    conftest.ensure_qapp()
+    reported = []
+    panel = PlayersPanel(
+        on_set_view=lambda player_id: reported.append(("set", player_id)),
+        on_go_to_view=lambda player_id: reported.append(("go", player_id)),
+        on_reset_view=lambda player_id: reported.append(("reset", player_id)),
+        on_player_selected=lambda player_id: reported.append(("selected", player_id)),
+    )
+    panel.show_scenario(
+        loaded, editable_fields=[s.field_id for s in specs_for(loaded)] if editable else []
+    )
+    return panel, reported
+
+
+def _loaded_blank():
+    from descape.scenario_io import load_map_and_units
+
+    return load_map_and_units(BLANK_FIXTURE)
+
+
+def test_the_point_of_view_group_carries_three_buttons() -> None:
+    panel, _reported = _pov_panel(_loaded_blank())
+    try:
+        labels = [
+            b.text()
+            for b in (panel.set_view_button, panel.go_to_view_button, panel.reset_view_button)
+        ]
+        assert labels == ["Set View", "Go to View", "Reset View"]
+        assert panel.set_view_button.isEnabled()
+        assert panel.reset_view_button.isEnabled()
+    finally:
+        panel.deleteLater()
+
+
+def test_go_to_view_is_disabled_at_an_unset_view() -> None:
+    """The blank template stores (-1, -1) for every player: there is
+    nowhere to go until a view is set."""
+    from descape.player_fields import POV_X_FIELD, POV_Y_FIELD
+
+    panel, _reported = _pov_panel(_loaded_blank())
+    try:
+        assert panel.current_view() is None
+        assert not panel.go_to_view_button.isEnabled()
+        panel.widget_for(POV_X_FIELD).setValue(30)
+        panel.widget_for(POV_Y_FIELD).setValue(40)
+        assert panel.current_view() == (30, 40)
+        # The enabled state is refreshed by the repopulate every edit
+        # already triggers, not by the widget signal itself -- with the
+        # window's own pending values, since a byte-patch write leaves the
+        # parsed retriever holding the original -1.
+        panel.show_scenario(
+            panel._loaded,
+            editable_fields=panel._editable_fields,
+            pending_values={POV_X_FIELD: {1: 30}, POV_Y_FIELD: {1: 40}},
+        )
+        assert panel.current_view() == (30, 40)
+        assert panel.go_to_view_button.isEnabled()
+    finally:
+        panel.deleteLater()
+
+
+def test_a_read_only_file_still_navigates_but_cannot_write() -> None:
+    panel, _reported = _pov_panel(_loaded_blank(), editable=False)
+    try:
+        assert not panel.set_view_button.isEnabled()
+        assert not panel.reset_view_button.isEnabled()
+        # Go to View writes nothing, so a refused write path does not gate it.
+        assert not panel.go_to_view_button.isEnabled(), "still unset on this file"
+    finally:
+        panel.deleteLater()
+
+
+def test_each_button_reports_the_selected_player() -> None:
+    panel, reported = _pov_panel(_loaded_blank())
+    try:
+        panel.player_combo.setCurrentIndex(4)  # P5
+        assert ("selected", 5) in reported
+        panel.set_view_button.click()
+        panel.reset_view_button.click()
+        assert [entry for entry in reported if entry[0] in ("set", "reset")] == [
+            ("set", 5),
+            ("reset", 5),
+        ]
+    finally:
+        panel.deleteLater()
+
+
+def test_player_selected_fires_on_the_combo_and_on_select_player() -> None:
+    """select_player() backs the number-key shortcut, which goes through
+    the combo -- so one callback covers both paths."""
+    panel, reported = _pov_panel(_loaded_blank())
+    try:
+        panel.player_combo.setCurrentIndex(2)
+        assert panel.select_player(7) is True
+        assert [entry for entry in reported if entry[0] == "selected"] == [
+            ("selected", 3),
+            ("selected", 7),
+        ]
+        assert panel.current_player_id() == 7
+    finally:
+        panel.deleteLater()
+
+
+def test_no_buttons_without_a_point_of_view_group() -> None:
+    """A file whose specs carry no Point of View pair -- pre-1.40, or a
+    1.41 one, whose mis-framed copy specs_for() drops -- gets the spinboxes
+    and the buttons removed together."""
+    from descape import player_fields
+    from descape.players_panel import PlayersPanel
+
+    conftest.ensure_qapp()
+    loaded = _loaded_blank()
+    loaded.scenario_version = player_fields._MISALIGNED_POV_VERSION
+    panel = PlayersPanel()
+    try:
+        panel.show_scenario(loaded)
+        assert panel.widget_for(player_fields.POV_X_FIELD) is None
+        assert panel.set_view_button is None
+        assert panel.go_to_view_button is None
+        assert panel.reset_view_button is None
+        assert panel.current_view() is None
+    finally:
+        panel.deleteLater()
+
+
+@pytest.mark.corpus
+def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
+    """The group and its buttons on every real file: absent on the six
+    C2_ElCid 1.41 scenarios (Point of View bytes framed one early) and on
+    the files predating initial_player_views (the 1.37 one among them),
+    present with all three buttons everywhere else."""
+    from descape import player_fields
+    from descape.players_panel import PlayersPanel
+    from descape.scenario_io import load_map_and_units
+
+    conftest.ensure_qapp()
+    loaded = load_map_and_units(scenario_path)
+    map_section = loaded._scenario.sections.get("Map")
+    stored = map_section is not None and "initial_player_views" in map_section.retriever_map
+    expected = stored and loaded.scenario_version != player_fields._MISALIGNED_POV_VERSION
+    panel = PlayersPanel()
+    try:
+        panel.show_scenario(loaded)
+        has_rows = panel.widget_for(player_fields.POV_X_FIELD) is not None
+        assert has_rows == expected, (
+            f"{scenario_path.name} (v{loaded.scenario_version}): rows {has_rows}, want {expected}"
+        )
+        assert (panel.set_view_button is not None) == expected
+        assert (panel.go_to_view_button is not None) == expected
+        assert (panel.reset_view_button is not None) == expected
+    finally:
+        panel.deleteLater()
+
+
 # --- corpus tier -----------------------------------------------------------
 
 

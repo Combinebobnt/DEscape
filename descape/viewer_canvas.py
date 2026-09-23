@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
+from typing import ClassVar
 
 import numpy as np
 from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt
@@ -20,6 +21,7 @@ from PyQt5.QtGui import (
     QFontDatabase,
     QImage,
     QPainter,
+    QPainterPath,
     QPen,
     QPolygonF,
     QTransform,
@@ -643,38 +645,17 @@ class EdgeTickItem(QGraphicsItem):
                 painter.drawText(box, Qt.AlignCenter, text)
 
 
-def _segments_in_rect(segments: np.ndarray, rect: QRectF | None) -> np.ndarray:
-    """The rows of an (n, 4) segment array whose own bounding box meets
-    `rect`. None means "cull nothing", covering both a paint with no option
-    and an empty exposed rect."""
-    if rect is None or rect.isEmpty():
-        return segments
-    x0, y0 = segments[:, 0], segments[:, 1]
-    x1, y1 = segments[:, 2], segments[:, 3]
-    keep = (
-        (np.minimum(x0, x1) <= rect.right())
-        & (np.maximum(x0, x1) >= rect.left())
-        & (np.minimum(y0, y1) <= rect.bottom())
-        & (np.maximum(y0, y1) >= rect.top())
-    )
-    return segments[keep]
-
-
-def _segments_polygon(segments: np.ndarray) -> QPolygonF:
-    """An (n, 4) segment array as the point-pair QPolygonF
-    QPainter.drawLines takes, filled straight through the polygon's own
-    buffer. Building n QLineF objects instead costs ~300x as long at 100k
-    segments, which a draped grid reaches on a big map."""
-    polygon = QPolygonF(2 * len(segments))
-    buffer = polygon.data()
-    buffer.setsize(16 * 2 * len(segments))
-    np.frombuffer(buffer, dtype=np.float64)[:] = segments.reshape(-1).astype(np.float64)
-    return polygon
-
-
 class GridItem(QGraphicsItem):
-    """View > Grid: one line per tile boundary over the whole map, with every
-    fourth line a major. Geometry comes from the Qt-free descape.grid_overlay.
+    """View > Grid's ground-plane lattice: one line per tile boundary over the
+    whole map, with every fourth line a major. Geometry comes from the
+    Qt-free descape.grid_overlay.
+
+    Not the usual grid. With Follow Terrain Elevation on (and always in Flat)
+    the grid is baked into the chunk composite under the sprites, and this
+    item is hidden. It serves only the follow-off elevation-0 lattice in
+    Stepped and Sloped, which is not per-tile geometry and so draws over
+    sprites, and the Settings > Appearance slider preview, where re-baking
+    per tick would evict the whole canvas each time.
 
     **Lines are prebuilt once per (dims, style) in _rebuild(), never inside
     paint().** Same reason as EdgeTickItem: the bounding rect spans the map,
@@ -695,23 +676,8 @@ class GridItem(QGraphicsItem):
         tile_px: int | None = None,
         blend: int = grid_overlay.BLEND_DEFAULT,
         thickness: int = grid_overlay.THICKNESS_DEFAULT,
-        style: str = "flat",
-        follow_elevation: bool = False,
     ) -> None:
         super().__init__()
-        self._style = style
-        self._follow = follow_elevation
-        # Pushed by MapView on every elevation edit, never held from
-        # set_source(): SlopedChunkCache.patch() rebinds corner_rise to a
-        # fresh array, so a reference captured once goes stale.
-        self._elevations = None
-        self._corner_rise = None
-        self._elev_version = 0
-        self._lift = 0
-        self._geom_key: tuple | None = None
-        self._window: QRectF | None = None
-        self._draped: tuple = (None, None)
-        self.rebuild_count = 0
         self._map_w = map_w
         self._map_h = map_h
         self._proj = proj
@@ -727,9 +693,6 @@ class GridItem(QGraphicsItem):
         self._major_pen = QPen()
         self.paint_count = 0
         self.last_lod: dict[str, grid_overlay.GridLod] = {}
-        # Draped geometry is windowed to what is on screen, so the item needs
-        # the real exposed rect rather than "the whole bounding rect".
-        self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
         self.set_appearance(blend, thickness)
         self._rebuild()
 
@@ -747,12 +710,7 @@ class GridItem(QGraphicsItem):
                 ys += (y0, y1)
             self._batches.append((tuple(minors), tuple(majors)))
         lines_rect = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
-        # Draping only ever lifts a line up-screen, so one adjusted top edge
-        # covers it. Computed here from the elevation source rather than from
-        # the drawn segments: a bounding rect grown inside paint() would need
-        # prepareGeometryChange() there, whose documented symptom when missed
-        # is leftover fragments after a scroll.
-        self._base_rect = self._map_rect.united(lines_rect).adjusted(0, -self._lift, 0, 0)
+        self._base_rect = self._map_rect.united(lines_rect)
         self._apply_geometry()
 
     def _apply_geometry(self) -> None:
@@ -777,41 +735,6 @@ class GridItem(QGraphicsItem):
     def pens(self) -> tuple[QPen, QPen]:
         return self._minor_pen, self._major_pen
 
-    def set_follow_elevation(self, enabled: bool) -> None:
-        if enabled == self._follow:
-            return
-        self._follow = enabled
-        self._geom_key = None
-        self.update()
-
-    def set_elevation_source(self, elevations=None, corner_rise=None) -> None:
-        """The live height field the draped grid reads. MapView re-pushes it
-        on every elevation edit rather than the item holding one from
-        set_source(): SlopedChunkCache.patch() rebinds corner_rise to a fresh
-        array, so a held reference silently goes stale. Pushed unconditionally,
-        hidden or not, so an edit made while the grid is off still shows up
-        when it comes back on."""
-        self._elevations = elevations
-        self._corner_rise = corner_rise
-        self._elev_version += 1
-        self._geom_key = None
-        lift = 0
-        if elevations is not None and len(elevations):
-            lift = int(elevations.max()) * (self._proj.elev_step if self._proj else 0)
-        elif corner_rise is not None and len(corner_rise):
-            lift = int(corner_rise.max())
-        if lift != self._lift:
-            self._lift = lift
-            self._rebuild()
-        self.update()
-
-    def _drapes(self) -> bool:
-        if not (self._follow and self._proj is not None):
-            return False
-        if self._style == "stepped":
-            return self._elevations is not None
-        return self._style == "sloped" and self._corner_rise is not None
-
     def set_min_view_scale(self, scale: float | None) -> None:
         """Pads for the thickest pen's device-space half-width at the
         smallest scale the view can reach, like EdgeTickItem.set_min_view_scale."""
@@ -828,96 +751,26 @@ class GridItem(QGraphicsItem):
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         self.paint_count += 1
-        # A centred blend slider is invisible, so skip the whole pass rather
-        # than window, rebuild and rasterize a draped grid's ~100k fully
-        # transparent segments.
+        # A centred blend slider is invisible, so skip the whole pass.
         if not self._minor_pen.color().alpha() and not self._major_pen.color().alpha():
             return
         with perf_trace.phase("grid_repaint"):
             world = painter.worldTransform()
             painter.save()
             try:
-                if self._drapes():
-                    self._paint_draped(painter, world, option)
-                else:
-                    self._paint_ground(painter, world)
+                for axis, (minors, majors) in zip(self._axes, self._batches, strict=True):
+                    lod = grid_overlay.grid_lod(math.hypot(*_mapped_delta(world, *axis.minor_step)))
+                    self.last_lod[axis.axis] = lod
+                    if not lod.draw_grid:
+                        continue
+                    if lod.draw_minors and minors:
+                        painter.setPen(self._minor_pen)
+                        painter.drawLines(list(minors))
+                    if majors:
+                        painter.setPen(self._major_pen)
+                        painter.drawLines(list(majors))
             finally:
                 painter.restore()
-
-    def _paint_ground(self, painter: QPainter, world) -> None:
-        for axis, (minors, majors) in zip(self._axes, self._batches, strict=True):
-            lod = grid_overlay.grid_lod(math.hypot(*_mapped_delta(world, *axis.minor_step)))
-            self.last_lod[axis.axis] = lod
-            if not lod.draw_grid:
-                continue
-            if lod.draw_minors and minors:
-                painter.setPen(self._minor_pen)
-                painter.drawLines(list(minors))
-            if majors:
-                painter.setPen(self._major_pen)
-                painter.drawLines(list(majors))
-
-    def _paint_draped(self, painter: QPainter, world, option) -> None:
-        lod = grid_overlay.GridLod(True, True)
-        for axis in self._axes:
-            axis_lod = grid_overlay.grid_lod(math.hypot(*_mapped_delta(world, *axis.minor_step)))
-            self.last_lod[axis.axis] = axis_lod
-            lod = grid_overlay.GridLod(
-                lod.draw_grid and axis_lod.draw_grid, lod.draw_minors and axis_lod.draw_minors
-            )
-        if not lod.draw_grid:
-            return
-        self._ensure_draped(world, painter)
-        exposed = getattr(option, "exposedRect", None)
-        minor, major = self._draped
-        for segments, pen in ((minor, self._minor_pen), (major, self._major_pen)):
-            if segments is None or not len(segments) or (segments is minor and not lod.draw_minors):
-                continue
-            visible = _segments_in_rect(segments, exposed)
-            if not len(visible):
-                continue
-            painter.setPen(pen)
-            painter.drawLines(_segments_polygon(visible))
-
-    def _visible_scene_rect(self, world, painter) -> QRectF:
-        """The whole device surface in scene coordinates, NOT option's
-        exposedRect: a scroll repaints a thin strip, and windowing the
-        geometry to that strip would rebuild on every scrolled pixel."""
-        inverted, ok = world.inverted()
-        device = QRectF(painter.window())
-        return inverted.mapRect(device) if ok else self._base_rect
-
-    def _ensure_draped(self, world, painter) -> None:
-        visible = self._visible_scene_rect(world, painter)
-        if (
-            self._geom_key == (self._follow, self._elev_version)
-            and self._window is not None
-            and self._window.contains(visible)
-        ):
-            return
-        with perf_trace.phase("grid_rebuild"):
-            pad_x = grid_overlay.WINDOW_PAD_TILES * 2 * self._proj.half_w
-            pad_y = grid_overlay.WINDOW_PAD_TILES * 2 * self._proj.half_h + self._lift
-            window = visible.adjusted(-pad_x, -pad_y, pad_x, pad_y)
-            tiles = iso_geometry.tiles_in_screen_rect(
-                math.floor(window.left()),
-                math.floor(window.top()),
-                math.ceil(window.right()),
-                math.ceil(window.bottom()),
-                self._map_w,
-                self._map_h,
-                self._proj,
-            )
-            self._draped = grid_overlay.draped_lines(
-                tiles,
-                self._style,
-                self._proj,
-                elevations=self._elevations,
-                corner_rise=self._corner_rise,
-            )
-            self._window = window
-            self._geom_key = (self._follow, self._elev_version)
-            self.rebuild_count += 1
 
 
 class StackBadgeItem(QGraphicsItem):
@@ -1012,6 +865,139 @@ class StackBadgeItem(QGraphicsItem):
             painter.restore()
 
 
+class AnalysisMarkerItem(QGraphicsItem):
+    """Tools > Map Analysis' on-map markers: one item for the whole layer,
+    drawing a severity glyph over every tile map_analysis.marker_anchors()
+    returned, while the results dialog is open.
+
+    StackBadgeItem's shape (scene-point anchors handed in by MapView, drawn
+    in device space so a marker stays one size at every zoom) minus its LOD
+    floor: seeing where findings cluster at fit-to-view is the point, so
+    markers are drawn at every zoom and allowed to overlap when far out.
+    Without that floor the scene-unit overhang grows as the view zooms out,
+    so the bounding rect is padded from the smallest reachable scale, the
+    way EdgeTickItem.set_min_view_scale() pads the tick strip."""
+
+    FONT_PX = 11
+    PAD_PX = 3.0
+    GAP_PX = 2.0
+    BACKGROUND_ALPHA = 200
+    FOCUS_RING_PX = 2.0
+    # Furthest a marker box reaches from its anchor, in device pixels: the
+    # widest glyph plus count ("!! x200") with padding and the focus ring.
+    DEVICE_REACH_PX = 64.0
+    GLYPHS: ClassVar[dict[str, str]] = {"error": "!!", "warning": "!", "info": "i"}
+
+    def __init__(self, color: QColor) -> None:
+        super().__init__()
+        self._markers: list[tuple[QPointF, str, str, int]] = []
+        self._focus: QPointF | None = None
+        self._pad = 0.0
+        self._bounding_rect = QRectF()
+        self._font = map_overlay_font(self.FONT_PX)
+        self._font.setBold(True)
+        self._color = QColor(color)
+        self._background = QColor(0, 0, 0, self.BACKGROUND_ALPHA)
+        self.markers_drawn = 0
+        self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
+        # A map-wide layer: it must never swallow a Units-mode click.
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def set_markers(self, markers: list[tuple[QPointF, str, int]]) -> None:
+        """(scene anchor, severity, finding count) per marked tile."""
+        self._markers = [
+            (QPointF(point), severity, self._label(severity, count), int(count)) for point, severity, count in markers
+        ]
+        self._apply_geometry()
+
+    def set_focus(self, point: QPointF | None) -> None:
+        """The anchor of the marker to ring, or None."""
+        self._focus = None if point is None else QPointF(point)
+        self.update()
+
+    def set_min_view_scale(self, scale: float | None) -> None:
+        if scale is None or scale <= 0:
+            return
+        pad = edge_ticks.PAD_SAFETY * self.DEVICE_REACH_PX / scale
+        if pad == self._pad:
+            return
+        self._pad = pad
+        self._apply_geometry()
+
+    def set_color(self, color: QColor) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def color(self) -> QColor:
+        return QColor(self._color)
+
+    def marker_points(self) -> list[tuple[QPointF, str, int]]:
+        return [(QPointF(point), severity, count) for point, severity, _label, count in self._markers]
+
+    @classmethod
+    def _label(cls, severity: str, count: int) -> str:
+        glyph = cls.GLYPHS.get(severity, "?")
+        return f"{glyph} x{count}" if count > 1 else glyph
+
+    def _apply_geometry(self) -> None:
+        self.prepareGeometryChange()
+        if not self._markers:
+            self._bounding_rect = QRectF()
+        else:
+            xs = [p.x() for p, *_rest in self._markers]
+            ys = [p.y() for p, *_rest in self._markers]
+            pad = self._pad
+            self._bounding_rect = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)).adjusted(
+                -pad, -pad, pad, pad
+            )
+        self.update()
+
+    def boundingRect(self) -> QRectF:
+        return self._bounding_rect
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        self.markers_drawn = 0
+        if not self._markers:
+            return
+        world = painter.worldTransform()
+        exposed = getattr(option, "exposedRect", None)
+        exposed_device = None
+        if exposed is not None and not exposed.isEmpty():
+            margin = self.DEVICE_REACH_PX
+            exposed_device = world.mapRect(QRectF(exposed)).adjusted(-margin, -margin, margin, margin)
+        painter.save()
+        try:
+            painter.resetTransform()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setFont(self._font)
+            metrics = painter.fontMetrics()
+            text_pen = QPen(self._color)
+            ring_pen = QPen(self._color, self.FOCUS_RING_PX)
+            focused_box = None
+            for point, _severity, label, _count in self._markers:
+                device = world.map(point)
+                if exposed_device is not None and not exposed_device.contains(device):
+                    continue
+                w = metrics.horizontalAdvance(label) + 2 * self.PAD_PX
+                h = metrics.height() + self.PAD_PX
+                box = QRectF(device.x() - w / 2.0, device.y() - self.GAP_PX - h, w, h)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(self._background)
+                painter.drawRoundedRect(box, 3.0, 3.0)
+                painter.setPen(text_pen)
+                painter.drawText(box, Qt.AlignCenter, label)
+                if self._focus is not None and point == self._focus:
+                    focused_box = box
+                self.markers_drawn += 1
+            # Last, so a neighbour drawn later can't cover the ring.
+            if focused_box is not None:
+                painter.setPen(ring_pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(focused_box.adjusted(-1.0, -1.0, 1.0, 1.0), 4.0, 4.0)
+        finally:
+            painter.restore()
+
+
 class UnitGhostItem(QGraphicsItem):
     """The translucent copy of a unit that follows the cursor while it is
     being dragged (the mid-drag move preview).
@@ -1045,9 +1031,8 @@ class UnitGhostItem(QGraphicsItem):
         # the array would leave the item painting freed memory.
         self._arrays: list[np.ndarray] = []
         self._images: list[tuple[QImage, float, float]] = []
-        self._polygons: list[QPolygonF] = []
-        self._brush = QBrush(Qt.NoBrush)
-        self._pen = QPen(Qt.NoPen)
+        # (polygon, brush, pen) per mark polygon: a group ghost (GH #75) mixes owners.
+        self._marks: list[tuple[QPolygonF, QBrush, QPen]] = []
         self._bounding_rect = QRectF()
         self.setOpacity(self.GHOST_OPACITY)
 
@@ -1059,11 +1044,30 @@ class UnitGhostItem(QGraphicsItem):
         Returns whether anything is left to show, so the caller can fall back
         to the coloured mark on an empty resolve rather than leaving a stale
         ghost on screen."""
+        return self.set_content(draws, ())
+
+    def set_mark(self, polygons, color: tuple[int, int, int]) -> bool:
+        """polygons: unit_pick.unit_polygons()' plain (x, y) point lists, in
+        the same canvas/scene pixels as set_sprites(). The coloured-mark
+        fallback, for Flat (which has no sprite compositor at all) and for any
+        unit whose sprite does not resolve."""
+        return self.set_content((), [(polygons, color)])
+
+    def set_content(self, draws, marks) -> bool:
+        """Sprite draws and coloured marks together, for a group ghost whose
+        members resolve differently. `marks` is a list of (polygons, color)."""
         self.prepareGeometryChange()
-        self._polygons = []
         self._arrays = []
         self._images = []
+        self._marks = []
         rect = QRectF()
+        for polygons, color in marks:
+            qcolor = QColor(*color)
+            brush, pen = QBrush(qcolor), QPen(qcolor)
+            for points in polygons:
+                polygon = QPolygonF([QPointF(px, py) for px, py in points])
+                self._marks.append((polygon, brush, pen))
+                rect = rect.united(polygon.boundingRect())
         for draw, ax, ay in draws:
             rgba = np.ascontiguousarray(draw.rgba)
             h, w = rgba.shape[:2]
@@ -1079,35 +1083,136 @@ class UnitGhostItem(QGraphicsItem):
             rect = rect.united(QRectF(x0, y0, w, h))
         self._bounding_rect = rect
         self.update()
-        return bool(self._images)
-
-    def set_mark(self, polygons, color: tuple[int, int, int]) -> bool:
-        """polygons: unit_pick.unit_polygons()' plain (x, y) point lists, in
-        the same canvas/scene pixels as set_sprites(). The coloured-mark
-        fallback, for Flat (which has no sprite compositor at all) and for any
-        unit whose sprite does not resolve."""
-        self.prepareGeometryChange()
-        self._arrays = []
-        self._images = []
-        self._polygons = [QPolygonF([QPointF(px, py) for px, py in points]) for points in polygons]
-        qcolor = QColor(*color)
-        self._brush = QBrush(qcolor)
-        self._pen = QPen(qcolor)
-        rect = QRectF()
-        for polygon in self._polygons:
-            rect = rect.united(polygon.boundingRect())
-        self._bounding_rect = rect
-        self.update()
-        return bool(self._polygons)
+        return bool(self._images or self._marks)
 
     def boundingRect(self) -> QRectF:
         return self._bounding_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        if self._polygons:
-            painter.setPen(self._pen)
-            painter.setBrush(self._brush)
-            for polygon in self._polygons:
-                painter.drawPolygon(polygon)
+        for polygon, brush, pen in self._marks:
+            painter.setPen(pen)
+            painter.setBrush(brush)
+            painter.drawPolygon(polygon)
         for image, x, y in self._images:
             painter.drawImage(QPointF(x, y), image)
+
+
+class CameraMarkerItem(QGraphicsItem):
+    """One player's starting camera (Map.initial_player_views), View >
+    Player Cameras: a camera glyph standing on the tile that player's view
+    is set to, filled in the player's own colour and carrying its number.
+
+    Device-space like StackBadgeItem, but through
+    ItemIgnoresTransformations rather than a resetTransform() in paint():
+    this is one item per player rather than one for the whole layer, so the
+    flag's own position-anchored device frame is exactly what is wanted --
+    the glyph keeps its size and stays upright through zoom, the Flat squash
+    and the isometric rotation, with the ruler label as the precedent.
+
+    The anchor (a scene point handed in by MapView, from its own
+    _ruler_anchor) is the glyph's BOTTOM CENTRE, so the marker stands on the
+    tile at that tile's own elevation rather than hanging over it.
+    """
+
+    GLYPH_W_PX = 20.0
+    # An emphasised marker (the player selected in Players mode) is drawn
+    # larger as well as outlined lighter: size survives a busy map where a
+    # one-pixel outline colour change does not.
+    EMPHASIS_SCALE = 1.3
+    NUMBER_FONT_PX = 9
+    INK = QColor(20, 20, 20)
+    EMPHASIS_INK = QColor(255, 255, 255)
+    INK_WIDTH = 1.0
+    EMPHASIS_INK_WIDTH = 2.0
+
+    def __init__(self, player_id: int, color: QColor, tile: tuple[int, int]) -> None:
+        super().__init__()
+        self.player_id = int(player_id)
+        self._color = QColor(color)
+        self._tile = (int(tile[0]), int(tile[1]))
+        self._emphasised = False
+        self._font = map_overlay_font(self.NUMBER_FONT_PX)
+        self._font.setBold(True)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        # The marker is chrome, not a target: without this it would swallow
+        # a Units-mode click on whatever sits under it.
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setToolTip(f"P{self.player_id} camera view ({self._tile[0]}, {self._tile[1]})")
+        self._rebuild()
+
+    # -- state ---------------------------------------------------------
+
+    def set_emphasised(self, emphasised: bool) -> None:
+        if emphasised == self._emphasised:
+            return
+        self._emphasised = emphasised
+        self._rebuild()
+
+    def is_emphasised(self) -> bool:
+        return self._emphasised
+
+    def tile(self) -> tuple[int, int]:
+        return self._tile
+
+    def set_color(self, color: QColor) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def _rebuild(self) -> None:
+        """The glyph, in device pixels around a bottom-centre origin: a
+        camera body with a viewfinder bump and a lens, plus a pin down to
+        the anchor point. Rebuilt rather than scaled in paint() so the
+        bounding rect follows the emphasis size."""
+        self.prepareGeometryChange()
+        w = self.GLYPH_W_PX * (self.EMPHASIS_SCALE if self._emphasised else 1.0)
+        body_h, pin_h, bump_h = 0.58 * w, 0.34 * w, 0.17 * w
+        body_top = -(body_h + pin_h)
+        body = QRectF(-w / 2.0, body_top, w, body_h)
+        path = QPainterPath()
+        path.addRoundedRect(body, 0.12 * w, 0.12 * w)
+        path.addRect(QRectF(body.left() + 0.16 * w, body_top - bump_h, 0.28 * w, bump_h + 1.0))
+        pin = QPolygonF([
+            QPointF(-0.17 * w, body.bottom()),
+            QPointF(0.17 * w, body.bottom()),
+            QPointF(0.0, 0.0),
+        ])
+        path.addPolygon(pin)
+        path.closeSubpath()
+        self._path = path.simplified()
+        self._lens = QRectF(0.0, 0.0, 0.34 * w, 0.34 * w)
+        self._lens.moveCenter(QPointF(body.center().x() - 0.22 * w, body.center().y()))
+        self._number_rect = QRectF(body.center().x() + 0.02 * w, body_top, 0.44 * w, body_h)
+        pad = self.EMPHASIS_INK_WIDTH + 1.0
+        self._bounding_rect = QRectF(
+            body.left(), body_top - bump_h, w, body_h + bump_h + pin_h
+        ).adjusted(-pad, -pad, pad, pad)
+        self.update()
+
+    # -- painting ------------------------------------------------------
+
+    def boundingRect(self) -> QRectF:
+        return self._bounding_rect
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        ink = self.EMPHASIS_INK if self._emphasised else self.INK
+        width = self.EMPHASIS_INK_WIDTH if self._emphasised else self.INK_WIDTH
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(ink, width))
+        painter.setBrush(QBrush(self._color))
+        painter.drawPath(self._path)
+        # The lens reads as a lens only against the body, so it takes the
+        # body's outline ink at a fixed hairline width rather than the
+        # emphasis one, which at 2 px would fill it in.
+        painter.setPen(QPen(ink, self.INK_WIDTH))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(self._lens)
+        painter.setPen(QPen(_contrast_ink(self._color)))
+        painter.setFont(self._font)
+        painter.drawText(self._number_rect, Qt.AlignCenter, str(self.player_id))
+
+
+def _contrast_ink(color: QColor) -> QColor:
+    """Black or white, whichever reads on `color` -- the player number sits
+    on the player's own fill, which ranges from near-black to yellow."""
+    luma = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+    return QColor(0, 0, 0) if luma > 140 else QColor(255, 255, 255)

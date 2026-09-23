@@ -229,7 +229,7 @@ def test_sloped_keeps_the_selected_tool_rather_than_forcing_pan() -> None:
         assert window.draw_action.isChecked(), "Draw must survive the switch into Sloped"
         assert window.draw_action.isEnabled()
         assert not window.pan_action.isChecked()
-        assert window.terrain_combo.isEnabled(), "Draw's terrain param must come back with it"
+        assert window.paint_trees_param_action.isVisible(), "Draw's terrain params must come back with it"
     finally:
         window.edit_history.mark_saved()
         window.close()

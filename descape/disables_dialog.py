@@ -46,8 +46,8 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import constant_picker, disables_fields, object_catalog
-from descape.players_panel import _swatch_icon
 from descape.value_picker import PickerItem, ValuePickerView
+from descape.viewer_common import _swatch_icon
 
 # Tab order, and the in-game editor's own: Buildings, Units, Techs. Not
 # disables_fields.CATEGORIES, which is the order the *bytes* are in.

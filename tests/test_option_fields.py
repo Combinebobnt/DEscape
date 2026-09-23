@@ -191,3 +191,17 @@ def test_every_spec_declares_sentinel_and_sentinel_display_together() -> None:
             assert spec.minimum <= spec.sentinel_display <= spec.maximum, (
                 f"{spec.field_id}'s sentinel_display is outside its own bounds"
             )
+
+
+def test_every_spec_carries_a_tooltip() -> None:
+    """GH #55: every Map Options and Diplomacy row explains itself on hover."""
+    for spec in option_fields._SPECS:
+        assert spec.tooltip.strip(), f"{spec.field_id} has no tooltip"
+
+
+def test_block_humanity_team_change_tooltip_names_lock_coop_alliances() -> None:
+    """GH #43: the label matches the in-game editor, so the tooltip carries the
+    name users search for instead."""
+    spec = next(s for s in option_fields._SPECS if s.field_id == "lock_coop_alliances")
+    assert spec.label == "Block humanity team change"
+    assert "co-op alliances" in spec.tooltip.lower()

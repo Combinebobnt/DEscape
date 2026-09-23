@@ -61,12 +61,7 @@ def _isolate_config(tmp_dir: Path) -> None:
     config: unlike every sibling tool here, this one is about sprite art, and
     isolating the config without that would silently capture the coloured
     mark everywhere and look like a bug in the ghost."""
-    import descape.asset_source as asset_source_module
-
-    install = asset_source_module.get_install_path()
-    if install is not None:
-        os.environ["AOE2DE_INSTALL_PATH"] = str(install)
-    else:
+    if settings_isolation.pin_install_path() is None:
         print("no AoE2:DE install visible -- every capture will show the coloured mark")
 
     settings_isolation.isolate_settings(tmp_dir)

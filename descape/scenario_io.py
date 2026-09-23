@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,12 +112,84 @@ BLANK_TEMPLATE_SIZES = (120,)
 def blank_template_path(tiles: int) -> Path:
     return TEMPLATE_DIR / f"blank_{tiles}x{tiles}.aoe2scenario"
 
-# TerrainStruct's on-disk layout (versions/DE/*/structure.json, identical across
-# every DE structure version seen so far -- 1.41, 1.54, 1.55): u8 terrain_id,
-# u8 elevation, 3 bytes unused (opaque, carried through untouched), s16 (little-
-# endian) layer. Confirmed against every tile of every example file in this repo.
+
+# Structure definitions this repo authors for scenario versions the library
+# ships none for (today only v1.21). The library's own definition always wins.
+REPO_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "DE"
+
+
+def _repo_structure_path(scenario_version: str) -> Path | None:
+    """This repo's structure.json for `scenario_version`, or None if the
+    library ships one itself (it wins) or neither does."""
+    name = Path(f"v{scenario_version}") / "structure.json"
+    if (library_compat.VERSIONS_DIR / name).is_file():
+        return None
+    path = REPO_VERSIONS_DIR / name
+    return path if path.is_file() else None
+
+
+def structure_is_available(scenario_version: str) -> bool:
+    """True if load_map_and_units() has a structure for `scenario_version`:
+    the library's own, or else one from REPO_VERSIONS_DIR. Says nothing about
+    triggers; library_compat.vocabulary_is_available() is that probe."""
+    name = Path(f"v{scenario_version}") / "structure.json"
+    return (library_compat.VERSIONS_DIR / name).is_file() or (REPO_VERSIONS_DIR / name).is_file()
+
+
+def _version_key(scenario_version: str) -> tuple[int, ...] | None:
+    """`"1.21"` -> `(1, 21)`, for ordering. None if it isn't dotted numbers
+    (viewer.py's File > New sentinel, or anything else unexpected)."""
+    try:
+        return tuple(int(part) for part in scenario_version.split("."))
+    except ValueError:
+        return None
+
+
+def unsupported_version_sentence(scenario_version: str) -> str:
+    """One sentence naming why AoE2ScenarioParser has no definitions for
+    `scenario_version`. Shared by the load-failure modal and the trigger
+    panel's repo-structure text so the two never disagree about the cause.
+
+    The "older than" phrasing is measured against what the installed library
+    actually ships, not assumed: everything unsupported today is older, but a
+    scenario version newer than the pinned library would land here too."""
+    key = _version_key(scenario_version)
+    shipped = [k for k in (_version_key(p.name[1:]) for p in library_compat.VERSIONS_DIR.glob("v*")) if k]
+    if key and shipped and key < min(shipped):
+        return f"Scenario version {scenario_version} is older than any version AoE2ScenarioParser supports."
+    return f"Scenario version {scenario_version} is not a version AoE2ScenarioParser supports."
+
+
+def unsupported_structure_message(scenario_version: str) -> str:
+    """The "Failed to load" modal's body, in place of the library's raw
+    `UnknownScenarioStructureError: ... :(` text."""
+    repo = sorted(p.name[1:] for p in REPO_VERSIONS_DIR.glob("v*") if (p / "structure.json").is_file())
+    supplied = f" DEscape supplies its own definition for version {', '.join(repo)}, but not for this one." if repo else ""
+    return (
+        "DEscape can't open this file.\n\n"
+        f"{unsupported_version_sentence(scenario_version)}{supplied} None of the file "
+        "can be read, so there is nothing to show."
+    )
+
+
+class UnsupportedStructureVersion(Exception):
+    """A scenario version neither the library nor this repo ships a structure
+    definition for (the DE:1.32/1.35 engine test content), raised before any
+    section is parsed. `str()` is the user-facing explanation, so a caller with
+    no UI of its own can report it as-is."""
+
+    def __init__(self, scenario_version: str) -> None:
+        self.scenario_version = scenario_version
+        super().__init__(unsupported_structure_message(scenario_version))
+
+
+# The blank template's TerrainStruct stride, for descape/scenario_new.py's
+# splice only: u8 terrain_id, u8 elevation, 3 bytes unused, s16 layer. Not
+# universal -- v1.21's TerrainStruct is 3 bytes with no layer, so a loaded
+# file's stride is LoadedScenario.terrain_struct_size, read off its own parse.
 TERRAIN_STRUCT_SIZE = 7
-_LAYER_STRUCT = struct.Struct("<h")  # offset 5 within one TerrainStruct
+_LAYER_STRUCT = struct.Struct("<h")  # offset 5 within a 7-byte TerrainStruct
+_LAYER_OFFSET = 5
 
 
 # eq=False (Batch D's D1b): identity equality/hash, so this can key a
@@ -128,6 +201,9 @@ class LoadedScenario:
     # destination and never reads this. descape/viewer.py may replace it with a
     # display-only sentinel that does not exist on disk (a File > New document).
     scenario_version: str
+    structure_source: str  # "library", or "repo" for a version only
+    # REPO_VERSIONS_DIR defines (v1.21). A repo-structure file has no trigger
+    # vocabulary, so parse_triggers() never attempts it.
     map_manager: MapManager
     unit_manager: UnitManager
     trigger_tail: bytes  # Triggers section onward, byte-exact, never parsed
@@ -140,12 +216,18 @@ class LoadedScenario:
     # verbatim by scenario_write.py when nothing changed -- recompressing the
     # same decompressed bytes does not reliably reproduce them byte-for-byte.
     terrain_block_offset: int  # byte offset of the terrain struct array, within
-    # decompressed_body, at load time. Patching TERRAIN_STRUCT_SIZE * i bytes
+    # decompressed_body, at load time. Patching terrain_struct_size * i bytes
     # starting here for each tile index i is the entire write path -- see
     # scenario_write.py. -1 if terrain_write_supported is False (see below).
     terrain_write_supported: bool  # False disables Terrain mode's terrain/elevation
     # tools for this file without refusing to open it read-only -- see the
     # verification in load_map_and_units() for what can make this False.
+    terrain_struct_size: int  # bytes per TerrainStruct in this file, read off the
+    # parsed terrain_data (7 on DE, 3 on v1.21). 0 if the division did not
+    # come out exact, which also makes terrain_write_supported False.
+    terrain_has_layer: bool  # whether this file's TerrainStruct carries `layer`.
+    # False means tile.layer is TerrainTile's -1 default, never from the file,
+    # so neither the verify nor the write path may touch a layer field.
 
     # -- units byte-offset state, used by tools/strip_units.py (which never
     # touches unit_manager) and by descape/unit_model.py's UnitEditModel
@@ -157,8 +239,12 @@ class LoadedScenario:
     # that many UnitStructs) within decompressed_body. -1 if units_write_supported
     # is False.
     units_section_end: int  # byte offset where the Units section ends, i.e.
-    # where trigger_tail begins -- players_units is the section's last field
-    # (see versions/DE/*/structure.json), same reasoning as terrain_data above.
+    # where trigger_tail begins. Not where players_units ends: v1.21 declares
+    # number_of_players and player_data_3 after it (see players_units_end).
+    players_units_end: int  # byte offset one past the players_units array.
+    # Equal to units_section_end on every DE version; the bytes between the two
+    # are carried through verbatim on a units splice. -1 if
+    # units_write_supported is False.
     number_of_unit_sections: int  # length of players_units (9: GAIA + 8 players)
     units_write_supported: bool  # False if the raw per-section unit_count u32s
     # don't match the parsed counts -- see _verify_units_block().
@@ -167,9 +253,14 @@ class LoadedScenario:
     # save exactly as before.
     options_section_end: int  # byte offset where the Options section ends, within
     # decompressed_body. Options.number_of_triggers is that section's last
-    # retriever in all 19 DE structure versions, so the counter phase 4b has to
-    # patch is the 4 bytes ending here. Recorded now because the walk that knows
-    # it happens at load time and nowhere else.
+    # retriever in all 19 DE structure versions (v1.21 has none -- see
+    # has_trigger_counters), so the counter phase 4b patches is the 4 bytes
+    # ending here. Recorded now because the walk that knows it happens at load
+    # time and nowhere else.
+    has_trigger_counters: bool  # whether this file has Options.number_of_triggers
+    # and FileHeader.trigger_count at all, read off the parsed sections. False
+    # on v1.21, where those 4-byte tails are ordinary content (per-player
+    # starting age, unknown_numbers) that no trigger-count patch may touch.
     trigger_version: float  # the Triggers section's own f64 version, distinct
     # from scenario_version. -1.0 if trigger_tail is too short to hold one.
     triggers_section_end: int  # byte offset where the Triggers section ends,
@@ -177,7 +268,8 @@ class LoadedScenario:
     # it means parsing Triggers.
     trigger_read_supported: bool | None  # None = not attempted yet (the parse is
     # lazy). False means the Triggers section refused to parse, which for the
-    # 1.54/trigger-3.9 set is expected and is not a reason to fail the open.
+    # 1.54/trigger-3.9 set is expected and is not a reason to fail the open,
+    # or that it was never attempted (structure_source "repo").
     trigger_write_supported: bool  # False until a full section walk has proven
     # exact byte alignment -- see _trigger_alignment_ok(). Phase 4b's write gate;
     # nothing writes triggers yet.
@@ -276,33 +368,54 @@ def retriever_length(retriever: Any) -> int:
     return len(retriever.get_data_as_bytes())
 
 
-def _verify_terrain_block(decompressed: bytes, offset: int, terrain: list) -> bool:
-    """True iff the TERRAIN_STRUCT_SIZE-byte struct at `offset` for every tile
-    matches that tile's already-parsed terrain_id/elevation/layer -- the
-    load-time trust check for the offset math in terrain_block_offset. Catches
-    a future scenario structure version changing TerrainStruct's layout
-    immediately, instead of silently patching the wrong bytes on save."""
+def _verify_terrain_block(
+    decompressed: bytes, offset: int, terrain: list, stride: int, has_layer: bool
+) -> bool:
+    """True iff the `stride`-byte struct at `offset` for every tile matches
+    that tile's already-parsed terrain_id/elevation (and layer, only if
+    `has_layer`) -- the load-time trust check for terrain_block_offset.
+    Catches a structure version changing TerrainStruct's layout immediately,
+    instead of silently patching the wrong bytes on save."""
+    if stride < 2 or (has_layer and stride < _LAYER_OFFSET + _LAYER_STRUCT.size):
+        return False
     n = len(terrain)
-    end = offset + TERRAIN_STRUCT_SIZE * n
+    end = offset + stride * n
     if offset < 0 or end > len(decompressed):
         return False
     for i, tile in enumerate(terrain):
-        o = offset + TERRAIN_STRUCT_SIZE * i
-        terrain_id = decompressed[o]
-        elevation = decompressed[o + 1]
-        (layer,) = _LAYER_STRUCT.unpack_from(decompressed, o + 5)
-        if terrain_id != tile.terrain_id or elevation != tile.elevation or layer != tile.layer:
+        o = offset + stride * i
+        if decompressed[o] != tile.terrain_id or decompressed[o + 1] != tile.elevation:
+            return False
+        if has_layer and _LAYER_STRUCT.unpack_from(decompressed, o + _LAYER_OFFSET)[0] != tile.layer:
             return False
     return True
 
 
-def _verify_units_block(decompressed: bytes, offset: int, players_units: list) -> bool:
+def _terrain_layout(map_section: Any, map_section_end: int, w: int, h: int) -> tuple[int, int, bool]:
+    """(terrain_block_offset, terrain_struct_size, terrain_has_layer), all read
+    off the parsed Map section, never a version table. terrain_data is Map's
+    last retriever in every structure (v1.21 included), so the block ends at
+    map_section_end. Stride is 0 if the parsed length is not an exact
+    multiple of w*h: that means the parse is not what it claims."""
+    terrain = map_section.retriever_map["terrain_data"]
+    length = retriever_length(terrain)
+    stride, remainder = divmod(length, w * h) if w * h > 0 else (0, 1)
+    tiles = terrain.data or []
+    has_layer = bool(tiles) and "layer" in tiles[0].retriever_map
+    return map_section_end - length, (stride if remainder == 0 else 0), has_layer
+
+
+def _verify_units_block(
+    decompressed: bytes, offset: int, players_units: list, trailer_length: int, units_section_end: int
+) -> bool:
     """True iff the u32 unit_count at the start of each PlayerUnitsStruct in
     `players_units` (as walked from `offset`) matches that struct's already-parsed
-    unit_count, and the structs' byte_lengths sum to exactly the span consumed --
-    the load-time trust check for units_block_offset, mirroring
-    _verify_terrain_block() above."""
-    if offset < 0 or offset > len(decompressed):
+    unit_count, and the forward walk of the whole Units section (the array,
+    then the `trailer_length` bytes of retrievers declared after it) lands
+    exactly on the independently captured `units_section_end` -- the
+    load-time trust check for units_block_offset, mirroring
+    _verify_terrain_block() and _verify_messages_block() above."""
+    if offset < 0 or offset > len(decompressed) or units_section_end > len(decompressed):
         return False
     o = offset
     for section in players_units:
@@ -312,7 +425,28 @@ def _verify_units_block(decompressed: bytes, offset: int, players_units: list) -
         if raw_count != section.retriever_map["unit_count"].data:
             return False
         o += section.byte_length
-    return o <= len(decompressed)
+    return o + trailer_length == units_section_end
+
+
+def _units_layout(units_section: Any, units_section_start: int) -> tuple[int, int, int]:
+    """(units_block_offset, players_units_end, trailer_length): a forward walk
+    of the Units retrievers in declaration order from the section's start.
+    Not a backward walk from units_section_end, because players_units is not
+    Units' last retriever everywhere (v1.21 puts number_of_players and
+    player_data_3 after it). trailer_length is the byte total of the
+    retrievers after players_units, 0 on every DE version."""
+    pos = units_section_start
+    block_offset = players_units_end = -1
+    trailer = 0
+    for name, retriever in units_section.retriever_map.items():
+        length = retriever_length(retriever)
+        if name == "players_units":
+            block_offset = pos
+            players_units_end = pos + length
+        elif block_offset >= 0:
+            trailer += length
+        pos += length
+    return block_offset, players_units_end, trailer
 
 
 # Messages' 12 retrievers, in true on-disk order (structure.json's own
@@ -379,13 +513,16 @@ def _verify_messages_block(decompressed: bytes, start: int, end: int, retriever_
 def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, tuple[int, int]]:
     """(start, end) within header_bytes of every FileHeader retriever, from
     one forward walk in true on-disk order -- the shared derivation behind
-    both header_instructions_span and header_player_count_span. Empty if
-    the walk doesn't reconcile to exactly len(header_bytes) (e.g. an older
-    structure version with an extra field this walk doesn't know about --
-    every header-editing feature degrades gracefully rather than trusting a
-    wrong offset). Measured: the walk fails this way on one real corpus
-    file (a scenario version 1.37 one), so the reconcile check is
-    load-bearing rather than a rubber stamp.
+    both header_instructions_span and header_player_count_span. Walks only
+    the _HEADER_WALK_ORDER names this file's structure actually has (v1.21
+    has no creator_name or trigger_count). Empty, never raising, if the walk
+    overruns or doesn't reconcile to exactly len(header_bytes) (e.g. a
+    structure with a field this walk doesn't know about -- every
+    header-editing feature degrades gracefully rather than trusting a wrong
+    offset). Measured: the walk fails this way on one real corpus file (a
+    scenario version 1.37 one) and on every v1.21 file, both because of
+    individual_victories_used, so the reconcile check is load-bearing rather
+    than a rubber stamp.
 
     A str32 field's span excludes its own 4-byte length prefix (the payload
     is what a caller splices); every other field's span is the whole field.
@@ -404,7 +541,11 @@ def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, t
     pos = 0
     spans: dict[str, tuple[int, int]] = {}
     for name in _HEADER_WALK_ORDER:
+        if name not in retriever_map:
+            continue
         if name in _HEADER_STR32_FIELDS:
+            if pos + _STR32_PREFIX_SIZE > len(header_bytes):
+                return {}
             (payload_len,) = _STR32_LENGTH_PREFIX_STRUCT.unpack_from(header_bytes, pos)
             length = _STR32_PREFIX_SIZE + payload_len
             spans[name] = (pos + _STR32_PREFIX_SIZE, pos + length)
@@ -412,6 +553,8 @@ def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, t
             length = retriever_length(retriever_map[name])
             spans[name] = (pos, pos + length)
         pos += length
+        if pos > len(header_bytes):
+            return {}
     if pos != len(header_bytes):
         return {}
     return spans
@@ -461,8 +604,19 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     scenario = AoE2DEScenario(
         "DE", scenario_version, source_location=str(path), name="", variant=scenario_variant
     )
-    scenario._load_structure()
-    _initialise_version_dependencies(scenario.game_version, scenario.scenario_version)
+    if not structure_is_available(scenario_version):
+        # Checked here rather than letting _load_structure() raise, so the
+        # cause is named instead of surfacing the library's raw message.
+        raise UnsupportedStructureVersion(scenario_version)
+    repo_structure = _repo_structure_path(scenario_version)
+    if repo_structure is None:
+        scenario._load_structure()
+        _initialise_version_dependencies(scenario.game_version, scenario.scenario_version)
+    else:
+        # Parsed fresh per load: the library mutates the structure dict it is
+        # given. No vocabulary init, since the library ships none for this
+        # version; parse_triggers() refuses these files instead.
+        scenario.structure = json.loads(repo_structure.read_text(encoding="utf-8"))
     scenario._load_header_section(igen)
     # igen wraps the whole raw byte stream up front; progress is exactly the
     # header's length at this point, so this slice is the header's own verbatim
@@ -519,6 +673,8 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
 
     trigger_tail = data_igen.get_remaining_bytes()
 
+    # After the depoison() above, so the next load's depoison() undoes it.
+    library_compat.adapt_map_links(scenario.sections["Map"])
     map_manager = MapManager.construct(scenario.uuid)
     unit_manager = UnitManager.construct(scenario.uuid)
 
@@ -530,26 +686,27 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     scenario._object_manager.managers["Map"] = map_manager
     scenario._object_manager.managers["Unit"] = unit_manager
 
-    # The terrain struct array is the Map section's last field (terrain_data,
-    # after every other Map retriever -- see versions/DE/*/structure.json), so
-    # it ends exactly where the Map section itself ends.
     w, h = map_manager.map_width, map_manager.map_height
-    terrain_block_offset = map_section_end - TERRAIN_STRUCT_SIZE * w * h
+    terrain_block_offset, terrain_struct_size, terrain_has_layer = _terrain_layout(
+        scenario.sections["Map"], map_section_end, w, h
+    )
     terrain_write_supported = _verify_terrain_block(
-        decompressed, terrain_block_offset, map_manager.terrain
+        decompressed, terrain_block_offset, map_manager.terrain, terrain_struct_size, terrain_has_layer
     )
     if not terrain_write_supported:
         terrain_block_offset = -1
 
-    # players_units is the Units section's last field (see
-    # versions/DE/*/structure.json), same reasoning as terrain_data above -- it
-    # ends exactly where the Units section itself ends.
-    players_units = scenario.sections["Units"].retriever_map["players_units"].data
+    # Units starts where Map ends (they are adjacent in every structure).
+    units_section = scenario.sections["Units"]
+    players_units = units_section.retriever_map["players_units"].data
     number_of_unit_sections = len(players_units)
-    units_block_offset = units_section_end - sum(s.byte_length for s in players_units)
-    units_write_supported = _verify_units_block(decompressed, units_block_offset, players_units)
+    units_block_offset, players_units_end, units_trailer = _units_layout(units_section, map_section_end)
+    units_write_supported = _verify_units_block(
+        decompressed, units_block_offset, players_units, units_trailer, units_section_end
+    )
     if not units_write_supported:
         units_block_offset = -1
+        players_units_end = -1
 
     player_colors, team_indices = resolve_player_colors(_read_player_colors(scenario))
 
@@ -564,6 +721,7 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     return LoadedScenario(
         path=path,
         scenario_version=scenario_version,
+        structure_source="library" if repo_structure is None else "repo",
         map_manager=map_manager,
         unit_manager=unit_manager,
         trigger_tail=trigger_tail,
@@ -572,11 +730,18 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         original_compressed_body=original_compressed_body,
         terrain_block_offset=terrain_block_offset,
         terrain_write_supported=terrain_write_supported,
+        terrain_struct_size=terrain_struct_size,
+        terrain_has_layer=terrain_has_layer,
         units_block_offset=units_block_offset,
         units_section_end=units_section_end,
+        players_units_end=players_units_end,
         number_of_unit_sections=number_of_unit_sections,
         units_write_supported=units_write_supported,
         options_section_end=options_section_end,
+        has_trigger_counters=(
+            "number_of_triggers" in scenario.sections["Options"].retriever_map
+            and "trigger_count" in header_retriever_map
+        ),
         global_victory_section_end=global_victory_section_end,
         diplomacy_section_end=diplomacy_section_end,
         player_data_two_section_end=player_data_two_section_end,
@@ -587,7 +752,8 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         messages_write_supported=messages_write_supported,
         trigger_version=_read_trigger_version(trigger_tail),
         triggers_section_end=-1,
-        trigger_read_supported=None,
+        # Known up front for a repo structure: parse_triggers() never tries one.
+        trigger_read_supported=None if repo_structure is None else False,
         trigger_write_supported=False,
         _trigger_manager=None,
         map_is_square=(w == h),
@@ -716,6 +882,11 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     NoneType with non-zero repeat to bytes"). Those files open and edit
     normally for terrain and units; only trigger reading is unavailable.
 
+    Also returns None, without attempting a parse, for a file loaded from a
+    repo structure (structure_source "repo", i.e. v1.21): the library ships
+    no condition/effect definitions for it and _load_map_and_units() never
+    initialised any, so a parse would read another version's vocabulary.
+
     **Call this again before reading a manager you obtained earlier.** The
     library's field gating is class-level and therefore global to the process:
     parsing scenario B disables B's unsupported fields on the same Condition/
@@ -732,6 +903,9 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     """
     global _active_trigger_uuid
 
+    if loaded.structure_source == "repo":
+        loaded.trigger_read_supported = False
+        return None
     scenario = loaded._scenario
     if loaded._trigger_manager is not None:
         if _active_trigger_uuid != scenario.uuid:

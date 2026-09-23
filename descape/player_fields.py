@@ -240,6 +240,20 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
 )
 
 
+# The Point of View pair, named once rather than spelled out at each of the
+# three places that key off it (the panel's buttons, the camera markers, and
+# specs_for()'s 1.41 drop below).
+POV_X_FIELD = "initial_view_x"
+POV_Y_FIELD = "initial_view_y"
+_POV_FIELD_IDS = frozenset({POV_X_FIELD, POV_Y_FIELD})
+# What an unset view stores: every unset slot across the corpus is -1, on
+# both axes (blank_map and ring75 are -1 throughout).
+POV_UNSET = -1
+# See specs_for()'s docstring: the one scenario version whose Point of View
+# array the library frames one byte early.
+_MISALIGNED_POV_VERSION = "1.41"
+
+
 def _retriever_present(
     loaded: LoadedScenario, section_name: str, retriever_name: str, struct_field: str | None = None
 ) -> bool:
@@ -275,13 +289,28 @@ def specs_for(loaded: LoadedScenario) -> tuple[PlayerFieldSpec, ...]:
     scenario_version, matching option_fields.specs_for()'s reasoning: a
     structure-version gate and an empty repeat-driven array both look like
     "0 bytes" and both mean "not on this file".
+
+    The one version check, and why it is not a violation of that rule: on a
+    scenario version 1.41 file the library's structure declares
+    `block_humanity_team_change` BEFORE `collide_and_correct`, where every
+    measured 1.41 file puts it AFTER the 16 initial_player_views. The array
+    is present, so the presence check passes -- it is just framed one byte
+    early, so the Point of View rows show garbage and a typed value would
+    patch at the wrong offset. Dropping the specs takes the group, GH #22's
+    buttons and its camera markers off those files together. Delete this
+    once the structure override lands (the 1.41 misalignment is its own
+    `[NEEDS PLAN]` roadmap entry).
     """
+    drop = _POV_FIELD_IDS if loaded.scenario_version == _MISALIGNED_POV_VERSION else frozenset()
     out = []
     out.extend(
         spec
         for spec in _SPECS
-        if _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field)
-        or (spec.fallback is not None and _retriever_present(loaded, *spec.fallback))
+        if spec.field_id not in drop
+        and (
+            _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field)
+            or (spec.fallback is not None and _retriever_present(loaded, *spec.fallback))
+        )
     )
     return tuple(out)
 
@@ -686,7 +715,8 @@ def _map_bases(loaded: LoadedScenario) -> dict[str, FieldOffset] | None:
 
 
 # units_block_offset is the *start* of players_units, the section's own
-# last retriever (see scenario_io.LoadedScenario's docstring) -- not "one
+# last retriever on every DE version (v1.21 declares two after it, so this
+# walk misplaces player_data_4 there and verify_player_block() fails closed) -- not "one
 # past the section's end" the way player_data_two_section_end/
 # options_section_end are. players_units must be excluded from the reversed
 # walk entirely, the same reason Map excludes terrain_data above: the

@@ -12,8 +12,13 @@ directly by a lot of tests."""
 
 from __future__ import annotations
 
+import math
+
+from PyQt5.QtGui import QColor, QFontMetricsF, QIcon, QPixmap, QValidator
 from PyQt5.QtWidgets import (
+    QApplication,
     QComboBox,
+    QDoubleSpinBox,
     QSpinBox,
 )
 
@@ -96,6 +101,29 @@ def tool_applicable(tool_id: str, mode: str) -> bool:
 _COMBO_CONTENTS_CHARS = 12
 
 
+# QFontMetricsF.averageCharWidth() of the font every panel width was measured
+# against: the test suite's pinned DejaVu Sans 12pt at 96 DPI.
+_BASELINE_AVG_CHAR_PX = 8.109375
+
+
+class FontScaledWidth:
+    """A panel's MIN_USEFUL_WIDTH, read as a class attribute like the plain
+    int it replaces. `base_px` is the width measured at the baseline font;
+    a larger app font (Windows 150% scaling reports 144 DPI to Qt 5, or a
+    bigger Settings > Appearance size) scales it up, since every label and
+    field in the panel grows with the font while a pixel constant would not.
+    Never scales below `base_px`, so a smaller font keeps today's width."""
+
+    def __init__(self, base_px: int) -> None:
+        self.base_px = base_px
+
+    def __get__(self, obj, owner=None) -> int:
+        if QApplication.instance() is None:
+            return self.base_px
+        ratio = QFontMetricsF(QApplication.font()).averageCharWidth() / _BASELINE_AVG_CHAR_PX
+        return max(self.base_px, math.ceil(self.base_px * ratio))
+
+
 def _fit_combo_width(combo: QComboBox) -> None:
     """Size a combo for a fixed character count rather than for its longest
     item -- see _COMBO_CONTENTS_CHARS. The popup still shows every name in
@@ -106,6 +134,81 @@ def _fit_combo_width(combo: QComboBox) -> None:
     combo.setMinimumContentsLength(_COMBO_CONTENTS_CHARS)
 
 
+def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:
+    """A 16px player-colour square for a player combo's item icon."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(QColor(*rgb))
+    return QIcon(pixmap)
+
+
+class _IndeterminateMixin:
+    """A blank "the selection differs" state for a spinbox (GH #60).
+
+    A spinbox has no blank value and -1 is a real one (trigger_fields.UNSET),
+    so the box parks on its minimum and renders "" instead. specialValueText
+    beats textFromValue() at the minimum, so it is parked too and put back on
+    the first real change. The panel clears the state from valueChanged, or
+    from editingFinished when the typed value equals the parked one.
+
+    That second case cannot use lineEdit().isModified(): Qt re-renders the
+    text before editingFinished, which clears the flag (measured). So the last
+    user-typed text is latched from textEdited, which programmatic sets never emit.
+    """
+
+    _indeterminate = False
+    _parked_special_text = ""
+    _typed_text = ""
+
+    def set_indeterminate(self) -> None:
+        if self._indeterminate:
+            return
+        self._indeterminate = True
+        self._typed_text = ""
+        self._parked_special_text = self.specialValueText()
+        self.setSpecialValueText("")
+        self.setValue(self.minimum())
+        # By hand: setValue() on a box already at its minimum re-renders nothing.
+        self.lineEdit().setText("")
+        self.lineEdit().textEdited.connect(self._note_typed)
+
+    def _note_typed(self, text: str) -> None:
+        if self._indeterminate:
+            self._typed_text = text.strip()
+
+    def typed_parked_value(self) -> bool:
+        """Whether the user typed the very value the blank box is parked on,
+        the one edit that emits no valueChanged."""
+        if not self._indeterminate or not self._typed_text:
+            return False
+        state, _text, _pos = self.validate(self._typed_text, 0)
+        return state == QValidator.Acceptable and self.valueFromText(self._typed_text) == self.value()
+
+    def is_indeterminate(self) -> bool:
+        return self._indeterminate
+
+    def clear_indeterminate(self) -> None:
+        """Leave the blank state and show the value it now holds."""
+        if not self._indeterminate:
+            return
+        self._indeterminate = False
+        self.setSpecialValueText(self._parked_special_text)
+        # The value that ended the state was rendered blank; Qt will not repaint it.
+        value = self.value()
+        at_special = value == self.minimum() and bool(self._parked_special_text)
+        self.lineEdit().setText(self._parked_special_text if at_special else self.textFromValue(value))
+
+    def textFromValue(self, value):  # Qt override
+        return "" if self._indeterminate else super().textFromValue(value)
+
+
+class IndeterminateSpinBox(_IndeterminateMixin, QSpinBox):
+    pass
+
+
+class IndeterminateDoubleSpinBox(_IndeterminateMixin, QDoubleSpinBox):
+    pass
+
+
 def _make_spinbox(
     value,
     editable: bool,
@@ -113,6 +216,7 @@ def _make_spinbox(
     minimum: int,
     maximum: int,
     special_value_text: str = "",
+    indeterminate: bool = False,
 ) -> QSpinBox:
     """A property-form spinbox with keyboard tracking off.
 
@@ -128,7 +232,7 @@ def _make_spinbox(
     know -- TriggerPanel passes it for trigger_fields.UNSET's -1 sentinel, and
     Map Options, which has no unset sentinel, passes nothing.
     """
-    spin = QSpinBox()
+    spin = IndeterminateSpinBox() if indeterminate else QSpinBox()
     spin.setRange(minimum, maximum)
     if special_value_text:
         spin.setSpecialValueText(special_value_text)
@@ -137,4 +241,7 @@ def _make_spinbox(
     spin.setValue(value if isinstance(value, int) and not isinstance(value, bool) else minimum)
     spin.setEnabled(editable)
     spin.setKeyboardTracking(False)
+    if indeterminate:
+        # Last, so it parks the special text set above.
+        spin.set_indeterminate()
     return spin

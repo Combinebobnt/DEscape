@@ -55,15 +55,21 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python -m pip install pytest pytest-qt ruff==0.16.3
-          # tests/test_lint.py hardcodes .venv/bin/ruff (the local dev
-          # layout); the runner has no .venv, so point that path at the
-          # ruff pip just installed instead of building a whole venv.
-          mkdir -p .venv/bin
-          ln -s "$(command -v ruff)" .venv/bin/ruff
           xvfb-run -a python -m pytest
 
       - name: Build frozen bundle
+        if: runner.os != 'Linux'
         run: python -m PyInstaller packaging/descape.spec --noconfirm
+
+      # An explicit docker run, not a job-level container:, so checkout, the
+      # test tier, verification and upload stay on the ubuntu-22.04 host. The
+      # verify steps below are then a real cross-glibc test (built 2.28, run
+      # 2.35). setup-python's pip cache does not reach inside the container.
+      - name: Build frozen bundle + AppImage in AlmaLinux 8 (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CONTAINER_RUNTIME: docker
+        run: bash packaging/build_linux_container.sh
 
       - name: Verify frozen bundle (self-check + smoke)
         run: python tools/verify_frozen_build.py
@@ -71,14 +77,6 @@ jobs:
       - name: Smoke test (real xcb plugin, Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a env QT_QPA_PLATFORM=xcb dist/DEscape/DEscape --smoke
-
-      - name: Build AppImage (Linux)
-        if: runner.os == 'Linux'
-        env:
-          PYTHON: python
-        # Invoked via bash, not the executable bit -- the script isn't
-        # tracked as executable in git, and CI shouldn't depend on that.
-        run: bash packaging/build_appimage.sh
 
       - name: Move AppImage to artifact root (Linux)
         # actions/download-artifact --merge-multiple preserves each

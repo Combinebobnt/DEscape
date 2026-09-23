@@ -13,10 +13,12 @@ and tests/test_unit_edit_viewer.py instead.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import pytest
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QSpinBox
 
 from descape.unit_filter import GAIA_PLAYER_ID
 from descape.unit_pick import UnitEntry
@@ -31,6 +33,7 @@ pytestmark = [
 
 _TREE_CONST = 349  # a real GAIA doodad -- rotation is a variant index, not an angle
 _ARCHER_CONST = 4  # a real creatable unit -- rotation is a genuine angle
+_TOWER_CONST = 79  # Watch Tower -- a real garrison host, 5 places
 
 
 @dataclass
@@ -199,7 +202,7 @@ def test_float_editors_have_keyboard_tracking_off() -> None:
 
 
 def test_rotation_caption_carries_the_full_caveat_as_a_tooltip() -> None:
-    """The "shown raw, in radians" half of the old always-visible note stays
+    """The "shown as a facing, stored in radians" half of the old note stays
     reachable regardless of which const is selected -- via the Rotation
     caption's own tooltip, not the conditional unit_rotation_note."""
     panel = _panel()
@@ -313,3 +316,325 @@ def test_catalog_tree_uses_click_focus() -> None:
     _build_catalog_pane docstring."""
     panel = _panel()
     assert panel.catalog_view.tree.focusPolicy() == Qt.ClickFocus
+
+
+# --- GH #71: group mode ------------------------------------------------------
+
+_WALL_CONST = 117  # stone wall -- VARIANT, not rotatable
+
+
+def test_show_group_shows_the_grid_and_keeps_the_count_line() -> None:
+    panel = _panel()
+    panel.show_group([_entry(reference_id=1), _entry(reference_id=2), _entry(reference_id=3)])
+    assert panel.unit_inspector_grid.isVisibleTo(panel)
+    assert panel.unit_inspector_empty.isVisibleTo(panel)
+    assert panel.unit_inspector_empty.text() == "3 units selected"
+    for field_id in ("reference_id", "garrisoned_in_id"):
+        assert not panel.unit_field_labels[field_id].isVisibleTo(panel)
+        assert not panel.unit_field_captions[field_id].isVisibleTo(panel)
+
+
+def test_show_group_shows_common_values_when_the_members_agree() -> None:
+    panel = _panel()
+    panel.show_group([_entry(x=12.5, rotation=1.0), _entry(x=12.5, y=3.5, rotation=1.0)])
+    assert panel.unit_field_labels["name"].text() != "(mixed)"
+    assert panel.unit_field_labels["unit_const"].text() == str(_ARCHER_CONST)
+    assert panel.unit_field_editors["x"].text() == "12.50"
+    assert panel.unit_field_editors["y"].text() == "(mixed)"
+    assert panel.unit_field_editors["rotation"].text() == "3"  # 1.0 rad = 2.55 of 16
+    assert panel.unit_field_editors["player"].currentData() == 1
+    assert panel.unit_stats_header.isVisibleTo(panel)
+
+
+def test_show_group_marks_disagreeing_fields_mixed() -> None:
+    panel = _panel()
+    panel.show_group(
+        [
+            _entry(player_id=1, x=1.5, rotation=0.5),
+            _entry(player_id=2, x=2.5, rotation=1.5, unit_const=_TREE_CONST),
+            _entry(player_id=1, x=1.5, rotation=0.5),
+        ]
+    )
+    assert panel.unit_field_labels["name"].text() == "(mixed)"
+    assert panel.unit_field_labels["unit_const"].text() == "(mixed)"
+    assert panel.unit_field_editors["x"].text() == "(mixed)"
+    combo = panel.unit_field_editors["player"]
+    assert combo.currentText() == "(mixed)"
+    assert combo.currentData() is None
+    # Only the two archers count for rotation, and they agree.
+    assert panel.unit_field_editors["rotation"].text() == "1"  # 0.5 rad = 1.27 of 16
+    assert panel.unit_rotation_note.isVisibleTo(panel)
+    assert panel.unit_rotation_note.text().startswith("1 of 3 selected won't rotate")
+    assert not panel.unit_stats_header.isVisibleTo(panel)
+
+
+def test_group_rotation_compares_facings_not_raw_radians() -> None:
+    panel = _panel()
+    panel.show_group([_entry(rotation=1.0), _entry(rotation=1.0 + 1e-9)])
+    assert panel.unit_field_editors["rotation"].text() == "3"
+
+
+def test_group_rotation_is_mixed_across_angle_members() -> None:
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    assert panel.unit_field_editors["rotation"].text() == "(mixed)"
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+
+
+def test_group_with_no_angle_member_shows_na_and_hides_the_editor() -> None:
+    panel = _panel()
+    panel.show_group([_entry(unit_const=_TREE_CONST, rotation=7), _entry(unit_const=_WALL_CONST, rotation=2)])
+    grid = panel.unit_inspector_grid
+    assert not panel.unit_field_editors["rotation"].isVisibleTo(grid)
+    assert panel.unit_field_labels["rotation"].isVisibleTo(grid)
+    assert panel.unit_field_labels["rotation"].text() == "(n/a)"
+    assert panel.unit_rotation_note.text().startswith("2 of 2 selected")
+
+
+def test_show_unit_after_group_restores_single_unit_state() -> None:
+    panel = _panel()
+    panel.show_group([_entry(player_id=1, x=1.5, rotation=0.5), _entry(player_id=2, x=2.5, rotation=1.5)])
+    panel.show_unit(_entry(x=4.5, rotation=0.0))
+    combo = panel.unit_field_editors["player"]
+    assert combo.findText("(mixed)") < 0
+    assert combo.count() == 9
+    spin = panel.unit_field_editors["x"]
+    assert spin.minimum() == -(2**15)
+    assert spin.text() == "4.50"
+    # A real facing 0 sits at the minimum, where special text would render.
+    rotation = panel.unit_field_editors["rotation"]
+    assert rotation.text() == "0"
+    assert rotation.minimum() == 0
+    assert panel.unit_field_labels["reference_id"].isVisibleTo(panel)
+    assert panel.unit_field_captions["garrisoned_in_id"].isVisibleTo(panel)
+    assert not panel.unit_inspector_empty.isVisibleTo(panel)
+
+
+def test_group_note_text_is_restored_for_a_single_variant_unit() -> None:
+    panel = _panel()
+    panel.show_group([_entry(), _entry(unit_const=_TREE_CONST, rotation=7)])
+    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=7))
+    assert panel.unit_rotation_note.text().startswith("Rotation is shown as a facing")
+    assert panel.unit_field_labels["rotation"].text() == "7"
+
+
+def test_populating_across_single_group_transitions_reports_nothing() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    mixed = [_entry(player_id=1, x=1.5, rotation=0.5), _entry(player_id=2, x=2.5, rotation=1.5)]
+    agreeing = [_entry(player_id=3, x=9.5), _entry(player_id=3, x=9.5)]
+    panel.show_unit(_entry(rotation=0.0))
+    panel.show_group(mixed)
+    panel.show_unit(_entry(player_id=4, x=5.5, rotation=2.0))
+    panel.show_group(mixed)
+    panel.show_group(agreeing)
+    panel.show_group(mixed)
+    panel.show_unit(None)
+    panel.show_group(mixed)
+    panel.show_selection_count(0)
+    assert received == []
+
+
+def test_a_genuine_group_edit_reports_but_the_mixed_placeholder_does_not() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_group([_entry(player_id=1, x=1.5), _entry(player_id=2, x=2.5)])
+    spin = panel.unit_field_editors["x"]
+    spin.setValue(50.0)
+    assert received == [("x", 50.0)]
+    # Back onto the sentinel (e.g. a wheel step down) is not an edit.
+    spin.setValue(spin.minimum())
+    combo = panel.unit_field_editors["player"]
+    combo.setCurrentIndex(combo.findData(5))
+    combo.setCurrentIndex(0)
+    assert received == [("x", 50.0), ("player", 5)]
+
+
+# --- GH #61: whole-number facings --------------------------------------------
+
+_TREBUCHET_CONST = 42  # angle_count 32
+_CONST_6 = 2607  # angle_count 6, holds 16-grid values in the corpus
+
+
+def _rotation_spin(panel):
+    return panel.unit_field_editors["rotation"]
+
+
+def test_rotation_editor_is_a_wrapping_whole_facing() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(rotation=math.pi / 2))
+    spin = _rotation_spin(panel)
+    assert isinstance(spin, QSpinBox)
+    assert spin.wrapping()
+    assert spin.keyboardTracking() is False
+    assert spin.suffix() == ""
+    assert (spin.minimum(), spin.maximum()) == (0, 15)
+    assert spin.value() == 4
+
+
+def test_a_trebuchet_ranges_over_its_own_32_facings() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TREBUCHET_CONST, rotation=math.pi))
+    spin = _rotation_spin(panel)
+    assert (spin.minimum(), spin.maximum()) == (0, 31)
+    assert spin.value() == 16
+
+
+def test_a_six_direction_const_ranges_to_5_and_shows_the_nearest_facing() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_CONST_6, rotation=3 * math.pi / 4))
+    spin = _rotation_spin(panel)
+    assert spin.maximum() == 5
+    assert spin.value() == 2  # 2.25 frames
+
+
+def test_switching_from_a_32_to_a_16_count_unit_sets_range_before_value() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(unit_const=_TREBUCHET_CONST, rotation=20 * 2 * math.pi / 32))
+    assert _rotation_spin(panel).value() == 20
+    panel.show_unit(_entry(rotation=3 * 2 * math.pi / 16))
+    assert _rotation_spin(panel).maximum() == 15
+    assert _rotation_spin(panel).value() == 3
+    # And back up: facing 20 must not clamp to the archer's 15.
+    panel.show_unit(_entry(unit_const=_TREBUCHET_CONST, rotation=20 * 2 * math.pi / 32))
+    assert _rotation_spin(panel).value() == 20
+    assert received == []
+
+
+def test_the_junk_sentinel_populates_as_its_wrapped_facing_without_an_edit() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(rotation=7.0))
+    assert _rotation_spin(panel).value() == 2
+    assert received == []
+
+
+def test_the_editor_tooltip_carries_the_exact_stored_radians() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(rotation=3 * 2 * math.pi / 16))
+    assert _rotation_spin(panel).toolTip() == "Facing 3 of 16 (stored: 1.1781 rad)"
+
+
+def test_a_wheel_step_reports_the_next_facing_and_wraps() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(rotation=15 * 2 * math.pi / 16))
+    spin = _rotation_spin(panel)
+    spin.stepBy(1)
+    assert received == [("rotation", 0)]
+
+
+def test_a_mixed_count_group_edits_on_the_finest_grid() -> None:
+    """Archer (16) + trebuchet (32): the scale is 32, and a shared direction
+    reads as one facing on it."""
+    panel = _panel()
+    panel.show_group([_entry(rotation=math.pi / 2), _entry(unit_const=_TREBUCHET_CONST, rotation=math.pi / 2)])
+    spin = _rotation_spin(panel)
+    assert spin.maximum() == 31
+    assert spin.text() == "8"
+    assert "32-direction scale" in spin.toolTip()
+    assert "(16)" in spin.toolTip()
+
+
+def test_a_mixed_count_group_facing_differently_shows_mixed() -> None:
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.0), _entry(unit_const=_TREBUCHET_CONST, rotation=math.pi)])
+    spin = _rotation_spin(panel)
+    assert spin.text() == "(mixed)"
+    assert spin.maximum() == 31
+
+
+def test_a_mixed_facing_group_then_a_single_unit_restores_the_minimum() -> None:
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    assert _rotation_spin(panel).minimum() == -1
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=0.5)])
+    assert _rotation_spin(panel).minimum() == 0
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    panel.show_unit(_entry(unit_const=_TREBUCHET_CONST))
+    assert (_rotation_spin(panel).minimum(), _rotation_spin(panel).maximum()) == (0, 31)
+
+
+# --- GH #42: the Garrison block -----------------------------------------
+
+
+def test_the_garrison_block_is_hidden_until_it_is_given_rows() -> None:
+    panel = _panel()
+    panel.show_unit(_entry())
+    assert not panel.garrison_tree.isVisibleTo(panel)
+    assert not panel.garrison_header.isVisibleTo(panel)
+
+
+def test_show_garrison_lists_the_rows_and_counts_against_capacity() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Archer", "Player 1", 11), ("Villager", "GAIA", 12)], 5)
+
+    assert panel.garrison_tree.isVisibleTo(panel)
+    assert "Garrison (2 / 5)" in panel.garrison_header.text()
+    assert panel.garrison_tree.topLevelItemCount() == 2
+    assert panel.garrison_tree.topLevelItem(0).text(0) == "Archer"
+    assert panel.garrison_tree.topLevelItem(1).text(1) == "GAIA"
+    assert not panel.garrison_note.isVisibleTo(panel)
+    assert panel.garrison_add_button.isEnabled()
+    assert not panel.garrison_delete_button.isEnabled()
+
+
+def test_add_is_disabled_at_capacity_and_the_note_explains_an_overfull_host() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    rows = [(f"Archer {i}", "Player 1", 20 + i) for i in range(6)]
+    panel.show_garrison(rows, 5)
+
+    assert not panel.garrison_add_button.isEnabled()
+    assert panel.garrison_note.isVisibleTo(panel)
+    assert "5" in panel.garrison_note.text()
+
+
+def test_a_wrong_type_occupant_is_reported_not_corrected() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Mangonel", "Player 1", 11)], 5, wrong_type=1)
+
+    assert panel.garrison_note.isVisibleTo(panel)
+    assert "cannot garrison here" in panel.garrison_note.text()
+    assert panel.garrison_tree.topLevelItemCount() == 1
+
+
+def test_selecting_a_row_enables_delete_and_reports_the_selected_ids() -> None:
+    reported = []
+    panel = _panel(on_garrison_delete=reported.append)
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Archer", "Player 1", 11), ("Villager", "Player 1", 12)], 5)
+
+    panel.garrison_tree.topLevelItem(1).setSelected(True)
+    assert panel.garrison_delete_button.isEnabled()
+    assert panel.garrison_selection() == [12]
+    panel.garrison_delete_button.click()
+    assert reported == [[12]]
+
+
+def test_add_and_double_click_report_through_their_callbacks() -> None:
+    added, navigated = [], []
+    panel = _panel(on_garrison_add=lambda: added.append(True), on_garrison_navigate=navigated.append)
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Archer", "Player 1", 11)], 5)
+
+    panel.garrison_add_button.click()
+    panel._garrison_double_clicked(panel.garrison_tree.topLevelItem(0), 0)
+    assert added == [True]
+    assert navigated == [11]
+
+
+def test_a_group_selection_or_a_new_single_unit_hides_the_garrison_block() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Archer", "Player 1", 11)], 5)
+
+    panel.show_group([_entry(reference_id=1), _entry(reference_id=2)])
+    assert not panel.garrison_tree.isVisibleTo(panel)
+
+    panel.show_garrison([("Archer", "Player 1", 11)], 5)
+    panel.show_unit(_entry(reference_id=3))
+    assert not panel.garrison_tree.isVisibleTo(panel)

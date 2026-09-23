@@ -34,9 +34,13 @@ from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.trigger_model import (
     TriggerEditModel,
     TriggerEditsUnavailableError,
+    display_order_moved_to_slot,
+    display_order_with_block_inserted,
     display_order_with_copy_inserted,
     moved_display_order,
+    moved_display_order_block,
 )
+from descape.trigger_organize import parse_tag
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
@@ -1145,3 +1149,429 @@ def test_single_trigger_edit_stays_local_across_the_corpus(
     offset = model.regions.triggers_start + len(slices[0]) + delta
     original_offset = model.regions.triggers_start + len(slices[0])
     assert new_section[offset:] == original_section[original_offset:]
+
+
+# -- the quantity cluster: an object_attributes switch must still save --------
+#
+# Trigger 1 is "Fixture: armour split": effect 0 is Modify Attribute on ARMOR
+# (armour_attack_quantity 2, class 3), effect 1 on HIT_POINTS (quantity 45).
+# Driven through the viewer's funnel, since that is where the fixup lives.
+
+_WORK_RATE = 13
+
+
+def _cluster_spec(name: str):
+    from descape import trigger_fields
+
+    if name == "quantity_float":
+        return trigger_fields.FieldSpec(name, trigger_fields.FLOAT, attribute="quantity")
+    return trigger_fields.FieldSpec(name, trigger_fields.INT)
+
+
+class _Kept(list):
+    """A list that also holds a reference keeping its source alive."""
+
+    def __init__(self, items, keep):
+        super().__init__(items)
+        self.keep = keep
+
+
+def _edit_and_reload(tmp_path: Path, edits, setup=None):
+    """Apply (effect index, field, value) edits to trigger 1, save, reparse."""
+    import conftest
+
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(FIXTURE_PATH)
+        window.mode_combo.setCurrentText("Triggers")
+        if setup is not None:
+            setup(window)
+        for effect_index, name, value in edits:
+            window.set_entry_field(1, "effect", effect_index, _cluster_spec(name), value)
+        status = window.status_log.toPlainText()
+        out = tmp_path / "cluster.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    # The LoadedScenario rides along: the library's scenario store is weak, and
+    # an effect whose scenario is gone raises on its first version lookup.
+    reloaded_scenario = load_map_and_units(out)
+    reloaded = parse_triggers(reloaded_scenario)
+    assert reloaded is not None
+    return _Kept(reloaded.triggers[1].effects, reloaded_scenario), status
+
+
+@pytest.mark.parametrize(
+    "edits,effect_index,expected",
+    [
+        ([(0, "object_attributes", 0)], 0, {"quantity": 2}),
+        ([(0, "object_attributes", _WORK_RATE)], 0, {"quantity": 2.0}),
+        ([(0, "object_attributes", 9)], 0, {"armour_attack_quantity": 2, "armour_attack_class": 3}),
+        ([(1, "object_attributes", 8)], 1, {"armour_attack_quantity": 45, "armour_attack_class": 0}),
+        ([(1, "object_attributes", 9)], 1, {"armour_attack_quantity": 45, "armour_attack_class": 0}),
+        (
+            [(1, "object_attributes", _WORK_RATE), (1, "quantity_float", 2.5), (1, "object_attributes", 0)],
+            1,
+            {"quantity": 2},
+        ),
+    ],
+    ids=["armor->hp", "armor->work rate", "armor->attack", "hp->armor", "hp->attack", "float 2.5->hp"],
+)
+def test_an_attribute_switch_saves_and_carries_the_amount(tmp_path: Path, edits, effect_index, expected) -> None:
+    effects, _ = _edit_and_reload(tmp_path, edits)
+    effect = effects[effect_index]
+    for name, value in expected.items():
+        got = getattr(effect, name)
+        assert got == value and type(got) is type(value), f"{name}: {got!r}, expected {value!r}"
+
+
+def test_a_by_variable_switch_onto_armor_saves(tmp_path: Path) -> None:
+    def add_by_variable(window):
+        window.entry_structural_edit("new", 1, "effect", -1, 79)  # MODIFY_ATTRIBUTE_BY_VARIABLE
+
+    effects, _ = _edit_and_reload(
+        tmp_path,
+        [(2, "object_attributes", 0), (2, "variable", 5), (2, "object_attributes", 8)],
+        setup=add_by_variable,
+    )
+    assert (effects[2].armour_attack_class, effects[2].variable) == (0, 5)
+
+
+def test_an_attribute_switch_says_what_it_rewrote(tmp_path: Path) -> None:
+    _, status = _edit_and_reload(tmp_path, [(0, "object_attributes", 0)])
+    assert "set quantity to 2" in status and "cleared armour attack class" in status, status
+
+
+def test_retyping_onto_a_switching_type_keeps_a_carried_armor_attribute_saveable(tmp_path: Path) -> None:
+    """GH #37's retype carries object_attributes onto a fresh entry whose own
+    construction populated the int slot, not the pair ARMOR makes live."""
+
+    def retype(window):
+        window.entry_structural_edit("retype", 1, "effect", 0, 104)  # MODIFY_ATTRIBUTE_FOR_CLASS
+
+    effects, _ = _edit_and_reload(tmp_path, [], setup=retype)
+    assert (effects[0].effect_type, effects[0].object_attributes) == (104, 8)
+
+
+def test_a_bypassed_cluster_write_is_refused_legibly_at_save() -> None:
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.manager().triggers[1].effects[0].object_attributes = 0
+    model.mark_dirty(1)
+    with pytest.raises(RuntimeError, match="trigger 1 effect 0 cannot be saved"):
+        model.serialize()
+
+
+# -- block helpers (GH #27) ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "order,indices,delta,expected",
+    [
+        ([0, 1, 2, 3, 4], [2], -1, [0, 2, 1, 3, 4]),
+        ([0, 1, 2, 3, 4], [1, 2], -1, [1, 2, 0, 3, 4]),
+        ([0, 1, 2, 3, 4], [1, 3], -1, [1, 0, 3, 2, 4]),
+        ([0, 1, 2, 3, 4], [1, 3], 1, [0, 2, 1, 4, 3]),
+        # Pressed against an end: the blocked member stays, the rest close up.
+        ([0, 1, 2, 3, 4], [0, 2], -1, [0, 2, 1, 3, 4]),
+        ([0, 1, 2, 3, 4], [0, 1], -1, [0, 1, 2, 3, 4]),
+        ([0, 1, 2, 3, 4], [3, 4], 1, [0, 1, 2, 3, 4]),
+        # By list index, through a custom order.
+        ([3, 2, 1, 0], [1, 0], -1, [3, 1, 0, 2]),
+    ],
+)
+def test_moved_display_order_block(order, indices, delta, expected) -> None:
+    assert moved_display_order_block(order, indices, delta) == expected
+
+
+def test_moved_display_order_block_refuses_an_unknown_index() -> None:
+    with pytest.raises(IndexError):
+        moved_display_order_block([0, 1, 2], [5], -1)
+
+
+@pytest.mark.parametrize(
+    ("order", "indices", "target", "expected"),
+    [
+        # Source below the target: the pre-move slot shifts left by one.
+        ([0, 1, 2, 3, 4], [1], 4, [0, 2, 3, 1, 4]),
+        # Source above the target: no shift.
+        ([0, 1, 2, 3, 4], [3], 1, [0, 3, 1, 2, 4]),
+        # The end of the list.
+        ([0, 1, 2, 3, 4], [0], 5, [1, 2, 3, 4, 0]),
+        ([0, 1, 2, 3, 4], [2], 0, [2, 0, 1, 3, 4]),
+        # A block keeps display order, and straddling members shift only the
+        # ones below the target.
+        ([0, 1, 2, 3, 4], [3, 0], 3, [1, 2, 0, 3, 4]),
+        ([0, 1, 2, 3, 4], [4, 1], 3, [0, 2, 1, 4, 3]),
+        # By list index, through a custom order.
+        ([3, 2, 1, 0], [2], 4, [3, 1, 0, 2]),
+    ],
+)
+def test_display_order_moved_to_slot(order, indices, target, expected) -> None:
+    assert display_order_moved_to_slot(order, indices, target) == expected
+
+
+def test_display_order_moved_to_slot_is_a_no_op_onto_itself() -> None:
+    assert display_order_moved_to_slot([0, 1, 2], [1], 1) == [0, 1, 2]
+    assert display_order_moved_to_slot([0, 1, 2], [1], 2) == [0, 1, 2]
+
+
+def test_display_order_moved_to_slot_refuses_bad_input() -> None:
+    with pytest.raises(ValueError):
+        display_order_moved_to_slot([0, 1, 2], [5], 0)
+    with pytest.raises(IndexError):
+        display_order_moved_to_slot([0, 1, 2], [1], 4)
+    with pytest.raises(IndexError):
+        display_order_moved_to_slot([0, 1, 2], [1], -1)
+
+
+def test_display_order_with_block_inserted_lands_after_the_anchor() -> None:
+    assert display_order_with_block_inserted([3, 2, 1, 0], [4, 5], 2) == [3, 2, 4, 5, 1, 0]
+    assert display_order_with_block_inserted([3, 2, 1, 0], [4, 5], None) == [3, 2, 1, 0, 4, 5]
+
+
+def test_a_pasted_block_round_trips_field_for_field_and_keeps_a_custom_display_order(tmp_path: Path) -> None:
+    """GH #27's paste, as the funnel runs it: one import, then display order
+    repaired from the pre-import value. The pasted triggers' conditions and
+    effects come back identical to their sources', and the custom order with
+    the block below its anchor survives the write."""
+    from descape import trigger_clipboard
+
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.manager().trigger_display_order = [3, 2, 1, 0]
+    block = trigger_clipboard.copy_block(model.manager(), [0, 1])
+    sources = _trigger_snapshot(model.manager())
+
+    def mutate(m):
+        before_order = list(m.trigger_display_order)
+        pasted = trigger_clipboard.paste_into(m, block).triggers
+        new = list(range(4, 4 + len(pasted)))
+        m.trigger_display_order = display_order_with_block_inserted(before_order, new, 2)
+
+    model.structural_edit(mutate)
+    out = tmp_path / "pasted.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+
+    reloaded_scenario = load_map_and_units(out)  # kept alive: the library's store is weak
+    reloaded = parse_triggers(reloaded_scenario)
+    assert reloaded is not None
+    # Block order is display order: trigger 1 sits before 0 in [3, 2, 1, 0].
+    assert list(reloaded.trigger_display_order) == [3, 2, 4, 5, 1, 0]
+    after = _trigger_snapshot(reloaded)
+    assert after[:4] == sources
+    assert after[4][1:] == sources[1][1:] and after[5][1:] == sources[0][1:]
+    assert [t.name for t in reloaded.triggers[4:]] == ["Fixture: armour split (copy)", "Fixture: setup (copy)"]
+
+
+# -- tag management: rename and remove a tag across its carriers ---------------
+
+# Trigger 1 is the case variant, trigger 2 carries D1 only as a chained second
+# tag, so renaming "D1" must leave both alone.
+_TAGGED_NAMES = ["[D1] setup", "[d1]armour split", "[P1][D1] references", "[D1]: variable"]
+
+
+def _tagged_base(tmp_path: Path) -> Path:
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    for index, name in enumerate(_TAGGED_NAMES):
+        model.manager().triggers[index].name = name
+        model.mark_dirty(index)
+    out = tmp_path / "tagged.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+    return out
+
+
+def _tag_window(base: Path):
+    import conftest
+
+    window = conftest.shown_window()
+    window.load_scenario(base)
+    window.mode_combo.setCurrentText("Triggers")
+    return window
+
+
+def _live_names(window) -> list[str]:
+    return [t.name for t in window.trigger_edits.manager().triggers]
+
+
+def _saved_blobs(path: Path) -> list[bytes]:
+    loaded = load_map_and_units(path)
+    return model_blob_lengths(_section_bytes(loaded), TriggerEditModel(loaded))
+
+
+def _save_and_reload_names(window, tmp_path: Path) -> tuple[Path, list[str]]:
+    out = tmp_path / "retagged.aoe2scenario"
+    write_scenario(window.scenario, out, triggers=window.trigger_edits)
+    reloaded = parse_triggers(load_map_and_units(out))
+    assert reloaded is not None
+    return out, [t.name for t in reloaded.triggers]
+
+
+def test_renaming_a_tag_rewrites_every_carrier_and_nothing_else(tmp_path: Path) -> None:
+    base = _tagged_base(tmp_path)
+    window = _tag_window(base)
+    try:
+        window.rename_trigger_tag("D1", "Intro")
+        expected = ["[Intro] setup", "[d1]armour split", "[P1][D1] references", "[Intro]: variable"]
+        assert _live_names(window) == expected
+        assert len(window.edit_history.records) == 1
+        assert window.edit_history.records[0].label == 'Rename tag "D1" to "Intro" (2 triggers)'
+        out, names = _save_and_reload_names(window, tmp_path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    assert names == expected
+    # Names change length, so no byte-range confinement: every non-carrier's
+    # own blob is byte-identical instead.
+    before, after = _saved_blobs(base), _saved_blobs(out)
+    assert [after[i] == before[i] for i in range(4)] == [False, True, True, False]
+
+
+def test_a_rename_without_its_content_declaration_is_spliced_away(tmp_path: Path, monkeypatch) -> None:
+    """The control for the test above: content_touched is what saves it."""
+    base = _tagged_base(tmp_path)
+    window = _tag_window(base)
+    original = type(window)._trigger_edit
+    monkeypatch.setattr(
+        type(window),
+        "_trigger_edit",
+        lambda self, model, label, content_touched=(), **kw: original(self, model, label, (), **kw),
+    )
+    try:
+        window.rename_trigger_tag("D1", "Intro")
+        assert _live_names(window)[0] == "[Intro] setup"
+        _, names = _save_and_reload_names(window, tmp_path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    assert names == _TAGGED_NAMES
+
+
+def test_one_undo_reverses_a_tag_rename_and_redo_reapplies_it(tmp_path: Path) -> None:
+    window = _tag_window(_tagged_base(tmp_path))
+    try:
+        window.rename_trigger_tag("D1", "Intro")
+        renamed = _live_names(window)
+        window.undo()
+        assert _live_names(window) == _TAGGED_NAMES
+        assert not window.edit_history.is_dirty
+        window.redo()
+        assert _live_names(window) == renamed
+        assert len(window.edit_history.records) == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_renaming_onto_an_existing_tag_merges_the_facets(tmp_path: Path) -> None:
+    window = _tag_window(_tagged_base(tmp_path))
+    try:
+        window.rename_trigger_tag("d1", "D1")
+        names = _live_names(window)
+        assert [parse_tag(n) for n in names] == ["D1", "D1", "P1", "D1"]
+        assert names[1] == "[D1]armour split"
+        assert len(window.edit_history.records) == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    "old,new", [("D1", ""), ("D1", "   "), ("D1", "D1"), ("D1", " D1 "), ("Nope", "X")],
+    ids=["empty", "whitespace", "unchanged", "unchanged-padded", "no-carriers"],
+)
+def test_a_no_op_tag_rename_records_nothing(tmp_path: Path, old, new) -> None:
+    window = _tag_window(_tagged_base(tmp_path))
+    try:
+        window.rename_trigger_tag(old, new)
+        assert window.edit_history.records == []
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits
+    finally:
+        window.close()
+
+
+def test_a_new_tag_holding_the_closer_is_refused_before_anything_opens(tmp_path: Path, monkeypatch) -> None:
+    from descape import viewer
+
+    warnings = []
+    monkeypatch.setattr(viewer.QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    window = _tag_window(_tagged_base(tmp_path))
+    try:
+        window.rename_trigger_tag("D1", "a]b")
+        assert window.edit_history.records == []
+        assert not window.trigger_edits.has_edits
+        assert _live_names(window) == _TAGGED_NAMES
+    finally:
+        window.close()
+    assert len(warnings) == 1 and '"]"' in warnings[0]
+
+
+def test_removing_a_tag_strips_every_carrier_and_saves(tmp_path: Path) -> None:
+    base = _tagged_base(tmp_path)
+    window = _tag_window(base)
+    try:
+        window.remove_trigger_tag("D1")
+        expected = ["setup", "[d1]armour split", "[P1][D1] references", ": variable"]
+        assert _live_names(window) == expected
+        assert len(window.edit_history.records) == 1
+        assert window.edit_history.records[0].label == 'Remove tag "D1" (2 triggers)'
+        out, names = _save_and_reload_names(window, tmp_path)
+        window.undo()
+        assert _live_names(window) == _TAGGED_NAMES
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    assert names == expected
+    before, after = _saved_blobs(base), _saved_blobs(out)
+    assert [after[i] == before[i] for i in range(4)] == [False, True, True, False]
+
+
+def test_removing_a_tag_nobody_carries_records_nothing(tmp_path: Path) -> None:
+    window = _tag_window(_tagged_base(tmp_path))
+    try:
+        window.remove_trigger_tag("Nope")
+        assert window.edit_history.records == []
+    finally:
+        window.close()
+
+
+@pytest.mark.corpus
+def test_renaming_each_files_commonest_tag_survives_a_reload(scenario_path: Path, tmp_path: Path) -> None:
+    from collections import Counter
+
+    import conftest
+
+    loaded = load_map_and_units(scenario_path)
+    manager = parse_triggers(loaded)
+    if manager is None:
+        pytest.skip(f"{scenario_path.name}: Triggers section does not parse")
+    if not loaded.trigger_write_supported:
+        pytest.skip(f"{scenario_path.name}: fails the alignment gate")
+    before = [t.name or "" for t in manager.triggers]
+    tags = Counter(tag for n in before if (tag := parse_tag(n)) is not None)
+    if not tags:
+        pytest.skip(f"{scenario_path.name}: no tagged trigger")
+    old = tags.most_common(1)[0][0]
+    new = "DEscapeRetag"
+    assert new not in tags
+
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(scenario_path)
+        window.mode_combo.setCurrentText("Triggers")
+        window.rename_trigger_tag(old, new)
+        out = tmp_path / "retagged.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    reloaded = parse_triggers(load_map_and_units(out))
+    after = [t.name or "" for t in reloaded.triggers]
+    assert {parse_tag(n) for n in after} == ({parse_tag(n) for n in before} - {old}) | {new}
+    for name_before, name_after in zip(before, after, strict=True):
+        if parse_tag(name_before) != old:
+            assert name_after == name_before
+        else:
+            assert parse_tag(name_after) == new

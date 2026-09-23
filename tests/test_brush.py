@@ -17,6 +17,7 @@ from descape.brush import (
     brush_offsets,
     brush_tiles,
     clamp_brush_size,
+    line_tiles,
 )
 
 
@@ -153,3 +154,34 @@ def test_brush_tiles_off_map_center_returns_empty() -> None:
 def test_brush_tiles_size_1_is_the_bare_cursor_tile() -> None:
     assert brush_tiles(4, 4, 1, BRUSH_SHAPE_SQUARE, 10, 10) == [(4, 4)]
     assert brush_tiles(4, 4, 1, BRUSH_SHAPE_CIRCLE, 10, 10) == [(4, 4)]
+
+
+# line_tiles golden paths, derived by hand from the tile-centre line's
+# edge crossings (x steps first at an exact corner tie).
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        ((0, 0), (3, 0), [(1, 0), (2, 0), (3, 0)]),
+        ((0, 0), (0, -2), [(0, -1), (0, -2)]),
+        ((0, 0), (2, 2), [(1, 0), (1, 1), (2, 1), (2, 2)]),
+        ((0, 0), (1, 3), [(0, 1), (1, 1), (1, 2), (1, 3)]),
+        ((2, 1), (0, 0), [(1, 1), (1, 0), (0, 0)]),
+        ((5, 5), (5, 5), []),
+    ],
+    ids=["horizontal", "vertical-negative", "diagonal-tie", "steep", "negative-both", "zero-length"],
+)
+def test_line_tiles_golden_paths(start, end, expected) -> None:
+    assert line_tiles(*start, *end) == expected
+
+
+def test_line_tiles_is_4_connected_and_ends_at_the_target() -> None:
+    for x0, y0, x1, y1 in [(0, 0, 7, 3), (4, 9, -2, 1), (-3, 2, 5, -6), (10, 10, 3, 11), (0, 0, -5, -5)]:
+        path = line_tiles(x0, y0, x1, y1)
+        assert len(path) == abs(x1 - x0) + abs(y1 - y0)
+        assert path[-1] == (x1, y1)
+        prev = (x0, y0)
+        for tile in path:
+            assert abs(tile[0] - prev[0]) + abs(tile[1] - prev[1]) == 1
+            assert min(x0, x1) <= tile[0] <= max(x0, x1)
+            assert min(y0, y1) <= tile[1] <= max(y0, y1)
+            prev = tile

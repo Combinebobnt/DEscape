@@ -11,12 +11,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -24,22 +22,13 @@ from PyQt5.QtWidgets import (
 )
 
 from descape.messages_fields import MESSAGE_FIELDS, STRING_ID_UNSET, normalize_for_display
+from descape.text_edits import ProseTextEdit
 
 
-class _CommitOnBlurTextEdit(QPlainTextEdit):
-    """QPlainTextEdit has no built-in editingFinished -- QLineEdit's "commit
-    once, when the user is done, not on every keystroke" signal.
-    trigger_panel.py's QLineEdit fields all key off editingFinished for
-    exactly that reason: textChanged fires per character, so wiring a
-    commit straight to it would push one undo record -- and one status-log
-    line -- per keystroke. This reaches the same commit point via focus
-    loss instead, the nearest QPlainTextEdit equivalent."""
+class MessageTextEdit(ProseTextEdit):
+    """A Messages prose box: the trigger prose editor, free to grow."""
 
-    editingFinished = pyqtSignal()
-
-    def focusOutEvent(self, event) -> None:
-        super().focusOutEvent(event)
-        self.editingFinished.emit()
+    FIXED_HEIGHT = False
 
 
 class MessagesPanel(QWidget):
@@ -51,14 +40,6 @@ class MessagesPanel(QWidget):
     """
 
     MIN_USEFUL_WIDTH = 300
-    # A field's whole point is holding real prose -- left at its default
-    # sizeHint (about 3 lines), the box shows barely a sentence before
-    # scrolling. Applied as a minimum, not a fixed height, the same reason
-    # viewer.py's status_log uses setMinimumHeight over setFixedHeight: a
-    # fixed height would pin the box and stop the group box (and the
-    # QScrollArea's layout generally) from giving it more room when there's
-    # space to spare.
-    MIN_TEXT_LINES = 6
 
     _NO_DOCUMENT = "No map open."
     _READ_ONLY_NOTE = "Read-only for this file -- nothing here can be written back."
@@ -201,11 +182,8 @@ class MessagesPanel(QWidget):
                 self._warning_labels[spec.field_id] = warning
                 self._clear_id_buttons[spec.field_id] = clear_button
 
-            editor = _CommitOnBlurTextEdit()
-            editor.setPlainText(str(self._values.get(spec.field_id, "")))
+            editor = MessageTextEdit(str(self._values.get(spec.field_id, "")))
             editor.setEnabled(self._editable)
-            line_height = editor.fontMetrics().lineSpacing()
-            editor.setMinimumHeight(line_height * self.MIN_TEXT_LINES + 12)
             tip = self._read_only_reasons.get(spec.field_id, "")
             if tip:
                 editor.setToolTip(tip)

@@ -46,7 +46,7 @@ def _shape_window(tool: str = "draw_line", style: str = "Flat"):
     window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText(style)
     window._on_tool_selected(tool)
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_TERRAIN))
+    window.terrain_panel.set_terrain(_TERRAIN)
     # This file tests shape mechanics, not descape/terrain_units.py -- Trees
     # defaults on and would pop an unpatched large-edit confirm QMessageBox
     # for the bigger rectangles below, hanging the offscreen run.

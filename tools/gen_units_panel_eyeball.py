@@ -12,8 +12,11 @@ Captures, at MIN_USEFUL_WIDTH and a comfortable width:
 2. An Archer selected -- both grids, five stat rows, editable rotation, no
    rotation note (a real facing const, not a variant one -- see
    _ANGLE_ROTATION_CONST's own comment for why this isn't a building).
+   Then a Trebuchet: the facing spinbox ranges 0..31 (GH #61).
 3. A tree selected -- Hit points only, combat rows gone, rotation note visible.
-4. Three units selected -- the count readout.
+4. Group mode: an agreeing pair of archers, then a mixed archers + tree
+   selection (mixed owner/name/X, the "won't rotate" note), then an archer
+   + trebuchet pair facing one way (a 32-direction scale, GH #61).
 5. Catalog filtered to a long name (elision check, no horizontal clipping).
 6. The vertical splitter dragged to its floor (the _fit_inspector_height
    check -- the two notes must scroll, never overlap).
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -51,6 +55,7 @@ PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
 # check needs a real 36-character name, not a synthetic one.
 _ANGLE_ROTATION_CONST = 4  # Archer
 _TREE_CONST = 284
+_TREBUCHET_CONST = 42  # angle_count 32
 _LONG_NAME_FILTER = "FLAGSHIP OF NEARCHOS DOCKED MOVEABLE"
 
 _MIN_WIDTH = 380  # UnitsPanel.MIN_USEFUL_WIDTH, read fresh at capture time
@@ -94,10 +99,13 @@ def _open_window():
         raise SystemExit("blank template failed to load")
 
     units = window.scenario.unit_manager.units
-    units[1].append(_SyntheticUnit(x=4.5, y=4.5, unit_const=_ANGLE_ROTATION_CONST, reference_id=101))
+    # Facing 4 of 16, and the trebuchet at the same direction (8 of 32).
+    quarter = math.pi / 2
+    units[1].append(_SyntheticUnit(x=4.5, y=4.5, unit_const=_ANGLE_ROTATION_CONST, reference_id=101, rotation=quarter))
     units[0].append(_SyntheticUnit(x=8.5, y=8.5, unit_const=_TREE_CONST, reference_id=102))
     units[1].append(_SyntheticUnit(x=12.5, y=12.5, unit_const=_ANGLE_ROTATION_CONST, reference_id=103))
     units[1].append(_SyntheticUnit(x=16.5, y=16.5, unit_const=_ANGLE_ROTATION_CONST, reference_id=104))
+    units[1].append(_SyntheticUnit(x=20.5, y=20.5, unit_const=_TREBUCHET_CONST, reference_id=105, rotation=quarter))
 
     window.mode_combo.setCurrentText("Units")
     window._rebuild_unit_index()
@@ -109,6 +117,16 @@ def _set_left_width(window, width: int) -> None:
     sizes = window.content_splitter.sizes()
     total = sum(sizes) or (width + 800)
     window.content_splitter.setSizes([width, total - width])
+
+
+def _grab_inspector(window, out_path: Path) -> Path:
+    """The whole inspector content, unscrolled: the panel grab only shows
+    whatever part of it fits the splitter's lower pane."""
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    window.units_panel.inspector_host.grab().save(str(out_path))
+    return out_path
 
 
 def _grab(window, out_path: Path) -> None:
@@ -142,6 +160,9 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
     path = out_dir / f"w{width}_2_angle_rotation_const_selected.png"
     _grab(window, path)
     written.append(path)
+    written.append(_grab_inspector(window, out_dir / f"w{width}_2a_archer_inspector.png"))
+    window.units_panel.show_unit(_entry_for(window, 105))
+    written.append(_grab_inspector(window, out_dir / f"w{width}_2b_trebuchet_inspector.png"))
 
     # 3. A tree selected -- Hit points only, rotation note visible.
     window.units_panel.show_unit(_entry_for(window, 102))
@@ -149,11 +170,21 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
     _grab(window, path)
     written.append(path)
 
-    # 4. Three units selected -- the count readout.
-    window.units_panel.show_selection_count(3)
-    path = out_dir / f"w{width}_4_three_selected.png"
+    # 4. Group mode (GH #71): two archers agree on name/owner/rotation, and
+    # X/Y read "(mixed)"; then archers + a tree, which adds a mixed owner and
+    # name and the "1 of 3 won't rotate" note.
+    window.units_panel.show_group([_entry_for(window, 103), _entry_for(window, 104)])
+    path = out_dir / f"w{width}_4a_group_agreeing.png"
     _grab(window, path)
     written.append(path)
+    written.append(_grab_inspector(window, out_dir / f"w{width}_4a_group_agreeing_inspector.png"))
+    window.units_panel.show_group([_entry_for(window, ref) for ref in (101, 102, 103)])
+    path = out_dir / f"w{width}_4b_group_mixed.png"
+    _grab(window, path)
+    written.append(path)
+    written.append(_grab_inspector(window, out_dir / f"w{width}_4b_group_mixed_inspector.png"))
+    window.units_panel.show_group([_entry_for(window, ref) for ref in (101, 105)])
+    written.append(_grab_inspector(window, out_dir / f"w{width}_4c_group_mixed_direction_counts_inspector.png"))
 
     # 5. Catalog filtered to a long name -- the elision check.
     window.units_panel.catalog_view.filter_edit.setText(_LONG_NAME_FILTER)

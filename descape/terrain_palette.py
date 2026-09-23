@@ -100,6 +100,10 @@ BUILDING_TILE_OFFSETS: dict[int, frozenset[tuple[int, int]]] = {
     int(uid): frozenset((ox, oy) for ox, oy in offsets)
     for uid, offsets in _UNIT_RENDER_DATA.get("building_tiles", {}).items()
 }
+# The 260 heroes the game draws its golden glow around (GH #39), generated
+# from the .dat's hero_mode bits and hero_glow_graphic; see
+# tools/gen_unit_render_data.py's "hero_glow" docs for the rule.
+HERO_GLOW_CONSTS: frozenset[int] = frozenset(_UNIT_RENDER_DATA.get("hero_glow", []))
 # unit_const -> (span_x, span_y) for the 96 cliff consts, which are not
 # buildings and so have no BUILDING_TILE_SPANS entry -- see
 # tools/gen_unit_render_data.py's "object_spans" docs for why they need one

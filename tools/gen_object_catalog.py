@@ -7,8 +7,10 @@ code -> "UNKNOWN_<id>").
 
 Pure factual id/field correspondence data extracted via genieutils-py, same
 reasoning as terrain_texture_map.json/tree_unit_ids.json -- commits integers
-and the .dat's own short internal codes only, never a display string. Real
-in-game display names are resolved at runtime from the user's own install
+and the .dat's own short internal codes only, never a display string.
+An object's `no_graphic` key is present (always True) only when its .dat
+standing_graphic[0] is -1; unit_kind.invisible_consts() is derived from it.
+Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
 
@@ -37,6 +39,9 @@ def _object_entries(units: list) -> dict[str, dict]:
             "icon": unit.icon_id,
             "code": unit.name,
         }
+        # Omitted when false, so the committed diff is only the ~200 consts that need it.
+        if unit.standing_graphic[0] == -1:
+            entries[str(unit_const)]["no_graphic"] = True
     return entries
 
 

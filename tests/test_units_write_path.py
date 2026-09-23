@@ -295,6 +295,33 @@ def test_placed_moved_and_reassigned_units_all_read_back(tmp_path: Path) -> None
     assert next_id > new_ref
 
 
+def test_an_added_occupant_reads_back_inside_its_host(tmp_path: Path) -> None:
+    """GH #42: Add... is a plain add() with garrisoned_in_id set, so the only
+    new thing on the write path is that field surviving the round trip on a
+    unit the file did not have before."""
+    loaded, model = _open()
+    host = _unit(loaded, _REF_HOUSE)
+    occupant = model.add(
+        player=1,
+        unit_const=4,
+        x=host.x,
+        y=host.y,
+        z=host.z,
+        garrisoned_in_id=host.reference_id,
+    )
+    new_ref = occupant.reference_id
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    reloaded = load_map_and_units(out)
+
+    got = next(u for u in reloaded.unit_manager.units[1] if u.reference_id == new_ref)
+    assert got.garrisoned_in_id == host.reference_id
+    assert (got.x, got.y, got.unit_const) == (host.x, host.y, 4)
+    # The host is still there to be garrisoned in, and unchanged.
+    assert any(u.reference_id == _REF_HOUSE for u in reloaded.unit_manager.units[1])
+
+
 def test_next_unit_id_is_untouched_when_nothing_was_added(tmp_path: Path) -> None:
     loaded, model = _open()
     original_next_id = int.from_bytes(loaded.decompressed_body[0:4], "little")

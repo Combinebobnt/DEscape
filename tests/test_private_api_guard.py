@@ -1,7 +1,7 @@
 """Guards the AoE2ScenarioParser==0.8.3 pin (see requirements.txt's own
-comment on why it's pinned, not just listed): descape/scenario_io.py and
-descape/elevation_tools.py each reach into several of that library's
-*private* names. Nothing else asserts these still exist -- an unpinned or
+comment on why it's pinned, not just listed): descape/scenario_io.py,
+descape/elevation_tools.py, descape/trigger_fields.py (the quantity cluster)
+and others each reach into several of that library's *private* names. Nothing else asserts these still exist -- an unpinned or
 bumped install could silently drop or rename one of them, and the first
 sign would be a runtime AttributeError/ImportError deep inside a real
 scenario load, not a clear failure here.
@@ -23,7 +23,11 @@ from pathlib import Path
 
 from AoE2ScenarioParser.objects.aoe2_object import AoE2Object
 from AoE2ScenarioParser.objects.data_objects.condition import Condition
-from AoE2ScenarioParser.objects.data_objects.effect import Effect
+from AoE2ScenarioParser.objects.data_objects.effect import (
+    Effect,
+    _get_armour_attack_source,
+    _is_float_quantity_effect,
+)
 from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.data_objects.variable import Variable
@@ -193,6 +197,36 @@ def test_trigger_exposes_the_generic_condition_and_effect_constructors() -> None
     assert len(uncovered) == 71
 
 
+def test_every_vocabulary_has_type_0_unit_reference_defaults() -> None:
+    """trigger_clipboard.reference_fields() takes a Unit/Unit[] field's
+    default from the type-0 entry, overlaid with the type's own (v1.58's Task
+    Object lists no selected_object_ids default). A version whose type 0 lacked one
+    would make a cross-document paste clear nothing and report 0 (GH #3)."""
+    from descape import library_compat
+
+    versions = [
+        version.name[1:]
+        for version in sorted(library_compat.VERSIONS_DIR.iterdir())
+        if (version / "conditions.json").is_file()
+    ]
+    assert {"1.36", "1.44", "1.54", "1.58"} <= set(versions), versions
+    for version in versions:
+        vocabulary = library_compat.load_vocabulary(version)
+        condition_0 = vocabulary.conditions.get(0)
+        effect_0 = vocabulary.effects.get(0)
+        assert condition_0 is not None and effect_0 is not None, version
+        assert condition_0.default_attributes.get("unit_object") == -1, version
+        assert effect_0.default_attributes.get("selected_object_ids") == [], version
+        assert effect_0.default_attributes.get("location_object_reference") == -1, version
+        for base, presentation in (
+            (condition_0, vocabulary.condition_presentation),
+            (effect_0, vocabulary.effect_presentation),
+        ):
+            for field, shown_as in presentation.items():
+                if shown_as in ("Unit", "Unit[]"):
+                    assert base.default_attributes.get(field) is not None, (version, field)
+
+
 def test_aoe2object_has_get_object_attrs() -> None:
     """tests/test_trigger_write_path.py's field-for-field round-trip snapshot
     is driven off this rather than a hand-listed set of attribute names, so a
@@ -220,6 +254,40 @@ def test_effect_exposes_the_raw_quantity_triple() -> None:
     for effect in effects:
         for name in ("_quantity_int", "_quantity_float", "variable"):
             assert hasattr(effect, name), f"Effect instance has no {name}"
+
+
+def test_the_quantity_cluster_gates_and_raw_fields_exist() -> None:
+    """trigger_fields.live_quantity_slot() asks these two library gates which
+    slot serializes, and cluster_fixup()/cluster_incoherence() read the three
+    raw fields, because on a broken pair the public quantity getter raises."""
+    assert _get_armour_attack_source(51, 8) == "quantity"
+    assert _get_armour_attack_source(79, 8) == "variable"
+    assert _get_armour_attack_source(51, 0) is None
+    assert callable(_is_float_quantity_effect)
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+    manager = parse_triggers(load_map_and_units(fixture))
+    assert manager is not None
+    aa, plain = manager.triggers[1].effects
+    assert (aa._armour_attack_quantity, aa._armour_attack_class) == (2, 3)
+    assert plain._quantity == 45
+    assert _is_float_quantity_effect(51, 13) and not _is_float_quantity_effect(51, 0)
+
+
+def test_triggers_keep_uuid_stamped_inner_lists_the_clipboard_restamps() -> None:
+    """trigger_clipboard.paste_into() restamps each pasted trigger's inner
+    effect/condition UuidList `_uuid` to the destination manager's, since the
+    manager restamps only the entries. Pins those names."""
+    from AoE2ScenarioParser.objects.support.uuid_list import UuidList
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+    manager = parse_triggers(load_map_and_units(fixture))
+    assert manager is not None and hasattr(manager, "_uuid")
+    trigger = manager.triggers[0]
+    for name in ("_effects", "_conditions"):
+        inner = getattr(trigger, name)
+        assert isinstance(inner, UuidList), f"Trigger.{name} is not a UuidList"
+        assert inner._uuid == manager._uuid
 
 
 def test_trigger_section_retrievers_expose_serialization_and_datatypes() -> None:
@@ -308,3 +376,33 @@ def test_xs_attachment_retrievers_are_reachable() -> None:
     content = s._scenario.sections["Files"].retriever_map["script_file_content"]
     assert isinstance(content, Retriever)
     assert isinstance(content.data, str)
+
+
+def test_map_links_library_compat_rebuilds_are_where_it_expects() -> None:
+    """library_compat.adapt_map_links() rebuilds the Map group of
+    MapManager._link_list minus `_map_color_mood`, and TerrainTile's group
+    minus `layer`, for a structure lacking those fields (v1.21). It relies on
+    both links existing under those names, on MapManager.__init__ taking
+    `_map_color_mood` as a required argument (so it must be fed a value, not
+    dropped), on TerrainTile.__init__ defaulting `layer` to -1 (so it can be
+    dropped), and on a group calling pull_from_link/push_to_link on its
+    children (the two methods _AbsentFieldLink overrides)."""
+    import inspect
+
+    from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
+
+    for cls, name in ((MapManager, "_map_color_mood"), (TerrainTile, "layer")):
+        assert isinstance(cls._link_list, list) and cls._link_list, f"{cls.__name__} has no own _link_list"
+        groups = [e for e in cls._link_list if isinstance(e, RetrieverObjectLinkGroup)]
+        assert any(name in [link.name for link in g.group] for g in groups), (
+            f"{cls.__name__}._link_list has no group holding {name!r}"
+        )
+
+    mm_params = inspect.signature(MapManager.__init__).parameters
+    assert "_map_color_mood" in mm_params
+    assert mm_params["_map_color_mood"].default is inspect.Parameter.empty
+    assert inspect.signature(TerrainTile.__init__).parameters["layer"].default == -1
+
+    group_source = inspect.getsource(RetrieverObjectLinkGroup)
+    assert "link.pull_from_link(" in group_source
+    assert "link.push_to_link(" in group_source

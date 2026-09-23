@@ -5,7 +5,43 @@ files. Renders the terrain grid and unit placement, and supports terrain/elevati
 editing with undo/redo and a scriptable batch-edit API, without needing the
 in-game editor.
 
+## Download
+
+Prebuilt builds that need no Python install are attached to every
+[release](https://github.com/Combinebobnt/DEscape/releases/latest). CI builds
+and smoke-tests them on every `v*` tag. Pick the asset for your platform:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x86_64 | `DEscape-<version>-x86_64.AppImage` (single file), or `DEscape-<version>-linux-x86_64.tar.gz` |
+| Windows x86_64 | `DEscape-<version>-windows-x86_64.zip` |
+| macOS, Apple Silicon | `DEscape-<version>-macos-arm64.tar.gz` |
+
+There is no Intel Mac build; run from source there (see Setup below). The
+`.tar.gz` and `.zip` archives unpack to a `DEscape` folder: run `DEscape`
+(`DEscape.exe` on Windows) inside it, and keep the rest of the folder beside it.
+
+First-run notes:
+- **Linux AppImage:** make it executable first (`chmod +x DEscape-*.AppImage`,
+  or tick "Allow executing" in your file manager's Properties). It is type-2,
+  so it also needs `libfuse2` (`sudo apt install libfuse2` on Debian/Ubuntu),
+  or run it with `./DEscape-*.AppImage --appimage-extract-and-run` if FUSE
+  isn't available.
+- **Linux, both formats:** v0.8 and later builds need glibc 2.28 or newer
+  (Ubuntu 20.04, Debian 10, RHEL 8 or later); the v0.7 builds need 2.35
+  (Ubuntu 22.04, Debian 12, Fedora 36 or later). On an older distro they fail
+  with a `GLIBC_2.xx not found` error; run from source there instead.
+- **Windows:** the build is not code-signed, so SmartScreen may show "Windows
+  protected your PC". Choose More info, then Run anyway. A console window opens
+  alongside the editor; that is expected.
+- **macOS:** the build is not signed or notarized, so Gatekeeper blocks it on
+  first launch. Allow it under System Settings > Privacy & Security > Open
+  Anyway, or clear the download flag with
+  `xattr -dr com.apple.quarantine DEscape` on the unpacked folder. (UNTESTED!)
+
 ## Setup
+
+Everything in this section is for running from source instead of a download.
 
 ### Quickest way to run it
 
@@ -129,19 +165,6 @@ real scenario and check the output still looks sane before trusting it.
 
 </details>
 
-## Prebuilt builds
-
-Each [tagged release](https://github.com/Combinebobnt/DEscape/releases) has
-frozen, no-Python-required builds attached: a `.tar.gz` for Linux/macOS, a
-`.zip` for Windows, and a Linux `.AppImage`. These are built and tested by CI
-on every `v*` tag push; the setup steps above are only needed if you'd
-rather run from source.
-
-The AppImage is type-2, so it needs either a `libfuse2` package installed
-(most distros ship this, or `sudo apt install libfuse2` on Debian/Ubuntu) or
-running it with `./DEscape-*.AppImage --appimage-extract-and-run` if FUSE
-isn't available.
-
 ## Usage
 
 The easiest way to start the GUI is `LAUNCH_DEscape_LinuxMac.sh`/
@@ -213,6 +236,14 @@ randomizes `rotation`, which is a graphic-variant index rather than an angle for
 many GAIA objects; pass `rotation_choices=` with values you've confirmed if you
 need variety.
 
+The same thing from the GUI is **Edit > Scatter Units in Region…**: pick an
+object (and an owner) in the Units panel, outline an area with the Select tool
+in Terrain mode, then open the dialog from any mode. It filters the outlined
+region to eligible tiles (any tile, water only, or one terrain type),
+optionally skips tiles already under a unit, and places a count or a density of
+randomized copies as one undo step. The live "N eligible tiles" line is exactly
+what will be placed.
+
 `batch_scripts/` has runnable examples:
 
 ```bash
@@ -252,7 +283,7 @@ the *actual* average color of each terrain's real texture instead — no visual
 difference in code, `descape/terrain_palette.py`'s `color_for_terrain_id()` just
 starts returning better numbers.
 
-Easiest way: use the "AoE2DE install path" field in the viewer's sidebar (type
+Easiest way: use the "AoE2DE install path" field in Edit > Settings…, General tab (type
 or Browse… to it, then Load) — it validates the path and writes it to
 `config.yaml` for you. Equivalently, copy `config.example.yaml` to
 `config.yaml` yourself and set `aoe2de_install` to your AoE2DE install root

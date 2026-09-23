@@ -386,3 +386,155 @@ def test_a_push_at_the_tip_leaves_the_saved_marker_alone() -> None:
     assert hist.is_dirty
     hist.undo(tiles)
     assert not hist.is_dirty, "undoing back onto the saved cursor is clean again"
+
+
+# -- jump_to / span_kinds / on_change (GH #30's History window) ---------------
+
+
+def _three_paints() -> tuple[EditHistory, list[FakeTile]]:
+    """Three single-tile records, so the tile's terrain_id reads back the
+    cursor position directly: cursor 0 -> 0, cursor 1 -> 1, and so on."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    for value in (1, 2, 3):
+        hist.apply(f"paint {value}", tiles, _paint(tiles, 0, value))
+    return hist, tiles
+
+
+def test_jump_to_zero_replays_every_undo() -> None:
+    hist, tiles = _three_paints()
+    assert hist.jump_to(0, tiles) == [0]
+    assert hist.cursor == 0
+    assert tiles[0].terrain_id == 0
+
+
+def test_jump_to_a_middle_entry_lands_exactly_there() -> None:
+    hist, tiles = _three_paints()
+    hist.jump_to(1, tiles)
+    assert hist.cursor == 1
+    assert tiles[0].terrain_id == 1
+
+
+def test_jump_forward_replays_the_redos() -> None:
+    hist, tiles = _three_paints()
+    hist.jump_to(0, tiles)
+    assert hist.jump_to(3, tiles) == [0]
+    assert hist.cursor == 3
+    assert tiles[0].terrain_id == 3
+
+
+def test_jump_to_the_current_cursor_is_a_no_op() -> None:
+    hist, tiles = _three_paints()
+    assert hist.jump_to(3, tiles) == []
+    assert hist.cursor == 3
+    assert tiles[0].terrain_id == 3
+
+
+def test_jump_out_of_range_raises_without_moving() -> None:
+    hist, tiles = _three_paints()
+    for target in (-1, 4):
+        with pytest.raises(ValueError, match="out of range"):
+            hist.jump_to(target, tiles)
+    assert hist.cursor == 3
+    assert tiles[0].terrain_id == 3
+
+
+def test_jump_dedupes_tile_indices_across_the_span() -> None:
+    """All three records touch tile 0, and _apply_dirty() branches on the
+    count of what it is handed -- one tile repainted three times is one
+    repaint, not three."""
+    hist, tiles = _three_paints()
+    assert hist.jump_to(0, tiles) == [0]
+
+
+def test_jump_onto_the_saved_cursor_reads_clean_again() -> None:
+    hist, tiles = _three_paints()
+    hist.jump_to(1, tiles)
+    hist.mark_saved()
+    saved = hist.saved_at_cursor
+    hist.jump_to(3, tiles)
+    assert hist.is_dirty
+    hist.jump_to(1, tiles)
+    assert hist.saved_at_cursor == saved, "a jump never touches the saved marker"
+    assert not hist.is_dirty
+
+
+def test_a_refused_record_mid_span_leaves_the_cursor_and_the_tiles_alone() -> None:
+    """require_target() runs over the WHOLE span before anything moves, so a
+    jump past an unrestorable record is all-or-nothing, exactly like undo()."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.push_trigger_record(_trigger_record())
+    hist.apply("paint again", tiles, _paint(tiles, 0, 9))
+    with pytest.raises(RuntimeError, match="no TriggerEditModel"):
+        hist.jump_to(0, tiles)
+    assert hist.cursor == 3
+    assert tiles[0].terrain_id == 9, "no record in the span may have been applied"
+
+
+def test_span_kinds_unions_the_span_including_a_composite() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.push_composite_record(
+        CompositeDiffRecord("paste", children=[_tile_record(), _unit_record()])
+    )
+    assert hist.span_kinds(0) == frozenset({"tile", "unit"})
+    assert hist.span_kinds(1) == frozenset({"tile", "unit"}), "only the composite"
+    assert hist.span_kinds(2) == frozenset(), "the cursor is already there"
+
+
+def test_span_kinds_out_of_range_raises() -> None:
+    hist, _tiles = _three_paints()
+    with pytest.raises(ValueError, match="out of range"):
+        hist.span_kinds(9)
+
+
+class _Counter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> None:
+        self.calls += 1
+
+
+def test_on_change_fires_once_per_mutation() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    counter = _Counter()
+    hist.on_change = counter
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    assert counter.calls == 1
+    hist.apply("paint again", tiles, _paint(tiles, 0, 9))
+    assert counter.calls == 2
+    hist.undo(tiles)
+    assert counter.calls == 3
+    hist.redo(tiles)
+    assert counter.calls == 4
+    hist.mark_saved()
+    assert counter.calls == 5
+    hist.reset()
+    assert counter.calls == 6
+
+
+def test_on_change_fires_once_for_a_whole_jump() -> None:
+    """Not once per step: the History window would otherwise rebuild its
+    whole tree N times for one double-click."""
+    hist, tiles = _three_paints()
+    counter = _Counter()
+    hist.on_change = counter
+    hist.jump_to(0, tiles)
+    assert counter.calls == 1
+
+
+def test_on_change_does_not_fire_on_a_no_op() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    counter = _Counter()
+    hist.on_change = counter
+    hist.undo(tiles)
+    hist.redo(tiles)
+    hist.apply("nothing", tiles, lambda: None)
+    hist.jump_to(0, tiles)
+    assert counter.calls == 0

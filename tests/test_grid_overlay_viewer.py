@@ -1,9 +1,12 @@
 """GridItem and MapView's View > Grid lifecycle, driven through real offscreen
 paint dispatch. Structured after tests/test_edge_ticks_viewer.py.
 
-Unlike the ticks, the grid is supposed to change interior pixels, so the
-leak detector here compares a hidden grid against a grid removed from the
-scene outright, not on against off.
+The grid has two halves. With Follow Terrain Elevation on (and always in
+Flat) it is baked into the chunk cache, checked here through the live cache's
+own spec and pixels; GridItem only draws the follow-off lattice and the
+Settings > Appearance slider preview. Unlike the ticks, the overlay is
+supposed to change interior pixels, so its leak detector compares a hidden
+item against one removed from the scene outright, not on against off.
 """
 
 from __future__ import annotations
@@ -187,21 +190,48 @@ def _window():
     return window
 
 
-def test_the_item_is_built_in_every_terrain_style_and_keeps_its_state() -> None:
+def _overlay_window():
+    """Follow Terrain Elevation off, the one iso mode GridItem still draws."""
+    window = _window()
+    window.map_view.set_grid_follow_elevation(False)
+    return window
+
+
+def _probe_rect(view, tile=(60, 60), tiles: int = 4):
+    from PyQt5.QtCore import QRectF
+
+    from descape import iso_geometry as ig
+
+    proj = view._iso_proj
+    sx, sy = ig.tile_screen_origin(tile[0], tile[1], 0, proj)
+    return QRectF(sx, sy, tiles * proj.half_w, tiles * proj.half_h)
+
+
+def _cache_pixels(window, tile=(60, 60)):
+    """The live cache's own pixels around `tile`, no scene items involved."""
+    rect = _probe_rect(window.map_view, tile, 8)
+    x0, y0 = int(rect.left()), int(rect.top())
+    return window._cache.render_rect(x0, y0, x0 + int(rect.width()), y0 + int(rect.height())).copy()
+
+
+def test_the_bake_follows_every_terrain_style_and_keeps_its_state() -> None:
+    """A style switch builds a fresh cache in set_source(), which must get the
+    spec re-applied or the grid silently drops until the next toggle."""
     from PyQt5.QtWidgets import QApplication
 
     window = _window()
     try:
         window.map_view.set_grid_appearance(-60, 3)
-        expected_alpha = grid_overlay.grid_colors(-60)[0][3]
+        expected = grid_overlay.grid_bake(True, -60, 3)
         for style in ("Flat", "Sloped", "Stepped"):
             window.terrain_style_combo.setCurrentText(style)
             QApplication.processEvents()
             item = window.map_view._grid_item
             assert item is not None, style
-            assert item.isVisible(), style
+            assert not item.isVisible(), f"{style}: the bake is live, so the overlay must be hidden"
+            assert window._cache.grid == expected, style
             minor_pen, _major = item.pens()
-            assert minor_pen.color().alpha() == expected_alpha, style
+            assert minor_pen.color().alpha() == expected.minor[3], style
             assert minor_pen.width() == 3, style
             assert minor_pen.isCosmetic(), style
     finally:
@@ -213,7 +243,7 @@ def test_the_brush_highlight_stacks_above_the_grid() -> None:
     later at the same Z, paints over it by insertion order."""
     from PyQt5.QtCore import Qt
 
-    window = _window()
+    window = _overlay_window()
     try:
         view = window.map_view
         window.mode_terrain_action.trigger()
@@ -227,19 +257,15 @@ def test_the_brush_highlight_stacks_above_the_grid() -> None:
         conftest.close_window(window)
 
 
-def test_a_hidden_grid_is_byte_identical_to_no_grid_and_never_paints() -> None:
-    from PyQt5.QtCore import QRectF
-
-    from descape import iso_geometry as ig
+def test_a_hidden_overlay_is_byte_identical_to_no_overlay_and_never_paints() -> None:
     from testkit.qt_capture import scene_rect_to_array
 
-    window = _window()
+    window = _overlay_window()
     try:
         view = window.map_view
-        proj = view._iso_proj
-        sx, sy = ig.tile_screen_origin(60, 60, 0, proj)
-        rect = QRectF(sx, sy, 4 * proj.half_w, 4 * proj.half_h)
+        rect = _probe_rect(view)
         item = view._grid_item
+        assert window._cache.grid == grid_overlay.DEFAULT_GRID, "follow off must not bake"
 
         shown = scene_rect_to_array(view.scene(), rect)
         view.set_grid_overlay(False)
@@ -252,6 +278,19 @@ def test_a_hidden_grid_is_byte_identical_to_no_grid_and_never_paints() -> None:
 
         assert np.array_equal(hidden, removed)
         assert not np.array_equal(shown, hidden), "the shown grid drew nothing, so the check is vacuous"
+    finally:
+        conftest.close_window(window)
+
+
+def test_turning_the_baked_grid_off_restores_the_exact_pixels() -> None:
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        before = _cache_pixels(window)
+        window.grid_action.setChecked(True)
+        on = _cache_pixels(window)
+        window.grid_action.setChecked(False)
+        assert not np.array_equal(before, on), "the baked grid drew nothing, so the check is vacuous"
+        assert np.array_equal(before, _cache_pixels(window))
     finally:
         conftest.close_window(window)
 
@@ -289,6 +328,8 @@ def test_closing_a_map_then_resizing_and_restyling_does_not_touch_a_deleted_item
         window.map_view._capture_zoom_baseline()
         window.map_view.set_grid_overlay(False)
         window.map_view.set_grid_appearance(-30, 2)
+        window.map_view.begin_grid_preview()
+        window.map_view.end_grid_preview()
     finally:
         conftest.close_window(window)
 
@@ -321,14 +362,16 @@ def test_the_action_opens_at_the_persisted_state(monkeypatch) -> None:
         conftest.close_window(window)
 
 
-def test_the_toggle_persists_and_reaches_the_view() -> None:
+def test_the_toggle_persists_and_reaches_the_cache() -> None:
     window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
     try:
         window.grid_action.setChecked(True)
         assert settings.get_grid_overlay() is True
-        assert window.map_view._grid_item.isVisible()
+        assert window._cache.grid.paints
+        assert not window.map_view._grid_item.isVisible()
         window.grid_action.setChecked(False)
         assert settings.get_grid_overlay() is False
+        assert window._cache.grid == grid_overlay.DEFAULT_GRID
         assert not window.map_view._grid_item.isVisible()
     finally:
         conftest.close_window(window)
@@ -397,18 +440,78 @@ def test_the_blend_label_names_the_side(blend: int, label: str) -> None:
     assert SettingsDialog._blend_label(blend) == label
 
 
-def test_dragging_a_slider_persists_and_reaches_the_live_item_synchronously() -> None:
-    """No apply timer, deliberately: the handler must have run by the time
-    setValue() returns."""
+def _count_spec_changes(cache) -> list:
+    changes = []
+    original = cache.set_grid
+
+    def counting(spec):
+        if spec != cache.grid:
+            changes.append(spec)
+        original(spec)
+
+    cache.set_grid = counting
+    return changes
+
+
+def test_a_drag_evicts_twice_per_gesture_not_per_tick() -> None:
+    """The first tick pulls the bake and shows GridItem's preview; every tick
+    after is pens only; the release re-bakes at the final appearance."""
     dialog, window = _dialog_and_window(BLANK_TEMPLATE_PATH)
     try:
+        view = window.map_view
+        view.set_grid_overlay(True)
+        changes = _count_spec_changes(window._cache)
+        slider = dialog.grid_blend_slider
+        slider.setSliderDown(True)
+        for value in (-10, -20, -30, -40):
+            slider.setValue(value)
+        assert changes == [grid_overlay.DEFAULT_GRID]
+        assert view.grid_previewing()
+        assert view._grid_item.isVisible()
+        minor_pen, _ = view._grid_item.pens()
+        assert minor_pen.color().alpha() == grid_overlay.grid_colors(-40)[0][3]
+        slider.setSliderDown(False)
+        applied = grid_overlay.grid_bake(True, -40, settings.get_grid_thickness())
+        assert changes == [grid_overlay.DEFAULT_GRID, applied]
+        assert window._cache.grid == applied
+        assert not view.grid_previewing()
+        assert not view._grid_item.isVisible()
+        assert settings.get_grid_blend() == -40
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_a_keyboard_change_is_applied_when_the_dialog_closes() -> None:
+    """No press/release pair, so a timer applies it; closing the dialog
+    first must not leave the grid stuck in its unbaked preview."""
+    dialog, window = _dialog_and_window(BLANK_TEMPLATE_PATH)
+    try:
+        view = window.map_view
+        view.set_grid_overlay(True)
+        dialog.grid_thickness_slider.setValue(grid_overlay.thickness_index(4))
+        assert view.grid_previewing()
+        assert dialog._grid_apply_timer.isActive()
+        dialog.reject()  # what Close, Escape and the title-bar X all reach
+        assert not view.grid_previewing()
+        assert window._cache.grid.thickness == 4
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_overlay_mode_never_evicts_from_the_sliders() -> None:
+    dialog, window = _dialog_and_window(BLANK_TEMPLATE_PATH)
+    try:
+        view = window.map_view
+        view.set_grid_overlay(True)
+        view.set_grid_follow_elevation(False)
+        changes = _count_spec_changes(window._cache)
         dialog.grid_blend_slider.setValue(-30)
         dialog.grid_thickness_slider.setValue(grid_overlay.thickness_index(4))
-        assert settings.get_grid_blend() == -30
-        assert settings.get_grid_thickness() == 4
-        minor_pen, major_pen = window.map_view._grid_item.pens()
+        assert changes == []
+        assert not view.grid_previewing()
+        minor_pen, major_pen = view._grid_item.pens()
         minor, major = grid_overlay.grid_colors(-30)
-        assert minor_pen.color().red() == major_pen.color().red() == 0  # darkening
         assert (minor_pen.color().alpha(), major_pen.color().alpha()) == (minor[3], major[3])
         assert minor_pen.width() == major_pen.width() == 4
     finally:
@@ -435,84 +538,12 @@ def _ramped_window(style: str = "Stepped"):
     # the style already showing is a no-op, so re-render explicitly.
     window.refresh_map()
     QApplication.processEvents()
-    window.map_view.set_grid_overlay(True)
-    window.map_view.set_grid_follow_elevation(True)
+    window._on_grid_overlay_toggled(True)
+    window._on_grid_follow_toggled(True)
     return window
 
 
-# The tile the geometry checks below both capture around and edit: a windowed
-# grid only rebuilds what the visible rect covers, so an edit elsewhere on the
-# map legitimately leaves its segments untouched.
 _PROBE = (60, 60)
-
-
-def _interior_capture(view, tile=_PROBE):
-    from PyQt5.QtCore import QRectF
-
-    from descape import iso_geometry as ig
-    from testkit.qt_capture import scene_rect_to_array
-
-    proj = view._iso_proj
-    sx, sy = ig.tile_screen_origin(tile[0], tile[1], 0, proj)
-    return scene_rect_to_array(view.scene(), QRectF(sx - 4 * proj.half_w, sy - 8 * proj.half_h,
-                                                    12 * proj.half_w, 16 * proj.half_h))
-
-
-@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
-def test_draping_reaches_pixels_on_a_raised_map(style: str) -> None:
-    window = _ramped_window(style)
-    try:
-        view = window.map_view
-        # A probe astride the ramp, where the two halves differ in height.
-        mm = window.scenario.map_manager
-        probe = (mm.map_width // 2, mm.map_height // 2)
-        draped = _interior_capture(view, probe)
-        view.set_grid_follow_elevation(False)
-        flat = _interior_capture(view, probe)
-        assert draped.any()
-        assert not np.array_equal(draped, flat)
-    finally:
-        conftest.close_window(window)
-
-
-@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
-def test_on_a_flat_map_the_mode_switch_changes_nothing_on_screen(style: str) -> None:
-    """The sharper half: draping moves lines, it never changes which are
-    drawn."""
-    from PyQt5.QtWidgets import QApplication
-
-    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
-    try:
-        window.terrain_style_combo.setCurrentText(style)
-        QApplication.processEvents()
-        view = window.map_view
-        view.set_grid_overlay(True)
-        view.set_grid_follow_elevation(True)
-        draped = _interior_capture(view)
-        view.set_grid_follow_elevation(False)
-        flat = _interior_capture(view)
-        assert draped.any()
-        assert np.array_equal(draped, flat)
-    finally:
-        conftest.close_window(window)
-
-
-def test_a_hidden_grid_is_byte_identical_to_no_grid_while_draping() -> None:
-    from testkit.qt_capture import scene_rect_to_array
-
-    window = _ramped_window("Sloped")
-    try:
-        view = window.map_view
-        item = view._grid_item
-        view.set_grid_overlay(False)
-        hidden = _interior_capture(view)
-        view.scene().removeItem(item)
-        removed = _interior_capture(view)
-        view.scene().addItem(item)
-        del scene_rect_to_array
-        assert np.array_equal(hidden, removed)
-    finally:
-        conftest.close_window(window)
 
 
 def _raise_tile(window, x: int, y: int) -> None:
@@ -524,130 +555,34 @@ def _raise_tile(window, x: int, y: int) -> None:
     window.on_edit_stroke_end()
 
 
-def _live_segments(view) -> set:
-    """Every segment the grid item is currently drawing from."""
-    _interior_capture(view)
-    return {tuple(row) for segments in view._grid_item._draped for row in segments.tolist()}
-
-
-def _expected_segments(view) -> set:
-    """The same, recomputed from the map's live height field. A capture-based
-    comparison cannot serve here: an elevation edit moves terrain pixels too,
-    so a stale grid still yields a changed image."""
-    item = view._grid_item
-    tiles = np.array(
-        [(x, y) for y in range(view._map_height) for x in range(view._map_width)], dtype=np.int64
-    )
-    source = (
-        {"elevations": view._iso_elevations}
-        if view._terrain_style == "stepped"
-        else {"corner_rise": view._sloped_cache().corner_rise}
-    )
-    minor, major = grid_overlay.draped_lines(tiles, view._terrain_style, view._iso_proj, **source)
-    del item
-    return {tuple(row) for segments in (minor, major) for row in segments.tolist()}
-
-
-def _assert_grid_matches_the_terrain(view) -> None:
-    """Merged runs make a windowed segment a sub-run of a full-map one, so
-    compare the per-tile steps rather than whole segments."""
-    half_w = view._iso_proj.half_w
-    live = _unit_steps(_live_segments(view), half_w)
-    assert live, "the grid drew nothing, so the check is vacuous"
-    assert live <= _unit_steps(_expected_segments(view), half_w)
-
-
-def _unit_steps(segments: set, half_w: int) -> set:
-    steps = set()
-    for x0, y0, x1, y1 in segments:
-        count = abs(x1 - x0) // half_w
-        dx, dy = (x1 - x0) // count, (y1 - y0) // count
-        for k in range(count):
-            a = (x0 + k * dx, y0 + k * dy)
-            steps.add((*min(a, (a[0] + dx, a[1] + dy)), *max(a, (a[0] + dx, a[1] + dy))))
-    return steps
-
-
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
-def test_an_elevation_edit_moves_the_grid_within_the_same_frame(style: str) -> None:
-    """In Sloped this is the regression for SlopedChunkCache.patch() rebinding
-    corner_rise: a reference held from set_source(), or a push that never
-    happens, leaves the grid drawing the pre-edit height field forever."""
+def test_follow_off_swaps_the_bake_for_the_overlay(style: str) -> None:
     window = _ramped_window(style)
     try:
         view = window.map_view
-        _assert_grid_matches_the_terrain(view)
-        before = _live_segments(view)
+        assert window._cache.grid.paints
+        assert not view._grid_item.isVisible()
+        window.grid_follow_action.setChecked(False)
+        assert window._cache.grid == grid_overlay.DEFAULT_GRID
+        assert view._grid_item.isVisible()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_elevation_edit_redrapes_the_grid_with_no_refresh(style: str) -> None:
+    """The edit's own cache.patch() recomposites through self.grid, so the
+    patched pixels must equal a from-scratch render of the edited map with
+    the same spec, which refresh_map() rebuilds through set_source()."""
+    window = _ramped_window(style)
+    try:
+        before = _cache_pixels(window, _PROBE)
         _raise_tile(window, *_PROBE)
-        assert _live_segments(view) != before, "the edit did not reach the grid"
-        _assert_grid_matches_the_terrain(view)
-    finally:
-        conftest.close_window(window)
-
-
-def test_an_edit_made_while_the_grid_is_hidden_still_shows_up_when_it_returns() -> None:
-    window = _ramped_window("Sloped")
-    try:
-        view = window.map_view
-        _assert_grid_matches_the_terrain(view)
-        view.set_grid_overlay(False)
-        _raise_tile(window, *_PROBE)
-        view.set_grid_overlay(True)
-        _assert_grid_matches_the_terrain(view)
-    finally:
-        conftest.close_window(window)
-
-
-def test_a_terrain_only_stroke_rebuilds_no_grid_geometry() -> None:
-    from PyQt5.QtCore import Qt
-
-    window = _ramped_window("Sloped")
-    try:
-        view = window.map_view
-        _interior_capture(view)  # force one rebuild
-        window._on_tool_selected("draw")
-        before = view._grid_item.rebuild_count
-        window.on_edit_stroke_start()
-        window.on_edit_stroke_tile(30, 30, Qt.NoModifier)
-        window.on_edit_stroke_end()
-        _interior_capture(view)
-        assert view._grid_item.rebuild_count == before
-    finally:
-        conftest.close_window(window)
-
-
-def test_an_elevation_stroke_rebuilds_no_more_often_than_it_repaints() -> None:
-    """Qt coalesces the update() calls, so a multi-touch stroke costs a
-    handful of rebuilds, not one per touched tile."""
-    from PyQt5.QtCore import Qt
-
-    window = _ramped_window("Stepped")
-    try:
-        view = window.map_view
-        _interior_capture(view)
-        before = view._grid_item.rebuild_count
-        window.on_edit_stroke_start()
-        for step in range(8):
-            window.on_edit_stroke_tile(20 + step, 20, Qt.NoModifier)
-        window.on_edit_stroke_end()
-        _interior_capture(view)
-        rebuilds = view._grid_item.rebuild_count - before
-        assert 1 <= rebuilds <= 2
-    finally:
-        conftest.close_window(window)
-
-
-def test_the_bounding_rect_covers_every_draped_corner() -> None:
-    window = _ramped_window("Sloped")
-    try:
-        view = window.map_view
-        item = view._grid_item
-        item.set_min_view_scale(1.0)
-        rect = item.boundingRect()
-        _interior_capture(view)
-        for segments in item._draped:
-            for x0, y0, x1, y1 in segments.tolist():
-                assert rect.contains(x0, y0) and rect.contains(x1, y1)
+        patched = _cache_pixels(window, _PROBE)
+        assert not np.array_equal(before, patched), "the edit changed nothing, so the check is vacuous"
+        window.refresh_map()
+        assert window._cache.grid.paints
+        assert np.array_equal(patched, _cache_pixels(window, _PROBE))
     finally:
         conftest.close_window(window)
 
@@ -661,10 +596,8 @@ def test_both_toggles_survive_a_terrain_style_round_trip() -> None:
         QApplication.processEvents()
         window.terrain_style_combo.setCurrentText("Sloped")
         QApplication.processEvents()
-        item = window.map_view._grid_item
-        assert item.isVisible()
-        assert item._follow is True
-        assert item._corner_rise is not None
+        assert window.map_view.grid_bake_live()
+        assert window._cache.grid.paints
     finally:
         conftest.close_window(window)
 
@@ -677,7 +610,7 @@ def test_the_follow_action_persists_reaches_the_view_and_is_never_greyed() -> No
         assert window.grid_follow_action.isChecked() is True  # on by default
         window.grid_follow_action.setChecked(False)
         assert settings.get_grid_follow_elevation() is False
-        assert window.map_view._grid_item._follow is False
+        assert window.map_view._grid_follow_elevation is False
         for style in ("Flat", "Stepped", "Sloped"):
             window.terrain_style_combo.setCurrentText(style)
             QApplication.processEvents()
@@ -686,7 +619,7 @@ def test_the_follow_action_persists_reaches_the_view_and_is_never_greyed() -> No
         conftest.close_window(window)
 
 
-def test_flat_ignores_the_follow_toggle() -> None:
+def test_flat_ignores_the_follow_toggle_and_always_bakes() -> None:
     from PyQt5.QtWidgets import QApplication
 
     window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
@@ -696,7 +629,9 @@ def test_flat_ignores_the_follow_toggle() -> None:
         QApplication.processEvents()
         view = window.map_view
         view.set_grid_overlay(True)
-        view.set_grid_follow_elevation(True)
-        assert view._grid_item._drapes() is False
+        view.set_grid_follow_elevation(False)
+        assert view.grid_bake_live()
+        assert window._cache.grid.paints
+        assert not view._grid_item.isVisible()
     finally:
         conftest.close_window(window)

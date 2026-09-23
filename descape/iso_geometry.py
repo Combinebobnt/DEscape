@@ -691,7 +691,10 @@ def shadow_quad_indices(
     half_h - 2] -- still goes NEGATIVE (the whole point is reaching above
     the diamond's own row 0), so callers MUST still clip (see render.py's
     _clipped_darken), but by at most half_h - 2 rather than by rise_px,
-    and the reach SHRINKS as rise_px grows. depth in [0, span).
+    and the reach SHRINKS as rise_px grows. depth in [0, span). This band
+    is NOT a tile's furthest upward reach: shadow_apex_indices' wedge
+    reaches 2*half_h - rise_px, past half_h at small rises. A bbox sizing
+    that reach reads shadow_reach_px, the union over every pass.
 
     EMPTY BAND: once rise_px >= 2*half_h - 2 the caster fully hides its
     neighbor and all four arrays come back empty (measured first-empty
@@ -1829,6 +1832,22 @@ def iso_tile_extent(
     )
 
 
+@lru_cache(maxsize=64)
+def shadow_reach_px(tile_px: int, elev_step: int) -> int:
+    """Rows a tile's paint can reach above its own top row, at the smallest real rise.
+
+    Read off iso_tile_extent's y_lo with every shadow pass at rise_px =
+    elev_step: each pass's reach shrinks as rise grows, so the smallest
+    legal rise is the worst case (the apex wedge's 2*half_h - rise_px).
+    tests/test_contact_shadow.py pins both that and the monotonicity.
+
+    Sizing a bbox from this is not the reject use iso_tile_extent's SCOPE
+    note forbids: it covers the TERRAIN passes only. Footprints and sprites
+    are sized by _dirty_screen_bbox's own owner-range and sprite-band terms."""
+    y_lo = iso_tile_extent(tile_px, 0, 0, elev_step, elev_step, elev_step)[0]
+    return max(0, -y_lo)
+
+
 @lru_cache(maxsize=256)
 def sloped_tile_outline(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
@@ -2030,10 +2049,10 @@ def tile_screen_bounds_swept(x, y, proj: IsoProjection):
     (screen_x doesn't depend on elevation at all -- see tile_screen_origin);
     y-extent is tallest at max_elev, MINUS the contact-shadow headroom a
     tile could cast even further up-screen onto whatever's behind it
-    (shadow_quad_indices' own dst_y still goes negative, though now by at
-    most half_h - 2 rather than by rise_px -- see that function's
-    docstring), and lowest (plus a full skirt-headroom drop) at min_elev,
-    matching canvas_size_and_origin's own derivation.
+    (the band's dst_y goes negative by at most half_h - 2, the apex
+    wedge's by up to 2*half_h - rise_px -- see shadow_reach_px), and
+    lowest (plus a full skirt-headroom drop) at min_elev, matching
+    canvas_size_and_origin's own derivation.
     Callers that don't need the full sweep (e.g. a single tile at its own
     real elevation) should use tile_screen_origin directly instead -- this
     is deliberately looser than that, by construction.
@@ -2063,15 +2082,15 @@ def tile_screen_bounds_swept(x, y, proj: IsoProjection):
     # to measure: the whole-grid caller below builds and discards a
     # 230,400-entry array for it on this project's largest real map.
     y1 = y0 + 2 * half_h + 2 * elev_span
-    # Contact-shadow headroom above the top edge. The band is a wedge whose
-    # rows run from the caster's own top edge up to at most half_h - 2 above
-    # it (dst_y bottoms out at rise_px - half_h + 1, so the reach SHRINKS as
-    # rise_px grows and is independent of max_elev) -- half_w/half_h scale,
-    # not elev_span scale, which is why half_h is the term that actually
-    # covers it. The elev_span term stays only as retained slack: it was the
-    # old (pre-wedge) bound and dropping it would tighten the candidate set
-    # for no correctness gain, while a looser bbox only ever costs a few
-    # extra rejected candidates -- never a missed one.
+    # Contact-shadow headroom above the top edge. half_h alone does NOT
+    # cover it: the band reaches half_h - 2 rows up, but the apex wedge
+    # (shadow_apex_indices) reaches 2*half_h - rise_px, past half_h at small
+    # rises (shadow_reach_px is the measured union). The elev_span term is
+    # what currently covers the wedge: 16*elev_step >= half_h at every pct
+    # stop, so elev_span + half_h >= 2*half_h - elev_step. It is the
+    # candidate-enumeration bound, loose only at the cost of rejected
+    # candidates. Tightening it (with tiles_in_screen_rect's d_hi) must go
+    # through tools/verify_iso_rect_candidates.py's equivalence proof.
     #
     # corner_headroom_px (0 for Stepped/Flat, see IsoProjection's own
     # comment) widens the same top edge further still -- Sloped's per-corner
@@ -2091,14 +2110,15 @@ def tile_screen_bounds_over(x, y, lo, hi, proj: IsoProjection):
     neighbourhood's. With that given, the bottom edge needs no second
     elev_span for the skirt drop, since the drop ends at `lo`.
 
-    y0 keeps the same retained elev_span slack tile_screen_bounds_swept()
-    carries (see its comment): it is not part of the sweep."""
+    The upward bound is the shadow passes' measured reach above the tile's
+    top row at `hi` (shadow_reach_px, the apex wedge's 2*half_h - elev_step)
+    plus corner_headroom_px. None of it is slack: below pct 100 the wedge
+    reaches past half_h, so a half_h term would under-cover it."""
     half_w, half_h = proj.half_w, proj.half_h
-    elev_span = (proj.max_elev - proj.min_elev) * proj.elev_step
     x0, y_hi = tile_screen_origin(x, y, hi, proj)
     x1 = x0 + 2 * half_w
     y1 = y_hi + (hi - lo) * proj.elev_step + 2 * half_h
-    y0 = y_hi - elev_span - half_h - proj.corner_headroom_px
+    y0 = y_hi - shadow_reach_px(proj.tile_px, proj.elev_step) - proj.corner_headroom_px
     return x0, y0, x1, y1
 
 
@@ -2159,8 +2179,9 @@ def tiles_in_screen_rect(x0: int, y0: int, x1: int, y1: int, w: int, h: int, pro
     # check would catch.
     #
     # Both terms MUST match tile_screen_bounds_swept's own y0 widening
-    # exactly (max_drop is its elev_span, half_h its half_h -- the wedge
-    # band's real reach, see that function's own comment): this enumeration
+    # exactly (max_drop is its elev_span, half_h its half_h; together they
+    # cover the apex wedge's 2*half_h - elev_step reach, which half_h alone
+    # does not -- see that function's own comment): this enumeration
     # bound and that per-candidate "keep" filter are proven equivalent by
     # tools/verify_iso_rect_candidates.py, so widening one without the other
     # breaks that equivalence. Do NOT lean on the trailing +1 pad below,

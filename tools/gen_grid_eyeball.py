@@ -5,12 +5,15 @@ settings-isolation trap testkit.settings_isolation exists for.
 
 Two fixtures, because the two halves of the feature need different terrain:
 
-- the blank template, for the ground-plane lattice in Flat (with and without
+- the blank template, for the grid on flat ground in Flat (with and without
   Isometric View), Stepped and Sloped, at the darkest and lightest stops, plus
-  one fit-to-map capture where the LOD ladder has dropped the minors;
+  one fit-to-map capture. Follow Terrain Elevation is off here, so the iso
+  captures are GridItem's overlay lattice; plain Flat ignores that setting and
+  is always the grid baked into the chunk composite;
 - an elevated `examples/` scenario, for Follow Terrain Elevation on vs off in
-  Stepped and Sloped. Draping is invisible on flat ground, so the first
-  fixture cannot show it at all.
+  Stepped and Sloped. The two halves of that pair are two different
+  mechanisms: "follow" is the baked grid, under the sprites and occluded by
+  nearer raised terrain, and "ground" is the overlay, drawn over everything.
 
 Writes build/grid_eyeball/, gitignored. No test reads it.
 """
@@ -86,6 +89,14 @@ def _grab(window, out_path: Path) -> None:
     window.map_view.viewport().grab().save(str(out_path))
 
 
+def _mechanism(window) -> str:
+    """Which half drew the capture: the bake has no per-view LOD to report."""
+    view = window.map_view
+    if view.grid_bake_live():
+        return f"baked, thickness {window._cache.grid.thickness} canvas px"
+    return f"overlay, lod={view._grid_item.last_lod}"
+
+
 def _ground_plane_captures(out_dir: Path) -> list[Path]:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
@@ -110,13 +121,13 @@ def _ground_plane_captures(out_dir: Path) -> list[Path]:
                 path = out_dir / f"ground_{style.lower()}_{view}_blend_{side}{abs(blend)}.png"
                 _grab(window, path)
                 written.append(path)
-                print(f"  {path.name}: lod={window.map_view._grid_item.last_lod}")
+                print(f"  {path.name}: {_mechanism(window)}")
 
         window.map_view.fitInView(window.map_view._map_rect, Qt.KeepAspectRatio)
         path = out_dir / "ground_flat_top_fit_to_map.png"
         _grab(window, path)
         written.append(path)
-        print(f"  {path.name}: lod={window.map_view._grid_item.last_lod}")
+        print(f"  {path.name}: {_mechanism(window)}")
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -142,7 +153,7 @@ def _drape_captures(out_dir: Path) -> list[Path]:
                 path = out_dir / f"drape_{style.lower()}_{'follow' if follow else 'ground'}.png"
                 _grab(window, path)
                 written.append(path)
-                print(f"  {path.name}")
+                print(f"  {path.name}: {_mechanism(window)}")
     finally:
         window.edit_history.mark_saved()
         window.close()

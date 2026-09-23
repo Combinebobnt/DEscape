@@ -5,7 +5,8 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Five tables, all keyed by unit_const:
+Six tables, five keyed by unit_const and one ("hero_glow") a sorted list of
+consts:
 
 - "buildings": [span_x, span_y] -- the footprint's real width and height in
   TILES, for every unit whose `building` field is populated (i.e. it's an
@@ -115,6 +116,32 @@ Five tables, all keyed by unit_const:
   eye-candy rather than a grid family, and the displacement is invisible on
   a 1-tile sprite. Widening this gate would move them for no gain.
 
+- "hero_glow": [unit_const, ...] -- the heroes the game draws its golden glow
+  around (GH #39). The rule is `(creatable.hero_mode & 0xff) & (1 | 64)` AND
+  `creatable.hero_glow_graphic in 12218..12224`, which gives 260 consts.
+
+  Neither half alone is enough. 529 ordinary units (ARCHR, KNGHT...) also
+  carry a HeroGlow graphic, and so does KINGX 434 (mode 34, no glow
+  in-game), so the graphic cannot mark a hero by itself. Hero-flagged
+  buildings (HTAT, SEAFORF..., mode 1) have glow graphic -1 and drop out,
+  matching the game.
+
+  12218..12224 are the seven gold `HeroGlow <Infantry|Cavalry|Elephant|Ship|
+  Siege|Animal|Admiral>` graphics. Every one of them, and their
+  Small/Medium/Big/Huge deltas 12271..12274, has `file_name None` and
+  `frame_count 0`: the game draws the glow procedurally, so DEscape builds a
+  gold outline from each sprite's alpha (unit_sprites._with_glow) instead of
+  loading art. The three non-gold custom glows are out of scope: 12716
+  (black, WOLF2), 13006 (GreenDragon) and 13008 (WindingBlades).
+
+  Against AoE2ScenarioParser's `HeroInfo` (244 consts), 17 are only in the
+  .dat and 1 (2171, Oystering Ship, mode 0) is only in `HeroInfo`. Modes -111
+  (0x91, 22 Three Kingdoms heroes) and -63 (0xC1, HWOLF 700) set bit 128,
+  which AGE documents as "invert flags". The `& 65` reading keeps all 23;
+  whether HWOLF really glows is settled in-game, not guessed here. Gaia
+  (`civs[0]`) is read, as for every other table: the one civ override of
+  hero_mode (civ 31, CHIEFSYURT) is a building.
+
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install -- neither of which this repo depends on for normal use, only for
 regenerating this file if the game updates its unit table or palette.
@@ -150,6 +177,20 @@ _GATE_CLASS = 39
 # Desert graphic. Taken from the .dat's own class_ rather than a hand-kept
 # const list precisely so that partial family can't be missed.
 _CLIFF_CLASS = 34
+
+
+# The seven gold HeroGlow graphics; see the "hero_glow" docs above.
+_HERO_GLOW_GRAPHICS = range(12218, 12225)
+_HERO_MODE_GLOW_BITS = 1 | 64
+
+
+def _is_glowing_hero(unit) -> bool:
+    creatable = getattr(unit, "creatable", None)
+    if creatable is None:
+        return False
+    return bool((creatable.hero_mode & 0xFF) & _HERO_MODE_GLOW_BITS) and (
+        creatable.hero_glow_graphic in _HERO_GLOW_GRAPHICS
+    )
 
 
 def _gate_tile_offsets(unit, span_x: int, span_y: int) -> list[list[int]] | None:
@@ -209,10 +250,13 @@ def main() -> None:
     object_spans: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
     foundation_terrain: dict[str, int] = {}
+    hero_glow: list[int] = []
 
     for unit_const, unit in enumerate(units):
         if unit is None:
             continue
+        if _is_glowing_hero(unit):
+            hero_glow.append(unit_const)
         if unit.class_ == _CLIFF_CLASS:
             object_spans[str(unit_const)] = [
                 max(1, round(unit.collision_size_x * 2)),
@@ -253,6 +297,7 @@ def main() -> None:
                 "foundation_terrain": dict(
                     sorted(foundation_terrain.items(), key=lambda kv: int(kv[0]))
                 ),
+                "hero_glow": sorted(hero_glow),
             },
             indent=2,
         )
@@ -262,8 +307,9 @@ def main() -> None:
         f"Wrote {len(buildings)} building footprints, "
         f"{len(building_tiles)} sparse building_tiles, "
         f"{len(object_spans)} object_spans, "
-        f"{len(resource_colors)} resource colors and "
-        f"{len(foundation_terrain)} foundation terrains to {out_path}"
+        f"{len(resource_colors)} resource colors, "
+        f"{len(foundation_terrain)} foundation terrains and "
+        f"{len(hero_glow)} glowing heroes to {out_path}"
     )
 
 

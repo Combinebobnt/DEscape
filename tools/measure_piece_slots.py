@@ -219,7 +219,7 @@ def main() -> None:
     committed = getattr(generator, "_PIECE_SLOTS", {})
     measured: dict[int, list[list[int]]] = {}
     print(f"Piece slot measurement -- install {install}")
-    for unit_const in sorted(generator._COMPOSITE_SCOPE):
+    for unit_const in sorted(generator._COMPOSITE_SCOPE | generator._ANNEX_TREE_SCOPE):
         result = measure(unit_const)
         if result is None:
             print(f"\n{unit_const}: no pieces or unreadable art, skipped")

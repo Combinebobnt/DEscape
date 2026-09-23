@@ -1,9 +1,9 @@
-"""Tool-param toolbar widgets (Terrain type / Level / Brush) show only for the
+"""Tool-param toolbar widgets (Trees / Eye candy / Level / Brush) show only for the
 tool that reads them, and mode-inapplicable tool buttons hide rather than
 grey out (ToolDef.modes) -- driven through a real offscreen ViewerWindow, same
 technique and default-tier rationale as tests/test_fill_tool.py.
 
-Asserts on the captured QAction handles (terrain_param_combo_action,
+Asserts on the captured QAction handles (paint_trees_param_action,
 level_param_spin_action, brush_size_spin_action, ...), never on the widgets'
 own isVisible(): under QT_QPA_PLATFORM=offscreen with a never-shown window, a
 widget's isVisible() is False unconditionally, which would make a
@@ -44,8 +44,12 @@ pytestmark = [
 # its own param group (the three paste-filter checkboxes, gated on
 # _current_tool == "select" rather than on ToolDef.param_widget) -- see
 # tests/test_region_select.py's own visibility test.
+# Triggers-only tools (Create Objects) are excluded for the same reason as
+# the Units-only ones; tests/test_create_objects_tool.py covers them.
 _TERRAIN_MODE_TOOLS = [
-    t for t in settings.TOOLS if t.modes != ("units",) and t.tool_id not in ("eyedropper", "select")
+    t
+    for t in settings.TOOLS
+    if viewer_common.tool_applicable(t.tool_id, "terrain") and t.tool_id not in ("eyedropper", "select")
 ]
 
 # Which of the two single-valued params (if either) is expected to be
@@ -77,7 +81,9 @@ def test_tool_visibility_matches_mode_applicability() -> None:
     Terrain-only, so a future mode-gated tool is covered for free."""
     window = conftest.blank_window()
     try:
-        for mode_text, mode_id in [("View", "view"), ("Terrain", "terrain"), ("Units", "units")]:
+        for mode_text, mode_id in [
+            ("View", "view"), ("Terrain", "terrain"), ("Units", "units"), ("Triggers", "triggers")
+        ]:
             window.mode_combo.setCurrentText(mode_text)
             for tool in settings.TOOLS:
                 action = getattr(window, f"{tool.tool_id}_action")
@@ -99,8 +105,9 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
         expected_brush = _expected_brush(tool, window)
         expected_free = _EXPECTED_FREE_PLACE[tool]
 
-        assert window.terrain_param_combo_action.isVisible() == (expected == "terrain")
-        assert window.terrain_param_label_action.isVisible() == (expected == "terrain")
+        # The terrain itself is picked in the sidebar (GH #56); Trees/Eye candy carry its gate.
+        assert window.paint_trees_param_action.isVisible() == (expected == "terrain")
+        assert window.paint_eye_candy_param_action.isVisible() == (expected == "terrain")
         assert window.level_param_spin_action.isVisible() == (expected == "level")
         assert window.level_param_label_action.isVisible() == (expected == "level")
         assert window.brush_size_spin_action.isVisible() == expected_brush
@@ -171,7 +178,7 @@ def test_tool_params_hidden_before_map_loaded() -> None:
     conftest.ensure_qapp()
     window = ViewerWindow()
     try:
-        assert not window.terrain_param_combo_action.isVisible()
+        assert not window.paint_trees_param_action.isVisible()
         assert not window.level_param_spin_action.isVisible()
         assert not window.brush_size_spin_action.isVisible()
         assert not window.tool_param_separator_action.isVisible()
@@ -187,11 +194,11 @@ def test_tool_params_hidden_in_view_mode() -> None:
     window = conftest.terrain_edit_window()
     try:
         window._on_tool_selected("draw")
-        assert window.terrain_param_combo_action.isVisible()
+        assert window.paint_trees_param_action.isVisible()
         assert window.brush_size_spin_action.isVisible()
 
         window.mode_combo.setCurrentText("View")
-        assert not window.terrain_param_combo_action.isVisible()
+        assert not window.paint_trees_param_action.isVisible()
         assert not window.brush_size_spin_action.isVisible()
         assert not window.tool_param_separator_action.isVisible()
     finally:
@@ -244,7 +251,7 @@ _GRASS_1 = 0
 
 
 def _select_terrain(window, terrain_id: int) -> None:
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(terrain_id))
+    window.terrain_panel.set_terrain(terrain_id)
 
 
 def test_auto_beach_shows_only_for_draw() -> None:
@@ -278,7 +285,7 @@ def test_auto_beach_is_live_only_for_a_water_terrain() -> None:
 
 
 def test_switching_the_terrain_regates_the_checkbox() -> None:
-    """terrain_combo had no change signal wired at all before this feature;
+    """The terrain picker had no change signal wired at all before this feature;
     without one the checkbox would keep whatever state the last tool switch
     left it in."""
     window = conftest.terrain_edit_window()
@@ -336,6 +343,22 @@ def test_the_beach_width_defaults_to_one() -> None:
         assert window.beach_width_spin.value() == 1
         assert window.beach_width_spin.minimum() == 1
         assert window.beach_width_spin.maximum() == 3
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_elevation_view_combo_explains_every_style() -> None:
+    """GH #55: the Elevation View combo carries a tooltip naming each style."""
+    from descape.terrain_style import STYLE_LABELS
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        tip = window.terrain_style_combo.toolTip()
+        for label in STYLE_LABELS:
+            assert f"{label}:" in tip, label
     finally:
         window.edit_history.mark_saved()
         window.close()

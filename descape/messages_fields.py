@@ -15,7 +15,7 @@ no newline at all.
 
 `\r\n` is a third token, absent from all 132 Messages values in the 22-file
 corpus but present in trigger `description`, whose prose editor
-(descape/trigger_panel.py's ProseTextEdit) shares these two functions. That
+(descape/text_edits.py's ProseTextEdit) shares these two functions. That
 field is why substitute_newlines() exists as a str -> str helper: a trigger
 field is stored as a str on the entry, and the <H length prefix and NUL
 guard encode_for_write() adds belong to the Messages block alone.

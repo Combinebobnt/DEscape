@@ -108,10 +108,10 @@ from descape.options_model import (
     players_write_supported,
 )
 from descape.scenario_io import (
+    _LAYER_OFFSET,
     _LAYER_STRUCT,
     FORBIDDEN_WRITE_MARKER,
     TEMPLATE_DIR,
-    TERRAIN_STRUCT_SIZE,
     LoadedScenario,
 )
 from descape.trigger_model import TriggerEditModel
@@ -119,7 +119,8 @@ from descape.unit_model import UnitEditModel
 
 # Options.number_of_triggers and FileHeader.trigger_count. Both are their own
 # section's *last* retriever in all 19 DE structure versions, so each is
-# addressed as "the 4 bytes ending where that section ends".
+# addressed as "the 4 bytes ending where that section ends". v1.21 has neither
+# (LoadedScenario.has_trigger_counters), and both patches refuse there.
 _TRIGGER_COUNT_STRUCT = struct.Struct("<I")
 
 # DataHeader.next_unit_id_to_place, the leading u32 of decompressed_body
@@ -155,9 +156,9 @@ def _compress_bytes(data: bytes) -> bytes:
 def _patch_terrain_block(scenario: LoadedScenario) -> bytes:
     """Returns a new decompressed body: scenario.decompressed_body with the
     terrain struct array overwritten from the *current* MapManager.terrain
-    tile values. Only terrain_id, elevation, and layer are touched -- the
-    per-tile 'unused' 3 bytes are carried through untouched, exactly as
-    loaded.
+    tile values, at this file's own terrain_struct_size stride. Only
+    terrain_id, elevation, and (if the struct has one) layer are touched --
+    every other byte is carried through untouched, exactly as loaded.
 
     Elevation is written as-is, with no legality check of its own here:
     elevation_tools.set_tile_elevation() is the one path in this codebase
@@ -170,11 +171,14 @@ def _patch_terrain_block(scenario: LoadedScenario) -> bytes:
     glitch."""
     body = bytearray(scenario.decompressed_body)
     offset = scenario.terrain_block_offset
+    stride = scenario.terrain_struct_size
+    has_layer = scenario.terrain_has_layer
     for i, tile in enumerate(scenario.map_manager.terrain):
-        o = offset + TERRAIN_STRUCT_SIZE * i
+        o = offset + stride * i
         body[o] = tile.terrain_id
         body[o + 1] = tile.elevation
-        _LAYER_STRUCT.pack_into(body, o + 5, tile.layer)
+        if has_layer:
+            _LAYER_STRUCT.pack_into(body, o + _LAYER_OFFSET, tile.layer)
     return bytes(body)
 
 
@@ -203,10 +207,12 @@ def _patch_options(body: bytes, scenario: LoadedScenario, options: OptionsEditMo
     which the caller patches from the live trigger count before calling this.
     No mapped field reaches them -- the backward walk subtracts that retriever
     first -- and this refuses rather than letting the two writers race on the
-    same bytes.
+    same bytes. On a file without trigger counters (v1.21) the reservation is
+    zero-width: those bytes are ordinary Options content there.
     """
     patched = bytearray(body)
-    counter_start = scenario.options_section_end - _TRIGGER_COUNT_STRUCT.size
+    reserved = _TRIGGER_COUNT_STRUCT.size if scenario.has_trigger_counters else 0
+    counter_start = scenario.options_section_end - reserved
     limit = scenario.units_block_offset if scenario.units_block_offset >= 0 else scenario.units_section_end
     for offset, data in options.serialize_patches():
         end = offset + len(data)
@@ -215,7 +221,7 @@ def _patch_options(body: bytes, scenario: LoadedScenario, options: OptionsEditMo
                 f"A Map Options/Diplomacy/Players patch at {offset}..{end} falls outside "
                 f"the pre-Units region this write path owns (ends at {limit})."
             )
-        if offset < scenario.options_section_end and end > counter_start:
+        if reserved and offset < scenario.options_section_end and end > counter_start:
             raise WriteBlockedError(
                 f"A Map Options/Diplomacy/Players patch at {offset}..{end} overlaps "
                 f"Options.number_of_triggers ({counter_start}..{scenario.options_section_end}), "
@@ -229,11 +235,21 @@ def _patch_options(body: bytes, scenario: LoadedScenario, options: OptionsEditMo
     return bytes(patched)
 
 
+def _require_trigger_counters(scenario: LoadedScenario) -> None:
+    if not scenario.has_trigger_counters:
+        raise WriteBlockedError(
+            "This file's structure has no Options.number_of_triggers / "
+            "FileHeader.trigger_count, so there is no trigger count to patch."
+        )
+
+
 def _patch_trigger_count(body: bytes, scenario: LoadedScenario, count: int) -> bytes:
     """Options.number_of_triggers, patched from the live trigger count.
     Lifted out of the old _splice_triggers() (phase 3.5a absorbed the actual
     splice into _assemble_body(), which has to run after both the Units and
-    Triggers sections' lengths are known)."""
+    Triggers sections' lengths are known). Raises on a file with no such
+    counter rather than overwriting whatever its last 4 Options bytes are."""
+    _require_trigger_counters(scenario)
     patched = bytearray(body)
     _TRIGGER_COUNT_STRUCT.pack_into(patched, scenario.options_section_end - _TRIGGER_COUNT_STRUCT.size, count)
     return bytes(patched)
@@ -271,8 +287,14 @@ def _assemble_body(
     )
 
     if units is not None and units.has_edits:
-        assert 0 <= scenario.units_block_offset < scenario.units_section_end <= len(base)
-        head = base[: scenario.units_block_offset] + units.serialize()
+        assert 0 <= scenario.units_block_offset <= scenario.players_units_end <= scenario.units_section_end <= len(base)
+        # The retrievers declared after players_units (none on DE; v1.21's
+        # number_of_players and player_data_3) ride along verbatim.
+        head = (
+            base[: scenario.units_block_offset]
+            + units.serialize()
+            + base[scenario.players_units_end : scenario.units_section_end]
+        )
     else:
         head = base[: scenario.units_section_end]
 
@@ -423,9 +445,11 @@ def _patch_header_instructions(header_bytes: bytes, messages: MessagesEditModel)
     return header_bytes[:start] + payload + header_bytes[end:]
 
 
-def _patch_header_trigger_count(header_bytes: bytes, count: int) -> bytes:
+def _patch_header_trigger_count(header_bytes: bytes, scenario: LoadedScenario, count: int) -> bytes:
     """FileHeader.trigger_count, the header's last 4 bytes. The header lives
-    outside the compressed body entirely, so it is patched separately."""
+    outside the compressed body entirely, so it is patched separately.
+    Raises on a file with no such field, same as _patch_trigger_count()."""
+    _require_trigger_counters(scenario)
     header = bytearray(header_bytes)
     _TRIGGER_COUNT_STRUCT.pack_into(header, len(header) - 4, count)
     return bytes(header)
@@ -630,7 +654,7 @@ def write_scenario(
                 "already be disabled for this file."
             )
         patched_body = _patch_trigger_count(patched_body, scenario, triggers.trigger_count)
-        header_bytes = _patch_header_trigger_count(header_bytes, triggers.trigger_count)
+        header_bytes = _patch_header_trigger_count(header_bytes, scenario, triggers.trigger_count)
 
     patched_body = _assemble_body(scenario, patched_body, units, triggers)
 

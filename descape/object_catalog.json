@@ -6,6 +6,7 @@
       "code": "OLD-ACADEMY",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21090,
       "type": 70
     },
@@ -1046,6 +1047,7 @@
       "code": "FACAHOLE",
       "hidden": true,
       "icon": 32,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -1070,6 +1072,7 @@
       "code": "Relic building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -2414,6 +2417,7 @@
       "code": "OLD_EXPLORER",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21268,
       "type": 70
     },
@@ -2606,6 +2610,7 @@
       "code": "Invisible object that keeps player alive",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21089,
       "type": 70
     },
@@ -4846,6 +4851,7 @@
       "code": "PLACEHOLDER",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -4854,6 +4860,7 @@
       "code": "PLACEHOLDER (LAND)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -4862,6 +4869,7 @@
       "code": "PLACEHOLDER (AMPHIBIOUS)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -4870,6 +4878,7 @@
       "code": "PLACEHOLDER (NAVAL)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -4878,6 +4887,7 @@
       "code": "PLACEHOLDER (WATER)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -5470,6 +5480,7 @@
       "code": "Terrain blocker",
       "hidden": true,
       "icon": 14,
+      "no_graphic": true,
       "string_id": 0,
       "type": 10
     },
@@ -5478,6 +5489,7 @@
       "code": "Bolt explosion",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -5694,6 +5706,7 @@
       "code": "Monument resources enabler",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5710,6 +5723,7 @@
       "code": "Disable Horse building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5718,6 +5732,7 @@
       "code": "Empty building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5726,6 +5741,7 @@
       "code": "Empty building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5734,6 +5750,7 @@
       "code": "Empty building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5742,6 +5759,7 @@
       "code": "Empty building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5750,6 +5768,7 @@
       "code": "Empty building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -5830,6 +5849,7 @@
       "code": "Resources",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6174,6 +6194,7 @@
       "code": "Sheep building1",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6182,6 +6203,7 @@
       "code": "Sheep annex1",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6190,6 +6212,7 @@
       "code": "Sheep building2",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6198,6 +6221,7 @@
       "code": "Sheep annex2",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6246,6 +6270,7 @@
       "code": "Sheep building3",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6750,6 +6775,7 @@
       "code": "Gaia transition building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6894,6 +6920,7 @@
       "code": "REVEAL",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21101,
       "type": 20
     },
@@ -6902,6 +6929,7 @@
       "code": "REVEAL",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21102,
       "type": 20
     },
@@ -6910,6 +6938,7 @@
       "code": "BLOCKER",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21103,
       "type": 10
     },
@@ -7390,6 +7419,7 @@
       "code": "TMISB",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -7766,6 +7796,7 @@
       "code": "REVEAL1 (TEMP)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -7774,6 +7805,7 @@
       "code": "REVEAL2 (TEMP)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -7782,6 +7814,7 @@
       "code": "REVEAL3 (TEMP)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -7854,6 +7887,7 @@
       "code": "LCHUAN_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -7870,6 +7904,7 @@
       "code": "LCHUAN_DELAY_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -8038,6 +8073,7 @@
       "code": "PLACEHOLDER2",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -8062,6 +8098,7 @@
       "code": "PLACEHOLDER2 (LAND)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -8094,6 +8131,7 @@
       "code": "PLACEHOLDER2 (AMPHIBIOUS)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -8126,6 +8164,7 @@
       "code": "PLACEHOLDER2 (NAVAL)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -8150,6 +8189,7 @@
       "code": "GREN_DELAY_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -8166,6 +8206,7 @@
       "code": "GREN_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -8182,6 +8223,7 @@
       "code": "RCKTCRT_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -8206,6 +8248,7 @@
       "code": "PLACEHOLDER2 (WATER)",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -8262,6 +8305,7 @@
       "code": "ROCKET_DELAY_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -9326,6 +9370,7 @@
       "code": "FIREARCH_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -10726,6 +10771,7 @@
       "code": "Government cost change",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -10742,6 +10788,7 @@
       "code": "First Government cost change",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -10750,6 +10797,7 @@
       "code": "Second Government cost change",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -10758,6 +10806,7 @@
       "code": "Third Government cost change",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -10766,6 +10815,7 @@
       "code": "Fourth Government cost change",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -10790,6 +10840,7 @@
       "code": "Lembos spawner",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -10798,6 +10849,7 @@
       "code": "Lembos spawner part 2",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -10990,6 +11042,7 @@
       "code": "Spawn Basileus",
       "hidden": true,
       "icon": 622,
+      "no_graphic": true,
       "string_id": 405031,
       "type": 70
     },
@@ -12174,6 +12227,7 @@
       "code": "Second Empty TC annex",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -12238,6 +12292,7 @@
       "code": "Blocker 1x3",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 421109,
       "type": 10
     },
@@ -12246,6 +12301,7 @@
       "code": "Blocker 3x1",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 421110,
       "type": 10
     },
@@ -12254,6 +12310,7 @@
       "code": "Mole annex 1",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -12262,6 +12319,7 @@
       "code": "Mole annex 2",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -12270,6 +12328,7 @@
       "code": "Mole annex 3",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -12278,6 +12337,7 @@
       "code": "Mole annex 4",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -12286,6 +12346,7 @@
       "code": "Buildable Blocker 1x3",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 421109,
       "type": 10
     },
@@ -12294,6 +12355,7 @@
       "code": "DOPL",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 25
     },
@@ -12302,6 +12364,7 @@
       "code": "Buildable Blocker 3x1",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 421110,
       "type": 10
     },
@@ -12342,6 +12405,7 @@
       "code": "Thin blocker",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21103,
       "type": 10
     },
@@ -13286,6 +13350,7 @@
       "code": "Invisible object B",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21269,
       "type": 70
     },
@@ -13302,6 +13367,7 @@
       "code": "Invisible object C",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21270,
       "type": 70
     },
@@ -13318,6 +13384,7 @@
       "code": "Invisible object D",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21271,
       "type": 70
     },
@@ -13374,6 +13441,7 @@
       "code": "Invisible object E",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21272,
       "type": 70
     },
@@ -13678,6 +13746,7 @@
       "code": "OLD-FISH3",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 10
     },
@@ -13838,6 +13907,7 @@
       "code": "FIRESHIP_EXP",
       "hidden": true,
       "icon": 113,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -17518,6 +17588,7 @@
       "code": "HGRAV_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17534,6 +17605,7 @@
       "code": "HLORR_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17550,6 +17622,7 @@
       "code": "HRICH_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17566,6 +17639,7 @@
       "code": "HJOSS_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17590,6 +17664,7 @@
       "code": "HBURE_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17606,6 +17681,7 @@
       "code": "HFALS_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17830,6 +17906,7 @@
       "code": "HREY_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -17854,6 +17931,7 @@
       "code": "HMOT_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -18006,6 +18084,7 @@
       "code": "HSUBO_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -18038,6 +18117,7 @@
       "code": "HWOLF_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -19214,6 +19294,7 @@
       "code": "REVEAL",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21100,
       "type": 20
     },
@@ -19662,6 +19743,7 @@
       "code": "Lithuanian food building",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -19670,6 +19752,7 @@
       "code": "Disabled TC spawn",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -19686,6 +19769,7 @@
       "code": "Empty TC annex",
       "hidden": true,
       "icon": 40,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },

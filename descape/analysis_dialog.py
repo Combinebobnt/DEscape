@@ -33,11 +33,18 @@ def _group_text(result: CheckResult) -> str:
 
 
 class AnalysisDialog(QDialog):
-    def __init__(self, parent=None, on_navigate=None):
+    """on_select gets the current row's Finding, or None for a group row;
+    on_closed fires however the dialog goes away (Close, Escape, title-bar X)."""
+
+    def __init__(self, parent=None, on_navigate=None, on_select=None, on_closed=None):
         super().__init__(parent)
         self.setWindowTitle("Map Analysis")
         self.resize(640, 420)
         self._on_navigate = on_navigate or (lambda finding: None)
+        self._on_select = on_select or (lambda finding: None)
+        self._on_closed = on_closed or (lambda: None)
+        # finished, not closeEvent: Escape reaches reject() -> done() without a closeEvent.
+        self.finished.connect(lambda _result: self._on_closed())
 
         self.headline = QLabel("")
         self.headline.setWordWrap(True)
@@ -50,6 +57,7 @@ class AnalysisDialog(QDialog):
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         _configure_scrolling(self.tree)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.currentItemChanged.connect(self._on_current_item_changed)
 
         hint = QLabel("Double-click a finding to jump to its tile or unit.")
 
@@ -77,6 +85,10 @@ class AnalysisDialog(QDialog):
                     item.setToolTip(1, "No map location for this finding")
                 group.addChild(item)
             group.setExpanded(bool(result.findings))
+
+    def _on_current_item_changed(self, current: QTreeWidgetItem | None, _previous) -> None:
+        finding = current.data(0, Qt.UserRole) if current is not None else None
+        self._on_select(finding if isinstance(finding, Finding) else None)
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         finding = item.data(0, Qt.UserRole)

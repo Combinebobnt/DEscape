@@ -1,7 +1,9 @@
-"""Qt-free geometry, LOD and colours for View > Grid, the tile-grid overlay.
-The Qt half is viewer_canvas.GridItem, which turns these scene-space lines
-into prebuilt QLineF batches and decides per paint which ranks are worth
-drawing.
+"""Qt-free geometry, LOD and colours for View > Grid.
+
+Two consumers. The chunk compositors bake the grid per tile from GridBake and
+owned_edges() (Follow Terrain Elevation on, and always in Flat). The Qt half,
+viewer_canvas.GridItem, draws grid_axes()' ground lattice for the follow-off
+mode and the Settings > Appearance slider preview.
 
 Split the way edge_ticks already is: this module decides WHERE a line
 belongs, the item decides how it looks. Nothing here imports PyQt5.
@@ -111,7 +113,9 @@ LEGACY_LIGHTNESS_MID = 120
 
 # Thickness stays a stop space, like settings.ELEV_STEP_PCT_STOPS, so its
 # slider's value space is the stop index.
-THICKNESS_STOPS: tuple[int, ...] = (1, 2, 3, 4)  # device pixels
+# Baked: canvas px at the composited mip, so ~0.5x-1x that on screen. As the
+# follow-off overlay: device px.
+THICKNESS_STOPS: tuple[int, ...] = (1, 2, 3, 4)
 THICKNESS_DEFAULT = 1
 
 # The two ranks separate by alpha, not lightness: a lightness split would eat
@@ -160,137 +164,57 @@ def grid_colors(blend: int) -> tuple[RGBA, RGBA]:
     )
 
 
-# --- Follow Terrain Elevation ------------------------------------------------
+# --- The baked grid ------------------------------------------------------------
 #
-# draped_lines() is deliberately a separate function rather than a flag on
-# grid_axes(): the ground-plane lattice must stay at elevation 0 alongside the
-# ruler and the tick strip, which are elevation-0 by design.
-
-# Tiles of slack around the visible rect, so a scroll does not rebuild per pixel.
-WINDOW_PAD_TILES = 8
-
-Segments = np.ndarray  # (n, 4) int64: x0, y0, x1, y1
+# With Follow Terrain Elevation on (and always in Flat) the grid is not a scene
+# item: each chunk compositor draws it per tile, between that tile's own
+# terrain and its own units, so a sprite is never crossed by a line and nearer
+# raised terrain occludes a farther one by painter's order alone.
 
 
-def corner_point(cx: int, cy: int, rise: int, proj: iso_geometry.IsoProjection) -> Point:
-    """Scene point of grid corner (cx, cy) lifted `rise` canvas pixels off
-    the ground plane. rise=0 is exactly edge_ticks.iso_corner()."""
-    ox, oy = iso_geometry.tile_screen_origin(cx, cy, 0, proj)
-    return ox, oy + proj.half_h - rise
+@dataclass(frozen=True)
+class GridBake:
+    """What a chunk compositor bakes into its pixels. Frozen and compared by
+    value, like view_layers.LayerState, so a no-op set_grid() costs nothing.
+    `thickness` is in CANVAS pixels at the mip being composited."""
+
+    enabled: bool = False
+    minor: RGBA = (0, 0, 0, 0)
+    major: RGBA = (0, 0, 0, 0)
+    thickness: int = THICKNESS_DEFAULT
+
+    @property
+    def paints(self) -> bool:
+        return self.enabled and (self.minor[3] > 0 or self.major[3] > 0)
 
 
-def _corner_points(cx: np.ndarray, cy: np.ndarray, rise: np.ndarray, proj) -> tuple[np.ndarray, np.ndarray]:
-    sx = proj.origin_x + (cx + cy) * proj.half_w
-    sy = proj.origin_y + (cy - cx) * proj.half_h + proj.half_h - rise
-    return sx, sy
+DEFAULT_GRID = GridBake()
 
 
-def draped_lines(
-    tiles: np.ndarray,
-    style: str,
-    proj: iso_geometry.IsoProjection,
-    elevations: np.ndarray | None = None,
-    corner_rise: np.ndarray | None = None,
-) -> tuple[Segments, Segments]:
-    """(minor, major) grid segments over `tiles`, an (n, 2) int (x, y) array,
-    lifted onto the terrain.
+def grid_bake(enabled: bool, blend: int, thickness: int) -> GridBake:
+    minor, major = grid_colors(blend)
+    return GridBake(enabled=bool(enabled), minor=minor, major=major, thickness=snap_thickness(thickness))
 
-    Stepped is per-tile slabs: a tile's four corners all sit at its own
-    elevation, so a boundary between two differing neighbours is drawn twice,
-    once at each side's height, which is what the cliff between them looks
-    like. Sloped is one shared lattice through corner_rise, whose blended
-    corners make every shared edge identical from both sides.
 
-    Each tile contributes its x-low and y-low edges, plus its x-high / y-high
-    edge at the map border or, in Stepped, where the neighbour's height
-    differs; so no edge is ever emitted twice at the same place. Collinear
-    runs along a grid line are then merged, which makes a flat map's output
-    exactly grid_axes()' lines.
+def owned_edges(
+    tx: int, ty: int, map_w: int, map_h: int, elevations: np.ndarray | None = None
+) -> tuple[tuple[str, bool], ...]:
+    """The (edge, is_major) pairs tile (tx, ty) draws. Every tile owns its
+    x-low and y-low edges; x-high and y-high only at the map border or, given
+    Stepped `elevations`, where that neighbour's height differs (the cliff
+    lip). Owning two sides is what composites a shared edge once, not twice."""
+    edges = [("x_low", is_major(tx)), ("y_low", is_major(ty))]
+    here = None if elevations is None else elevations[ty, tx]
+    if tx + 1 == map_w or (here is not None and elevations[ty, tx + 1] != here):
+        edges.append(("x_high", is_major(tx + 1)))
+    if ty + 1 == map_h or (here is not None and elevations[ty + 1, tx] != here):
+        edges.append(("y_high", is_major(ty + 1)))
+    return tuple(edges)
 
-    Stepped drops the copies a nearer tile's slab would bury. The overlay has
-    no depth test, so without this a behind-and-lower tile's copy paints on
-    top of the front tile it sits inside -- and elev_step is only half half_h
-    by default, so it lands INSIDE that tile's face, reading as a grid line
-    drawn mid-tile rather than as the cliff below it."""
-    tiles = np.asarray(tiles, dtype=np.int64).reshape(-1, 2)
-    empty = np.zeros((0, 4), dtype=np.int64)
-    if style == "stepped":
-        if elevations is None or corner_rise is not None:
-            raise ValueError("stepped drapes from elevations only")
-        map_h, map_w = elevations.shape
-    elif style == "sloped":
-        if corner_rise is None or elevations is not None:
-            raise ValueError("sloped drapes from corner_rise only")
-        map_h, map_w = corner_rise.shape[0] - 1, corner_rise.shape[1] - 1
-    else:
-        raise ValueError(f"no draped grid for style {style!r}")
-    if len(tiles) == 0:
-        return empty, empty
-    x, y = tiles[:, 0], tiles[:, 1]
 
-    # Rows of (orient, line, pos, r_start, r_end): orient 0 is a line of
-    # constant x = line running along y = pos .. pos+1, orient 1 the transpose.
-    rows = []
-    if style == "stepped":
-        rise = elevations[y, x].astype(np.int64) * proj.elev_step
-        # depth_order paints ascending d = y - x, so the WEST and SOUTH
-        # neighbours are in front of this tile and the EAST and NORTH ones
-        # behind it. A boundary's two copies are emitted only where the one
-        # in front cannot bury the other.
-        west = x == 0
-        inner = ~west
-        keep = ~(inner & (elevations[y, np.maximum(x - 1, 0)] > elevations[y, x]))
-        rows.append(np.stack([np.zeros_like(x[keep]), x[keep], y[keep], rise[keep], rise[keep]], axis=1))
-        rows.append(np.stack([np.ones_like(x), y, x, rise, rise], axis=1))
-        east = x + 1 == map_w
-        inner = ~east
-        east |= inner & (elevations[y, np.minimum(x + 1, map_w - 1)] != elevations[y, x])
-        south = y + 1 == map_h
-        inner = ~south
-        south |= inner & (elevations[np.minimum(y + 1, map_h - 1), x] < elevations[y, x])
-        rows.append(np.stack([np.zeros_like(x[east]), x[east] + 1, y[east], rise[east], rise[east]], axis=1))
-        rows.append(np.stack([np.ones_like(x[south]), y[south] + 1, x[south], rise[south], rise[south]], axis=1))
-    else:
-        cr = corner_rise.astype(np.int64)
-        rows.append(np.stack([np.zeros_like(x), x, y, cr[y, x], cr[y + 1, x]], axis=1))
-        rows.append(np.stack([np.ones_like(x), y, x, cr[y, x], cr[y, x + 1]], axis=1))
-        east = x + 1 == map_w
-        south = y + 1 == map_h
-        xe, ye = x[east], y[east]
-        rows.append(np.stack([np.zeros_like(xe), xe + 1, ye, cr[ye, xe + 1], cr[ye + 1, xe + 1]], axis=1))
-        xs, ys = x[south], y[south]
-        rows.append(np.stack([np.ones_like(xs), ys + 1, xs, cr[ys + 1, xs], cr[ys + 1, xs + 1]], axis=1))
-    edges = np.concatenate(rows)
-
-    # Merge: collinear edges share (orient, line, slope, intercept) and are
-    # consecutive in pos.
-    orient, line, pos, r0, r1 = edges.T
-    slope = r1 - r0
-    intercept = r0 - pos * slope
-    order = np.lexsort((pos, intercept, slope, line, orient))
-    orient, line, pos, r0, r1, slope, intercept = (
-        a[order] for a in (orient, line, pos, r0, r1, slope, intercept)
-    )
-    same = (
-        (orient[1:] == orient[:-1])
-        & (line[1:] == line[:-1])
-        & (slope[1:] == slope[:-1])
-        & (intercept[1:] == intercept[:-1])
-        & (pos[1:] == pos[:-1] + 1)
-    )
-    starts = np.flatnonzero(np.concatenate(([True], ~same)))
-    ends = np.concatenate((starts[1:], [len(pos)])) - 1
-
-    o, ln = orient[starts], line[starts]
-    p0, p1 = pos[starts], pos[ends] + 1
-    rs, re = r0[starts], r1[ends]
-    # orient 0: corner (line, pos); orient 1: corner (pos, line).
-    cx0 = np.where(o == 0, ln, p0)
-    cy0 = np.where(o == 0, p0, ln)
-    cx1 = np.where(o == 0, ln, p1)
-    cy1 = np.where(o == 0, p1, ln)
-    sx0, sy0 = _corner_points(cx0, cy0, rs, proj)
-    sx1, sy1 = _corner_points(cx1, cy1, re, proj)
-    segments = np.stack([sx0, sy0, sx1, sy1], axis=1).astype(np.int64)
-    major = ln % edge_ticks.MAJORS_PER_MINOR == 0
-    return segments[~major], segments[major]
+def bake_lod(minor_spacing_canvas_px: float) -> GridLod:
+    """grid_lod() on one mip's own minor spacing at residual magnification
+    1.0, so it never drops a line that is genuinely visible. On the shipped
+    ladders (MIP_MIN_TILE_PIXELS = 16) it never fires: a guard for a future
+    ladder, not a live behaviour."""
+    return grid_lod(minor_spacing_canvas_px)

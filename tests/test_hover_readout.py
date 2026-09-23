@@ -39,11 +39,17 @@ class _NonSquareMapManager:
 
 
 def _stub_window(mm: _NonSquareMapManager) -> SimpleNamespace:
-    return SimpleNamespace(
+    from descape.viewer import ViewerWindow
+
+    window = SimpleNamespace(
         _hover_tile=None,
         scenario=SimpleNamespace(map_manager=mm),
         hover_label=_Label(),
+        # The Terrain-mode page's copy of the readout (GH #56); _set_hover_text() writes both.
+        terrain_panel=SimpleNamespace(set_hover_text=lambda text: None),
     )
+    window._set_hover_text = lambda text: ViewerWindow._set_hover_text(window, text)
+    return window
 
 
 def test_hover_readout_updates_on_non_square_map() -> None:

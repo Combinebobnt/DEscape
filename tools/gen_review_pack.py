@@ -223,9 +223,9 @@ def _inject_notch(tile_px, rise_px, _sides="both"):
 def _inject_no_tip(_tile_px, _rise_px, _side="up_right"):
     """LOCALIZED. Gates the inner-corner tip pass off, which is literally the
     pre-4bd5f07 render: the two casters' bands converge into a 2-column bare
-    stripe at the vertex and leave it un-shaded. corner_symptom's matching
-    control, and the only inject in the pack that reopens a GAP rather than
-    adding something."""
+    stripe at the vertex and leave it un-shaded. corner_shape's matching
+    control (SPLIT), and the only inject in the pack that removes shading from
+    inside a mass rather than adding or detaching something."""
     return (_EMPTY, _EMPTY, _EMPTY, _EMPTY)
 
 
@@ -267,6 +267,14 @@ COARSE_INJECT = "no-apex-wedge"
 # Clean reads 3 connected components on the pyramid band (one per terrace
 # ring); with the wedge gone it reads 18.
 COARSE_MIN_COMPONENT_RATIO = 3.0
+
+# Topology is countable, so it is asserted here rather than asked of a
+# reviewer. Band: one component per terrace ring. Corner diff mask: the vertex
+# mass and its two lines are one piece, and no-tip must split it in two, or
+# corner_shape's matching inject has silently stopped producing its symptom.
+CLEAN_BAND_COMPONENTS = 3
+CLEAN_CORNER_COMPONENTS = 1
+NO_TIP_CORNER_COMPONENTS = 2
 
 
 # ----------------------------------------------------------------- rendering
@@ -376,10 +384,12 @@ def _flat_frame(size: tuple[int, int]) -> np.ndarray:
 
 
 def _shadow_band_spec() -> rp.PackSpec:
-    """The pilot pack. Three questions, each on frames that can answer it:
-    a pyramid for contour continuity, a pure one-sided straight run for
-    perpendicular artifacts, a bare inner corner for which corner symptom is
-    present, and a flat field where none of the three is possible."""
+    """The pilot pack, re-posed in round 3. Each question sits on frames that
+    can answer it: a pyramid for whether the band breaks, a pure one-sided
+    straight run for perpendicular artifacts, a bare inner corner for whether
+    its vertex mass is split, and a flat field where none of them is possible.
+    Every closed question's EXCLUDE clause is written against a mask measured
+    off the injects themselves, not against assumed geometry."""
     frames: list[rp.Frame] = []
     for pct in (50, 100):
         frames += [
@@ -416,14 +426,29 @@ def _shadow_band_spec() -> rp.PackSpec:
             ),
         ]
     for pct in (50, 100):
-        frames.append(
+        frames += [
             rp.Frame(
                 f"corner_pct{pct}_raw",
                 f"corner_pct{pct}_raw.png",
                 "raw",
                 caption=f"Two raised tiles meeting at a corner over one lower tile, vertical scale {pct}%.",
-            )
-        )
+            ),
+            rp.Frame(
+                f"corner_pct{pct}_control",
+                f"corner_pct{pct}_control.png",
+                "control",
+                caption=f"The same corner with one shading pass switched off, vertical scale {pct}%.",
+            ),
+            rp.Frame(
+                f"corner_pct{pct}_diff",
+                f"corner_pct{pct}_diff.png",
+                "diff",
+                caption=(
+                    f"Amplified difference of the two corner frames above, vertical scale {pct}%. "
+                    "Only the pixels that pass touched, on black."
+                ),
+            ),
+        ]
     frames.append(
         rp.Frame(
             "flat_raw",
@@ -437,10 +462,26 @@ def _shadow_band_spec() -> rp.PackSpec:
         rp.Check(
             id="band_connectivity",
             question=(
-                "Follow the dark shading that runs along each terrace edge of the hill. "
-                "Does it read as ONE unbroken contour per terrace ring, or does it read as a "
-                "row of separate blocks with clear breaks between them? "
-                "Answer PASS if unbroken, FAIL if broken into separate pieces."
+                "First, in your own words, describe the shading the two amplified difference "
+                "frames show along each terrace ring of the hill: where it is thick, where it "
+                "thins, and whether it ever stops.\n\n"
+                "Then the closed question, which is about whether that shading is broken, not "
+                "about how even or how thick it is. Judge it on the difference frames, where only "
+                "the pixels one shading pass touched appear, on black. The raw and switched-off "
+                "frames are context only: both carry a separate thin dark line along every "
+                "terrace edge, drawn by a different pass, and a line that also appears in the "
+                "switched-off frame is NOT what this question asks about, however continuous or "
+                "broken it looks.\n"
+                "- A BREAK is a place where a ring's shading stops entirely: plain black, with no "
+                "shading at all, between two separate pieces of it. At this enlargement such a "
+                "stretch is at least about 40 pixels long.\n"
+                "- NOT a break: a stretch where the shading thins to a single line only a few "
+                "pixels thick at this enlargement (one pixel in the original) but carries on to "
+                "the next piece. That counts as connected, however thin it is beside the thicker "
+                "pieces it joins, and however much the ring looks like a row of blocks strung on "
+                "a line.\n\n"
+                "Answer BREAKS-PRESENT if at least one ring has a break, NO-BREAKS if every "
+                "ring's shading is continuous, even where only a thin line carries it."
             ),
             frames=(
                 "band_pct50_raw",
@@ -450,6 +491,7 @@ def _shadow_band_spec() -> rp.PackSpec:
                 "band_pct100_control",
                 "band_pct100_diff",
             ),
+            answers=("BREAKS-PRESENT", "NO-BREAKS", "CANNOT-TELL"),
         ),
         rp.Check(
             id="straight_run_edge",
@@ -485,17 +527,44 @@ def _shadow_band_spec() -> rp.PackSpec:
                 "run_pct100_diff",
             ),
         ),
+        # Raw before diff: once a reviewer has seen the amplified mass, it would
+        # be judging the raw frames from memory of it.
         rp.Check(
-            id="corner_symptom",
+            id="corner_raw_shape",
             question=(
-                "Look at the vertex where the shading from the two raised tiles meets over the "
-                "lower tile between them. Which is true there? "
-                "GAP: the dark contour breaks, leaving un-shaded ground at the vertex. "
-                "EXTRA: there is additional darkening at the vertex beyond the two contours. "
-                "NEITHER: the two contours meet cleanly with nothing missing and nothing added."
+                "Look only at the two raw corner frames. First, in your own words, describe the "
+                "dark mass in the middle of the frame, where the shading from the two raised tiles "
+                "meets over the lower tile between them, and anything that runs into it.\n\n"
+                "Then the closed question. Is that mass split through by a narrow vertical column "
+                "of un-darkened ground, as bright as the open ground around it, running its full "
+                "depth from top to bottom? Two things are NOT such a split: the stepped outline "
+                "of the mass, where its depth changes in small steps every couple of columns; and "
+                "the terrain texture's own light and dark mottling. "
+                "Answer SPLIT if such a column is present, WHOLE if the mass is one continuous "
+                "piece across its width."
             ),
             frames=("corner_pct50_raw", "corner_pct100_raw"),
-            answers=("GAP", "EXTRA", "NEITHER", "CANNOT-TELL"),
+            answers=("SPLIT", "WHOLE", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="corner_shape",
+            question=(
+                "Now the amplified difference frames of the same corner, where only the pixels "
+                "one shading pass touched appear, on black; the switched-off frames are context "
+                "only. First, in your own words, describe the bright shape in the middle of the "
+                "frame, where the two tiles' shading meets, and anything that joins it.\n\n"
+                "Then the closed question, which is about that middle mass only. Is it split "
+                "through by a narrow vertical column with no shading at all, plain black, running "
+                "its full depth from top to bottom? Two things are NOT such a split:\n"
+                "- The stepped outline of the mass, where its depth changes in small steps every "
+                "couple of columns. That is its expected edge.\n"
+                "- Any break in the thin lines leading away from the mass to either side. That is "
+                "about the lines, not the mass, and does not count however clear it is.\n\n"
+                "Answer SPLIT if such a column is present, WHOLE if the mass is one continuous "
+                "piece across its width."
+            ),
+            frames=("corner_pct50_control", "corner_pct50_diff", "corner_pct100_control", "corner_pct100_diff"),
+            answers=("SPLIT", "WHOLE", "CANNOT-TELL"),
         ),
         rp.Check(
             id="flat_ground_marks",
@@ -544,7 +613,10 @@ def _frame_images(inject: str | None) -> dict[str, np.ndarray]:
             images[f"run_pct{pct}_raw"] = raw
             images[f"run_pct{pct}_diff"] = seam_eyeball._amplify_diff(raw, control)
         for pct in (50, 100):
-            images[f"corner_pct{pct}_raw"] = _scene_pair("corner", pct, boxes[("corner", pct)])[0]
+            raw, control = _scene_pair("corner", pct, boxes[("corner", pct)])
+            images[f"corner_pct{pct}_raw"] = raw
+            images[f"corner_pct{pct}_control"] = control
+            images[f"corner_pct{pct}_diff"] = seam_eyeball._amplify_diff(raw, control)
         images["flat_raw"] = _flat_frame(images["run_pct100_raw"].shape[:2])
     return images
 
@@ -599,7 +671,7 @@ def _review_markdown(spec: rp.PackSpec, rendered: dict[str, tuple[int, int, int]
     return "\n".join(lines)
 
 
-def _run_token(pack_id: str, inject: str | None) -> str:
+def _run_token(pack_id: str, inject: str | None, replica: int = 0) -> str:
     """An opaque directory name per run, INCLUDING the clean one.
 
     Every frame path appears verbatim in REVIEW.md, so a directory called
@@ -609,17 +681,22 @@ def _run_token(pack_id: str, inject: str | None) -> str:
     one by elimination. Deterministic, so re-running overwrites rather than
     accumulating, and the mapping is printed to the operator's terminal --
     which the reviewer never sees.
+
+    `replica` gives the same run a second and third directory, for the k=3
+    clean replication REVIEW_PACK.md requires. Replica 0 hashes exactly as
+    before, so earlier rounds' directory names still hold.
     """
-    return hashlib.sha1(f"{pack_id}|{inject or 'clean'}".encode(), usedforsecurity=False).hexdigest()[:10]
+    key = f"{pack_id}|{inject or 'clean'}" + (f"|{replica}" if replica else "")
+    return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:10]
 
 
-def generate(out_dir: Path, pack_id: str, inject: str | None) -> list[Path]:
+def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) -> list[Path]:
     spec = PACKS[pack_id]()
     rp.validate_spec(spec)
     if inject is not None and inject not in INJECTS:
         raise SystemExit(f"unknown inject {inject!r}; choose from {', '.join(INJECTS)}")
 
-    pack_dir = out_dir / pack_id / _run_token(pack_id, inject)
+    pack_dir = out_dir / pack_id / _run_token(pack_id, inject, replica)
     pack_dir.mkdir(parents=True, exist_ok=True)
 
     images = _frame_images(inject)
@@ -665,10 +742,10 @@ def generate(out_dir: Path, pack_id: str, inject: str | None) -> list[Path]:
 # -------------------------------------------------------------------- check
 
 
-def _band_component_count(inject: str | None, pct: int = 100) -> int:
-    box = _clean_boxes()[("band", pct)]
+def _component_count(scene: str, inject: str | None, pct: int = 100) -> int:
+    box = _clean_boxes()[(scene, pct)]
     with _GeometryPatch(INJECTS.get(inject) if inject else None):
-        raw, control = _scene_pair("band", pct, box)
+        raw, control = _scene_pair(scene, pct, box)
     return rp.components(rp.changed_pixels(raw, control))
 
 
@@ -734,8 +811,21 @@ def check() -> None:
                     f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
                 )
 
-    clean_components = _band_component_count(None)
-    coarse_components = _band_component_count("no-apex-wedge")
+    clean_components = _component_count("band", None)
+    coarse_components = _component_count("band", "no-apex-wedge")
+    if clean_components != CLEAN_BAND_COMPONENTS:
+        failures.append(
+            f"clean band is {clean_components} connected components, not {CLEAN_BAND_COMPONENTS} "
+            f"(one per terrace ring)"
+        )
+    for pct in (50, 100):
+        for inject, want in ((None, CLEAN_CORNER_COMPONENTS), ("no-tip", NO_TIP_CORNER_COMPONENTS)):
+            got = _component_count("corner", inject, pct)
+            if got != want:
+                failures.append(
+                    f"corner diff mask at pct {pct} under {inject or 'clean'} is {got} components, "
+                    f"not {want}, so corner_shape's SPLIT/WHOLE no longer maps onto the render"
+                )
     if coarse_components < clean_components * COARSE_MIN_COMPONENT_RATIO:
         failures.append(
             f"inject no-apex-wedge: band goes from {clean_components} to {coarse_components} "
@@ -749,7 +839,8 @@ def check() -> None:
     print(
         f"OK: shadow_band frames couple to its checks, every frame lands in "
         f"{rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px, all {len(INJECTS)} injects bite and stay inside their bounds, and the band goes "
-        f"{clean_components} -> {coarse_components} components under the coarse one"
+        f"{clean_components} -> {coarse_components} components under the coarse one, and the corner "
+        f"diff mask goes {CLEAN_CORNER_COMPONENTS} -> {NO_TIP_CORNER_COMPONENTS} under no-tip"
     )
 
 
@@ -758,6 +849,9 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="Output directory")
     parser.add_argument("--pack", default="shadow_band", choices=sorted(PACKS), help="Which pack to render")
     parser.add_argument("--inject", choices=sorted(INJECTS), help="Render the pack with one known defect applied")
+    parser.add_argument(
+        "--replica", type=int, default=0, help="Replica number, for a second or third opaque directory of the same run"
+    )
     parser.add_argument("--check", action="store_true", help="Validate without writing any files")
     args = parser.parse_args()
 
@@ -765,7 +859,7 @@ def main() -> None:
         check()
         return
 
-    written = generate(args.out_dir, args.pack, args.inject)
+    written = generate(args.out_dir, args.pack, args.inject, args.replica)
     for path in written:
         # relative_to(ROOT) raises for an --out-dir outside the repo -- every
         # file is already written by this point, so fall back to the absolute
@@ -776,8 +870,8 @@ def main() -> None:
             shown = path
         print(f"wrote {shown}")
     print(
-        f"\nrun `{args.inject or 'clean'}` is directory "
-        f"{_run_token(args.pack, args.inject)} -- record that pairing OUTSIDE the pack, "
+        f"\nrun `{args.inject or 'clean'}` replica {args.replica} is directory "
+        f"{_run_token(args.pack, args.inject, args.replica)} -- record that pairing OUTSIDE the pack, "
         f"and hand the reviewer only that directory's REVIEW.md"
     )
 

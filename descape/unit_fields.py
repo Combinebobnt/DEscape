@@ -7,16 +7,16 @@ kind -- has one source of truth.
 
 X, Y, Z and Owner are editable unconditionally (D5's decision); Name is
 derived, and Unit ID/Reference ID/Garrisoned in stay plain read-only labels.
-Rotation is editable only for the consts unit_rotation classifies ANGLE -- see
-`conditional` below.
+Rotation is editable, as a whole facing, only for the consts unit_rotation
+classifies ANGLE -- see `conditional` below.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 FLOAT = "float"
+FACING = "facing"
 PLAYER = "player"
 TEXT = "text"
 
@@ -25,7 +25,7 @@ TEXT = "text"
 class UnitFieldSpec:
     field_id: str
     label: str
-    kind: str  # FLOAT | PLAYER | TEXT
+    kind: str  # FLOAT | FACING | PLAYER | TEXT
     editable: bool
     minimum: float | None = None  # FLOAT only
     maximum: float | None = None  # FLOAT only
@@ -51,17 +51,14 @@ FIELDS: tuple[UnitFieldSpec, ...] = (
     UnitFieldSpec("x", "X", FLOAT, editable=True, minimum=_COORD_MIN, maximum=_COORD_MAX),
     UnitFieldSpec("y", "Y", FLOAT, editable=True, minimum=_COORD_MIN, maximum=_COORD_MAX),
     UnitFieldSpec("z", "Z", FLOAT, editable=True, minimum=_COORD_MIN, maximum=_COORD_MAX),
-    # Raw radians, never degree-formatted -- the value actually stored, so the
-    # round-trip stays obvious. Editable only where `rotation` genuinely is an
-    # angle: for ~65% of GAIA objects and for every wall it is a shape-variant
-    # index (AGENTS.md's hard rule), and for a gate there is only one stored
-    # frame. Four decimals, not the default two: one stored frame at
-    # angle_count 16 is 0.3927 rad, and two decimals would round every
-    # arrow-click off the graphic's own grid. Arrow-stepping is not the
-    # frame-accurate path regardless -- the Rotate actions are.
+    # Edited as a whole facing (GH #61), 0 to angle_count - 1: the range is
+    # per-const, so the panel sets it at populate time. The stored field stays
+    # radians, reachable via the editor's tooltip and the read-only label
+    # non-ANGLE consts keep. Editable only where `rotation` genuinely is an
+    # angle: for ~65% of GAIA objects and every wall it is a shape-variant
+    # index (AGENTS.md's hard rule), and a gate has only one stored frame.
     UnitFieldSpec(
-        "rotation", "Rotation", FLOAT, editable=True,
-        minimum=0.0, maximum=2 * math.pi, decimals=4,
+        "rotation", "Rotation", FACING, editable=True,
         conditional="rotation_is_angle",
     ),
     UnitFieldSpec("reference_id", "Reference ID", TEXT, editable=False),

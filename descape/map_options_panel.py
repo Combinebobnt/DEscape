@@ -26,7 +26,7 @@ from descape import (
 from descape.scenario_io import (
     LoadedScenario,
 )
-from descape.viewer_common import _fit_combo_width, _make_spinbox
+from descape.viewer_common import FontScaledWidth, _fit_combo_width, _make_spinbox
 
 
 class _FitHost(QWidget):
@@ -69,8 +69,8 @@ class MapOptionsPanel(QWidget):
     # form of short labels, not a tree plus a detail pane, and there is no
     # reason a width tuned for one suits the other. Measured against the
     # widest row this panel actually builds -- see
-    # tests/test_map_options_panel.py's width check.
-    MIN_USEFUL_WIDTH = 300
+    # tests/test_map_options_panel.py's width check. Scales with the app font.
+    MIN_USEFUL_WIDTH = FontScaledWidth(300)
 
     # Two settles it in practice (fit, scrollbar appears, refit); the third is
     # headroom against a width that oscillates around the scrollbar threshold.
@@ -126,10 +126,11 @@ class MapOptionsPanel(QWidget):
         # the ORIGINAL value, so re-reading the file would make every edit look
         # like a fresh change on the next populate.
         self._widgets: dict[str, QWidget] = {}
-        # The row label and the tooltip _build_groups() settled on, kept so the
-        # custom-victory gate can grey the label too and restore that exact tip.
+        # The row label, the row's explanation tip (why it is read-only or
+        # as-stored) and its spec description, kept for the custom-victory gate.
         self._row_labels: dict[str, QWidget] = {}
         self._base_tooltips: dict[str, str] = {}
+        self._spec_tooltips: dict[str, str] = {}
         self._values: dict[str, int] = {}
         self._editable_fields: frozenset[str] = frozenset()
         self._read_only_reasons: dict[str, str] = {}
@@ -172,6 +173,7 @@ class MapOptionsPanel(QWidget):
         self._widgets = {}
         self._row_labels = {}
         self._base_tooltips = {}
+        self._spec_tooltips = {}
 
     # -- document state ------------------------------------------------------
 
@@ -342,12 +344,14 @@ class MapOptionsPanel(QWidget):
             # and is a checkbox, so it can take any of these branches.
             # Between the other two, why the row cannot be edited at all wins
             # over what the setting does.
-            tip = self._read_only_reasons.get(spec.field_id, "") or spec.tooltip
-            if tip and not widget.toolTip():
+            reason = widget.toolTip() or self._read_only_reasons.get(spec.field_id, "")
+            tip = reason or spec.tooltip
+            if tip:
                 widget.setToolTip(tip)
             form.addRow(spec.label, widget)
             self._row_labels[spec.field_id] = form.labelForField(widget)
-            self._base_tooltips[spec.field_id] = widget.toolTip()
+            self._base_tooltips[spec.field_id] = reason
+            self._spec_tooltips[spec.field_id] = spec.tooltip
         # Absorbs the leftover height so the groups stay stacked at the top
         # instead of spreading out over a tall pane.
         self.host_layout.addStretch(1)
@@ -593,8 +597,9 @@ class MapOptionsPanel(QWidget):
                 # As-stored: stays enabled and keeps its own explanation.
                 continue
             widget.setEnabled(applies and field_id in self._editable_fields)
-            # The stored tip always wins, matching _build_groups()' precedence.
-            widget.setToolTip(base_tip or ("" if applies else self._CUSTOM_ONLY_TOOLTIP))
+            # Precedence as in _build_groups(): why it can't be edited, then what it does.
+            spec_tip = self._spec_tooltips.get(field_id, "")
+            widget.setToolTip(base_tip or (spec_tip if applies else self._CUSTOM_ONLY_TOOLTIP))
 
     # -- reporting an edit ---------------------------------------------------
 

@@ -333,6 +333,23 @@ def test_every_row_is_enabled_when_the_write_path_is_available() -> None:
         _close(window)
 
 
+def test_every_enabled_row_describes_itself_rather_than_claiming_read_only() -> None:
+    """GH #55: an editable stance row used to carry "Read-only for this file."
+    as its only tooltip."""
+    from descape.diplomacy_panel import DiplomacyPanel
+
+    window = _diplomacy_window()
+    try:
+        panel = window.diplomacy_panel
+        assert panel._widgets, "no rows built -- this would pass vacuously"
+        for field_id, widget in panel._widgets.items():
+            assert _row_enabled(widget), field_id
+            assert widget.toolTip(), f"{field_id} has no tooltip"
+            assert widget.toolTip() != DiplomacyPanel._READ_ONLY_REASON, field_id
+    finally:
+        _close(window)
+
+
 def test_grid_rows_are_disabled_with_a_reason_when_the_diplomacy_gate_fails() -> None:
     """Corrupting one stance byte fails diplomacy_write_supported() without
     touching options_write_supported() -- same technique

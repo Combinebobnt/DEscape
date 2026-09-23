@@ -37,6 +37,10 @@ class SyntheticUnit:
     # reference_id IS the pick identity, so every unit it builds passes one
     # explicitly, and a new test in that file should keep doing so.
     reference_id: int = 1
+    # -1 is "not inside anything", the value 99.5% of real placements carry.
+    # UnitFilter.matches() reads it through getattr() with the same default,
+    # so a fake that predates this field still filters correctly.
+    garrisoned_in_id: int = -1
 
 
 class FakeMapManager:

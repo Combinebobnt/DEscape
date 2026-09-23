@@ -46,11 +46,11 @@ _OTHER_TERRAIN = 2  # BEACH
 
 def _edit_window(tool: str = "fill"):
     """Loads the blank template, switches to Terrain mode with `tool` active,
-    and selects _FILL_TERRAIN on terrain_combo. Caller must
+    and selects _FILL_TERRAIN in the terrain panel. Caller must
     edit_history.mark_saved() + close()."""
     window = conftest.terrain_edit_window()
     window._on_tool_selected(tool)
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
+    window.terrain_panel.set_terrain(_FILL_TERRAIN)
     # This file tests Paint Can's own mechanics, not descape/terrain_units.py
     # -- Trees defaults on and would otherwise pop an unpatched large-fill
     # confirm QMessageBox for the whole-map fills below, hanging offscreen.
@@ -285,7 +285,7 @@ def test_mid_drag_tool_switch_to_fill_does_not_wedge_history() -> None:
         assert mm.terrain[2 * mm.map_width + 2].terrain_id == _FILL_TERRAIN
 
         window._on_tool_selected("draw")
-        window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_OTHER_TERRAIN))
+        window.terrain_panel.set_terrain(_OTHER_TERRAIN)
         window.on_edit_stroke_start()
         window.on_edit_stroke_tile(2, 2, 0)
         window.on_edit_stroke_end()
@@ -315,9 +315,9 @@ def test_copy_paste_no_longer_depends_on_active_tool() -> None:
         window.close()
 
 
-def test_copy_region_does_not_touch_terrain_combo() -> None:
+def test_copy_region_does_not_touch_the_terrain_picker() -> None:
     """The old tool-scoped copy_tile()'s terrain branch doubled as an
-    eyedropper, loading the picked terrain into terrain_combo -- retired in
+    eyedropper, loading the picked terrain into the terrain picker -- retired in
     favour of the real Eyedropper tool (pick_tile_value()), which covers the
     same case for Draw/Fill AND Elevate/Set Elevation. Copy Region must not
     revive that side effect."""
@@ -325,11 +325,11 @@ def test_copy_region_does_not_touch_terrain_combo() -> None:
     try:
         mm = window.scenario.map_manager
         mm.get_tile(0, 0).terrain_id = _OTHER_TERRAIN
-        assert window.terrain_combo.currentData() == _FILL_TERRAIN  # sanity: still the starting selection
+        assert window.terrain_panel.terrain_id() == _FILL_TERRAIN  # sanity: still the starting selection
 
         window.on_region_selected((0, 0, 1, 1))
         window.copy_region()
-        assert window.terrain_combo.currentData() == _FILL_TERRAIN  # unchanged
+        assert window.terrain_panel.terrain_id() == _FILL_TERRAIN  # unchanged
         assert window._region_clipboard.terrain_ids == (_OTHER_TERRAIN,)
     finally:
         window.edit_history.mark_saved()

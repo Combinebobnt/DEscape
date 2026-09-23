@@ -67,6 +67,12 @@ def _close(window) -> None:
     window.close()
 
 
+def _selection_items(map_view) -> list:
+    """Every live selection scene item: each group's fill, under-stroke (if
+    any) and outline."""
+    return [item for group in map_view._unit_select_groups.values() for item in group if item is not None]
+
+
 def _select_first_unit(window):
     """Selects via the same path a click takes, but resolving the entry from
     the index rather than synthesising a QPointF -- the pixel maths is
@@ -137,7 +143,7 @@ def test_units_mode_survives_switching_to_sloped() -> None:
         window.mode_combo.setCurrentText("Units")
         _select_first_unit(window)
         window.terrain_style_combo.setCurrentText("Flat")
-        reference = (window.mode, window.map_view._unit_select_item is None)
+        reference = (window.mode, not window.map_view._unit_select_groups)
 
         window.mode_combo.setCurrentText("Units")
         _select_first_unit(window)
@@ -146,7 +152,7 @@ def test_units_mode_survives_switching_to_sloped() -> None:
         assert window.mode_combo.currentText() == "Units"
         assert window.map_view._mode == "units"
         assert window.map_view._unit_index is not None
-        assert (window.mode, window.map_view._unit_select_item is None) == reference, (
+        assert (window.mode, not window.map_view._unit_select_groups) == reference, (
             "Sloped no longer handles a style switch the way Flat does"
         )
     finally:
@@ -210,6 +216,8 @@ def test_left_panel_swaps_to_the_inspector_and_back() -> None:
         window.mode_combo.setCurrentText("Triggers")
         assert window.left_stack.currentIndex() == 1, "the triggers branch must survive the units one"
         window.mode_combo.setCurrentText("Terrain")
+        assert window.left_stack.currentIndex() == 7  # GH #56's own page
+        window.mode_combo.setCurrentText("View")
         assert window.left_stack.currentIndex() == 0
     finally:
         _close(window)
@@ -305,7 +313,7 @@ def test_rotation_is_shown_raw_with_its_variant_index_warning() -> None:
         assert window.units_panel.unit_field_labels["rotation"].text() == "37"
         assert "variant index" in window.units_panel.unit_rotation_note.text()
         assert window.units_panel.unit_rotation_note.isVisibleTo(window.units_panel)
-        # The "shown raw, in radians" half stays reachable regardless of
+        # The "stored in radians" half stays reachable regardless of
         # const, via the Rotation caption's own tooltip -- see
         # units_panel.py's _ROTATION_TOOLTIP.
         assert "radians" in window.units_panel.unit_rotation_label.toolTip()
@@ -324,11 +332,11 @@ def test_a_filter_that_hides_the_selection_clears_it() -> None:
         window._selection = [(gaia_entry.player_id, gaia_entry.unit.reference_id)]
         window.map_view.set_unit_selection([gaia_entry])
         window.units_panel.show_unit(gaia_entry)
-        assert window.map_view._unit_select_item is not None
+        assert bool(window.map_view._unit_select_groups)
 
         window.show_gaia_action.setChecked(False)
         assert window._selection == []
-        assert window.map_view._unit_select_item is None
+        assert not window.map_view._unit_select_groups
         assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
     finally:
         _close(window)
@@ -341,7 +349,7 @@ def test_a_filter_that_spares_the_selection_keeps_it() -> None:
         entry = _select_first_unit(window)  # the player-1 building
         window.show_gaia_action.setChecked(False)
         assert window._selection == [(entry.player_id, entry.unit.reference_id)]
-        assert window.map_view._unit_select_item is not None
+        assert bool(window.map_view._unit_select_groups)
     finally:
         _close(window)
 
@@ -399,7 +407,7 @@ def test_hover_and_selection_stack_in_a_fixed_order_either_way_round() -> None:
         index = window.map_view._unit_index
         window.map_view._update_unit_hover(index.entries[0])
         window.map_view.set_unit_selection([index.entries[1]])
-        assert window.map_view._unit_select_item.zValue() > window.map_view._unit_hover_item.zValue()
+        assert min(i.zValue() for i in _selection_items(window.map_view)) > window.map_view._unit_hover_item.zValue()
     finally:
         _close(window)
 
@@ -434,7 +442,7 @@ def test_leaving_units_mode_clears_the_selection_key_not_just_the_cue() -> None:
 
         window.mode_combo.setCurrentText("Units")
         assert window._selection == []
-        assert window.map_view._unit_select_item is None
+        assert not window.map_view._unit_select_groups
         assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
     finally:
         _close(window)
@@ -449,7 +457,7 @@ def test_leaving_units_mode_clears_both_cues() -> None:
         window.map_view.set_unit_selection([index.entries[1]])
         window.mode_combo.setCurrentText("View")
         assert window.map_view._unit_hover_item is None
-        assert window.map_view._unit_select_item is None
+        assert not window.map_view._unit_select_groups
     finally:
         _close(window)
 
@@ -463,7 +471,7 @@ def test_leave_event_clears_hover_but_keeps_selection() -> None:
         window.map_view.set_unit_selection([index.entries[1]])
         window.map_view.leaveEvent(None)
         assert window.map_view._unit_hover_item is None
-        assert window.map_view._unit_select_item is not None, "selection must survive the cursor leaving"
+        assert bool(window.map_view._unit_select_groups), "selection must survive the cursor leaving"
     finally:
         _close(window)
 
@@ -483,8 +491,8 @@ def test_sloped_produces_a_unit_highlight_at_the_units_own_rise() -> None:
         window.map_view.set_unit_index(index)
         entry = index.entries[0]
         window.map_view.set_unit_selection([entry])
-        item = window.map_view._unit_select_item
-        assert item is not None
+        (group,) = window.map_view._unit_select_groups.values()
+        item = group[2]
 
         corner_rise = window.map_view._sloped_cache().corner_rise
         polygons = unit_pick.unit_polygons(
@@ -554,5 +562,408 @@ def test_pick_unit_at_reuses_a_tile_it_is_handed_in_sloped() -> None:
         # here") must leave it unoccluded. Both fail if the tile is ignored.
         assert mv.pick_unit_at(pos, (0, mv._map_height - 1)) is None
         assert mv.pick_unit_at(pos, None) is entry
+    finally:
+        _close(window)
+
+
+# --- selection coloured by owner ---------------------------------------
+
+
+def _owner_window():
+    """_window()'s GAIA tree and P1 building plus a P2 unit, in Units mode."""
+    window = _window()
+    window.scenario.unit_manager.units[2].append(
+        SyntheticUnit(x=12.5, y=12.5, unit_const=_BUILDING_CONST, reference_id=103)
+    )
+    window.mode_combo.setCurrentText("Units")
+    return window
+
+
+def _entry_for(window, player_id: int):
+    return next(e for e in window.map_view._unit_index.entries if e.player_id == player_id)
+
+
+def _rgb(color) -> tuple[int, int, int]:
+    return (color.red(), color.green(), color.blue())
+
+
+def test_a_player_1_selection_is_one_group_in_player_1s_colour() -> None:
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 1)])
+        p1 = tuple(window.scenario.player_colors[1])
+        assert list(mv._unit_select_groups) == [p1]
+        fill, under, outline = mv._unit_select_groups[p1]
+        assert _rgb(outline.pen().color()) == p1
+        assert outline.pen().widthF() == mv.UNIT_SELECT_PEN_WIDTH
+        assert _rgb(fill.brush().color()) == p1
+        assert fill.brush().color().alpha() == mv.UNIT_SELECT_FILL_ALPHA
+        assert under is not None, "no dark under-stroke while colouring by owner"
+        assert under.pen().widthF() == mv.UNIT_SELECT_UNDERSTROKE_WIDTH
+        assert under.pen().color().getRgb() == mv.UNIT_SELECT_UNDERSTROKE_RGBA
+    finally:
+        _close(window)
+
+
+def test_a_reassigned_color_id_is_what_the_highlight_follows() -> None:
+    """player_colors, not PLAYER_COLORS: a file can give P1 any ColorId."""
+    from descape.scenario_io import refresh_player_colors
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID, PLAYER_COLORS
+
+    window = _window()
+    window.scenario.unit_manager.units[2].append(
+        SyntheticUnit(x=12.5, y=12.5, unit_const=_BUILDING_CONST, reference_id=103)
+    )
+    try:
+        refresh_player_colors(window.scenario, {1: 5})
+        window.mode_combo.setCurrentText("Units")
+        window.map_view.set_unit_selection([_entry_for(window, 1)])
+        (key,) = window.map_view._unit_select_groups
+        assert key == PLAYER_COLOR_BY_ID[5]
+        assert key != tuple(PLAYER_COLORS[1])
+    finally:
+        _close(window)
+
+
+def test_gaia_keeps_the_configured_colour_with_an_under_stroke() -> None:
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, GAIA_PLAYER_ID)])
+        assert list(mv._unit_select_groups) == [None]
+        fill, under, outline = mv._unit_select_groups[None]
+        assert outline.pen().color() == mv._unit_select_pen.color()
+        assert fill.brush().color() == mv._unit_select_fill_color
+        assert under is not None, "GAIA drops the under-stroke, so a mixed selection has uneven edges"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 1, 0)])
+def test_every_fill_sits_below_every_under_stroke_below_every_outline(order) -> None:
+    """Explicit Z, not insertion order: a later group's fill must not wash
+    over an earlier group's edge, whichever group was created first."""
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in order])
+        groups = list(mv._unit_select_groups.values())
+        assert len(groups) == 3
+        fills = [g[0].zValue() for g in groups]
+        unders = [g[1].zValue() for g in groups]
+        outlines = [g[2].zValue() for g in groups]
+        assert max(fills) < min(unders)
+        assert max(unders) < min(outlines)
+        assert max(outlines) < mv.REGION_SELECT_Z
+    finally:
+        _close(window)
+
+
+def test_mixed_owners_make_three_groups_and_reselecting_one_drops_the_rest() -> None:
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (0, 1, 2)])
+        p1 = tuple(window.scenario.player_colors[1])
+        p2 = tuple(window.scenario.player_colors[2])
+        assert set(mv._unit_select_groups) == {None, p1, p2}
+        dropped = [i for key in (None, p2) for i in mv._unit_select_groups[key] if i is not None]
+
+        mv.set_unit_selection([_entry_for(window, 1)])
+        assert list(mv._unit_select_groups) == [p1]
+        assert all(item.scene() is None for item in dropped), "a dropped group left items in the scene"
+    finally:
+        _close(window)
+
+
+def test_toggle_off_is_one_configured_group_with_no_under_stroke() -> None:
+    """Off = today's drawing: one unioned fill+outline pair in the configured
+    colour, whoever owns the units."""
+    from descape import settings
+
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (0, 1, 2)])
+        window.selection_owner_colour_action.setChecked(False)
+        assert settings.get_selection_by_owner() is False
+        assert list(mv._unit_select_groups) == [None]
+        fill, under, outline = mv._unit_select_groups[None]
+        assert under is None
+        assert outline.pen().color() == mv._unit_select_pen.color()
+        assert outline.pen().widthF() == mv.UNIT_SELECT_PEN_WIDTH
+        assert fill.brush().color() == mv._unit_select_fill_color
+        assert fill.pen().style() == 0  # Qt.NoPen
+        assert len([i for i in mv.scene().items() if i.zValue() in (mv.UNIT_SELECT_UNDER_Z,)]) == 0
+
+        window.selection_owner_colour_action.setChecked(True)
+        assert len(mv._unit_select_groups) == 3
+        assert all(group[1] is not None for group in mv._unit_select_groups.values())
+    finally:
+        _close(window)
+
+
+def test_a_colour_edit_recolours_a_live_selection() -> None:
+    from descape import player_fields
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 1)])
+        spec = next(s for s in player_fields.specs_for(window.scenario) if s.field_id == "color")
+        window.set_player_field(spec, 1, 5)
+        (key,) = mv._unit_select_groups
+        assert key == PLAYER_COLOR_BY_ID[5]
+        assert _rgb(mv._unit_select_groups[key][2].pen().color()) == PLAYER_COLOR_BY_ID[5]
+    finally:
+        _close(window)
+
+
+def test_the_marquee_keeps_the_configured_colour() -> None:
+    from PyQt5.QtCore import QPoint
+
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 1)])
+        mv._update_marquee(QPoint(0, 0), QPoint(40, 40))
+        assert mv._marquee_item.pen().color() == mv._unit_select_pen.color()
+        assert mv._marquee_item.brush().color() == mv._unit_select_fill_color
+    finally:
+        _close(window)
+
+
+def test_an_appearance_change_reinks_only_the_configured_group() -> None:
+    from descape import settings
+
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (0, 1)])
+        p1 = tuple(window.scenario.player_colors[1])
+        settings.set_overlay_color("unit_select", "#ff00ff")
+        mv.apply_overlay_colors()
+        assert _rgb(mv._unit_select_groups[None][2].pen().color()) == (255, 0, 255)
+        assert _rgb(mv._unit_select_groups[p1][2].pen().color()) == p1
+    finally:
+        _close(window)
+
+
+def test_close_then_reopen_leaves_no_stale_group_refs() -> None:
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (0, 1)])
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert mv._unit_select_groups == {}
+        assert mv._selection_player_colors is None
+
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        window.scenario.unit_manager.units[1].append(
+            SyntheticUnit(x=8.5, y=8.5, unit_const=_BUILDING_CONST, reference_id=102)
+        )
+        window.mode_combo.setCurrentText("View")
+        window.mode_combo.setCurrentText("Units")
+        mv.set_unit_selection([_entry_for(window, 1)])
+        assert list(mv._unit_select_groups) == [tuple(window.scenario.player_colors[1])]
+    finally:
+        _close(window)
+
+
+# --- range rings (GH #49) ----------------------------------------------
+
+_CASTLE_CONST = 82  # 4x4, range 8.0 -> a 10-tile ring
+_HOUSE_CONST = 70  # 2x2, range 0.0
+_ARCHER_CONST = 4  # range 4.0, but not a building
+
+
+def _ring_window(enabled: bool = True):
+    """One Castle, one House and one archer on P1, in Units mode, with
+    View > Range Rings on unless asked otherwise."""
+    window = _window(with_units=False)
+    units = window.scenario.unit_manager.units
+    # Every even-span building sits at `tile + span/2`, so a 4x4 and a 2x2
+    # both land on a whole coordinate -- the ring's centre and the footprint's
+    # only coincide when the placement is the one real files use.
+    units[1].append(SyntheticUnit(x=20.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=201))
+    units[1].append(SyntheticUnit(x=40.0, y=40.0, unit_const=_HOUSE_CONST, reference_id=202))
+    units[1].append(SyntheticUnit(x=60.5, y=60.5, unit_const=_ARCHER_CONST, reference_id=203))
+    window.mode_combo.setCurrentText("Units")
+    window.range_rings_action.setChecked(enabled)
+    return window
+
+
+def _entry_for_const(window, unit_const: int):
+    return next(e for e in window.map_view._unit_index.entries if e.unit.unit_const == unit_const)
+
+
+def test_selecting_a_castle_draws_a_ring_in_the_configured_colour() -> None:
+    from descape import settings
+
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        item = mv._range_ring_item
+        assert item is not None
+        assert not item.path().isEmpty()
+        assert item.zValue() == mv.RANGE_RING_Z
+        assert item.pen().color().name() == settings.get_overlay_color("range_ring")
+        assert item.pen().widthF() == 0, "a non-cosmetic ring thins unevenly around the ellipse"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("unit_const", [_HOUSE_CONST, _ARCHER_CONST])
+def test_a_rangeless_building_and_a_non_building_draw_no_ring(unit_const: int) -> None:
+    """The gate is both halves: a House is a building with range 0, an
+    archer has range 4 but is not a building."""
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, unit_const)])
+        assert mv._unit_select_groups, "the selection itself should still be drawn"
+        assert mv._range_ring_item is None
+    finally:
+        _close(window)
+
+
+def test_a_castle_and_an_archer_together_draw_exactly_one_ring() -> None:
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        castle = _entry_for_const(window, _CASTLE_CONST)
+        mv.set_unit_selection([castle])
+        alone = mv._range_ring_item.path().elementCount()
+        mv.set_unit_selection([castle, _entry_for_const(window, _ARCHER_CONST)])
+        assert mv._range_ring_item.path().elementCount() == alone
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_every_terrain_style_draws_the_ring(style: str) -> None:
+    """The three styles reach three different geometry branches (scene-space
+    circle, Stepped's elevation rise, Sloped's corner_rise), so a missing
+    height field shows up as a dropped ring rather than a misplaced one."""
+    window = _ring_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        assert mv._range_ring_item is not None, f"{style}: no ring"
+        assert not mv._range_ring_item.path().isEmpty()
+    finally:
+        _close(window)
+
+
+def test_the_ring_is_wider_than_the_buildings_own_footprint() -> None:
+    """A 4x4 Castle with range 8 rings at 10 tiles, so the ring's bounding
+    box has to dwarf the selection's -- the measured version of "a ring
+    appeared"."""
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        entry = _entry_for_const(window, _CASTLE_CONST)
+        mv.set_unit_selection([entry])
+        ring = mv._range_ring_item.path().boundingRect()
+        footprint = mv._unit_path(entry).boundingRect()
+        assert ring.width() > 3 * footprint.width()
+        assert ring.center().x() == pytest.approx(footprint.center().x(), abs=2.0)
+        assert ring.center().y() == pytest.approx(footprint.center().y(), abs=2.0)
+    finally:
+        _close(window)
+
+
+def test_deselecting_and_leaving_units_mode_both_clear_the_ring() -> None:
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        mv.set_unit_selection(None)
+        assert mv._range_ring_item is None
+
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        window.mode_combo.setCurrentText("View")
+        assert mv._range_ring_item is None
+    finally:
+        _close(window)
+
+
+def test_the_toggle_drops_a_live_ring_and_puts_it_back() -> None:
+    window = _ring_window(enabled=False)
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        assert mv._range_ring_item is None, "no ring while View > Range Rings is off"
+
+        window.range_rings_action.setChecked(True)
+        assert mv._range_ring_item is not None
+        assert not mv._range_ring_item.path().isEmpty()
+
+        window.range_rings_action.setChecked(False)
+        assert mv._range_ring_item is None
+    finally:
+        _close(window)
+
+
+def test_the_toggle_persists_and_is_rebindable() -> None:
+    from descape import settings
+
+    window = _ring_window(enabled=False)
+    try:
+        assert settings.get_range_rings() is False
+        window.range_rings_action.setChecked(True)
+        assert settings.get_range_rings() is True
+        assert ("view_range_rings", "Range Rings", "") in settings.REBINDABLE_ACTIONS
+    finally:
+        _close(window)
+
+
+def test_a_colour_change_reinks_a_live_ring() -> None:
+    from descape import settings
+
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        settings.set_overlay_color("range_ring", "#ff00ff")
+        mv.apply_overlay_colors()
+        assert mv._range_ring_item.pen().color().name() == "#ff00ff"
+    finally:
+        _close(window)
+
+
+def test_closing_the_scenario_leaves_no_stale_ring_ref() -> None:
+    """scene().clear() destroys the C++ item; a surviving Python ref would
+    raise RuntimeError on the next selection."""
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert mv._range_ring_item is None
+    finally:
+        _close(window)
+
+
+def test_a_style_switch_under_a_live_selection_rebuilds_the_ring() -> None:
+    """set_source() nulls the ring item on a style switch; the selection is
+    re-pushed afterwards, so the ring has to come back rather than leaving a
+    dangling reference behind."""
+    window = _ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        assert mv._range_ring_item is not None
+        for style in ("Sloped", "Flat", "Stepped"):
+            window.terrain_style_combo.setCurrentText(style)
+            mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+            assert mv._range_ring_item is not None, f"{style}: ring lost across the style switch"
+            assert not mv._range_ring_item.path().isEmpty()
     finally:
         _close(window)

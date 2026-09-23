@@ -389,6 +389,10 @@ _WALL_CONST = 117  # WALL2, the corpus's most-placed wall
 _GATE_CONST = 64  # a stone gate: hidden by show_walls too, per unit_kind
 _EYE_CANDY_CONST = 1358  # Grass Green
 _RESOURCE_CONST = 66  # GOLDM -- type 10 but a resource, so NOT eye candy
+_INVISIBLE_CONST = 1291  # Invisible Object A, player-owned by design (GH #53)
+_REVEALER_CONST = 837  # Map Revealer, an invisible_consts() member
+_BLOCKER_CONST = 1776  # type 10, but invisible and so no longer eye candy
+_INVISIBLE_KIND = {_INVISIBLE_CONST, _REVEALER_CONST, _BLOCKER_CONST}
 
 
 def _kind_scenario() -> FakeScenario:
@@ -402,12 +406,15 @@ def _kind_scenario() -> FakeScenario:
         SyntheticUnit(x=1.5, y=1.5, unit_const=_WALL_CONST),
         SyntheticUnit(x=2.5, y=1.5, unit_const=_EYE_CANDY_CONST),
         SyntheticUnit(x=3.5, y=1.5, unit_const=_RESOURCE_CONST),
+        SyntheticUnit(x=4.5, y=1.5, unit_const=_REVEALER_CONST),
     ]
     units_by_player[1] = [
         SyntheticUnit(x=6.5, y=6.5, unit_const=_WALL_CONST),
         SyntheticUnit(x=8.5, y=6.5, unit_const=_GATE_CONST),
         SyntheticUnit(x=6.5, y=9.5, unit_const=_EYE_CANDY_CONST),
         SyntheticUnit(x=8.5, y=9.5, unit_const=_PLAIN_CONST),
+        SyntheticUnit(x=11.5, y=6.5, unit_const=_INVISIBLE_CONST),
+        SyntheticUnit(x=11.5, y=9.5, unit_const=_BLOCKER_CONST),
     ]
     return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
 
@@ -437,7 +444,7 @@ def test_the_two_new_gates_are_independent_of_each_other_and_of_owner() -> None:
     scn = _kind_scenario()
     both = _expected_visible(scn, UnitFilter(show_walls=False, show_eye_candy=False))
     kept = {u.unit_const for _pid, u in both}
-    assert kept == {_RESOURCE_CONST, _PLAIN_CONST}
+    assert kept == {_RESOURCE_CONST, _PLAIN_CONST} | _INVISIBLE_KIND
     # show_gaia still governs the GAIA slot on its own: the const gates run
     # first but do not subsume it.
     gaia_off = _expected_visible(scn, UnitFilter(show_gaia=False))
@@ -447,6 +454,7 @@ def test_the_two_new_gates_are_independent_of_each_other_and_of_owner() -> None:
 def test_is_default_false_for_the_two_new_fields() -> None:
     assert not UnitFilter(show_walls=False).is_default
     assert not UnitFilter(show_eye_candy=False).is_default
+    assert not UnitFilter(show_invisible=False).is_default
     assert UnitFilter().is_default
 
 
@@ -460,7 +468,7 @@ def test_default_filter_over_the_kind_fixture_is_byte_identical_to_no_filter() -
     assert np.array_equal(overlay_units(base, scn), overlay_units(base, scn, UnitFilter()))
 
 
-@pytest.mark.parametrize("field", ["show_walls", "show_eye_candy"])
+@pytest.mark.parametrize("field", ["show_walls", "show_eye_candy", "show_invisible"])
 def test_every_compositor_round_trips_the_new_gates_byte_identically(field: str) -> None:
     """One parametrized pass per compositor -- Flat, Stepped and Sloped all
     reach the same matches() predicate, but they cache units differently
@@ -477,6 +485,22 @@ def test_every_compositor_round_trips_the_new_gates_byte_identically(field: str)
         )
         cache.set_unit_filter(UnitFilter())
         assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: {field} did not restore"
+
+
+def test_show_invisible_false_hides_invisible_objects_under_every_owner() -> None:
+    """GH #53: owner-blind like the other const gates. The player-owned
+    Invisible Object A is the load-bearing case."""
+    scn = _kind_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_invisible=False))
+    assert all(u.unit_const not in _INVISIBLE_KIND for _pid, u in visible)
+    assert {u.unit_const for _pid, u in visible} >= {_WALL_CONST, _EYE_CANDY_CONST, _RESOURCE_CONST, _PLAIN_CONST}
+
+
+def test_show_eye_candy_false_keeps_blockers_now_that_they_are_invisible() -> None:
+    """Blockers moved out of eye candy (GH #53), so the two toggles stay disjoint."""
+    scn = _kind_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_eye_candy=False))
+    assert any(u.unit_const == _BLOCKER_CONST for _pid, u in visible)
 
 
 def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
@@ -496,3 +520,64 @@ def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
     render_cache._splice_units_by_tile(by_tile, scn, UnitFilter(show_walls=False), splice)
     remaining = [t for t, entries in by_tile.items() if any(u is unit for u, _c in entries)]
     assert remaining == [], f"a hidden unit was left in {remaining}"
+
+
+# --- GH #42: Show Garrisoned Units --------------------------------------
+
+
+def _garrison_scenario() -> FakeScenario:
+    """A host with two occupants stacked on its own point, plus the two
+    non-garrison encodings that must stay visible: -1, and a unit pointing at
+    its own reference_id (legal on disk)."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [
+        SyntheticUnit(x=6.5, y=6.5, unit_const=_BUILDING_CONST, reference_id=10),
+        SyntheticUnit(x=6.5, y=6.5, unit_const=_PLAIN_CONST, reference_id=11, garrisoned_in_id=10),
+        SyntheticUnit(x=6.5, y=6.5, unit_const=_PLAIN_CONST, reference_id=12, garrisoned_in_id=10),
+        SyntheticUnit(x=9.5, y=9.5, unit_const=_PLAIN_CONST, reference_id=13),
+        SyntheticUnit(x=11.5, y=9.5, unit_const=_PLAIN_CONST, reference_id=14, garrisoned_in_id=14),
+    ]
+    units_by_player[GAIA_PLAYER_ID] = [
+        SyntheticUnit(x=2.5, y=2.5, unit_const=_TREE_CONST, reference_id=20, garrisoned_in_id=10),
+    ]
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+def test_show_garrisoned_false_hides_occupants_and_keeps_their_host() -> None:
+    scn = _garrison_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_garrisoned=False))
+    assert {u.reference_id for _pid, u in visible} == {10, 13, 14}
+    assert any(u.reference_id == 10 for _pid, u in visible), "the host itself must stay"
+
+
+
+def test_show_garrisoned_false_is_owner_blind_and_spares_the_two_non_garrison_encodings() -> None:
+    """-1 and a self-reference both mean "not inside anything"; the GAIA
+    occupant is the owner-blind half (a garrisoned tree is still garrisoned)."""
+    scn = _garrison_scenario()
+    kept = {u.reference_id for _pid, u in _expected_visible(scn, UnitFilter(show_garrisoned=False))}
+    assert kept == {10, 13, 14}
+    assert {u.reference_id for _pid, u in _expected_visible(scn, UnitFilter())} == {10, 11, 12, 13, 14, 20}
+
+
+def test_is_default_false_for_show_garrisoned() -> None:
+    assert not UnitFilter(show_garrisoned=False).is_default
+    assert UnitFilter().is_default
+
+
+def test_every_compositor_round_trips_the_garrison_gate_byte_identically() -> None:
+    """Same per-compositor pass as the const gates: Flat, Stepped and Sloped
+    cache units differently, so "the toggle repaints, and restoring it puts
+    the pixels back" has to be asserted on each."""
+    scn = _garrison_scenario()
+    hidden_filter = UnitFilter(show_garrisoned=False)
+    for make in (_flat_cache, _iso_cache, _sloped_cache):
+        cache = make(scn, UnitFilter())
+        before = _whole_canvas(cache).copy()
+        cache.set_unit_filter(hidden_filter)
+        assert not np.array_equal(before, _whole_canvas(cache)), (
+            f"{type(cache).__name__}: show_garrisoned=False changed no pixels"
+        )
+        cache.set_unit_filter(UnitFilter())
+        assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: did not restore"

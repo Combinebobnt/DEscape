@@ -37,6 +37,12 @@ Three things measured per real corpus file, per style, per mip level:
   build + chunk composite together; a cache that only ran the level build
   first should pay just the composite on its first real chunk fetch, if
   fact 3 is right that the layer build dominates.
+
+`--per-chunk` replaces all of the above with a per-chunk distribution: one
+timed get_chunk() per chunk of the mip-0 grid, per style, over `--repeats`
+fresh caches (see _bench_per_chunk). That is the margin-warm tick cost the
+single-rect columns above only approximate (an unaligned 512px rect can
+touch up to four chunks).
 """
 
 from __future__ import annotations
@@ -190,6 +196,86 @@ def _bench_sloped(scenario) -> list[str]:
     return lines
 
 
+def _sloped_level_warm(cache: SlopedChunkCache, mip: int) -> None:
+    # Construction already built everything (see _bench_sloped's docstring).
+    pass
+
+
+_PER_CHUNK_STYLES = {
+    "stepped": (_stepped_cache, _iso_level_warm),
+    "flat": (_flat_cache, _flat_level_warm),
+    "sloped": (_sloped_cache, _sloped_level_warm),
+}
+
+
+def _pct(samples: list[float], q: float) -> float:
+    ordered = sorted(samples)
+    return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
+
+
+def _dist(label: str, samples: list[float]) -> str:
+    if not samples:
+        return f"{label}: n=0"
+    return (
+        f"{label}: n={len(samples)} median {_ms(_pct(samples, 0.5))} | "
+        f"p90 {_ms(_pct(samples, 0.9))} | max {_ms(max(samples))}"
+    )
+
+
+def _bench_per_chunk(scenario, style: str, repeats: int) -> list[str]:
+    """--per-chunk mode: one timed get_chunk(0, cx, cy) per chunk of the
+    whole mip-0 grid, on a level-warm cache -- exactly MarginWarmer.tick()'s
+    unit of work. Mip 0 because it is Sloped's only level, so it is the one
+    level all three styles can be compared on.
+
+    Run 1 starts from cleared sprite caches (cold); later runs build a fresh
+    chunk cache but keep the process-wide sprite caches (warm), which is the
+    in-app margin-warm case once the viewport has painted. "centre" is the
+    middle half of each axis, which sits inside the iso diamond, so it
+    excludes the empty canvas corners that dilute the "all" figures."""
+    make_cache, level_warm = _PER_CHUNK_STYLES[style]
+    cold: dict[str, list[float]] = {"all": [], "centre": []}
+    warm: dict[str, list[float]] = {"all": [], "centre": []}
+    lines = [f"    {style} (mip 0, {repeats} run(s)):"]
+    for run in range(repeats):
+        if run == 0:
+            unit_sprites.clear_caches()
+        start = time.perf_counter()
+        cache = make_cache(scenario)
+        level_warm(cache, 0)
+        setup = time.perf_counter() - start
+        canvas_w, canvas_h = cache.canvas_dims(0)
+        nx, ny = -(-canvas_w // cache.chunk_px), -(-canvas_h // cache.chunk_px)
+        into = cold if run == 0 else warm
+        for cy in range(ny):
+            for cx in range(nx):
+                t = _time(lambda c=cache, cx=cx, cy=cy: c.get_chunk(0, cx, cy))
+                into["all"].append(t)
+                if nx // 4 <= cx < nx - nx // 4 and ny // 4 <= cy < ny - ny // 4:
+                    into["centre"].append(t)
+        lines.append(
+            f"      run {run + 1}: construct + level warm {_ms(setup)} (load-time, not per-tick) | "
+            f"grid {nx}x{ny}"
+        )
+        del cache
+    lines.extend(
+        "      " + _dist(f"{label} {region}", bucket[region])
+        for label, bucket in (("cold", cold), ("warm", warm))
+        for region in ("centre", "all")
+        if bucket[region]
+    )
+    return lines
+
+
+def bench_file_per_chunk(path: Path, styles: list[str], repeats: int) -> str:
+    scenario = load_map_and_units(path)
+    mm = scenario.map_manager
+    lines = [f"  {path.name} ({mm.map_width}x{mm.map_height})"]
+    for style in styles:
+        lines.extend(_bench_per_chunk(scenario, style, repeats))
+    return "\n".join(lines)
+
+
 def bench_file(path: Path) -> str:
     scenario = load_map_and_units(path)
     lines = [f"  {path.name}"]
@@ -208,7 +294,20 @@ def main() -> None:
         help="Specific .aoe2scenario files (default: the biggest few in examples/)",
     )
     parser.add_argument("--install", type=Path, help="AoE2:DE install root override")
+    parser.add_argument(
+        "--per-chunk", action="store_true",
+        help="Time get_chunk() over the whole mip-0 grid per style instead (margin-warm tick cost)",
+    )
+    parser.add_argument(
+        "--styles", default="stepped,flat,sloped",
+        help="Comma-separated styles for --per-chunk (default: all three)",
+    )
+    parser.add_argument("--repeats", type=int, default=3, help="Fresh caches per style for --per-chunk")
     args = parser.parse_args()
+    styles = [s.strip() for s in args.styles.split(",") if s.strip()]
+    unknown = [s for s in styles if s not in _PER_CHUNK_STYLES]
+    if unknown:
+        parser.error(f"unknown style(s): {', '.join(unknown)}")
 
     if args.install:
         asset_source.set_install_path_override(args.install)
@@ -227,7 +326,7 @@ def main() -> None:
 
     print(f"Chunk-preload bench -- install {asset_source.get_install_path()}")
     for path in files:
-        print(bench_file(path))
+        print(bench_file_per_chunk(path, styles, args.repeats) if args.per_chunk else bench_file(path))
     print(f"\nMeasured {len(files)} file(s). See this module's docstring for what each line means.")
 
 

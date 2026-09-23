@@ -23,6 +23,7 @@ Two kinds of assertion, deliberately separated:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -68,12 +69,13 @@ DECORATION_SHELL_CONSTS = (72, 119, 788)
 #
 # 1889 (PASTURE_BUILD) is deliberately NOT in this tuple: it resolves to a
 # real modern .sld and correctly HAS a graphic_map entry, unlike its sibling
-# consts here. 1193/1194/1195 (FARMDROP/FARMSTACK/RFARMDROP) are invisible
+# consts here. Nor are 1893/1897 (placed Pastures): their annex tree reaches
+# modern art even though their own graphic doesn't (GH #66, ANNEX_TREE_CONSTS). 1193/1194/1195 (FARMDROP/FARMSTACK/RFARMDROP) are invisible
 # internal dropsite helpers with foundation_terrain_id == -1 -- absent for
 # the same reason as the rest, but not renderable as terrain either (see
 # render.py's FOUNDATION_TERRAIN / _terrain_overlay_for).
 FARM_FAMILY_CONSTS = (
-    50, 357, 1187, 1188, 1193, 1194, 1195, 1893, 1894, 1897, 1898,
+    50, 357, 1187, 1188, 1193, 1194, 1195, 1894, 1898,
 )
 
 FIELDS = {
@@ -103,7 +105,13 @@ PIECE_FIELDS = {
 COMPOSITE_PIECE_FIELDS = {**PIECE_FIELDS, "mx": float, "my": float, "slot": list}
 
 # Mirrors tools/gen_unit_graphic_map.py's _COMPOSITE_SCOPE (town centres, pastures).
-COMPOSITE_SCOPE_CONSTS = frozenset({71, 109, 141, 142, 2275, 2276, 2277, 1889, 1890, 2079, 2080})
+# Mirrors tools/gen_unit_graphic_map.py's _ANNEX_TREE_SCOPE (placed Pastures).
+ANNEX_TREE_CONSTS = frozenset({1893, 1897})
+# Every const whose pieces carry mx/my/slot.
+SLOTTED_CONSTS = frozenset(
+    {71, 109, 141, 142, 2275, 2276, 2277, 1889, 1890, 2079, 2080}
+) | ANNEX_TREE_CONSTS
+COMPOSITE_SCOPE_CONSTS = SLOTTED_CONSTS - ANNEX_TREE_CONSTS
 
 # unit_const -> depth-sorted piece file_names, read off the real .dat
 # (2026-08-29) via tools/gen_unit_graphic_map.py's annex walk. 109 is the
@@ -196,14 +204,15 @@ def test_decoration_shells_resolve_to_the_body_not_the_overlay(graphics):
 
 
 # unit_const -> (file_name, dx, dy, is_parent) per piece, read off the real .dat
-# 2026-09-02: deltas in .dat list order, then the flag shell last.
+# 2026-09-02: deltas in .dat list order, the flag shell at its -1 delta's slot.
+# Its non-zero dy lifts the pole onto the tower top; at (0, 0) it hung mid-wall (GH #51).
 KNOWN_WALL_PIECES = {
-    72: [("b_dark_wall_palisade_x1", 0, 0, True), (PALISADE_FLAG_SHELL, 0, 0, False)],
-    119: [("b_scen_wall_palisade_fortified_x1", 0, 0, True), (PALISADE_FLAG_SHELL, 0, 0, False)],
+    72: [("b_dark_wall_palisade_x1", 0, 0, True), (PALISADE_FLAG_SHELL, 0, -40, False)],
+    119: [("b_scen_wall_palisade_fortified_x1", 0, 0, True), (PALISADE_FLAG_SHELL, 0, -60, False)],
     788: [
         ("b_scen_wall_sea_underwater_x1", 0, 0, False),
         ("b_scen_wall_sea_x1", 0, 0, True),
-        (PALISADE_FLAG_SHELL, 0, 0, False),
+        (PALISADE_FLAG_SHELL, 0, -60, False),
     ],
 }
 
@@ -272,9 +281,12 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
             assert len(parents) == 1 and parents[0]["parent"] is True, (
                 f"unit_const {key}: exactly one piece must be marked parent, got {len(parents)}"
             )
-            shape = COMPOSITE_PIECE_FIELDS if int(key) in COMPOSITE_SCOPE_CONSTS else PIECE_FIELDS
+            shape = COMPOSITE_PIECE_FIELDS if int(key) in SLOTTED_CONSTS else PIECE_FIELDS
             for i, piece in enumerate(entry["pieces"]):
-                assert set(piece) - {"parent"} == set(shape), f"unit_const {key} piece {i}: {sorted(piece)}"
+                assert set(piece) - {"parent", "seeded"} == set(shape), f"unit_const {key} piece {i}: {sorted(piece)}"
+                if "seeded" in piece:
+                    assert piece["seeded"] is True and int(key) in ANNEX_TREE_CONSTS, (key, i)
+                    assert "parent" not in piece, (key, i)
                 for field, kind in shape.items():
                     assert isinstance(piece[field], kind), f"unit_const {key} piece {i}.{field}"
 
@@ -376,7 +388,7 @@ def test_every_slot_lies_inside_its_parents_own_footprint(graphics):
     beyond it paint over the piece's feet."""
     from descape.terrain_palette import tile_span
 
-    for unit_const in COMPOSITE_SCOPE_CONSTS:
+    for unit_const in SLOTTED_CONSTS:
         entry = graphics.get(str(unit_const))
         if entry is None:
             continue
@@ -392,7 +404,7 @@ def test_only_composite_scope_entries_carry_a_slot(graphics):
     supporting (see tests/test_sprite_chunks.py's no-slot fallback pin)."""
     slotted = {int(k) for k, e in graphics.items()
                if any("slot" in p for p in e.get("pieces", ()))}
-    assert slotted == {c for c in COMPOSITE_SCOPE_CONSTS if str(c) in graphics}
+    assert slotted == {c for c in SLOTTED_CONSTS if str(c) in graphics}
 
 
 @pytest.mark.corpus
@@ -416,7 +428,7 @@ def test_the_committed_slots_still_match_the_real_art(request):
     generator = measure._generator_module()
 
     measured = {}
-    for unit_const in sorted(generator._COMPOSITE_SCOPE):
+    for unit_const in sorted(generator._COMPOSITE_SCOPE | generator._ANNEX_TREE_SCOPE):
         result = measure.measure(unit_const)
         if result is not None:
             measured[unit_const] = [list(row["slot"]) for row in result["rows"]]
@@ -426,6 +438,45 @@ def test_the_committed_slots_still_match_the_real_art(request):
             f"unit_const {unit_const}: the real art now wants {slots}. Re-run "
             f"tools/measure_piece_slots.py and commit its table"
         )
+
+
+# GH #66: 1897's annex tree, (unit_id, mx, my) in depth order, read off the
+# real .dat 2026-09-21. Hut 1890 + 4 posts 1888 + 5 fences per edge (2079/1885
+# along y = +-2, 2080/1886 along x = +-2), misplacement summed down the tree.
+KNOWN_PASTURE_TREE = [
+    (1888, 2.0, -2.0), (1885, 1.3, -2.0), (1886, 2.0, -1.3), (1885, 0.65, -2.0),
+    (1886, 2.0, -0.65), (2079, 0.0, -2.0), (2080, 2.0, 0.0), (1885, -0.65, -2.0),
+    (1886, 2.0, 0.65), (1885, -1.3, -2.0), (1886, 2.0, 1.3), (1890, 0.0, 0.0),
+    (1888, 2.0, 2.0), (1888, -2.0, -2.0), (1885, 1.3, 2.0), (1886, -2.0, -1.3),
+    (1885, 0.65, 2.0), (1886, -2.0, -0.65), (2079, 0.0, 2.0), (2080, -2.0, 0.0),
+    (1885, -0.65, 2.0), (1886, -2.0, 0.65), (1885, -1.3, 2.0), (1886, -2.0, 1.3),
+    (1888, -2.0, 2.0),
+]
+
+
+def test_placed_pasture_draws_its_whole_annex_tree(graphics):
+    for unit_const in ANNEX_TREE_CONSTS:
+        entry = graphics[str(unit_const)]
+        pieces = entry["pieces"]
+        assert [(p["unit_id"], p["mx"], p["my"]) for p in pieces] == KNOWN_PASTURE_TREE, unit_const
+        # The hut is the parent and supplies the top-level fields, unlike a
+        # town centre whose parent is the const's own art.
+        assert entry["file_name"] == "b_dark_pasture_x1"
+        assert [p["unit_id"] for p in pieces if p.get("parent")] == [1890]
+        assert sum(1 for p in pieces if p.get("seeded")) == 24
+        names = Counter(p["file_name"] for p in pieces)
+        assert names == {
+            "b_dark_pasture_x1": 1,
+            "b_dark_pasture_corner_posts_x1": 4,
+            "b_dark_pasture_broken_perimeter_fencesA_x1": 10,
+            "b_dark_pasture_broken_perimeter_fencesB_x1": 10,
+        }
+        # FencesA sit on the y = +-2 edges, fencesB on x = +-2.
+        for p in pieces:
+            if p["file_name"].endswith("fencesA_x1"):
+                assert abs(p["my"]) == 2.0, p
+            if p["file_name"].endswith("fencesB_x1"):
+                assert abs(p["mx"]) == 2.0, p
 
 
 def test_counts_are_positive(graphics):
@@ -502,4 +553,4 @@ def test_non_gate_composite_scope_is_unaffected_by_the_gate_rule(graphics):
     non_gate = {
         int(k) for k, e in graphics.items() if "pieces" in e and "_gate_" not in e["file_name"]
     }
-    assert non_gate == COMPOSITE_SCOPE_CONSTS | set(KNOWN_WALL_PIECES)
+    assert non_gate == SLOTTED_CONSTS | set(KNOWN_WALL_PIECES)

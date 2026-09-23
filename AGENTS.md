@@ -29,8 +29,25 @@ commands, and architecture.
     guard here, only the plan's own rule. A wall's stored run-direction index
     (0 along x, 1 along y) swaps under the four axis-swapping D4 elements,
     and only in a file that encodes the index as a literal integer (a
-    radian-encoded file carries no shape information there, measured). Every
-    other rotation, including a real facing angle, is copied verbatim.
+    radian-encoded file carries no shape information there, measured). A
+    real facing angle, only on the consts `unit_rotation.rotation_is_angle()`
+    calls ANGLE (the predicate Rotate uses, never the player id), maps through
+    `mirror_tools.facing_image()`, whose 2x2 matrix is `TRANSFORMS`' own
+    linear part, so the facing cannot drift from the positions. Every other
+    rotation, VARIANT and INERT alike, is copied verbatim.
+    The angular modes (3-way, 6-way rotational, 6-way reflective: tile-space
+    rotations by multiples of 60 degrees, not D4 elements) extend this with
+    three accepted approximations, each derived from the element's own
+    linear action rather than hand-typed. A building keeps its const's
+    axis-aligned span: its footprint centre is rotated and the same span is
+    re-anchored around it on whole tiles, since AoE2 has no rotated
+    footprint. A gate's image takes the orientation sibling nearest the
+    rotated run direction (always 15 degrees off, never a tie), still via
+    `reorient_gate_const()`. A wall's run-direction index swaps when the
+    element carries the x axis nearer the y axis (60 and 120 degrees and `a`
+    do, 180 degrees and the other two reflections do not), under the same
+    integer-encoded-file rule. A facing angle rotates through
+    `facing_image()` with the angular element's own matrix.
   - *Cycle Variant*, via `UnitEditModel.set_variant()`, only on consts
     `descape/unit_variant.py` calls cyclable: VARIANT, at least two real
     variants, and not a wall, cliff or gate. Those three are excluded by const
@@ -38,7 +55,7 @@ commands, and architecture.
     because the game re-derives their index from neighbours, so a written
     value would be overridden. It always writes a literal integer index: every
     corpus placement on a cyclable const stores one, never the radian form.
-  - *The Wall Run tool's junction rewrites*, via
+  - *Place Unit's wall-run junction rewrites*, via
     `UnitEditModel.set_wall_variant()`, only on the 8 wall consts
     `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
     and only for an index in `0..4`. Allowed for the same reason the bullet

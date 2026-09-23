@@ -54,7 +54,7 @@ from collections.abc import Iterable, Mapping
 
 from AoE2ScenarioParser.helper.bytes_conversions import str_to_bytes
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QValidator
+from PyQt5.QtGui import QValidator
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -74,6 +74,8 @@ from descape.player_fields import (
     COMBO,
     NUM_PLAYERS,
     PLAYER_COUNT_FIELD_ID,
+    POV_X_FIELD,
+    POV_Y_FIELD,
     TEXT,
     civilization_choices,
     current_value,
@@ -81,7 +83,7 @@ from descape.player_fields import (
     specs_for,
 )
 from descape.scenario_io import LoadedScenario
-from descape.viewer_common import _fit_combo_width, _make_spinbox
+from descape.viewer_common import _fit_combo_width, _make_spinbox, _swatch_icon
 
 # Number of Players' own editable range. 1 is refused rather than shown as a
 # floor: every corpus file measured stores 2..8, and a one-player scenario
@@ -141,6 +143,11 @@ _F32_EXACT_RANGE_TOOLTIP = (
     "stored copies."
 )
 
+# The group both Point of View specs declare -- matched by name because that
+# string is what _build_groups() keys its QFormLayouts by, and GH #22's
+# buttons ride inside that group rather than beside it.
+_POV_GROUP = "Point of View"
+
 
 class PlayersPanel(QWidget):
     """Per-player settings: a P1..P8 selector plus one form (the Players
@@ -176,6 +183,21 @@ class PlayersPanel(QWidget):
         "Read-only for this file: its Options disable lists failed verification, "
         "so rewriting that region would land at an offset that cannot be trusted."
     )
+    _SET_VIEW_LABEL = "Set View"
+    _SET_VIEW_TOOLTIP = (
+        "Set this player's starting camera to the tile at the centre of the "
+        "map view. Both coordinates change together, as one undo step."
+    )
+    _GO_TO_VIEW_LABEL = "Go to View"
+    _GO_TO_VIEW_TOOLTIP = (
+        "Scroll the map to this player's starting camera. Disabled while the "
+        "view is unset."
+    )
+    _RESET_VIEW_LABEL = "Reset View"
+    _RESET_VIEW_TOOLTIP = (
+        "Clear this player's starting camera back to unset (-1, -1), which is "
+        "what every scenario with no view set stores."
+    )
     _PLAYER_COUNT_LABEL = "Number of players"
     _PLAYER_COUNT_TOOLTIP = (
         "How many players this scenario defines. Lowering it deactivates the "
@@ -185,13 +207,30 @@ class PlayersPanel(QWidget):
         "on a file whose other player settings are editable."
     )
 
-    def __init__(self, on_player_field=None, on_player_count=None, on_disables_requested=None):
+    def __init__(
+        self,
+        on_player_field=None,
+        on_player_count=None,
+        on_disables_requested=None,
+        on_set_view=None,
+        on_go_to_view=None,
+        on_reset_view=None,
+        on_player_selected=None,
+    ):
         super().__init__()
         # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel's callbacks have.
         self._on_player_field = on_player_field or (lambda *args: None)
         self._on_player_count = on_player_count or (lambda *args: None)
         self._on_disables_requested = on_disables_requested or (lambda *args: None)
+        # GH #22's three Point of View buttons and the selection notice the
+        # camera markers' emphasis follows. All four stay model-free: the
+        # panel reports the gesture and the player it was made for, and the
+        # window does every read and write.
+        self._on_set_view = on_set_view or (lambda *args: None)
+        self._on_go_to_view = on_go_to_view or (lambda *args: None)
+        self._on_reset_view = on_reset_view or (lambda *args: None)
+        self._on_player_selected = on_player_selected or (lambda *args: None)
 
         self._loaded: LoadedScenario | None = None
         self._specs = ()
@@ -269,6 +308,11 @@ class PlayersPanel(QWidget):
         self.host_layout.setContentsMargins(6, 6, 6, 6)
         self.area.setWidget(self.host)
         self._widgets = {}
+        # Rebuilt with the form (they live inside the Point of View group),
+        # so the old C++ objects go with the old host -- see _build_groups().
+        self.set_view_button = None
+        self.go_to_view_button = None
+        self.reset_view_button = None
 
     # -- document state -------------------------------------------------
 
@@ -438,6 +482,11 @@ class PlayersPanel(QWidget):
             return
         self._player_id = index + 1
         self._populate_current_player()
+        # After the repopulate, so anything the callback reads back off this
+        # panel (current_view(), current_player_id()) already describes the
+        # newly selected player. Covers select_player()'s number-key path
+        # too, since that goes through the combo.
+        self._on_player_selected(self._player_id)
 
     def _populate_current_player(self) -> None:
         self._populating = True
@@ -507,7 +556,63 @@ class PlayersPanel(QWidget):
                     reason = self._read_only_reasons.get(spec.field_id, "")
                 widget.setToolTip(reason or spec.tooltip)
             form.addRow(spec.label, widget)
+        self._build_point_of_view_buttons(forms.get(_POV_GROUP))
         self.host_layout.addStretch(1)
+
+    def _build_point_of_view_buttons(self, form: QFormLayout | None) -> None:
+        """GH #22's Set / Go to / Reset View row, appended to the Point of
+        View group when the file has one -- so a scenario version that never
+        stored the field, and a 1.41 file whose copy the library mis-frames
+        (player_fields.specs_for()), get no buttons along with no spinboxes.
+
+        Rebuilt on every player switch with the rest of the form, which is
+        what keeps the enabled states in step with the newly shown player
+        without a second refresh path."""
+        if form is None:
+            return
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        editable = POV_X_FIELD in self._editable_fields
+        self.set_view_button = QPushButton(self._SET_VIEW_LABEL)
+        self.set_view_button.setToolTip(
+            self._SET_VIEW_TOOLTIP if editable else self._read_only_reasons.get(POV_X_FIELD, "")
+        )
+        self.set_view_button.setEnabled(editable)
+        self.set_view_button.clicked.connect(lambda *_: self._on_set_view(self._player_id))
+        self.go_to_view_button = QPushButton(self._GO_TO_VIEW_LABEL)
+        self.go_to_view_button.setToolTip(self._GO_TO_VIEW_TOOLTIP)
+        # Read-only files still navigate: Go to View changes nothing on disk.
+        self.go_to_view_button.setEnabled(self.current_view() is not None)
+        self.go_to_view_button.clicked.connect(lambda *_: self._on_go_to_view(self._player_id))
+        self.reset_view_button = QPushButton(self._RESET_VIEW_LABEL)
+        self.reset_view_button.setToolTip(
+            self._RESET_VIEW_TOOLTIP if editable else self._read_only_reasons.get(POV_X_FIELD, "")
+        )
+        self.reset_view_button.setEnabled(editable)
+        self.reset_view_button.clicked.connect(lambda *_: self._on_reset_view(self._player_id))
+        for button in (self.set_view_button, self.go_to_view_button, self.reset_view_button):
+            row_layout.addWidget(button)
+        form.addRow(row)
+
+    def current_view(self) -> tuple[int, int] | None:
+        """The selected player's Point of View as currently shown, or None
+        when it is unset (-1 on either axis) or the file has no such field.
+        What Go to View's enabled state is read from."""
+        x = self._values.get(POV_X_FIELD)
+        y = self._values.get(POV_Y_FIELD)
+        if not isinstance(x, int) or not isinstance(y, int):
+            return None
+        if x < 0 or y < 0:
+            return None
+        return x, y
+
+    def current_player_id(self) -> int:
+        """Which player the form is showing. The camera markers' emphasis
+        reads this rather than tracking a copy in the window, which would go
+        stale on the load path: show_scenario() resets to P1 with the combo's
+        signals blocked, so no selection callback fires there."""
+        return self._player_id
 
     def _build_widget(self, spec, value: int | str) -> QWidget:
         if not self._is_representable(spec, value):
@@ -673,9 +778,3 @@ class PlayersPanel(QWidget):
             return
         for i in range(self.player_combo.count()):
             self.player_combo.setItemIcon(i, _swatch_icon(loaded.player_colors[i + 1]))
-
-
-def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:
-    pixmap = QPixmap(16, 16)
-    pixmap.fill(QColor(*rgb))
-    return QIcon(pixmap)

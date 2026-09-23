@@ -33,6 +33,7 @@ import ast
 from pathlib import Path
 
 from descape import settings
+from testkit import settings_isolation
 from testkit.settings_isolation import MEMOIZED_GLOBALS, isolate_settings
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,3 +126,33 @@ def test_isolate_settings_can_leave_asset_source_alone(tmp_path: Path) -> None:
 
     assert tmp_path / "config.yaml" == settings.CONFIG_PATH
     assert before == asset_source_module.CONFIG_PATH
+
+
+def test_pin_install_path_survives_the_redirect(tmp_path: Path, monkeypatch) -> None:
+    """tools/bench_fill_latency.py and tools/gen_unit_ghost_eyeball.py depend on
+    this: the install comes from the real config, every write goes to the fake."""
+    import descape.asset_source as asset_source_module
+
+    install = tmp_path / "aoe2de"
+    install.mkdir()
+    real_config = tmp_path / "real" / "config.yaml"
+    real_config.parent.mkdir()
+    real_config.write_text(f"aoe2de_install: {install}\n")
+    monkeypatch.setattr(asset_source_module, "CONFIG_PATH", real_config)
+    monkeypatch.setattr(asset_source_module, "_override_path", None)
+    # setenv first: delenv on an absent var records nothing, so pin's write would leak.
+    monkeypatch.setenv("AOE2DE_INSTALL_PATH", "")
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH")
+    # get_install_path() is lru_cached, so an earlier test's answer would mask both reads.
+    asset_source_module.get_install_path.cache_clear()
+    try:
+        assert settings_isolation.pin_install_path() == install
+        fake_dir = tmp_path / "fake"
+        fake_dir.mkdir()
+        isolate_settings(fake_dir)
+        asset_source_module.get_install_path.cache_clear()
+
+        assert fake_dir / "config.yaml" == asset_source_module.CONFIG_PATH
+        assert asset_source_module.get_install_path() == install
+    finally:
+        asset_source_module.get_install_path.cache_clear()

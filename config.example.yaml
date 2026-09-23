@@ -66,6 +66,10 @@ distance_tick_interval: 5
 # another, View > Show Stacked-Unit Badges. Default: true.
 stack_badges: true
 
+# In Units mode, outline each selected unit in its owner's player colour (GAIA
+# keeps unit_select), View > Colour Selection by Owner. Default: true.
+selection_by_owner: true
+
 # A line on every tile boundary, View > Grid. Default: false.
 grid_overlay: false
 
@@ -73,6 +77,19 @@ grid_overlay: false
 # elevation-0 ground plane, View > Grid > Follow Terrain Elevation. No effect
 # in Flat. Default: true.
 grid_follow_elevation: true
+
+# A circle around each selected building showing its attack range, View >
+# Range Rings. Buildings only, and only ones with a range. Default: false.
+range_rings: false
+
+# A camera glyph on each player's stored starting view tile, View > Player
+# Cameras. Default: false.
+camera_markers: false
+
+# The selected trigger's areas, locations and patrol runs drawn on the map,
+# View > Trigger Overlay. Draws nothing until a trigger is selected in the
+# Triggers panel. Default: true.
+trigger_overlay: true
 
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
@@ -87,7 +104,9 @@ footprint_scope: multitile
 # Out-of-range values clamp. Default: -50.
 grid_blend: -50
 
-# Grid line width in screen pixels, Settings > Appearance. Snaps to the
+# Grid line width, Settings > Appearance: map pixels at the current zoom
+# level's detail, so roughly half to all of that on screen (screen pixels
+# with Follow Terrain Elevation off in Stepped or Sloped). Snaps to the
 # nearest of [1, 2, 3, 4]. Default: 1.
 grid_thickness: 1
 
@@ -125,6 +144,7 @@ keybinds:
   file_close: Ctrl+W
   file_save: Ctrl+S
   file_save_as: Ctrl+Shift+S
+  file_recover_autosave: ''
   file_exit: Ctrl+Q
   edit_undo: Ctrl+Z
   edit_redo: Ctrl+Y
@@ -133,6 +153,8 @@ keybinds:
   edit_select_all: Ctrl+A
   edit_deselect: Ctrl+Shift+A
   edit_clipboard_history: ''
+  edit_history: ''
+  edit_scatter_units: ''
   edit_settings: ''
   edit_disables: ''
   map_mirror: ''
@@ -143,9 +165,14 @@ keybinds:
   view_grid_overlay: ''
   view_grid_follow: ''
   view_footprint_outlines: ''
+  view_selection_owner_colour: ''
+  view_range_rings: ''
+  view_player_cameras: ''
+  view_trigger_overlay: ''
   view_layer_terrain_textures: ''
   view_layer_farm_overlay: ''
   view_layer_small_trees: ''
+  view_layer_hero_glow: ''
   view_pan_up: Up
   view_pan_down: Down
   view_pan_left: Left
@@ -166,6 +193,8 @@ keybinds:
   filter_show_trees: ''
   filter_show_walls: ''
   filter_show_eye_candy: ''
+  filter_show_invisible: ''
+  filter_show_garrisoned: ''
   filter_all_players: ''
   filter_no_players: ''
   filter_show_all: ''
@@ -177,6 +206,7 @@ keybinds:
   unit_variant_prev: ;
   unit_variant_next: ''''
   unit_variant_random: '-'
+  unit_select_stack: Ctrl+K
   player_select_0: '0'
   player_select_1: '1'
   player_select_2: '2'
@@ -198,8 +228,9 @@ keybinds:
   tool_select: S
   tool_ruler: R
   tool_place_unit: ''
+  tool_wall_rect: ''
   tool_convert: ''
-  tool_wall_run: ''
+  tool_create_objects: ''
   adjust_increment: ']'
   adjust_decrement: '['
 
@@ -235,6 +266,7 @@ overlay_colors:
   unit_select_fill: '#50aaff'
   unit_stack: '#ffd24a'
   footprint_outline: '#e65ae6'
+  range_ring: '#9ee65a'
   ruler_line: '#ff8228'
   ruler_label: '#ffbe6e'
   ruler_label_outline: '#000000'
@@ -242,6 +274,11 @@ overlay_colors:
   region_outline: '#141414'
   region_ants: '#3ce6c8'
   mirror_overlay: '#50dcff'
+  analysis_marker: '#ff3c3c'
+  trigger_area_outline: '#7ce650'
+  trigger_area_fill: '#7ce650'
+  trigger_run: '#b4f078'
+  trigger_unit_ref: '#3cd28c'
 
 # Settings > Saving. Autosave writes its own rotating recovery slot on a
 # timer, never the file you have open, and never clears the unsaved-changes

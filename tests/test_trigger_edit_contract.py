@@ -186,3 +186,65 @@ def test_a_failed_edit_is_reported_and_still_recorded(monkeypatch) -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- the plural funnels (GH #60) ---------------------------------------------
+
+
+def _armour_spec(name: str):
+    from descape import trigger_fields
+
+    return trigger_fields.FieldSpec(name, trigger_fields.INT)
+
+
+def test_a_group_field_edit_reaches_the_saved_file_and_undoes_byte_identically(tmp_path: Path) -> None:
+    """set_entry_fields() over both of trigger 1's effects: one record, both
+    entries in the reloaded file, and an undo that restores the bytes."""
+    from descape.scenario_io import load_map_and_units, parse_triggers
+
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.set_entry_fields(1, [("effect", 0), ("effect", 1)], _armour_spec("source_player"), 5)
+        assert len(window.edit_history.records) == 1
+
+        out = tmp_path / "edited.aoe2scenario"
+        _save(window, out)
+        reloaded = parse_triggers(load_map_and_units(out))
+        assert [effect.source_player for effect in reloaded.triggers[1].effects] == [5, 5]
+
+        window.undo()
+        assert _save(window, tmp_path / "undone.aoe2scenario") == TRIGGER_FIXTURE.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_group_field_edit_that_changes_nothing_records_nothing() -> None:
+    """Both effects already hold source_player 1: entering the bracket anyway
+    would push a phantom record and dirty the trigger."""
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.set_entry_fields(1, [("effect", 0), ("effect", 1)], _armour_spec("source_player"), 1)
+        assert not window.edit_history.records
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_bulk_delete_then_undo_saves_byte_identically(tmp_path: Path) -> None:
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.entry_structural_edit("delete", 1, "effect", [("condition", 0), ("effect", 0), ("effect", 1)], -1)
+        assert len(window.edit_history.records) == 1
+        manager = window.trigger_edits.manager()
+        assert (len(manager.triggers[1].conditions), len(manager.triggers[1].effects)) == (0, 0)
+
+        window.undo()
+        assert _save(window, tmp_path / "undone.aoe2scenario") == TRIGGER_FIXTURE.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

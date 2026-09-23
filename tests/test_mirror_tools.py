@@ -8,6 +8,7 @@ those modules' own deliberately self-contained style.
 
 from __future__ import annotations
 
+import math
 import random
 
 from descape.edit_history import tile_state
@@ -480,3 +481,289 @@ def test_reorient_refuses_a_non_gate():
 
     with pytest.raises(ValueError):
         reorient_gate_const(117, "d")  # a wall
+
+
+# --- Angular modes (6-way / 3-fold) -------------------------------------------
+#
+# Not exact, so these assert exactness only where it is real (the sub-elements
+# that ARE D4 elements, the source wedge, idempotence) and bound it elsewhere.
+# The D4 block above stays untouched and never iterates ANGULAR_MODES.
+
+
+def _angular():
+    from descape.mirror_tools import ANGULAR_MODES
+
+    return ANGULAR_MODES
+
+
+def _random_map(n: int, seed: int) -> FakeMapManager:
+    rng = random.Random(seed)
+    mm = _square(n)
+    for tile in mm.terrain:
+        tile.terrain_id = rng.randrange(0, 50)
+        tile.elevation = rng.randrange(0, 3)
+        tile.layer = rng.choice([-1, rng.randrange(0, 50)])
+    return mm
+
+
+def test_the_lattice_modes_are_unchanged_and_the_angular_ones_live_apart() -> None:
+    assert [mode.mode_id for mode in MODES] == list(range(1, 10))
+    assert all(mode.kind == "lattice" and mode.angular is None for mode in MODES)
+    assert [mode.mode_id for mode in _angular()] == [10, 11, 12]
+    for mode in _angular():
+        assert mode.kind == "angular" and mode.group == ()
+        assert MODE_BY_ID[mode.mode_id] is mode
+
+
+def test_the_angular_element_algebra_is_closed_and_matches_its_own_action() -> None:
+    from descape.mirror_tools import AngularElement, angular_compose, angular_invert
+
+    rng = random.Random(3)
+    points = [(rng.uniform(-50, 50), rng.uniform(-50, 50)) for _ in range(20)]
+    everything = [AngularElement(s, f) for s in range(6) for f in (False, True)]
+    for g in everything:
+        for h in everything:
+            gh = angular_compose(g, h)
+            for u, v in points:
+                expected = g.apply(*h.apply(u, v))
+                got = gh.apply(u, v)
+                assert abs(got[0] - expected[0]) < 1e-9 and abs(got[1] - expected[1]) < 1e-9
+        assert angular_compose(g, angular_invert(g)) == AngularElement(0, False)
+    sizes = {10: 3, 11: 6, 12: 6}
+    for mode in _angular():
+        elements = set(mode.angular.elements)
+        assert len(elements) == sizes[mode.mode_id] == mode.angular.wedges
+        assert AngularElement(0, False) in elements
+        for g in elements:
+            assert angular_invert(g) in elements
+            for h in elements:
+                assert angular_compose(g, h) in elements, (mode.mode_id, g, h)
+    d3 = set(MODE_BY_ID[12].angular.elements)
+    assert sum(element.reflect for element in d3) == 3
+    assert AngularElement(0, True) in d3  # `a` itself: the exact mirror axis
+
+
+def test_the_angular_elements_that_are_d4_elements_act_exactly_like_them() -> None:
+    """Cheapest possible centre-convention bug detector: exact equality, no
+    tolerance, on tiles and in doubled space."""
+    from descape.mirror_tools import _UV_TRANSFORMS, AngularElement
+
+    pairs = {AngularElement(0, False): "id", AngularElement(3, False): "r2", AngularElement(0, True): "a"}
+    for n in (8, 9):
+        for x in range(n):
+            for y in range(n):
+                u, v = doubled(x, y, n)
+                for element, name in pairs.items():
+                    got = element.apply(u, v)
+                    assert got == _UV_TRANSFORMS[name](u, v), (element, name, u, v)
+                    gx, gy = TRANSFORMS[name](x, y, n)
+                    assert got == doubled(gx, gy, n)
+
+
+def test_the_continuous_reduction_is_exactly_equivariant() -> None:
+    """reduce(g(p)) == reduce(p) for every group element, BEFORE rounding --
+    the analytic counterpart of the D4 path's `rep` orbit-constancy."""
+    from descape.mirror_tools import angular_reduce
+
+    rng = random.Random(4)
+    for mode in _angular():
+        spec = mode.angular
+        width = 360.0 / spec.wedges
+        for j in range(spec.wedges):
+            checked = 0
+            while checked < 200:
+                u, v = rng.uniform(-100, 100), rng.uniform(-100, 100)
+                angle = (math.degrees(math.atan2(v, u)) - spec.start_degrees) % width
+                if min(angle, width - angle) < 1e-6:
+                    continue  # on a wedge boundary: sector() picks a side, fine either way
+                base = angular_reduce(spec, j, u, v)
+                for g in spec.elements:
+                    image = angular_reduce(spec, j, *g.apply(u, v))
+                    assert abs(image[0] - base[0]) < 1e-9 and abs(image[1] - base[1]) < 1e-9
+                checked += 1
+
+
+def test_the_source_wedge_is_preserved_byte_for_byte() -> None:
+    """No source index is ever changed, every tile of wedge j is a source, and
+    the surplus is exactly the tiles on `a`'s axis that `a` fixes -- empty for
+    the pure rotations, and non-empty in mode 12 only beside that axis."""
+    for n in (40, 41):
+        mm = _random_map(n, 5)
+        for mode in _angular():
+            spec = mode.angular
+            with_surplus = set()
+            for j in range(spec.wedges):
+                plan = plan_mirror(mm, mode.mode_id, j, True, True)
+                changed = {idx for idx, _ in plan.changes}
+                assert not (changed & plan.source_indices)
+                wedge = {
+                    y * n + x for y in range(n) for x in range(n) if spec.sector(*doubled(x, y, n)) == j
+                }
+                assert plan.source_indices >= wedge
+                surplus = plan.source_indices - wedge
+                if mode.mode_id != 12:
+                    # The odd-n centre tile is fixed by every rotation, so it is
+                    # a legitimate surplus when wedge j does not own it.
+                    assert surplus <= {(n // 2) * n + n // 2} if n % 2 else not surplus
+                    continue
+                for idx in surplus:
+                    u, v = doubled(idx % n, idx // n, n)
+                    assert u + v == 0, (n, j, idx)
+                if surplus and n % 2 == 0:
+                    with_surplus.add(j)
+            if mode.mode_id == 12 and n % 2 == 0:
+                # `a`'s axis is the 135/315 degree boundary pair: wedges 1|2 and 4|5.
+                # The half-open sector() gives its tiles to one side of each.
+                assert with_surplus <= {1, 2, 4, 5}
+                assert len(with_surplus & {1, 2}) == 1 and len(with_surplus & {4, 5}) == 1
+
+
+def test_an_angular_mirror_applied_twice_is_a_no_op_the_second_time() -> None:
+    """What the wedge-constrained snap buys: fails the moment the snap may
+    read a tile this same operation rewrites."""
+    for n in (40, 41):
+        for mode in _angular():
+            for j in range(mode.angular.wedges):
+                mm = _random_map(n, 6 + j)
+                _apply(mm, plan_mirror(mm, mode.mode_id, j, True, True))
+                assert plan_mirror(mm, mode.mode_id, j, True, True).changes == [], (n, mode.mode_id, j)
+
+
+def test_six_way_rotation_reproduces_the_exact_180_degree_mirror() -> None:
+    """Mode 11 from wedge j must agree with the exact r2 on wedge j+3, and
+    with mode 5 itself where mode 5's source half holds wedge j."""
+    n = 40
+    for j in range(6):
+        mm = _random_map(n, 7)
+        before = [tile_state(tile) for tile in mm.terrain]
+        _apply(mm, plan_mirror(mm, 11, j, True, True))
+        spec = MODE_BY_ID[11].angular
+        opposite = [
+            (x, y) for y in range(n) for x in range(n) if spec.sector(*doubled(x, y, n)) == (j + 3) % 6
+        ]
+        assert opposite
+        for x, y in opposite:
+            sx, sy = TRANSFORMS["r2"](x, y, n)
+            assert tile_state(mm.terrain[y * n + x]) == before[sy * n + sx]
+        if j in (3, 4):  # wedges wholly inside mode 5's slice-0 half u + v < 0
+            exact = _random_map(n, 7)
+            _apply(exact, plan_mirror(exact, 5, 0, True, True))
+            for x, y in opposite:
+                assert tile_state(mm.terrain[y * n + x]) == tile_state(exact.terrain[y * n + x])
+
+
+def test_six_way_reflective_reproduces_the_exact_screen_mirror_on_as_image() -> None:
+    from descape.mirror_tools import AngularElement, angular_compose
+
+    n = 40
+    spec = MODE_BY_ID[12].angular
+    for j in range(6):
+        mm = _random_map(n, 8)
+        before = [tile_state(tile) for tile in mm.terrain]
+        _apply(mm, plan_mirror(mm, 12, j, True, True))
+        mirrored_wedge = spec.elements.index(angular_compose(AngularElement(0, True), spec.elements[j]))
+        tiles = [(x, y) for y in range(n) for x in range(n) if spec.sector(*doubled(x, y, n)) == mirrored_wedge]
+        assert tiles
+        for x, y in tiles:
+            sx, sy = TRANSFORMS["a"](x, y, n)
+            assert tile_state(mm.terrain[y * n + x]) == before[sy * n + sx], (j, x, y)
+
+
+def test_every_snapped_source_is_within_one_tile_of_its_preimage() -> None:
+    """The 2x2-block path is bounded by 1 tile (Chebyshev). The widened path,
+    measured at zero occurrences on these sizes, gets its own looser bound so
+    this assertion keeps covering the 2x2 path on its own."""
+    from descape.mirror_tools import GATHER_SNAP, GATHER_WIDEN, angular_gather, angular_reduce
+
+    for n in (40, 41, 120):
+        for mode in _angular():
+            spec = mode.angular
+            for j in range(spec.wedges):
+                gather = angular_gather(mode.mode_id, j, n)
+                snapped = 0
+                for d_idx, (src, kind) in enumerate(zip(gather.sources, gather.kinds, strict=True)):
+                    if kind not in (GATHER_SNAP, GATHER_WIDEN):
+                        continue
+                    pu, pv = angular_reduce(spec, j, *doubled(d_idx % n, d_idx // n, n))
+                    su, sv = doubled(src % n, src // n, n)
+                    error = max(abs(su - pu), abs(sv - pv)) / 2  # doubled -> tiles
+                    assert error <= (1.0 if kind == GATHER_SNAP else 3.0), (n, mode.mode_id, j, d_idx)
+                    snapped += kind == GATHER_SNAP
+                assert snapped > 0
+
+
+def test_unreachable_is_exactly_the_off_map_preimage_set() -> None:
+    from descape.mirror_tools import angular_reduce
+
+    n = 40
+    mm = _random_map(n, 9)
+    for mode in _angular():
+        spec = mode.angular
+        for j in range(spec.wedges):
+            plan = plan_mirror(mm, mode.mode_id, j, True, True)
+            expected = set()
+            for y in range(n):
+                for x in range(n):
+                    pu, pv = angular_reduce(spec, j, *doubled(x, y, n))
+                    if not (-n <= pu < n and -n <= pv < n):
+                        expected.add(y * n + x)
+            assert plan.unreachable == expected
+            assert not plan.unreachable & {idx for idx, _ in plan.changes}
+            assert not plan.unreachable & plan.source_indices
+
+
+def test_the_unreachable_fraction_is_a_corner_sized_slice_of_the_map() -> None:
+    """Measured at 120 and 480: 5.6-15.5% depending on mode and wedge, from
+    the 21.5% of the square outside its inscribed circle. A loose band, so a
+    geometry regression shows without the test becoming a magic number."""
+    for n in (120,):
+        for mode in _angular():
+            for j in range(mode.angular.wedges):
+                plan = plan_mirror(_square(n), mode.mode_id, j, False, False)
+                fraction = len(plan.unreachable) / (n * n)
+                assert 0.04 < fraction < 0.18, (mode.mode_id, j, fraction)
+
+
+def test_the_elevation_sweep_catches_a_staircase_row_the_snap_drops() -> None:
+    """Decision 5's failure mode, pinned directly: a legal one-level-per-tile
+    ramp comes out with a +-2 step because nearest-neighbour skipped a row."""
+    n = 40
+    mm = _square(n)
+    for y in range(n):
+        for x in range(n):
+            mm.terrain[y * n + x].elevation = x  # legal: exactly +-1 between x-neighbours
+    assert _is_elevation_legal(mm)
+    from descape.mirror_tools import angular_gather
+
+    for mode_id in (10, 11, 12):
+        plan = plan_mirror(mm, mode_id, 0, False, True)
+        gather = angular_gather(mode_id, 0, n)
+        dropped = []
+        for a, b in plan.elevation_violations:
+            sa, sb = gather.sources[a], gather.sources[b]
+            if sa < 0 or sb < 0:
+                continue  # an untouched corner tile, not a snap
+            # Adjacent destinations whose sources are two columns apart: a skipped row.
+            if abs(sa % n - sb % n) == 2 and abs(sa // n - sb // n) <= 2:
+                dropped.append((a, b))
+        assert dropped, mode_id
+
+
+def test_angular_slice_labels_are_distinct_per_wedge() -> None:
+    for mode in _angular():
+        assert len(mode.slice_labels) == mode.angular.wedges
+        assert len(set(mode.slice_labels)) == mode.angular.wedges
+
+
+def test_the_angular_gather_is_fast_enough_for_a_live_dialog() -> None:
+    """Decision 3's cost check at the largest standard size, uncached."""
+    import time
+
+    from descape.mirror_tools import angular_gather
+
+    angular_gather.cache_clear()
+    start = time.perf_counter()
+    angular_gather(11, 1, 480)
+    elapsed = time.perf_counter() - start
+    angular_gather.cache_clear()
+    assert elapsed < 10.0, elapsed

@@ -50,7 +50,9 @@ def _default_entries_for(section_name: str, retriever_name: str):
     ]
 
 
-def _stub_loaded(overrides: dict[tuple[str, str], _StubRetriever] | None = None):
+def _stub_loaded(
+    overrides: dict[tuple[str, str], _StubRetriever] | None = None, scenario_version: str = "1.58"
+):
     """A LoadedScenario stand-in exposing only what specs_for()/current_value()
     touch. Every primary (section, retriever) pair in player_fields._SPECS
     gets a present, non-empty, repeat-16 stub of P1..P8-then-GAIA-shaped data
@@ -85,7 +87,9 @@ def _stub_loaded(overrides: dict[tuple[str, str], _StubRetriever] | None = None)
         for name, retrievers in sections.items()
         if retrievers
     }
-    return SimpleNamespace(_scenario=SimpleNamespace(sections=section_objs))
+    return SimpleNamespace(
+        _scenario=SimpleNamespace(sections=section_objs), scenario_version=scenario_version
+    )
 
 
 # -- PlayerArrayLayout.index_for() --------------------------------------------
@@ -123,6 +127,27 @@ def test_index_for_rejects_out_of_range_player_id() -> None:
 def test_every_spec_present_by_default() -> None:
     loaded = _stub_loaded()
     assert {s.field_id for s in specs_for(loaded)} == {s.field_id for s in player_fields._SPECS}
+
+
+def test_point_of_view_is_dropped_on_a_1_41_file() -> None:
+    """The one version check in specs_for(): 1.41's initial_player_views is
+    present but framed one byte early by the library, so the pair is hidden
+    rather than shown as garbage a typed value would patch at the wrong
+    offset. Everything else on the same file stays."""
+    loaded = _stub_loaded(scenario_version="1.41")
+    ids = {s.field_id for s in specs_for(loaded)}
+    assert player_fields.POV_X_FIELD not in ids
+    assert player_fields.POV_Y_FIELD not in ids
+    assert ids == {
+        s.field_id for s in player_fields._SPECS if s.field_id not in player_fields._POV_FIELD_IDS
+    }
+
+
+@pytest.mark.parametrize("version", ["1.40", "1.42", "1.54", "1.58"])
+def test_point_of_view_survives_every_other_version(version: str) -> None:
+    ids = {s.field_id for s in specs_for(_stub_loaded(scenario_version=version))}
+    assert player_fields.POV_X_FIELD in ids
+    assert player_fields.POV_Y_FIELD in ids
 
 
 def test_a_missing_section_drops_every_spec_in_it() -> None:

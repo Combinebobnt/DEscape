@@ -7,8 +7,6 @@ computed presence-gate logic -- there is none here, unlike option_fields.py.
 
 from __future__ import annotations
 
-import math
-
 from descape import unit_fields
 
 
@@ -38,14 +36,12 @@ def test_rotation_is_the_only_conditional_field():
     assert unit_fields.FIELDS_BY_ID["rotation"].conditional == "rotation_is_angle"
 
 
-def test_rotation_is_bounded_to_one_turn_in_raw_radians():
-    """Raw radians, not degrees -- the value actually stored. The bound is
-    what makes a typed value normalizable by the same helper the tool path
-    uses."""
+def test_rotation_is_edited_as_a_facing_with_a_per_const_range():
+    """GH #61: a whole facing, not raw radians. The range is the const's own
+    angle_count, so the spec carries no bounds of its own."""
     spec = unit_fields.FIELDS_BY_ID["rotation"]
-    assert spec.kind == unit_fields.FLOAT
-    assert (spec.minimum, spec.maximum) == (0.0, 2 * math.pi)
-    assert spec.decimals > 2, "two decimals would round a stored frame off its own grid"
+    assert spec.kind == unit_fields.FACING
+    assert (spec.minimum, spec.maximum) == (None, None)
 
 
 def test_float_fields_declare_bounds():

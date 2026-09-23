@@ -44,6 +44,86 @@ def test_every_rebindable_action_has_a_matching_keybind_action() -> None:
         window.close()
 
 
+def test_every_menu_command_is_rebindable_or_explicitly_exempt() -> None:
+    """A menu action added with its own QAction but no REBINDABLE_ACTIONS row
+    never reaches the Keybinds tab, and nothing else fails. Walks the menu bar
+    and the Filters popup; tools are covered structurally via settings.TOOLS."""
+    from PyQt5.QtWidgets import QAction
+
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        bound = {id(action) for action in window._keybind_actions.values()}
+        # Each exemption is a deliberate "not a command" call: preset sizes
+        # beside file_new/file_new_default, and per-player filter toggles.
+        exempt = {id(a) for a in window.new_size_actions if a is not window.new_action}
+        exempt |= {id(a) for a in window.player_actions.values()}
+
+        missing: list[str] = []
+
+        def walk(actions: list[QAction]) -> None:
+            for action in actions:
+                if action.isSeparator():
+                    continue
+                if action.menu() is not None:
+                    # Open Recent is rebuilt from disk on every open, so its
+                    # entries are never stable objects to bind.
+                    if action.menu() is not window.recent_menu:
+                        walk(action.menu().actions())
+                    continue
+                group = action.actionGroup()
+                if group is not None and group.isExclusive():
+                    continue  # a radio choice inside a submenu, not a command
+                if id(action) not in bound and id(action) not in exempt:
+                    missing.append(action.text())
+
+        walk(window.menuBar().actions())
+        walk(window.filters_button.menu().actions())
+        assert not missing, f"menu actions with no REBINDABLE_ACTIONS row: {missing}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_recover_autosave_ships_unbound_and_takes_a_binding() -> None:
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        assert settings.get_default_keybind("file_recover_autosave") == ""
+        assert window.recover_autosave_action.shortcut().isEmpty()
+        settings.set_keybind("file_recover_autosave", "Ctrl+F10")
+        window.apply_keybind("file_recover_autosave")
+        assert window.recover_autosave_action.shortcut() == QKeySequence("Ctrl+F10")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_every_mode_combo_entry_has_a_mode_keybind() -> None:
+    """The mode_* rows are hand-listed, so a new mode could otherwise ship
+    without a switch-to shortcut."""
+    from descape import settings
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        combo = window.mode_combo
+        expected = {f"mode_{combo.itemText(i).lower().replace(' ', '_')}" for i in range(combo.count())}
+        rows = {a for a, _label, _default in settings.REBINDABLE_ACTIONS if a.startswith("mode_")}
+        assert rows == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_redo_default_keybind_is_ctrl_y() -> None:
     from PyQt5.QtGui import QKeySequence
 

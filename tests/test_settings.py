@@ -483,6 +483,15 @@ def test_keybind_holder_ignores_a_stale_action_id_not_in_rebindable_actions(tmp_
     assert settings.keybind_holder("F5") is None
 
 
+def test_the_retired_wall_run_keybind_is_dropped_on_load(tmp_path: Path) -> None:
+    """GH #98 folded Wall Run into Place Unit. Its saved key must not linger
+    for set_keybind()'s collision loop to auto-clear and report."""
+    _write_config(tmp_path, "keybinds:\n  tool_wall_run: W\n")
+    assert "tool_wall_run" not in settings._load_keybinds()
+    assert settings.get_keybind("tool_place_unit") == ""
+    assert settings.set_keybind("tool_pan", "W") is None
+
+
 # -- Settings > Saving ------------------------------------------------------
 
 

@@ -15,7 +15,7 @@ shipped templates.
 The splice: each of the Units section's `number_of_unit_sections`
 PlayerUnitsStructs is `unit_count u32` followed by that many UnitStructs.
 Replacing the whole players_units array (scenario_io.load_map_and_units's
-units_block_offset .. units_section_end) with `number_of_unit_sections` zero
+units_block_offset .. players_units_end) with `number_of_unit_sections` zero
 u32s removes every unit and leaves every other section -- including the never
 -parsed trigger_tail -- byte-for-byte untouched. Also zeroes DataHeader's
 first field, next_unit_id_to_place (a u32 at decompressed_body[0:4] that
@@ -62,7 +62,7 @@ def strip_units(scenario: LoadedScenario) -> bytes:
     body = bytearray(scenario.decompressed_body)
     struct.pack_into("<I", body, 0, 0)  # next_unit_id_to_place
     zero_counts = b"\0\0\0\0" * scenario.number_of_unit_sections
-    return bytes(body[: scenario.units_block_offset]) + zero_counts + bytes(body[scenario.units_section_end :])
+    return bytes(body[: scenario.units_block_offset]) + zero_counts + bytes(body[scenario.players_units_end :])
 
 
 def _self_test(golden_path: Path) -> None:

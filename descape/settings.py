@@ -293,6 +293,26 @@ def set_stack_badges(enabled: bool) -> None:
     _save_config(config)
 
 
+# View > Colour Selection by Owner: the Units-mode selection outline takes each
+# owner's player colour (GAIA keeps unit_select). Persisted, on by default.
+_selection_by_owner: bool | None = None
+
+
+def get_selection_by_owner() -> bool:
+    global _selection_by_owner
+    if _selection_by_owner is None:
+        _selection_by_owner = bool(_load_config().get("selection_by_owner", True))
+    return _selection_by_owner
+
+
+def set_selection_by_owner(enabled: bool) -> None:
+    global _selection_by_owner
+    _selection_by_owner = enabled
+    config = _load_config()
+    config["selection_by_owner"] = enabled
+    _save_config(config)
+
+
 # View > Grid and its two Settings > Appearance sliders. Persisted like
 # Distance Ticks: a grid adds and hides nothing, so it is passive chrome, and
 # a tuned slider that reset every launch would just be broken.
@@ -303,6 +323,18 @@ _grid_follow_elevation: bool | None = None
 # persisted for the same passive-chrome reason as the two above.
 _footprint_outlines: bool | None = None
 _footprint_scope: str | None = None
+# View > Range Rings (GH #49): a circle around each selected building showing
+# its attack range. Persisted for the same passive-chrome reason, but OFF by
+# default -- it draws over the sprites, so it is opt-in rather than ambient.
+_range_rings: bool | None = None
+# View > Player Cameras (GH #22): a camera glyph on each player's stored
+# starting view tile. Off by default for the same opt-in reason as the rings
+# above -- it draws over the map rather than beside it.
+_camera_markers: bool | None = None
+# View > Trigger Overlay (GH #41): the selected trigger's areas, locations and
+# patrol runs on the map. ON by default, unlike the two above: it draws nothing
+# until a trigger is selected in the Triggers panel, so it costs nothing idle.
+_trigger_overlay: bool | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
 
@@ -386,6 +418,51 @@ def set_footprint_scope(value: str) -> None:
     _save_config(config)
 
 
+def get_range_rings() -> bool:
+    global _range_rings
+    if _range_rings is None:
+        _range_rings = bool(_load_config().get("range_rings", False))
+    return _range_rings
+
+
+def set_range_rings(enabled: bool) -> None:
+    global _range_rings
+    _range_rings = enabled
+    config = _load_config()
+    config["range_rings"] = enabled
+    _save_config(config)
+
+
+def get_camera_markers() -> bool:
+    global _camera_markers
+    if _camera_markers is None:
+        _camera_markers = bool(_load_config().get("camera_markers", False))
+    return _camera_markers
+
+
+def set_camera_markers(enabled: bool) -> None:
+    global _camera_markers
+    _camera_markers = enabled
+    config = _load_config()
+    config["camera_markers"] = enabled
+    _save_config(config)
+
+
+def get_trigger_overlay() -> bool:
+    global _trigger_overlay
+    if _trigger_overlay is None:
+        _trigger_overlay = bool(_load_config().get("trigger_overlay", True))
+    return _trigger_overlay
+
+
+def set_trigger_overlay(enabled: bool) -> None:
+    global _trigger_overlay
+    _trigger_overlay = enabled
+    config = _load_config()
+    config["trigger_overlay"] = enabled
+    _save_config(config)
+
+
 def get_grid_blend() -> int:
     """Always within grid_overlay's blend range; an out-of-range integer
     clamps, anything else falls back to the default. A config predating this
@@ -416,7 +493,9 @@ def set_grid_blend(value: int) -> None:
 
 
 def get_grid_thickness() -> int:
-    """Device pixels, always one of grid_overlay.THICKNESS_STOPS."""
+    """Always one of grid_overlay.THICKNESS_STOPS. Canvas pixels at the
+    composited mip for the baked grid (~0.5-1x on screen), device pixels for
+    the Follow Terrain Elevation off overlay."""
     global _grid_thickness
     if _grid_thickness is None:
         raw = _load_config().get("grid_thickness")
@@ -524,6 +603,7 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_select_fill", "Selection fill", "#50aaff"),
     ("unit_stack", "Stacked-unit badge", "#ffd24a"),
     ("footprint_outline", "Footprint outlines", "#e65ae6"),
+    ("range_ring", "Range ring", "#9ee65a"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
     ("ruler_label", "Label text", "#ffbe6e"),
     ("ruler_label_outline", "Label outline", "#000000"),
@@ -531,6 +611,11 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("region_outline", "Outline", "#141414"),
     ("region_ants", "Marching ants", "#3ce6c8"),
     ("mirror_overlay", "Map mirroring preview", "#50dcff"),
+    ("analysis_marker", "Map Analysis markers", "#ff3c3c"),
+    ("trigger_area_outline", "Area outline", "#7ce650"),
+    ("trigger_area_fill", "Area fill", "#7ce650"),
+    ("trigger_run", "Location and patrol run", "#b4f078"),
+    ("trigger_unit_ref", "Referenced unit", "#3cd28c"),
 ]
 _DEFAULT_OVERLAY_COLORS: dict[str, str] = {cid: default for cid, _label, default in OVERLAY_COLORS}
 _OVERLAY_COLOR_LABELS: dict[str, str] = {cid: label for cid, label, _default in OVERLAY_COLORS}
@@ -909,13 +994,15 @@ class ToolDef:
     # semantics stay exactly as they are. Paint Can is click_only and never
     # sets this: one flood fill per click has no brush to speak of.
     supports_brush: bool = False
-    # "" | "line" | "rect" | "wall" -- press-drag-preview-commit-once tools,
-    # the third routing shape after the plain drag stroke and click_only. A
-    # stroke cannot un-paint, so a rubber band that shrinks back toward its
-    # anchor needs the whole edit deferred to release; see
-    # viewer_common.SHAPE_TOOLS and MapView's own shape branches. "wall"
-    # defers for a second reason on top of that one: a wall's shape is
-    # derived from its neighbours, which aren't known until the path ends.
+    # "" | "line" | "rect" | "wall_rect" -- press-drag-preview-commit-once tools, the third
+    # routing shape after the plain drag stroke and click_only. A stroke
+    # cannot un-paint, so a rubber band that shrinks back toward its anchor
+    # needs the whole edit deferred to release; see viewer_common.SHAPE_TOOLS
+    # and MapView's own shape branches. MapView also has a "wall" shape, but
+    # no ToolDef names it: Place Unit reaches it when a wall const is picked
+    # in the Units catalog (GH #98, MapView.set_place_shape_query). It defers
+    # for a second reason on top of that one: a wall's shape is derived from
+    # its neighbours, which aren't known until the path ends.
     drag_shape: str = ""
     # Whether this tool offers the free (non-snapped) placement checkbox --
     # D2's toggle, free placement's Stage 3. Orthogonal to param_widget for
@@ -983,8 +1070,8 @@ TOOLS: list[ToolDef] = [
         "cliff", "Cliff", stroke_label="Place cliff", default_key="",
         param_widget="cliff", modes=("terrain",),
     ),
-    # Pick a tile's terrain + elevation into the toolbar params instead of
-    # hunting the Terrain type combo. Reads only -- is_edit_tool=False, no
+    # Pick a tile's terrain + elevation into the terrain picker and Level param
+    # instead of hunting for them. Reads only -- is_edit_tool=False, no
     # undo record -- and click_only since a drag has no meaning for a pick.
     # Terrain-mode only: the unit half is gated on a unit-placement tool
     # existing first (there is no "current unit type" state to write into).
@@ -1020,6 +1107,16 @@ TOOLS: list[ToolDef] = [
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
         click_only=True, modes=("units",), supports_free_place=True,
     ),
+    # The wall enclosure plan (2026-09-21): an outline-only, tile-axis ring
+    # of walls, one undo record per drag. Its own drag_shape value, like Draw
+    # Line / Draw Rectangle are two ToolDefs. The wall const comes from the
+    # Units catalog (no param widget), and brush/free placement stay off
+    # because an off-centre or dilated wall piece has no derivable shape.
+    # Unbound: a duplicate QKeySequence silently kills BOTH actions.
+    ToolDef(
+        "wall_rect", "Wall Rectangle", stroke_label="Place wall rectangle", default_key="",
+        drag_shape="wall_rect", modes=("units",),
+    ),
     # Phase 3.5b's b2.5 (D3): a brush, not a click-once tool, so it reuses
     # the generic stroke mechanism (begin/tile/end) every brush tool already
     # has -- one undo record per drag, mirroring Draw/Elevate. Units-mode
@@ -1029,21 +1126,18 @@ TOOLS: list[ToolDef] = [
         "convert", "Convert", stroke_label="Convert units", default_key="",
         param_widget="convert", supports_brush=True, modes=("units",),
     ),
-    # The 2026-09-19 wall-runs plan (GH #31/#50). Units-mode, and inside this
-    # block so the Keybinds tab doesn't grow a second "Units" header.
-    # drag_shape="wall" is a third value alongside "line"/"rect": one undo
-    # record per drag, committed at release, because a wall's variant index
-    # is derived from its neighbours and a node's neighbour set isn't
-    # complete until the path is.
+    # The Wall Run tool (2026-09-19 wall-runs plan) was folded into Place
+    # Unit by GH #98: picking a wall const makes Place Unit drag a run. Its
+    # saved keybind is dropped on load, see _RETIRED_KEYBINDS.
     #
-    # supports_brush=False and supports_free_place=False for that same
-    # reason -- an off-centre or brush-dilated wall piece has no derivable
-    # shape. Unbound by default like every other tool added since Elevate:
-    # every short letter is taken, and a duplicate QKeySequence silently
-    # kills BOTH actions.
+    # GH #59, Triggers mode only: each click stamps the brush footprint and
+    # appends one copy of the current Create Object effect per covered tile,
+    # as one undo record. click_only because a drag stroke would emit per
+    # entered tile; supports_brush for the size/shape widgets and the hover
+    # footprint. Unbound: a duplicate QKeySequence silently kills BOTH actions.
     ToolDef(
-        "wall_run", "Wall Run", stroke_label="Place wall run", default_key="",
-        param_widget="wall", drag_shape="wall", modes=("units",),
+        "create_objects", "Create Objects", stroke_label="Create objects",
+        default_key="", click_only=True, supports_brush=True, modes=("triggers",),
     ),
 ]
 
@@ -1066,6 +1160,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("file_close", "Close Map", "Ctrl+W"),
     ("file_save", "Save", "Ctrl+S"),
     ("file_save_as", "Save As", "Ctrl+Shift+S"),
+    # Autosave's recovery dialog opener. Unbound, like edit_settings below.
+    ("file_recover_autosave", "Recover from Autosave…", ""),
     ("file_exit", "Exit", "Ctrl+Q"),
     ("edit_undo", "Undo", "Ctrl+Z"),
     ("edit_redo", "Redo", "Ctrl+Y"),
@@ -1076,8 +1172,10 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # this module is deliberately Qt-free, and a first-run macOS user seeing
     # "Ctrl+N" instead of "Cmd+N" as the displayed (not matched) default is
     # an accepted tradeoff.
-    ("edit_copy", "Copy Region", "Ctrl+C"),
-    ("edit_paste", "Paste Region", "Ctrl+V"),
+    # "Copy"/"Paste", not "... Region": the actions dispatch on mode, and in
+    # Triggers mode they copy and paste triggers (GH #27).
+    ("edit_copy", "Copy", "Ctrl+C"),
+    ("edit_paste", "Paste", "Ctrl+V"),
     # Phase 2.8: the Select tool's whole-map-select / clear-selection pair.
     # Not Ctrl+D -- mode_diplomacy already owns it (see that entry below) --
     # and the collision would fail test_settings.py's default-tier check.
@@ -1086,6 +1184,14 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # Unbound by default, like edit_settings below: both are dialog openers,
     # and the clipboard history is reached by menu rather than by reflex.
     ("edit_clipboard_history", "Clipboard History…", ""),
+    # GH #30's edit-history window. Unbound for the same reason as the dialog
+    # openers either side of it, and kept inside the contiguous edit_* run so
+    # _build_keybinds_tab emits no second "Edit" header.
+    ("edit_history", "History…", ""),
+    # Scatter Units in Region. Unbound for the same reason as the two
+    # dialog openers either side of it, and kept inside the contiguous
+    # edit_* run so _build_keybinds_tab emits no second "Edit" header.
+    ("edit_scatter_units", "Scatter Units in Region…", ""),
     ("edit_settings", "Settings…", ""),
     # GH #57's Disabled Objects dialog. Unbound by default, like
     # edit_clipboard_history and edit_settings above: another dialog opener,
@@ -1116,6 +1222,14 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_grid_follow", "Grid Follows Elevation", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_footprint_outlines", "Footprint Outlines", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_selection_owner_colour", "Colour Selection by Owner", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings", "Range Rings", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_player_cameras", "Player Cameras", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_trigger_overlay", "Trigger Overlay", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows
     # below are generated from TOOLS, so the table stays single-source.
@@ -1174,6 +1288,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_show_trees", "Show Trees", ""),
     ("filter_show_walls", "Show Walls", ""),
     ("filter_show_eye_candy", "Show Eye Candy", ""),
+    ("filter_show_invisible", "Show Invisible Objects", ""),
+    ("filter_show_garrisoned", "Show Garrisoned Units", ""),
     ("filter_all_players", "All Players", ""),
     ("filter_no_players", "No Players", ""),
     ("filter_show_all", "Show All (Filters)", ""),
@@ -1204,6 +1320,9 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("unit_variant_prev", "Cycle Unit Variant Backward", ";"),
     ("unit_variant_next", "Cycle Unit Variant Forward", "'"),
     ("unit_variant_random", "Randomize Unit Variant", "-"),
+    # GH #75: widen the selection to whole stacks. Ctrl+K ("stacK"): free, and a
+    # modifier combo keeps it clear of the bare-letter tool keys.
+    ("unit_select_stack", "Select Whole Stack", "Ctrl+K"),
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
@@ -1303,12 +1422,20 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
             keybinds[action_id] = ""
 
 
+# Action ids of removed tools. A config written before the removal still
+# names them, and set_keybind()'s collision loop walks keybinds.items(), so a
+# phantom entry could be auto-cleared and reported in Settings.
+_RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run",)
+
+
 def _load_keybinds() -> dict[str, str]:
     global _keybinds
     if _keybinds is None:
         persisted = _load_config().get("keybinds", {})
         _keybinds = dict(_DEFAULT_KEYBINDS)
         _keybinds.update(persisted)
+        for action_id in _RETIRED_KEYBINDS:
+            _keybinds.pop(action_id, None)
         _migrate_elevate_off_r(_keybinds, persisted)
         _reconcile_load_time_collisions(_keybinds, persisted)
     return _keybinds

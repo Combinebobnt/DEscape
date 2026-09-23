@@ -95,6 +95,7 @@ def principal_axis_deg(alpha: np.ndarray) -> float:
 
 
 KNIGHT_GRAPHIC = "u_cav_knight_idleC_x1"
+KNIGHT_GRAPHIC_CONST = 38
 KNIGHT_ANGLE_RIGHT = 0
 KNIGHT_ANGLE_LEFT = 8
 
@@ -199,8 +200,14 @@ def _run_knight_arm() -> bool:
     script treats as "nothing to measure" rather than a hard error --
     tests/README.md's own convention for install-gated tools/verify_*.py."""
     print(f"\n=== Knight decode ({KNIGHT_GRAPHIC}, mod-360 sign) ===")
-    right = unit_sprites._native_frame(KNIGHT_GRAPHIC, KNIGHT_ANGLE_RIGHT)
-    left = unit_sprites._native_frame(KNIGHT_GRAPHIC, KNIGHT_ANGLE_LEFT)
+    entry = unit_sprites.graphic_map().get(KNIGHT_GRAPHIC_CONST, {})
+    if (entry.get("file_name"), entry.get("angle_count")) != (KNIGHT_GRAPHIC, ANGLE_COUNT):
+        print(f"  SKIP  const {KNIGHT_GRAPHIC_CONST} is not {KNIGHT_GRAPHIC} at {ANGLE_COUNT} angles here")
+        return True
+    # Frames are angle-major, so angle N starts at frame N * frame_count.
+    frame_count = entry["frame_count"]
+    right = unit_sprites._native_frame(KNIGHT_GRAPHIC, KNIGHT_ANGLE_RIGHT * frame_count)
+    left = unit_sprites._native_frame(KNIGHT_GRAPHIC, KNIGHT_ANGLE_LEFT * frame_count)
     if right is None or left is None:
         print(f"  SKIP  {KNIGHT_GRAPHIC} did not decode on this install")
         return True

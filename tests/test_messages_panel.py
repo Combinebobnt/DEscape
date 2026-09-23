@@ -77,7 +77,7 @@ def test_typing_does_not_fire_the_callback_until_focus_is_lost() -> None:
     """The bug this guards against: QPlainTextEdit's only built-in signal is
     textChanged, which fires per keystroke -- wiring the callback straight to
     it would push one undo record (and one status-log line) per character
-    typed. _CommitOnBlurTextEdit's editingFinished is the fix; this pins that
+    typed. MessageTextEdit's editingFinished is the fix; this pins that
     setPlainText() alone (textChanged's trigger) does nothing on its own."""
     calls = []
     panel = _panel(_loaded(), editable=True)
@@ -96,6 +96,22 @@ def test_editing_a_field_reports_exactly_one_edit() -> None:
     widget.editingFinished.emit()
     assert calls == [("hints", "a brand new hint")]
     assert panel.current_values()["hints"] == "a brand new hint"
+
+
+def test_an_editor_can_grow_and_a_popup_focus_out_reports_no_edit() -> None:
+    """A Messages box takes a minimum height, not the trigger form's pinned
+    band, and a context menu opening over it is not the user leaving it."""
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QFocusEvent
+
+    calls = []
+    panel = _panel(_loaded(), editable=True)
+    panel._on_message_field = lambda *args: calls.append(args)
+    widget = panel.widget_for("hints")
+    assert widget.maximumHeight() != widget.minimumHeight()
+    widget.setPlainText("a brand new hint")
+    widget.focusOutEvent(QFocusEvent(QEvent.FocusOut, Qt.PopupFocusReason))
+    assert calls == []
 
 
 def test_read_only_disables_every_editor() -> None:

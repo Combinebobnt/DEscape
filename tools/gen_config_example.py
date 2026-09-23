@@ -130,6 +130,10 @@ distance_tick_interval: {edge_ticks.TICK_INTERVAL_DEFAULT}
 # another, View > Show Stacked-Unit Badges. Default: true.
 stack_badges: true
 
+# In Units mode, outline each selected unit in its owner's player colour (GAIA
+# keeps unit_select), View > Colour Selection by Owner. Default: true.
+selection_by_owner: true
+
 # A line on every tile boundary, View > Grid. Default: false.
 grid_overlay: false
 
@@ -137,6 +141,19 @@ grid_overlay: false
 # elevation-0 ground plane, View > Grid > Follow Terrain Elevation. No effect
 # in Flat. Default: true.
 grid_follow_elevation: true
+
+# A circle around each selected building showing its attack range, View >
+# Range Rings. Buildings only, and only ones with a range. Default: false.
+range_rings: false
+
+# A camera glyph on each player's stored starting view tile, View > Player
+# Cameras. Default: false.
+camera_markers: false
+
+# The selected trigger's areas, locations and patrol runs drawn on the map,
+# View > Trigger Overlay. Draws nothing until a trigger is selected in the
+# Triggers panel. Default: true.
+trigger_overlay: true
 
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
@@ -151,7 +168,9 @@ footprint_scope: {unit_pick.FOOTPRINT_SCOPE_DEFAULT}
 # Out-of-range values clamp. Default: {grid_overlay.BLEND_DEFAULT}.
 grid_blend: {grid_overlay.BLEND_DEFAULT}
 
-# Grid line width in screen pixels, Settings > Appearance. Snaps to the
+# Grid line width, Settings > Appearance: map pixels at the current zoom
+# level's detail, so roughly half to all of that on screen (screen pixels
+# with Follow Terrain Elevation off in Stepped or Sloped). Snaps to the
 # nearest of {list(grid_overlay.THICKNESS_STOPS)}. Default: {grid_overlay.THICKNESS_DEFAULT}.
 grid_thickness: {grid_overlay.THICKNESS_DEFAULT}
 

@@ -52,6 +52,12 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "victory_condition", "Victory condition", "Global Victory",
         "GlobalVictory", "mode", COMBO,
+        tooltip=(
+            "How the scenario is won. Standard: conquest, relics or a wonder. "
+            "Conquest: defeat all enemies. Score: reach the score below. Time "
+            "limit: highest score when time runs out. Custom: the custom "
+            "conditions below. Secondary game mode: the mode chosen under Map."
+        ),
         choices=(
             (0, "Standard"), (1, "Conquest"), (2, "Score"),
             (3, "Time limit"), (4, "Custom"), (6, "Secondary game mode"),
@@ -60,6 +66,7 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "victory_score", "Score to win", "Global Victory",
         "GlobalVictory", "required_score_for_score_victory", SPINBOX,
+        tooltip="Score victory only: the score a player must reach to win.",
         # 0xFFFFFFFF (five corpus files) means "no explicit score was ever
         # chosen" -- the real editor pre-fills 14000, an ordinary editable
         # number, the first time Score victory is selected. sentinel_display
@@ -69,6 +76,10 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "victory_years", "Time limit, years", "Global Victory",
         "GlobalVictory", "time_for_timed_game_in_10ths_of_a_year", SPINBOX,
+        tooltip=(
+            "Time limit victory only: how many in-game years the game lasts. The "
+            "highest score at the end wins."
+        ),
         # Raw units (10ths), divided by scale for display. 100_000, not
         # 999_999: the scale branch's floor/round agreement below was only
         # measured over raw 0..100000, and going wider would leave the
@@ -86,16 +97,25 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "custom_conquest", "Conquest", "Global Victory",
         "GlobalVictory", "conquest_required", CHECKBOX,
+        tooltip="Custom victory: win by defeating all enemy players.",
     ),
     OptionFieldSpec(
         "custom_explored_percent", "Exploration, % of map", "Global Victory",
         "GlobalVictory", "explored_percent_of_map_required", SPINBOX,
+        tooltip=(
+            "Custom victory: the percentage of the map a player must explore. 0 "
+            "turns this condition off."
+        ),
         # A percentage, so >100 is meaningless and falls to as-stored.
         minimum=0, maximum=100,
     ),
     OptionFieldSpec(
         "custom_relics", "Relics", "Global Victory",
         "GlobalVictory", "artifacts_required", SPINBOX,
+        tooltip=(
+            "Custom victory: how many relics a player must capture, with no hold "
+            "time. 0 turns this condition off."
+        ),
         # A count, not a flag: C2_ElCid_coop_1/_3 store 20. A UI bound on a
         # u32; anything above renders as-stored.
         minimum=0, maximum=9999,
@@ -103,6 +123,10 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "custom_all_conditions", "Conditions needed", "Global Victory",
         "GlobalVictory", "all_custom_conditions_required", COMBO,
+        tooltip=(
+            "Custom victory: whether meeting any one enabled condition wins, or all"
+            " of them are needed."
+        ),
         # The in-game Any One / All switch, not a bare flag.
         choices=((0, "Any one"), (1, "All")),
     ),
@@ -113,11 +137,16 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "lock_teams", "Lock teams", "Teams",
         "Diplomacy", "lock_teams", CHECKBOX,
+        tooltip="Players cannot change teams in-game. Triggers can still change them.",
         panel="diplomacy",
     ),
     OptionFieldSpec(
         "allow_players_choose_teams", "Players choose teams", "Teams",
         "Diplomacy", "allow_players_choose_teams", CHECKBOX,
+        tooltip=(
+            "Players can pick their team in the lobby. Off removes that choice; "
+            "teams can still change in-game unless Lock teams is on."
+        ),
         panel="diplomacy",
     ),
     OptionFieldSpec(
@@ -129,6 +158,7 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "max_number_of_teams", "Max number of teams", "Teams",
         "Diplomacy", "max_number_of_teams", SPINBOX, minimum=0, maximum=8,
+        tooltip="The most teams the scenario allows.",
         panel="diplomacy",
     ),
 
@@ -136,10 +166,15 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "collide_and_correct", "Collide and correcting", "Map",
         "Map", "collide_and_correct", CHECKBOX,
+        tooltip="Stationary units step aside for moving units passing through.",
     ),
     OptionFieldSpec(
         "villager_force_drop", "Villager force drop", "Map",
         "Map", "villager_force_drop", CHECKBOX,
+        tooltip=(
+            "Villagers drop carried resources the moment their task changes, not "
+            "only once they start the new task."
+        ),
         # Stays as-stored on the six 1.41 C2_ElCid_coop_* files (90/119/167/
         # 255): the byte was never a flag there, so a checkbox would overwrite
         # different semantics. _is_representable() is what enforces that.
@@ -147,10 +182,18 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "lock_coop_alliances", "Block humanity team change", "Map",
         "Map", "lock_coop_alliances", CHECKBOX,
+        tooltip=(
+            "Locks co-op alliances: human players cannot change their team or "
+            "diplomacy with each other in-game."
+        ),
     ),
     OptionFieldSpec(
         "secondary_game_modes", "Secondary game mode", "Map",
         "Map", "secondary_game_modes", COMBO,
+        tooltip=(
+            "A game mode played on top of the victory condition: Empire Wars, "
+            "Sudden Death, Regicide or King of the Hill."
+        ),
         # Modelled as bit flags in AoE2ScenarioParser, but every value across
         # all 20 example files is 0 -- no corpus evidence the game combines
         # them, so this is a conservative single-select rather than four
@@ -163,16 +206,25 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "no_waves_on_shore", "No waves on shore", "Map",
         "Map", "no_waves_on_shore", CHECKBOX,
+        tooltip="Hides the animated waves along shorelines.",
     ),
 
     # -- Options ------------------------------------------------------------
     OptionFieldSpec(
         "all_techs", "Full tech tree", "Options",
         "Options", "all_techs", CHECKBOX,
+        tooltip=(
+            "Every player gets the full tech tree. Unlike the lobby option, "
+            "civilization bonuses stay."
+        ),
     ),
     OptionFieldSpec(
         "ai_map_type", "AI map type", "Options",
         "Options", "ai_map_type", SPINBOX, minimum=-2_147_483_648, maximum=2_147_483_647,
+        tooltip=(
+            "Tells the AI what kind of map this is, e.g. a water map makes it build"
+            " a navy. Stored as the raw map type number."
+        ),
     ),
 
     # -- Triggers -------------------------------------------------------------
@@ -184,6 +236,10 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
     OptionFieldSpec(
         "legacy_exec_order", "Trigger execution order", "Triggers",
         "Triggers", "legacy_exec_order", COMBO,
+        tooltip=(
+            "The order triggers run in. Display order follows the trigger list; "
+            "Legacy runs them by trigger ID, as older game versions did."
+        ),
         choices=((0, "Display order"), (1, "Legacy - trigger ID order")),
     ),
 )

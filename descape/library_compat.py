@@ -34,8 +34,8 @@ Two library behaviours make a shim necessary.
    load_vocabulary() reads the per-version JSON off disk instead, which also
    means the UI can populate a condition/effect picker before any file is open.
 
-**Import ordering is load-bearing.** PRISTINE_CLASS_STATE snapshots the four
-classes at import time, and that snapshot is only clean if nothing has loaded a
+**Import ordering is load-bearing.** PRISTINE_CLASS_STATE snapshots every
+POISONED_CLASSES class at import time, and that snapshot is only clean if nothing has loaded a
 scenario yet. descape/scenario_io.py imports this module at its own top for
 exactly that reason: it is the only module that loads scenarios, so importing
 it can never come first. Do not make that import lazy.
@@ -59,16 +59,21 @@ from typing import Any
 import AoE2ScenarioParser
 from AoE2ScenarioParser.objects.data_objects.condition import Condition
 from AoE2ScenarioParser.objects.data_objects.effect import Effect
+from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
 from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.data_objects.variable import Variable
+from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+from AoE2ScenarioParser.sections.retrievers.retriever_object_link import RetrieverObjectLink
 from AoE2ScenarioParser.sections.retrievers.retriever_object_link_group import (
     RetrieverObjectLinkGroup,
 )
 
-# The five classes the library poisons. Every trigger-side object the Triggers
-# section parses into, plus Unit for the Units section, is one of these.
-POISONED_CLASSES = (Trigger, Condition, Effect, Variable, Unit)
+# Every class whose class-level state a load can change. Trigger/Condition/
+# Effect/Variable/Unit are poisoned by the library itself; MapManager and
+# TerrainTile are re-linked by adapt_map_links() below for a structure that
+# lacks fields they pull. depoison() restores all seven the same way.
+POISONED_CLASSES = (Trigger, Condition, Effect, Variable, Unit, MapManager, TerrainTile)
 
 # Names never touched by a restore: they are descriptor slots owned by the type
 # machinery, not library state, and assigning them raises.
@@ -115,7 +120,7 @@ def class_state_delta(cls: type) -> tuple[list[str], list[str]]:
 
 
 def depoison() -> None:
-    """Restore Trigger/Condition/Effect/Variable/Unit to their pre-load state.
+    """Restore every POISONED_CLASSES class to its pre-load state.
 
     Call before every Triggers parse, and before the Map/Units section walk in
     scenario_io._load_map_and_units() -- Unit is parsed there, not lazily like
@@ -141,6 +146,75 @@ def depoison() -> None:
                 setattr(cls, name, value)
         for link in _iter_links(cls._link_list):
             link.disabled = False
+
+
+class _AbsentFieldLink(RetrieverObjectLink):
+    """Stands in for a link whose retriever this file's structure does not
+    have: pulls a fixed value, pushes nothing. Used where `support=` cannot
+    be, because the library would pass None to an __init__ that rejects it."""
+
+    def __init__(self, variable_name: str, value: Any) -> None:
+        super().__init__(variable_name)
+        self._value = value
+
+    def pull_from_link(self, uuid=None, number_hist=None, host_obj=None, progress=None) -> Any:
+        return self._value
+
+    def push_to_link(self, uuid=None, number_hist=None, host_obj=None, progress=None) -> None:
+        return None
+
+
+def _without_link(group: RetrieverObjectLinkGroup, name: str, replacement=None) -> RetrieverObjectLinkGroup:
+    """A new group equal to `group` minus the link called `name`, or with it
+    swapped for `replacement`. Never mutates `group`: it belongs to the
+    pristine snapshot. Raises KeyError if no such link, so a library bump
+    that renames it fails loudly."""
+    names = [link.name for link in group.group]
+    if name not in names:
+        raise KeyError(f"{name!r} is not a link of {group.section_name}/{group.link}: {names}")
+    links = []
+    for link in group.group:
+        if link.name != name:
+            links.append(link)
+        elif replacement is not None:
+            links.append(replacement)
+    new_group = RetrieverObjectLinkGroup(group.section_name, group.link, group=links)
+    # The constructor re-parents its children; point them back at the
+    # pristine group so that group object is left exactly as it was.
+    for link in group.group:
+        link.parent = group
+    return new_group
+
+
+def _relinked(cls: type, name: str, replacement=None) -> list:
+    """cls._link_list with the first group holding `name` rebuilt by
+    _without_link(). A new list, so depoison()'s value-restore step puts the
+    pristine one back."""
+    new_list = list(cls._link_list)
+    for i, entry in enumerate(new_list):
+        if isinstance(entry, RetrieverObjectLinkGroup) and any(link.name == name for link in entry.group):
+            new_list[i] = _without_link(entry, name, replacement)
+            return new_list
+    raise KeyError(f"{cls.__name__}._link_list has no group holding {name!r}")
+
+
+def adapt_map_links(map_section: Any) -> None:
+    """Re-link MapManager/TerrainTile for a Map section lacking fields they
+    pull unconditionally (v1.21: no map_color_mood, no TerrainStruct.layer).
+
+    Presence-derived, never keyed on scenario version. Call after
+    depoison() and after the Map section has parsed, before
+    MapManager.construct(). A no-op for every structure that has both
+    fields; the next depoison() undoes it. `layer` is dropped rather than
+    gated, so TerrainTile.__init__'s -1 default stands and the eight
+    in-memory `.layer` sites keep working.
+    """
+    retriever_map = map_section.retriever_map
+    if "map_color_mood" not in retriever_map:
+        MapManager._link_list = _relinked(MapManager, "_map_color_mood", _AbsentFieldLink("_map_color_mood", ""))
+    tiles = retriever_map["terrain_data"].data or []
+    if tiles and "layer" not in tiles[0].retriever_map:
+        TerrainTile._link_list = _relinked(TerrainTile, "layer")
 
 
 def trigger_version(trigger_tail: bytes) -> float:
@@ -199,8 +273,9 @@ def _parse_vocabulary_json(path: Path) -> tuple[Mapping[int, VocabularyEntry], M
 
 def vocabulary_is_available(scenario_version: str) -> bool:
     """False for a scenario version the installed library ships no definition
-    for. The census found 71 such files (DE 1.21/1.32/1.35); none of them load
-    at all, so this is a pre-check, not a trigger-specific limitation."""
+    for. The census found 71 such files (DE 1.21/1.32/1.35). v1.21 files now
+    load from this repo's own structure (scenario_io.structure_is_available())
+    yet still have no vocabulary, so this stays the trigger-specific probe."""
     return (VERSIONS_DIR / f"v{scenario_version}" / "conditions.json").is_file()
 
 

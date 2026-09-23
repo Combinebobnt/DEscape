@@ -35,20 +35,19 @@ window state so each is timed independently rather than accumulating:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 from descape.edit_history import EditHistory
 from descape.fill_tools import flood_fill_terrain
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 from descape.scenario_new import load_blank_scenario
+from testkit import qt_window, settings_isolation
 
 _FILL_TERRAIN = 15  # GRASS_1 -- any fixed non-zero TerrainId, same choice as this feature's gui tests
 
@@ -130,39 +129,51 @@ def _bench_case(window, label: str) -> str:
     return "\n".join(lines)
 
 
+def _select_fill_tool(window) -> None:
+    window.mode_combo.setCurrentText("Terrain")
+    window._on_tool_selected("fill")
+    window.terrain_panel.set_terrain(_FILL_TERRAIN)
+    # Terrain-only fill: with either box on, a full-map on_fill() opens the modal
+    # "Large fill" QMessageBox, which offscreen blocks forever.
+    window.paint_trees_check.setChecked(False)
+    window.paint_eye_candy_check.setChecked(False)
+
+
+def _run_cases() -> list[str]:
+    from descape.viewer import ViewerWindow
+
+    output = []
+    window = ViewerWindow()
+    window.load_scenario(BLANK_TEMPLATE_PATH)
+    _select_fill_tool(window)
+    output.append(_bench_case(window, "blank_120x120"))
+    window.edit_history.mark_saved()
+    window.close()
+
+    window = ViewerWindow()
+    window.scenario = load_blank_scenario(480)
+    window._render_current()
+    _select_fill_tool(window)
+    output.append(_bench_case(window, "blank_480x480"))
+    window.edit_history.mark_saved()
+    window.close()
+    return output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.parse_args()
 
-    from PyQt5.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication(["bench_fill_latency"])
-    from descape.viewer import ViewerWindow
-
-    output = []
-    for _label, path in [(f"blank_{BLANK_TEMPLATE_PATH.stem.split('_')[1]}", BLANK_TEMPLATE_PATH)]:
-        window = ViewerWindow()
-        window.load_scenario(path)
-        window.mode_combo.setCurrentText("Terrain")
-        window._on_tool_selected("fill")
-        window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
-        output.append(_bench_case(window, "blank_120x120"))
-        window.edit_history.mark_saved()
-        window.close()
-
-    scenario = load_blank_scenario(480)
-    window = ViewerWindow()
-    window.scenario = scenario
-    window._render_current()
-    window.mode_combo.setCurrentText("Terrain")
-    window._on_tool_selected("fill")
-    window.terrain_combo.setCurrentIndex(window.terrain_combo.findData(_FILL_TERRAIN))
-    output.append(_bench_case(window, "blank_480x480"))
-    window.edit_history.mark_saved()
-    window.close()
-
+    # The QApplication lives in testkit's module global, so it outlives every
+    # ViewerWindow; see testkit/qt_window.py for why a dropped app aborts.
+    qt_window.ensure_qapp()
+    # Pin the install from the real config first, then send every settings write
+    # (recent files, window size on close) to a throwaway config.yaml.
+    settings_isolation.pin_install_path()
+    with tempfile.TemporaryDirectory(prefix="bench_fill_latency_") as tmp:
+        settings_isolation.isolate_settings(Path(tmp))
+        output = _run_cases()
     print("\n".join(output))
-    del app
 
 
 if __name__ == "__main__":

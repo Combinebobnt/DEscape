@@ -310,3 +310,79 @@ def test_reading_a_newer_only_field_needs_depoison(corpus_files, monkeypatch) ->
     finally:
         monkeypatch.undo()
         library_compat.depoison()
+
+
+class _FakeRetriever:
+    def __init__(self, data) -> None:
+        self.data = data
+
+
+class _FakeSection:
+    def __init__(self, retriever_map: dict) -> None:
+        self.retriever_map = retriever_map
+
+
+def _v121_shaped_map_section() -> _FakeSection:
+    tile = _FakeSection({"terrain_id": None, "elevation": None, "unused": None})
+    return _FakeSection({"map_width": None, "map_height": None, "terrain_data": _FakeRetriever([tile])})
+
+
+def test_adapt_map_links_is_a_no_op_on_a_de_load() -> None:
+    """A DE file carries map_color_mood and TerrainStruct.layer, so a normal
+    load must leave MapManager/TerrainTile exactly as pristine."""
+    from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
+    from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+
+    library_compat.depoison()
+    loaded = load_map_and_units("tests/fixtures/golden_blank_120x120.aoe2scenario")
+    for cls in (MapManager, TerrainTile):
+        assert library_compat.class_state_delta(cls) == ([], [])
+    assert loaded.map_manager.map_color_mood is not None
+
+
+def test_adapt_map_links_relinks_and_depoison_restores() -> None:
+    """The regression that would show up as "the second file opened in a
+    session renders wrong": a v1.21-shaped Map re-links both classes, and
+    depoison() must put the pristine link lists (and every link object in
+    them) back untouched."""
+    from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
+    from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+
+    library_compat.depoison()
+    pristine_mm = MapManager._link_list
+    pristine_tt = TerrainTile._link_list
+    pristine_tt_names = [link.name for link in pristine_tt[0].group]
+    pristine_mood_property = vars(MapManager)["_map_color_mood"]
+
+    library_compat.adapt_map_links(_v121_shaped_map_section())
+
+    assert MapManager._link_list is not pristine_mm
+    assert TerrainTile._link_list is not pristine_tt
+    mm_names = [link.name for link in MapManager._link_list[0].group]
+    assert mm_names == ["_map_color_mood", "map_width", "map_height", "terrain"]
+    assert isinstance(MapManager._link_list[0].group[0], library_compat._AbsentFieldLink)
+    assert [link.name for link in TerrainTile._link_list[0].group] == ["terrain_id", "elevation"]
+    assert library_compat.class_state_delta(MapManager)[1] == ["_link_list"]
+    assert library_compat.class_state_delta(TerrainTile)[1] == ["_link_list"]
+    # The pristine groups themselves were never mutated.
+    assert [link.name for link in pristine_tt[0].group] == pristine_tt_names
+    assert all(link.parent is pristine_tt[0] for link in pristine_tt[0].group)
+
+    library_compat.depoison()
+
+    assert MapManager._link_list is pristine_mm
+    assert TerrainTile._link_list is pristine_tt
+    assert vars(MapManager)["_map_color_mood"] is pristine_mood_property
+    for cls in (MapManager, TerrainTile):
+        assert library_compat.class_state_delta(cls) == ([], [])
+
+    # And the next DE load reads layer from the file again.
+    loaded = load_map_and_units("tests/fixtures/golden_blank_120x120.aoe2scenario")
+    assert loaded.terrain_write_supported
+
+
+def test_absent_field_link_pulls_its_value_and_pushes_nothing() -> None:
+    link = library_compat._AbsentFieldLink("_map_color_mood", "")
+    assert link.pull_from_link() == ""
+    assert link.push_to_link() is None
+    assert link.get_names() == ["_map_color_mood"]

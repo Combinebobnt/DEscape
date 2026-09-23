@@ -535,6 +535,7 @@ def test_setting_a_sentinel_score_writes_the_real_value(name, tmp_path, monkeypa
     assert option_fields.current_value(reloaded, spec) == 5000
 
 
+@pytest.mark.font_sensitive
 def test_every_widget_fits_the_pane_it_is_given() -> None:
     """The measured version of "does the form fit", not an eyeballed one.
     VictoryCondition and SecondaryGameMode are the same class of long-label
@@ -811,6 +812,12 @@ def _row(window, field_id):
     return window.map_options_panel.widget_for(field_id)
 
 
+def _spec_tip(field_id):
+    from descape.option_fields import _SPECS
+
+    return next(s.tooltip for s in _SPECS if s.field_id == field_id)
+
+
 def test_editing_a_scalar_row_records_one_undo_step_and_dirties_the_document() -> None:
     window = _options_window(TRIGGER_FIXTURE)
     try:
@@ -1015,6 +1022,7 @@ def test_an_as_stored_row_is_never_editable() -> None:
 # --- geometry ---------------------------------------------------------------
 
 
+@pytest.mark.font_sensitive
 def test_the_status_line_stays_short_enough_to_leave_the_form_visible() -> None:
     """The regression an offscreen capture found and every width/height
     assertion missed.
@@ -1070,6 +1078,7 @@ def test_the_status_line_stays_short_enough_to_leave_the_form_visible() -> None:
         panel.deleteLater()
 
 
+@pytest.mark.font_sensitive
 def test_every_group_renders_at_the_height_its_layout_asks_for() -> None:
     """The half of the plan's in-session visual check this panel was missing.
 
@@ -1163,7 +1172,7 @@ def test_a_greyed_exec_order_row_says_why(monkeypatch) -> None:
     try:
         assert window._map_options_notes() == []
         assert window._map_options_read_only_reasons() == {}
-        assert not _row(window, "legacy_exec_order").toolTip()
+        assert _row(window, "legacy_exec_order").toolTip() == _spec_tip("legacy_exec_order")
 
         monkeypatch.setattr(window.scenario, "trigger_write_supported", False)
         window._show_map_options()
@@ -1174,7 +1183,7 @@ def test_a_greyed_exec_order_row_says_why(monkeypatch) -> None:
         # In the status *tooltip*, not its label -- see _status_text().
         assert "execution order" in window.map_options_panel.status.toolTip()
         # The scalars keep their own gate's wording, not this one's.
-        assert not _row(window, "collide_and_correct").toolTip()
+        assert _row(window, "collide_and_correct").toolTip() == _spec_tip("collide_and_correct")
     finally:
         _close(window)
 
@@ -1192,7 +1201,7 @@ def test_a_greyed_scalar_row_says_why_in_its_own_words(monkeypatch) -> None:
         assert _row(window, "collide_and_correct").toolTip() == ViewerWindow._SCALARS_READ_ONLY
         # exec-order is still editable on this file, so it gets no reason.
         assert _row(window, "legacy_exec_order").isEnabled()
-        assert not _row(window, "legacy_exec_order").toolTip()
+        assert _row(window, "legacy_exec_order").toolTip() == _spec_tip("legacy_exec_order")
     finally:
         _close(window)
 
@@ -1419,7 +1428,7 @@ def test_custom_victory_rows_are_listed_always_and_enabled_only_under_custom(mod
             assert widget is not None and not isinstance(widget, QLabel), field_id
             assert widget.isEnabled() is applies, field_id
             assert panel._row_labels[field_id].isEnabled() is applies, field_id
-            expected_tip = "" if applies else MapOptionsPanel._CUSTOM_ONLY_TOOLTIP
+            expected_tip = _spec_tip(field_id) if applies else MapOptionsPanel._CUSTOM_ONLY_TOOLTIP
             assert widget.toolTip() == expected_tip, field_id
         assert ("Custom-victory only" in panel.status.text()) is (not applies)
     finally:

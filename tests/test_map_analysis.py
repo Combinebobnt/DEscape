@@ -160,6 +160,29 @@ def test_unit_reference_to_an_unplaced_unit_is_reported_and_placed_one_is_not() 
     assert "unit id 99999" in result.findings[0].message
 
 
+# -- garrison links -------------------------------------------------------------
+
+
+def test_dangling_garrison_link_is_reported_and_a_live_one_is_not() -> None:
+    """GH #42: the fixture's villager sits inside its house, which is placed.
+    Pointing it at an id nothing carries makes it invisible under the default
+    filter, which is why this check exists."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_garrison_links(loaded).is_clean
+    _unit(loaded, 203).garrisoned_in_id = 99999
+    result = map_analysis.check_garrison_links(loaded)
+    assert [f.unit_key for f in result.findings] == [(1, 203)]
+    assert "unit id 99999" in result.findings[0].message
+    assert result.findings[0].severity == "warning"
+
+
+def test_a_self_referencing_garrison_link_is_not_dangling() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    unit = _unit(loaded, 203)
+    unit.garrisoned_in_id = unit.reference_id
+    assert map_analysis.check_garrison_links(loaded).is_clean
+
+
 # -- players --------------------------------------------------------------------
 
 
@@ -263,6 +286,52 @@ def test_connected_regions_splits_on_the_predicate_without_row_wraparound() -> N
     mm = SimpleNamespace(map_width=width, map_height=len(rows), terrain=terrain)
     regions = connected_regions(mm, lambda i: terrain[i].ch == "L")
     assert sorted(sorted(r) for r in regions) == [[0, 1, 5, 6], [3, 4, 8, 9, 14]]
+
+
+# -- map markers ------------------------------------------------------------------
+
+
+def _marker_report(*groups):
+    return map_analysis.AnalysisReport(
+        tuple(map_analysis.CheckResult(f"check {i}", tuple(findings)) for i, findings in enumerate(groups))
+    )
+
+
+def test_marker_anchors_dedupe_per_tile_with_worst_severity_and_a_count() -> None:
+    F = map_analysis.Finding
+    report = _marker_report(
+        [F("a", "info", tile=(3, 4)), F("b", "error", tile=(5, 5))],
+        [F("c", "warning", tile=(3, 4)), F("d", "info", tile=(3, 4)), F("e", "warning", tile=(5, 5))],
+    )
+    assert map_analysis.marker_anchors(report, 10, 10) == [((3, 4), "warning", 3), ((5, 5), "error", 2)]
+
+
+def test_marker_anchors_clamp_to_the_map_before_deduping() -> None:
+    F = map_analysis.Finding
+    report = _marker_report([F("a", "warning", tile=(-2, 30)), F("b", "info", tile=(0, 99)), F("c", "info", tile=(12, 3))])
+    assert map_analysis.marker_anchors(report, 10, 20) == [((0, 19), "warning", 2), ((9, 3), "info", 1)]
+
+
+def test_unlocated_and_unit_only_findings_get_no_marker() -> None:
+    F = map_analysis.Finding
+    report = _marker_report(
+        [F("trigger", "warning"), F("off-map unit", "warning", unit_key=(1, 201)), F("...and 5 more", "error")],
+        [F("stranded", "info", tile=(2, 2), unit_key=(1, 7))],
+    )
+    assert map_analysis.marker_anchors(report, 10, 10) == [((2, 2), "info", 1)]
+    assert map_analysis.marker_tile(F("x", "info", unit_key=(1, 201)), 10, 10) is None
+
+
+def test_marker_anchors_from_a_real_elevation_violation() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _tile(loaded, 10, 10).elevation = 2
+    report = map_analysis.analyze(loaded)
+    mm = loaded.map_manager
+    anchors = map_analysis.marker_anchors(report, mm.map_width, mm.map_height)
+    errors = {tile: count for tile, severity, count in anchors if severity == "error"}
+    # Each finding sits on its pair's "a" tile: (10, 10) for four of the eight pairs, a neighbour for the rest.
+    assert errors[(10, 10)] == 4
+    assert sum(errors.values()) == len(map_analysis.check_elevation(loaded).findings) == 8
 
 
 # -- corpus ---------------------------------------------------------------------

@@ -54,7 +54,7 @@ from pathlib import Path
 
 import numpy as np
 
-from descape import asset_source, debug_log, gate_orientation
+from descape import asset_source, debug_log, editor_markers, gate_orientation, unit_kind
 from descape.sld_decoder import SLDError, load_sld
 
 GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
@@ -376,6 +376,9 @@ def clear_caches() -> None:
     _icon_cache.clear()
     sld_frame_count.cache_clear()
     wall_connector_consts.cache_clear()
+    # The revealer marker reads the game's own icon from the install.
+    marker_for.cache_clear()
+    editor_markers.clear_caches()
 
 
 @lru_cache(maxsize=1)
@@ -717,10 +720,10 @@ def rotation_variant_eligible(unit_const: int) -> bool:
 
 
 def wall_family_consts() -> tuple[int, ...]:
-    """The wall consts the Wall Run tool offers, ascending: exactly those
-    rotation_variant_eligible() accepts, which is exactly
-    UnitEditModel.set_wall_variant()'s own scope -- so the family picker can
-    never offer something the model would refuse. Gates are not here: their
+    """The wall consts Place Unit drags as a wall run (GH #98), ascending:
+    exactly those rotation_variant_eligible() accepts, which is exactly
+    UnitEditModel.set_wall_variant()'s own scope -- so a wall run can never
+    place something the model would refuse. Gates are not here: their
     orientation lives in the const, not in `rotation`."""
     return tuple(sorted(c for c in _ROTATION_VARIANT_CONSTS if rotation_variant_eligible(c)))
 
@@ -960,9 +963,24 @@ def sprite_scale(half_w: int) -> float:
     return 2 * half_w / NATIVE_TILE_W
 
 
+def seeded_variant(seed: int, piece_index: int, variant_count: int) -> int:
+    """A fixed integer mix of (seed, piece_index) into range(variant_count).
+
+    Not Python's hash(), which is salted per process: a pasture must look the
+    same across runs, and across save/load since the seed is its reference_id."""
+    x = (seed * 0x9E3779B1 + (piece_index + 1) * 0x85EBCA77) & 0xFFFFFFFF
+    x ^= x >> 16
+    x = (x * 0x7FEB352D) & 0xFFFFFFFF
+    x ^= x >> 15
+    x = (x * 0x846CA68B) & 0xFFFFFFFF
+    x ^= x >> 16
+    return x % max(1, variant_count)
+
+
 def _frame_for(
     unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+    seed: int | None = None, piece_index: int = 0,
 ) -> int:
     """Which stored frame index `entry`'s graphic resolves to at `rotation`:
     the variant_index/angle_index dispatch, times frame_count.
@@ -980,9 +998,17 @@ def _frame_for(
     pre-rotation applied at icon_for()'s door.
 
     `unit_const` is the piece's OWN resolving unit_id, not necessarily the
-    unit standing on the map -- see _draw_for_entry()'s own note on that."""
+    unit standing on the map -- see _draw_for_entry()'s own note on that.
+
+    A piece marked `"seeded"` (a pasture's posts and fences, GH #66) picks its
+    variant from seeded_variant(seed, piece_index) instead of `rotation`, when
+    a seed is given; seed=None keeps the rotation dispatch below unchanged."""
     angle_count = max(1, int(entry["angle_count"]))
     frame_count = max(1, int(entry["frame_count"]))
+    if seed is not None and entry.get("seeded"):
+        real_frames = sld_frame_count(str(entry["file_name"]))
+        count = angle_count if real_frames is None else max(1, real_frames // frame_count)
+        return seeded_variant(int(seed), piece_index, count) * frame_count
     if not rotation_is_variant(unit_const):
         return angle_index(rotation, angle_count, angle_offset_deg) * frame_count
     # The file's real frame count, not the .dat's angle_count, bounds a literal
@@ -1004,9 +1030,50 @@ def _frame_for(
     return variant_index(rotation, angle_count, variant_count) * frame_count
 
 
+HERO_GLOW_GOLD = (255, 205, 50)
+"""The hero glow ring's colour (GH #39). The game draws its glow procedurally
+(every HeroGlow graphic has no art), so this is a pick, not a measured value."""
+HERO_GLOW_RADIUS = 2
+"""The ring's width in px at the scaled size, fixed at every zoom (GH #39 plan)."""
+# (ring alpha, the disk of offsets its dilation ORs over), innermost ring first.
+_GLOW_RINGS = tuple(
+    (alpha, tuple(
+        (dy, dx)
+        for dy in range(-r, r + 1) for dx in range(-r, r + 1)
+        if dx * dx + dy * dy <= r * r
+    ))
+    for r, alpha in ((1, 255), (2, 128))
+)
+
+
+def _with_glow(draw: SpriteDraw) -> SpriteDraw:
+    """`draw` with a gold ring round its alpha silhouette: the inner px opaque,
+    the outer px about half. The sprite itself is copied back unchanged on top,
+    and the canvas grows by HERO_GLOW_RADIUS on every side, so the hotspot moves
+    by the same amount."""
+    r = HERO_GLOW_RADIUS
+    h, w = draw.rgba.shape[:2]
+    out = np.zeros((h + 2 * r, w + 2 * r, 4), dtype=np.uint8)
+    mask = np.zeros(out.shape[:2], dtype=bool)
+    mask[r:r + h, r:r + w] = draw.rgba[..., 3] > 0
+    # np.roll wraps, but the r px pad is empty on every side, so only zeros wrap in.
+    covered = mask.copy()
+    for alpha, offsets in _GLOW_RINGS:
+        grown = np.zeros_like(mask)
+        for dy, dx in offsets:
+            grown |= np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
+        ring = grown & ~covered
+        out[ring] = (*HERO_GLOW_GOLD, alpha)
+        covered |= grown
+    inner = out[r:r + h, r:r + w]
+    inner[mask[r:r + h, r:r + w]] = draw.rgba[mask[r:r + h, r:r + w]]
+    return SpriteDraw(rgba=out, hotspot_x=draw.hotspot_x + r, hotspot_y=draw.hotspot_y + r)
+
+
 def _draw_for_entry(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
-    tree_scale: float = 1.0,
+    tree_scale: float = 1.0, seed: int | None = None, piece_index: int = 0,
+    hero_glow: bool = False,
 ) -> SpriteDraw | None:
     """The tinted, scaled sprite `entry` (one graphic_map() record) resolves
     to, or None on any of the failure paths sprite_for()'s docstring lists.
@@ -1029,8 +1096,12 @@ def _draw_for_entry(
     frame. Scaling the rgba and the hotspot by the same factor is what makes
     this a scale about the sprite's own ground-contact point: a tree's
     hotspot sits at its trunk base, so the trunk stays put and the canopy
-    shrinks toward it. The caller decides which consts it applies to."""
-    index = _frame_for(unit_const, entry, rotation)
+    shrinks toward it. The caller decides which consts it applies to.
+
+    `hero_glow` (View > Layers > Hero Glow, GH #39) adds _with_glow()'s gold
+    ring round the scaled sprite. The caller decides which consts it applies
+    to, as for tree_scale."""
+    index = _frame_for(unit_const, entry, rotation, seed=seed, piece_index=piece_index)
 
     scale = sprite_scale(half_w) * tree_scale
     team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
@@ -1040,7 +1111,8 @@ def _draw_for_entry(
     # tree_scale is in the key for the same reason half_w is: this LRU is a
     # process global shared across windows and tests, so without it full-size
     # art leaks into a shrunk render and vice versa.
-    key = (entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale)
+    # hero_glow is keyed for the same reason: the ringed draw is a different image.
+    key = (entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow)
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
@@ -1058,8 +1130,27 @@ def _draw_for_entry(
         hotspot_x=round(hx * scale),
         hotspot_y=round(hy * scale),
     )
+    if hero_glow:
+        draw = _with_glow(draw)
     _scaled_cache.put(key, draw)
     return draw
+
+
+@lru_cache(maxsize=512)
+def marker_for(category: str, team_index: int, half_w: int) -> SpriteDraw:
+    """An invisible object's one-tile editor-only marker (GH #53 Part B), tinted
+    for its owner through the same _tinted() multiply a sprite gets. The hotspot
+    is the diamond's centre, where the coloured mark sat. See editor_markers."""
+    main, coverage, hx, hy = editor_markers.marker_layers(category, half_w)
+    team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
+    return SpriteDraw(rgba=_tinted(main, coverage, team), hotspot_x=hx, hotspot_y=hy)
+
+
+def _marker_icon(category: str, team_index: int, footprint_w: int, footprint_h: int) -> SpriteDraw:
+    """marker_for() contain-fitted into a Flat footprint rect: built at the largest
+    half_w that fits (2*half_w wide, half_w tall), so no second resample."""
+    draw = marker_for(category, team_index, max(1, min(footprint_w // 2, footprint_h)))
+    return SpriteDraw(rgba=draw.rgba, hotspot_x=0, hotspot_y=0)
 
 
 def sprite_for(
@@ -1084,7 +1175,8 @@ def sprite_for(
 
 
 def sprite_pieces_for(
-    unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0
+    unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
+    seed: int | None = None, hero_glow: bool = False,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -1111,19 +1203,36 @@ def sprite_pieces_for(
     art itself -- a composite whose dx/dy kept the full-size scale would fly
     apart as its pieces shrank. No tree is a composite today; the invariant
     holds anyway rather than depending on that staying true.
+
+    `seed` (the placed unit's reference_id) reaches every `"seeded"` piece's
+    frame dispatch; see _frame_for().
+
+    `hero_glow` rings every piece (see _draw_for_entry()). No hero is a
+    composite today, so in practice that is the one piece.
+
+    A const with no .dat graphic (unit_kind.invisible_category(), GH #53 Part
+    B) resolves to its editor-only marker instead, one piece at (0, 0).
     """
+    category = unit_kind.invisible_category(unit_const)
+    if category is not None:
+        return [SpritePiece(draw=marker_for(category, team_index, half_w), dx=0, dy=0)]
     entry = graphic_map().get(unit_const)
     if entry is None:
         return []
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        draw = _draw_for_entry(unit_const, entry, rotation, team_index, half_w, tree_scale)
+        draw = _draw_for_entry(
+            unit_const, entry, rotation, team_index, half_w, tree_scale, hero_glow=hero_glow
+        )
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
 
     scale = sprite_scale(half_w) * tree_scale
     result: list[SpritePiece] = []
-    for piece in pieces_data:
-        draw = _draw_for_entry(piece["unit_id"], piece, rotation, team_index, half_w, tree_scale)
+    for index, piece in enumerate(pieces_data):
+        draw = _draw_for_entry(
+            piece["unit_id"], piece, rotation, team_index, half_w, tree_scale, seed, index,
+            hero_glow,
+        )
         if draw is None:
             # Marked, not positional: depth order can (and for a town centre's
             # back piece, does) place the parent anywhere but index 0.
@@ -1165,11 +1274,12 @@ def _source_over(dst: np.ndarray, base_y: int, base_x: int, src: np.ndarray) -> 
 def _native_piece(
     unit_const: int, entry: dict, rotation: float, team,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+    seed: int | None = None, piece_index: int = 0,
 ) -> SpriteDraw | None:
     """One piece resolved and tinted at NATIVE scale -- _draw_for_entry()'s
     body with the scaling and the _scaled_cache put both left out."""
     native = _native_frame(
-        entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg)
+        entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg, seed, piece_index)
     )
     if native is None:
         return None
@@ -1180,6 +1290,7 @@ def _native_piece(
 def _native_pieces_for(
     unit_const: int, entry: dict, rotation: float, team,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+    seed: int | None = None,
 ) -> list[SpritePiece]:
     """sprite_pieces_for()'s walk at native scale: same marked-parent
     rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
@@ -1202,8 +1313,8 @@ def _native_pieces_for(
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
 
     result: list[SpritePiece] = []
-    for piece in pieces_data:
-        draw = _native_piece(piece["unit_id"], piece, rotation, team, angle_offset_deg)
+    for index, piece in enumerate(pieces_data):
+        draw = _native_piece(piece["unit_id"], piece, rotation, team, angle_offset_deg, seed, index)
         if draw is None:
             # Marked parent, not list position -- see sprite_pieces_for().
             if piece.get("parent"):
@@ -1242,6 +1353,7 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
 def _frame_key(
     unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+    seed: int | None = None,
 ) -> tuple[int, ...]:
     """icon_for()'s cache key's frame component: every piece's own _frame_for()
     result, length 1 for a non-composite const.
@@ -1260,13 +1372,14 @@ def _frame_key(
     if not pieces_data:
         return (_frame_for(unit_const, entry, rotation, angle_offset_deg),)
     return tuple(
-        _frame_for(piece["unit_id"], piece, rotation, angle_offset_deg)
-        for piece in pieces_data
+        _frame_for(piece["unit_id"], piece, rotation, angle_offset_deg, seed, index)
+        for index, piece in enumerate(pieces_data)
     )
 
 
 def icon_for(
-    unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int
+    unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int,
+    seed: int | None = None,
 ) -> SpriteDraw | None:
     """This unit's sprite fitted into a footprint_w x footprint_h pixel rect --
     Flat mode's counterpart to sprite_for() (P3-g7). None to fall back to the
@@ -1300,9 +1413,15 @@ def icon_for(
     No cache-key change comes with it: the key below already contains
     _frame_key()'s RESOLVED indices, _scaled_cache is iso-only and unreached
     from here, and _native_cache is keyed on (file_name, frame_index) and so is
-    correct for both projections at once."""
+    correct for both projections at once.
+
+    An invisible const (GH #53 Part B) returns its editor-only marker instead,
+    never None, so Flat's row lockstep with _flat_unit_draws() holds."""
     if footprint_w <= 0 or footprint_h <= 0:
         return None
+    category = unit_kind.invisible_category(unit_const)
+    if category is not None:
+        return _marker_icon(category, team_index, footprint_w, footprint_h)
     entry = graphic_map().get(unit_const)
     if entry is None:
         return None
@@ -1310,7 +1429,7 @@ def icon_for(
     team_slot = team_index % len(TEAM_COLORS)
     key = (
         unit_const,
-        _frame_key(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG),
+        _frame_key(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
         team_slot, footprint_w, footprint_h,
     )
     hit = _icon_cache.get_or_none(key)
@@ -1319,7 +1438,7 @@ def icon_for(
 
     draw = _build_icon(
         unit_const, entry, rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h,
-        FLAT_ANGLE_ZERO_OFFSET_DEG,
+        FLAT_ANGLE_ZERO_OFFSET_DEG, seed,
     )
     _icon_cache.put(key, _MISS if draw is None else draw)  # see _MISS
     return draw
@@ -1327,11 +1446,11 @@ def icon_for(
 
 def _build_icon(
     unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int,
-    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
+    angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG, seed: int | None = None,
 ) -> SpriteDraw | None:
     """icon_for()'s uncached body."""
     assembly = _assembled_native(
-        _native_pieces_for(unit_const, entry, rotation, team, angle_offset_deg)
+        _native_pieces_for(unit_const, entry, rotation, team, angle_offset_deg, seed)
     )
     if assembly is None:
         return None

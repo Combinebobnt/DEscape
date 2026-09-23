@@ -163,7 +163,7 @@ def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
     verbatim decompressed body, then patches DataHeader.next_unit_id_to_place
     (the leading u32 at decompressed_body[0:4] -- plan finding 8), which a
     library commit() does not reliably set to a value above manually-assigned
-    reference_ids (plan fact 11). The same units_block_offset/units_section_end
+    reference_ids (plan fact 11). The same units_block_offset/players_units_end
     boundaries descape/scenario_write.py's units branch will use, hand-rolled
     here so the generator stays independent of the code its output tests.
     """
@@ -176,7 +176,7 @@ def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
     body = bytearray(
         loaded.decompressed_body[: loaded.units_block_offset]
         + section_bytes
-        + loaded.decompressed_body[loaded.units_section_end :]
+        + loaded.decompressed_body[loaded.players_units_end :]
     )
     struct.pack_into("<I", body, 0, NEXT_UNIT_ID)
 
