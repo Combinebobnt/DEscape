@@ -23,8 +23,8 @@ python3.11 -m pip install --only-binary :all: -r requirements.txt -r packaging/r
 python3.11 -m PyInstaller packaging/descape.spec --noconfirm
 PYTHON=python3.11 bash packaging/build_appimage.sh
 
-# Docker writes root-owned files into the bind mount; rootless podman maps to
-# the invoking user already, so this is a no-op there.
+# Docker writes root-owned files into the bind mount. Rootless podman maps root
+# to the invoking user already, so build_linux_container.sh doesn't set HOST_UID.
 if [ -n "${HOST_UID:-}" ]; then
     chown -R "$HOST_UID:${HOST_GID:-$HOST_UID}" dist build
 fi

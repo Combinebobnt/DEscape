@@ -12,6 +12,14 @@ CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 # Pinned to a minor, not almalinux:8, for the same reason appimagetool is pinned.
 IMAGE="${IMAGE:-docker.io/library/almalinux:8.10}"
 
+# Rootless podman already maps container root to the invoking user; a chown
+# to HOST_UID there would hand build/ and dist/ to a subuid. Checked via
+# --version so a podman-docker shim named "docker" is caught too.
+OWNER_ENV=()
+if ! "$CONTAINER_RUNTIME" --version 2>/dev/null | grep -qi podman; then
+    OWNER_ENV=(-e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)")
+fi
+
 "$CONTAINER_RUNTIME" run --rm -v "$ROOT:/src:Z" -w /src \
-    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    "${OWNER_ENV[@]}" \
     "$IMAGE" bash packaging/container_build.sh
