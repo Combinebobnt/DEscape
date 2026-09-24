@@ -135,7 +135,7 @@ def _drag(window, record, paints, *, row: int, px: int, delay_ms: float, button:
 def _run(args) -> list[str]:
     from PyQt5.QtGui import QTransform
 
-    from descape import perf_trace, settings, viewer_canvas
+    from descape import composite_backend, perf_trace, settings, viewer_canvas
 
     # Trees/eye candy/ticks off: a Large-fill modal would hang the run, and
     # they are not what this measures. Module globals, per testkit/qt_window.py.
@@ -182,6 +182,7 @@ def _run(args) -> list[str]:
         view._on_stroke_tiles = recording
         vp = view.viewport()
         output.append(f"{args.style}, {args.tool}, viewport {vp.width()}x{vp.height()}, scale {view.transform().m11():g}")
+        output.append(composite_backend.describe())
         row = 0
         for brush_size in args.brush:
             window.brush_size_spin.setValue(brush_size)

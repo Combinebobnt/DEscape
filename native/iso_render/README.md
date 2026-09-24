@@ -1,5 +1,13 @@
 # iso_render — Phase 0 backend-decision benchmark evidence
 
+> **Later note: the verdict below is about this port's shape, not native code
+> in general.** This Phase 0 port kept the per-tile loop in Python and moved
+> only each tile's numeric work into Cython, so every tile still paid the
+> Python call overhead. The renderer now ships a native kernel,
+> `descape/_composite_native.pyx` (built by `tools/build_native.py`, with the
+> numpy code kept as its fallback and byte-identity oracle), which is meant to
+> loop over a whole chunk in C. Nothing here is built on by it.
+
 **Outcome: pure numpy was chosen for Phase 1 onward — this directory's
 Cython kernel is kept as reproducible benchmark evidence, not shipped or
 built on by later phases.** The unaccelerated numpy prototype

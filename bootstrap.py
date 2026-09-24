@@ -184,6 +184,37 @@ def install_dependencies(reporter) -> None:
         fail(reporter, "couldn't install dependencies -- check your internet connection.")
 
 
+def _native_skipped(reporter, reason: str) -> bool:
+    reporter.set_status(f"Fast renderer not built: {reason}. DEscape will use its slower built-in renderer.")
+    return False
+
+
+def build_native_kernel(reporter) -> bool:
+    """Builds the optional native renderer via tools/build_native.py, run in
+    the venv. Never fatal: without it the app runs on its numpy fallback.
+    Returns whether the kernel is built and current.
+
+    A compiler probe runs first (on macOS without ever invoking cc, which
+    would pop the Command Line Tools dialog). A failed build leaves a stamp
+    that --check reports as exit 2, so it isn't retried every launch."""
+    build_native = str(ROOT / "tools" / "build_native.py")
+    check = subprocess.run([str(VENV_PYTHON), build_native, "--check"], capture_output=True, check=False)
+    if check.returncode == 0:
+        return True
+    if check.returncode == 2:
+        return _native_skipped(reporter, "an earlier build failed (retried after an update or a new Python)")
+    probe = subprocess.run([str(VENV_PYTHON), build_native, "--probe"], capture_output=True, text=True, check=False)
+    if probe.returncode != 0:
+        return _native_skipped(reporter, probe.stdout.strip() or "no C compiler found")
+    status = "Building the fast renderer, first launch only..."
+    pip = [str(VENV_PYTHON), "-m", "pip", "install", "--quiet", "-r", str(ROOT / "packaging" / "requirements-native.txt")]
+    if run_step(reporter, pip, status) != 0:
+        return _native_skipped(reporter, "couldn't install its build tools (cython, setuptools)")
+    if run_step(reporter, [str(VENV_PYTHON), build_native], status) != 0:
+        return _native_skipped(reporter, "the build failed")
+    return True
+
+
 def newest_crash_dump(dump_dir: Path) -> Path | None:
     if not dump_dir.is_dir():
         return None
@@ -239,6 +270,7 @@ def main() -> None:
     try:
         find_or_create_venv(reporter)
         install_dependencies(reporter)
+        build_native_kernel(reporter)
         launch_app(reporter)
     except SystemExit:
         raise

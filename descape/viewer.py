@@ -85,6 +85,7 @@ from descape import (
     cliff_catalog,
     cliff_chain,
     clipboard_history,
+    composite_backend,
     crash_report,
     debug_log,
     diplomacy_fields,
@@ -11638,6 +11639,7 @@ def main() -> None:
     # debug_log snapshot only exists if the hook outlives the first log line.
     install_crash_hooks()
     debug_log.log("Application started")
+    debug_log.log(composite_backend.describe())
     migrated = asset_source.migrate_legacy_config()
     if migrated is not None:
         debug_log.log(f"Migrated config from {asset_source.LEGACY_CONFIG_PATH} to {migrated}")

@@ -15,7 +15,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from descape import asset_source, grid_overlay, iso_geometry, settings, terrain_style, unit_sprites
+from descape import asset_source, composite_backend, grid_overlay, iso_geometry, settings, terrain_style, unit_sprites
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
@@ -959,8 +959,12 @@ def _render_tile_iso(
         _clipped_paint(img, base_y, base_x, dst_y, dst_x, skirt, extent=extent)
 
     dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(tile_px)
-    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
-    _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
+    native = composite_backend.native
+    if native is not None:
+        native.paint_diamond(img, base_y, base_x, dst_y, dst_x, src_y, src_x, top_block)
+    else:
+        extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+        _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
 
     # Seam line: a 1px contour along this tile's OWN two up-screen diamond
     # edges wherever the neighbor behind that edge is lower -- this tile's

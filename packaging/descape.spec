@@ -41,7 +41,8 @@ a = Analysis(
     [str(ROOT / "packaging" / "entry_frozen.py")],
     pathex=[str(ROOT)],
     datas=datas,
-    hiddenimports=[],
+    # composite_backend imports the kernel inside a try, which analysis can miss.
+    hiddenimports=["descape._composite_native"],
     excludes=["tkinter", "pytest", "pytest-qt", "cython"],
 )
 # Host-supplied by design: a bundled libstdc++ shadows the host's and breaks a

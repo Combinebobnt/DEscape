@@ -73,6 +73,25 @@ downloading dependencies) can take a while with no visible sign of it. If
 `python3-tk` package, the same way they split `venv` — see below) it falls
 back to a console instead, opening one itself if none is already attached.
 
+### Faster renderer (optional C compiler)
+
+Part of the map renderer is compiled from `descape/_composite_native.pyx`.
+The downloads already include it. From source, `bootstrap.py` builds it on
+the first launch if it finds a C compiler ("Building the fast renderer, first
+launch only..."), and rebuilds it after an update changes it. Without a
+compiler DEscape still runs, on a slower built-in renderer; Help > Debug Log
+says which one is active. To get the fast one, install:
+- **Linux (Debian/Ubuntu):** `sudo apt install build-essential python3-dev`
+- **macOS:** the Xcode Command Line Tools (`xcode-select --install`)
+- **Windows:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/),
+  with the "Desktop development with C++" workload
+
+then launch again. A build that started and then failed isn't retried on
+later launches until an update or a new Python version; building by hand
+retries it now, and is also the way to get it with the manual setup below:
+`pip install -r packaging/requirements-native.txt` in the venv, then
+`python tools/build_native.py --force`.
+
 ### Manual setup
 
 Only needed if you'd rather not use the launcher script above, or it doesn't

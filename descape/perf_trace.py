@@ -30,7 +30,7 @@ import time
 from contextlib import nullcontext
 from typing import Self
 
-from descape import debug_log
+from descape import composite_backend, debug_log
 
 _enabled = os.environ.get("DESCAPE_PERF_TRACE") == "1"
 _NULL_PHASE = nullcontext()
@@ -131,6 +131,8 @@ def flush(label: str) -> None:
         _current_step = {}
         return
     lines = []
+    # Last on the header line, so tester traces say which composite path ran.
+    backend = f", composite {composite_backend.active_backend()}"
     if n:
         total = sum(_step_totals)
         mean_step = total / n
@@ -139,7 +141,7 @@ def flush(label: str) -> None:
             f"{name} {_phase_sums.get(name, 0.0) / n:.1f}" for name in _phase_order
         )
         lines.append(
-            f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f})"
+            f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f}){backend}"
         )
         lines.append(f"  | {phase_line}")
     if _repaint_durations:
@@ -149,7 +151,7 @@ def flush(label: str) -> None:
         if n:
             lines.append(f"  | repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
         else:
-            lines.append(f"perf {label}: repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
+            lines.append(f"perf {label}: repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f}){backend}")
     debug_log.log("\n".join(lines))
     _current_step = {}
     _step_totals = []

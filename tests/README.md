@@ -34,6 +34,15 @@ The selected ruleset is broad rather than syntax-only, so expect this test to
 catch style and idiom findings (line length at 140, import order, bugbear,
 security, datetime, modernization) as readily as real errors.
 
+**Native composite kernel.** `test_native_composite.py` compares the
+compiled kernel (`descape/_composite_native.pyx`) against the numpy code it
+replaces, byte for byte, and skips when the kernel isn't built:
+`.venv/bin/python3 tools/build_native.py` builds it (cython from
+`requirements-dev.txt`). `DESCAPE_REQUIRE_NATIVE=1` turns that skip into a
+failure (CI and `ci_parity.sh` set it, and build first).
+`DESCAPE_COMPOSITE=numpy` or `native` forces the backend the rest of the
+suite renders with. Run the tier once each way after a kernel change.
+
 **Anything that rebuilds `.venv` drops the dev dependencies, pytest
 included** -- `bootstrap.py` (what the `LAUNCH_DEscape_*` launchers run)
 installs `requirements.txt` only, correctly, since it sets up an end-user

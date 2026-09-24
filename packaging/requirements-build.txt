@@ -1,9 +1,11 @@
-# Build-only dependency for packaging/descape.spec. Not needed to run the
-# viewer from source, and deliberately kept separate from requirements-dev.txt
-# so CI can install just this without pulling in cython/genieutils-py, which
-# would red a packaging job for reasons unrelated to packaging.
+# Build-only dependencies: PyInstaller for packaging/descape.spec, plus the
+# native kernel's toolchain (requirements-native.txt, cython and setuptools),
+# since every shipped bundle carries the compiled kernel. None of these is
+# needed to run the viewer from source, and genieutils-py stays out, so CI
+# can install just this without pulling in the rest of requirements-dev.txt.
 #
 # Pinned to the version packaging/descape.spec was verified against locally
 # (Stage 1, 2026-09-03) -- a PyInstaller minor bump changes bundle layout and
 # hook behavior.
 pyinstaller==6.22.2
+-r requirements-native.txt

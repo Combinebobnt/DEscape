@@ -42,12 +42,12 @@ ruff==0.16.3
 # runtime dependency of anything a normal user runs.
 genieutils-py
 
-# Cython is only used to build native/iso_render/iso_kernel.pyx, the Phase 0
-# rendering-backend benchmark prototype for the isometric Z-height terrain
-# rendering plan (v2.6) -- reproduce via
-# tools/bench_iso_backend.py. Not a runtime dependency: the actual decision
-# was to build Phase 1 onward in pure numpy, not on top of this extension.
-cython
+# Cython (pinned, with setuptools, in packaging/requirements-native.txt via the
+# -r below) builds the native composite kernel, descape/_composite_native.pyx,
+# with tools/build_native.py. The app falls back to numpy without it, so it is
+# a build tool, not a runtime dependency. It also builds
+# native/iso_render/iso_kernel.pyx, the Phase 0 benchmark prototype
+# (tools/bench_iso_backend.py).
 
 # PyInstaller builds the frozen onedir bundle (packaging/descape.spec). Not a
 # runtime dependency of anything a normal user (or `python3 map_editor.py`)

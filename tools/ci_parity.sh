@@ -31,12 +31,16 @@ else
     echo "ci_parity: no tag given, skipping check_release_tag.py"
 fi
 
+# Same as build.yml: the kernel is built first and the tier requires it, so a
+# missing or stale build fails here rather than skipping the native oracle.
+.venv/bin/python3 tools/build_native.py || exit 1
+
 sandbox="$(mktemp -d "${TMPDIR:-/tmp}/descape-ci-parity.XXXXXX")"
 trap 'rm -rf "$sandbox"' EXIT
 mkdir -p "$sandbox/home" "$sandbox/config" "$sandbox/scenarios"
 
-HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" \
-    env -u AOE2DE_INSTALL_PATH -u QT_QPA_PLATFORM \
+HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" DESCAPE_REQUIRE_NATIVE=1 \
+    env -u AOE2DE_INSTALL_PATH -u DESCAPE_COMPOSITE -u QT_QPA_PLATFORM \
     .venv/bin/python3 -m pytest "--scenario-dir=$sandbox/scenarios"
 status=$?
 if [ "$status" -eq 0 ]; then

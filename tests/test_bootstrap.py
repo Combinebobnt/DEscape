@@ -230,6 +230,72 @@ def test_install_dependencies_uses_requirements_txt(monkeypatch, tmp_path) -> No
     assert calls[0][-1].endswith("requirements.txt")
 
 
+class _FakeCompleted:
+    def __init__(self, returncode: int, stdout: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _native_harness(monkeypatch, tmp_path, *, check: int, probe: int = 0, step_codes=()):
+    """Fakes build_native.py's --check/--probe (subprocess.run) and the pip
+    and build steps (run_step), recording the steps' commands."""
+    monkeypatch.setattr(bootstrap, "VENV_PYTHON", tmp_path / "python3")
+
+    def fake_run(cmd, **kwargs):
+        if "--check" in cmd:
+            return _FakeCompleted(check)
+        return _FakeCompleted(probe, "no C compiler found; install one" if probe else "")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+    steps: list[list[str]] = []
+    codes = iter(step_codes)
+
+    def fake_step(reporter, cmd, status):
+        steps.append(list(cmd))
+        return next(codes, 0)
+
+    monkeypatch.setattr(bootstrap, "run_step", fake_step)
+    return steps
+
+
+def test_build_native_kernel_does_nothing_when_current(monkeypatch, tmp_path) -> None:
+    steps = _native_harness(monkeypatch, tmp_path, check=0)
+    assert bootstrap.build_native_kernel(_FakeReporter()) is True
+    assert steps == []
+
+
+def test_build_native_kernel_installs_pinned_tools_then_builds(monkeypatch, tmp_path) -> None:
+    steps = _native_harness(monkeypatch, tmp_path, check=1)
+    assert bootstrap.build_native_kernel(_FakeReporter()) is True
+    assert steps[0][-1].endswith("requirements-native.txt")
+    assert steps[1][-1].endswith("build_native.py")
+
+
+def test_build_native_kernel_skips_a_build_that_failed_before(monkeypatch, tmp_path) -> None:
+    steps = _native_harness(monkeypatch, tmp_path, check=2)
+    reporter = _FakeReporter()
+    assert bootstrap.build_native_kernel(reporter) is False
+    assert steps == []
+    assert "slower" in reporter.statuses[-1]
+
+
+def test_build_native_kernel_skips_when_the_probe_fails(monkeypatch, tmp_path) -> None:
+    steps = _native_harness(monkeypatch, tmp_path, check=1, probe=1)
+    reporter = _FakeReporter()
+    assert bootstrap.build_native_kernel(reporter) is False
+    assert steps == []
+    assert "install one" in reporter.statuses[-1]
+
+
+@pytest.mark.parametrize("step_codes", [(1,), (0, 1)], ids=["pip-fails", "build-fails"])
+def test_build_native_kernel_failure_never_blocks_launch(monkeypatch, tmp_path, step_codes) -> None:
+    _native_harness(monkeypatch, tmp_path, check=1, step_codes=step_codes)
+    monkeypatch.setattr(bootstrap, "fail", lambda *a: pytest.fail("a native build failure must not be fatal"))
+    reporter = _FakeReporter()
+    assert bootstrap.build_native_kernel(reporter) is False
+    assert "slower" in reporter.statuses[-1]
+
+
 def test_newest_crash_dump_picks_latest_by_mtime(tmp_path) -> None:
     older = tmp_path / "crash-20260101-000000-aaaaaaaa.txt"
     older.write_text("old")
