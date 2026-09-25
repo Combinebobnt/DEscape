@@ -1439,6 +1439,13 @@ def test_a_pending_exec_order_flip_updates_the_triggers_readout() -> None:
             else "Executes in display order - unsaved change."
         )
         assert expected in panel.status.text(), panel.status.text()
+
+        # GH #2: a second flip lands back on the stored byte, so nothing is unsaved.
+        window.mode_combo.setCurrentText("Map Options")
+        widget = window.map_options_panel.widget_for("legacy_exec_order")  # rebuilt on re-entry
+        widget.setCurrentIndex(widget.findData(before))
+        window.mode_combo.setCurrentText("Triggers")
+        assert "unsaved change" not in panel.status.text(), panel.status.text()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -3226,6 +3233,65 @@ def test_a_paste_into_another_file_reports_and_undoes_in_one_step() -> None:
         window.close()
 
 
+def test_a_paste_after_reopening_the_same_file_counts_as_another_scenario() -> None:
+    """GH #3's reopen check: a reload is a new document, so the links a copy
+    carried are cleared even though the path is the same."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 2, 3)
+        window.copy_triggers()
+        window.edit_history.mark_saved()
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Triggers")
+        window.status_log.clear()
+
+        window.trigger_structural_edit("paste", [])
+        assert [t.name for t in window.trigger_edits.manager().triggers][-2:] == [
+            "Fixture: references (copy)",
+            "Fixture: variable (copy)",
+        ]
+        # Variable 0 already carries the same name here, so none is renamed.
+        assert "Pasted 2 triggers from another scenario: cleared 2 trigger links and 5 unit references." in (
+            window.status_log.toPlainText()
+        ), window.status_log.toPlainText()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_ctrl_a_in_the_filter_box_selects_its_text_not_the_triggers() -> None:
+    """GH #3: the line edit claims Ctrl+A before the window's Select All does."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        # Shortcut dispatch needs an active window, as in test_keybinds.py.
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+
+        panel = window.trigger_panel
+        panel.select_trigger(1)
+        panel.filter_edit.setText("Fixture")  # matches every shipped trigger
+        panel.filter_edit.setFocus()
+        QApplication.processEvents()
+        assert panel.filter_edit.hasFocus()
+        assert panel.selected_trigger_indices() == [1]
+
+        QTest.keyClick(panel.filter_edit, Qt.Key_A, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert panel.filter_edit.selectedText() == "Fixture"
+        assert panel.selected_trigger_indices() == [1]
+    finally:
+        QTest.keyRelease(window, Qt.Key_Control)
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_select_all_in_triggers_mode_takes_every_visible_trigger() -> None:
     """Ctrl+A dispatches on mode like Ctrl+C: every trigger in Triggers mode,
     collapsed sections included, filtered rows excluded; the whole map elsewhere."""
@@ -3443,6 +3509,28 @@ def test_rename_tag_is_offered_only_on_a_chosen_tag_of_a_writable_file(tmp_path:
         window.close()
 
 
+def test_a_picked_tag_disables_move_up_and_down_and_says_why(tmp_path: Path) -> None:
+    """GH #1: the tag facet hides rows like the text filter, so a swap could
+    land on a hidden neighbour; both buttons disable with the tag named as why."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        panel.set_tag_filter("P1")
+        assert _visible_ids(panel) == [2], "fixture assumption: one P1 trigger, away from both ends"
+        panel.select_trigger(2)
+        for button in (panel.trigger_move_up_button, panel.trigger_move_down_button):
+            assert not button.isEnabled()
+            assert "tag" in button.toolTip(), button.toolTip()
+
+        panel.set_tag_filter(None)
+        panel.select_trigger(2)
+        assert panel.trigger_move_up_button.isEnabled() and panel.trigger_move_down_button.isEnabled()
+        assert "tag" not in panel.trigger_move_up_button.toolTip()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_renaming_the_facets_tag_keeps_the_facet_on_it(tmp_path: Path, monkeypatch) -> None:
     window = _tagged_window(tmp_path)
     asked = _answer_dialogs(monkeypatch, text="  Intro ")
@@ -3584,6 +3672,50 @@ def test_the_sections_button_lists_every_section_and_hides_when_flat() -> None:
         ]
         panel.sort_combo.setCurrentIndex(1)  # File order
         assert panel.sections_button.isHidden()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_clicking_the_synthetic_header_shows_no_trigger() -> None:
+    """GH #1: the "(before the first section)" row is not a trigger, so a click
+    on it leaves the entry tree empty rather than showing a stale trigger."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 2, "--- Second ---")  # sections: (before) 0, 1 | 2: 3
+        panel.select_trigger(1)
+        assert panel.entry_tree.topLevelItemCount() > 0, "fixture assumption: a trigger is showing"
+
+        synthetic = panel.tree.topLevelItem(0)
+        assert synthetic.data(0, Qt.UserRole) is None, "fixture assumption: row 0 is the synthetic header"
+        pos = panel.tree.visualItemRect(synthetic).center()
+        QTest.mouseClick(panel.tree.viewport(), Qt.LeftButton, Qt.NoModifier, pos)
+        QApplication.processEvents()
+        assert panel.tree.currentItem() is synthetic, "the click did not land on the header"
+        assert panel.current_trigger_index() is None
+        assert panel.entry_tree.topLevelItemCount() == 0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_renaming_the_only_divider_back_folds_the_tree_flat() -> None:
+    """GH #1: undoing the divider by hand, not by Undo, drops the grouping."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 2, "--- Second ---")
+        assert not panel.sections_button.isHidden(), "fixture assumption: the rename grouped the tree"
+
+        _rename(panel, 2, "Fixture: references")
+        assert panel.sections_button.isHidden()
+        assert all(panel.tree.topLevelItem(i).childCount() == 0 for i in range(panel.tree.topLevelItemCount()))
+        assert _trigger_row_count(panel.tree) == panel.tree.topLevelItemCount() == 4
     finally:
         window.edit_history.mark_saved()
         window.close()

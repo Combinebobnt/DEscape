@@ -72,6 +72,46 @@ def test_draw_with_trees_on_adds_a_unit_as_one_composite_undo_step() -> None:
         window.close()
 
 
+def test_auto_placed_trees_survive_a_save_and_reload_with_varied_rotation(tmp_path, monkeypatch) -> None:
+    """GH #89 step 5's DEscape half. The variant RNG is unseeded, so 40 tiles
+    make "more than one distinct rotation" near-certain without pinning values."""
+    import descape.viewer as viewer_module
+    from descape.scenario_io import load_map_and_units
+
+    dest = tmp_path / "trees.aoe2scenario"
+    monkeypatch.setattr(
+        viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
+    )
+    window = _window("draw")
+    try:
+        window.paint_trees_check.setChecked(True)
+        window.paint_eye_candy_check.setChecked(False)
+        window.on_edit_stroke_start()
+        for y in range(10, 14):
+            for x in range(10, 20):
+                window.on_edit_stroke_tile(x, y, 0)
+        window.on_edit_stroke_end()
+
+        placed = sorted(
+            (int(u.x), int(u.y), u.rotation)
+            for u in window.scenario.unit_manager.units[0]
+            if u.unit_const == FOREST_OAK_CONST
+        )
+        assert len(placed) == 40
+        window.save_as()
+        assert dest.is_file()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+    reloaded = load_map_and_units(dest)
+    read_back = sorted(
+        (int(u.x), int(u.y), u.rotation) for u in reloaded.unit_manager.units[0] if u.unit_const == FOREST_OAK_CONST
+    )
+    assert read_back == placed
+    assert len({rotation for _x, _y, rotation in read_back}) > 1, "every tree read back with one rotation"
+
+
 def test_draw_with_trees_off_pushes_a_plain_tile_record() -> None:
     window = _window("draw")
     try:

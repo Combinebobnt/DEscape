@@ -63,7 +63,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import iso_geometry, render
+from descape import composite_backend, iso_geometry, render
 from descape.beach_edges import apply_beach_ring
 from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
 from descape.edit_history import EditHistory, tile_state
@@ -348,6 +348,7 @@ def main() -> None:
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
 
     names = [n.strip() for n in args.files.split(",")] if args.files else FILES
+    print(composite_backend.describe())
     for name in names:
         path = args.scenario_dir / name
         if not path.exists():

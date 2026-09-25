@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from test_invalidate_units_splice import _make_cache, _oracle
 
 from descape import asset_source, render, unit_sprites
 from descape.options_model import OptionsEditModel
@@ -344,3 +345,39 @@ def test_a_colour_edit_repaints_the_flat_sprite_tint(sprite_install):
     after = _recolour_and_recomposite(cache, loaded, model, sprites=True)
 
     assert not np.array_equal(before, after)
+
+
+# --- the same recolour on the Stepped and Sloped caches -----------------
+#
+# The Flat tests above pin the ordering; these pin that the same production
+# tail leaves an Iso/Sloped cache byte-identical to a fresh render.
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_colour_edit_repaints_the_iso_unit_dots_like_a_fresh_render(style):
+    loaded, model = _blank_with_options()
+    UnitEditModel(loaded).add(1, CONST, 4.0, 4.0)
+    cache = _make_cache(style, loaded)
+    w, h = cache.canvas_dims(0)
+    before = cache.render_rect(0, 0, w, h, mip=0).copy()
+
+    model.set_value(player_field_id("color", 1), 5)
+    after = _recolour_and_recomposite(cache, loaded, model, sprites=False)
+
+    assert not np.array_equal(after, before), "the recolour did not reach the canvas"
+    assert np.array_equal(after, _oracle(style, loaded)[:h, :w])
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_colour_edit_retints_the_iso_sprite_like_a_fresh_render(style, sprite_install):
+    loaded, model = _blank_with_options()
+    UnitEditModel(loaded).add(1, CONST, 4.0, 4.0)
+    cache = _make_cache(style, loaded, sprites=True)
+    w, h = cache.canvas_dims(0)
+    before = cache.render_rect(0, 0, w, h, mip=0).copy()
+
+    model.set_value(player_field_id("color", 1), 5)
+    after = _recolour_and_recomposite(cache, loaded, model, sprites=True)
+
+    assert not np.array_equal(after, before), "the recolour did not retint the sprite"
+    assert np.array_equal(after, _oracle(style, loaded, sprites=True)[:h, :w])

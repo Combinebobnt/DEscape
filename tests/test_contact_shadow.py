@@ -723,19 +723,22 @@ def test_tip_pass_closes_the_inner_corner_vertex(elev_step_pct, monkeypatch):
         assert darker.all(), f"{side}: {int((~darker).sum())} of {ys.size} vertex pixels left bare"
 
 
+@pytest.mark.parametrize("elev_step_pct", [50, 100])
 @pytest.mark.parametrize("axis", ["up_left", "up_right"])
-def test_tip_pass_leaves_a_straight_run_byte_identical(axis, monkeypatch):
+def test_tip_pass_leaves_a_straight_run_byte_identical(axis, elev_step_pct, monkeypatch):
     """The inner-corner gate's bar: on a straight terrace edge the other
     caster is never higher than N, so neither half may fire; an ungated
     stripe would add a vertical line at every tile, a lattice rather than
-    relief. Mutation-checked per side: dropping that side's gate turns its
-    parametrization red."""
+    relief. Mutation-checked per side and pct: dropping that side's gate
+    turns its parametrization red."""
     from descape import settings
 
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
-    settings.set_elev_step_pct(50)
+    settings.set_elev_step_pct(elev_step_pct)
+    assert settings.get_elev_step_pct() == elev_step_pct, "pct snapped off the requested stop"
     scenario = _straight_run_scenario(axis)
-    img, _elev, _proj = render.render_terrain_iso_with_proj(scenario, with_units=False)
+    img, _elev, proj = render.render_terrain_iso_with_proj(scenario, with_units=False)
+    assert proj.elev_step == _proj(proj.tile_px, elev_step_pct).elev_step, "render ignored the pinned pct"
     bare, _ = _render_without_tip(scenario, monkeypatch)
     assert np.array_equal(img, bare), "the tip pass drew on a straight run"
 

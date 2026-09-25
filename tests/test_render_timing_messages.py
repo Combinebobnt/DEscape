@@ -159,7 +159,7 @@ def test_first_paint_line_reports_composite_and_a_real_total():
         assert total == pytest.approx(parse + prepare + paint, abs=0.03)
         # The perf-trace pair below asserts on this substring being absent
         # with tracing off; the new line must not reintroduce it.
-        assert "perf" not in debug_log.get_log_text()
+        assert "] perf " not in debug_log.get_log_text()
     finally:
         debug_log.clear()
         window.edit_history.mark_saved()
@@ -349,7 +349,7 @@ def test_perf_trace_on_emits_load_repaint_line_off_emits_nothing():
         window.show()
         QApplication.processEvents()
         QApplication.processEvents()
-        assert "perf" not in debug_log.get_log_text()
+        assert "] perf " not in debug_log.get_log_text()
         assert "Loaded" in window.status_log.toPlainText()
     finally:
         window.edit_history.mark_saved()

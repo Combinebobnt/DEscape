@@ -315,7 +315,10 @@ def test_hover_preview_matches_the_stroke_footprint() -> None:
 
 
 @pytest.mark.parametrize("style", ["Flat", "Stepped"])
-def test_every_highlight_subpath_is_closed_so_every_tile_edge_strokes(style: str) -> None:
+@pytest.mark.parametrize(
+    ("size", "shape"), [(3, BRUSH_SHAPE_SQUARE), (9, BRUSH_SHAPE_SQUARE), (3, BRUSH_SHAPE_CIRCLE), (9, BRUSH_SHAPE_CIRCLE)]
+)
+def test_every_highlight_subpath_is_closed_so_every_tile_edge_strokes(style: str, size: int, shape: str) -> None:
     """QPainterPath.addPolygon() leaves the subpath OPEN, so the outline pen
     stroked 3 of each tile's 4 edges. Same defect tests/
     test_unit_selection_viewer.py's own subpath check pins for the unit cues,
@@ -328,7 +331,8 @@ def test_every_highlight_subpath_is_closed_so_every_tile_edge_strokes(style: str
     """
     window = _edit_window("draw")
     try:
-        window.brush_size_spin.setValue(3)
+        window.brush_size_spin.setValue(size)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(shape))
         if style == "Flat":
             _shown_flat(window)
         else:
@@ -337,11 +341,41 @@ def test_every_highlight_subpath_is_closed_so_every_tile_edge_strokes(style: str
         map_view._update_highlight(40, 40)
         path = map_view._highlight_outline_item.path()
         moves = sum(1 for i in range(path.elementCount()) if path.elementAt(i).type == 0)
-        assert moves > 1, f"{style}: expected several subpaths at brush size 3, got {moves}"
+        assert moves > 1, f"{style}: expected several subpaths at brush size {size}, got {moves}"
         assert path.elementCount() == 5 * moves, (
             f"{style}: unclosed subpath. {path.elementCount()} elements for {moves} "
             f"tile polygon(s), expected {5 * moves}"
         )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(("size", "shape"), [(3, BRUSH_SHAPE_SQUARE), (9, BRUSH_SHAPE_CIRCLE)])
+def test_every_sloped_highlight_subpath_returns_to_its_move_to(size: int, shape: str) -> None:
+    """GH #87 in Sloped, where a tile outline is not a 4-gon, so 5 elements
+    per subpath does not hold. Closure is checked directly instead."""
+    from PyQt5.QtCore import QPointF
+    from PyQt5.QtGui import QPainterPath
+    from PyQt5.QtWidgets import QApplication
+
+    window = _edit_window("draw")
+    try:
+        window.brush_size_spin.setValue(size)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(shape))
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.show()
+        QApplication.processEvents()
+        map_view = window.map_view
+        map_view._update_highlight(40, 40)
+        path = map_view._highlight_outline_item.path()
+
+        starts = [i for i in range(path.elementCount()) if path.elementAt(i).type == QPainterPath.MoveToElement]
+        assert len(starts) > 1, f"expected several subpaths at brush size {size}, got {len(starts)}"
+        for start, end in zip(starts, [*starts[1:], path.elementCount()], strict=True):
+            assert end - start > 2, f"subpath at element {start} is degenerate"
+            first, last = path.elementAt(start), path.elementAt(end - 1)
+            assert QPointF(last.x, last.y) == QPointF(first.x, first.y), f"subpath at element {start} is left open"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -450,6 +484,34 @@ def test_a_highlight_rebuilt_mid_stroke_is_not_left_fully_opaque() -> None:
         map_view._pulse_phase_ms = map_view.HIGHLIGHT_PULSE_PERIOD_MS // 4
         map_view._on_pulse_tick()
         assert map_view._highlight_fill_item.opacity() != opacity
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_double_click_on_one_tile_is_two_strokes_but_one_undo_record(monkeypatch) -> None:
+    """GH #46 step 11. mouseDoubleClickEvent re-enters the press handler, so
+    the second click starts its own stroke; it repaints nothing, so pushes nothing."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    window = _edit_window("draw")
+    try:
+        _shown_flat(window)
+        map_view = window.map_view
+        starts = []
+        real_begin = window.edit_history.begin_stroke
+        monkeypatch.setattr(window.edit_history, "begin_stroke", lambda tiles: (starts.append(1), real_begin(tiles))[1])
+        before = len(window.edit_history.records)
+
+        _press(map_view, (40, 40))
+        _release(map_view, (40, 40))
+        pos = conftest.polygon_viewport_pos(map_view, 40, 40)
+        map_view.mouseDoubleClickEvent(conftest.mouse_event(QEvent.MouseButtonDblClick, pos, Qt.LeftButton, Qt.LeftButton))
+        _release(map_view, (40, 40))
+
+        assert len(starts) == 2
+        assert len(window.edit_history.records) == before + 1
+        assert window.scenario.map_manager.get_tile(40, 40).terrain_id == _TERRAIN
     finally:
         window.edit_history.mark_saved()
         window.close()

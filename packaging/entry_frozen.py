@@ -112,6 +112,15 @@ def _self_check() -> int:
         else:
             print(f"OK  vocabulary_is_available({version!r})")
 
+    # Every shipped bundle carries the native kernel; numpy is the from-source
+    # fallback only.
+    from descape import composite_backend
+
+    if composite_backend.active_backend() != "native":
+        failures.append(composite_backend.describe())
+    else:
+        print(f"OK  {composite_backend.describe()}")
+
     if failures:
         print("\nSELF-CHECK FAILED:")
         for failure in failures:

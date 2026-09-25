@@ -71,6 +71,8 @@ def test_dialog_groups_results_and_navigates_only_located_findings() -> None:
 
     group = tree.topLevelItem(1)
     assert (group.child(1).text(0), group.child(1).text(1)) == ("Info", "no place")
+    assert group.child(1).toolTip(1) == "No map location for this finding"
+    assert group.child(0).toolTip(1) == ""
     tree.itemDoubleClicked.emit(group.child(1), 0)
     tree.itemDoubleClicked.emit(group, 0)
     assert navigated == []
@@ -125,6 +127,25 @@ def test_show_analysis_opens_a_modeless_reused_dialog_that_closes_with_the_map()
 
         window.close_scenario()
         assert window._analysis_dialog is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_running_and_browsing_an_analysis_leaves_the_document_clean() -> None:
+    """GH #90 also-check: analysis is read-only, so no "*" in the title."""
+    window = _marker_window()
+    try:
+        window._update_title()
+        title = window.windowTitle()
+        assert "*" not in title
+        window.analysis_action.trigger()
+        tree = window._analysis_dialog.tree
+        group = next(tree.topLevelItem(i) for i in range(tree.topLevelItemCount()) if tree.topLevelItem(i).childCount())
+        tree.setCurrentItem(group.child(0))
+        tree.itemDoubleClicked.emit(group.child(0), 0)
+
+        assert not window.edit_history.is_dirty
+        assert window.windowTitle() == title
     finally:
         conftest.close_window(window)
 

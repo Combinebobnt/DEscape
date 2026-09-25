@@ -170,6 +170,63 @@ def test_preview_auto_undo_on_mode_change() -> None:
         window.close()
 
 
+def test_preview_then_cancel_restores_the_pre_preview_state() -> None:
+    """GH #77: Cancel after a Preview leaves tiles, cursor and undo tip exactly
+    as they were before the dialog opened."""
+    from descape.edit_history import tile_state
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        _paint_asymmetric_tiles(window)
+        before_tiles = [tile_state(t) for t in mm.terrain]
+        before_cursor = window.edit_history.cursor
+        before_tip = window.edit_history.peek_undo()
+
+        dialog = MirrorDialog(window)
+        dialog._on_preview()
+        assert window.edit_history.cursor == before_cursor + 1, "the preview applied nothing"
+        assert [tile_state(t) for t in mm.terrain] != before_tiles
+
+        dialog.reject()
+        assert [tile_state(t) for t in mm.terrain] == before_tiles
+        assert window.edit_history.cursor == before_cursor
+        assert window.edit_history.peek_undo() is before_tip
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _mirror_overlay_items(window) -> list:
+    z = window.map_view.MIRROR_OVERLAY_Z
+    return [item for item in window.map_view.scene().items() if item.zValue() == z]
+
+
+@pytest.mark.parametrize("finish", ["cancel", "apply"])
+def test_the_source_slice_overlay_shows_on_open_and_clears_on_finish(finish: str) -> None:
+    """GH #77 step 2: the shaded slice is up as soon as the dialog opens and
+    gone once it closes by either button."""
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        _paint_asymmetric_tiles(window)
+        assert _mirror_overlay_items(window) == []
+        dialog = MirrorDialog(window)
+        # Outline and fill; the axis lines are Flat-only and this window is Stepped.
+        assert len(_mirror_overlay_items(window)) == 2
+        if finish == "cancel":
+            dialog.reject()
+        else:
+            dialog._on_apply()
+            assert window.edit_history.peek_undo().label == "Mirror Map"
+        assert _mirror_overlay_items(window) == []
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_preview_auto_undo_declines_when_not_top_record() -> None:
     """If some other edit lands on top of the preview's own record before
     the dialog tries to auto-undo it, EditHistory.peek_undo() no longer

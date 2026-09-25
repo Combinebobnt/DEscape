@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import ClassVar
 
 import numpy as np
-from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt
+from PyQt5.QtCore import QCoreApplication, QLineF, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -41,6 +41,27 @@ from descape.render_cache import (
     IsoChunkCache,
     SlopedChunkCache,
 )
+
+# Quiet time after the last repaint before Perf Trace logs a `perf view` line.
+PERF_VIEW_IDLE_MS = 1000
+_perf_view_timer: QTimer | None = None
+
+
+def _restart_perf_view_timer() -> None:
+    # Created lazily (a QTimer needs the QApplication) and app-lifetime, so no
+    # window teardown can leave perf_trace holding a deleted timer.
+    global _perf_view_timer
+    if QCoreApplication.instance() is None:
+        return
+    if _perf_view_timer is None:
+        _perf_view_timer = QTimer()
+        _perf_view_timer.setSingleShot(True)
+        _perf_view_timer.setInterval(PERF_VIEW_IDLE_MS)
+        _perf_view_timer.timeout.connect(perf_trace.flush_idle)
+    _perf_view_timer.start()
+
+
+perf_trace.set_idle_scheduler(_restart_perf_view_timer)
 
 
 def map_overlay_font(px: int) -> QFont:

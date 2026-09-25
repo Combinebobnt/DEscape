@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 
 import pytest
+from test_wall_connectivity import WALL_CONST, real_gate_wall_install  # noqa: F401 (a pytest fixture, imported for its name)
 
 from descape import render
 from descape.mirror_tools import (
@@ -37,6 +38,7 @@ from descape.mirror_tools import (
 from descape.terrain_palette import tile_span
 
 N = 64
+_RADIAN_3 = 3 * 2 * math.pi / 5  # a radian-encoded wall index, so the file reads as radian
 OAK = 349  # 1x1, variant-indexed
 WALL = 117  # 1x1, angle_count 5, rotation is a run-direction index
 HOUSE = 70  # 2x2
@@ -320,6 +322,35 @@ def test_ownership_rotation_is_off_by_default_and_steps_along_the_defined_list()
     owners = [image.player for image in plan.images if image.source is source]
     assert owners == [2, 4, 5]  # one step per slice, along the defined list
     assert all(image.player == 0 for image in plan.images if image.source is gaia)
+
+
+@pytest.mark.usefixtures("real_gate_wall_install")
+def test_a_mirrored_gates_walls_derive_the_connected_shape():
+    """GH #77 step 7: in a radian file the plan copies wall rotations verbatim,
+    so the image run's shape comes from connectivity to the reoriented gate."""
+    from types import SimpleNamespace
+
+    y = 10
+    walls = [FakeUnit(WALL_CONST, x + 0.5, y + 0.5, rotation=_RADIAN_3) for x in (14, 15, 20, 21)]
+    gate = FakeUnit(GATE_NE, *render.span_anchor(16, y, 4, 1))  # tiles 16..19 along x
+    mm = FakeMapManager()
+    tiles = plan_mirror(mm, 2, 0, False, False)  # `d`: a run along x becomes a run along y
+    plan = plan_mirror_units(mm, 2, 0, _by_player([*walls, gate]), tiles.source_indices)
+    assert not plan.blocked and len(plan.images) == 5
+    images = [FakeUnit(i.unit_const, i.x, i.y, player=i.player, rotation=i.rotation) for i in plan.images]
+    (image_gate,) = [u for u in images if u.unit_const != WALL_CONST]
+    assert image_gate.unit_const == reorient_gate_const(GATE_NE, "d")
+    assert set(render.unit_occupied_tiles(image_gate, N, N)) == {(y, 16), (y, 17), (y, 18), (y, 19)}
+
+    units = _by_player([*walls, gate, *images])
+    scenario = SimpleNamespace(map_manager=mm, unit_manager=SimpleNamespace(units=units))
+    overrides = render.wall_variant_rotation_overrides(scenario)
+    shape = {(int(u.x), int(u.y)): overrides.get((1, i)) for i, u in enumerate(units[1]) if u.unit_const == WALL_CONST}
+    # Next to the gate: a through-run, index 0 along x and 1 along y. Run ends: 2.
+    assert shape == {
+        (14, y): 2.0, (15, y): 0.0, (20, y): 0.0, (21, y): 2.0,
+        (y, 14): 2.0, (y, 15): 1.0, (y, 20): 1.0, (y, 21): 2.0,
+    }
 
 
 def test_a_non_zero_source_slice_still_emits_the_sources_own_orbit():

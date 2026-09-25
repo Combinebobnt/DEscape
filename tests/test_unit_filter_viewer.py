@@ -260,6 +260,21 @@ def test_hide_all_and_show_all_reach_the_new_toggles_too() -> None:
         conftest.close_window(window)
 
 
+def test_the_menu_hide_all_and_show_all_reach_show_garrisoned() -> None:
+    """GH #42: the one entry that ships unchecked, driven through the menu's
+    own actions rather than _set_all_filters."""
+    window = conftest.blank_window()
+    try:
+        window.show_garrisoned_action.setChecked(True)
+        window.filter_hide_all_action.trigger()
+        assert not window.show_garrisoned_action.isChecked()
+
+        window.filter_show_all_action.trigger()
+        assert window.show_garrisoned_action.isChecked()
+    finally:
+        conftest.close_window(window)
+
+
 def test_the_new_toggles_appear_in_the_filter_summary() -> None:
     window = conftest.blank_window()
     try:

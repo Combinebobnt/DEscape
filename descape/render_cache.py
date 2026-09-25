@@ -71,7 +71,9 @@ class UnitSplice:
 
     Empty old_tiles/old_own_tile=None means an add (Place, no pre-edit
     state); empty new_tiles/new_own_tile=None means a removal (single
-    Delete, no post-edit state).
+    Delete, no post-edit state). Identical old and new tiles mean a
+    re-anchor: the unit stayed put but its tile's elevation changed (see
+    _elevation_splices() and _reanchor_units()).
 
     old_player_id is the pre-edit owner for a reassign (Convert), None when
     the owner didn't change. player_id/index are then the DESTINATION list
@@ -134,6 +136,67 @@ def _splice_eligible(units_by_tile: dict, splice: UnitSplice) -> bool:
     return True
 
 
+# Past this many re-anchored units an elevation patch takes the wholesale path
+# instead. Measured on June Event (14,106 units, sprites on): _reanchor_units
+# plus the bystander-grid rebuild costs ~5ms + 13us/unit, 18ms at 1000, against
+# a 90-320ms wholesale rebuild. A real brush-9 stroke step re-anchors <=132.
+_ELEV_SPLICE_MAX_UNITS = 1000
+
+
+def _elevation_splices(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, tiles
+) -> list[UnitSplice] | None:
+    """One re-anchor UnitSplice per unit whose OWN tile is in `tiles`, or
+    None when any of them isn't splice-safe (the caller then falls back to
+    its wholesale path for the whole edit, never a partial one).
+
+    Units the filter hides, or off-map ones, contribute nothing to either
+    layer before or after, so they are skipped rather than spliced. Everyone
+    else must be alone on every tile of its footprint and on its own tile
+    (a wall/gate's own tile need not be in its footprint) in BOTH indexes:
+    units_by_tile catches another unit's footprint or sprite slot there, and
+    the unfiltered own-tile index catches another unit's building_bboxes key
+    there even when that unit's footprint lies elsewhere. Unlike
+    _splice_eligible() there is no const check: an elevation edit moves no
+    unit, so a wall's neighbour-derived override stays valid as long as the
+    caller passes the real one.
+
+    Also None past _ELEV_SPLICE_MAX_UNITS, where the wholesale rebuild is the
+    cheaper of the two."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    own_index = render.unit_own_tile_index(scenario)
+    out: list[UnitSplice] = []
+    for own in tiles:
+        for player_id, i, unit in own_index.get(own, ()):
+            if not unit_filter.matches(player_id, unit):
+                continue
+            occupied = render.unit_occupied_tiles(unit, w, h)
+            if occupied is None:
+                continue
+            for tile in {*occupied, own}:
+                if any(u is not unit for u, _ in units_by_tile.get(tile, ())):
+                    return None
+                if any(u is not unit for _, _, u in own_index.get(tile, ())):
+                    return None
+            if len(out) >= _ELEV_SPLICE_MAX_UNITS:
+                return None
+            occupied = tuple(occupied)
+            out.append(UnitSplice(player_id, i, unit, own, own, occupied, occupied))
+    return out
+
+
+def _dilate(tiles, w: int, h: int) -> set[tuple[int, int]]:
+    """`tiles` plus their 8 neighbours, clipped to the map."""
+    return {
+        (x + dx, y + dy)
+        for x, y in tiles
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        if 0 <= x + dx < w and 0 <= y + dy < h
+    }
+
+
 def _drop_from_tiles(units_by_tile: dict, splice: UnitSplice) -> None:
     """Removes splice.unit from every bucket it used to occupy, deleting a
     bucket that empties (an empty list and a missing key are not the same
@@ -190,26 +253,67 @@ def _splice_building_and_sprites(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
 ) -> render.SpriteLayer | None:
-    """Updates one cache's (or, for Iso, one level's) building_bboxes --
-    span>1 units only, keyed by own-tile -- and, if `sprites` is not None,
-    its SpriteLayer. Mutates building_bboxes IN PLACE (callers rely on that
-    for their own id()-based staleness proxies, e.g.
+    """_reanchor_units() for a single splice, with overrides {}. {} rather
+    than render.wall_variant_rotation_overrides(scenario): every caller of
+    this form sits behind _splice_eligible(), which excludes every
+    rotation-variant-eligible unit, so a real overrides dict would never be
+    consulted (render._wall_variant_rotation_overrides_uncached's own
+    candidate filter) -- {} just skips paying for the lookup."""
+    return _reanchor_units(
+        building_bboxes, sprites, scenario, proj, elevations, unit_filter, corner_rise,
+        extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow,
+    )
+
+
+def _reanchor_units(
+    building_bboxes: dict,
+    sprites: render.SpriteLayer | None,
+    scenario: LoadedScenario,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    unit_filter: UnitFilter,
+    corner_rise: np.ndarray | None,
+    extra_top_px: int,
+    splices: list[UnitSplice],
+    overrides: dict[tuple[int, int], float],
+    with_farms: bool = True,
+    tree_scale: float = 1.0,
+    hero_glow: bool = False,
+) -> render.SpriteLayer | None:
+    """Applies every splice in `splices` to one cache's (or, for Iso, one
+    level's) building_bboxes -- keyed by own-tile -- and, if `sprites` is
+    not None, its SpriteLayer. Mutates building_bboxes IN PLACE (callers
+    rely on that for their own id()-based staleness proxies, e.g.
     SlopedChunkCache._set_building_bboxes / tests/
     test_patch_unit_sources.py) and returns the (possibly new, since
     SpriteLayer is frozen) sprite layer for the caller to reassign -- `None`
-    in, `None` back out, unchanged, when sprites are disabled.
+    in, `None` back out, unchanged, when sprites are disabled. The
+    SpriteLayer's four dicts are copied ONCE per call, not once per splice:
+    a batch of N units pays one whole-dict copy, which is the point of the
+    batch form.
 
-    Only valid under _splice_eligible()'s guard: it is what lets every
-    touched key (the unit's own-tile for building_bboxes, its
-    per-piece slot tiles, all inside its footprint, for by_anchor/bboxes/
-    farm_by_tile) be treated as belonging to `splice.unit` alone -- so each is a plain delete-then-
-    recompute rather than a subtraction from a union with unknown other
-    contributors. overrides is passed as {} rather than a fresh
-    render.wall_variant_rotation_overrides(scenario) call: the guard above
-    already excludes every rotation-variant-eligible unit, so a real
-    overrides dict would never be consulted for `splice.unit` anyway (see
-    render._wall_variant_rotation_overrides_uncached's own candidate
-    filter) -- {} just skips paying for the lookup.
+    A splice with old_tiles == new_tiles and old_own_tile == new_own_tile
+    is a RE-ANCHOR: the unit did not move, but something its placement
+    reads did (an elevation edit under it). Same delete-then-recompute
+    either way.
+
+    Only valid under a guard that makes every touched key (the unit's
+    own-tile for building_bboxes, its per-piece slot tiles, all inside its
+    footprint, for by_anchor/bboxes/farm_by_tile) belong to that splice's
+    unit alone -- _splice_eligible() for unit edits, _elevation_splices()
+    for elevation edits -- so each is a plain delete-then-recompute rather
+    than a subtraction from a union with unknown other contributors. The
+    same guard makes the splices' key sets disjoint, so their order here
+    does not matter.
+
+    overrides is passed to render._resolve_unit_sprite() as-is: {} is fine
+    under _splice_eligible() (see _splice_building_and_sprites), but an
+    elevation re-anchor admits walls and must pass the real dict.
+
+    The building part goes through render._building_bbox_for(), the same
+    predicate render._building_bboxes_iso() uses, and only for a unit the
+    filter keeps: a span test alone would drop an off-centre 1x1 mark's
+    bbox, which the wholesale walk keeps.
 
     with_farms and tree_scale must be the OWNING CACHE's current View >
     Layers values, not the defaults: this re-resolves the edited unit, so a
@@ -219,88 +323,89 @@ def _splice_building_and_sprites(
     too: a hardcoded False would drop a moved hero's ring."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
-    unit = splice.unit
-    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-    is_building = span_x > 1 or span_y > 1
-    new_building_bbox = (
-        render._unit_screen_bbox_iso(unit, w, h, proj, elevations, extra_top_px)
-        if is_building and splice.new_own_tile is not None
-        else None
-    )
+    if sprites is not None:
+        by_anchor = dict(sprites.by_anchor)
+        bboxes = dict(sprites.bboxes)
+        skip_ids = set(sprites.skip_ids)
+        farm_by_tile = dict(sprites.farm_by_tile)
+
+    for splice in splices:
+        unit = splice.unit
+        new_building_bbox = (
+            render._building_bbox_for(unit, w, h, proj, elevations, extra_top_px)
+            if splice.new_own_tile is not None and unit_filter.matches(splice.player_id, unit)
+            else None
+        )
+
+        if sprites is None:
+            # No sprite layer, so building_bboxes' only possible content at
+            # either own-tile is this unit's own plain contribution (the guard
+            # rules out anyone else's).
+            for key in (splice.old_own_tile, splice.new_own_tile):
+                if key is not None:
+                    building_bboxes.pop(key, None)
+            if new_building_bbox is not None:
+                building_bboxes[splice.new_own_tile] = new_building_bbox
+            continue
+
+        # own-tile and sprite-anchor-tile are independent keys (sprite_anchor_
+        # tile() picks whichever footprint tile is LAST in depth order, not
+        # necessarily the unit's own) -- collect every key either side of this
+        # edit could have written to, so the reconciliation loop below can
+        # recompute each exactly once regardless of how they overlap.
+        touched_keys = {splice.old_own_tile, splice.new_own_tile}
+
+        # Every OLD footprint tile, not just sprite_anchor_tile(old_tiles): a
+        # composite building's pieces carry their own depth slots and land on
+        # several tiles inside that footprint (see render._resolve_unit_sprite).
+        # The guard above is what makes clearing all of them safe -- each holds
+        # this unit alone.
+        for tile in splice.old_tiles:
+            by_anchor.pop(tile, None)
+            bboxes.pop(tile, None)
+            farm_by_tile.pop(tile, None)
+            touched_keys.add(tile)
+        skip_ids.discard(id(unit))
+
+        if splice.new_tiles:
+            contribution = render._resolve_unit_sprite(
+                scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
+                splice.player_id, splice.index, unit, tree_scale, hero_glow,
+            )
+            if contribution is not None:
+                skip_ids.add(contribution.skip_id)
+                farm_by_tile.update(contribution.farm_tiles)
+                by_anchor.update(contribution.by_anchor)
+                bboxes.update(contribution.bboxes)
+                touched_keys.update(contribution.by_anchor)
+
+        # Reconcile building_bboxes at every touched key: the plain building
+        # part exists only at new_own_tile (old_own_tile's own contribution was
+        # this unit's alone, per the guard, and is gone); the sprite part is
+        # whatever bboxes now holds there, already updated above. This is
+        # render.merge_sprite_bboxes()'s own per-key union, restricted to the
+        # handful of keys this edit could have touched.
+        for key in touched_keys:
+            if key is None:
+                continue
+            building_part = new_building_bbox if key == splice.new_own_tile else None
+            sprite_part = bboxes.get(key)
+            if building_part is None and sprite_part is None:
+                building_bboxes.pop(key, None)
+            elif sprite_part is None:
+                building_bboxes[key] = building_part
+            elif building_part is None:
+                building_bboxes[key] = sprite_part
+            else:
+                building_bboxes[key] = (
+                    min(building_part[0], sprite_part[0]),
+                    min(building_part[1], sprite_part[1]),
+                    max(building_part[2], sprite_part[2]),
+                    max(building_part[3], sprite_part[3]),
+                )
 
     if sprites is None:
-        # No sprite layer, so building_bboxes' only possible content at
-        # either own-tile is this unit's own plain contribution (the guard
-        # rules out anyone else's).
-        for key in (splice.old_own_tile, splice.new_own_tile):
-            if key is not None:
-                building_bboxes.pop(key, None)
-        if new_building_bbox is not None:
-            building_bboxes[splice.new_own_tile] = new_building_bbox
         return None
-
-    by_anchor = dict(sprites.by_anchor)
-    bboxes = dict(sprites.bboxes)
-    skip_ids = set(sprites.skip_ids)
-    farm_by_tile = dict(sprites.farm_by_tile)
-
-    # own-tile and sprite-anchor-tile are independent keys (sprite_anchor_
-    # tile() picks whichever footprint tile is LAST in depth order, not
-    # necessarily the unit's own) -- collect every key either side of this
-    # edit could have written to, so the reconciliation loop below can
-    # recompute each exactly once regardless of how they overlap.
-    touched_keys = {splice.old_own_tile, splice.new_own_tile}
-
-    # Every OLD footprint tile, not just sprite_anchor_tile(old_tiles): a
-    # composite building's pieces carry their own depth slots and land on
-    # several tiles inside that footprint (see render._resolve_unit_sprite).
-    # The guard above is what makes clearing all of them safe -- each holds
-    # this unit alone.
-    for tile in splice.old_tiles:
-        by_anchor.pop(tile, None)
-        bboxes.pop(tile, None)
-        touched_keys.add(tile)
-    for tile in splice.old_tiles:
-        farm_by_tile.pop(tile, None)
-    skip_ids.discard(id(unit))
-
-    if splice.new_tiles:
-        contribution = render._resolve_unit_sprite(
-            scenario, proj, elevations, unit_filter, corner_rise, {}, with_farms,
-            splice.player_id, splice.index, unit, tree_scale, hero_glow,
-        )
-        if contribution is not None:
-            skip_ids.add(contribution.skip_id)
-            farm_by_tile.update(contribution.farm_tiles)
-            by_anchor.update(contribution.by_anchor)
-            bboxes.update(contribution.bboxes)
-            touched_keys.update(contribution.by_anchor)
-
-    # Reconcile building_bboxes at every touched key: the plain building
-    # part exists only at new_own_tile (old_own_tile's own contribution was
-    # this unit's alone, per the guard, and is gone); the sprite part is
-    # whatever bboxes now holds there, already updated above. This is
-    # render.merge_sprite_bboxes()'s own per-key union, restricted to the
-    # handful of keys this edit could have touched.
-    for key in touched_keys:
-        if key is None:
-            continue
-        building_part = new_building_bbox if key == splice.new_own_tile else None
-        sprite_part = bboxes.get(key)
-        if building_part is None and sprite_part is None:
-            building_bboxes.pop(key, None)
-        elif sprite_part is None:
-            building_bboxes[key] = building_part
-        elif building_part is None:
-            building_bboxes[key] = sprite_part
-        else:
-            building_bboxes[key] = (
-                min(building_part[0], sprite_part[0]),
-                min(building_part[1], sprite_part[1]),
-                max(building_part[2], sprite_part[2]),
-                max(building_part[3], sprite_part[3]),
-            )
-
     return replace(sprites, by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile)
 
 
@@ -1027,6 +1132,9 @@ class IsoChunkCache(_ChunkCacheBase):
                 f"exact mip of the reference's -- {(lw, lh)} vs reference {(ref_w, ref_h)}"
             )
         self._source_gen = 0
+        # Bumped by every splice that leaves _source_gen alone, so a warm
+        # started before one can tell its half-walked layer is stale.
+        self._splice_epoch = 0
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -1039,9 +1147,9 @@ class IsoChunkCache(_ChunkCacheBase):
         screen bbox depends on its center tile's elevation via
         _unit_screen_bbox_iso), so under mips they are per-level, and
         rebuilding every ENUMERATED level here would make a single edit
-        pay ~15-20ms x N levels on an 11k-unit map -- for levels that may
-        hold no cached chunks at all. Each level's bboxes are instead
-        rebuilt lazily, in _level(), the first time that level is actually
+        pay a whole-map walk per level -- for levels that may hold no
+        cached chunks at all. Each level's bboxes are instead rebuilt
+        lazily, in _level(), the first time that level is actually
         composited after this bump -- see _level()'s own docstring.
 
         elevation_changed (draw-perf plan Step 3, 3a/3b): None means
@@ -1051,31 +1159,52 @@ class IsoChunkCache(_ChunkCacheBase):
         since THOSE changed and every level's bboxes/sprites must go stale.
 
         A patch() caller instead passes the elevation-changed subset of its
-        own edit (empty for a terrain-paint-only edit). Two changes from
-        the unconditional form:
+        own edit (empty for a terrain-paint-only edit). units_by_tile is
+        NEVER rebuilt then (3a): no terrain or elevation edit can move a
+        unit, so this dict cannot go stale from a patch().
 
-        - units_by_tile is NEVER rebuilt here (3a): no terrain or elevation
-          edit can move a unit, so this dict -- a pure function of unit
-          positions and the filter -- cannot go stale from a patch(), only
-          from the wholesale path above.
-        - the gen bump is gated (3b) on whether the edit touched any unit's
-          OWN tile, using self.units_by_tile's own keys as that test:
-          every unit is bucketed under its own tile among its (possibly
-          several) footprint-tile buckets, so this can only ever be a
-          superset of "just the own tile" -- over-triggering the bump on a
-          multi-tile building's other footprint tiles, never under-
-          triggering it. That matters because _level()'s gen-gated rebuild
-          covers TWO things with different sensitivities (building_bboxes,
-          own-tile-only via _unit_screen_bbox_iso's span>1 gate; sprite_
-          draws_by_anchor, EVERY unit's own tile, 1x1 included) -- an
-          under-gate here would leave a 1x1 unit's sprite anchored at a
-          stale elevation with sprites on."""
+        The unit layers are re-anchored in place rather than rebuilt (the
+        2026-09-24 anchor-local splice). The wholesale level rebuild cost
+        21-91ms per stroke step with sprites on, not the ~15-20ms the gen
+        gate was accepted on. Stepped reads a unit's OWN tile only
+        (_resolve_unit_sprite's elevations[uy, ux], _unit_iso_footprint's own
+        floored tile), so the affected units are exactly those whose own
+        tile is in elevation_changed -- radius 0, unlike Sloped's 1. Each
+        already-current level gets one _reanchor_units() call with the real
+        wall overrides (an elevation edit leaves them valid) and a fresh
+        bystander_grid. A stale level is left stale and rebuilds fully in
+        _level(). No gen bump, so _splice_epoch is bumped instead for
+        level_warm_job()'s install predicate. Anything _elevation_splices()
+        can't prove safe bumps the gen, today's wholesale fallback."""
         if elevation_changed is None:
             self.units_by_tile = render._units_by_tile(self.scenario, self.unit_filter) if self.with_units else {}
             self._source_gen += 1
             return
-        if self.with_units and elevation_changed & self.units_by_tile.keys():
+        if not self.with_units or not elevation_changed:
+            return
+        splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, elevation_changed)
+        if splices is None:
             self._source_gen += 1
+            return
+        if not splices:
+            return
+        overrides = render.wall_variant_rotation_overrides(self.scenario)
+        self._splice_levels(splices, overrides)
+
+    def _splice_levels(self, splices: list[UnitSplice], overrides: dict) -> None:
+        """_reanchor_units() on every already-current level, then its grid.
+        Shared by the elevation patch and invalidate_units(); bumps
+        _splice_epoch since neither moves _source_gen."""
+        for lvl in self._levels.values():
+            if lvl.gen != self._source_gen:
+                continue
+            lvl.sprites = _reanchor_units(
+                lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
+                self.unit_filter, None, 0, splices, overrides, self.layers.farm_overlay,
+                self.layers.tree_scale, self.layers.hero_glow,
+            )
+            lvl.bystander_grid = render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
+        self._splice_epoch += 1
 
     def _level(self, mip: int) -> _IsoLevel:
         """The mip level's own state, rebuilding its building_bboxes if
@@ -1164,26 +1293,21 @@ class IsoChunkCache(_ChunkCacheBase):
         levels with `lvl.gen == self._source_gen` (already built and
         current) are spliced; an already-stale level is left alone and
         rebuilds fully fresh, correctly, the next time _level() reaches it.
-        Not bumping the gen is also why the caller (_after_unit_mutation,
-        D5) must call self._cancel_warms() first: an in-flight warm's
-        install predicate checks only the gen, so a splice that doesn't move
-        it cannot cancel a stale warm on its own -- see level_warm_job()'s
-        own docstring for that predicate."""
+        Not bumping the gen is also why _splice_levels() bumps
+        _splice_epoch, which level_warm_job()'s install predicate checks:
+        without it a warm started before this splice would install a layer
+        describing the pre-edit units. The caller (_after_unit_mutation, D5)
+        still cancels warms first, which saves the wasted walk.
+
+        The whole batch goes through ONE _reanchor_units() call per level,
+        so a Convert of N units copies each SpriteLayer dict once, not N
+        times. overrides stays {}: _splice_eligible() excludes every wall."""
         if not self.with_units or changed is None or any(not _splice_eligible(self.units_by_tile, s) for s in changed):
             self._refresh_source_caches()
             return
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
-        for lvl in self._levels.values():
-            if lvl.gen != self._source_gen:
-                continue
-            for s in changed:
-                lvl.sprites = _splice_building_and_sprites(
-                    lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
-                    self.unit_filter, None, 0, s, self.layers.farm_overlay,
-                    self.layers.tree_scale, self.layers.hero_glow,
-                )
-            lvl.bystander_grid = render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
+        self._splice_levels(changed, {})
 
     def level_warm_job(self, mip: int) -> LevelWarmJob | None:
         """Stepped's resumable warm for one level -- see _ChunkCacheBase's
@@ -1198,15 +1322,17 @@ class IsoChunkCache(_ChunkCacheBase):
         **The install predicate is three checks, and `lvl.gen ==
         self._source_gen` is the one that isn't obvious.** The first two are
         staleness (the source moved under a warm that started before it, so
-        the layer describes a scenario that no longer exists). The third is
-        the opposite case: a real paint got there first and built an
-        equivalent level, and overwriting it would throw away a layer already
-        wired into the chunk cache to install a fresh copy of the same
-        thing."""
+        the layer describes a scenario that no longer exists): a gen bump,
+        or a splice (_splice_epoch), which moves units or elevations without
+        one. The third is the opposite case: a real paint got there first
+        and built an equivalent level, and overwriting it would throw away a
+        layer already wired into the chunk cache to install a fresh copy of
+        the same thing."""
         if not (self.with_units and self.sprites_enabled):
             return None
         lvl = self._levels[mip]
         start_gen = self._source_gen
+        start_epoch = self._splice_epoch
         if lvl.gen == start_gen:
             return None
         gen = render.sprite_draws_by_anchor_sliced(
@@ -1217,7 +1343,11 @@ class IsoChunkCache(_ChunkCacheBase):
         )
 
         def install(sprites: render.SpriteLayer) -> bool:
-            if self._source_gen != start_gen or lvl.gen == self._source_gen:
+            if (
+                self._source_gen != start_gen
+                or self._splice_epoch != start_epoch
+                or lvl.gen == self._source_gen
+            ):
                 return False
             self._install_level(mip, sprites, start_gen)
             return True
@@ -1368,8 +1498,8 @@ class FlatChunkCache(_ChunkCacheBase):
     unit_draws (_flat_unit_draws()) derive only from unit.x/unit.y,
     unit_const, the owning player index, and map dimensions -- none of
     which any terrain or elevation edit touches. That makes patch() here
-    genuinely cheaper than Stepped's per-edit ~15-20ms units_by_tile/
-    building_bboxes rebuild, not just an equivalent no-op restated. A unit
+    genuinely cheaper than Stepped's per-edit re-anchor of the units on
+    changed tiles, not just an equivalent no-op restated. A unit
     edit goes through invalidate_units() instead, which splices the edited
     rows or, failing that, forces a rebuild. Don't
     "fix" this no-op into an unconditional rebuild instead, since that
@@ -1921,9 +2051,9 @@ class SlopedChunkCache(_ChunkCacheBase):
         above its own elevation, maxed over the map. One elev_step is what
         that evaluates to under this project's +-1-elevation-neighbour
         invariant, but a LOADED file is not required to satisfy that
-        invariant, and this costs four vectorized array maxes next to the
-        ~15-20ms _building_bboxes_iso() call it feeds. Zero on a flat map,
-        so flat-map byte-identity is untouched.
+        invariant, and this costs only four vectorized array maxes. Zero on
+        a flat map, so flat-map byte-identity is untouched. self._headroom
+        records the value the current building_bboxes were built with.
 
         Sloped honours unit_filter exactly as Flat and Stepped do -- and,
         since C5, so does unit picking (unit_pick.pick_unit's sloped
@@ -1944,9 +2074,7 @@ class SlopedChunkCache(_ChunkCacheBase):
         against a 25ms end-to-end sloped patch there (2026-08-21). So it is
         real but not dominant, and a ring-only update -- which the C4 plan
         offers as the alternative -- stays available as a later optimization
-        rather than being needed now. On a unit-heavy map the
-        _building_bboxes_iso() call below dwarfs it anyway (~15-20ms); on a
-        blank one it is the largest single term. It also makes the redundant
+        rather than being needed now. It also makes the redundant
         rebuild at construction a non-issue, and buys a real property for it:
         corner_rise can no longer disagree with self.elevations, however the
         constructor was called.
@@ -1973,57 +2101,63 @@ class SlopedChunkCache(_ChunkCacheBase):
 
         A patch() caller instead passes the elevation-changed subset of its
         own edit. 3a applies here too: units_by_tile never rebuilds on a
-        patch(), since no terrain or elevation edit can move a unit. For
-        corner_rise/building_bboxes/sprites this class uses ONE gate, not
-        IsoChunkCache's narrower per-unit one -- deliberately: an empty
-        elevation_changed (a terrain-paint-only edit) skips all three,
-        since none of them depend on anything terrain-paint touches; a
-        non-empty one rebuilds all three together, unconditionally, even if
-        the changed tile is nowhere near a unit. That is coarser than
-        IsoChunkCache's "any unit's own tile" test on purpose: corner_rise
-        depends on EVERY changed tile, not just ones under units (see the
-        corner_rise paragraph above), so it cannot share IsoChunkCache's
-        narrower gate; and sprite_draws_by_anchor reads corner_rise itself
-        (see the sprites paragraph above) -- rebuilding corner_rise while
-        skipping sprites, or vice versa, would leave the sprite layer
-        anchored against a height field that no longer matches
-        self.corner_rise. One gate, all three rebuilt together, is the only
-        form that cannot drift out of sync with itself."""
+        patch(), since no terrain or elevation edit can move a unit. An
+        empty elevation_changed (a terrain-paint-only edit) skips
+        everything below, since none of it depends on anything terrain
+        paint touches. A non-empty one always rebuilds corner_rise whole
+        (it depends on EVERY changed tile, not just ones under units) and
+        recomputes the headroom, then re-anchors only the units that read a
+        changed corner rather than rebuilding every unit (the 2026-09-24
+        anchor-local splice; the wholesale rebuild was 194-208ms per stroke
+        step on June Event with sprites on).
+
+        Sloped reads a unit's own tile's FOUR corners (unit_rise_px), and
+        under SLOPE_CORNER_RULE each corner blends the up-to-4 tiles
+        touching it, so a changed tile moves the corners of every tile in
+        the 3x3 around it: the affected units are those whose own tile is in
+        elevation_changed dilated by one -- radius 1, unlike Stepped's 0.
+        They are re-anchored against the NEW corner_rise, so sprites and
+        corner_rise cannot drift apart. The headroom feeds every building's
+        bbox, not just the re-anchored ones, so a headroom change (in
+        practice only a flat <-> non-flat transition) takes the wholesale
+        path, as does anything _elevation_splices() can't prove safe."""
         if elevation_changed is not None:
             if not elevation_changed:
                 return
             self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
-            mm = self.scenario.map_manager
+            if not self.with_units:
+                return
             headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
-            building_bboxes = (
-                render._building_bboxes_iso(
-                    self.scenario, mm.map_width, mm.map_height, self.proj, self.elevations, headroom,
-                    unit_filter=self.unit_filter,
+            mm = self.scenario.map_manager
+            splices = (
+                _elevation_splices(
+                    self.scenario, self.units_by_tile, self.unit_filter,
+                    _dilate(elevation_changed, mm.map_width, mm.map_height),
                 )
-                if self.with_units
-                else {}
-            )
-            self.sprites = (
-                render.sprite_draws_by_anchor(
-                    self.scenario, self.proj, self.elevations, self.unit_filter,
-                    corner_rise=self.corner_rise, with_farms=self.layers.farm_overlay,
-                    tree_scale=self.layers.tree_scale,
-                    hero_glow=self.layers.hero_glow,
-                )
-                if self.with_units and self.sprites_enabled
+                if headroom == self._headroom
                 else None
             )
-            self._set_building_bboxes(
-                render.merge_sprite_bboxes(building_bboxes, self.sprites)
-                if self.sprites is not None
-                else building_bboxes
-            )
+            if splices is None:
+                self._rebuild_unit_layers(headroom)
+            elif splices:
+                self.sprites = _reanchor_units(
+                    self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
+                    self.unit_filter, self.corner_rise, headroom, splices,
+                    render.wall_variant_rotation_overrides(self.scenario),
+                    self.layers.farm_overlay, self.layers.tree_scale, self.layers.hero_glow,
+                )
+                self._set_building_bboxes(self.building_bboxes)
             return
 
         self.units_by_tile = render._units_by_tile(self.scenario, self.unit_filter) if self.with_units else {}
         self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
+        self._rebuild_unit_layers(render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj))
+
+    def _rebuild_unit_layers(self, headroom: int) -> None:
+        """The wholesale building_bboxes + sprites rebuild against the current
+        corner_rise, recording the headroom it used."""
+        self._headroom = headroom
         mm = self.scenario.map_manager
-        headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
         building_bboxes = (
             render._building_bboxes_iso(
                 self.scenario, mm.map_width, mm.map_height, self.proj, self.elevations, headroom,
@@ -2075,22 +2209,21 @@ class SlopedChunkCache(_ChunkCacheBase):
 
         corner_rise is untouched, same as _refresh_source_caches()'s own
         elevation_changed=empty-set branch: no unit edit moves elevation,
-        so the headroom this recomputes below is the ONLY per-call cost a
-        splice adds over Iso's version (four vectorized array maxes,
-        `_refresh_source_caches`'s own docstring), not a rebuild of
-        corner_rise itself. `_pick_planes` is terrain-only and stays
-        untouched for the same reason patch() leaves it alone here."""
+        so the spliced bboxes use self._headroom, the value every other
+        entry in building_bboxes was built with. `_pick_planes` is
+        terrain-only and stays untouched for the same reason patch() leaves
+        it alone here. The batch goes through one _reanchor_units() call,
+        one SpriteLayer copy for the whole Convert stroke."""
         if not self.with_units or changed is None or any(not _splice_eligible(self.units_by_tile, s) for s in changed):
             self._refresh_source_caches()
             return
-        headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
-            self.sprites = _splice_building_and_sprites(
-                self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
-                self.unit_filter, self.corner_rise, headroom, s, self.layers.farm_overlay,
-                self.layers.tree_scale, self.layers.hero_glow,
-            )
+        self.sprites = _reanchor_units(
+            self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
+            self.unit_filter, self.corner_rise, self._headroom, changed, {},
+            self.layers.farm_overlay, self.layers.tree_scale, self.layers.hero_glow,
+        )
         self._set_building_bboxes(self.building_bboxes)
 
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:

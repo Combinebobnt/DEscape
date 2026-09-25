@@ -197,6 +197,51 @@ def test_sloped_enables_select_and_copy_paste_round_trip() -> None:
         window.close()
 
 
+def test_opening_and_new_map_while_in_sloped_keep_sloped() -> None:
+    """GH #87 open-in-style: neither load path resets the Elevation View.
+    Asserted on the combo and the log line; the cache type is a secondary check."""
+    from descape.render_cache import SlopedChunkCache
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.terrain_edit_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        assert window.terrain_style_combo.currentText() == "Sloped"
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert last.startswith("Loaded ") and "style=sloped)" in last, last
+        assert isinstance(window._cache, SlopedChunkCache)
+
+        window.new_map()
+        assert window.terrain_style_combo.currentText() == "Sloped"
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert last.startswith("Created ") and "style=sloped)" in last, last
+        assert isinstance(window._cache, SlopedChunkCache)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_cycling_every_elevation_view_logs_no_failure() -> None:
+    """GH #87 style switch: every combo entry, there and back, renders
+    without a "failed" line in the status log."""
+    from descape.terrain_style import STYLE_LABELS
+
+    window = conftest.terrain_edit_window()
+    try:
+        before = len(window.status_log.toPlainText().splitlines())
+        for label in (*STYLE_LABELS, *reversed(STYLE_LABELS)):
+            window.terrain_style_combo.setCurrentText(label)
+            assert window.terrain_style_combo.currentText() == label
+        new_lines = window.status_log.toPlainText().splitlines()[before:]
+        assert any(line.startswith("Elevation view: ") for line in new_lines), "no style switch was logged"
+        assert not [line for line in new_lines if "failed" in line.lower()]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_sloped_disables_isometric_view_checkbox() -> None:
     window = conftest.terrain_edit_window()
     try:

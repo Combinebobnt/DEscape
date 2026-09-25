@@ -55,7 +55,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, composite_backend, render, unit_sprites
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 
@@ -325,6 +325,7 @@ def main() -> None:
         raise SystemExit("No scenarios to measure")
 
     print(f"Chunk-preload bench -- install {asset_source.get_install_path()}")
+    print(composite_backend.describe())
     for path in files:
         print(bench_file_per_chunk(path, styles, args.repeats) if args.per_chunk else bench_file(path))
     print(f"\nMeasured {len(files)} file(s). See this module's docstring for what each line means.")

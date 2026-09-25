@@ -16,12 +16,13 @@ wrong reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pytest
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
-from descape import render, unit_sprites
+from descape import asset_source, render, unit_sprites
 from descape.render import (
     elevations_and_proj,
     render_terrain_iso_with_proj,
@@ -34,6 +35,7 @@ from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_filter import UnitFilter
 
+import conftest
 from test_unit_sprites import CONST as SPRITE_CONST
 
 MILL_CONST = 68  # BUILDING_TILE_SPANS[68] == (2, 2) -- a real multi-tile building
@@ -666,3 +668,92 @@ def test_ineligible_flat_batches_fall_back_to_wholesale(case, monkeypatch):
 
     assert counts["rows"] >= 1, "an ineligible batch should have rebuilt the rows"
     _assert_flat_matches_fresh(cache, scenario, False)
+
+
+# --- GH #75: a group drag of walls through the window ----------------------
+
+RUN_WALL_CONST = 72  # a real _ROTATION_VARIANT_CONSTS member, span (1, 1)
+RUN_WALL_RADIAN = 2 * (2 * np.pi / 5)  # variant 2, radian-encoded, so the file is radian
+UNITS_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
+
+
+@pytest.fixture
+def run_wall_install(tmp_path, monkeypatch):
+    """RUN_WALL_CONST as a 5-variant graphic whose frames differ in colour, so
+    a wall drawn at the wrong variant is a pixel mismatch. A copy of
+    test_elevation_unit_splice's wall_install, which cannot be imported here
+    because that module imports this one."""
+    from test_sprite_edit_bbox import REACH_NAMES
+
+    from test_unit_sprites import FILE_NAME, build_sld
+
+    canvas = 4 * unit_sprites.NATIVE_TILE_W
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(5, canvas=canvas, playercolor=False))
+    monkeypatch.setattr(
+        unit_sprites, "graphic_map",
+        lambda: {RUN_WALL_CONST: {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 5,
+                                  "mirroring_mode": 0, "frame_count": 1, "rotation_is_variant": True}},
+    )
+    for name in REACH_NAMES:
+        monkeypatch.setattr(unit_sprites, name, canvas // 2)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def _derived_variant(scenario, player_id: int, unit) -> int:
+    """The shape the wall-connectivity override gives `unit` right now."""
+    index = next(i for i, u in enumerate(scenario.unit_manager.units[player_id]) if u is unit)
+    overrides = render.wall_variant_rotation_overrides(scenario)
+    return unit_sprites.variant_index(overrides[(player_id, index)], 5)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_group_wall_drag_reshapes_the_stationary_neighbour_like_a_fresh_render(style, run_wall_install):
+    """GH #75 step 8. Two walls either side of a stationary one are dragged two
+    tiles east, so the middle wall goes from a run piece (0) to an end piece (2)
+    without moving. A wall const never splices, so this is the wholesale source
+    refresh under the window's scoped repaint of the dragged walls' footprints."""
+    from PyQt5.QtCore import Qt
+
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        window.load_scenario(UNITS_FIXTURE_PATH)
+        window.terrain_style_combo.setCurrentText(style.capitalize())
+        window.show_garrisoned_action.setChecked(True)  # the fixture's garrisoned villager, as the oracle draws it
+        window.mode_combo.setCurrentText("Units")
+        assert isinstance(window._cache, IsoChunkCache if style == "stepped" else SlopedChunkCache)
+        assert window.show_sprites_action.isChecked()
+        scenario = window.scenario
+
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add walls", [1]):
+            west, middle, east = [model.add(1, RUN_WALL_CONST, x + 0.5, 40.5, rotation=RUN_WALL_RADIAN)
+                                  for x in (39, 40, 41)]
+        assert _derived_variant(scenario, 1, middle) == 0
+        canvas_w, canvas_h = window._cache.canvas_dims(0)
+        before = window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
+        assert np.array_equal(before, _oracle(style, scenario, sprites=True)[:canvas_h, :canvas_w])
+
+        window._selection = [(1, west.reference_id), (1, east.reference_id)]
+        window._refresh_selection_view()
+        target = window.map_view._tile_polygon(41, 40).boundingRect().center()
+        window.on_unit_move((1, west.reference_id), target, Qt.NoModifier)
+
+        assert "Moved 2 units by (2, 0)" in window.status_log.toPlainText()
+        assert [(u.x, u.y) for u in (west, middle, east)] == [(41.5, 40.5), (40.5, 40.5), (43.5, 40.5)]
+        assert _derived_variant(scenario, 1, middle) == 2, "the stationary wall did not reshape"
+        after = window._cache.render_rect(0, 0, canvas_w, canvas_h)
+        assert np.array_equal(after, _oracle(style, scenario, sprites=True)[:canvas_h, :canvas_w])
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

@@ -206,6 +206,95 @@ def test_assigning_a_taken_keybind_auto_clears_the_conflict_and_warns() -> None:
         window.close()
 
 
+# Every checkable, non-radio keybind action. The Filters rows live only in the
+# Filters button's popup menu, so they're the ones most likely to stop firing.
+_TOGGLE_ACTION_IDS = (
+    "view_isometric",
+    "view_distance_ticks",
+    "view_show_sprites",
+    "view_stack_badges",
+    "view_grid_overlay",
+    "view_grid_follow",
+    "view_footprint_outlines",
+    "view_selection_owner_colour",
+    "view_range_rings",
+    "view_player_cameras",
+    "view_trigger_overlay",
+    "view_layer_terrain_textures",
+    "view_layer_farm_overlay",
+    "view_layer_small_trees",
+    "view_layer_hero_glow",
+    "help_perf_trace",
+    "filter_show_gaia",
+    "filter_show_trees",
+    "filter_show_walls",
+    "filter_show_eye_candy",
+    "filter_show_invisible",
+    "filter_show_garrisoned",
+)
+
+
+def _is_toggle(action) -> bool:
+    group = action.actionGroup()
+    return action.isCheckable() and not (group is not None and group.isExclusive())
+
+
+def test_the_toggle_list_names_every_checkable_keybind_action() -> None:
+    """A new toggle added to _keybind_actions without a row above would
+    silently escape the shortcut-toggles test below."""
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        toggles = {aid for aid, action in window._keybind_actions.items() if _is_toggle(action)}
+        assert toggles == set(_TOGGLE_ACTION_IDS)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("action_id", _TOGGLE_ACTION_IDS)
+def test_a_bound_shortcut_toggles_its_checkable_action(action_id: str) -> None:
+    """Binds an unused Ctrl+Alt+F9 and presses it on a shown, active Stepped
+    window: the action's checked state must flip, then flip back on a second press."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    action = window._keybind_actions[action_id]
+    start = action.isChecked()
+    try:
+        if not action.isEnabled():
+            pytest.skip(f"{action_id} is disabled on a blank Stepped window with no install")
+        taken = [aid for aid in window._keybind_actions if settings.get_keybind(aid) == "Ctrl+Alt+F9"]
+        assert not taken, f"Ctrl+Alt+F9 is not free: {taken}"
+        settings.set_keybind(action_id, "Ctrl+Alt+F9")
+        window.apply_keybind(action_id)
+        assert action.shortcut() == QKeySequence("Ctrl+Alt+F9")
+
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+
+        QTest.keyClick(window, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+        QApplication.processEvents()
+        assert action.isChecked() is not start
+        QTest.keyClick(window, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+        QApplication.processEvents()
+        assert action.isChecked() is start
+    finally:
+        # Persisted toggles (layers, overlays, filters) write through on toggle.
+        if action.isChecked() is not start:
+            action.trigger()
+        conftest.close_window(window)
+
+
 def test_default_button_refuses_to_clear_another_actions_custom_binding() -> None:
     """2026-09-02 decision: clicking Default is a much weaker statement than
     typing a sequence, and must not outrank a binding the user chose on

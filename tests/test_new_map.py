@@ -47,6 +47,8 @@ from descape.scenario_write import WriteBlockedError, write_scenario
 
 import conftest
 
+_CORNER_TERRAIN = 2  # BEACH, distinct from a new map's terrain_id 0
+
 
 @pytest.mark.parametrize("tiles", BLANK_TEMPLATE_SIZES)
 def test_blank_template_is_shipped_and_loads(tiles: int) -> None:
@@ -355,10 +357,11 @@ def test_save_as_default_never_points_at_the_template() -> None:
 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
-@pytest.mark.parametrize("tiles", (BLANK_TEMPLATE_TILES, 168))
+@pytest.mark.parametrize("tiles", (BLANK_TEMPLATE_TILES, 168, 220))
 def test_save_as_on_new_map_adopts_path(tmp_path, monkeypatch, tiles: int) -> None:
     """168, alongside the donor's own 120, proves Save As works end-to-end on
-    a *generated* (not shipped-file) size too."""
+    a *generated* (not shipped-file) size too. 220 is GH #94's size: its far
+    corner is painted, and must read back at the same index."""
     conftest.ensure_qapp()
     import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
@@ -373,11 +376,23 @@ def test_save_as_on_new_map_adopts_path(tmp_path, monkeypatch, tiles: int) -> No
     window = ViewerWindow()
     try:
         window.new_map(tiles)
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("draw")
+        window.terrain_panel.set_terrain(_CORNER_TERRAIN)
+        window.paint_trees_check.setChecked(False)
+        window.paint_eye_candy_check.setChecked(False)
+        window.brush_size_spin.setValue(1)
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(tiles - 1, tiles - 1, 0)
+        window.on_edit_stroke_end()
         window.save_as()
 
         assert dest.is_file()
         reloaded = load_map_and_units(dest)
-        assert reloaded.map_manager.map_width == reloaded.map_manager.map_height == tiles
+        mm = reloaded.map_manager
+        assert mm.map_width == mm.map_height == tiles
+        assert mm.terrain[tiles * tiles - 1].terrain_id == _CORNER_TERRAIN
+        assert mm.terrain[tiles * tiles - 2].terrain_id == 0
 
         assert window._untitled is False
         assert window.scenario.path == dest

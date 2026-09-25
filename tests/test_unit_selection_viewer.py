@@ -19,6 +19,7 @@ close() -- see tests/test_fill_tool.py's module docstring for why.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -778,11 +779,12 @@ def test_close_then_reopen_leaves_no_stale_group_refs() -> None:
 _CASTLE_CONST = 82  # 4x4, range 8.0 -> a 10-tile ring
 _HOUSE_CONST = 70  # 2x2, range 0.0
 _ARCHER_CONST = 4  # range 4.0, but not a building
+_OAK_CONST = 349  # a GAIA tree: neither a building nor ranged
 
 
-def _ring_window(enabled: bool = True):
-    """One Castle, one House and one archer on P1, in Units mode, with
-    View > Range Rings on unless asked otherwise."""
+def _ring_window(enabled: bool = True, second_castle: bool = False):
+    """One Castle, one House and one archer on P1 plus a GAIA oak, in Units
+    mode, with View > Range Rings on unless asked otherwise."""
     window = _window(with_units=False)
     units = window.scenario.unit_manager.units
     # Every even-span building sits at `tile + span/2`, so a 4x4 and a 2x2
@@ -791,6 +793,9 @@ def _ring_window(enabled: bool = True):
     units[1].append(SyntheticUnit(x=20.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=201))
     units[1].append(SyntheticUnit(x=40.0, y=40.0, unit_const=_HOUSE_CONST, reference_id=202))
     units[1].append(SyntheticUnit(x=60.5, y=60.5, unit_const=_ARCHER_CONST, reference_id=203))
+    units[0].append(SyntheticUnit(x=80.5, y=80.5, unit_const=_OAK_CONST, reference_id=204))
+    if second_castle:
+        units[1].append(SyntheticUnit(x=90.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=205))
     window.mode_combo.setCurrentText("Units")
     window.range_rings_action.setChecked(enabled)
     return window
@@ -817,10 +822,10 @@ def test_selecting_a_castle_draws_a_ring_in_the_configured_colour() -> None:
         _close(window)
 
 
-@pytest.mark.parametrize("unit_const", [_HOUSE_CONST, _ARCHER_CONST])
+@pytest.mark.parametrize("unit_const", [_HOUSE_CONST, _ARCHER_CONST, _OAK_CONST])
 def test_a_rangeless_building_and_a_non_building_draw_no_ring(unit_const: int) -> None:
     """The gate is both halves: a House is a building with range 0, an
-    archer has range 4 but is not a building."""
+    archer has range 4 but is not a building. A GAIA tree is GH #49's own case."""
     window = _ring_window()
     try:
         mv = window.map_view
@@ -840,6 +845,67 @@ def test_a_castle_and_an_archer_together_draw_exactly_one_ring() -> None:
         alone = mv._range_ring_item.path().elementCount()
         mv.set_unit_selection([castle, _entry_for_const(window, _ARCHER_CONST)])
         assert mv._range_ring_item.path().elementCount() == alone
+    finally:
+        _close(window)
+
+
+def _subpath_count(path) -> int:
+    return sum(1 for i in range(path.elementCount()) if path.elementAt(i).isMoveTo())
+
+
+def test_two_selected_castles_draw_two_rings_and_deselecting_one_leaves_one() -> None:
+    """GH #49's several-buildings step: one ring subpath per selected Castle."""
+    window = _ring_window(second_castle=True)
+    try:
+        mv = window.map_view
+        castles = [e for e in mv._unit_index.entries if e.unit.unit_const == _CASTLE_CONST]
+        assert len(castles) == 2
+        mv.set_unit_selection(castles)
+        assert _subpath_count(mv._range_ring_item.path()) == 2
+        mv.set_unit_selection(castles[1:])
+        assert _subpath_count(mv._range_ring_item.path()) == 1
+    finally:
+        _close(window)
+
+
+_UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
+
+
+def test_nudging_a_castle_moves_its_ring_one_tile_and_undo_puts_it_back() -> None:
+    """GH #49's move + undo step. A real fixture, not SyntheticUnit: a nudge
+    goes through UnitEditModel, whose construction gate needs real unit structs."""
+    from PyQt5.QtCore import Qt
+
+    from descape import unit_pick
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    window.load_scenario(_UNITS_FIXTURE)
+    try:
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.range_rings_action.setChecked(True)
+        model = window._ensure_unit_edits()
+        assert model is not None
+        with window._unit_edit(model, "Place castle", [1]):
+            castle = model.add(1, _CASTLE_CONST, 30.0, 30.0)
+        window.mode_combo.setCurrentText("Units")
+        mv = window.map_view
+        key = unit_pick.unit_key(1, castle)
+        window._selection = [key]
+        mv.set_unit_selection([mv._unit_index.entry_for_key(key)])
+        before = mv._range_ring_item.path().boundingRect().center()
+        tp = mv._tile_pixels
+
+        window.on_unit_nudge(1, 0, Qt.ShiftModifier)
+        moved = mv._range_ring_item.path().boundingRect().center()
+        assert moved.x() - before.x() == pytest.approx(tp, abs=1.0)
+        assert moved.y() == pytest.approx(before.y(), abs=1.0)
+
+        window.undo()
+        restored = mv._range_ring_item.path().boundingRect().center()
+        assert (restored.x(), restored.y()) == pytest.approx((before.x(), before.y()), abs=1.0)
     finally:
         _close(window)
 

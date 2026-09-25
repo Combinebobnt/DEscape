@@ -1,9 +1,11 @@
 """A draw-perf invariant: an edit patch() must never rebuild per-edit
 unit-derived state (units_by_tile/building_bboxes/
-sprites) for a terrain-only edit, and must always rebuild it for an elevation
+sprites) for a terrain-only edit, and must always refresh it for an elevation
 edit under a unit's own tile -- both directions, since only the second one is
 a correctness requirement and it's trivially satisfied by never optimizing
-anything at all.
+anything at all. "Refresh" is a re-anchor of the affected units or a
+wholesale rebuild, whichever the cache picks; tests/
+test_elevation_unit_splice.py pins which one.
 
 Built on BLANK_TEMPLATE_PATH (tracked, 120x120) with duck-typed units
 appended, the tests/test_sprite_edit_bbox.py / tests/test_sprite_chunks.py
@@ -85,14 +87,28 @@ def _make_cache(style: str, scenario, sprites: bool = False):
 
 
 def _rebuild_snapshot(style: str, cache):
-    """A proxy for "did source state actually get rebuilt", different per
-    class because they expose the fact differently: IsoChunkCache gates a
-    LAZY per-level rebuild behind _source_gen (see its own _level()); Sloped
-    has no laziness and just reassigns the three objects directly -- see
-    render_cache.py's own docstrings for both."""
+    """A proxy for "did source state actually get refreshed", different per
+    class because they expose the fact differently. IsoChunkCache either
+    re-anchors the affected units in place (bumping _splice_epoch) or falls
+    back to a LAZY per-level rebuild behind _source_gen (see its own
+    _level()). Sloped reassigns corner_rise on every elevation patch, and
+    building_bboxes/sprites on its wholesale path -- see render_cache.py's
+    own docstrings for both."""
     if style == "stepped":
-        return cache._source_gen
+        return (cache._source_gen, cache._splice_epoch)
     return (id(cache.corner_rise), id(cache.building_bboxes), id(cache.sprites))
+
+
+def _assert_matches_fresh_cache(style: str, cache, scenario, sprites: bool = False) -> None:
+    """The proxy above only says SOMETHING was refreshed; this says it was
+    refreshed right, whichever path did it."""
+    def state(c):
+        if style == "stepped":
+            return dict(c._level(0).building_bboxes), c._level(0).sprites
+        return dict(c.building_bboxes), c.sprites
+
+    fresh, _elevations, _proj = _make_cache(style, scenario, sprites=sprites)
+    assert state(cache) == state(fresh)
 
 
 def _bbox_fn(style):
@@ -157,17 +173,17 @@ def test_elevation_under_building_rebuilds(style):
     assert _rebuild_snapshot(style, cache) != before, (
         "an elevation edit under a building did not rebuild unit sources"
     )
+    _assert_matches_fresh_cache(style, cache, scenario)
 
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 def test_elevation_far_from_any_unit_does_not_rebuild(style):
-    """Stepped-only: IsoChunkCache's gate (3b) is "any unit's OWN tile", so an
-    elevation edit nowhere near one must skip the bump. SlopedChunkCache
-    deliberately uses one COARSER gate for corner_rise/building_bboxes/
-    sprites together -- "any elevation changed at all" -- since corner_rise
-    feeds every tile's own shading, not just tiles under units (see
-    SlopedChunkCache._refresh_source_caches's own docstring); the sibling
-    test below pins that a far-from-any-unit edit still rebuilds there."""
+    """Stepped-only: IsoChunkCache re-anchors units whose OWN tile changed, so
+    an elevation edit nowhere near one must touch neither the gen nor the
+    splice epoch. SlopedChunkCache rebuilds corner_rise on ANY elevation
+    change, since it feeds every tile's own shading, not just tiles under
+    units (see SlopedChunkCache._refresh_source_caches's own docstring);
+    the Sloped half below pins that a far-from-any-unit edit still does."""
     scenario = _scenario(MILL_CONST)
     cache, elevations, proj = _make_cache(style, scenario)
     before = _rebuild_snapshot(style, cache)
@@ -209,3 +225,4 @@ def test_elevation_under_1x1_unit_rebuilds_with_sprites(style):
     assert _rebuild_snapshot(style, cache) != before, (
         "an elevation edit under a 1x1 unit did not rebuild sources with sprites on"
     )
+    _assert_matches_fresh_cache(style, cache, scenario, sprites=True)

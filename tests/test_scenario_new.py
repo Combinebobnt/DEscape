@@ -94,7 +94,7 @@ def test_generated_matches_real_game_export(donor, tiles: int) -> None:
     assert header + _compress_bytes(patched) == REAL_ORACLE_PATHS[tiles].read_bytes()
 
 
-@pytest.mark.parametrize("tiles", (120, 137, 168, 240))
+@pytest.mark.parametrize("tiles", (120, 137, 144, 168, 200, 220, 240))
 def test_generated_sizes_load_blank_and_square(tiles: int) -> None:
     """Full reload through the real loader for a representative sample.
     137 is deliberately odd, not a multiple of 8 (220 in the real corpus
@@ -102,7 +102,9 @@ def test_generated_sizes_load_blank_and_square(tiles: int) -> None:
     in test_generated_480_structurally_without_a_full_reload instead of here
     -- a full reload of a 480 body alone takes ~5s, and this parametrization
     should stay cheap. Do not extend this tuple to "complete" it without
-    re-checking that cost."""
+    re-checking that cost. 144, 200 and 220 are the remaining New Map sizes
+    under 480 in STANDARD_MAP_SIZES (GH #94), and cost about 3.7s together,
+    measured 2026-09-24."""
     scenario = load_blank_scenario(tiles)
     mm = scenario.map_manager
     assert mm.map_width == mm.map_height == tiles

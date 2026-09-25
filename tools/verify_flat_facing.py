@@ -77,21 +77,32 @@ ANGLE_COUNT = 16
 TOLERANCE_DEG = 8.0
 
 
-def principal_axis_deg(alpha: np.ndarray) -> float:
-    """The mask's principal axis, in degrees clockwise from screen-right with
-    y down, mod 180. Weighted by alpha rather than thresholded, so an
-    antialiased hull edge contributes proportionally."""
+def _alpha_covariance(alpha: np.ndarray) -> np.ndarray:
+    """The mask's 2x2 (x, y) covariance, weighted by alpha."""
     ys, xs = np.nonzero(alpha)
     w = alpha[ys, xs].astype(np.float64)
     x = xs.astype(np.float64) - np.average(xs, weights=w)
     y = ys.astype(np.float64) - np.average(ys, weights=w)
-    cov = np.array([
+    return np.array([
         [np.average(x * x, weights=w), np.average(x * y, weights=w)],
         [np.average(x * y, weights=w), np.average(y * y, weights=w)],
     ])
-    values, vectors = np.linalg.eigh(cov)
+
+
+def principal_axis_deg(alpha: np.ndarray) -> float:
+    """The mask's principal axis, in degrees clockwise from screen-right with
+    y down, mod 180. Weighted by alpha rather than thresholded, so an
+    antialiased hull edge contributes proportionally."""
+    values, vectors = np.linalg.eigh(_alpha_covariance(alpha))
     vx, vy = vectors[:, int(np.argmax(values))]
     return math.degrees(math.atan2(vy, vx)) % 180.0
+
+
+def axis_elongation(alpha: np.ndarray) -> float:
+    """Largest over smallest covariance eigenvalue: how far a principal axis
+    can be trusted. Near 1 the mask is round and its axis is noise."""
+    values = np.linalg.eigvalsh(_alpha_covariance(alpha))
+    return float(values[-1] / values[0]) if values[0] > 0 else math.inf
 
 
 KNIGHT_GRAPHIC = "u_cav_knight_idleC_x1"
@@ -140,36 +151,49 @@ def iso_screen_dirs() -> tuple[float, float]:
     return plus_x, plus_y
 
 
-def _assert_graphic_shape() -> None:
+def _assert_graphic_shape(
+    graphic: str = GRAPHIC, graphic_const: int = GRAPHIC_CONST, angle_count: int = ANGLE_COUNT
+) -> None:
     """A game patch could reshape the galley's angle set, and the whole
     measurement rests on frame index == angle index. Fail loudly here rather
     than reporting confident nonsense from a graphic that no longer has
     frame_count 1."""
-    entry = unit_sprites.graphic_map().get(GRAPHIC_CONST, {})
+    entry = unit_sprites.graphic_map().get(graphic_const, {})
     actual = (entry.get("file_name"), entry.get("angle_count"), entry.get("frame_count"))
-    wanted = (GRAPHIC, ANGLE_COUNT, 1)
+    wanted = (graphic, angle_count, 1)
     if actual != wanted:
         raise SystemExit(
-            f"const {GRAPHIC_CONST} now reads {actual}, not {wanted}. Re-measure before "
+            f"const {graphic_const} now reads {actual}, not {wanted}. Re-measure before "
             f"trusting anything below: frame index == angle index only at frame_count 1."
         )
 
 
-def frame_axes() -> list[float]:
-    """Every stored angle's measured axis, index-ordered."""
+def frame_masks(graphic: str = GRAPHIC, angle_count: int = ANGLE_COUNT) -> list[np.ndarray]:
+    """Every stored angle's alpha mask, index-ordered (frame_count 1 only)."""
     out = []
-    for index in range(ANGLE_COUNT):
-        native = unit_sprites._native_frame(GRAPHIC, index)
+    for index in range(angle_count):
+        native = unit_sprites._native_frame(graphic, index)
         if native is None:
             raise SystemExit(
-                f"{GRAPHIC} frame {index} did not decode. This install does not hold the "
+                f"{graphic} frame {index} did not decode. This install does not hold the "
                 f"graphic the offset was measured on, so nothing below would mean anything."
             )
-        out.append(principal_axis_deg(native[0][..., 3]))
+        out.append(native[0][..., 3])
     return out
 
 
-def _run_arm(name: str, offset_deg: float, expected: dict[float, float], axes: list[float]) -> bool:
+def frame_axes(graphic: str = GRAPHIC, angle_count: int = ANGLE_COUNT) -> list[float]:
+    """Every stored angle's measured axis, index-ordered."""
+    return [principal_axis_deg(mask) for mask in frame_masks(graphic, angle_count)]
+
+
+def _run_arm(
+    name: str,
+    offset_deg: float,
+    expected: dict[float, float],
+    axes: list[float],
+    angle_count: int = ANGLE_COUNT,
+) -> bool:
     """One projection's arm: every cardinal rotation's resolved frame must
     read along that projection's own screen direction for the same world
     axis.
@@ -182,7 +206,7 @@ def _run_arm(name: str, offset_deg: float, expected: dict[float, float], axes: l
     print(f"\n=== {name} (offset {offset_deg} degrees) ===")
     ok = True
     for rotation, want in expected.items():
-        index = unit_sprites.angle_index(rotation, ANGLE_COUNT, offset_deg)
+        index = unit_sprites.angle_index(rotation, angle_count, offset_deg)
         got = axes[index]
         gap = axis_gap_deg(got, want)
         verdict = "PASS" if gap <= TOLERANCE_DEG else "FAIL"

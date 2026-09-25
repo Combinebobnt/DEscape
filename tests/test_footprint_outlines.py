@@ -394,6 +394,73 @@ def test_placing_a_unit_updates_the_outlines_without_an_index_rebuild() -> None:
         conftest.close_window(window)
 
 
+def _outline_items(view):
+    """The overlay found by its z layer, not through the private item ref."""
+    from descape.map_view import MapView
+
+    return [item for item in view.scene().items() if item.zValue() == MapView.FOOTPRINT_Z]
+
+
+def _outline_points(view) -> set[tuple[float, float]]:
+    (item,) = _outline_items(view)
+    path = item.path()
+    return {(round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3)) for i in range(path.elementCount())}
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_colour_change_recolours_the_outline_pen() -> None:
+    """GH #86 colour step, per test_ruler_viewer.py's recoloured-glow test."""
+    window = _window_with_units("Stepped")
+    try:
+        view = window.map_view
+        items = _outline_items(view)
+        assert len(items) == 1
+        assert items[0].pen().color().name() != "#123456"
+        settings.set_overlay_color("footprint_outline", "#123456")
+        view.apply_overlay_colors()
+        assert _outline_items(view)[0].pen().color().name() == "#123456"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_moving_a_unit_moves_its_outline_and_undo_puts_it_back() -> None:
+    """GH #86 move + undo, on a real placed Town Centre (UnitEditModel edits
+    the real scenario objects, not this module's duck-typed ones)."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        view = window.map_view
+        window.footprint_action.setChecked(True)
+        view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
+        window.mode_combo.setCurrentText("Units")
+        window.show()
+        QApplication.processEvents()
+        window.units_panel.select_object(_TOWN_CENTRE)
+        window.on_unit_place(view._tile_polygon(50, 50).boundingRect().center(), None)
+        (entry,) = [e for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
+        key = (entry.player_id, entry.unit.reference_id)
+        window._selection = [key]
+        view.set_unit_selection([entry])
+        placed = _outline_points(view)
+        assert placed, "the placed Town Centre drew no outline"
+        start_x = entry.unit.x
+
+        window.on_unit_nudge(1, 0, Qt.ShiftModifier)
+        assert view._unit_index.entry_for_key(key).unit.x == pytest.approx(start_x + 1.0), "the nudge did not happen"
+        moved = _outline_points(view)
+        assert moved != placed, "the move left the outline where it was"
+
+        window.undo()
+        assert _outline_points(view) == placed
+    finally:
+        conftest.close_window(window)
+
+
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_a_unit_edit_made_outside_units_mode_still_reaches_the_outlines() -> None:

@@ -63,6 +63,49 @@ def test_the_combo_lists_gaia_then_the_defined_players_and_defaults_to_player_on
         conftest.close_window(window)
 
 
+def test_every_combo_item_carries_its_players_colour_swatch() -> None:
+    """GH #5 step 2: GAIA included, each item's icon is its player's colour."""
+    window = _window(UNITS_FIXTURE)
+    try:
+        combo = window.stats_player_combo
+        assert combo.count() == 3
+        for i in range(combo.count()):
+            icon = combo.itemIcon(i)
+            assert not icon.isNull(), combo.itemText(i)
+            pixel = icon.pixmap(16, 16).toImage().pixelColor(8, 8)
+            expected = tuple(window.scenario.player_colors[combo.itemData(i)])
+            assert (pixel.red(), pixel.green(), pixel.blue()) == expected, combo.itemText(i)
+    finally:
+        conftest.close_window(window)
+
+
+def test_lowering_the_player_count_labels_a_slot_that_owns_units_inactive() -> None:
+    """GH #5 step 7 through a real Number of Players edit. The fixture sits at
+    the spinbox's minimum of 2, so it first gains a P3 unit and a third slot."""
+    window = _window(UNITS_FIXTURE)
+    try:
+        model = window._ensure_unit_edits()
+        assert model is not None
+        with window._unit_edit(model, "Place for P3", [3]):
+            model.add(3, _PLACE_CONST, 30.5, 30.5)
+        window.mode_combo.setCurrentText("Players")
+        spin = window.players_panel.player_count_spin
+        assert spin.isEnabled(), "Number of Players is read-only on this fixture"
+        assert spin.value() == 2
+        assert _combo_items(window)[-1] == ("Player 3 (inactive)", 3)
+
+        spin.setValue(3)
+        assert _combo_items(window)[-1] == ("Player 3", 3)
+        spin.setValue(2)
+        assert _combo_items(window)[-1] == ("Player 3 (inactive)", 3)
+
+        window.undo()
+        assert spin.value() == 3
+        assert _combo_items(window)[-1] == ("Player 3", 3)
+    finally:
+        conftest.close_window(window)
+
+
 def test_an_inactive_slot_that_owns_placements_is_listed_and_labelled(monkeypatch) -> None:
     window = _window(UNITS_FIXTURE)
     try:

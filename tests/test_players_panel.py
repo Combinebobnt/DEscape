@@ -532,6 +532,50 @@ def test_an_edit_round_trips_through_the_window_with_undo_redo() -> None:
         _close(window)
 
 
+def _swatch_rgb(combo, index: int) -> tuple[int, int, int]:
+    pixel = combo.itemIcon(index).pixmap(16, 16).toImage().pixelColor(8, 8)
+    return (pixel.red(), pixel.green(), pixel.blue())
+
+
+def test_a_colour_edit_reswatches_the_players_and_diplomacy_combos_and_undo_reverts() -> None:
+    """GH #81 steps 3 and 5. The combos carry no item data, so the selection
+    is read off currentText() and the swatch off the icon's own pixel."""
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    window = _players_window()
+    try:
+        # Diplomacy's combo is only built on entering the mode; refresh skips an empty one.
+        window.mode_combo.setCurrentText("Diplomacy")
+        window.mode_combo.setCurrentText("Players")
+        panel = window.players_panel
+        diplomacy = window.diplomacy_panel.player_combo
+        assert diplomacy.itemText(1) == "P2"
+        panel.player_combo.setCurrentIndex(1)
+        assert panel.player_combo.currentText() == "P2"
+
+        before = _swatch_rgb(panel.player_combo, 1)
+        assert _swatch_rgb(diplomacy, 1) == before
+        widget = panel.widget_for("color")
+        target = next(
+            i for i in range(widget.count())
+            if widget.itemData(i) is not None and PLAYER_COLOR_BY_ID[widget.itemData(i)] != before
+        )
+        after = PLAYER_COLOR_BY_ID[widget.itemData(target)]
+
+        widget.setCurrentIndex(target)
+        assert window.edit_history.is_dirty
+        assert _swatch_rgb(panel.player_combo, 1) == after
+        assert _swatch_rgb(diplomacy, 1) == after
+        assert panel.player_combo.currentText() == "P2"
+
+        window.undo()
+        assert _swatch_rgb(panel.player_combo, 1) == before
+        assert _swatch_rgb(diplomacy, 1) == before
+        assert panel.player_combo.currentText() == "P2"
+    finally:
+        _close(window)
+
+
 def test_a_civilization_edit_round_trips_through_the_window_with_undo_redo() -> None:
     """Step B: civilization is editable on BLANK_FIXTURE (1.58, str16),
     same undo/redo shape as any other Players mode field despite riding

@@ -34,6 +34,7 @@ pytestmark = [
 _TREE_CONST = 349  # a real GAIA doodad -- rotation is a variant index, not an angle
 _ARCHER_CONST = 4  # a real creatable unit -- rotation is a genuine angle
 _TOWER_CONST = 79  # Watch Tower -- a real garrison host, 5 places
+_GATE_CONST = 64  # stone gate, ne orientation, angle_count 1
 
 
 @dataclass
@@ -125,6 +126,16 @@ def test_rotation_editor_visible_for_an_angle_const_hidden_for_a_variant_const()
     assert not panel.unit_field_editors["rotation"].isVisibleTo(panel.unit_inspector_grid)
     assert panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
     assert panel.unit_field_labels["rotation"].text() == "37"
+
+
+def test_a_gate_shows_its_raw_rotation_read_only() -> None:
+    """GH #61: a gate's orientation lives in its const, so the junk sentinel
+    it stores is shown as it is, never as a facing."""
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_GATE_CONST, rotation=7.0))
+    assert not panel.unit_field_editors["rotation"].isVisibleTo(panel.unit_inspector_grid)
+    assert panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
+    assert panel.unit_field_labels["rotation"].text() == "7"
 
 
 def test_stats_block_shows_all_five_rows_for_a_full_combat_const() -> None:
@@ -525,6 +536,18 @@ def test_a_wheel_step_reports_the_next_facing_and_wraps() -> None:
     assert received == [("rotation", 0)]
 
 
+def test_a_wheel_step_off_a_mixed_group_facing_reports_facing_0() -> None:
+    """The "(mixed)" placeholder parks one below 0, so the first step up is a
+    real edit to facing 0, not a no-op on the sentinel."""
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    spin = _rotation_spin(panel)
+    assert spin.text() == "(mixed)"
+    spin.stepBy(1)
+    assert received == [("rotation", 0)]
+
+
 def test_a_mixed_count_group_edits_on_the_finest_grid() -> None:
     """Archer (16) + trebuchet (32): the scale is 32, and a shared direction
     reads as one facing on it."""
@@ -588,6 +611,7 @@ def test_add_is_disabled_at_capacity_and_the_note_explains_an_overfull_host() ->
     panel.show_garrison(rows, 5)
 
     assert not panel.garrison_add_button.isEnabled()
+    assert panel.garrison_add_button.toolTip() == "Full: the game gives this one 5 places"
     assert panel.garrison_note.isVisibleTo(panel)
     assert "5" in panel.garrison_note.text()
 

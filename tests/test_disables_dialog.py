@@ -123,6 +123,62 @@ def test_ok_after_several_adds_across_two_categories_pushes_exactly_one_record()
         assert model.current_value("disabled:buildings:2") == ()
         assert model.current_value("disabled:techs:5") == ()
         assert not model.has_edits, "one Ctrl+Z must restore the whole session"
+
+        window.redo()
+        assert model.current_value("disabled:buildings:2") == (109, 68)
+        assert model.current_value("disabled:techs:5") == (22,)
+    finally:
+        _close(window)
+
+
+def test_return_on_a_row_adds_it_and_return_on_a_disabled_row_removes_it() -> None:
+    """GH #57: activating a row moves it across. Return fires the same
+    itemActivated a double-click does, and is reliable offscreen."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    window = _window()
+    try:
+        before_depth = len(window.edit_history.records)
+        dialog = window._build_disables_dialog()
+        dialog.select_player(2)
+        full_list = dialog.full_list_for("buildings")
+        full_list.select(109)
+        assert full_list.current_value() == 109
+        QTest.keyClick(full_list.tree, Qt.Key_Return)
+        assert dialog.disabled_ids_for("buildings") == (109,)
+
+        disabled_list = dialog._tabs["buildings"].disabled_list
+        disabled_list.setCurrentRow(0)
+        QTest.keyClick(disabled_list, Qt.Key_Return)
+        assert dialog.disabled_ids_for("buildings") == ()
+        assert len(window.edit_history.records) == before_depth, "a key reached OK"
+        dialog.reject()
+    finally:
+        _close(window)
+
+
+@pytest.mark.xfail(strict=True, reason="Return on a list row also presses the default OK button and closes the dialog")
+def test_return_on_a_row_of_the_shown_dialog_adds_without_closing_it() -> None:
+    """Shown, OK is the default button, and the tree ignores the Return it
+    just used, so QDialog accepts: Enter-to-add ends the whole session."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        before_depth = len(window.edit_history.records)
+        dialog = window._build_disables_dialog()
+        dialog.show()
+        QApplication.processEvents()
+        full_list = dialog.full_list_for("buildings")
+        full_list.select(109)
+        QTest.keyClick(full_list.tree, Qt.Key_Return)
+        assert dialog.disabled_ids_for("buildings") == (109,)
+        assert dialog.isVisible(), "Return on a row closed the dialog"
+        assert len(window.edit_history.records) == before_depth
+        dialog.reject()
     finally:
         _close(window)
 

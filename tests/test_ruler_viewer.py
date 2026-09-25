@@ -270,6 +270,13 @@ def test_the_overlay_is_built_in_every_elevation_view(style: str) -> None:
         assert len(map_view._ruler_end_items) == 2
         assert map_view._ruler_label_item.text() == "24.4 tiles  (dx +20, dy +14)"
         assert map_view._ruler_line_item.line().length() > 0
+        # GH #91: each glow sits exactly on its end marker, which sits on its tile.
+        assert len(map_view._ruler_glow_items) == 2
+        for glow, end, tile in zip(map_view._ruler_glow_items, map_view._ruler_end_items, [(10, 10), (30, 24)], strict=True):
+            assert end.polygon().count() >= 4
+            assert glow.polygon() == end.polygon(), f"{style}: glow off its end marker at {tile}"
+            assert end.polygon() == map_view._tile_polygon(*tile), f"{style}: end marker off {tile}"
+            assert glow.pos() == end.pos()
     finally:
         window.edit_history.mark_saved()
         window.close()

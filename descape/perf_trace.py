@@ -21,7 +21,14 @@ stroke_scan, bbox, patch, invalidate): Qt's paint() fires on a paint event
 AFTER invalidate_region() schedules one, not synchronously inside
 mouseMoveEvent, so it never nests inside a step() boundary -- reported as
 its own call count/total/max instead of being forced into a ms/step
-column it cannot honestly belong to."""
+column it cannot honestly belong to.
+
+A drag is bracketed by MapView's begin_drag()/end_drag(). Hover moves time
+pick/highlight too, so begin_drag() drops what hover left in the open step,
+and flushes repaints from before the drag (pans, zoom notches) as their own
+`perf view` line. Outside a drag, flush_idle() does the same once the
+canvas has been quiet for a moment (viewer_canvas's idle timer), so panning
+shows up on its own instead of inside the next drag's repaint row."""
 
 from __future__ import annotations
 
@@ -30,7 +37,7 @@ import time
 from contextlib import nullcontext
 from typing import Self
 
-from descape import debug_log
+from descape import composite_backend, debug_log
 
 _enabled = os.environ.get("DESCAPE_PERF_TRACE") == "1"
 _NULL_PHASE = nullcontext()
@@ -41,6 +48,10 @@ _phase_sums: dict[str, float] = {}
 _phase_order: list[str] = []
 _repaint_durations: list[float] = []
 _armed_label: str | None = None
+_drag_active = False
+# Called on every repaint recorded outside a drag; viewer_canvas installs a
+# timer restart here that ends in flush_idle(), keeping this module Qt-free.
+_idle_scheduler = None
 
 
 def enable(on: bool) -> None:
@@ -52,9 +63,16 @@ def is_enabled() -> bool:
     return _enabled
 
 
+def set_idle_scheduler(scheduler) -> None:
+    global _idle_scheduler
+    _idle_scheduler = scheduler
+
+
 def _record(name: str, elapsed_ms: float) -> None:
     if name == "repaint":
         _repaint_durations.append(elapsed_ms)
+        if _idle_scheduler is not None and not _drag_active:
+            _idle_scheduler()
         return
     if name not in _current_step and name not in _phase_sums:
         _phase_order.append(name)
@@ -118,6 +136,51 @@ def step() -> None:
     _current_step = {}
 
 
+def _repaint_summary() -> str:
+    r = _repaint_durations
+    return f"repaint: {len(r)} calls, {sum(r):.0f}ms total (max {max(r):.1f})"
+
+
+def _flush_view() -> None:
+    """Logs pending repaints as a `perf view` line and clears only those."""
+    global _repaint_durations
+    if _repaint_durations:
+        debug_log.log(f"perf view: {_repaint_summary()}, composite {composite_backend.active_backend()}")
+        _repaint_durations = []
+
+
+def begin_drag() -> None:
+    """Called when a stroke starts, before its first tile is touched."""
+    global _drag_active, _current_step, _phase_order
+    if not _enabled:
+        return
+    if _armed_label is None:
+        _flush_view()
+    # Hover pick/highlight since the last flush, not part of this drag.
+    _current_step = {}
+    _phase_order = [name for name in _phase_order if name in _phase_sums]
+    _drag_active = True
+
+
+def end_drag(label: str) -> None:
+    """Called after the stroke-end callback. Flushes under `label` whatever
+    that callback didn't (Convert and Cliff strokes flush nothing themselves)."""
+    global _drag_active
+    if not _enabled:
+        return
+    _drag_active = False
+    if _step_totals:
+        flush(label)
+
+
+def flush_idle() -> None:
+    """The idle timer's target: repaints recorded outside any drag or armed
+    load become a `perf view` line. Hover phases are left for begin_drag()."""
+    if not _enabled or _drag_active or _armed_label is not None:
+        return
+    _flush_view()
+
+
 def flush(label: str) -> None:
     """Emits the accumulated drag's summary to debug_log.log() -- deliberately
     NOT _log_status(), so a drag doesn't spam the visible status pane -- then
@@ -131,6 +194,8 @@ def flush(label: str) -> None:
         _current_step = {}
         return
     lines = []
+    # Last on the header line, so tester traces say which composite path ran.
+    backend = f", composite {composite_backend.active_backend()}"
     if n:
         total = sum(_step_totals)
         mean_step = total / n
@@ -139,17 +204,14 @@ def flush(label: str) -> None:
             f"{name} {_phase_sums.get(name, 0.0) / n:.1f}" for name in _phase_order
         )
         lines.append(
-            f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f})"
+            f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f}){backend}"
         )
         lines.append(f"  | {phase_line}")
     if _repaint_durations:
-        r_n = len(_repaint_durations)
-        r_total = sum(_repaint_durations)
-        r_max = max(_repaint_durations)
         if n:
-            lines.append(f"  | repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
+            lines.append(f"  | {_repaint_summary()}")
         else:
-            lines.append(f"perf {label}: repaint: {r_n} calls, {r_total:.0f}ms total (max {r_max:.1f})")
+            lines.append(f"perf {label}: {_repaint_summary()}{backend}")
     debug_log.log("\n".join(lines))
     _current_step = {}
     _step_totals = []

@@ -229,6 +229,10 @@ def test_the_saving_tab_controls_persist_and_re_arm_the_timer(tmp_path) -> None:
         assert settings.get_autosave_interval_min() == 15
         assert window._autosave_timer.interval() == 15 * 60 * 1000
 
+        dialog.autosave_interval_combo.setCurrentIndex(settings.AUTOSAVE_INTERVAL_CHOICES.index(1))
+        assert "Autosave interval: 1 min" in window.status_log.toPlainText()
+        assert window._autosave_timer.interval() == 60 * 1000
+
         dialog.autosave_enabled_check.setChecked(False)
         assert settings.get_autosave_enabled() is False
         assert not window._autosave_timer.isActive()
@@ -273,6 +277,59 @@ def test_the_recover_dialog_lists_a_slot_and_opens_it_untitled(tmp_path) -> None
 
         assert window._untitled
         assert window.scenario is not None
+    finally:
+        conftest.close_window(window)
+
+
+def _recover_dialog_with_no_map_open(tmp_path):
+    """One autosaved slot, the map closed, and File > Recover opened through
+    its own action. Returns (window, target, dialog)."""
+    from descape.autosave_dialog import RecoverAutosaveDialog
+
+    window, target = _window_on(tmp_path)
+    _dirty(window)
+    window._autosave_tick()
+    window.edit_history.mark_saved()  # before any assert: a dirty window's close() prompts
+    assert len(_slots()) == 1
+    window.close_scenario()
+    assert window.scenario is None
+    assert window.recover_autosave_action.isEnabled()
+    window.recover_autosave_action.trigger()
+    dialog = window.findChild(RecoverAutosaveDialog)
+    assert dialog is not None and dialog.isVisible()
+    return window, target, dialog
+
+
+def test_the_recover_dialog_shows_its_columns_and_opens_with_no_map_open(tmp_path) -> None:
+    """GH #97: Original is the source path, Saved at the slot's local time,
+    and Open works with nothing loaded."""
+    import time
+
+    window, target, dialog = _recover_dialog_with_no_map_open(tmp_path)
+    try:
+        header = dialog.tree.headerItem()
+        assert [header.text(c) for c in range(3)] == ["Original", "Saved at", "Size"]
+        row = dialog.tree.topLevelItem(0)
+        entry = dialog.selected_entry()
+        assert row.text(0) == str(target)
+        assert row.text(1) == time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.saved_at))
+
+        dialog.open_button.click()
+        assert window.scenario is not None
+        assert window._untitled
+        assert not dialog.isVisible()
+    finally:
+        conftest.close_window(window)
+
+
+def test_delete_in_the_recover_dialog_removes_the_slot_and_disables_the_buttons(tmp_path) -> None:
+    window, _target, dialog = _recover_dialog_with_no_map_open(tmp_path)
+    try:
+        dialog.delete_button.click()
+        assert dialog.tree.topLevelItemCount() == 0
+        assert _slots() == []
+        assert not dialog.delete_button.isEnabled()
+        assert not dialog.open_button.isEnabled()
     finally:
         conftest.close_window(window)
 

@@ -15,7 +15,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from descape import asset_source, grid_overlay, iso_geometry, settings, terrain_style, unit_sprites
+from descape import asset_source, composite_backend, grid_overlay, iso_geometry, settings, terrain_style, unit_sprites
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
@@ -959,8 +959,12 @@ def _render_tile_iso(
         _clipped_paint(img, base_y, base_x, dst_y, dst_x, skirt, extent=extent)
 
     dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(tile_px)
-    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
-    _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
+    native = composite_backend.native
+    if native is not None:
+        native.paint_diamond(img, base_y, base_x, dst_y, dst_x, src_y, src_x, top_block)
+    else:
+        extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+        _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
 
     # Seam line: a 1px contour along this tile's OWN two up-screen diamond
     # edges wherever the neighbor behind that edge is lower -- this tile's
@@ -1255,21 +1259,7 @@ def _building_bboxes_iso(
         for unit in units:
             if not unit_filter.matches(player_id, unit):
                 continue
-            span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
-            if span_x <= 1 and span_y <= 1 and unit_paint_offset(unit) == (0.0, 0.0):
-                # A CENTRED single-tile object only ever paints its own tile,
-                # so it can't make a neighbour a bystander. Written as a span
-                # test rather than a sentinel comparison so it stays true by
-                # construction -- which is what let cliffs join the multi-tile
-                # side of it just by gaining an OBJECT_TILE_SPANS entry.
-                #
-                # The offset condition is free placement's Stage 1: an
-                # off-centre mark straddles a tile boundary, so the premise
-                # above stops holding for it and it needs a real bbox. Skipping
-                # it would clip that mark at a chunk edge in every chunked
-                # render while a full-canvas one looked fine.
-                continue
-            bbox = _unit_screen_bbox_iso(unit, w, h, proj, elevations, extra_top_px)
+            bbox = _building_bbox_for(unit, w, h, proj, elevations, extra_top_px)
             if bbox is None:
                 continue
             key = (int(unit.x), int(unit.y))
@@ -1281,6 +1271,36 @@ def _building_bboxes_iso(
                 max(prior[3], bbox[3]),
             )
     return out
+
+
+def _building_bbox_for(
+    unit,
+    w: int,
+    h: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    extra_top_px: int = 0,
+) -> tuple[int, int, int, int] | None:
+    """One unit's own contribution to _building_bboxes_iso(), before the
+    per-own-tile union: its _unit_screen_bbox_iso(), or None for a unit that
+    contributes nothing (a centred single-tile object, or off-map). The
+    filter is the caller's job. Extracted so the chunk caches' unit splices
+    use the same skip predicate as the wholesale walk, not a copy of it."""
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    if span_x <= 1 and span_y <= 1 and unit_paint_offset(unit) == (0.0, 0.0):
+        # A CENTRED single-tile object only ever paints its own tile,
+        # so it can't make a neighbour a bystander. Written as a span
+        # test rather than a sentinel comparison so it stays true by
+        # construction -- which is what let cliffs join the multi-tile
+        # side of it just by gaining an OBJECT_TILE_SPANS entry.
+        #
+        # The offset condition is free placement's Stage 1: an
+        # off-centre mark straddles a tile boundary, so the premise
+        # above stops holding for it and it needs a real bbox. Skipping
+        # it would clip that mark at a chunk edge in every chunked
+        # render while a full-canvas one looked fine.
+        return None
+    return _unit_screen_bbox_iso(unit, w, h, proj, elevations, extra_top_px)
 
 
 def _observed_elevation_range(
@@ -3462,6 +3482,7 @@ def stored_rotation(player_id: int, unit) -> float:
 # LoadedScenario.unit_gen's own docstring for exactly what bumps it).
 _ANCHOR_TILES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _WALL_OVERRIDES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_OWN_TILE_INDEX_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _unit_gen_cached(memo: weakref.WeakKeyDictionary, scenario, compute):
@@ -3493,6 +3514,24 @@ def anchor_tiles(scenario) -> set[tuple[int, int]]:
         return {(int(u.x), int(u.y)) for units in scenario.unit_manager.units for u in units}
 
     return _unit_gen_cached(_ANCHOR_TILES_MEMO, scenario, _compute)
+
+
+def unit_own_tile_index(scenario) -> dict[tuple[int, int], list[tuple[int, int, object]]]:
+    """Own tile `(int(u.x), int(u.y))` -> every unit there as `(player_id,
+    i, unit)`, i being its position in its player's list (the key
+    _resolve_unit_sprite() and the wall overrides need). Over ALL units,
+    ignoring any filter, like anchor_tiles() above and memoized the same way.
+    Lets an elevation edit find the units whose placement reads a changed
+    height without walking every unit."""
+
+    def _compute() -> dict[tuple[int, int], list[tuple[int, int, object]]]:
+        out: dict[tuple[int, int], list[tuple[int, int, object]]] = {}
+        for player_id, units in enumerate(scenario.unit_manager.units):
+            for i, u in enumerate(units):
+                out.setdefault((int(u.x), int(u.y)), []).append((player_id, i, u))
+        return out
+
+    return _unit_gen_cached(_OWN_TILE_INDEX_MEMO, scenario, _compute)
 
 
 def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:

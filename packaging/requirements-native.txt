@@ -1,0 +1,9 @@
+# Build-time only: compiles descape/_composite_native.pyx via
+# tools/build_native.py. The compiled extension needs neither at runtime.
+# Installed by CI and packaging/container_build.sh through
+# requirements-build.txt, and by bootstrap.py on its own, so a from-source
+# launch can build the kernel without pulling in PyInstaller.
+#
+# setuptools is listed because venvs on Python 3.12+ don't ship it.
+cython==3.2.9
+setuptools==80.9.0

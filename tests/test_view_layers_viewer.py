@@ -138,6 +138,51 @@ def test_the_farm_layer_greys_the_moment_sprites_go_off(sprite_install) -> None:
         conftest.close_window(window)
 
 
+def test_layers_are_not_persisted_across_windows(sprite_install) -> None:
+    """GH #85, mirroring test_sprite_toggle_viewer.py's own per-session test:
+    a fresh window starts every layer at its registry default."""
+    first = conftest.blank_window()
+    try:
+        for layer_id in (TEXTURES_LAYER, FARM_LAYER):
+            first.layer_actions[layer_id].setChecked(False)
+        first.layer_actions[SMALL_TREES_LAYER].setChecked(True)
+        assert first._cache.layers.terrain_textures is False
+    finally:
+        conftest.close_window(first)
+
+    second = conftest.blank_window()
+    try:
+        for spec in view_layers.LAYERS:
+            assert second.layer_actions[spec.layer_id].isChecked() is spec.default, spec.layer_id
+            assert getattr(second._layers, spec.layer_id) is spec.default, spec.layer_id
+        assert second._cache.layers.terrain_textures is True
+        assert second._cache.layers.farm_overlay is True
+    finally:
+        conftest.close_window(second)
+
+
+def test_the_farm_row_stays_unticked_across_a_sprites_off_and_on(sprite_install) -> None:
+    """The sprite round trip greys the farm row and brings it back, which
+    must not reset the user's untick."""
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Stepped")
+        window.show_sprites_action.setChecked(True)
+        window.layer_actions[FARM_LAYER].setChecked(False)
+
+        window.show_sprites_action.setChecked(False)
+        assert not window.layer_actions[FARM_LAYER].isEnabled()
+        window.show_sprites_action.setChecked(True)
+
+        action = window.layer_actions[FARM_LAYER]
+        assert action.isEnabled()
+        assert action.isChecked() is False
+        assert window._layers.farm_overlay is False
+        assert window._cache.layers.farm_overlay is False
+    finally:
+        conftest.close_window(window)
+
+
 def test_toggling_reaches_the_live_cache(sprite_install) -> None:
     window = conftest.blank_window()
     try:

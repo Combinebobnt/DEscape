@@ -172,6 +172,44 @@ def test_a_line_drag_is_one_undo_record() -> None:
         _close(window)
 
 
+_FOREST_OAK = 10  # density 1000/1000, so exactly one tree per painted tile
+_FOREST_OAK_CONST = 411
+
+
+def test_a_forest_line_with_trees_on_plants_a_tree_per_tile_in_one_undo_step(monkeypatch) -> None:
+    """GH #88, per tests/test_terrain_units_viewer.py's Draw version: the
+    shape commit routes through the same Trees path as a stroke."""
+    import descape.viewer as viewer_module
+    from descape.edit_history import CompositeDiffRecord
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("a short line must not reach the large-edit confirm")
+
+    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    window = _shape_window("draw_line")
+    try:
+        window.terrain_panel.set_terrain(_FOREST_OAK)
+        window.paint_trees_check.setChecked(True)
+        mm = window.scenario.map_manager
+        before = len(window.edit_history.records)
+        _drag(window.map_view, (4, 4), (12, 8))
+
+        line = set(shape_tools.line_tiles(4, 4, 12, 8, mm.map_width, mm.map_height))
+        assert {(t.x, t.y) for t in mm.terrain if t.terrain_id == _FOREST_OAK} == line
+        trees = [
+            (int(u.x), int(u.y)) for u in window.scenario.unit_manager.units[0] if u.unit_const == _FOREST_OAK_CONST
+        ]
+        assert sorted(trees) == sorted(line), "expected exactly one GAIA oak on every painted tile"
+        assert len(window.edit_history.records) == before + 1
+        assert isinstance(window.edit_history.records[-1], CompositeDiffRecord)
+
+        window.undo()
+        assert not any(t.terrain_id == _FOREST_OAK for t in mm.terrain)
+        assert not any(u.unit_const == _FOREST_OAK_CONST for u in window.scenario.unit_manager.units[0])
+    finally:
+        _close(window)
+
+
 def test_a_filled_rectangle_paints_its_whole_area() -> None:
     window = _shape_window("draw_rect")
     try:

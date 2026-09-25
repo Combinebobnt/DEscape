@@ -749,6 +749,57 @@ def test_sloped_pick_covers_every_pixel_of_a_farms_own_footprint_and_no_other() 
     assert hits > 0, "sampled no pixels of the farm's own footprint -- the check would be vacuous"
 
 
+@pytest.mark.parametrize(
+    "farm_first",
+    [
+        pytest.param(True, id="unit-after-farm"),
+        pytest.param(
+            False,
+            id="farm-after-unit",
+            marks=pytest.mark.xfail(
+                strict=True, reason="_stepped_key's order tie-break picks a later draped farm over the unit on top"
+            ),
+        ),
+    ],
+)
+def test_sloped_pick_returns_a_1x1_unit_standing_on_a_draped_farm_in_either_index_order(farm_first: bool) -> None:
+    """GH #84: with sprites on, the farm paints as its tile's own terrain and
+    the unit's marker paints over it, whatever order the two sit in the index.
+    So every pixel of the unit's tile must pick the unit, not the farm."""
+    tiles = [
+        SyntheticTile(x=x, y=y, elevation=max(0, min(4, x - 8)))
+        for y in range(MAP_H)
+        for x in range(MAP_W)
+    ]
+    farm = SyntheticUnit(x=10.5, y=10.5, unit_const=_FARM_CONST, reference_id=1)
+    # A footprint tile off the farm's own tile, at an exact .5 (zero paint offset).
+    unit = SyntheticUnit(x=11.5, y=10.5, unit_const=_PLAIN_CONST, reference_id=2)
+    units = [[] for _ in range(9)]
+    units[1] = [farm, unit] if farm_first else [unit, farm]
+    scn = FakeScenario(MAP_W, MAP_H, tiles, units)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
+
+    unit_entry = next(e for e in index.entries if e.unit is unit)
+    farm_entry = next(e for e in index.entries if e.unit is farm)
+    assert (farm_entry.order > unit_entry.order) is not farm_first, "index order is not the one parametrized"
+    own = (unit_entry.own_x, unit_entry.own_y)
+    assert own in render.unit_occupied_tiles(farm, MAP_W, MAP_H), "the unit must stand on the farm"
+
+    pixels = np.argwhere(terrain == own[1] * MAP_W + own[0])
+    assert pixels.size, "the unit's tile painted no pixels"
+    for sy, sx in (pixels[0], pixels[len(pixels) // 2], pixels[-1]):
+        got = pick_unit(
+            index, "sloped", int(sx), int(sy), tile_px, MAP_W, MAP_H, None, proj,
+            corner_rise=corner_rise, terrain_tile=own, farms_draped=True,
+        )
+        assert got is not None and got.unit is unit, (
+            f"({sx}, {sy}) on the unit's tile picked {None if got is None else got.unit.unit_const}"
+        )
+
+
 def test_sloped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() -> None:
     """The sprites-off half of the farms_draped contract: when a farm is
     NOT currently drawn draped (farms_draped=False, its default), pick_unit
@@ -1141,6 +1192,30 @@ def test_stepped_unit_polygons_only_covers_the_occupied_set() -> None:
     assert len(polygons) == 6
 
     occupied = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
+    expected_centers = {_tile_center(tx, ty, proj) for tx, ty in occupied}
+    got_centers = set()
+    for poly in polygons:
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        got_centers.add((round(sum(xs) / 4), round(sum(ys) / 4)))
+    assert got_centers == expected_centers
+
+
+@pytest.mark.parametrize("unit_const", [_GATE_CONST, _N_GATE_CONST])
+def test_sloped_unit_polygons_only_covers_the_occupied_set(unit_const) -> None:
+    """The Sloped twin of the Stepped check above (GH #86's gate step): one
+    diamond per occupied tile, none on the 10 gap tiles."""
+    scn = _gate_scenario(unit_const)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    entry = index.entries[0]
+
+    polygons = unit_polygons(entry, "sloped", tile_px, MAP_W, MAP_W, None, proj, corner_rise=corner_rise)
+    assert len(polygons) == 6
+
+    occupied = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
+    # Flat ground, so the unit's rise is 0 and each diamond centres on its tile.
     expected_centers = {_tile_center(tx, ty, proj) for tx, ty in occupied}
     got_centers = set()
     for poly in polygons:

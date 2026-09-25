@@ -295,6 +295,21 @@ def test_placed_moved_and_reassigned_units_all_read_back(tmp_path: Path) -> None
     assert next_id > new_ref
 
 
+def test_a_fine_nudged_position_reads_back_within_float32(tmp_path: Path) -> None:
+    """GH #62: a 0.1 nudge lands off the half-tile grid, and x/y are stored as
+    float32, so the read-back is compared with a tolerance, not ==."""
+    loaded, model = _open()
+    moved = _unit(loaded, _REF_VILLAGER_P1)
+    model.set_position(moved, 60.15, 40.35, 0.0)
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    got = _unit(load_map_and_units(out), _REF_VILLAGER_P1)
+
+    assert got.x == pytest.approx(60.15, abs=1e-4)
+    assert got.y == pytest.approx(40.35, abs=1e-4)
+
+
 def test_an_added_occupant_reads_back_inside_its_host(tmp_path: Path) -> None:
     """GH #42: Add... is a plain add() with garrisoned_in_id set, so the only
     new thing on the write path is that field surviving the round trip on a
@@ -320,6 +335,28 @@ def test_an_added_occupant_reads_back_inside_its_host(tmp_path: Path) -> None:
     assert (got.x, got.y, got.unit_const) == (host.x, host.y, 4)
     # The host is still there to be garrisoned in, and unchanged.
     assert any(u.reference_id == _REF_HOUSE for u in reloaded.unit_manager.units[1])
+
+
+def test_a_moved_host_and_its_occupant_read_back_on_the_same_point(tmp_path: Path) -> None:
+    """GH #42: the viewer moves an occupant onto its host's new point in the
+    same edit. Here both moves go through the model, and the pair must survive
+    the round trip still together and still linked."""
+    loaded, model = _open()
+    host = _unit(loaded, _REF_HOUSE)
+    occupant = _unit(loaded, _REF_VILLAGER_P1)
+    assert occupant.garrisoned_in_id == host.reference_id
+    model.set_position(host, 30.5, 31.5, host.z)
+    model.set_position(occupant, host.x, host.y, host.z)
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    reloaded = load_map_and_units(out)
+
+    got_host = _unit(reloaded, _REF_HOUSE)
+    got_occupant = _unit(reloaded, _REF_VILLAGER_P1)
+    assert (got_host.x, got_host.y) == (30.5, 31.5)
+    assert (got_occupant.x, got_occupant.y) == (got_host.x, got_host.y)
+    assert got_occupant.garrisoned_in_id == got_host.reference_id
 
 
 def test_next_unit_id_is_untouched_when_nothing_was_added(tmp_path: Path) -> None:

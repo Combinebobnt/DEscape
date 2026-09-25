@@ -16,12 +16,18 @@ import pytest
 from descape import gate_orientation, unit_rotation, unit_sprites, unit_variant
 
 OAK, PINE, RAINFOREST, AQUEDUCT, GRANARY, MOLE = 349, 350, 1146, 231, 1089, 2421
+BARRELS = 1330
 WALL, CLIFF, GATE, ARCHER, HOUSE = 117, 264, 64, 4, 70
 
 
-@pytest.mark.parametrize("const", [OAK, PINE, RAINFOREST, AQUEDUCT, GRANARY])
+@pytest.mark.parametrize("const", [OAK, PINE, RAINFOREST, AQUEDUCT, GRANARY, BARRELS])
 def test_trees_and_scenery_are_cyclable(const):
     assert unit_variant.is_cyclable(const)
+
+
+def test_barrels_cycle_through_six_variants():
+    """GH #52's Barrels step, DEscape half: the count Next/Previous wraps at."""
+    assert unit_variant.variant_count_for(BARRELS) == 6
 
 
 @pytest.mark.parametrize("const", [WALL, CLIFF, GATE, ARCHER, HOUSE])
@@ -127,12 +133,61 @@ def test_every_cyclable_placement_stores_a_literal_index(corpus_files):
     assert not radian, f"{len(radian)} non-literal: {radian[:10]}"
 
 
+_UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
+
+
+def _sprite_hashes(loaded):
+    """One digest per sprite anchor, over every draw's rgba bytes."""
+    import hashlib
+
+    from descape import render
+
+    _img, elevations, proj = render.render_terrain_iso_with_proj(loaded, with_sprites=True)
+    layer = render.sprite_draws_by_anchor(loaded, proj, elevations)
+    hashes = {}
+    for anchor, draws in layer.by_anchor.items():
+        digest = hashlib.sha1(usedforsecurity=False)
+        for item in draws:
+            draw = item[0] if isinstance(item, tuple) else item
+            digest.update(draw.rgba.tobytes())
+        hashes[anchor] = digest.hexdigest()
+    return hashes
+
+
 @pytest.mark.corpus
 def test_cycling_changes_the_rendered_sprite_and_leaves_its_neighbour_alone():
     """The drawn frame must differ after each cycle, and the adjacent untouched
     pine must stay byte-identical, so a global repaint cannot pass."""
-    import hashlib
+    from descape import asset_source
+    from descape.scenario_io import load_map_and_units
+    from descape.unit_model import UnitEditModel
 
+    if asset_source.get_install_path() is None:
+        pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH to one")
+
+    loaded = load_map_and_units(_UNITS_FIXTURE)
+    model = UnitEditModel(loaded)
+    units = {u.reference_id: u for u in loaded.unit_manager.get_all_units()}
+    oak, pine = units[100], units[101]
+
+    oak_anchor, pine_anchor = (int(oak.x), int(oak.y)), (int(pine.x), int(pine.y))
+    seen = [_sprite_hashes(loaded)]
+    assert oak_anchor in seen[0] and pine_anchor in seen[0], "no sprite resolved, so this proves nothing"
+    angle_count = unit_rotation.angle_count_for(oak.unit_const)
+    variant_count = unit_variant.variant_count_for(oak.unit_const)
+    for _ in range(3):
+        model.set_variant(oak, unit_variant.cycle_step(oak.rotation, angle_count, variant_count, 5))
+        seen.append(_sprite_hashes(loaded))
+
+    assert len({h[oak_anchor] for h in seen}) == 4, "a cycled variant drew a repeated frame"
+    assert len({h[pine_anchor] for h in seen}) == 1, "an untouched neighbour changed too"
+
+
+@pytest.mark.corpus
+def test_cycling_barrels_changes_its_sprite_and_leaves_its_twin_alone():
+    """GH #52's Barrels Next/Previous step: each Next draws a new frame,
+    Previous draws the prior one again, and an identical Barrels on the next
+    tile stays byte-identical throughout."""
     from descape import asset_source, render
     from descape.scenario_io import load_map_and_units
     from descape.unit_model import UnitEditModel
@@ -140,32 +195,24 @@ def test_cycling_changes_the_rendered_sprite_and_leaves_its_neighbour_alone():
     if asset_source.get_install_path() is None:
         pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH to one")
 
-    fixture = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
-    loaded = load_map_and_units(fixture)
+    loaded = load_map_and_units(_UNITS_FIXTURE)
     model = UnitEditModel(loaded)
-    units = {u.reference_id: u for u in loaded.unit_manager.get_all_units()}
-    oak, pine = units[100], units[101]
+    # GAIA doodads on empty tiles, both starting at literal variant 0.
+    barrels = model.add(0, BARRELS, *render.span_anchor(8, 8, 1, 1), rotation=0.0)
+    twin = model.add(0, BARRELS, *render.span_anchor(9, 8, 1, 1), rotation=0.0)
 
-    def sprite_hashes():
-        _img, elevations, proj = render.render_terrain_iso_with_proj(loaded, with_sprites=True)
-        layer = render.sprite_draws_by_anchor(loaded, proj, elevations)
-        hashes = {}
-        for anchor, draws in layer.by_anchor.items():
-            digest = hashlib.sha1(usedforsecurity=False)
-            for item in draws:
-                draw = item[0] if isinstance(item, tuple) else item
-                digest.update(draw.rgba.tobytes())
-            hashes[anchor] = digest.hexdigest()
-        return hashes
+    barrels_anchor, twin_anchor = (int(barrels.x), int(barrels.y)), (int(twin.x), int(twin.y))
+    seen = [_sprite_hashes(loaded)]
+    assert barrels_anchor in seen[0] and twin_anchor in seen[0], "no sprite resolved, so this proves nothing"
+    assert seen[0][barrels_anchor] == seen[0][twin_anchor], "twins at one variant drew different frames"
+    angle_count = unit_rotation.angle_count_for(BARRELS)
+    variant_count = unit_variant.variant_count_for(BARRELS)
+    for step in (1, 1, -1):
+        model.set_variant(barrels, unit_variant.cycle_step(barrels.rotation, angle_count, variant_count, step))
+        seen.append(_sprite_hashes(loaded))
 
-    oak_anchor, pine_anchor = (int(oak.x), int(oak.y)), (int(pine.x), int(pine.y))
-    seen = [sprite_hashes()]
-    assert oak_anchor in seen[0] and pine_anchor in seen[0], "no sprite resolved, so this proves nothing"
-    angle_count = unit_rotation.angle_count_for(oak.unit_const)
-    variant_count = unit_variant.variant_count_for(oak.unit_const)
-    for _ in range(3):
-        model.set_variant(oak, unit_variant.cycle_step(oak.rotation, angle_count, variant_count, 5))
-        seen.append(sprite_hashes())
-
-    assert len({h[oak_anchor] for h in seen}) == 4, "a cycled variant drew a repeated frame"
-    assert len({h[pine_anchor] for h in seen}) == 1, "an untouched neighbour changed too"
+    assert [u.rotation for u in (barrels, twin)] == [1.0, 0.0]
+    drawn = [h[barrels_anchor] for h in seen]
+    assert len(set(drawn[:3])) == 3, "a Next drew a repeated frame"
+    assert drawn[3] == drawn[1], "Previous did not redraw the prior variant"
+    assert len({h[twin_anchor] for h in seen}) == 1, "the untouched twin changed too"

@@ -19,6 +19,7 @@ def setup_function():
     perf_trace._phase_order = []
     perf_trace._repaint_durations = []
     perf_trace._armed_label = None
+    perf_trace._drag_active = False
 
 
 def test_disabled_by_default():
@@ -149,3 +150,82 @@ def test_flush_emits_repaint_only_line_with_no_steps_recorded():
     assert text.count("\n[") == 0
     assert "perf load: repaint: 1 calls" in text
     assert perf_trace._repaint_durations == []
+
+
+def _repaint():
+    with perf_trace.phase("repaint"):
+        pass
+
+
+def test_flush_idle_logs_repaints_outside_a_drag_as_a_view_line():
+    perf_trace.enable(True)
+    _repaint()
+    _repaint()
+    perf_trace.flush_idle()
+    text = debug_log.get_log_text()
+    assert "perf view: repaint: 2 calls" in text
+    assert perf_trace._repaint_durations == []
+
+
+def test_flush_idle_is_a_no_op_during_a_drag_or_an_armed_load():
+    perf_trace.enable(True)
+    perf_trace.begin_drag()
+    _repaint()
+    perf_trace.flush_idle()
+    assert debug_log.get_log_text() == "(empty)"
+    perf_trace.end_drag("draw")
+    perf_trace._repaint_durations = []
+
+    perf_trace.arm("load")
+    _repaint()
+    perf_trace.flush_idle()
+    assert debug_log.get_log_text() == "(empty)"
+
+
+def test_begin_drag_splits_off_earlier_repaints_and_drops_hover_phases():
+    """Pan repaints before the drag get their own line, and hover pick time
+    (recorded on every mouse move, drag or not) never reaches the first step."""
+    perf_trace.enable(True)
+    _repaint()
+    perf_trace._record("pick", 500.0)  # an afternoon of hovering
+    perf_trace.begin_drag()
+    perf_trace._record("pick", 1.0)
+    perf_trace.step()
+    perf_trace.flush("paint-terrain")
+    perf_trace.end_drag("draw")
+
+    lines = debug_log.get_log_text().splitlines()
+    assert "perf view: repaint: 1 calls" in lines[0]
+    assert "perf drag paint-terrain: 1 steps, 1ms total" in lines[1]
+    assert "repaint" not in "\n".join(lines[1:])
+
+
+def test_end_drag_flushes_a_stroke_the_viewer_did_not():
+    perf_trace.enable(True)
+    perf_trace.begin_drag()
+    perf_trace._record("patch", 2.0)
+    perf_trace.step()
+    perf_trace.end_drag("convert")
+    assert "perf drag convert: 1 steps" in debug_log.get_log_text()
+    assert perf_trace._drag_active is False
+
+
+def test_end_drag_after_the_viewer_flushed_logs_nothing_more():
+    perf_trace.enable(True)
+    perf_trace.begin_drag()
+    perf_trace._record("patch", 2.0)
+    perf_trace.step()
+    perf_trace.flush("paint-terrain")
+    perf_trace.end_drag("draw")
+    assert debug_log.get_log_text().count("perf drag") == 1
+
+
+def test_the_idle_scheduler_runs_on_repaints_outside_a_drag_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(perf_trace, "_idle_scheduler", lambda: calls.append(1))
+    perf_trace.enable(True)
+    _repaint()
+    assert len(calls) == 1
+    perf_trace.begin_drag()
+    _repaint()
+    assert len(calls) == 1

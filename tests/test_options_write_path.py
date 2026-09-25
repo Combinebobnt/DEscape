@@ -465,6 +465,32 @@ def test_an_option_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
     assert options_write_supported(reloaded, option_fields.specs_for(reloaded))
 
 
+def test_custom_victory_and_all_four_custom_fields_read_back_together(tmp_path: Path) -> None:
+    """GH #80 step 6: Custom plus all four of its rows, set in one save. Each
+    new value differs from what the file stores, so a dropped patch shows."""
+    loaded = _loaded()
+    specs = {s.field_id: s for s in option_fields.specs_for(loaded)}
+    stored = {field_id: option_fields.current_value(loaded, spec) for field_id, spec in specs.items()}
+    wanted = {
+        "victory_condition": 4,  # Custom
+        "custom_conquest": 1 - stored["custom_conquest"],
+        "custom_explored_percent": 33 if stored["custom_explored_percent"] != 33 else 34,
+        "custom_relics": 7 if stored["custom_relics"] != 7 else 8,
+        "custom_all_conditions": 1 - stored["custom_all_conditions"],
+    }
+    assert stored["victory_condition"] != 4, "the fixture is already Custom, so this proves less"
+
+    model = OptionsEditModel(loaded)
+    for field_id, value in wanted.items():
+        model.set_value(field_id, value)
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model)
+
+    reloaded = load_map_and_units(out)
+    assert {field_id: option_fields.current_value(reloaded, specs[field_id]) for field_id in wanted} == wanted
+    assert options_write_supported(reloaded, option_fields.specs_for(reloaded))
+
+
 def test_an_exec_order_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
     loaded = _loaded()
     model = TriggerEditModel(loaded)

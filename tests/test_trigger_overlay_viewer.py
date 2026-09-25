@@ -200,17 +200,34 @@ def test_a_structural_delete_re_derives_the_entry_indices() -> None:
     window = _window()
     try:
         view = window.map_view
-        window.trigger_panel.select_entry(*PATROL)
+        panel = window.trigger_panel
+        panel.select_entry(*PATROL)
+        patrol_rect = _outline_path_rect(view)
+        # As in the GUI: the effect above is selected to delete it.
+        panel.select_entry("effect", 0)
+        before_delete = _overlay_snapshot(view)
         window.entry_structural_edit("delete", GEOMETRY_TRIGGER, "effect", [("effect", 0)], -1)
         # The change_variable effect is gone: the patrol is effect 0 now.
         assert any(s.entry_ref == ("effect", 0) and s.shape == "area" for s in view._trigger_shapes)
         # The whole-map area moved down to effect 3 with it.
         assert any(s.entry_ref == ("effect", 3) and s.coords == _gen().GEOMETRY_WHOLE_MAP_AREA for s in view._trigger_shapes)
         assert not any(s.entry_ref == ("effect", 4) and s.shape == "area" for s in view._trigger_shapes)
+        # GH #41: the delete lands on the patrol, and the emphasised ring is the patrol's.
+        assert panel.current_entry_ref() == ("effect", 0)
+        assert _outline_path_rect(view) == patrol_rect
+        assert _overlay_snapshot(view) != before_delete
         window.undo()
         assert any(s.entry_ref == WHOLE_MAP for s in view._trigger_shapes)
+        # Back to the pre-delete state: the restored effect above selected, the same items drawn.
+        assert panel.current_entry_ref() == ("effect", 0)
+        assert _overlay_snapshot(view) == before_delete
     finally:
         conftest.close_window(window)
+
+
+def _overlay_snapshot(view) -> dict:
+    """Each overlay item's role and scene bounds: what the user sees drawn."""
+    return {item.data(0): item.boundingRect() for item in view.trigger_overlay_items()}
 
 
 # -- lifecycle ---------------------------------------------------------------------
@@ -245,14 +262,16 @@ def test_close_and_reload_leave_no_overlay() -> None:
         conftest.close_window(window)
 
 
-def test_an_elevation_edit_moves_the_outline_in_stepped() -> None:
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_elevation_edit_moves_the_outline(style: str) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
 
     gen = _gen()
-    window = _window()
+    window = _window(style=style)
     try:
         view = window.map_view
+        assert view._terrain_style == style.lower(), "the restyle did not reach the view"
         window.trigger_panel.select_entry(*CONDITION_AREA)
         before = _outline_path(view)
         x1, y1, _x2, _y2 = gen.GEOMETRY_CONDITION_AREA
@@ -267,7 +286,7 @@ def test_an_elevation_edit_moves_the_outline_in_stepped() -> None:
         conftest.close_window(window)
 
 
-def test_the_view_toggle_hides_without_dropping_and_persists() -> None:
+def test_the_view_toggle_hides_without_dropping_and_persists(monkeypatch) -> None:
     from descape import settings
 
     window = _window()
@@ -281,8 +300,19 @@ def test_the_view_toggle_hides_without_dropping_and_persists() -> None:
         assert not any(i.isVisible() for i in view.trigger_overlay_items()), "a rebuild re-showed hidden items"
         window.trigger_overlay_action.setChecked(True)
         assert all(i.isVisible() for i in view.trigger_overlay_items())
+        window.trigger_overlay_action.setChecked(False)
     finally:
         conftest.close_window(window)
+
+    # GH #41's restart: drop the memo so the fresh window has to read config.yaml back.
+    monkeypatch.setattr(settings, "_trigger_overlay", None)
+    fresh = _window()
+    try:
+        assert not fresh.trigger_overlay_action.isChecked()
+        items = fresh.map_view.trigger_overlay_items()
+        assert items and not any(i.isVisible() for i in items)
+    finally:
+        conftest.close_window(fresh)
 
 
 def test_the_z_band_sits_between_the_selection_and_the_region_and_above_the_ruler_label() -> None:
@@ -413,6 +443,24 @@ def test_the_unit_outline_is_on_its_own_colour_row(tmp_path, monkeypatch) -> Non
     try:
         pen = _items_by_role(window.map_view)["units_strong"].pen()
         assert pen.color().name() == "#ff00ff"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_colour_change_reinks_a_live_outline() -> None:
+    """GH #41: Settings > Appearance recolours a drawn overlay straight away,
+    through the same call its colour swatch makes."""
+    from descape import settings
+
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*PATROL)
+        assert _items_by_role(view)["outline_strong"].pen().color().name() != "#ff00ff"
+        settings.set_overlay_color("trigger_area_outline", "#ff00ff")
+        view.apply_overlay_colors()
+        # Re-fetched: a colour change rebuilds the items rather than re-inking them.
+        assert _items_by_role(view)["outline_strong"].pen().color().name() == "#ff00ff"
     finally:
         conftest.close_window(window)
 

@@ -55,7 +55,8 @@ def main() -> None:
 
     written = generate(args.scenario_dir, args.out_dir)
     for path in written:
-        print(f"wrote {path.relative_to(ROOT)}")
+        resolved = path.resolve()
+        print(f"wrote {resolved.relative_to(ROOT) if resolved.is_relative_to(ROOT) else resolved}")
 
 
 if __name__ == "__main__":

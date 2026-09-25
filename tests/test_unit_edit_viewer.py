@@ -374,7 +374,7 @@ def test_arrow_nudge_moves_by_a_fine_step_and_shift_by_a_whole_tile() -> None:
 
         window.on_unit_nudge(1, 0, Qt.NoModifier)
         fine = window.map_view._unit_index.entry_for_key(key).unit.x
-        assert 0 < fine - start_x < 1
+        assert fine - start_x == pytest.approx(0.1, abs=1e-4)
 
         window.on_unit_nudge(1, 0, Qt.ShiftModifier)
         whole = window.map_view._unit_index.entry_for_key(key).unit.x
@@ -470,6 +470,10 @@ def test_nudging_a_host_carries_its_hidden_garrison() -> None:
         assert (occupant.x, occupant.y) == (host.x, host.y)
         assert host.x == 11.5
         assert len(window.edit_history.records) == records_before + 1
+
+        window.undo()
+        assert (host.x, occupant.x) == (10.5, 10.5)
+        assert occupant.y == host.y
     finally:
         _close(window)
 
@@ -554,6 +558,25 @@ def test_a_plain_unit_has_no_garrison_block() -> None:
         _close(window)
 
 
+def test_an_empty_house_has_no_garrison_block() -> None:
+    """The game gives a House no places, so only an occupant already in the
+    file (the fixture's own House) earns it a block."""
+    window = _window()
+    try:
+        model = window._ensure_unit_edits()
+        tile = _empty_tile(window)
+        with window._unit_edit(model, "Place house", [1]):
+            house = model.add(1, _HOUSE_CONST, tile[0] + 1.0, tile[1] + 1.0)
+        window._rebuild_unit_index()
+        window._selection = [(1, house.reference_id)]
+        window._refresh_selection_view()
+
+        assert window.units_panel.unit_field_labels["reference_id"].text() == str(house.reference_id)
+        assert not window.units_panel.garrison_tree.isVisibleTo(window.units_panel)
+    finally:
+        _close(window)
+
+
 def test_adding_an_occupant_puts_it_inside_the_host_and_undo_removes_it() -> None:
     window = _window()
     try:
@@ -611,6 +634,7 @@ def test_a_full_host_refuses_a_further_occupant() -> None:
         assert _unit_count(window) == before
         assert "is full" in window.status_log.toPlainText()
         assert not window.units_panel.garrison_add_button.isEnabled()
+        assert window.units_panel.garrison_add_button.toolTip() == "Full: the game gives this one 5 places"
     finally:
         _close(window)
 
@@ -1362,6 +1386,30 @@ def test_randomize_variant_is_seedable_and_always_changes() -> None:
         _close(window)
 
 
+def test_a_group_randomize_is_one_record_that_undoes_and_redoes_exactly() -> None:
+    import random
+
+    window = _window()
+    try:
+        entries = _select(window, _REF_TREE_OAK, _REF_TREE_PINE)
+        before = {e.unit.reference_id: e.unit.rotation for e in entries}
+        records_before = len(window.edit_history.records)
+        window._variant_rng = random.Random(5)
+
+        window.on_unit_variant(randomize=True)
+
+        randomized = {e.unit.reference_id: e.unit.rotation for e in entries}
+        assert all(randomized[ref] != before[ref] for ref in before)
+        assert len(window.edit_history.records) == records_before + 1
+
+        window.undo()
+        assert {e.unit.reference_id: e.unit.rotation for e in entries} == before
+        window.redo()
+        assert {e.unit.reference_id: e.unit.rotation for e in entries} == randomized
+    finally:
+        _close(window)
+
+
 def test_cycle_variant_does_nothing_outside_units_mode() -> None:
     window = _window()
     try:
@@ -1428,6 +1476,25 @@ def test_rotate_cycles_a_selected_gate_to_its_next_orientation() -> None:
         _close(window)
 
 
+def test_four_gate_rotates_come_back_to_the_starting_orientation() -> None:
+    """GH #12: the four siblings form a cycle, and each re-anchor inverts
+    exactly, so no drift accumulates over a full turn."""
+    window = _window()
+    try:
+        entry = _make_gate(window)
+        start = (entry.unit.unit_const, entry.unit.x, entry.unit.y)
+        start_tiles = _occupied(window, entry.unit)
+
+        for _ in range(4):
+            window.on_unit_rotate(1)
+
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == start
+        assert _occupied(window, entry.unit) == start_tiles
+        assert "map edge" not in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
 def test_a_coarse_rotate_cycles_a_gate_by_two_orientations() -> None:
     """One gate step is 45 degrees, so a quarter turn is two of them: ne
     lands on se, not on the diagonal in between."""
@@ -1476,6 +1543,75 @@ def test_a_gate_with_no_room_at_the_map_edge_refuses_and_says_so() -> None:
         assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == before
         assert not window.edit_history.is_dirty
         assert "map edge" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+@pytest.fixture
+def gate_art(tmp_path, monkeypatch):
+    """A synthetic install drawing each stone gate orientation (64/88/659/667)
+    as its own solid colour, so a stale orientation is a pixel mismatch."""
+    from descape import asset_source, unit_sprites
+
+    from test_unit_sprites import build_sld
+
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    table = {}
+    for i, const in enumerate((64, 88, 659, 667)):
+        name = f"t_gate_{const}_x1"
+        art = build_sld(1, canvas=unit_sprites.NATIVE_TILE_W, playercolor=False, colour_base=5 * i)
+        (graphics / f"{name}.sld").write_bytes(art)
+        table[const] = {"graphic_id": const, "file_name": name, "angle_count": 1,
+                        "mirroring_mode": 0, "frame_count": 1}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def _fresh_canvas(window, style: str, sprites: bool = True) -> np.ndarray:
+    canvas_w, canvas_h = window._cache.canvas_dims(0)
+    if style == "Stepped":
+        full = render.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+    else:
+        full = render.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+    return full[:canvas_h, :canvas_w]
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_four_gate_rotates_repaint_like_a_fresh_render_with_sprites(style, gate_art) -> None:
+    """GH #78 step 12 and GH #12 step 3 outside Flat: every orientation swap
+    changes the gate's footprint and art, and must leave no stale fragment."""
+    from descape.render_cache import IsoChunkCache, SlopedChunkCache
+
+    window = _window_with_style(style)
+    try:
+        assert isinstance(window._cache, IsoChunkCache if style == "Stepped" else SlopedChunkCache)
+        assert window.show_sprites_action.isChecked()
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add gate", [1]):
+            gate = model.add(1, _GATE_NE, 60.0, 60.5)
+        _select(window, gate.reference_id)
+        start_tiles = _occupied(window, gate)
+        canvas_w, canvas_h = window._cache.canvas_dims(0)
+        start = window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
+        assert np.array_equal(start, _fresh_canvas(window, style))
+        assert not np.array_equal(start, _fresh_canvas(window, style, sprites=False)), "the gate drew no sprite"
+
+        previous = start
+        for step in range(1, 5):
+            window.on_unit_rotate(1)
+            now = window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
+            assert np.array_equal(now, _fresh_canvas(window, style)), f"stale pixels after rotate {step}"
+            assert not np.array_equal(now, previous), f"rotate {step} changed nothing on screen"
+            previous = now
+
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE_NE, 60.0, 60.5)
+        assert _occupied(window, gate) == start_tiles
+        assert np.array_equal(previous, start)
     finally:
         _close(window)
 
@@ -2129,6 +2265,31 @@ def test_a_convert_stroke_reassigns_live_and_records_one_undo_step() -> None:
         window.undo()
         assert all(u in window.scenario.unit_manager.units[1] for u in units)
         assert len([u for u in window.scenario.unit_manager.units[2] if u in units]) == 0
+
+        # GH #36: redo re-applies the whole stroke without adding a record.
+        window.redo()
+        assert all(u in window.scenario.unit_manager.units[2] for u in units)
+        assert len(window.edit_history.records) == before_records + 1
+    finally:
+        _close(window)
+
+
+def test_an_unticked_source_owner_keeps_its_units() -> None:
+    window = _window()
+    try:
+        entries = _convert_setup(window)
+        window.convert_source_actions[1].setChecked(False)
+        before_records = len(window.edit_history.records)
+        units = [e.unit for e in entries]
+
+        window._begin_convert_stroke()
+        for entry in entries:
+            window._convert_stroke_tile(entry.own_x, entry.own_y)
+        window._end_convert_stroke()
+
+        assert all(u in window.scenario.unit_manager.units[1] for u in units)
+        assert len(window.edit_history.records) == before_records
+        assert "Converted" not in window.status_log.toPlainText()
     finally:
         _close(window)
 

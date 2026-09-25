@@ -71,17 +71,28 @@ def _bare_scene(
     return scene, item
 
 
-def _paint_at(item, scale_x: float, scale_y: float | None = None, rotate_deg: float = 0.0):
+def _paint_at(
+    item,
+    scale_x: float,
+    scale_y: float | None = None,
+    rotate_deg: float = 0.0,
+    origin: tuple[float, float] | None = None,
+):
     """Drives exactly ONE paint() at a chosen world transform and hands back
-    item.stats. Calls paint() directly: TickPaintStats records the last paint
-    only, and Qt is free to split a scene render into several."""
-    from PyQt5.QtCore import QRectF
+    (item.stats, the painter's transform after paint, the 400x400 image's pixels).
+    Calls paint() directly: TickPaintStats records the last paint only, and Qt
+    is free to split a scene render into several. `origin` translates first,
+    so a rotated map lands inside the image."""
     from PyQt5.QtGui import QImage, QPainter, QTransform
+
+    from testkit.qt_capture import qimage_rgb888_to_array
 
     image = QImage(400, 400, QImage.Format_RGB888)
     image.fill(0)
     painter = QPainter(image)
     transform = QTransform()
+    if origin is not None:
+        transform.translate(*origin)
     transform.scale(scale_x, scale_x if scale_y is None else scale_y)
     if rotate_deg:
         transform.rotate(rotate_deg)
@@ -89,7 +100,7 @@ def _paint_at(item, scale_x: float, scale_y: float | None = None, rotate_deg: fl
     item.paint(painter, None)
     left_over = painter.worldTransform()
     painter.end()
-    return item.stats, left_over, QRectF()
+    return item.stats, left_over, qimage_rgb888_to_array(image)
 
 
 # --- device-space geometry -------------------------------------------------
@@ -177,6 +188,89 @@ def test_paint_leaves_the_painter_transform_untouched() -> None:
     expected = QTransform()
     expected.scale(1.5, 1.5)
     assert left_over == expected
+
+
+# Puts the whole map, letters included, inside _paint_at's image both plain and iso.
+_LETTER_ORIGIN = (100.0, 200.0)
+
+
+def _axis_letter_boxes(item, world, font_px: int) -> dict[str, object]:
+    """Each run's axis-letter box in device space, placed the way paint() places
+    it: the middle anchor, pushed out along the device-space outward ray."""
+    from PyQt5.QtCore import QPointF, QRectF
+
+    boxes = {}
+    box_w, box_h = edge_ticks.axis_label_box_px(font_px)
+    center = edge_ticks.axis_label_center_px(font_px)
+    for run in item._runs:
+        anchor_x, anchor_y = run.anchors[len(run.anchors) // 2]
+        point = world.map(QPointF(anchor_x, anchor_y))
+        tip = world.map(QPointF(anchor_x + run.outward[0], anchor_y + run.outward[1]))
+        dx, dy = tip.x() - point.x(), tip.y() - point.y()
+        reach = math.hypot(dx, dy)
+        cx, cy = point.x() + dx / reach * center, point.y() + dy / reach * center
+        boxes[run.edge] = QRectF(cx - box_w / 2.0, cy - box_h / 2.0, box_w, box_h)
+    return boxes
+
+
+def _ink_size(pixels, box) -> tuple[int, int]:
+    """Width and height of the ink inside `box`. Crops to the letter's own box
+    because the numbers share its colour."""
+    x0, y0 = math.floor(box.left()), math.floor(box.top())
+    x1, y1 = math.ceil(box.right()), math.ceil(box.bottom())
+    assert x0 >= 0 and y0 >= 0 and x1 <= pixels.shape[1] and y1 <= pixels.shape[0], "letter box off the image"
+    ink = (pixels[y0:y1, x0:x1] > 60).any(axis=2)
+    ys, xs = np.nonzero(ink)
+    assert xs.size, "no ink inside the axis letter's box"
+    return int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+
+
+def _scene_space_letter_size(world, letter: str, font_px: int) -> tuple[int, int]:
+    """Control: the same letter drawn under the world transform, which is what
+    a scene-space label would look like under Flat's rotate-and-squash."""
+    from PyQt5.QtCore import QRectF, Qt
+    from PyQt5.QtGui import QImage, QPainter
+
+    from descape.viewer_canvas import EdgeTickItem, map_overlay_font
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    image = QImage(400, 400, QImage.Format_RGB888)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.setWorldTransform(world)
+    painter.setFont(map_overlay_font(font_px))
+    painter.setPen(EdgeTickItem.LABEL_COLOR)
+    box_w, box_h = edge_ticks.axis_label_box_px(font_px)
+    painter.drawText(QRectF(80.0, 60.0, box_w, box_h), Qt.AlignCenter, letter)
+    painter.end()
+    ink = (qimage_rgb888_to_array(image) > 60).any(axis=2)
+    ys, xs = np.nonzero(ink)
+    return int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+
+
+def test_the_axis_letter_stays_upright_under_flat_isometric() -> None:
+    """GH #91 also-check. Flat+Isometric is scale(1, 0.5) then rotate(-45); the
+    letter is drawn in device space, so its ink box must match the plain render's
+    (2 px for the subpixel phase, as in test_ruler_viewer.py's label check)."""
+    font_px = edge_ticks.LABEL_FONT_PX
+    _scene, item = _bare_scene(font_px=font_px)
+    plain_stats, plain_world, plain = _paint_at(item, 1.0, origin=_LETTER_ORIGIN)
+    assert plain_stats.axis_labels_drawn == 4
+    iso_stats, iso_world, iso = _paint_at(item, 1.0, 0.5, -45.0, origin=_LETTER_ORIGIN)
+    drawn = {run.edge for run in item._runs if iso_stats.lod[run.edge].draw_labels}
+    assert {edge_ticks.axis_letter(edge) for edge in drawn} == {"X", "Y"}, "fixture must draw both letters in iso"
+
+    plain_boxes = _axis_letter_boxes(item, plain_world, font_px)
+    iso_boxes = _axis_letter_boxes(item, iso_world, font_px)
+    for edge in sorted(drawn):
+        upright = _ink_size(plain, plain_boxes[edge])
+        rotated = _ink_size(iso, iso_boxes[edge])
+        assert abs(upright[0] - rotated[0]) <= 2, f"{edge}: width changed, {upright} vs {rotated}"
+        assert abs(upright[1] - rotated[1]) <= 2, f"{edge}: height changed, {upright} vs {rotated}"
+        sheared = _scene_space_letter_size(iso_world, edge_ticks.axis_letter(edge), font_px)
+        assert max(abs(sheared[0] - upright[0]), abs(sheared[1] - upright[1])) > 2, (
+            f"{edge}: the 2 px tolerance cannot tell a sheared letter {sheared} from {upright}"
+        )
 
 
 # --- exposedRect culling ---------------------------------------------------

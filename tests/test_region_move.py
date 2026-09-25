@@ -122,6 +122,36 @@ def test_a_paste_plus_three_moves_is_one_undo_step() -> None:
         window.close()
 
 
+def _hover(map_view, tile):
+    """A plain mouse move with no button held, the case the cursor advertises."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    map_view.mouseMoveEvent(
+        conftest.mouse_event(QEvent.MouseMove, conftest.polygon_viewport_pos(map_view, *tile), Qt.NoButton, Qt.NoButton)
+    )
+
+
+def test_the_cursor_advertises_a_move_inside_the_pasted_block_only() -> None:
+    """GH #47's move-cursor step: SizeAll over the movable selection,
+    the Select tool's cross everywhere else."""
+    from PyQt5.QtCore import Qt
+
+    window = _select_window()
+    try:
+        _copy_and_paste(window, at=(20, 20))
+        map_view = window.map_view
+        assert map_view._region_movable
+        _hover(map_view, (30, 30))
+        assert map_view.cursor().shape() == Qt.CrossCursor
+        _hover(map_view, (21, 21))
+        assert map_view.cursor().shape() == Qt.SizeAllCursor
+        _hover(map_view, (22, 22))
+        assert map_view.cursor().shape() == Qt.CrossCursor
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_press_outside_the_selection_starts_a_new_selection() -> None:
     window = _select_window()
     try:

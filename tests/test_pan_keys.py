@@ -151,6 +151,37 @@ def test_both_keys_of_an_axis_pair_then_releasing_one_leaves_the_other_panning()
         _close(window)
 
 
+def test_a_diagonal_hold_advances_both_axes_and_a_speed_change_applies_next_tick() -> None:
+    """GH #93: Right + Down held move both scrollbars on every tick, and the
+    pan speed is read per tick, so a Settings change needs no re-press."""
+    from PyQt5.QtCore import Qt
+
+    from descape import settings
+
+    window = _window()
+    try:
+        view = window.map_view
+        _room_to_scroll(view)
+        h, v = view.horizontalScrollBar(), view.verticalScrollBar()
+        settings.set_pan_speed(settings.PAN_SPEED_MIN)
+        _press(view, Qt.Key_Right)
+        _press(view, Qt.Key_Down)
+
+        # 100 ms at 200 px/s is exactly 20 px per axis, no diagonal normalization.
+        for _ in range(2):
+            start = (h.value(), v.value())
+            view._pan_step(100.0)
+            assert (h.value(), v.value()) == (start[0] + 20, start[1] + 20)
+
+        settings.set_pan_speed(settings.PAN_SPEED_MAX)
+        start = (h.value(), v.value())
+        view._pan_step(100.0)
+        assert (h.value(), v.value()) == (start[0] + 200, start[1] + 200)
+        assert view._pan_timer.isActive()
+    finally:
+        _close(window)
+
+
 def test_focus_out_stops_a_held_pan() -> None:
     from PyQt5.QtCore import QEvent, Qt
     from PyQt5.QtGui import QFocusEvent

@@ -33,6 +33,7 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe
 WALL = 117  # Stone Wall
 PALISADE = 72  # Palisade Wall, another wall const
 GATE = 64  # Stone Gate, one orientation: not a wall-run const
+AQUEDUCT = 231  # class 27 with 5 variants, but not a wall
 VILLAGER = 83
 GAIA_PLAYER_ID = 0
 PLAYER = 1
@@ -199,6 +200,27 @@ def test_a_single_click_next_to_a_wall_joins_and_reshapes_it():
         assert len(window.edit_history.records) == 2
         window.undo()
         assert wall.rotation == before_rotation
+    finally:
+        _close(window)
+
+
+def test_a_wall_beside_an_aqueduct_neither_joins_nor_rewrites_it():
+    """GH #52's Aqueduct step, DEscape half. Aqueduct (231) is class 27 and
+    has 5 angles like a wall, but is no wall connector. The wall between the
+    Aqueduct and a second wall stays a run end (2), not a mid-run (0)."""
+    window = _window()
+    try:
+        model = window._ensure_unit_edits()
+        assert model is not None
+        with window._unit_edit(model, "Place aqueduct", [PLAYER]):
+            aqueduct = model.add(PLAYER, AQUEDUCT, 50.5, 50.5, rotation=3.0)
+        for tile in ((49, 50), (48, 50)):
+            _press(window.map_view, tile)
+            _release(window.map_view, tile)
+        inner = next(u for u in window.scenario.unit_manager.units[PLAYER] if (u.x, u.y) == (49.5, 50.5))
+        assert inner.unit_const == WALL
+        assert inner.rotation == 2.0
+        assert aqueduct.rotation == 3.0
     finally:
         _close(window)
 

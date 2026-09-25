@@ -85,6 +85,7 @@ from descape import (
     cliff_catalog,
     cliff_chain,
     clipboard_history,
+    composite_backend,
     crash_report,
     debug_log,
     diplomacy_fields,
@@ -2609,7 +2610,7 @@ class ViewerWindow(QMainWindow):
             "Perf &Trace", self, checkable=True, checked=perf_trace.is_enabled()
         )
         self.perf_trace_action.setToolTip(
-            "Traces per-stroke drag-paint latency by phase to Help > Debug Log. "
+            "Traces per-stroke drag-paint latency by phase, and pan/zoom repaints, to Help > Debug Log. "
             "Also settable via the DESCAPE_PERF_TRACE=1 environment variable."
         )
         self.perf_trace_action.toggled.connect(perf_trace.enable)
@@ -11638,6 +11639,7 @@ def main() -> None:
     # debug_log snapshot only exists if the hook outlives the first log line.
     install_crash_hooks()
     debug_log.log("Application started")
+    debug_log.log(composite_backend.describe())
     migrated = asset_source.migrate_legacy_config()
     if migrated is not None:
         debug_log.log(f"Migrated config from {asset_source.LEGACY_CONFIG_PATH} to {migrated}")

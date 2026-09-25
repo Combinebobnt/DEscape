@@ -1460,6 +1460,61 @@ def test_switching_to_custom_enables_the_rows_without_a_repopulate() -> None:
         restore()
 
 
+def test_leaving_custom_keeps_the_custom_rows_edited_values() -> None:
+    """GH #80 also-check: edit the custom rows under Custom, switch to
+    Standard, and the rows grey out still showing the edited values."""
+    panel, reported, restore = _gv_mode_panel(4)
+    try:
+        rows = {f: panel.widget_for(f) for f in _CUSTOM_FIELDS}
+        conquest = not rows["custom_conquest"].isChecked()
+        rows["custom_conquest"].setChecked(conquest)
+        rows["custom_explored_percent"].setValue(37)
+        rows["custom_relics"].setValue(7)
+        all_conditions = rows["custom_all_conditions"]
+        all_conditions.setCurrentIndex(1 - all_conditions.currentIndex())
+        needed = all_conditions.currentData()
+        assert {field_id for field_id, _value in reported} == set(_CUSTOM_FIELDS)
+
+        combo = panel.widget_for("victory_condition")
+        combo.setCurrentIndex(combo.findData(0))
+        for field_id, widget in rows.items():
+            assert panel.widget_for(field_id) is widget, f"{field_id} was rebuilt"
+            assert not widget.isEnabled(), field_id
+        assert rows["custom_conquest"].isChecked() is conquest
+        assert rows["custom_explored_percent"].value() == 37
+        assert rows["custom_relics"].value() == 7
+        assert all_conditions.currentData() == needed
+    finally:
+        restore()
+
+
+def test_leaving_custom_in_the_window_keeps_the_edited_values_pending() -> None:
+    """The same check through the real window, whose edits push undo records
+    and may repopulate the panel from the pending model."""
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        panel = window.map_options_panel
+        explored = panel.widget_for("custom_explored_percent").value() + 1
+        relics = panel.widget_for("custom_relics").value() + 1  # differ from stored, so each is a real edit
+        combo = panel.widget_for("victory_condition")
+        combo.setCurrentIndex(combo.findData(4))
+        assert panel.widget_for("custom_relics").isEnabled()
+        panel.widget_for("custom_explored_percent").setValue(explored)
+        panel.widget_for("custom_relics").setValue(relics)
+        combo = panel.widget_for("victory_condition")
+        combo.setCurrentIndex(combo.findData(0))
+
+        assert panel.widget_for("custom_explored_percent").value() == explored
+        assert panel.widget_for("custom_relics").value() == relics
+        assert not panel.widget_for("custom_relics").isEnabled()
+        assert window.option_edits.has_edits
+        assert window.option_edits.current_value("custom_explored_percent") == explored
+        assert window.option_edits.current_value("custom_relics") == relics
+        assert window.option_edits.current_value("victory_condition") == 0
+    finally:
+        _close(window)
+
+
 def test_a_write_gated_row_stays_greyed_under_custom_and_keeps_its_reason() -> None:
     """Greying off Custom must not displace the write-gate tooltip, and Custom
     must not enable a row the window refused."""

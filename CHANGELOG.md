@@ -22,6 +22,35 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [Unreleased]
+
+### Added
+
+- **`tools/release_render_diff.py`: pixel-diff the map render against a
+  release** (GH #87). Renders each scenario at `v0.6` and at this checkout in
+  every view, sprites off and on, and fails on any pixel that differs outside
+  the changes made on purpose since. `--frames-dir` writes side-by-side crops
+  of those; `--inject` runs a control that must fail.
+
+### Changed
+
+- **Faster Stepped rendering: part of the renderer is now compiled.** The
+  downloads include it. From source, the launcher builds it on first launch
+  when a C compiler is present, and otherwise runs the slower built-in
+  renderer; see README "Faster renderer (optional C compiler)".
+- **Elevate and Set Elevation no longer lag with sprites on.** An elevation
+  edit now updates only the units on the changed tiles instead of rebuilding
+  every unit's sprite and footprint.
+
+### Fixed
+
+- **Help > Perf Trace now reports panning and zooming** on their own
+  `perf view` lines. Before, those repaints and any hover time were folded
+  into the next drag's line, overstating it, and Convert and Cliff strokes
+  were never reported.
+- **`tools/gen_iso_reference_pngs.py` no longer crashes when `--out-dir` is
+  outside the repo.** It wrote the PNGs, then failed printing their paths.
+
 ## [0.8] - 2026-09-23
 
 ### Added

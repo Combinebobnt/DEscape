@@ -354,6 +354,38 @@ def _trigger_shape(manager) -> list:
     ]
 
 
+def test_a_move_an_add_and_a_delete_together_survive_a_save_and_a_reload(tmp_path: Path) -> None:
+    """GH #2: three structural edits in one session, saved once. Kept out of
+    _OPERATIONS, whose undo test needs each row to be a single record."""
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Triggers")
+
+        window.trigger_structural_edit("move_down", [0])
+        window.trigger_structural_edit("new", ())
+        window.trigger_structural_edit("delete", [2])
+        manager = window.trigger_edits.manager()
+        shape = _trigger_shape(manager)
+        order = list(manager.trigger_display_order)
+        assert len(shape) == 4 and "New trigger" in [name for name, *_ in shape]
+        assert order != sorted(order), "fixture assumption: the move left a non-identity order to lose"
+
+        out = tmp_path / "edited.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+    reloaded = parse_triggers(load_map_and_units(out))
+    assert reloaded is not None
+    assert _trigger_shape(reloaded) == shape
+    assert list(reloaded.trigger_display_order) == order
+
+
 # -- 5. copying a trigger through the window preserves a custom display order
 
 # The shipped fixture holds an identity display order (4 triggers, 0..3), so

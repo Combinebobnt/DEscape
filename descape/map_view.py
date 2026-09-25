@@ -1790,7 +1790,10 @@ class MapView(QGraphicsView):
         # Resumes the highlight pulse the press paused. See
         # _sync_pulse_timer() for why a stroke stops it.
         self._sync_pulse_timer()
-        self._on_stroke_end()
+        try:
+            self._on_stroke_end()
+        finally:
+            perf_trace.end_drag(self._tool)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MiddleButton:
@@ -1967,6 +1970,7 @@ class MapView(QGraphicsView):
                 # Pauses the pulse for the duration of the stroke, which is
                 # the one time its 40ms tick competes with real edit work.
                 self._sync_pulse_timer()
+                perf_trace.begin_drag()
                 self._on_stroke_start()
                 self._touch_tile(*self._pick_tile(pos), event.modifiers())
             return

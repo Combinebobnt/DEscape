@@ -156,6 +156,10 @@ def test_a_click_emits_one_effect_per_footprint_tile() -> None:
         conftest.close_window(window)
 
 
+def _last_status(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]
+
+
 def test_a_second_click_on_the_same_spot_stacks_nothing() -> None:
     from descape import brush
 
@@ -166,10 +170,13 @@ def test_a_second_click_on_the_same_spot_stacks_nothing() -> None:
         window.stamp_create_objects(50, 50)
         count = len(_effects(window))
         records = len(window.edit_history.records)
+        # GH #59: each click reports its count and how many tiles it skipped.
+        assert _last_status(window) == "Created 9 Create Object effects"
 
         window.stamp_create_objects(50, 50)
         assert len(_effects(window)) == count
         assert len(window.edit_history.records) == records, "an all-duplicate click records nothing"
+        assert _last_status(window) == "Create Objects: all 9 tiles already have this object"
 
         # One column over: only the new column's three tiles are emitted.
         window.stamp_create_objects(51, 50)
@@ -177,6 +184,7 @@ def test_a_second_click_on_the_same_spot_stacks_nothing() -> None:
         assert {(e.location_x, e.location_y) for e in _effects(window)[-3:]} == {
             (52, 49), (52, 50), (52, 51)
         }
+        assert _last_status(window) == "Created 3 Create Object effects (6 tiles already had one)"
     finally:
         conftest.close_window(window)
 
