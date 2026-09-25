@@ -254,8 +254,9 @@ def _build_units(loaded: LoadedScenario) -> None:
 
 def _patch_counter(buffer: bytearray, end_offset: int, value: int) -> None:
     """Overwrites the u32 that *ends* at end_offset. Both trigger counters are
-    the last retriever of their section (verified across all 19 DE structure
-    versions), so 'ends at the section end' is how each is addressed."""
+    the last retriever of their section (verified across every DE structure
+    version, library and repo), so 'ends at the section end' is how each is
+    addressed."""
     struct.pack_into("<I", buffer, end_offset - 4, value)
 
 

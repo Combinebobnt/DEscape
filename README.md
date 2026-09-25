@@ -155,6 +155,13 @@ methods changed or were removed. Confirmed via PyPI's metadata API that the
 PyPI's side; that's purely an artifact of installing from a raw git clone
 instead (see below).
 
+`0.8.3` ships scenario definitions up to version 1.58. DEscape supplies the
+rest itself under `descape/versions/DE/`: its own structure for 1.21, and
+1.59's structure and trigger definitions vendored from AoE2ScenarioParser's
+unreleased 1.59 support (see that directory's `PROVENANCE.md`). The
+library's own definition always wins, so the repo copy goes dormant once
+the pin moves to a release that ships it.
+
 <details>
 <summary>Alternative: install AoE2ScenarioParser from a local clone instead</summary>
 

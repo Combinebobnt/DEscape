@@ -118,7 +118,7 @@ from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
 
 # Options.number_of_triggers and FileHeader.trigger_count. Both are their own
-# section's *last* retriever in all 19 DE structure versions, so each is
+# section's *last* retriever in every DE structure version, library and repo, so each is
 # addressed as "the 4 bytes ending where that section ends". v1.21 has neither
 # (LoadedScenario.has_trigger_counters), and both patches refuse there.
 _TRIGGER_COUNT_STRUCT = struct.Struct("<I")

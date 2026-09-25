@@ -203,6 +203,18 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   docstring). Empty captions are written the game's way (length 0), not the
   library's (length 1 holding a NUL) -- same `_game_style_bytes()` helper
   the trigger fixture uses, now shared via `tools/_fixture_bytes.py`.
+- `tests/fixtures/v159_units_triggers.aoe2scenario` -- the default tier's
+  only scenario version 1.59 file, read through the vendored
+  `descape/versions/DE/v1.59/` definitions. Generated from the 120x120 donor
+  by `tools/gen_v159_fixture.py` (version fields patched to 1.59, then units
+  and triggers added through the library); regenerate with
+  `.venv/bin/python3 tools/gen_v159_fixture.py` and commit the result. **A
+  test input, not a byte oracle.** `tests/test_v159_load_path.py` pins it
+  against a fresh generator run. 11 units on GAIA and Players 1-2 carrying
+  every capture setting (-1..3), ordered so list neighbours always differ,
+  and two triggers with an Object Visible Multiplayer condition, one with
+  `allow_in_fog=1` between two timers. That ordering is what makes the
+  slot-shift regression tests for `descape/unlinked_fields.py` bite.
   `reference_id`s have a deliberate gap, and `next_unit_id_to_place` sits
   above every assigned id, mirroring every real corpus file (a naive
   `len(units)`-based add path fails on either).

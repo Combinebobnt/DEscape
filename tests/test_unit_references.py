@@ -39,11 +39,7 @@ def _loaded(players, width=120, height=120):
 
 
 def _every_shipped_version() -> list[str]:
-    return [
-        d.name[1:]
-        for d in sorted(library_compat.VERSIONS_DIR.glob("v*"))
-        if library_compat.vocabulary_is_available(d.name[1:])
-    ]
+    return library_compat.vocabulary_versions()
 
 
 # -- the vocabulary sweep ---------------------------------------------------

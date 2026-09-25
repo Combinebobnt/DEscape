@@ -10,8 +10,8 @@ repeated once per tile (terrain_id 0, elevation 0, layer -1 -- confirmed
 against every tile of all three shipped templates, not sampled). In the
 decompressed body, map_width and map_height are two consecutive little-endian
 s32 immediately preceding the terrain array: Map's last three retrievers are
-map_width, map_height, terrain_data, in that order, in all 19 DE
-versions/DE/*/structure.json files from v1.36 through v1.58 -- so the -8/-4
+map_width, map_height, terrain_data, in that order, in every DE
+versions/DE/*/structure.json, library and repo (v1.36 through v1.59) -- so the -8/-4
 offsets are a structural guarantee, not an accident of one file. Applying this
 splice to the shipped 120x120 donor reproduces the real 240x240 and 480x480
 exports byte-for-byte, except for two fields that are deliberately inherited

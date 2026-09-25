@@ -81,6 +81,13 @@ _UNRESTORABLE = frozenset({"__dict__", "__weakref__"})
 
 VERSIONS_DIR = Path(AoE2ScenarioParser.__file__).resolve().parent / "versions" / "DE"
 
+# Definitions this repo authors or vendors for scenario versions the library
+# ships none for: v1.21 (a structure only) and v1.59 (structure plus trigger
+# vocabulary). The library's own always wins. The one owner of this path:
+# every reader looks it up here at call time, so a test that patches it
+# reaches scenario_io and this module alike.
+REPO_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "DE"
+
 # The Triggers section's first field is an f64 trigger_version, and trigger_tail
 # starts at the Triggers section's first byte. See scenario_io.load_map_and_units.
 _TRIGGER_VERSION_STRUCT = struct.Struct("<d")
@@ -253,8 +260,7 @@ class TriggerVocabulary:
     effect_presentation: Mapping[str, str]
 
 
-def _parse_vocabulary_json(path: Path) -> tuple[Mapping[int, VocabularyEntry], Mapping[str, str]]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+def _parse_vocabulary_json(raw: Mapping[str, Any]) -> tuple[Mapping[int, VocabularyEntry], Mapping[str, str]]:
     # Key "-1" is not a real type: it holds the shared attribute-presentation map.
     presentation = dict(raw.get("-1", {}).get("attribute_presentation", {}))
     entries = {}
@@ -271,34 +277,130 @@ def _parse_vocabulary_json(path: Path) -> tuple[Mapping[int, VocabularyEntry], M
     return MappingProxyType(entries), MappingProxyType(presentation)
 
 
+_VOCABULARY_KINDS = ("conditions", "effects")
+
+
+def _has_vocabulary(version_dir: Path) -> bool:
+    return all((version_dir / f"{kind}.json").is_file() for kind in _VOCABULARY_KINDS)
+
+
+def _vocabulary_dir(scenario_version: str) -> tuple[Path, bool] | None:
+    """(directory, is_repo) holding `scenario_version`'s conditions.json and
+    effects.json, or None. The library's own wins, as for structures."""
+    name = f"v{scenario_version}"
+    if _has_vocabulary(VERSIONS_DIR / name):
+        return VERSIONS_DIR / name, False
+    if _has_vocabulary(REPO_VERSIONS_DIR / name):
+        return REPO_VERSIONS_DIR / name, True
+    return None
+
+
+def _vocabulary_names(raw: Mapping[str, Any]) -> set[str]:
+    """Every attribute name one conditions.json/effects.json mentions: listed,
+    defaulted, or given a presentation."""
+    names: set[str] = set()
+    for key, value in raw.items():
+        if key == "-1":
+            names.update(value.get("attribute_presentation", {}))
+        else:
+            names.update(value.get("attributes", ()))
+            names.update(value.get("default_attributes", {}))
+    return names
+
+
+@cache
+def _library_vocabulary_names(versions_dir: Path, kind: str) -> frozenset[str]:
+    """The union of _vocabulary_names() over every `kind` JSON under the
+    library's `versions_dir`. Keyed on the dir so a patched one isn't stale."""
+    names: set[str] = set()
+    for path in versions_dir.glob(f"v*/{kind}.json"):
+        names |= _vocabulary_names(json.loads(path.read_text(encoding="utf-8")))
+    return frozenset(names)
+
+
+def repo_only_attributes(scenario_version: str) -> dict[str, frozenset[str]]:
+    """Per kind, the attribute names a repo vocabulary has and no library
+    vocabulary does: fields 0.8.3's Condition/Effect can't hold (1.59's
+    `allow_in_fog`). Empty for a library vocabulary. Filtered by vocabulary
+    name, never by link name, since several links use private names."""
+    found = _vocabulary_dir(scenario_version)
+    if found is None or not found[1]:
+        return {kind: frozenset() for kind in _VOCABULARY_KINDS}
+    return {
+        kind: frozenset(
+            _vocabulary_names(json.loads((found[0] / f"{kind}.json").read_text(encoding="utf-8")))
+            - _library_vocabulary_names(VERSIONS_DIR, kind)
+        )
+        for kind in _VOCABULARY_KINDS
+    }
+
+
+def _without_attributes(raw: dict[str, Any], dropped: frozenset[str]) -> dict[str, Any]:
+    """A conditions.json/effects.json dict with every `dropped` name removed
+    from its attribute lists, defaults and presentation maps."""
+    if not dropped:
+        return raw
+    out: dict[str, Any] = {}
+    for key, original in raw.items():
+        value = dict(original)
+        if "attributes" in value:
+            value["attributes"] = [a for a in value["attributes"] if a not in dropped]
+        for field in ("default_attributes", "attribute_presentation"):
+            if field in value:
+                value[field] = {k: v for k, v in value[field].items() if k not in dropped}
+        out[key] = value
+    return out
+
+
+def vocabulary_json(scenario_version: str) -> dict[str, dict[str, Any]]:
+    """{"conditions": ..., "effects": ...}: `scenario_version`'s raw vocabulary
+    JSON, with repo_only_attributes() removed. What load_vocabulary() parses,
+    and what scenario_io feeds the library's module dicts for a repo version.
+    Raises FileNotFoundError if neither side ships one."""
+    found = _vocabulary_dir(scenario_version)
+    if found is None:
+        raise FileNotFoundError(
+            f"Neither AoE2ScenarioParser nor DEscape ships a condition/effect definition "
+            f"for scenario version {scenario_version} (looked in {VERSIONS_DIR} and {REPO_VERSIONS_DIR})"
+        )
+    dropped = repo_only_attributes(scenario_version)
+    return {
+        kind: _without_attributes(json.loads((found[0] / f"{kind}.json").read_text(encoding="utf-8")), dropped[kind])
+        for kind in _VOCABULARY_KINDS
+    }
+
+
+def vocabulary_versions() -> list[str]:
+    """Every scenario version with a vocabulary, library or repo, in version
+    order. What a sweep over "every vocabulary DEscape can serve" iterates."""
+    found = {d.name[1:] for base in (VERSIONS_DIR, REPO_VERSIONS_DIR) for d in base.glob("v*") if _has_vocabulary(d)}
+    return sorted(found, key=lambda v: tuple(int(part) for part in v.split(".")))
+
+
 def vocabulary_is_available(scenario_version: str) -> bool:
-    """False for a scenario version the installed library ships no definition
-    for. The census found 71 such files (DE 1.21/1.32/1.35). v1.21 files now
-    load from this repo's own structure (scenario_io.structure_is_available())
-    yet still have no vocabulary, so this stays the trigger-specific probe."""
-    return (VERSIONS_DIR / f"v{scenario_version}" / "conditions.json").is_file()
+    """False for a scenario version neither the installed library nor
+    REPO_VERSIONS_DIR ships a vocabulary for. The census found 71 such files
+    (DE 1.21/1.32/1.35). v1.21 files load from this repo's own structure
+    (scenario_io.structure_is_available()) yet still have no vocabulary, so
+    this stays the trigger-specific probe."""
+    return _vocabulary_dir(scenario_version) is not None
 
 
 @cache
 def load_vocabulary(scenario_version: str) -> TriggerVocabulary:
     """Condition/effect vocabulary for `scenario_version`, read from the
-    library's own versions/DE/v<version>/ JSON.
+    library's own versions/DE/v<version>/ JSON, or else REPO_VERSIONS_DIR's
+    (minus repo_only_attributes()).
 
     Deliberately not the module-level conditions.attributes/effects.attributes
     dicts: those are rewritten per load and describe the wrong version once two
     files have been opened. Reading the JSON needs no loaded scenario at all.
-    Cached because the UI asks per repaint and the files never change on disk.
+    Cached because the UI asks per repaint and the files never change on disk,
+    so a test that hides or reveals a version must call cache_clear().
     """
-    version_dir = VERSIONS_DIR / f"v{scenario_version}"
-    conditions_path = version_dir / "conditions.json"
-    effects_path = version_dir / "effects.json"
-    if not conditions_path.is_file() or not effects_path.is_file():
-        raise FileNotFoundError(
-            f"AoE2ScenarioParser ships no condition/effect definition for scenario "
-            f"version {scenario_version} (looked in {version_dir})"
-        )
-    conditions, condition_presentation = _parse_vocabulary_json(conditions_path)
-    effects, effect_presentation = _parse_vocabulary_json(effects_path)
+    raw = vocabulary_json(scenario_version)
+    conditions, condition_presentation = _parse_vocabulary_json(raw["conditions"])
+    effects, effect_presentation = _parse_vocabulary_json(raw["effects"])
     return TriggerVocabulary(
         scenario_version=scenario_version,
         conditions=conditions,

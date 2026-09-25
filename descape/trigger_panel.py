@@ -47,6 +47,7 @@ from descape.constant_picker import CatalogLineEdit
 from descape.scenario_io import (
     LoadedScenario,
     parse_triggers,
+    repo_version_has_triggers,
     unsupported_version_sentence,
 )
 from descape.text_edits import ProseTextEdit, XsTextEdit
@@ -264,7 +265,7 @@ class TriggerPanel(QWidget):
     _DIFFERS = "(differs)"
 
     _NO_DOCUMENT = "No map open."
-    # Keyed by LoadedScenario.structure_source: why parse_triggers() gave None.
+    # Why parse_triggers() gave None, keyed by _unsupported_key().
     _UNSUPPORTED: ClassVar[dict[str, str]] = {
         "library": (
             "This file's Triggers section can't be read.\n\n"
@@ -275,14 +276,21 @@ class TriggerPanel(QWidget):
         ),
         # {sentence} is scenario_io.unsupported_version_sentence(), the same
         # wording the "Failed to load" modal uses for a version with no
-        # structure either.
-        "repo": (
+        # structure either. Only for a repo version with no vocabulary (v1.21).
+        "repo_no_vocabulary": (
             "This file's Triggers section can't be read.\n\n"
             "{sentence} DEscape reads its map and units with its own structure "
             "definition, which does not cover triggers.\n\n"
             "Terrain, elevation and unit editing work normally on this file."
         ),
     }
+
+    @staticmethod
+    def _unsupported_key(loaded: LoadedScenario) -> str:
+        if loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version):
+            return "repo_no_vocabulary"
+        return "library"
+
     _READ_ONLY_NOTE = "This file's triggers can be read but not written, so editing is off."
     _PASTE_TOOLTIP = "Paste the copied triggers below the current one (Edit > Copy Triggers copies them)"
 
@@ -912,7 +920,7 @@ class TriggerPanel(QWidget):
                 self._populate_sections_menu([])
                 self._set_position_header(EXEC_MODE_UNKNOWN)
                 self.status.setText(
-                    self._UNSUPPORTED[loaded.structure_source].format(
+                    self._UNSUPPORTED[self._unsupported_key(loaded)].format(
                         sentence=unsupported_version_sentence(loaded.scenario_version)
                     )
                 )

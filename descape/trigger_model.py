@@ -47,17 +47,18 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from AoE2ScenarioParser.objects.data_objects.condition import Condition
 from AoE2ScenarioParser.objects.managers.trigger_manager import (
     TriggerManager,
     get_trigger_referencing_ce,
 )
 
-from descape import trigger_fields
+from descape import trigger_fields, unlinked_fields
 from descape.edit_history import EditHistory, TriggerDiffRecord
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
 # trigger_version f64 + trigger_instruction_start s8 + number_of_triggers s32,
-# in that order, in all 19 DE structure versions.
+# in that order, in every DE structure version, library and repo.
 SECTION_HEADER_SIZE = 13
 _TRIGGER_COUNT_STRUCT = struct.Struct("<i")  # s32, per versions/DE/*/structure.json
 _DISPLAY_ORDER_STRUCT = struct.Struct("<I")  # u32, same source
@@ -923,6 +924,10 @@ class TriggerEditModel:
                 f"trigger structs but the model tracks {len(self._blobs)} blobs -- a "
                 f"structural edit bypassed structural_edit()"
             )
+        # The commit re-slotted every condition; 1.59's allow_in_fog has no
+        # link, so it would otherwise stay with the slot.
+        for trigger, entry in zip(manager.triggers, entries, strict=True):
+            unlinked_fields.push(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
 
         parts: list[bytes] = [
             self._original_section[: SECTION_HEADER_SIZE - _TRIGGER_COUNT_STRUCT.size],

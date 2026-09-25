@@ -42,6 +42,10 @@ _EXPECTED_VERSIONS = [
     "1.53", "1.54", "1.55", "1.56", "1.57", "1.58",
 ]
 
+# Every version descape/versions/DE/ supplies a structure for. Fixed for the
+# same reason as the list above.
+_REPO_VERSIONS = ["1.21", "1.59"]
+
 
 def _self_check() -> int:
     import descape
@@ -98,13 +102,19 @@ def _self_check() -> int:
     except Exception as exc:  # noqa: BLE001 -- report, don't stop the rest of the checks
         failures.append(f"asset_source._terrain_texture_map(): {exc!r}")
 
-    # The one structure this repo ships itself (scenario_io.REPO_VERSIONS_DIR).
+    # The structures this repo ships itself (library_compat.REPO_VERSIONS_DIR),
+    # and 1.59's vendored vocabulary.
     from descape import scenario_io
 
-    if scenario_io._repo_structure_path("1.21") is None:
-        failures.append("repo structure for scenario 1.21 is missing")
+    for version in _REPO_VERSIONS:
+        if scenario_io._repo_structure_path(version) is None:
+            failures.append(f"repo structure for scenario {version} is missing")
+        else:
+            print(f"OK  repo structure for scenario {version}")
+    if not library_compat.vocabulary_is_available("1.59"):
+        failures.append("vocabulary_is_available('1.59') is False")
     else:
-        print("OK  repo structure for scenario 1.21")
+        print("OK  vocabulary_is_available('1.59')")
 
     for version in _EXPECTED_VERSIONS:
         if not library_compat.vocabulary_is_available(version):

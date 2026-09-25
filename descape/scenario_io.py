@@ -38,9 +38,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import AoE2ScenarioParser.datasets.conditions as condition_dataset
+import AoE2ScenarioParser.datasets.effects as effect_dataset
 from AoE2ScenarioParser import settings
 from AoE2ScenarioParser.helper.incremental_generator import IncrementalGenerator
 from AoE2ScenarioParser.objects.aoe2_object_manager import AoE2ObjectManager
+from AoE2ScenarioParser.objects.data_objects.condition import Condition
+from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 from AoE2ScenarioParser.objects.managers.trigger_manager import TriggerManager
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
@@ -57,7 +61,7 @@ from AoE2ScenarioParser.scenarios.aoe2_scenario import (
 # this module is the only one that loads scenarios, so importing it here is what
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
-from descape import library_compat
+from descape import library_compat, unlinked_fields
 from descape.terrain_palette import resolve_player_colors
 
 # AoE2ScenarioParser prints its own "Parsing FileHeader... Gathering FileHeader
@@ -113,27 +117,59 @@ def blank_template_path(tiles: int) -> Path:
     return TEMPLATE_DIR / f"blank_{tiles}x{tiles}.aoe2scenario"
 
 
-# Structure definitions this repo authors for scenario versions the library
-# ships none for (today only v1.21). The library's own definition always wins.
-REPO_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "DE"
-
-
 def _repo_structure_path(scenario_version: str) -> Path | None:
-    """This repo's structure.json for `scenario_version`, or None if the
-    library ships one itself (it wins) or neither does."""
+    """This repo's structure.json for `scenario_version` (under
+    library_compat.REPO_VERSIONS_DIR), or None if the library ships one
+    itself (it wins) or neither does."""
     name = Path(f"v{scenario_version}") / "structure.json"
     if (library_compat.VERSIONS_DIR / name).is_file():
         return None
-    path = REPO_VERSIONS_DIR / name
+    path = library_compat.REPO_VERSIONS_DIR / name
     return path if path.is_file() else None
 
 
 def structure_is_available(scenario_version: str) -> bool:
     """True if load_map_and_units() has a structure for `scenario_version`:
-    the library's own, or else one from REPO_VERSIONS_DIR. Says nothing about
-    triggers; library_compat.vocabulary_is_available() is that probe."""
+    the library's own, or else a repo one. Says nothing about triggers;
+    library_compat.vocabulary_is_available() is that probe."""
     name = Path(f"v{scenario_version}") / "structure.json"
-    return (library_compat.VERSIONS_DIR / name).is_file() or (REPO_VERSIONS_DIR / name).is_file()
+    return (library_compat.VERSIONS_DIR / name).is_file() or (library_compat.REPO_VERSIONS_DIR / name).is_file()
+
+
+def repo_version_has_triggers(scenario_version: str) -> bool:
+    """True for a version read from a repo structure that also ships a
+    trigger vocabulary (v1.59), so parse_triggers() may try it. False for a
+    vocabulary-less repo version (v1.21) and for every library version. Key
+    trigger behaviour off this, never off structure_source alone."""
+    return _repo_structure_path(scenario_version) is not None and library_compat.vocabulary_is_available(
+        scenario_version
+    )
+
+
+def _repo_versions() -> list[str]:
+    """Every version with a repo structure.json, in version order."""
+    found = [p.name[1:] for p in library_compat.REPO_VERSIONS_DIR.glob("v*") if (p / "structure.json").is_file()]
+    return sorted(found, key=lambda v: _version_key(v) or ())
+
+
+def _initialise_repo_vocabulary(scenario_version: str) -> None:
+    """The library's _initialise_version_dependencies() loop, fed a repo
+    vocabulary (minus the attributes 0.8.3's Condition/Effect can't hold)
+    rather than a library file. Same module dicts, no monkeypatching."""
+    raw = library_compat.vocabulary_json(scenario_version)
+    for module, kind, names in (
+        (condition_dataset, "conditions", condition_dataset.condition_names),
+        (effect_dataset, "effects", effect_dataset.effect_names),
+    ):
+        for key, definition in raw[kind].items():
+            type_id = int(key)
+            if type_id == -1:
+                module.attribute_presentation[type_id] = definition["attribute_presentation"]
+                continue
+            names[type_id] = definition["name"]
+            module.default_attributes[type_id] = definition["default_attributes"]
+            module.attributes[type_id] = definition["attributes"]
+            module.attribute_presentation[type_id] = definition.get("attribute_presentation", {})
 
 
 def _version_key(scenario_version: str) -> tuple[int, ...] | None:
@@ -163,8 +199,9 @@ def unsupported_version_sentence(scenario_version: str) -> str:
 def unsupported_structure_message(scenario_version: str) -> str:
     """The "Failed to load" modal's body, in place of the library's raw
     `UnknownScenarioStructureError: ... :(` text."""
-    repo = sorted(p.name[1:] for p in REPO_VERSIONS_DIR.glob("v*") if (p / "structure.json").is_file())
-    supplied = f" DEscape supplies its own definition for version {', '.join(repo)}, but not for this one." if repo else ""
+    repo = _repo_versions()
+    noun = "version" if len(repo) == 1 else "versions"
+    supplied = f" DEscape supplies its own definition for {noun} {', '.join(repo)}, but not for this one." if repo else ""
     return (
         "DEscape can't open this file.\n\n"
         f"{unsupported_version_sentence(scenario_version)}{supplied} None of the file "
@@ -202,8 +239,8 @@ class LoadedScenario:
     # display-only sentinel that does not exist on disk (a File > New document).
     scenario_version: str
     structure_source: str  # "library", or "repo" for a version only
-    # REPO_VERSIONS_DIR defines (v1.21). A repo-structure file has no trigger
-    # vocabulary, so parse_triggers() never attempts it.
+    # library_compat.REPO_VERSIONS_DIR defines (v1.21, v1.59). Whether
+    # parse_triggers() attempts one is repo_version_has_triggers(), not this.
     map_manager: MapManager
     unit_manager: UnitManager
     trigger_tail: bytes  # Triggers section onward, byte-exact, never parsed
@@ -253,7 +290,7 @@ class LoadedScenario:
     # save exactly as before.
     options_section_end: int  # byte offset where the Options section ends, within
     # decompressed_body. Options.number_of_triggers is that section's last
-    # retriever in all 19 DE structure versions (v1.21 has none -- see
+    # retriever in every DE structure version, library and repo (v1.21 has none -- see
     # has_trigger_counters), so the counter phase 4b patches is the 4 bytes
     # ending here. Recorded now because the walk that knows it happens at load
     # time and nowhere else.
@@ -269,7 +306,7 @@ class LoadedScenario:
     trigger_read_supported: bool | None  # None = not attempted yet (the parse is
     # lazy). False means the Triggers section refused to parse, which for the
     # 1.54/trigger-3.9 set is expected and is not a reason to fail the open,
-    # or that it was never attempted (structure_source "repo").
+    # or that it is never attempted (a repo version with no vocabulary).
     trigger_write_supported: bool  # False until a full section walk has proven
     # exact byte alignment -- see _trigger_alignment_ok(). Phase 4b's write gate;
     # nothing writes triggers yet.
@@ -450,8 +487,8 @@ def _units_layout(units_section: Any, units_section_start: int) -> tuple[int, in
 
 
 # Messages' 12 retrievers, in true on-disk order (structure.json's own
-# declaration order -- confirmed identical across all 19 DE structure
-# versions plus this repo's own v1.21 copy): six u32 string-table IDs, then
+# declaration order -- confirmed identical across every DE structure
+# version, library and repo): six u32 string-table IDs, then
 # six str16 payloads in the same field order.
 _MESSAGE_ID_FIELDS = ("instructions", "hints", "victory", "loss", "history", "scouts")
 _MESSAGE_TEXT_FIELDS = (
@@ -614,9 +651,11 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         _initialise_version_dependencies(scenario.game_version, scenario.scenario_version)
     else:
         # Parsed fresh per load: the library mutates the structure dict it is
-        # given. No vocabulary init, since the library ships none for this
-        # version; parse_triggers() refuses these files instead.
+        # given. A repo version with no vocabulary (v1.21) gets no init, and
+        # parse_triggers() refuses it instead.
         scenario.structure = json.loads(repo_structure.read_text(encoding="utf-8"))
+        if repo_version_has_triggers(scenario_version):
+            _initialise_repo_vocabulary(scenario_version)
     scenario._load_header_section(igen)
     # igen wraps the whole raw byte stream up front; progress is exactly the
     # header's length at this point, so this slice is the header's own verbatim
@@ -677,6 +716,10 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     library_compat.adapt_map_links(scenario.sections["Map"])
     map_manager = MapManager.construct(scenario.uuid)
     unit_manager = UnitManager.construct(scenario.uuid)
+    for units, player_units in zip(
+        unit_manager.units, scenario.sections["Units"].retriever_map["players_units"].data, strict=False
+    ):
+        unlinked_fields.pull(Unit, units, player_units.retriever_map["units"].data)
 
     # Skipping AoE2ObjectManager.setup() (it would also build a TriggerManager and
     # hit the same Triggers-parsing crash we're avoiding), but some lazy properties
@@ -752,8 +795,11 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         messages_write_supported=messages_write_supported,
         trigger_version=_read_trigger_version(trigger_tail),
         triggers_section_end=-1,
-        # Known up front for a repo structure: parse_triggers() never tries one.
-        trigger_read_supported=None if repo_structure is None else False,
+        # Known up front for a vocabulary-less repo structure: parse_triggers()
+        # never tries one.
+        trigger_read_supported=(
+            None if repo_structure is None or repo_version_has_triggers(scenario_version) else False
+        ),
         trigger_write_supported=False,
         _trigger_manager=None,
         map_is_square=(w == h),
@@ -883,9 +929,11 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     normally for terrain and units; only trigger reading is unavailable.
 
     Also returns None, without attempting a parse, for a file loaded from a
-    repo structure (structure_source "repo", i.e. v1.21): the library ships
-    no condition/effect definitions for it and _load_map_and_units() never
-    initialised any, so a parse would read another version's vocabulary.
+    repo structure with no repo vocabulary (v1.21, see
+    repo_version_has_triggers()): nothing ships condition/effect definitions
+    for it and _load_map_and_units() never initialised any, so a parse would
+    read another version's vocabulary. A repo version that does ship one
+    (v1.59) parses like a library version.
 
     **Call this again before reading a manager you obtained earlier.** The
     library's field gating is class-level and therefore global to the process:
@@ -903,7 +951,7 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     """
     global _active_trigger_uuid
 
-    if loaded.structure_source == "repo":
+    if loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version):
         loaded.trigger_read_supported = False
         return None
     scenario = loaded._scenario
@@ -936,6 +984,10 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
                 if section_name == "Triggers":
                     triggers_end_in_tail = igen.progress
             manager = TriggerManager.construct(scenario.uuid)
+            for trigger, entry in zip(
+                manager.triggers, scenario.sections["Triggers"].retriever_map["trigger_data"].data or [], strict=True
+            ):
+                unlinked_fields.pull(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
     except (ValueError, KeyError, IndexError, TypeError, struct.error):
         # The shapes a misparse actually throws (the 1.54/3.9 set raises
         # ValueError). Deliberately not bare `Exception`: an AttributeError from

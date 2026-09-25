@@ -26,6 +26,10 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Opens scenario version 1.59 (Sept 2026 game update).** Terrain, units and
+  triggers read, edit and save as usual. Known limit: each unit's capture
+  setting and the Object Visible Multiplayer condition's "allow in fog" are
+  kept through edits, copies and saves, but not shown or editable yet.
 - **`tools/release_render_diff.py`: pixel-diff the map render against a
   release** (GH #87). Renders each scenario at `v0.6` and at this checkout in
   every view, sprites off and on, and fails on any pixel that differs outside

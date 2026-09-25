@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from descape import scenario_io
+from descape import library_compat, scenario_io
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_write import _patch_terrain_block
 
@@ -351,9 +351,29 @@ def test_patch_options_reservation_is_zero_width_without_counters() -> None:
 def test_structure_is_available_from_library_or_repo() -> None:
     assert scenario_io.structure_is_available("1.58")
     assert scenario_io.structure_is_available("1.21")
+    assert scenario_io.structure_is_available("1.59")
     assert not scenario_io.structure_is_available("9.99")
     assert scenario_io._repo_structure_path("1.58") is None
-    assert scenario_io._repo_structure_path("1.21") == scenario_io.REPO_VERSIONS_DIR / "v1.21" / "structure.json"
+    for version in ("1.21", "1.59"):
+        expected = library_compat.REPO_VERSIONS_DIR / f"v{version}" / "structure.json"
+        assert scenario_io._repo_structure_path(version) == expected
+
+
+def test_repo_versions_split_on_vocabulary() -> None:
+    """v1.21 ships a structure only, v1.59 a structure plus vocabulary: only
+    the latter's triggers are attempted. A library version is never a repo
+    one, whatever its vocabulary."""
+    assert not scenario_io.repo_version_has_triggers("1.21")
+    assert scenario_io.repo_version_has_triggers("1.59")
+    assert not scenario_io.repo_version_has_triggers("1.58")
+    assert not library_compat.vocabulary_is_available("1.21")
+    assert library_compat.vocabulary_is_available("1.59")
+
+
+def test_scenario_io_has_no_repo_dir_of_its_own() -> None:
+    """One owner, read at call time: a second module-level copy is what let a
+    test patch one reader and not the other."""
+    assert not hasattr(scenario_io, "REPO_VERSIONS_DIR")
 
 
 def test_library_structure_wins_over_a_repo_one(tmp_path, monkeypatch) -> None:
@@ -361,30 +381,82 @@ def test_library_structure_wins_over_a_repo_one(tmp_path, monkeypatch) -> None:
     one is not even a valid structure, so reading it would fail the load."""
     (tmp_path / "v1.58").mkdir()
     (tmp_path / "v1.58" / "structure.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(scenario_io, "REPO_VERSIONS_DIR", tmp_path)
-    assert scenario_io._repo_structure_path("1.58") is None
-    assert load_map_and_units(TRIGGERS_FIXTURE).structure_source == "library"
+    (tmp_path / "v1.58" / "conditions.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "v1.58" / "effects.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(library_compat, "REPO_VERSIONS_DIR", tmp_path)
+    library_compat.load_vocabulary.cache_clear()
+    try:
+        assert scenario_io._repo_structure_path("1.58") is None
+        assert load_map_and_units(TRIGGERS_FIXTURE).structure_source == "library"
+        assert library_compat.load_vocabulary("1.58").conditions
+    finally:
+        library_compat.load_vocabulary.cache_clear()
 
 
-def _load_via_repo_structure(tmp_path, monkeypatch):
+def _library_without(tmp_path, version: str):
+    """A stand-in library versions dir: every real version but `version`,
+    symlinked. Hiding the whole library would also empty the repo-only
+    attribute filter's reference set."""
+    fake = tmp_path / "library"
+    fake.mkdir()
+    for d in library_compat.VERSIONS_DIR.glob("v*"):
+        if d.name != f"v{version}":
+            (fake / d.name).symlink_to(d, target_is_directory=True)
+    return fake
+
+
+def _load_via_repo_structure(tmp_path, monkeypatch, with_vocabulary: bool = False):
     """TRIGGERS_FIXTURE (1.58) loaded as if the library shipped nothing for it
-    and this repo did: the library's own structure copied into a fake repo
-    dir. The v1.21 path, minus bytes this repo can't commit."""
+    and this repo did: the library's own definition copied into a fake repo
+    dir. Structure only is the v1.21 path, structure plus vocabulary the v1.59
+    one, both minus bytes this repo can't commit."""
     import shutil
-
-    from descape import library_compat
 
     repo = tmp_path / "repo"
     (repo / "v1.58").mkdir(parents=True)
-    shutil.copy(library_compat.VERSIONS_DIR / "v1.58" / "structure.json", repo / "v1.58" / "structure.json")
-    monkeypatch.setattr(library_compat, "VERSIONS_DIR", tmp_path / "no_library")
-    monkeypatch.setattr(scenario_io, "REPO_VERSIONS_DIR", repo)
+    kinds = ("structure", "conditions", "effects") if with_vocabulary else ("structure",)
+    for kind in kinds:
+        shutil.copy(library_compat.VERSIONS_DIR / "v1.58" / f"{kind}.json", repo / "v1.58" / f"{kind}.json")
+    monkeypatch.setattr(library_compat, "VERSIONS_DIR", _library_without(tmp_path, "1.58"))
+    monkeypatch.setattr(library_compat, "REPO_VERSIONS_DIR", repo)
+    library_compat.load_vocabulary.cache_clear()
 
-    def _no_vocabulary(*_args):
-        raise AssertionError("repo-structure load initialised a trigger vocabulary")
+    def _no_library_vocabulary(*_args):
+        raise AssertionError("repo-structure load initialised a library trigger vocabulary")
 
-    monkeypatch.setattr(scenario_io, "_initialise_version_dependencies", _no_vocabulary)
+    monkeypatch.setattr(scenario_io, "_initialise_version_dependencies", _no_library_vocabulary)
+    if not with_vocabulary:
+        monkeypatch.setattr(scenario_io, "_initialise_repo_vocabulary", _no_library_vocabulary)
     return load_map_and_units(TRIGGERS_FIXTURE)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_vocabulary_cache():
+    """load_vocabulary() is @cache'd; a test that hides or reveals a version
+    must not leak its view into the next."""
+    library_compat.load_vocabulary.cache_clear()
+    yield
+    library_compat.load_vocabulary.cache_clear()
+
+
+def test_repo_vocabulary_branch_reads_and_writes_triggers(tmp_path, monkeypatch) -> None:
+    """The v1.59 shape: a repo structure with a repo vocabulary parses
+    triggers like a library version, and a no-op save is byte-identical."""
+    from pathlib import Path
+
+    from descape.scenario_write import write_scenario
+    from descape.trigger_model import TriggerEditModel
+
+    loaded = _load_via_repo_structure(tmp_path, monkeypatch, with_vocabulary=True)
+    assert loaded.structure_source == "repo"
+    assert loaded.trigger_read_supported is None
+    manager = scenario_io.parse_triggers(loaded)
+    assert manager is not None and len(manager.triggers) == 4
+    assert loaded.trigger_read_supported and loaded.trigger_write_supported
+    TriggerEditModel(loaded)
+    out = tmp_path / "same.aoe2scenario"
+    write_scenario(loaded, out, backup=False)
+    assert out.read_bytes() == Path(TRIGGERS_FIXTURE).read_bytes()
 
 
 def test_repo_structure_branch_loads_and_saves_byte_identically(tmp_path, monkeypatch) -> None:
@@ -436,6 +508,14 @@ def test_trigger_panel_explains_why_triggers_are_unreadable() -> None:
 
         panel.show_scenario(dataclasses.replace(window.scenario, trigger_read_supported=False, _trigger_manager=None))
         assert panel.status.text() == panel._UNSUPPORTED["library"]
+
+        # A repo version that ships a vocabulary never gets the "does not
+        # cover triggers" text: that would be false about v1.59.
+        panel.show_scenario(dataclasses.replace(
+                window.scenario, structure_source="repo", scenario_version="1.59",
+                trigger_read_supported=False, _trigger_manager=None,
+            ))
+        assert panel.status.text() == panel._UNSUPPORTED["library"]
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -457,17 +537,24 @@ def test_unsupported_version_sentence_measures_older_against_the_library() -> No
 
 def test_unsupported_structure_message_names_the_repo_version() -> None:
     text = scenario_io.unsupported_structure_message("1.35")
-    assert "1.35 is older" in text and "version 1.21, but not for this one" in text
+    assert "1.35 is older" in text and "versions 1.21, 1.59, but not for this one" in text
     assert "UnknownScenarioStructureError" not in text and ":(" not in text
+
+
+def test_repo_versions_sort_by_version_not_string(tmp_path, monkeypatch) -> None:
+    for version in ("1.9", "1.21", "1.59"):
+        (tmp_path / f"v{version}").mkdir()
+        (tmp_path / f"v{version}" / "structure.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(library_compat, "REPO_VERSIONS_DIR", tmp_path)
+    assert scenario_io._repo_versions() == ["1.9", "1.21", "1.59"]
+    assert "versions 1.9, 1.21, 1.59," in scenario_io.unsupported_structure_message("1.35")
 
 
 def test_load_raises_the_named_error_when_neither_side_ships_a_structure(tmp_path, monkeypatch) -> None:
     """TRIGGERS_FIXTURE (1.58) with both structure directories emptied: the
     v1.32/v1.35 situation, without bytes this repo can't commit."""
-    from descape import library_compat
-
     monkeypatch.setattr(library_compat, "VERSIONS_DIR", tmp_path / "no_library")
-    monkeypatch.setattr(scenario_io, "REPO_VERSIONS_DIR", tmp_path / "no_repo")
+    monkeypatch.setattr(library_compat, "REPO_VERSIONS_DIR", tmp_path / "no_repo")
 
     def _no_structure_load(*_args, **_kwargs):
         raise AssertionError("_load_structure() ran for an unsupported version")

@@ -64,6 +64,7 @@ class RegionUnit:
     caption_string_id: int
     caption_string: str
     garrison_slot: int  # index into RegionBlock.units, or -1 -- resolved at copy time
+    capture_flag: int = -1  # 1.59's per-unit capture setting, -1 (Default) before it
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,9 @@ def copy_region(
                 caption_string_id=caption_string_id,
                 caption_string=caption_string,
                 garrison_slot=garrison_slot,
+                # A plain carrier attribute (descape/unlinked_fields.py), so
+                # absent on a pre-1.59 unit rather than raising.
+                capture_flag=getattr(u, "capture_flag", -1),
             )
         )
 

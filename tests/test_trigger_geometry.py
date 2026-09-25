@@ -4,7 +4,6 @@ re-measures the plan's counts over examples/."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,11 +30,7 @@ def _shapes(entry, definition):
 
 
 def _every_shipped_version() -> list[str]:
-    return [
-        d.name[1:]
-        for d in sorted(library_compat.VERSIONS_DIR.glob("v*"))
-        if library_compat.vocabulary_is_available(d.name[1:])
-    ]
+    return library_compat.vocabulary_versions()
 
 
 def test_every_shipped_version_lists_only_whole_coordinate_groups() -> None:
@@ -44,11 +39,7 @@ def test_every_shipped_version_lists_only_whole_coordinate_groups() -> None:
     groups = (trigger_geometry.AREA_FIELDS, trigger_geometry.LOCATION_FIELDS, trigger_geometry.WALL_FIELDS)
     offenders = []
     for version in _every_shipped_version():
-        raw = {}
-        for kind in ("conditions", "effects"):
-            path = library_compat.VERSIONS_DIR / f"v{version}" / f"{kind}.json"
-            raw[kind] = json.loads(path.read_text(encoding="utf-8"))
-        for kind, entries in raw.items():
+        for kind, entries in library_compat.vocabulary_json(version).items():
             for key, value in entries.items():
                 if key == "-1":
                     continue
@@ -79,6 +70,7 @@ def test_the_area_set_is_version_dependent_and_walls_are_v157_build_object_only(
     assert {v: names for v, names in wall_effects.items() if names} == {
         "1.57": ["build_object"],
         "1.58": ["build_object"],
+        "1.59": ["build_object"],
     }
 
 

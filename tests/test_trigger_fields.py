@@ -12,8 +12,6 @@ read-only in the UI.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from descape import library_compat, trigger_fields
@@ -22,13 +20,12 @@ from descape.trigger_fields import FieldSpec
 
 def _every_shipped_vocabulary():
     """(version, kind, raw json) for every condition/effect file the installed
-    library ships. The corpus tier is not needed: these are library data files,
-    not scenarios."""
-    for version_dir in sorted(library_compat.VERSIONS_DIR.glob("v*")):
-        for kind in ("conditions", "effects"):
-            path = version_dir / f"{kind}.json"
-            if path.is_file():
-                yield (version_dir.name, kind, json.loads(path.read_text(encoding="utf-8")))
+    library or this repo ships, as the UI sees it (vocabulary_json() drops
+    repo-only attributes). The corpus tier is not needed: these are data
+    files, not scenarios."""
+    for version in library_compat.vocabulary_versions():
+        for kind, raw in library_compat.vocabulary_json(version).items():
+            yield (f"v{version}", kind, raw)
 
 
 # -- the sweep ---------------------------------------------------------------

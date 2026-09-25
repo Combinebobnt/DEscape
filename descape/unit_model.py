@@ -77,6 +77,7 @@ from descape import (
     unit_rotation,
     unit_sprites,
     unit_variant,
+    unlinked_fields,
 )
 from descape.edit_history import EditHistory, UnitDiffRecord
 from descape.scenario_io import LoadedScenario
@@ -754,6 +755,7 @@ class UnitEditModel:
         garrisoned_in_id: int = -1,
         caption_string_id: int = -1,
         caption_string: str = "",
+        capture_flag: int = -1,
     ) -> Unit:
         """Places a new unit for `player`. `rotation` is a pass-through
         parameter, not an edit operation -- storing a caller-supplied value
@@ -806,6 +808,9 @@ class UnitEditModel:
             caption_string=caption_string,
             uuid=self.loaded._scenario.uuid,
         )
+        # Unlinked on 0.8.3, so carried as a plain attribute; serialize()
+        # writes it into whatever slot the unit ends up in.
+        unit.capture_flag = capture_flag
         self.loaded.unit_manager.units[player].append(unit)
         self._blobs[player].append(None)
         self._tracked[player].append(unit)
@@ -820,7 +825,7 @@ class UnitEditModel:
         self._bump_unit_gen()
         return unit
 
-    def add_many(self, player: int, specs: Sequence) -> list[Unit]:
+    def add_many(self, player: int, specs: Sequence, capture_flag: int = -1) -> list[Unit]:
         """Batch counterpart to add(): resolves _reserve_reference_id()'s
         cost (a walk of all nine player lists) once for the whole batch
         instead of once per unit. Used by descape/terrain_units.py's bulk
@@ -835,6 +840,7 @@ class UnitEditModel:
 
         Same depoison() reasoning as add(): the caption fields are assigned
         unconditionally in `Unit.__init__` for every unit in the batch.
+        `capture_flag` applies to the whole batch, as add()'s does to one.
         """
         self._refuse_inside_field_delta("add_many")
         if not 0 <= player <= 8:
@@ -860,6 +866,7 @@ class UnitEditModel:
                     uuid=self.loaded._scenario.uuid,
                 )
             )
+            units[-1].capture_flag = capture_flag
             next_id += 1
         base = len(self._tracked[player])
         self.loaded.unit_manager.units[player].extend(units)
@@ -1200,6 +1207,9 @@ class UnitEditModel:
                         f"model tracks {len(blobs)} blobs -- an operation bypassed the "
                         f"model's own API"
                     )
+                # The commit re-slotted every unit; 1.59's capture_flag has no
+                # link, so it would otherwise stay with the slot.
+                unlinked_fields.push(Unit, self._tracked[player], entries)
 
         parts: list[bytes] = []
         for player, blobs in enumerate(self._blobs):

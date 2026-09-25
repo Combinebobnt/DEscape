@@ -8298,6 +8298,7 @@ class ViewerWindow(QMainWindow):
                             garrisoned_in_id=new_ids.get(t.holder_slot, -1),
                             caption_string_id=u.caption_string_id,
                             caption_string=u.caption_string,
+                            capture_flag=u.capture_flag,
                         )
                         new_ids[t.slot] = added.reference_id
                     unit_record = unit_edits.commit_unit_edit("Paste Region", self.edit_history, push=False)
@@ -8614,6 +8615,7 @@ class ViewerWindow(QMainWindow):
                     garrisoned_in_id=-1,  # a copy never inherits a garrison link
                     caption_string_id=source.caption_string_id,
                     caption_string=source.caption_string,
+                    capture_flag=getattr(source, "capture_flag", -1),
                 )
         except Exception:
             model.abort_unit_edit()

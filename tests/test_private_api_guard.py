@@ -175,13 +175,14 @@ def test_trigger_exposes_the_generic_condition_and_effect_constructors() -> None
 
     from descape import library_compat
 
+    # Repo vocabularies (v1.59) are in scope: New condition/effect reaches
+    # them through the same private route.
     uncovered = [
-        (version.name, kind, entry.name)
-        for version in sorted(library_compat.VERSIONS_DIR.iterdir())
-        if (version / "conditions.json").is_file()
+        (version, kind, entry.name)
+        for version in library_compat.vocabulary_versions()
         for kind, entries, support in (
-            ("condition", library_compat.load_vocabulary(version.name[1:]).conditions, NewConditionSupport),
-            ("effect", library_compat.load_vocabulary(version.name[1:]).effects, NewEffectSupport),
+            ("condition", library_compat.load_vocabulary(version).conditions, NewConditionSupport),
+            ("effect", library_compat.load_vocabulary(version).effects, NewEffectSupport),
         )
         for entry in entries.values()
         if not hasattr(support, entry.name)
@@ -194,7 +195,7 @@ def test_trigger_exposes_the_generic_condition_and_effect_constructors() -> None
         "enable/disable_technology",
         "or",
     }
-    assert len(uncovered) == 71
+    assert len(uncovered) == 76  # 71 library, 5 from v1.59
 
 
 def test_every_vocabulary_has_type_0_unit_reference_defaults() -> None:
@@ -204,12 +205,9 @@ def test_every_vocabulary_has_type_0_unit_reference_defaults() -> None:
     would make a cross-document paste clear nothing and report 0 (GH #3)."""
     from descape import library_compat
 
-    versions = [
-        version.name[1:]
-        for version in sorted(library_compat.VERSIONS_DIR.iterdir())
-        if (version / "conditions.json").is_file()
-    ]
-    assert {"1.36", "1.44", "1.54", "1.58"} <= set(versions), versions
+    # Repo vocabularies too: trigger_clipboard reads v1.59's the same way.
+    versions = library_compat.vocabulary_versions()
+    assert {"1.36", "1.44", "1.54", "1.58", "1.59"} <= set(versions), versions
     for version in versions:
         vocabulary = library_compat.load_vocabulary(version)
         condition_0 = vocabulary.conditions.get(0)
