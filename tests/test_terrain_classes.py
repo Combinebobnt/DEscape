@@ -54,7 +54,7 @@ _CLIMATES = {"temperate", "ice", "snow"}
 
 def test_every_enabled_terrain_id_is_classified():
     classes = terrain_classes._classes()
-    assert len(classes) == 131
+    assert len(classes) == 134
     # Every TerrainId the app can offer has a classification, so no paint
     # path ever has to handle a gap.
     assert {t.value for t in TerrainId} <= set(classes)

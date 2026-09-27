@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from test_ruler_viewer import _drag, _ruler_window
+from test_ruler_viewer import _drag, _pending, _ruler_window
 
 from descape import settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
@@ -102,7 +102,7 @@ def test_live_apply_repaints_without_replacing_the_item(tmp_path, monkeypatch) -
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         item_id_before = id(map_view._ruler_line_item)
 
         settings.set_overlay_color("ruler_line", "#ff00ff")

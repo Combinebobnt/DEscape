@@ -523,9 +523,9 @@ def test_neighbour_mask_ignores_diagonals_by_default():
     )
 
 
-def test_wall_family_consts_is_the_eight_eligible_walls():
+def test_wall_family_consts_is_the_eight_walls_plus_aqueduct():
     consts = unit_sprites.wall_family_consts()
-    assert consts == (72, 117, 119, 155, 370, 788, 1062, 2678)
+    assert consts == (72, 117, 119, 155, 231, 370, 788, 1062, 2678)
     assert all(unit_sprites.rotation_variant_eligible(c) for c in consts)
 
 

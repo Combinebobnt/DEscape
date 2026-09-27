@@ -84,6 +84,37 @@ def _drag(map_view, a: tuple[int, int], b: tuple[int, int]) -> None:
     )
 
 
+def _pending(map_view, a: tuple[int, int], b: tuple[int, int]) -> None:
+    """Press on a and move to b without releasing: a live, still PENDING
+    measurement. A finished one is pinned and leaves no live items."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    map_view.mousePressEvent(
+        conftest.mouse_event(QEvent.MouseButtonPress, _viewport_pos(map_view, *a), Qt.LeftButton, Qt.LeftButton)
+    )
+    map_view.mouseMoveEvent(
+        conftest.mouse_event(QEvent.MouseMove, _viewport_pos(map_view, *b), Qt.NoButton, Qt.LeftButton)
+    )
+    assert map_view._ruler.state == ruler.STATE_PENDING
+
+
+def _pinned_ends(map_view) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    return [(m.a, m.b) for m in map_view._pinned_rulers]
+
+
+def _pinned_labels(map_view) -> list:
+    from PyQt5.QtWidgets import QGraphicsSimpleTextItem
+
+    return [item for item in map_view._pinned_ruler_items if isinstance(item, QGraphicsSimpleTextItem)]
+
+
+def _right_click(map_view, tile: tuple[int, int]) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    pos = _viewport_pos(map_view, *tile)
+    map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton))
+
+
 def _label_ink_bbox(map_view) -> tuple[int, int]:
     """Width and height of the label's drawn ink, in device pixels, measured
     off a real render rather than read back off the item. Reading
@@ -170,7 +201,7 @@ def test_left_drag_with_ruler_active_does_not_pan() -> None:
         _drag(map_view, (10, 10), (30, 22))
         after = (map_view.horizontalScrollBar().value(), map_view.verticalScrollBar().value())
         assert after == before, "the view scrolled, so the drag was routed to a pan"
-        assert map_view._ruler.endpoints == ((10, 10), (30, 22))
+        assert _pinned_ends(map_view) == [((10, 10), (30, 22))]
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -185,7 +216,7 @@ def test_ruler_press_in_units_mode_does_not_select() -> None:
         window.mode_combo.setCurrentText("Units")
         map_view = window.map_view
         _drag(map_view, (12, 12), (20, 20))
-        assert map_view._ruler.endpoints == ((12, 12), (20, 20))
+        assert _pinned_ends(map_view) == [((12, 12), (20, 20))]
         assert window._selection == []
     finally:
         window.edit_history.mark_saved()
@@ -265,7 +296,7 @@ def test_the_overlay_is_built_in_every_elevation_view(style: str) -> None:
     window = _ruler_window(style)
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         assert map_view._ruler_line_item is not None
         assert len(map_view._ruler_end_items) == 2
         assert map_view._ruler_label_item.text() == "24.4 tiles  (dx +20, dy +14)"
@@ -289,7 +320,7 @@ def test_endpoints_follow_real_elevation_while_the_distance_stays_flat() -> None
     window = _ruler_window("Stepped")
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         distance_before = map_view._ruler.measurement.distance
         anchor_before = map_view._ruler_anchor((30, 24))
 
@@ -307,22 +338,23 @@ def test_endpoints_follow_real_elevation_while_the_distance_stays_flat() -> None
 
 @pytest.mark.parametrize("clear_by", ["escape", "right_click", "tool_change", "mode_change"])
 def test_the_measurement_is_cleared_by_every_documented_gesture(clear_by: str) -> None:
+    """Each gesture clears the LIVE (pending) measurement and keeps the pinned
+    one, which the status bar falls back to (GH #108/#109)."""
     from PyQt5.QtCore import QEvent, Qt
     from PyQt5.QtGui import QKeyEvent
 
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        pinned_text = ruler.format_measurement(map_view._pinned_rulers.newest)
+        _pending(map_view, (10, 10), (30, 24))
         assert map_view._ruler_line_item is not None
 
         if clear_by == "escape":
             map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
         elif clear_by == "right_click":
-            pos = _viewport_pos(map_view, 15, 15)
-            map_view.mousePressEvent(
-                conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton)
-            )
+            _right_click(map_view, (15, 15))
         elif clear_by == "tool_change":
             window._on_tool_selected("pan")
         else:
@@ -335,7 +367,9 @@ def test_the_measurement_is_cleared_by_every_documented_gesture(clear_by: str) -
         # The glow's pulse must stop with it: a timer still ticking after
         # scene().clear() would setOpacity() on a destroyed C++ object.
         assert not map_view._pulse_timer.isActive()
-        assert window.ruler_status_label.text() == ""
+        assert _pinned_ends(map_view) == [((40, 40), (50, 44))], f"{clear_by} dropped the pinned ruler"
+        assert len(_pinned_labels(map_view)) == 1
+        assert pinned_text in window.ruler_status_label.text()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -346,12 +380,21 @@ def test_the_on_map_label_anchors_to_the_live_endpoint_not_the_midpoint() -> Non
     can sit off screen with no readout visible at all, where the point the
     mouse is on (or last set the measurement to) always was on screen a
     moment ago."""
+    from PyQt5.QtCore import QEvent, Qt
+
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         b_anchor = map_view._ruler_anchor((30, 24))
         assert map_view._ruler_label_item.pos() == b_anchor
+        # A pinned ruler's label keeps the same anchor rule.
+        map_view.mouseReleaseEvent(
+            conftest.mouse_event(
+                QEvent.MouseButtonRelease, _viewport_pos(map_view, 30, 24), Qt.LeftButton, Qt.NoButton
+            )
+        )
+        assert [label.pos() for label in _pinned_labels(map_view)] == [b_anchor]
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -387,9 +430,13 @@ def test_close_then_resize_does_not_touch_deleted_items() -> None:
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        _pending(map_view, (10, 10), (30, 24))
         window.close_scenario()
         assert map_view._ruler_line_item is None
+        assert len(map_view._pinned_rulers) == 0
+        assert map_view._pinned_ruler_items == []
+        assert not window.clear_rulers_button.isEnabled()
         assert map_view._ruler_glow_items == []
         assert not map_view._pulse_timer.isActive()
         # The crash guard itself: a tick after the items are gone.
@@ -416,10 +463,14 @@ def test_opening_a_new_map_over_an_active_measurement_clears_the_status_bar() ->
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        _pending(map_view, (10, 10), (30, 24))
         assert window.ruler_status_label.text() != ""
         window.load_scenario(BLANK_TEMPLATE_PATH, untitled=True)
         assert window.ruler_status_label.text() == ""
+        # A new document drops the pinned rulers too.
+        assert len(map_view._pinned_rulers) == 0
+        assert map_view._pinned_ruler_items == []
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -588,7 +639,8 @@ def test_the_keybind_migration_reaches_the_real_actions(tmp_path) -> None:
         window.close()
 
 
-def test_hard_scrolling_leaves_no_stale_label_fragments() -> None:
+@pytest.mark.parametrize("pinned", [0, 5])
+def test_hard_scrolling_leaves_no_stale_label_fragments(pinned: int) -> None:
     """The one risk with no in-repo precedent: an ItemIgnoresTransformations
     item sits awkwardly in the
     scene's BSP index, and the documented failure mode is paint artifacts left
@@ -601,13 +653,18 @@ def test_hard_scrolling_leaves_no_stale_label_fragments() -> None:
 
     Both captures re-centre on the label first. Without that the test passes
     vacuously: after six hard scrolls the label sits almost entirely outside
-    the viewport, and a 5-pixel sliver trivially satisfies any upper bound."""
+    the viewport, and a 5-pixel sliver trivially satisfies any upper bound.
+
+    The pinned variant stacks five pinned labels a tile apart beside the live one."""
     from PyQt5.QtWidgets import QApplication
 
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (40, 30))
+        for i in range(pinned):
+            _drag(map_view, (10, 10 + i), (40, 31 + i))
+        _pending(map_view, (10, 10), (40, 30))
+        assert len(_pinned_labels(map_view)) == pinned
         map_view.scale(3.0, 3.0)
         anchor = map_view._ruler_label_item.pos()
         map_view.centerOn(anchor)
@@ -629,6 +686,228 @@ def test_hard_scrolling_leaves_no_stale_label_fragments() -> None:
         scrolled = _label_ink_bbox(map_view)
         assert scrolled[0] <= clean[0] + 2, f"label ink smeared horizontally: {clean} -> {scrolled}"
         assert scrolled[1] <= clean[1] + 2, f"label ink smeared vertically: {clean} -> {scrolled}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- pinned rulers (GH #108/#109) ----------------------------------------
+
+
+def test_two_finished_drags_give_two_pinned_rulers_and_two_labels() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (30, 24), (50, 24))
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((30, 24), (50, 24))]
+        labels = _pinned_labels(map_view)
+        assert sorted(label.text() for label in labels) == sorted(
+            ruler.format_measurement(m) for m in map_view._pinned_rulers
+        )
+        assert [label.pos() for label in labels] == [map_view._ruler_anchor((30, 24)), map_view._ruler_anchor((50, 24))]
+        # Finished measurements leave no live items behind.
+        assert map_view._ruler.state == ruler.STATE_IDLE
+        assert map_view._ruler_line_item is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("switch", ["tool", "mode", "elevation_view"])
+def test_pinned_rulers_survive_tool_mode_and_elevation_view_switches(switch: str) -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        if switch == "tool":
+            window._on_tool_selected("pan")
+        elif switch == "mode":
+            window.mode_combo.setCurrentText("Terrain")
+        else:
+            window.terrain_style_combo.setCurrentText("Stepped")
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((40, 40), (50, 44))]
+        labels = _pinned_labels(map_view)
+        assert len(labels) == 2
+        # Rebuilt against the current projection, and actually in the scene.
+        assert labels[1].pos() == map_view._ruler_anchor((50, 44))
+        assert all(item.scene() is map_view.scene() for item in map_view._pinned_ruler_items)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_elevation_edit_under_a_pinned_endpoint_moves_it_in_stepped() -> None:
+    window = _ruler_window("Stepped")
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        before = _pinned_labels(map_view)[0].pos()
+        raised = map_view._iso_elevations.copy()
+        raised[24, 30] = raised[24, 30] + 4
+        map_view._iso_elevations = raised
+        map_view.refresh_elevation_overlays()
+        after = _pinned_labels(map_view)[0].pos()
+        assert after == map_view._ruler_anchor((30, 24))
+        assert after.y() < before.y(), "the pinned endpoint ignored the elevation edit"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_right_click_on_an_endpoint_removes_only_that_ruler() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        _right_click(map_view, (30, 24))
+        assert _pinned_ends(map_view) == [((40, 40), (50, 44))]
+        assert len(_pinned_labels(map_view)) == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_right_click_while_pending_cancels_only_the_live_ruler() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (30, 24), (50, 50))
+        # On the pinned endpoint itself: the pending measurement wins.
+        _right_click(map_view, (30, 24))
+        assert map_view._ruler.state == ruler.STATE_IDLE
+        assert map_view._ruler_line_item is None
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_right_click_that_misses_is_a_no_op() -> None:
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _right_click(map_view, (20, 20))
+        void = QPointF(map_view.mapFromScene(QPointF(-500.0, -500.0)))
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, void, Qt.RightButton, Qt.RightButton))
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        assert len(_pinned_labels(map_view)) == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_clear_rulers_button_tracks_the_count_and_removes_all() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        button = window.clear_rulers_button
+        assert window.clear_rulers_param_action.isVisible()
+        # Joins the separator roll-up, or it would show beside a hidden separator.
+        assert window.tool_param_separator_action.isVisible()
+        # The Ruler reads no other param group.
+        assert not window.brush_size_spin_action.isVisible()
+        assert not window.level_param_spin_action.isVisible()
+        assert not window.paint_trees_param_action.isVisible()
+        assert not button.isEnabled()
+        _drag(map_view, (10, 10), (30, 24))
+        assert button.isEnabled()
+        _drag(map_view, (40, 40), (50, 44))
+        _right_click(map_view, (50, 44))
+        assert button.isEnabled()
+        _right_click(map_view, (10, 10))
+        assert not button.isEnabled()
+
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        assert window.ruler_status_label.text() != ""
+        button.click()
+        assert len(map_view._pinned_rulers) == 0
+        assert map_view._pinned_ruler_items == []
+        assert not button.isEnabled()
+        assert window.ruler_status_label.text() == ""
+
+        # Shown with the Ruler only.
+        _drag(map_view, (10, 10), (30, 24))
+        window._on_tool_selected("pan")
+        assert not window.clear_rulers_param_action.isVisible()
+        assert not button.isEnabled()
+        window._on_tool_selected("ruler")
+        assert window.clear_rulers_param_action.isVisible()
+        assert button.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_with_only_pinned_rulers_the_pulse_timer_is_stopped() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        assert map_view._ruler_glow_items == []
+        assert not map_view._pulse_timer.isActive()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_pinning_and_removing_leave_history_clean_and_the_document_not_dirty() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        _right_click(map_view, (50, 44))
+        window.clear_rulers_button.click()
+        assert not window.edit_history.records
+        assert not window.edit_history.can_undo
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_status_bar_shows_the_newest_pinned_ruler() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        newest = ruler.format_measurement(ruler.measure((40, 40), (50, 44)))
+        assert newest in window.ruler_status_label.text()
+        _right_click(map_view, (50, 44))
+        older = ruler.format_measurement(ruler.measure((10, 10), (30, 24)))
+        assert older in window.ruler_status_label.text()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_left_click_on_a_pinned_endpoint_in_units_mode_still_selects_a_unit() -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (30, 30), (40, 40))
+        window.mode_combo.setCurrentText("Units")
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Place", [1]):
+            unit = model.add(1, 83, 40.5, 40.5)
+        window._on_tool_selected("pan")
+        assert len(_pinned_labels(map_view)) == 1
+        pos = _viewport_pos(map_view, 40, 40)
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        map_view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+        assert (1, unit.reference_id) in window._selection
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -658,11 +937,11 @@ def _tile_interior_mean(map_view, tile: tuple[int, int]) -> float:
     return float(patch.mean())
 
 
-def test_a_completed_measurement_has_two_glow_items_that_breathe() -> None:
+def test_a_pending_measurement_has_two_glow_items_that_breathe() -> None:
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         assert len(map_view._ruler_glow_items) == 2
         assert map_view._pulse_timer.isActive(), "the glow must run the pulse even under a non-edit tool"
 
@@ -687,7 +966,7 @@ def test_the_glow_reaches_pixels_and_brightens_with_the_phase() -> None:
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         means = []
         for phase in (0.75, 0.0, 0.25):
             map_view._pulse_phase_ms = phase * map_view.HIGHLIGHT_PULSE_PERIOD_MS
@@ -704,7 +983,7 @@ def test_the_glow_follows_the_endpoints_during_a_drag() -> None:
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         for i in range(2):
             assert (
                 map_view._ruler_glow_items[i].polygon() == map_view._ruler_end_items[i].polygon()
@@ -718,7 +997,7 @@ def test_a_recoloured_ruler_recolours_its_glow() -> None:
     window = _ruler_window()
     try:
         map_view = window.map_view
-        _drag(map_view, (10, 10), (30, 24))
+        _pending(map_view, (10, 10), (30, 24))
         settings.set_overlay_color("ruler_line", "#123456")
         map_view.apply_overlay_colors()
         assert map_view._ruler_glow_items[0].brush().color().name() == "#123456"

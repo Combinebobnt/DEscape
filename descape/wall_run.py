@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from descape import unit_sprites
 from descape.render import span_anchor, unit_occupied_tiles, unit_tile_bounds
 
-# A wall piece is 1x1 for all 8 eligible consts (verified against
+# A wall piece is 1x1 for all 9 eligible consts (verified against
 # BUILDING_TILE_SPANS), which is why a run is a tile path and never a
 # lattice walk the way a cliff chain is.
 _WALL_SPAN = (1, 1)

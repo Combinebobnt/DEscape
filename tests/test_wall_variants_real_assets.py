@@ -17,7 +17,7 @@ tests/test_sprite_variant14_real_assets.py's docstring spells out: conftest's
 autouse _isolated_settings hides config.yaml from the suite on purpose.
 
 **Deliberately NOT `corpus`-marked**, unlike the other real-asset sprite
-tests. Those need PyQt5 and build render surfaces; this one is eight
+tests. Those need PyQt5 and build render surfaces; this one is nine
 `sprite_for()` calls against files already on disk and runs in well under a
 second, so it earns its place in the default tier. Gating is left to
 `_require_install()`'s skip, which is clean for anyone without an install. A
@@ -39,6 +39,7 @@ WALL_CONSTS = {
     117: "b_west_wall_stone_x1",
     119: "b_scen_wall_palisade_fortified_x1",
     155: "b_west_wall_fortified_x1",
+    231: "b_scen_aqueduct_x1",  # a full wall since GH #110
     370: "b_scen_city_wall_x1",
     788: "b_scen_wall_sea_x1",
     1062: "b_scen_fence_x1",

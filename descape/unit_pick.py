@@ -927,6 +927,112 @@ def units_in_rect(index: UnitIndex, tx0: int, ty0: int, tx1: int, ty1: int) -> l
     return result
 
 
+def _footprint_centre(unit, tile_w: int, tile_h: int) -> tuple[float, float]:
+    """The map point at the centre of the unit's drawn footprint: the
+    unit_tile_bounds() midpoint on a span > 1 axis, the stored coordinate
+    (tile + 0.5 + unit_paint_offset) on a span-1 axis."""
+    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    if span_x <= 1 and span_y <= 1:
+        return unit.x, unit.y
+    tile_x0, tile_x1, tile_y0, tile_y1 = render.unit_tile_bounds(unit, tile_w, tile_h)
+    cx = (tile_x0 + tile_x1) / 2 if span_x > 1 else unit.x
+    cy = (tile_y0 + tile_y1) / 2 if span_y > 1 else unit.y
+    return cx, cy
+
+
+def units_in_screen_rect(
+    index: UnitIndex,
+    style: str,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    elevations: np.ndarray | None = None,
+    proj: iso_geometry.IsoProjection | None = None,
+    corner_rise: np.ndarray | None = None,
+) -> list[UnitEntry]:
+    """Every entry whose on-screen ANCHOR lies inside the canvas-pixel rect,
+    edges inclusive, in `order` -- the Stepped/Sloped marquee's query (GH
+    #114). Flat keeps units_in_rect(), since its tile grid is screen-aligned.
+
+    The anchor is the footprint centre (_footprint_centre) raised to the
+    unit's own rise: its own tile's elevation in Stepped, unit_rise_px_for()
+    in Sloped (asymmetry 1). A marquee tile bbox built from sampled picks is
+    a diamond on screen, which is what grabbed units far outside the box.
+
+    No terrain occlusion test, unlike pick_unit_cover(): a unit hidden behind
+    a cliff whose anchor falls in the box is selected (RTS convention).
+    Filter-respecting for free, since a filtered unit was never indexed.
+    Returns [] without the style's own height field or proj.
+
+    The prefilters are pure optimisations. Candidates come from by_tile when
+    the rect's ground-plane tile bbox is smaller than the entry list. The
+    rise (Sloped's unit_rise_px is the expensive part) is only computed when
+    the rise-0 anchor is near the rect's top or bottom edge: every rise lies
+    in the height field's own [min, max], so an anchor outside the band
+    widened by that range is out, and one deep inside is in at any rise.
+    The tile bbox is widened a tile each way, and the band by `slack` px,
+    for map_point_to_screen's rounding (the risen and rise-0 y differ by at
+    most 1 px)."""
+    if style == "stepped":
+        if elevations is None or proj is None:
+            return []
+        tile_h, tile_w = elevations.shape
+        rise_min = int(elevations.min()) * proj.elev_step
+        rise_max = int(elevations.max()) * proj.elev_step
+    elif style == "sloped":
+        if corner_rise is None or proj is None:
+            return []
+        tile_h, tile_w = corner_rise.shape[0] - 1, corner_rise.shape[1] - 1
+        rise_min, rise_max = int(corner_rise.min()), int(corner_rise.max())
+    else:
+        raise ValueError(f"units_in_screen_rect has no rule for terrain style {style!r}")
+
+    slack = 2
+    band_top, band_bottom = top + rise_min - slack, bottom + rise_max + slack
+    # map_point_to_screen's rise-0 inverse at the band's corners, as tile bounds.
+    s_left = (left - proj.origin_x) / proj.half_w
+    s_right = (right - proj.origin_x) / proj.half_w
+    d_top = (band_top - proj.origin_y - proj.half_h) / proj.half_h
+    d_bottom = (band_bottom - proj.origin_y - proj.half_h) / proj.half_h
+    tx0 = max(0, int(np.floor((s_left - d_bottom) / 2)) - 1)
+    tx1 = min(tile_w, int(np.floor((s_right - d_top) / 2)) + 2)
+    ty0 = max(0, int(np.floor((s_left + d_top) / 2)) - 1)
+    ty1 = min(tile_h, int(np.floor((s_right + d_bottom) / 2)) + 2)
+    if tx0 >= tx1 or ty0 >= ty1:
+        return []
+    if (tx1 - tx0) * (ty1 - ty0) < len(index.entries):
+        orders: set[int] = set()
+        for ty in range(ty0, ty1):
+            for tx in range(tx0, tx1):
+                orders.update(index.by_tile.get((tx, ty), ()))
+        candidates = [index.entries[order] for order in sorted(orders)]
+    else:
+        candidates = index.entries
+
+    result: list[UnitEntry] = []
+    for entry in candidates:
+        # patch_index_for_move keeps an entry moved off-map; it isn't drawn.
+        if not (0 <= entry.own_x < tile_w and 0 <= entry.own_y < tile_h):
+            continue
+        cx, cy = _footprint_centre(entry.unit, tile_w, tile_h)
+        ax, ground_y = iso_geometry.map_point_to_screen(cx, cy, 0, proj)
+        if not (left <= ax <= right and band_top <= ground_y <= band_bottom):
+            continue
+        if top + rise_max + slack <= ground_y <= bottom + rise_min - slack:
+            # Inside at every rise the height field allows, so skip computing it.
+            result.append(entry)
+            continue
+        if style == "stepped":
+            rise = int(elevations[entry.own_y, entry.own_x]) * proj.elev_step
+        else:
+            rise = unit_rise_px_for(entry, corner_rise)
+        _ax, ay = iso_geometry.map_point_to_screen(cx, cy, rise, proj)
+        if top <= ay <= bottom:
+            result.append(entry)
+    return result
+
+
 def diamond_points(ox: int, oy: int, half_w: int, half_h: int) -> list[tuple[float, float]]:
     """The 4-point diamond for a tile box whose top-left is (ox, oy).
 

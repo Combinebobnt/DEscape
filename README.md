@@ -324,6 +324,19 @@ No install configured, or a specific terrain missing from it, both fall back
 to the guessed palette automatically — this is optional, not a hard
 dependency.
 
+DEscape can also read content from your AoE2:DE **profile folder** (the one
+holding a numeric folder per account, each with its own `resources/` and
+`mods/`), including your enabled subscribed and local mods. It is optional
+and only ever read, never written: without it, only the install's own
+content is offered. It is usually found on its own: on Windows at
+`%USERPROFILE%\Games\Age of Empires 2 DE`, and on Linux in the Proton prefix
+beside the install's Steam library
+(`steamapps/compatdata/813780/pfx/drive_c/users/steamuser/Games/Age of Empires 2 DE`).
+To point DEscape elsewhere, set `aoe2de_profile` in `config.yaml` or the
+`AOE2DE_PROFILE_PATH` environment variable (checked first). Players mode's
+Personality list is built from these folders: the install's AIs, plus any in
+your profile and enabled mods.
+
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`
 - **Linux:** `~/.local/share/Steam/steamapps/common/AoE2DE` (or wherever your

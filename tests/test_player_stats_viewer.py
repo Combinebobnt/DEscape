@@ -54,9 +54,10 @@ def _combo_items(window) -> list[tuple[str, int]]:
 def test_the_combo_lists_gaia_then_the_defined_players_and_defaults_to_player_one() -> None:
     window = _window(UNITS_FIXTURE)
     try:
-        assert _combo_items(window) == [("GAIA", 0), ("Player 1", 1), ("Player 2", 2)]
+        # GH #130: the fixture's tribe names are empty, so the labels are bare P<n>.
+        assert _combo_items(window) == [("GAIA", 0), ("P1", 1), ("P2", 2)]
         assert window.stats_player_combo.currentData() == 1
-        assert window.player_stats_label.text().startswith("<b>Player 1</b>")
+        assert window.player_stats_label.text().startswith("<b>P1</b>")
         assert _placements(window) == 3
         assert "Units per player" not in window.info.toPlainText()
     finally:
@@ -92,16 +93,16 @@ def test_lowering_the_player_count_labels_a_slot_that_owns_units_inactive() -> N
         spin = window.players_panel.player_count_spin
         assert spin.isEnabled(), "Number of Players is read-only on this fixture"
         assert spin.value() == 2
-        assert _combo_items(window)[-1] == ("Player 3 (inactive)", 3)
+        assert _combo_items(window)[-1] == ("P3 (inactive)", 3)
 
         spin.setValue(3)
-        assert _combo_items(window)[-1] == ("Player 3", 3)
+        assert _combo_items(window)[-1] == ("P3", 3)
         spin.setValue(2)
-        assert _combo_items(window)[-1] == ("Player 3 (inactive)", 3)
+        assert _combo_items(window)[-1] == ("P3 (inactive)", 3)
 
         window.undo()
         assert spin.value() == 3
-        assert _combo_items(window)[-1] == ("Player 3", 3)
+        assert _combo_items(window)[-1] == ("P3", 3)
     finally:
         conftest.close_window(window)
 
@@ -111,7 +112,7 @@ def test_an_inactive_slot_that_owns_placements_is_listed_and_labelled(monkeypatc
     try:
         monkeypatch.setattr(window, "_current_active_players", lambda: [1])
         window._repopulate_stats_players()
-        assert _combo_items(window) == [("GAIA", 0), ("Player 1", 1), ("Player 2 (inactive)", 2)]
+        assert _combo_items(window) == [("GAIA", 0), ("P1", 1), ("P2 (inactive)", 2)]
     finally:
         conftest.close_window(window)
 

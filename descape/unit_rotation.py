@@ -105,11 +105,12 @@ def semantics_for(unit_const: int) -> str:
 
 
 def rotation_is_angle(unit_const: int) -> bool:
-    """The write-path predicate: may a Rotate action touch this const?
+    """UnitEditModel.set_rotation()'s predicate: is this const's rotation a
+    real facing angle?
 
-    Named as a rule string in unit_fields.UnitFieldSpec.conditional, so the
-    inspector's per-const editability resolves through here rather than
-    duplicating the check.
+    No longer "may a Rotate action touch this const": since GH #123 Rotate and
+    the Rotation field also step cyclable consts through set_variant(), and
+    unit_variant.is_rotation_editable() is that wider rule.
     """
     return semantics_for(unit_const) == ANGLE
 

@@ -20,7 +20,7 @@ BARRELS = 1330
 WALL, CLIFF, GATE, ARCHER, HOUSE = 117, 264, 64, 4, 70
 
 
-@pytest.mark.parametrize("const", [OAK, PINE, RAINFOREST, AQUEDUCT, GRANARY, BARRELS])
+@pytest.mark.parametrize("const", [OAK, PINE, RAINFOREST, GRANARY, BARRELS])
 def test_trees_and_scenery_are_cyclable(const):
     assert unit_variant.is_cyclable(const)
 
@@ -35,11 +35,16 @@ def test_walls_cliffs_gates_angles_and_inert_consts_are_not(const):
     assert not unit_variant.is_cyclable(const)
 
 
-@pytest.mark.parametrize("const", [AQUEDUCT, MOLE])
-def test_class_27_non_walls_stay_cyclable(const):
-    """Regression guard: both are class 27, the wall class, so an exclusion
-    keyed on class_ rather than on the wall const set would silently drop them."""
-    assert unit_variant.is_cyclable(const)
+def test_class_27_non_walls_stay_cyclable():
+    """Regression guard: Mole is class 27, the wall class, so an exclusion
+    keyed on class_ rather than on the wall const set would silently drop it."""
+    assert unit_variant.is_cyclable(MOLE)
+
+
+def test_aqueduct_is_not_cyclable():
+    """GH #110: Aqueduct is treated as a full wall, so its index is
+    re-derived from its neighbours and cycling it would be overwritten."""
+    assert not unit_variant.is_cyclable(AQUEDUCT)
 
 
 def test_a_const_whose_file_holds_one_variant_is_not_cyclable():
@@ -51,13 +56,13 @@ def test_a_const_whose_file_holds_one_variant_is_not_cyclable():
 
 def test_excluded_consts_are_exactly_the_walls_cliffs_and_gates():
     gates = {c for group in gate_orientation.groups().values() for c in group}
-    assert len(unit_sprites._ROTATION_VARIANT_CONSTS) == 8
+    assert len(unit_sprites._ROTATION_VARIANT_CONSTS) == 9
     assert len(unit_sprites._CLIFF_VARIANT_CONSTS) == 96
     assert len(gates) == 96
     assert unit_variant.excluded_consts() == (
         unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIFF_VARIANT_CONSTS | gates
     )
-    assert len(unit_variant.excluded_consts()) == 200
+    assert len(unit_variant.excluded_consts()) == 201
 
 
 def test_cycle_step_wraps_and_round_trips():
@@ -93,6 +98,50 @@ def test_random_variant_never_returns_the_current_one_and_covers_the_rest():
         assert value == int(value)
         seen.add(value)
     assert seen == {0.0, 1.0, 2.0, 4.0}
+
+
+# --- GH #123: Rotate and the Rotation field on cyclable consts ----------------
+
+
+@pytest.mark.parametrize("const", [ARCHER, OAK, PINE, BARRELS])
+def test_angle_and_cyclable_consts_are_rotation_editable(const):
+    assert unit_variant.is_rotation_editable(const)
+
+
+@pytest.mark.parametrize("const", [WALL, CLIFF, GATE, HOUSE, 1280])
+def test_walls_cliffs_gates_inert_and_single_variant_consts_are_not_rotation_editable(const):
+    assert not unit_variant.is_rotation_editable(const)
+
+
+@pytest.mark.parametrize(
+    ("consts", "mode"),
+    [
+        ([], None),
+        ([ARCHER], "facing"),
+        ([OAK], "variant"),
+        ([OAK, PINE, WALL], "variant"),
+        ([ARCHER, OAK, WALL], "facing"),
+        ([WALL], None),
+        ([WALL, GATE, HOUSE], None),
+    ],
+)
+def test_rotation_field_mode(consts, mode):
+    assert unit_variant.rotation_field_mode(consts) == mode
+
+
+def test_rotation_field_mode_ignores_consts_the_rule_does_not_admit():
+    """The panel passes only the admitted consts, the viewer every selected
+    one: a wall or house in the input must not change the answer."""
+    for admitted in ([OAK], [ARCHER, OAK]):
+        assert unit_variant.rotation_field_mode(admitted) == unit_variant.rotation_field_mode(
+            [*admitted, WALL, HOUSE]
+        )
+
+
+def test_variant_scale_is_the_fewest_variants_of_any_cyclable_member():
+    assert unit_variant.variant_scale([OAK]) == 42
+    assert unit_variant.variant_scale([OAK, PINE]) == 27
+    assert unit_variant.variant_scale([OAK, PINE, WALL, ARCHER]) == 27
 
 
 @pytest.mark.corpus

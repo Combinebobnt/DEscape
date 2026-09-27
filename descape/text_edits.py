@@ -23,6 +23,11 @@ class _MultiLineEdit(QPlainTextEdit):
 
     Subclasses pick the font and wrap mode in _configure(), which runs before
     the height band is computed from fontMetrics().
+
+    While a box has focus, ViewerWindow's Edit > Undo/Redo act on its own
+    document undo stack rather than EditHistory (GH #38). Opening the Edit
+    menu is a popup focus-out, which focusOutEvent() exempts, so the menu
+    reaches the box's stack before anything is committed.
     """
 
     editingFinished = pyqtSignal()

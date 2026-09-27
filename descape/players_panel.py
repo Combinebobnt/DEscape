@@ -11,29 +11,25 @@ Writable as of step 3c, for whichever fields the window's
 `editable_fields` names -- never worked out here, the same split
 MapOptionsPanel keeps (two independent gates: the per-player write path
 verifying at all, and the Map Options carrier model it additively rides in
-also having to verify -- see the maintainer plan's decision 1). Three
-distinct read-only reasons, not two:
+also having to verify -- see the maintainer plan's decision 1). Two
+distinct read-only reasons:
 
-- Tier 1 fields (fixed byte length or, as of the civ/architecture
-  maintainer plan's Step B, a resizable str16) that this file's own write
-  path failed to verify for -- the window's `read_only_reasons`.
-  civilization/architecture ride this same reason as any other Tier-1
-  field: Step A made them writable below scenario version 1.56 (a plain
-  u32), Step B extended that to 1.56+ (a resizing splice), so there is no
-  longer a version-dependent field-kind reason for them to carry.
-- `personality`, stored as variable-length data no byte-patch could reach
-  regardless of file -- `_TIER2_REASON`, resolved here rather than by the
-  window, since it is a fact about the field, not the file.
-- `player_type`, whose semantics are unconfirmed (not "no write path yet"
-  -- one exists, but writing a byte nobody has identified is exactly what
-  AGENTS.md's pass-it-through-verbatim rules exist to prevent) --
-  `_PLAYER_TYPE_REASON`, also resolved here.
+- Fields (fixed byte length, a resizable str16, or Personality's own
+  splices) that this file's own write path failed to verify for -- the
+  window's `read_only_reasons`.
+- `player_type` (ai_type), which follows Personality and is only ever
+  written as part of a Personality choice -- `_PLAYER_TYPE_REASON`,
+  resolved here since it is a fact about the field, not the file.
 
-`tribe_name` is the one TEXT-kind spec that can be editable (step 3d): it
-gets a `QLineEdit` rather than the read-only `QLabel` the other TEXT spec
-(personality, the only remaining Tier 2 field) renders as. civilization/
-architecture are COMBO-kind, not TEXT, as of Step A -- see
-`player_fields.civilization_choices()`.
+`tribe_name` is the one TEXT-kind spec: a `QLineEdit` when editable, a
+read-only `QLabel` otherwise. civilization/architecture are COMBO-kind as of
+Step A -- see `player_fields.civilization_choices()`.
+
+Personality (GH #126) is its own PERSONALITY kind, a non-editable combo:
+the window's `PersonalityOptions` supplies the scanned choices, and a stored
+value matching none of them gets a "(stored)" row that restores the file's
+own bytes. It reports the chosen key, never a name, through the same
+on_player_field callback, and never reads any AI script text itself.
 
 Number of Players (step 3e) is the one row here that is not a
 PlayerFieldSpec and not per-player: a single spinbox above the player
@@ -50,7 +46,9 @@ GAIA's own PlayerDataTwo color slot is known junk (terrain_palette.py).
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 
 from AoE2ScenarioParser.helper.bytes_conversions import str_to_bytes
 from PyQt5.QtCore import Qt
@@ -69,10 +67,13 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from descape import ai_scripts, player_labels
+from descape.ai_scripts import AiChoice
 from descape.player_fields import (
     CHECKBOX,
     COMBO,
     NUM_PLAYERS,
+    PERSONALITY,
     PLAYER_COUNT_FIELD_ID,
     POV_X_FIELD,
     POV_Y_FIELD,
@@ -80,10 +81,11 @@ from descape.player_fields import (
     civilization_choices,
     current_value,
     defined_player_count,
+    pov_bounds,
     specs_for,
 )
 from descape.scenario_io import LoadedScenario
-from descape.viewer_common import _fit_combo_width, _make_spinbox, _swatch_icon
+from descape.viewer_common import _add_player_item, _fit_combo_width, _make_spinbox, _set_player_item
 
 # Number of Players' own editable range. 1 is refused rather than shown as a
 # floor: every corpus file measured stores 2..8, and a one-player scenario
@@ -120,13 +122,37 @@ class _EncodedByteLengthValidator(QValidator):
 # rather than a static spec.choices tuple -- see civilization_choices().
 _DYNAMIC_CHOICE_FIELDS = frozenset({"civilization", "architecture"})
 
-# personality (ai_names, always str16) is the one field left that no
-# byte-patch write path could ever reach regardless of file version --
-# unlike civilization/architecture, which became a plain u32 write below
-# scenario version 1.56 as of Step A. Distinct from Tier 1's read-only
-# reason on purpose, so it can't be confused with "this file's gate
-# failed".
-_TIER2_FIELDS = frozenset({"personality"})
+# The Personality combo's row for a stored value no scanned choice matches.
+STORED_PERSONALITY = "stored"
+
+
+@dataclass(frozen=True)
+class PersonalityOptions:
+    """What the window tells the panel about Personality. `custom_reason`
+    non-empty disables every custom row with it as the tooltip;
+    `unresolvable` disables single rows (key -> reason); `pending_keys`
+    names the exact choice a pending edit holds, for same-named copies."""
+
+    choices: tuple[AiChoice, ...] = ai_scripts.BUILTINS
+    custom_reason: str = ""
+    unresolvable: Mapping[str, str] = field(default_factory=dict)
+    pending_keys: Mapping[int, str] = field(default_factory=dict)
+
+
+def stored_personality_label(name: str, ai_type: int | None) -> str:
+    """A stored value no choice matches: "Standard (unset)" for the empty
+    name a new scenario carries, "(stored) <name>" otherwise."""
+    if name == "" and ai_type == ai_scripts.AI_TYPE_STANDARD:
+        return "Standard (unset)"
+    return f"(stored) {name or '(empty)'}"
+
+
+def personality_choice_label(choice: AiChoice) -> str:
+    if choice.key == ai_scripts.KEY_STANDARD:
+        return "Standard"
+    if choice.key == ai_scripts.KEY_NONE:
+        return "None"
+    return choice.stored_name
 
 # The four resource-mirrored fields plus Pop Limit: each has an f32 mirror
 # (player_data_4), so the largest integer either stored copy can hold
@@ -164,11 +190,9 @@ class PlayersPanel(QWidget):
     MIN_USEFUL_WIDTH = 320
 
     _NO_DOCUMENT = "No map open."
-    _TIER2_REASON = "Stored as a variable-length field, which this tool cannot patch in place."
     _PLAYER_TYPE_REASON = (
-        "Unconfirmed -- a hypothesis for the in-game 'Player Type' dropdown, not "
-        "documented anywhere in AoE2ScenarioParser. Writing a byte nobody has "
-        "identified risks corrupting a value whose meaning isn't confirmed."
+        "Follows Personality: Custom for a .ai script, Standard or None. "
+        "Change it by picking a Personality; the two are always written together."
     )
     _DISABLES_LABEL = "Disabled Objects…"
     _DISABLES_TOOLTIP = (
@@ -251,7 +275,10 @@ class PlayersPanel(QWidget):
         # derivable from the file once an edit is pending" reasoning
         # _values has, for the one row that isn't per-player.
         self._player_count = _MIN_PLAYER_COUNT
+        self._personality = PersonalityOptions()
         self._populating = False
+        # GH #130: pushed by refresh_player_labels(), read when the combo is built.
+        self._player_labels = player_labels.DEFAULT_LABELS
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -327,6 +354,7 @@ class PlayersPanel(QWidget):
             self._read_only_reasons = {}
             self._pending_values = {}
             self._player_count = _MIN_PLAYER_COUNT
+            self._personality = PersonalityOptions()
             self.player_count_spin.setEnabled(False)
             self._set_disables_enabled(False)
             self.player_combo.blockSignals(True)
@@ -348,6 +376,7 @@ class PlayersPanel(QWidget):
         player_count: int | None = None,
         disables_editable: bool = False,
         disables_carrier_ok: bool = True,
+        personality: PersonalityOptions | None = None,
     ) -> None:
         """Populate from `loaded`. The single repopulate path -- both
         ViewerWindow._show_players() (mode entry, a new document) and
@@ -393,6 +422,9 @@ class PlayersPanel(QWidget):
         `disables_carrier_ok` is which of its two gates refused, so the
         tooltip can name the right one -- the same carrier/own split
         `read_only_reasons` already carries for the per-player rows.
+
+        `personality` is the Personality combo's choices and per-row
+        refusals (GH #126); None means Standard and None only.
         """
         if loaded is None:
             self.clear_document()
@@ -404,6 +436,7 @@ class PlayersPanel(QWidget):
         self._editable_fields = frozenset(editable_fields)
         self._read_only_reasons = dict(read_only_reasons or {})
         self._pending_values = {k: dict(v) for k, v in (pending_values or {}).items()}
+        self._personality = personality or PersonalityOptions()
         self._populate_player_count(
             defined_player_count(loaded) if player_count is None else player_count
         )
@@ -414,7 +447,7 @@ class PlayersPanel(QWidget):
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
             for player_id in range(1, 9):
-                self.player_combo.addItem(_swatch_icon(loaded.player_colors[player_id]), f"P{player_id}")
+                _add_player_item(self.player_combo, player_id, self._player_labels, loaded.player_colors)
             self.player_combo.setCurrentIndex(0)
             self.player_combo.blockSignals(False)
             self.player_combo.setEnabled(True)
@@ -542,15 +575,12 @@ class PlayersPanel(QWidget):
             self._widgets[spec.field_id] = widget
             # Three-way precedence, same as MapOptionsPanel: an out-of-range
             # label has already set its own explanatory tooltip, so only a
-            # widget that hasn't gets a reason -- Tier 2/player_type resolve
-            # their own unconditionally (facts about the field, not the
-            # file); everything else, including tribe_name, falls back to
-            # the window's per-file gate reason, then the spec's own
-            # tooltip.
+            # widget that hasn't gets a reason -- player_type resolves its
+            # own unconditionally (a fact about the field, not the file);
+            # everything else falls back to the window's per-file gate
+            # reason, then the spec's own tooltip.
             if not widget.toolTip():
-                if spec.field_id in _TIER2_FIELDS:
-                    reason = self._TIER2_REASON
-                elif spec.field_id == "player_type":
+                if spec.field_id == "player_type":
                     reason = self._PLAYER_TYPE_REASON
                 else:
                     reason = self._read_only_reasons.get(spec.field_id, "")
@@ -619,10 +649,12 @@ class PlayersPanel(QWidget):
             return self._out_of_range_label(spec, value)
         editable = spec.field_id in self._editable_fields
 
+        if spec.kind == PERSONALITY:
+            return self._build_personality_combo(spec, str(value), editable)
+
         if spec.kind == TEXT:
             if editable:
-                # The only editable TEXT spec (tribe_name) -- everything
-                # else that reaches here is Tier 2, always read-only.
+                # tribe_name, the only TEXT spec.
                 widget = QLineEdit(str(value))
                 widget.setValidator(_EncodedByteLengthValidator(_TRIBE_NAME_MAX_ENCODED_BYTES, widget))
                 # editingFinished, not textChanged, so one undo record per
@@ -673,14 +705,97 @@ class PlayersPanel(QWidget):
             # AGENTS.md's pass-it-through-verbatim rules exist to prevent.
             minimum = min(-_F32_EXACT_RANGE, value)
             maximum = max(_F32_EXACT_RANGE, value)
+        pov_last_tile = None
+        if spec.field_id in (POV_X_FIELD, POV_Y_FIELD):
+            # GH #117: the map's range, widened (same rule as above) over an
+            # off-map stored value, so it shows as stored and stays editable.
+            map_manager = self._loaded.map_manager
+            lo, pov_last_tile = pov_bounds(spec.field_id, map_manager.map_width, map_manager.map_height)
+            minimum, maximum = min(lo, value), max(pov_last_tile, value)
         widget = _make_spinbox(value, editable, minimum=minimum, maximum=maximum)
+        # Range notes only when editable: a read-only row's tooltip is its
+        # gate reason, which the note would otherwise displace (_build_groups()).
         if editable and spec.field_id in _F32_EXACT_RANGE_FIELDS:
-            # Only when editable: a read-only row's tooltip is its gate
-            # reason, which is the more useful explanation when the range
-            # note would otherwise displace it (see _build_groups()).
             widget.setToolTip(_F32_EXACT_RANGE_TOOLTIP)
+        if editable and pov_last_tile is not None:
+            widget.setToolTip(f"0 to {pov_last_tile}, or -1 for unset")
         widget.valueChanged.connect(lambda new, s=spec: self._changed(s, new))
         return widget
+
+    def _original_personality(self) -> tuple[str, int | None]:
+        """The file's own (name, ai_type) for the current player, pending edits aside."""
+        specs = {s.field_id: s for s in self._specs}
+        name = current_value(self._loaded, specs["personality"], self._player_id)
+        type_spec = specs.get("player_type")
+        ai_type = None if type_spec is None else current_value(self._loaded, type_spec, self._player_id)
+        return str(name), ai_type
+
+    def _personality_rows(self, name: str) -> tuple[list[tuple[str, str, str]], str]:
+        """(label, key, disabled reason) per combo row, and the key of the
+        row the current player shows. The file's own value, when it matches
+        no choice (exact name bytes and ai_type), gets a first row that
+        stays offered after a switch, so picking it restores those bytes."""
+        ai_type = self._values.get("player_type")
+        options = self._personality
+        original_name, original_type = self._original_personality()
+        rows: list[tuple[str, str, str]] = []
+        if not any(ai_scripts.matches_stored(c, original_name, original_type) for c in options.choices):
+            label = stored_personality_label(original_name, original_type)
+            rows.append((label, STORED_PERSONALITY, ""))
+        pending_key = options.pending_keys.get(self._player_id)
+        matched = [c.key for c in options.choices if ai_scripts.matches_stored(c, name, ai_type)]
+        if pending_key in matched:
+            current = pending_key
+        elif matched:
+            current = matched[0]
+        else:
+            current = STORED_PERSONALITY
+        name_counts = Counter(c.stored_name for c in options.choices)
+        for choice in options.choices:
+            label = personality_choice_label(choice)
+            if name_counts[choice.stored_name] > 1:
+                label = f"{label} ({choice.source})"
+            reason = options.custom_reason if choice.is_custom and options.custom_reason else ""
+            rows.append((label, choice.key, reason or options.unresolvable.get(choice.key, "")))
+        return rows, current
+
+    def _build_personality_combo(self, spec, name: str, editable: bool) -> QComboBox:
+        widget = QComboBox()
+        _fit_combo_width(widget)
+        rows, current = self._personality_rows(name)
+        for i, (label, key, reason) in enumerate(rows):
+            widget.addItem(label, key)
+            if reason:
+                widget.model().item(i).setEnabled(False)
+                widget.setItemData(i, reason, Qt.ToolTipRole)
+        widget.setCurrentIndex(max(widget.findData(current), 0))
+        # Only when editable: a read-only row's tooltip is its gate reason (_build_groups()).
+        if editable and current == STORED_PERSONALITY:
+            if name == "" and self._values.get("player_type") == ai_scripts.AI_TYPE_STANDARD:
+                widget.setToolTip(
+                    "No personality stored, as in a new scenario (it plays as Standard). "
+                    "Kept as is until you pick one."
+                )
+            else:
+                widget.setToolTip(
+                    f"Stored as {name!r}, which matches no AI found in the game, profile or "
+                    "mod folders. Kept as stored; pick another to replace it."
+                )
+        widget.setEnabled(editable)
+        widget.currentIndexChanged.connect(lambda _, s=spec, w=widget: self._personality_changed(s, w))
+        return widget
+
+    def _personality_changed(self, spec, widget: QComboBox) -> None:
+        """Report the chosen key; the window repopulates, since the AI type
+        row follows it. Same guards as _changed()."""
+        if self._populating or spec.field_id not in self._editable_fields:
+            return
+        self._on_player_field(spec, self._player_id, widget.currentData())
+
+    def shown_personality(self) -> str | None:
+        """The current player's Personality combo key, for the window and tests."""
+        widget = self._widgets.get("personality")
+        return widget.currentData() if isinstance(widget, QComboBox) else None
 
     @staticmethod
     def _is_representable(spec, value: int | str) -> bool:
@@ -695,7 +810,7 @@ class PlayersPanel(QWidget):
         version-dependent type surprise that would need special-casing for
         a CHECKBOX or SPINBOX row.
         """
-        if spec.kind == TEXT:
+        if spec.kind in (TEXT, PERSONALITY):
             return True
         if spec.kind == CHECKBOX:
             return isinstance(value, int) and value in (0, 1)
@@ -764,17 +879,16 @@ class PlayersPanel(QWidget):
         """Number of Players as currently shown."""
         return self._player_count
 
-    def refresh_player_swatches(self, loaded) -> None:
-        """Re-icon the P1..P8 combo from `loaded`'s current player_colors,
-        after a colour edit re-derived them.
+    def refresh_player_labels(self, labels, colors) -> None:
+        """Relabel and re-icon the P1..P8 combo (GH #130), after a tribe name
+        or colour edit.
 
         Its own path rather than a show_scenario() round trip: the combo is
         built under `if not same_document`, which is False on every edit, so
-        a repopulate alone never rebuilds the icons. setItemIcon() in place
-        over the existing items -- no clear(), no setCurrentIndex() -- keeps
-        that guard's selection-preservation intent.
+        a repopulate alone never relabels it. Row i is pid i + 1, relabelled
+        in place with no clear() or setCurrentIndex(), which keeps that
+        guard's selection-preservation intent and the index-to-pid mapping.
         """
-        if loaded is None or self.player_combo.count() == 0:
-            return
+        self._player_labels = labels
         for i in range(self.player_combo.count()):
-            self.player_combo.setItemIcon(i, _swatch_icon(loaded.player_colors[i + 1]))
+            _set_player_item(self.player_combo, i, i + 1, labels, colors)

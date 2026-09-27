@@ -38,9 +38,10 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from descape import batch_api, object_catalog, scatter
+from descape import batch_api, object_catalog, player_labels, scatter
 from descape.terrain_palette import name_for_terrain_id
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
+from descape.viewer_common import _add_player_item
 
 RESTRICT_ANY = "any"
 RESTRICT_WATER = "water"
@@ -125,7 +126,9 @@ class ScatterDialog(QDialog):
     test can drive the widgets and call it directly.
     """
 
-    def __init__(self, scenario, region, unit_const, owner_id, parent=None, last=None):
+    def __init__(
+        self, scenario, region, unit_const, owner_id, parent=None, last=None, *, labels=None, colors=None
+    ):
         super().__init__(parent)
         self.setWindowTitle("Scatter Units in Region")
         self._scenario = scenario
@@ -140,9 +143,9 @@ class ScatterDialog(QDialog):
         layout.addWidget(QLabel(f"Object: {object_catalog.display_name(unit_const)} ({unit_const})"))
 
         self.owner_combo = QComboBox()
-        self.owner_combo.addItem("GAIA", GAIA_PLAYER_ID)
-        for player_id in range(1, MAX_PLAYER_ID + 1):
-            self.owner_combo.addItem(f"Player {player_id}", player_id)
+        labels = labels or player_labels.DEFAULT_LABELS
+        for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
+            _add_player_item(self.owner_combo, player_id, labels, colors, player_id)
         owner_index = self.owner_combo.findData(owner_id)
         self.owner_combo.setCurrentIndex(max(0, owner_index))
         owner_row = QHBoxLayout()

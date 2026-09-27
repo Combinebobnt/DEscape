@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Regenerates config.example.yaml from descape/settings.py and
-descape/asset_source.py, so the example file can't silently drift out of
+"""Regenerates config.example.yaml from descape/settings.py,
+descape/asset_source.py and descape/content_roots.py, so the example file can't silently drift out of
 sync with the real config schema the way it had (missing dark_mode/
 window_size, missing 16 of 22 keybind entries, one dead tool_pencil key
 left over from before the tools list was restructured -- none of that
@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from descape import (
     asset_source,
+    content_roots,
     edge_ticks,
     grid_overlay,
     iso_geometry,
@@ -44,6 +45,7 @@ _ELEV_STEP_STOP_COUNT = len(settings.ELEV_STEP_PCT_STOPS)
 
 _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
 _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
+_STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 
 
 def render() -> str:
@@ -78,6 +80,16 @@ def render() -> str:
 # Load button -- see asset_source.py's module docstring for priority order.
 # No default: falls back to flat colors if unset everywhere.
 aoe2de_install: /path/to/steamapps/common/AoE2DE
+
+# Path to your AoE2:DE profile folder, the one holding numeric per-account
+# folders with resources/ and mods/ inside. Only read, never written, and
+# optional: without it only the install's own content is offered. Also
+# settable via the AOE2DE_PROFILE_PATH env var (checked first). Default:
+# detected, as %USERPROFILE%\\Games\\Age of Empires 2 DE on Windows, or on
+# Linux as the Proton prefix beside aoe2de_install's Steam library
+# (steamapps/compatdata/{content_roots.AOE2DE_STEAM_APP_ID}/pfx/drive_c/users/steamuser/Games/...).
+# See content_roots.py's module docstring.
+# aoe2de_profile: /path/to/Games/Age of Empires 2 DE
 
 # Language folder under the install's resources/ (e.g. de, fr, es) that
 # trigger reference pickers resolve real object/tech display names from --
@@ -129,6 +141,13 @@ distance_tick_interval: {edge_ticks.TICK_INTERVAL_DEFAULT}
 # In Units mode, a count badge over every spot where a unit is hidden under
 # another, View > Show Stacked-Unit Badges. Default: true.
 stack_badges: true
+
+# Where each stacked-unit badge sits on its tile, Settings > Appearance.
+# One of {_STACK_BADGE_POSITIONS}.
+# Anything else falls back to the default on read. The four corners tuck the
+# badge inside the tile; above is the original look.
+# Default: {settings.STACK_BADGE_POSITION_DEFAULT}.
+stack_badge_position: {settings.STACK_BADGE_POSITION_DEFAULT}
 
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.

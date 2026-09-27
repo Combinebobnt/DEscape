@@ -54,10 +54,10 @@ class UnitSplice:
     already captured; this class only names the shape.
 
     player_id/index are the unit's position in
-    scenario.unit_manager.units[player_id] AT CALL TIME -- stable for every
-    splice-eligible op (Move/Nudge/Rotate/Set field/gate orientation/Place/
-    single Delete never reorders a player's list), unlike a remove's LATER
-    units, which is exactly why removal doesn't get this treatment.
+    scenario.unit_manager.units[player_id] AT CALL TIME for an add or a
+    move. A removal's index is never read: every cache drops a removed
+    unit by identity (_drop_from_tiles, skip_ids, Flat's _row_of), so a
+    batch removal that shifts later units' indices is safe too.
 
     old_own_tile/new_own_tile are (int(x), int(y)) pre-/post-edit -- the
     key building_bboxes uses -- and must be captured by the caller before/
@@ -134,6 +134,46 @@ def _splice_eligible(units_by_tile: dict, splice: UnitSplice) -> bool:
         if any(u is not unit for u, _ in units_by_tile.get(tile, ())):
             return False
     return True
+
+
+# Past this many splices a unit-edit batch takes the wholesale path instead. A backstop:
+# the batch callers' own cost guard (viewer._SPLICE_COST_RATIO) binds first below ~16k units.
+UNIT_SPLICE_MAX_UNITS = 1000
+
+
+def _batch_splice_eligible(units_by_tile: dict, changed: list[UnitSplice]) -> bool:
+    """_splice_eligible() for a whole batch, which the per-splice form rejects
+    whenever one splice removes the unit another replaces: Draw's stroke end
+    removes the tree on a changed tile and rolls a new one onto it.
+
+    A pre-edit occupant of a touched tile is allowed if the batch removes it
+    (new_own_tile None), since its slots are dropped before anything lands.
+    After the edit a tile may hold at most one batch unit. A non-batch
+    occupant still rejects, as it does per splice. A single-splice batch gets
+    exactly _splice_eligible()'s answer. Callers must apply removals first
+    (_removals_first)."""
+    if len(changed) > UNIT_SPLICE_MAX_UNITS:
+        return False
+    removed = {id(s.unit) for s in changed if s.new_own_tile is None}
+    claimed: dict[tuple[int, int], int] = {}
+    for s in changed:
+        unit = s.unit
+        if not _const_splice_eligible(unit):
+            return False
+        for tile in s.changed_tiles:
+            if any(u is not unit and id(u) not in removed for u, _ in units_by_tile.get(tile, ())):
+                return False
+        for tile in s.new_tiles:
+            if claimed.setdefault(tile, id(unit)) != id(unit):
+                return False
+    return True
+
+
+def _removals_first(changed: list[UnitSplice]) -> list[UnitSplice]:
+    """`changed` with its removals moved to the front, order otherwise kept.
+    A removal clears every slot on its old tiles, so one applied after an add
+    onto the same tile would delete that add's contribution."""
+    return [s for s in changed if s.new_own_tile is None] + [s for s in changed if s.new_own_tile is not None]
 
 
 # Past this many re-anchored units an elevation patch takes the wholesale path
@@ -217,10 +257,11 @@ def _splice_units_by_tile(
 ) -> None:
     """The O(footprint) alternative to render._units_by_tile()'s O(all
     units) rebuild -- mutates units_by_tile in place. Valid only under
-    _splice_eligible()'s guard, which guarantees every tile this touches
-    holds at most `splice.unit` itself, so removing it from its old
-    buckets and appending it to its new ones can't clobber another unit's
-    entry or disturb paint order within a shared bucket (there is none).
+    _batch_splice_eligible()'s guard, applied removals-first: by the time a
+    splice runs, every tile it touches holds at most `splice.unit` itself or
+    another unit this batch removes, so removing it from its old buckets and
+    appending it to its new ones can't clobber another unit's entry or
+    disturb paint order within a shared bucket (there is none).
 
     A filtered-out unit still has its OLD buckets cleared before the early
     return. Today no splice-eligible edit can flip matches() mid-splice (the
@@ -300,11 +341,12 @@ def _reanchor_units(
     Only valid under a guard that makes every touched key (the unit's
     own-tile for building_bboxes, its per-piece slot tiles, all inside its
     footprint, for by_anchor/bboxes/farm_by_tile) belong to that splice's
-    unit alone -- _splice_eligible() for unit edits, _elevation_splices()
+    unit alone -- _batch_splice_eligible() for unit edits, _elevation_splices()
     for elevation edits -- so each is a plain delete-then-recompute rather
-    than a subtraction from a union with unknown other contributors. The
-    same guard makes the splices' key sets disjoint, so their order here
-    does not matter.
+    than a subtraction from a union with unknown other contributors. Key
+    sets are disjoint except where a batch removal and an add or move share
+    a tile, which is why unit-edit callers pass _removals_first(): a removal
+    applied after the add would delete the add's slots.
 
     overrides is passed to render._resolve_unit_sprite() as-is: {} is fine
     under _splice_eligible() (see _splice_building_and_sprites), but an
@@ -618,6 +660,12 @@ class _ChunkCacheBase:
     def _refresh_source_caches(self, elevation_changed: set | None = None) -> None:
         raise NotImplementedError
 
+    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
+        """Whether invalidate_units(changed) would splice rather than rebuild,
+        for a caller whose repaint shape depends on it (a fallback's eager
+        patch() pays the level rebuild in the handler). Base: never."""
+        return False
+
     def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
         """Forces this cache's unit-derived structures to rebuild on the next
         composite -- the explicit hook for a unit-editing mutation (place/
@@ -841,6 +889,31 @@ class _ChunkCacheBase:
                     patched = self._composite_rect(mip, ix0, iy0, ix1, iy1)
                     chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
 
+    def patch_area(self, bbox: tuple[int, int, int, int]) -> int:
+        """Level pixels patch(bbox) would recomposite: bbox clipped to each
+        cached chunk, summed over the resident levels. Mirrors patch()'s loop
+        without compositing, so a caller can price the eager patch first."""
+        px0, py0, px1, py1 = bbox
+        if px1 <= px0 or py1 <= py0:
+            return 0
+        area = 0
+        for mip in {key[0] for key in self._cache}:
+            lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
+            if lx1 <= lx0 or ly1 <= ly0:
+                continue
+            cx0, cy0, cx1, cy1 = self.chunk_index_range(mip, lx0, ly0, lx1, ly1)
+            for cy in range(cy0, cy1 + 1):
+                for cx in range(cx0, cx1 + 1):
+                    chunk = self._cache.get((mip, cx, cy))
+                    if chunk is None:
+                        continue
+                    chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
+                    w = min(lx1, chunk_x0 + chunk.shape[1]) - max(lx0, chunk_x0)
+                    h = min(ly1, chunk_y0 + chunk.shape[0]) - max(ly0, chunk_y0)
+                    if w > 0 and h > 0:
+                        area += w * h
+        return area
+
     def patch_rects(self, rects) -> None:
         """patch() for each rect in rects -- Phase B-E's Flat edits patch
         per-tile rects rather than one union bbox (a union over a scattered
@@ -1031,6 +1104,9 @@ class _IsoLevel:
     # scaled by 2*half_w/NATIVE_TILE_W, so it is projection-dependent, and it
     # is built in the same lazy step rather than a second one.
     sprites: render.SpriteLayer | None = None
+    # The per-unit contributions `sprites` was merged from, so the next
+    # wholesale rebuild re-resolves only changed units. None with sprites off.
+    memo: render.SpriteMemo | None = None
 
 
 class IsoChunkCache(_ChunkCacheBase):
@@ -1222,20 +1298,26 @@ class IsoChunkCache(_ChunkCacheBase):
         if lvl.gen != self._source_gen:
             # P3-g3: resolving and decoding sprites is far too expensive to do
             # per chunk, so it rides this same per-level lazy rebuild.
-            sprites = (
-                render.sprite_draws_by_anchor(
-                    self.scenario, lvl.proj, self.elevations, self.unit_filter,
-                    with_farms=self.layers.farm_overlay,
-                    tree_scale=self.layers.tree_scale,
-                    hero_glow=self.layers.hero_glow,
-                )
-                if self.with_units and self.sprites_enabled
-                else None
-            )
-            self._install_level(mip, sprites, self._source_gen)
+            sprites = memo = None
+            if self.with_units and self.sprites_enabled:
+                sprites, memo = render._drain(self._sprite_walk(lvl))
+            self._install_level(mip, sprites, self._source_gen, memo)
         return lvl
 
-    def _install_level(self, mip: int, sprites: render.SpriteLayer | None, gen: int) -> None:
+    def _sprite_walk(self, lvl: _IsoLevel):
+        """The level's memo-backed sprite walk, shared by _level() and
+        level_warm_job() so the two can't pass different arguments."""
+        return render.sprite_draws_by_anchor_sliced(
+            self.scenario, lvl.proj, self.elevations, self.unit_filter,
+            with_farms=self.layers.farm_overlay,
+            tree_scale=self.layers.tree_scale,
+            hero_glow=self.layers.hero_glow,
+            memo=lvl.memo or render.SpriteMemo(),
+        )
+
+    def _install_level(
+        self, mip: int, sprites: render.SpriteLayer | None, gen: int, memo: render.SpriteMemo | None = None
+    ) -> None:
         """Assembles and installs a level from an already-built sprite layer
         -- everything _level() does EXCEPT building that layer.
 
@@ -1260,11 +1342,16 @@ class IsoChunkCache(_ChunkCacheBase):
         if sprites is not None:
             bboxes = render.merge_sprite_bboxes(bboxes, sprites)
         lvl.sprites = sprites
+        lvl.memo = memo
         lvl.building_bboxes = bboxes
         # Built from the MERGED dict, and here rather than in _level(), because
         # this is the one assembly point the warm install also routes through.
         lvl.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
         lvl.gen = gen
+
+    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
+        """Whether invalidate_units(changed) would take its splice path."""
+        return self.with_units and changed is not None and _batch_splice_eligible(self.units_by_tile, changed)
 
     def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
         """Batch D's D4 splice: `changed` (a list of UnitSplice, one per
@@ -1278,7 +1365,7 @@ class IsoChunkCache(_ChunkCacheBase):
         None (unknown -- every pre-D4 caller, plus set_unit_filter()/
         set_sprites_enabled() via _refresh_unit_sources()) keeps today's
         exact wholesale path via the base class. A non-eligible `changed`
-        (see _splice_eligible()) falls back to that same wholesale path --
+        (see _batch_splice_eligible()) falls back to that same wholesale path --
         this method never partially applies a batch: if any entry in
         `changed` isn't splice-safe, ALL of it is covered for free by one
         _refresh_source_caches() call, since that derives fresh from live
@@ -1302,9 +1389,10 @@ class IsoChunkCache(_ChunkCacheBase):
         The whole batch goes through ONE _reanchor_units() call per level,
         so a Convert of N units copies each SpriteLayer dict once, not N
         times. overrides stays {}: _splice_eligible() excludes every wall."""
-        if not self.with_units or changed is None or any(not _splice_eligible(self.units_by_tile, s) for s in changed):
+        if not self.can_splice(changed):
             self._refresh_source_caches()
             return
+        changed = _removals_first(changed)
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
         self._splice_levels(changed, {})
@@ -1335,21 +1423,17 @@ class IsoChunkCache(_ChunkCacheBase):
         start_epoch = self._splice_epoch
         if lvl.gen == start_gen:
             return None
-        gen = render.sprite_draws_by_anchor_sliced(
-            self.scenario, lvl.proj, self.elevations, self.unit_filter,
-            with_farms=self.layers.farm_overlay,
-            tree_scale=self.layers.tree_scale,
-            hero_glow=self.layers.hero_glow,
-        )
+        gen = self._sprite_walk(lvl)
 
-        def install(sprites: render.SpriteLayer) -> bool:
+        def install(payload: tuple[render.SpriteLayer, render.SpriteMemo]) -> bool:
             if (
                 self._source_gen != start_gen
                 or self._splice_epoch != start_epoch
                 or lvl.gen == self._source_gen
             ):
                 return False
-            self._install_level(mip, sprites, start_gen)
+            sprites, memo = payload
+            self._install_level(mip, sprites, start_gen, memo)
             return True
 
         return LevelWarmJob(gen=gen, install=install)
@@ -1587,6 +1671,10 @@ class FlatChunkCache(_ChunkCacheBase):
                 self.unit_draws = None
                 self._row_uid = self._row_player = None
 
+    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
+        """Whether invalidate_units(changed) would take its row splice."""
+        return self.with_units and bool(changed) and self._flat_splice_eligible(changed)
+
     def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
         """Brings unit_draws, every other level's draws and every icon layer
         up to date after a unit edit. Phase 3.5b's unit-editing UI calls this
@@ -1603,7 +1691,7 @@ class FlatChunkCache(_ChunkCacheBase):
         live scenario state in the same order. None, an empty list, or an
         ineligible batch takes the wholesale path below, which drops
         everything and rebuilds level 0's draws now and the rest lazily."""
-        if self.with_units and changed and self._flat_splice_eligible(changed):
+        if self.can_splice(changed):
             self._splice_rows(changed)
             return
         if hasattr(self, "unit_draws"):
@@ -1646,13 +1734,25 @@ class FlatChunkCache(_ChunkCacheBase):
         can't do is a neighbour-dependent const, a unit edited twice in one
         batch (its row would be looked up against the wrong state), or a Move
         that enters or leaves the map (its row would have to appear or vanish
-        mid-block, not at the block's end)."""
+        mid-block, not at the block's end). Nor an insertion that isn't at its
+        owner's list tail: undo's restore() puts a removed unit back mid-list,
+        so each player's inserted units must be exactly the last ones in
+        units[p], in `changed` order."""
         seen: set[int] = set()
+        inserted: dict[int, list] = {}
         for s in changed:
             if not _const_splice_eligible(s.unit) or id(s.unit) in seen:
                 return False
             seen.add(id(s.unit))
-            if self._is_row_move(s) and (self._row_of(s.unit) is not None) != self._wants_row(s.player_id, s.unit):
+            if self._is_row_move(s):
+                if (self._row_of(s.unit) is not None) != self._wants_row(s.player_id, s.unit):
+                    return False
+            elif s.new_own_tile is not None:
+                inserted.setdefault(s.player_id, []).append(s.unit)
+        units = self.scenario.unit_manager.units
+        for player_id, added in inserted.items():
+            tail = units[player_id][-len(added):]
+            if len(tail) != len(added) or any(a is not b for a, b in zip(added, tail, strict=True)):
                 return False
         return True
 
@@ -2016,6 +2116,8 @@ class SlopedChunkCache(_ChunkCacheBase):
         # the sprite layer.
         self.layers = layers
         self._pick_planes: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
+        # IsoChunkCache's per-level memo, for this cache's one level.
+        self._sprite_memo: render.SpriteMemo | None = None
         self._init_mip_levels({0: tile_px})
         # Set here, not left to _init_max_chunks below: _set_building_bboxes()
         # reads it and _refresh_source_caches() runs first.
@@ -2166,16 +2268,15 @@ class SlopedChunkCache(_ChunkCacheBase):
             if self.with_units
             else {}
         )
-        self.sprites = (
-            render.sprite_draws_by_anchor(
+        memo, self.sprites, self._sprite_memo = self._sprite_memo, None, None
+        if self.with_units and self.sprites_enabled:
+            self.sprites, self._sprite_memo = render._drain(render.sprite_draws_by_anchor_sliced(
                 self.scenario, self.proj, self.elevations, self.unit_filter,
                 corner_rise=self.corner_rise, with_farms=self.layers.farm_overlay,
                 tree_scale=self.layers.tree_scale,
                 hero_glow=self.layers.hero_glow,
-            )
-            if self.with_units and self.sprites_enabled
-            else None
-        )
+                memo=memo or render.SpriteMemo(),
+            ))
         self._set_building_bboxes(
             render.merge_sprite_bboxes(building_bboxes, self.sprites)
             if self.sprites is not None
@@ -2191,6 +2292,10 @@ class SlopedChunkCache(_ChunkCacheBase):
         sources test uses id(cache.building_bboxes) as its staleness proxy."""
         self.building_bboxes = bboxes
         self.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
+
+    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
+        """Whether invalidate_units(changed) would take its splice path."""
+        return self.with_units and changed is not None and _batch_splice_eligible(self.units_by_tile, changed)
 
     def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
         """Batch D's D4 splice, SlopedChunkCache's counterpart to
@@ -2214,9 +2319,10 @@ class SlopedChunkCache(_ChunkCacheBase):
         terrain-only and stays untouched for the same reason patch() leaves
         it alone here. The batch goes through one _reanchor_units() call,
         one SpriteLayer copy for the whole Convert stroke."""
-        if not self.with_units or changed is None or any(not _splice_eligible(self.units_by_tile, s) for s in changed):
+        if not self.can_splice(changed):
             self._refresh_source_caches()
             return
+        changed = _removals_first(changed)
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
         self.sprites = _reanchor_units(

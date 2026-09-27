@@ -36,7 +36,7 @@ MAP_W = MAP_H = 16
 
 
 def test_the_hero_set_is_the_dat_rule_not_a_hand_list():
-    assert len(HERO_GLOW_CONSTS) == 260
+    assert len(HERO_GLOW_CONSTS) == 268
     # Mode 1, mode 64, and a Three Kingdoms hero whose mode sets bit 128 (-111).
     assert {HLEIF, HKHAN, HLUBU} <= HERO_GLOW_CONSTS
     # A glow graphic without the hero bits, mode 34 with a glow graphic, the

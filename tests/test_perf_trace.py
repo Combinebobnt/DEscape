@@ -4,22 +4,27 @@ Pure-module test, no Qt needed."""
 
 from __future__ import annotations
 
+import pytest
+
 from descape import debug_log, perf_trace
 
 
-def setup_function():
-    perf_trace.enable(False)
+@pytest.fixture(autouse=True)
+def _fresh_trace_state(monkeypatch):
     debug_log.clear()
     # Reset module state directly rather than via flush() (which is itself
     # under test and a no-op while disabled) -- a leftover step from a test
-    # that forgot to flush must not leak into the next one.
-    perf_trace._current_step = {}
-    perf_trace._step_totals = []
-    perf_trace._phase_sums = {}
-    perf_trace._phase_order = []
-    perf_trace._repaint_durations = []
-    perf_trace._armed_label = None
-    perf_trace._drag_active = False
+    # that forgot to flush must not leak into the next one. monkeypatch also
+    # restores it afterwards, so tracing left on here can't leak into the
+    # next file on the same worker.
+    monkeypatch.setattr(perf_trace, "_enabled", False)
+    monkeypatch.setattr(perf_trace, "_current_step", {})
+    monkeypatch.setattr(perf_trace, "_step_totals", [])
+    monkeypatch.setattr(perf_trace, "_phase_sums", {})
+    monkeypatch.setattr(perf_trace, "_phase_order", [])
+    monkeypatch.setattr(perf_trace, "_repaint_durations", [])
+    monkeypatch.setattr(perf_trace, "_armed_label", None)
+    monkeypatch.setattr(perf_trace, "_drag_active", False)
 
 
 def test_disabled_by_default():
@@ -229,3 +234,18 @@ def test_the_idle_scheduler_runs_on_repaints_outside_a_drag_only(monkeypatch):
     perf_trace.begin_drag()
     _repaint()
     assert len(calls) == 1
+
+
+def test_phases_after_the_last_step_print_as_the_stroke_end_line():
+    """The stroke-end handler records after MapView's last step(); those
+    phases get their own line instead of being dropped or averaged in."""
+    perf_trace.enable(True)
+    perf_trace._record("patch", 2.0)
+    perf_trace.step()
+    perf_trace._record("unit_plan", 7.0)
+    perf_trace._record("unit_sources", 3.0)
+    perf_trace.flush("paint-terrain")
+
+    lines = debug_log.get_log_text().splitlines()
+    assert "unit_plan" not in lines[1], "a stroke-end phase leaked into the per-step line"
+    assert "| end: unit_plan 7.0 unit_sources 3.0" in lines[2]

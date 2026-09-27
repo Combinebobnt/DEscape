@@ -39,6 +39,12 @@ def _shown_value(panel, spec):
     from PyQt5.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QSpinBox
 
     widget = panel.widget_for(spec.field_id)
+    if spec.field_id == "personality":
+        # The combo holds a choice key; the stored row stands for the file's own name.
+        key = panel.shown_personality()
+        if key == "stored":
+            return panel.current_values()["personality"]
+        return next(c.stored_name for c in panel._personality.choices if c.key == key)
     if isinstance(widget, QCheckBox):
         return int(widget.isChecked())
     if isinstance(widget, QComboBox):
@@ -204,8 +210,9 @@ def test_groups_match_the_plan() -> None:
 def test_tier1_rows_are_enabled_when_both_gates_hold() -> None:
     """The blank fixture passes both options_write_supported() and
     players_write_supported(), so every Tier-1 field -- including
-    tribe_name, as of step 3d -- should be enabled. Tier 2 and player_type
-    stay disabled regardless, as facts about the field, not the file."""
+    tribe_name, as of step 3d -- should be enabled, and personality too
+    (GH #126, its own gate). player_type stays disabled regardless: it is
+    written only through a Personality choice."""
     from PyQt5.QtWidgets import QLabel
 
     window = _players_window()
@@ -215,7 +222,8 @@ def test_tier1_rows_are_enabled_when_both_gates_hold() -> None:
         assert editable, "no field is editable -- this would pass vacuously"
         assert "tribe_name" in editable
         assert {"civilization", "architecture"} <= editable  # Step B: writable on every version
-        assert {"player_type", "personality"}.isdisjoint(editable)
+        assert "player_type" not in editable
+        assert "personality" in editable
         for spec in panel._specs:
             widget = panel.widget_for(spec.field_id)
             if isinstance(widget, QLabel):
@@ -271,7 +279,7 @@ def test_player_type_carries_its_own_reason() -> None:
     window = _players_window()
     try:
         panel = window.players_panel
-        assert "unconfirmed" in panel.widget_for("player_type").toolTip().lower()
+        assert "follows personality" in panel.widget_for("player_type").toolTip().lower()
     finally:
         _close(window)
 
@@ -313,8 +321,9 @@ def test_switching_player_repopulates_the_form_with_that_players_values() -> Non
 
 def test_panel_source_never_references_ai_files() -> None:
     """ai_files holds the entire embedded .ai script source (up to several MB
-    across the corpus) -- see player_fields.py and the maintainer plan. A
-    single row referencing it could dump megabytes into the form."""
+    across the corpus). Only ai_scripts and the personality splices
+    (OptionsEditModel, scenario_write) touch it; the panel shows names only
+    and never reads script text, so a row cannot dump megabytes into the form."""
     import descape.players_panel as players_panel_module
 
     source = Path(players_panel_module.__file__).read_text()
@@ -761,6 +770,90 @@ def test_no_buttons_without_a_point_of_view_group() -> None:
         assert panel.go_to_view_button is None
         assert panel.reset_view_button is None
         assert panel.current_view() is None
+    finally:
+        panel.deleteLater()
+
+
+# --- Point of View range (GH #117) -----------------------------------------
+
+
+def _pov_spins(panel):
+    from descape.player_fields import POV_X_FIELD, POV_Y_FIELD
+
+    return panel.widget_for(POV_X_FIELD), panel.widget_for(POV_Y_FIELD)
+
+
+def test_pov_spins_range_over_the_map_and_the_unset_sentinel() -> None:
+    """The blank fixture is 120x120 and stores (-1, -1): both show and edit."""
+    from PyQt5.QtWidgets import QSpinBox
+
+    panel, _reported = _pov_panel(_loaded_blank())
+    try:
+        for spin in _pov_spins(panel):
+            assert isinstance(spin, QSpinBox) and spin.isEnabled()
+            assert (spin.minimum(), spin.maximum()) == (-1, 119)
+            assert spin.value() == -1
+            assert spin.toolTip() == "0 to 119, or -1 for unset"
+    finally:
+        panel.deleteLater()
+
+
+def test_pov_spins_clamp_to_the_map() -> None:
+    """Out-of-range input never lands: setValue clamps, and a typed digit that
+    would leave the range is refused by the spinbox's own validator."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    panel, _reported = _pov_panel(_loaded_blank())
+    try:
+        x_spin, _y_spin = _pov_spins(panel)
+        x_spin.setValue(200)
+        assert x_spin.value() == 119
+        x_spin.setValue(-7)
+        assert x_spin.value() == -1
+        x_spin.lineEdit().selectAll()
+        QTest.keyClicks(x_spin, "200")
+        QTest.keyClick(x_spin, Qt.Key_Return)
+        assert -1 <= x_spin.value() <= 119
+    finally:
+        panel.deleteLater()
+
+
+def test_an_off_map_pov_widens_the_range_and_stays_editable() -> None:
+    """GH #117's own 999: shown as stored in an editable spinbox rather than
+    a read-only label or a silent clamp, and populating it writes nothing."""
+    from PyQt5.QtWidgets import QSpinBox
+
+    from descape.player_fields import POV_X_FIELD, POV_Y_FIELD, specs_for
+    from descape.players_panel import PlayersPanel
+
+    conftest.ensure_qapp()
+    edits = []
+    loaded = _loaded_blank()
+    panel = PlayersPanel(on_player_field=lambda *args: edits.append(args))
+    try:
+        panel.show_scenario(
+            loaded,
+            editable_fields=[s.field_id for s in specs_for(loaded)],
+            pending_values={POV_X_FIELD: {1: 999}, POV_Y_FIELD: {1: 999}},
+        )
+        for spin in _pov_spins(panel):
+            assert isinstance(spin, QSpinBox) and spin.isEnabled()
+            assert spin.value() == 999
+            assert (spin.minimum(), spin.maximum()) == (-1, 999)
+        assert edits == []
+        x_spin, _y_spin = _pov_spins(panel)
+        x_spin.setValue(50)
+        assert edits, "the widened spinbox must still report an edit"
+    finally:
+        panel.deleteLater()
+
+
+def test_a_read_only_pov_row_keeps_its_gate_reason_tooltip() -> None:
+    panel, _reported = _pov_panel(_loaded_blank(), editable=False)
+    try:
+        for spin in _pov_spins(panel):
+            assert "or -1 for unset" not in spin.toolTip()
     finally:
         panel.deleteLater()
 

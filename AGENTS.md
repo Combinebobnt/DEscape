@@ -22,7 +22,11 @@ commands, and architecture.
     or INERT. The ANGLE whitelist is the .dat's own `unit.type == 70`
     (creatable), which has zero counterexamples across 5808 corpus placements,
     plus four hand-verified trebuchet consts; it is re-measured by a
-    corpus-marked test, not trusted.
+    corpus-marked test, not trusted. The Rotate actions and the Rotation
+    field also step cyclable members (trees, scenery) through their variants,
+    but only via `UnitEditModel.set_variant()`, i.e. the *Cycle Variant*
+    exception below with its scope unchanged; `set_rotation()` stays
+    ANGLE-only.
   - *Map mirroring's unit images*, via `mirror_tools.plan_mirror_units()`.
     This one transforms nothing in place: it derives a NEW unit's rotation
     from its source's and `UnitEditModel.add()`s it, so there is no model
@@ -51,14 +55,18 @@ commands, and architecture.
   - *Cycle Variant*, via `UnitEditModel.set_variant()`, only on consts
     `descape/unit_variant.py` calls cyclable: VARIANT, at least two real
     variants, and not a wall, cliff or gate. Those three are excluded by const
-    set (never by `unit.class_`, which would also drop Aqueduct and Mole)
+    set (never by `unit.class_`, which would also drop Mole)
     because the game re-derives their index from neighbours, so a written
     value would be overridden. It always writes a literal integer index: every
     corpus placement on a cyclable const stores one, never the radian form.
   - *Place Unit's wall-run junction rewrites*, via
-    `UnitEditModel.set_wall_variant()`, only on the 8 wall consts
+    `UnitEditModel.set_wall_variant()`, only on the 9 wall-family consts
     `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
-    and only for an index in `0..4`. Allowed for the same reason the bullet
+    and only for an index in `0..4`. Those are the 8 walls plus Aqueduct
+    (231), which the user decided on 2026-09-26 (GH #110) to treat as a full
+    wall: same 1x1 footprint and five stored shapes. No corpus file has a
+    wall beside an Aqueduct, so that junction rests on the decision, not a
+    measurement. Allowed for the same reason the bullet
     above forbids *cycling* a wall: the game re-derives a wall's index from
     its neighbours, so writing the value derived from those same neighbours
     converges with the game rather than diverging from it, where an

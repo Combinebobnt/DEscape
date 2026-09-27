@@ -13,7 +13,9 @@ One synthetic scenario on the blank template carries, deliberately:
 
 Captured in Flat, Stepped and Sloped at two zooms (the badge must be the same
 device size in both), plus one fit-to-map capture below the LOD gate and one
-with the toggle off (neither shows any badge).
+with the toggle off (neither shows any badge). GH #100 adds every position
+(Settings > Appearance) at one mid zoom in Flat, Flat + Isometric View, Stepped
+and Sloped, and one capture with a non-default background colour.
 
 Writes build/stack_badge_eyeball/, gitignored. No test reads it.
 """
@@ -148,9 +150,47 @@ def generate(out_dir: Path) -> list[Path]:
         path = out_dir / "sloped_near_badges_off.png"
         _grab(window, path)
         written.append(path)
+        window.stack_badges_action.setChecked(True)
+        written.extend(_capture_positions(window, out_dir))
     finally:
         window.edit_history.mark_saved()
         window.close()
+    return written
+
+
+def _capture_positions(window, out_dir: Path) -> list[Path]:
+    """GH #100: every badge position per view at one mid zoom, then a custom background."""
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    written: list[Path] = []
+    for label, style, iso in (
+        ("flat", "Flat", False), ("flat_iso", "Flat", True), ("stepped", "Stepped", False), ("sloped", "Sloped", False)
+    ):
+        if style == "Flat":
+            window.iso_action.setChecked(iso)
+        window.terrain_style_combo.setCurrentText(style)
+        window.mode_combo.setCurrentText("Units")
+        QApplication.processEvents()
+        for position, _text in settings.STACK_BADGE_POSITIONS:
+            window.map_view.set_stack_badge_position(position)
+            _frame(window, _NEAR_TILES)
+            path = out_dir / f"position_{label}_{position}.png"
+            _grab(window, path)
+            written.append(path)
+            item = window.map_view._stack_badge_item
+            sizes = sorted({(round(b.width()), round(b.height())) for b in item.drawn_boxes})
+            print(f"  {label} {position}: badges_drawn={item.badges_drawn} box sizes={sizes}")
+    window.map_view.set_stack_badge_position(settings.STACK_BADGE_POSITION_DEFAULT)
+    settings.set_overlay_color("unit_stack_background", "#c02040")
+    window.map_view.apply_overlay_colors()
+    path = out_dir / "position_sloped_bottom_right_custom_background.png"
+    _grab(window, path)
+    written.append(path)
+    item = window.map_view._stack_badge_item
+    print(f"  custom background alpha={item._background.alpha()} rgb={QColor(item._background).name()}")
     return written
 
 

@@ -12,8 +12,9 @@ form walls use. So writes are always a plain literal integer.
 
 Walls, cliffs and gates are excluded BY CONST SET, not by `unit.class_`: the
 game re-derives their stored index from neighbours (and a gate's orientation
-lives in its const). Class 27 is 36 consts of which only 8 are walls, so a
-class exclusion would also drop Aqueduct (231) and Mole (2421).
+lives in its const). Class 27 is 36 consts of which only 9 are walls
+(counting Aqueduct, 231, since GH #110), so a class exclusion would also drop
+Mole (2421).
 """
 
 from __future__ import annotations
@@ -64,6 +65,33 @@ def is_cyclable(unit_const: int) -> bool:
         and unit_const not in excluded_consts()
         and variant_count_for(unit_const) >= 2
     )
+
+
+def is_rotation_editable(unit_const: int) -> bool:
+    """Whether the Rotation field and the Rotate actions may change this const
+    (GH #123): a real facing via set_rotation(), or a variant via set_variant()."""
+    return unit_rotation.rotation_is_angle(unit_const) or is_cyclable(unit_const)
+
+
+def rotation_field_mode(unit_consts) -> str | None:
+    """What a typed Rotation means for this selection: "facing" if any member
+    is ANGLE, else "variant" if any is cyclable, else None.
+
+    The panel and ViewerWindow._on_unit_field_changed both ask this of the same
+    selection, so they cannot disagree about a typed value.
+    """
+    consts = list(unit_consts)
+    if any(unit_rotation.rotation_is_angle(const) for const in consts):
+        return "facing"
+    if any(is_cyclable(const) for const in consts):
+        return "variant"
+    return None
+
+
+def variant_scale(unit_consts) -> int:
+    """The fewest variants any cyclable member has, so a typed variant is in
+    range for every one of them (an oak+pine group edits 0..26)."""
+    return min(variant_count_for(const) for const in unit_consts if is_cyclable(const))
 
 
 def variant_of(rotation: float, angle_count: int, variant_count: int) -> int:

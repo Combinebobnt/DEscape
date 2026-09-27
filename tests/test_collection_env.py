@@ -41,7 +41,7 @@ def test_collection_succeeds_without_machine_data(tmp_path) -> None:
         [
             sys.executable, "-m", "pytest", "--collect-only", "-q",
             # The = form: a bare path argument would become pytest's rootdir.
-            "-p", "no:cacheprovider", f"--scenario-dir={empty}",
+            "-p", "no:cacheprovider", "-p", "no:xdist", f"--scenario-dir={empty}",
         ],
         cwd=ROOT,
         env=sanitized_env(tmp_path),

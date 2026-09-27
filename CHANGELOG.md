@@ -35,9 +35,42 @@ content, link the doc instead of summarizing it.
   every view, sprites off and on, and fails on any pixel that differs outside
   the changes made on purpose since. `--frames-dir` writes side-by-side crops
   of those; `--inject` runs a control that must fail.
+- **Filters > Show Buildings** (GH #120). Hides every building except walls
+  and gates, whoever owns it; combine it with the Player checks to hide one
+  player's buildings. Trebuchets and other packable siege stay visible, and a
+  hidden building can't be selected.
+- **Ruler measurements stay on the map** (GH #108, GH #109). You can keep
+  several at once. Right-click a ruler's endpoint to remove it, or press
+  Clear rulers on the Tool Options row. Rulers survive tool, mode and
+  Elevation View switches; opening another scenario or closing the file
+  clears them.
+- **Stacked-unit badge position and background colour settings** (GH #100).
+  Settings > Appearance places the count badge bottom-right, bottom-left,
+  top-right, top-left, or above the tile as before. The new default is
+  bottom-right, inside the tile against its lower-right edge. The badge
+  background colour is its own entry in the colour list.
+- **Players mode sets each player's AI Personality** (GH #126): Standard,
+  None, or any AI from the game's ai folder, your profile or enabled mods. A
+  custom AI's script and the files it loads are stored in the scenario the
+  way the in-game editor stores them, and switching away removes files
+  nothing uses any more. The read-only "Player type" row is now "AI type"
+  (Custom/Standard/None) and follows the pick.
+- **Every player selector shows the tribe name**, e.g. "P8 - Horde Army"
+  (GH #130): Units Owner and the inspector, Scatter, Players, Diplomacy,
+  trigger Source/Target Player, View stats, Disabled Objects, Convert
+  Sources and Filters. Combo boxes also show the colour swatch, and all of
+  them follow tribe name and colour edits and their undo.
+- **Aqueducts place like walls** (GH #110): Place Unit drags a run, a click
+  joins an existing one, and neighbours reshape. Aqueducts and walls now
+  connect to each other. Cycle Variant no longer applies to Aqueducts, since
+  their shape comes from their neighbours.
 
 ### Changed
 
+- **Game data refreshed for the Sept 2026 game update.** The new Norse
+  objects, terrains, trees and heroes render and name correctly, Jarls draw
+  their sprite again, and unit stats match the patch. Flares now count as
+  invisible objects, so Filters > Show Invisible Objects hides them.
 - **Faster Stepped rendering: part of the renderer is now compiled.** The
   downloads include it. From source, the launcher builds it on first launch
   when a C compiler is present, and otherwise runs the slower built-in
@@ -45,9 +78,41 @@ content, link the doc instead of summarizing it.
 - **Elevate and Set Elevation no longer lag with sprites on.** An elevation
   edit now updates only the units on the changed tiles instead of rebuilding
   every unit's sprite and footprint.
+- **Draw with Trees/Eye candy on is quicker at release.** The stroke is no
+  longer repainted a second time when you let go (20-250 ms per drag), and
+  Perf Trace shows the release's own phases on a separate `end:` line.
+- **Trees/Eye candy edits repaint about twice as fast in Stepped and Sloped
+  on dense maps.** Covers Draw strokes, their undo/redo, and undoing a
+  Paint Can fill: unchanged units' sprites are reused instead of re-resolved,
+  and only the edited area is repainted.
+- **Rotate now steps trees and scenery through their graphic variants**
+  (GH #123). The Rotate buttons and keys (`,` `.` `<` `>`, Edit > Rotate
+  Selection) and the Units inspector's Rotation field change a tree's or
+  scenery object's variant; the quarter-turn keys jump about a quarter of
+  its variants. Walls, cliffs, gates and single-frame objects are still
+  skipped.
 
 ### Fixed
 
+- **Zooming right after a pan no longer jumps the view to a map corner**
+  (GH #146). It happened when the mouse wasn't moved between a middle-drag
+  pan, or a pan pushed against the scroll limit, and the next wheel notch.
+- **Units mode's marquee in isometric views selects the units standing inside
+  the box** (GH #114). In Stepped, Sloped and Flat + Isometric View it used to
+  grab a tall diamond of tiles, so a thin strip below a base picked up
+  buildings far above it. Flat with Isometric View off is unchanged.
+- **Players mode's Point of View spinboxes stop at the map edge** (GH #117).
+  -1 still means unset, and a view already stored off the map shows as stored
+  and stays editable.
+- **The Disabled Objects dialog's player colour swatches now draw**
+  (GH #130).
+- **The Units inspector keeps X and Y on the map and Z within 0 to 15**
+  (GH #118). A unit already stored off the map still shows its stored value
+  and stays editable.
+- **Edit > Undo and Redo work from the menu while typing in a multi-line
+  box** (GH #38): trigger messages and descriptions, XS script bodies and the
+  six Messages boxes. They act on the box's own typing, and leaving the box
+  still records one undoable edit.
 - **Help > Perf Trace now reports panning and zooming** on their own
   `perf view` lines. Before, those repaints and any hover time were folded
   into the next drag's line, overstating it, and Convert and Cliff strokes

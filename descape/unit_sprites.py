@@ -479,12 +479,14 @@ def angle_index(
 # .dat's own unit.type != 70, not unit.class_ as originally proposed: class_
 # == 27 also catches 28 non-wall consts like "Sheep annex1" and "Empty
 # building"). This set's remaining job is wall_connector_consts() and
-# rotation_variant_eligible() below, where "exactly today's 8 walls" is
-# deliberately still hand-kept -- widening it to include Aqueduct is a
-# separate, open decision (2026-09-12 plan's [NEEDS DECISION] entry), not
-# settled here.
+# rotation_variant_eligible() below, where the wall family is deliberately
+# still hand-kept. Aqueduct (231) joined it on 2026-09-26 (GH #110, a user
+# decision): 1x1, angle_count 5, and 10/10 on mask-to-stored-index
+# self-consistency in old-allies-final-v2. No corpus file puts a wall next to
+# an Aqueduct, so the wall-to-Aqueduct direction is the user's call, not a
+# measurement.
 _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
-    72, 117, 119, 155, 370, 788, 1062, 2678,
+    72, 117, 119, 155, 231, 370, 788, 1062, 2678,
 })
 
 
@@ -546,8 +548,11 @@ def cliff_consts() -> frozenset[int]:
 # gate_orientation.groups(), which derives all 96 class-39 gate consts (24
 # complete families of 4) from the .dat's own unit.class_ field via that
 # module's code-regex derivation; the wall half stays _ROTATION_VARIANT_CONSTS
-# above (Aqueduct is a separate, still-open [NEEDS DECISION] item, not settled
-# here).
+# above (which includes Aqueduct since 2026-09-26).
+#
+# Re-measured 2026-09-26 on today's larger examples/: 99.03% (n=5349)
+# without Aqueduct, 99.03% (n=5359) with it, the extra 10 being Aqueducts
+# that all agree. The 2026-09-12 figures below are that date's corpus.
 #
 # Measured against examples/'s integer-only files (the metric is defined in
 # tools/scan_wall_rotation.py's docstring): this set scores 99.00%
@@ -687,13 +692,13 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     lily and a dozen other non-wall consts eligible for the wall-connectivity
     override -- a water lily between two walls would have its stored index
     rederived from a wall-calibrated neighbour mask, which is wrong. The
-    wall-family basis stays deliberately hand-kept at today's 8 walls
-    (2026-09-12 plan): the tempting generalisation, `class_ == 27` with
-    `angle_count == 5`, adds only Aqueduct, and Aqueduct's own
-    connector-membership question is a separate, open [NEEDS DECISION] item,
-    not settled here. `wall_connector_consts()` (the *neighbour tile* set,
-    which now also includes every generated gate family) is unaffected either
-    way.
+    wall-family basis stays deliberately hand-kept (2026-09-12 plan). The
+    tempting generalisation, `class_ == 27` with `angle_count == 5`, adds
+    only Aqueduct, and Aqueduct is now in the set anyway: on 2026-09-26
+    (GH #110) the user decided to treat it as a full wall. That is a user
+    decision, not a measurement, since no corpus file has a wall beside an
+    Aqueduct. `wall_connector_consts()` (the *neighbour tile* set, which also
+    includes every generated gate family) follows the same set.
 
     Preconditions 3 (not a literal integer index) and 4 (non-zero neighbour
     mask) are NOT checked here. Measured (tools/scan_wall_rotation.py): of the
@@ -720,7 +725,8 @@ def rotation_variant_eligible(unit_const: int) -> bool:
 
 
 def wall_family_consts() -> tuple[int, ...]:
-    """The wall consts Place Unit drags as a wall run (GH #98), ascending:
+    """The wall consts Place Unit drags as a wall run (GH #98, Aqueduct since
+    GH #110), ascending:
     exactly those rotation_variant_eligible() accepts, which is exactly
     UnitEditModel.set_wall_variant()'s own scope -- so a wall run can never
     place something the model would refuse. Gates are not here: their

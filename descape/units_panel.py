@@ -39,16 +39,17 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import object_catalog, unit_fields, unit_rotation
+from descape import object_catalog, player_labels, unit_fields, unit_rotation, unit_variant
 from descape.constant_picker import HIDDEN_LABEL, catalog_preview, items_for
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.unit_stats_table import unit_stats
 from descape.value_picker import ValuePickerView
+from descape.viewer_common import _add_player_item, _relabel_player_rows
 
 # unit_fields.UnitFieldSpec.conditional -> the rule it names. The specs stay
 # Qt-free and data-only by naming a rule as a string; this is the one place
 # that resolves it, so the rule itself stays independently testable.
-_FIELD_CONDITIONALS = {"rotation_is_angle": unit_rotation.rotation_is_angle}
+_FIELD_CONDITIONALS = {"rotation_is_editable": unit_variant.is_rotation_editable}
 
 # The full caveat, unconditionally available via the Rotation caption's
 # tooltip (see _build_inspector_pane) regardless of which const is selected.
@@ -57,10 +58,11 @@ _FIELD_CONDITIONALS = {"rotation_is_angle": unit_rotation.rotation_is_angle}
 # _apply_conditional_fields.
 _ROTATION_TOOLTIP = (
     "Rotation is shown as a facing number, 0 to one less than the unit's "
-    "direction count, stored in radians (hover the field). For most GAIA "
-    "objects, walls and gates it is a graphic-variant index instead, shown "
-    "raw and not editable. Trees, plants and scenery can change variant with "
-    "Edit > Cycle Variant."
+    "direction count, stored in radians (hover the field). Trees, plants and "
+    "scenery show their graphic variant number instead. Walls, cliffs and "
+    "gates store a graphic-variant index the game derives itself, and "
+    "single-frame objects have nothing to change: both are shown raw and not "
+    "editable."
 )
 
 # The in-game editor's own Units-tab selection panel set (docs/
@@ -97,11 +99,26 @@ _GARRISON_OVER_CAPACITY = (
 _GARRISON_WRONG_TYPE = "{count} of these cannot garrison here in game. Shown as it is; DEscape never changes it."
 
 # Group-mode wording of unit_rotation_note: {skipped} of {total} selected.
+# Facing mode first; the variant-mode tail replaces it when no member is ANGLE.
 _GROUP_ROTATION_NOTE = (
-    "{skipped} of {total} selected won't rotate: their rotation is a "
-    "graphic-variant index or has only one frame (trees, walls, gates, "
-    "scenery), so a typed Rotation leaves them unchanged."
+    "{skipped} of {total} selected won't rotate: a typed Rotation sets a "
+    "facing, which trees, walls, gates and scenery don't have, so it leaves "
+    "them unchanged."
 )
+_GROUP_ROTATION_NOTE_TREES = " The Rotate buttons still step trees and scenery through their variants."
+_GROUP_VARIANT_NOTE = (
+    "{skipped} of {total} selected won't rotate: walls, cliffs, gates and "
+    "single-frame objects keep their stored value, so a typed variant leaves "
+    "them unchanged."
+)
+
+
+def _variant_of(unit) -> int:
+    """A cyclable unit's current variant, via the one shared reader."""
+    const = unit.unit_const
+    return unit_variant.variant_of(
+        unit.rotation, unit_rotation.angle_count_for(const), unit_variant.variant_count_for(const)
+    )
 
 
 class UnitsPanel(QWidget):
@@ -118,8 +135,12 @@ class UnitsPanel(QWidget):
         on_garrison_add=None,
         on_garrison_delete=None,
         on_garrison_navigate=None,
+        map_size=None,
     ):
         super().__init__()
+        # (width, height) of the loaded map, or None: queried at populate time
+        # so a load or resize needs no push (GH #118).
+        self._map_size = map_size or (lambda: None)
         # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel/PlayersPanel's
         # callbacks have.
@@ -138,6 +159,9 @@ class UnitsPanel(QWidget):
         # filter or selection change that lands on nothing): the object the
         # next Place click/Enter places. See _on_catalog_current_changed.
         self._pending_object_const: int | None = None
+        # GH #130: what the owner combos show, pushed by refresh_player_labels().
+        self._player_labels = player_labels.DEFAULT_LABELS
+        self._player_colors = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -197,9 +221,8 @@ class UnitsPanel(QWidget):
         owner_row.setContentsMargins(0, 0, 0, 0)
         owner_row.addWidget(QLabel("Owner:"))
         self.owner_combo = QComboBox()
-        self.owner_combo.addItem("GAIA", GAIA_PLAYER_ID)
-        for player_id in range(1, MAX_PLAYER_ID + 1):
-            self.owner_combo.addItem(f"Player {player_id}", player_id)
+        for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
+            _add_player_item(self.owner_combo, player_id, self._player_labels, self._player_colors, player_id)
         self.owner_combo.setCurrentIndex(1)  # Player 1, preserved default
         owner_row.addWidget(self.owner_combo, stretch=1)
         pane_layout.addLayout(owner_row)
@@ -240,6 +263,16 @@ class UnitsPanel(QWidget):
     def owner_id(self) -> int:
         return self.owner_combo.currentData()
 
+    def refresh_player_labels(self, labels, colors) -> None:
+        """GH #130: relabel the Place owner combo and the inspector's Owner
+        field in place, keeping each one's selection and "(mixed)" row."""
+        self._player_labels = labels
+        self._player_colors = colors
+        _relabel_player_rows(self.owner_combo, labels, colors)
+        owner = self.unit_field_editors.get("player")
+        if owner is not None:
+            _relabel_player_rows(owner, labels, colors)
+
     def select_owner(self, player_id: int) -> bool:
         index = self.owner_combo.findData(player_id)
         if index < 0:
@@ -270,8 +303,9 @@ class UnitsPanel(QWidget):
         self.unit_field_labels: dict[str, QLabel] = {}
         self.unit_field_editors: dict[str, QWidget] = {}
         self.unit_field_captions: dict[str, QLabel] = {}
-        # Group mode's "(mixed)" spinbox value: one step below the spec minimum.
-        self._mixed_sentinels: dict[str, float] = {}
+        # Group mode's "(mixed)" spinbox value, one step below the live minimum.
+        # A FLOAT's is set per group by _set_spin_mixed (None when not mixed).
+        self._mixed_sentinels: dict[str, float | None] = {}
         for row, spec in enumerate(unit_fields.FIELDS):
             caption = QLabel(f"{spec.label}:")
             grid.addWidget(caption, row, 0)
@@ -297,9 +331,8 @@ class UnitsPanel(QWidget):
                 continue
             if spec.kind == unit_fields.PLAYER:
                 combo = QComboBox()
-                combo.addItem("GAIA", GAIA_PLAYER_ID)
-                for player_id in range(1, MAX_PLAYER_ID + 1):
-                    combo.addItem(f"Player {player_id}", player_id)
+                for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
+                    _add_player_item(combo, player_id, self._player_labels, self._player_colors, player_id)
                 combo.currentIndexChanged.connect(
                     lambda _, s=spec, w=combo: self._field_changed(s, w.currentData())
                 )
@@ -320,6 +353,7 @@ class UnitsPanel(QWidget):
             else:  # FLOAT
                 spin = QDoubleSpinBox()
                 spin.setDecimals(spec.decimals)
+                # Initial only: the map-derived range is applied at populate.
                 spin.setRange(spec.minimum, spec.maximum)
                 # setKeyboardTracking(False) is load-bearing the same way
                 # viewer_common._make_spinbox's own comment explains: without
@@ -332,7 +366,7 @@ class UnitsPanel(QWidget):
                 )
                 grid.addWidget(spin, row, 1)
                 self.unit_field_editors[spec.field_id] = spin
-                self._mixed_sentinels[spec.field_id] = spec.minimum - spin.singleStep()
+                self._mixed_sentinels[spec.field_id] = None
         self.inspector_layout.addWidget(self.unit_inspector_grid)
 
         # Conditional (only for a const whose rotation isn't a real angle) --
@@ -469,9 +503,12 @@ class UnitsPanel(QWidget):
             self.unit_field_editors["player"].setCurrentIndex(
                 max(self.unit_field_editors["player"].findData(entry.player_id), 0)
             )
-            self.unit_field_editors["x"].setValue(unit.x)
-            self.unit_field_editors["y"].setValue(unit.y)
-            self.unit_field_editors["z"].setValue(getattr(unit, "z", 0.0))
+            for field_id, value in (("x", unit.x), ("y", unit.y), ("z", getattr(unit, "z", 0.0))):
+                spin = self.unit_field_editors[field_id]
+                # Range before value, or setValue clamps silently to the
+                # previous unit's range (GH #118).
+                spin.setRange(*self._coordinate_range(field_id, [value]))
+                spin.setValue(value)
             self._apply_conditional_fields([unit])
         finally:
             self._populating = False
@@ -546,52 +583,79 @@ class UnitsPanel(QWidget):
             combo.insertItem(0, _MIXED_TEXT, None)
         combo.setCurrentIndex(0)
 
-    def _set_spin_mixed(self, field_id: str, mixed: bool) -> None:
+    def _coordinate_range(self, field_id: str, values) -> tuple[float, float]:
+        """X/Y/Z's live range (GH #118): the loaded map's bounds, or the
+        spec's wide fallback with no scenario, widened over `values`."""
+        size = self._map_size()
+        if size is None:
+            spec = unit_fields.FIELDS_BY_ID[field_id]
+            bounds = (spec.minimum, spec.maximum)
+        else:
+            bounds = unit_fields.coordinate_bounds(field_id, *size)
+        return unit_fields.widen(bounds, values)
+
+    def _set_spin_mixed(self, field_id: str, mixed: bool, values=()) -> None:
         """"(mixed)" is the special value text, shown only at minimum(), so
-        the range widens down to the sentinel and the value parks there."""
+        the range widens down to the sentinel and the value parks there.
+        `values` widens a FLOAT's live range over the selected units'."""
         spec = unit_fields.FIELDS_BY_ID[field_id]
         spin = self.unit_field_editors[field_id]
         # A facing's maximum is per-const (set by _apply_conditional_fields),
         # so only its minimum toggles here.
-        facing = spec.kind == unit_fields.FACING
-        minimum = 0 if facing else spec.minimum
-        maximum = spin.maximum() if facing else spec.maximum
+        if spec.kind == unit_fields.FACING:
+            minimum, maximum = 0, spin.maximum()
+            step = 1
+        else:
+            minimum, maximum = self._coordinate_range(field_id, values)
+            # One display step, not singleStep() (1.0): nothing off-map is
+            # typeable between the sentinel and the minimum.
+            step = 10 ** -spec.decimals
         if mixed:
-            spin.setRange(self._mixed_sentinels[field_id], maximum)
+            spin.setRange(minimum - step, maximum)
+            if spec.kind != unit_fields.FACING:
+                # Qt's rounded bound, which is what valueChanged will emit.
+                self._mixed_sentinels[field_id] = spin.minimum()
             spin.setSpecialValueText(_MIXED_TEXT)
             spin.setValue(self._mixed_sentinels[field_id])
         else:
             # Cleared too: special text would otherwise show for a real 0.
             spin.setSpecialValueText("")
             spin.setRange(minimum, maximum)
+            if spec.kind != unit_fields.FACING:
+                self._mixed_sentinels[field_id] = None
 
     def _set_group_spin(self, field_id: str, values: list[float]) -> None:
         # Compared at the spinbox's own decimals: raw == would read units
         # rotated or moved by different paths as "(mixed)" forever.
         spec = unit_fields.FIELDS_BY_ID[field_id]
-        decimals = 0 if spec.kind == unit_fields.FACING else spec.decimals
+        facing = spec.kind == unit_fields.FACING
+        decimals = 0 if facing else spec.decimals
+        # A facing's range is per-const, so only a FLOAT widens over values.
+        range_values = () if facing else values
         if len({round(value, decimals) for value in values}) == 1:
-            self._set_spin_mixed(field_id, False)
+            self._set_spin_mixed(field_id, False, range_values)
             self.unit_field_editors[field_id].setValue(values[0])
         else:
-            self._set_spin_mixed(field_id, True)
+            self._set_spin_mixed(field_id, True, range_values)
 
     def _apply_conditional_fields(self, units) -> None:
         """Swaps each conditional field between its editor and its read-only
         label for the selected unit(s) -- today only Rotation, whose rule is
-        unit_rotation.rotation_is_angle. The editor shows if ANY unit's const
-        admits it; unit_rotation_note shows if any unit's does not, so the
-        caveat appears exactly where a typed value would skip something.
+        unit_variant.is_rotation_editable. The editor shows if ANY unit's const
+        admits it; unit_rotation_note shows if a typed value would skip any
+        unit, so the caveat appears exactly where it applies.
 
         Only ever called with the populating guard already held: it sets an
         editor's value, and the resulting valueChanged must not record a
         phantom undo step.
 
-        Rotation shows as a facing (GH #61). rotation_to_facing wraps a junk
-        stored value like 7.0 (574 corpus placements) onto its own frame, and
-        the range is set before the value, or the value would clamp to the
-        previous selection's maximum. A group whose members differ in
-        direction count edits on the finest grid (unit_rotation.facing_scale).
+        Rotation has two modes (unit_variant.rotation_field_mode). As a facing
+        (GH #61), rotation_to_facing wraps a junk stored value like 7.0 (574
+        corpus placements) onto its own frame, and a group whose members
+        differ in direction count edits on the finest grid. As a variant
+        (GH #123), on a selection with no ANGLE member, the range is the fewest
+        variants any member has. Either way the range is set before the value,
+        or the value would clamp to the previous selection's maximum.
         """
         group = len(units) > 1
         for spec in unit_fields.FIELDS:
@@ -606,20 +670,36 @@ class UnitsPanel(QWidget):
             label.setVisible(not allowed)
             if spec.field_id != "rotation":
                 continue
-            skipped = len(units) - len(admitted)
+            mode = unit_variant.rotation_field_mode(unit.unit_const for unit in admitted)
+            # Counted from the active mode's writable set, not the rule's
+            # admitted one: in facing mode a typed value skips a tree too.
+            if mode == "facing":
+                writable = [unit for unit in admitted if unit_rotation.rotation_is_angle(unit.unit_const)]
+            else:
+                writable = admitted
+            skipped = len(units) - len(writable)
             self.unit_rotation_note.setVisible(skipped > 0)
             if group:
-                self.unit_rotation_note.setText(
-                    _GROUP_ROTATION_NOTE.format(skipped=skipped, total=len(units))
-                )
+                if mode == "variant":
+                    note = _GROUP_VARIANT_NOTE.format(skipped=skipped, total=len(units))
+                else:
+                    note = _GROUP_ROTATION_NOTE.format(skipped=skipped, total=len(units))
+                    if any(unit_variant.is_cyclable(unit.unit_const) for unit in admitted):
+                        note += _GROUP_ROTATION_NOTE_TREES
+                self.unit_rotation_note.setText(note)
                 if not allowed:
                     label.setText("(n/a)")
-            if allowed:
-                scale = unit_rotation.facing_scale(unit.unit_const for unit in admitted)
+            if mode == "facing":
+                scale = unit_rotation.facing_scale(unit.unit_const for unit in writable)
                 editor.setRange(editor.minimum(), scale - 1)
-                values = [unit_rotation.rotation_to_facing(unit.rotation, scale) for unit in admitted]
+                values = [unit_rotation.rotation_to_facing(unit.rotation, scale) for unit in writable]
                 self._set_group_spin(spec.field_id, values)
-                editor.setToolTip(self._facing_tooltip(admitted, scale))
+                editor.setToolTip(self._facing_tooltip(writable, scale))
+            elif mode == "variant":
+                scale = unit_variant.variant_scale(unit.unit_const for unit in writable)
+                editor.setRange(editor.minimum(), scale - 1)
+                self._set_group_spin(spec.field_id, [_variant_of(unit) for unit in writable])
+                editor.setToolTip(self._variant_tooltip(writable, scale))
 
     @staticmethod
     def _facing_tooltip(units, scale: int) -> str:
@@ -634,6 +714,19 @@ class UnitsPanel(QWidget):
         return (
             f"Facing on a {scale}-direction scale. Units with fewer directions "
             f"({others}) turn to their nearest frame."
+        )
+
+    @staticmethod
+    def _variant_tooltip(units, scale: int) -> str:
+        if len(units) == 1:
+            unit = units[0]
+            return f"Variant {_variant_of(unit)} of {scale} (stored: {unit.rotation:g})"
+        counts = sorted({unit_variant.variant_count_for(unit.unit_const) for unit in units})
+        if len(counts) == 1:
+            return f"Variant 0 to {scale - 1} of {scale} for every selected object"
+        return (
+            f"Variant 0 to {scale - 1}: the fewest any selected object has. "
+            f"Others have {', '.join(str(count) for count in counts[1:])}."
         )
 
     def _apply_stats(self, unit_const: int | None) -> None:

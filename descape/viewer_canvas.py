@@ -796,14 +796,17 @@ class GridItem(QGraphicsItem):
 
 class StackBadgeItem(QGraphicsItem):
     """The stacked-unit count badges, View > Show Stacked-Unit Badges: one
-    item for the whole layer, drawing a small count above every tile where
+    item for the whole layer, drawing a small count on every tile where
     unit_pick.stack_groups() found a unit hidden under another.
 
-    Anchors are scene points handed in by MapView (each group tile's top
-    vertex, via its own _tile_polygon), so this item knows nothing about
-    terrain styles. Drawn in device space like EdgeTickItem, so a badge
-    stays one size at every zoom; the whole layer drops out once a tile is
-    too small on screen for a badge to say which tile it belongs to."""
+    Each badge is an (anchor, centre) pair of scene points handed in by
+    MapView (GH #100: the tile's named edge midpoint or corner, and the tile
+    centre), so this item knows nothing about terrain styles. Tucked, the box
+    sits inside the tile against its anchor, on the centre's side per axis;
+    untucked it sits above the anchor (the original look). Drawn in device
+    space like EdgeTickItem, so a badge stays one size at every zoom; the
+    whole layer drops out once a tile is too small on screen for a badge to
+    say which tile it belongs to."""
 
     FONT_PX = 11
     PAD_PX = 3.0
@@ -812,27 +815,34 @@ class StackBadgeItem(QGraphicsItem):
     # Below this many device pixels per tile the badges would pile onto
     # their neighbours' tiles, so none are drawn at all.
     MIN_TILE_DEVICE_PX = 12.0
+    # Within this many device pixels an anchor and centre share an axis: the box centres on it.
+    AXIS_TIE_PX = 0.5
 
-    def __init__(self, tile_extent: float, color: QColor) -> None:
+    def __init__(self, tile_extent: float, color: QColor, background: QColor | None = None) -> None:
         super().__init__()
         self._tile_extent = float(tile_extent)
-        self._badges: list[tuple[QPointF, str]] = []
+        self._badges: list[tuple[QPointF, QPointF, str]] = []
         self._bounding_rect = QRectF()
         self._font = map_overlay_font(self.FONT_PX)
         self._font.setBold(True)
         self._pen = QPen(color)
         self._background = QColor(0, 0, 0, self.BACKGROUND_ALPHA)
+        if background is not None:
+            self.set_background_color(background)
+        self._tucked = True
         self.badges_drawn = 0
+        # Device-space boxes of the last paint, for tests and the eyeball tool.
+        self.drawn_boxes: list[QRectF] = []
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
 
-    def set_badges(self, badges: list[tuple[QPointF, int]]) -> None:
+    def set_badges(self, badges: list[tuple[QPointF, QPointF, int]]) -> None:
         self.prepareGeometryChange()
-        self._badges = [(QPointF(point), str(count)) for point, count in badges]
+        self._badges = [(QPointF(anchor), QPointF(centre), str(count)) for anchor, centre, count in badges]
         if not self._badges:
             self._bounding_rect = QRectF()
         else:
-            xs = [p.x() for p, _text in self._badges]
-            ys = [p.y() for p, _text in self._badges]
+            xs = [p.x() for anchor, centre, _text in self._badges for p in (anchor, centre)]
+            ys = [p.y() for anchor, centre, _text in self._badges for p in (anchor, centre)]
             # The badge's device size in scene units is largest at the LOD
             # floor, where one tile is MIN_TILE_DEVICE_PX; 4 tiles covers it.
             pad = 4 * self._tile_extent
@@ -842,17 +852,43 @@ class StackBadgeItem(QGraphicsItem):
         self.update()
 
     def badge_texts(self) -> list[str]:
-        return [text for _point, text in self._badges]
+        return [text for _anchor, _centre, text in self._badges]
+
+    def badge_anchors(self) -> list[tuple[QPointF, QPointF]]:
+        return [(QPointF(anchor), QPointF(centre)) for anchor, centre, _text in self._badges]
+
+    def set_placement(self, tucked: bool) -> None:
+        self._tucked = bool(tucked)
+        self.update()
 
     def set_color(self, color: QColor) -> None:
         self._pen = QPen(color)
         self.update()
 
+    def set_background_color(self, color: QColor) -> None:
+        """RGB from `color`; alpha stays BACKGROUND_ALPHA (legibility, not theme)."""
+        self._background = QColor(color.red(), color.green(), color.blue(), self.BACKGROUND_ALPHA)
+        self.update()
+
     def boundingRect(self) -> QRectF:
         return self._bounding_rect
 
+    def _box(self, anchor: QPointF, centre: QPointF, w: float, h: float) -> QRectF:
+        if not self._tucked:
+            return QRectF(anchor.x() - w / 2.0, anchor.y() - self.GAP_PX - h, w, h)
+
+        def _side(delta: float) -> int:
+            return 0 if abs(delta) <= self.AXIS_TIE_PX else (1 if delta > 0 else -1)
+
+        sx = _side(centre.x() - anchor.x())
+        sy = _side(centre.y() - anchor.y())
+        cx = anchor.x() + sx * (w / 2.0 + self.GAP_PX)
+        cy = anchor.y() + sy * (h / 2.0 + self.GAP_PX)
+        return QRectF(cx - w / 2.0, cy - h / 2.0, w, h)
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         self.badges_drawn = 0
+        self.drawn_boxes = []
         if not self._badges:
             return
         world = painter.worldTransform()
@@ -869,19 +905,20 @@ class StackBadgeItem(QGraphicsItem):
             painter.resetTransform()
             painter.setFont(self._font)
             metrics = painter.fontMetrics()
-            for point, text in self._badges:
-                device = world.map(point)
+            for anchor, centre, text in self._badges:
+                device = world.map(anchor)
                 if exposed_device is not None and not exposed_device.contains(device):
                     continue
                 w = metrics.horizontalAdvance(text) + 2 * self.PAD_PX
                 h = metrics.height() + self.PAD_PX
-                box = QRectF(device.x() - w / 2.0, device.y() - self.GAP_PX - h, w, h)
+                box = self._box(device, world.map(centre), w, h)
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(self._background)
                 painter.drawRoundedRect(box, 3.0, 3.0)
                 painter.setPen(self._pen)
                 painter.drawText(box, Qt.AlignCenter, text)
                 self.badges_drawn += 1
+                self.drawn_boxes.append(QRectF(box))
         finally:
             painter.restore()
 

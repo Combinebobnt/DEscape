@@ -35,6 +35,7 @@ pytestmark = [
 ]
 
 _TREE_CONST = min(TREE_UNIT_IDS)
+_WALL_CONST = 117  # stone wall: a variant index the game derives, never editable
 _BUILDING_CONST = next(uid for uid, (sx, sy) in BUILDING_TILE_SPANS.items() if sx == 4 and sy == 4)
 
 
@@ -309,6 +310,9 @@ def test_rotation_is_shown_raw_with_its_variant_index_warning() -> None:
     try:
         window.mode_combo.setCurrentText("Units")
         gaia_entry = next(e for e in window.map_view._unit_index.entries if e.player_id == 0)
+        # Pinned to a wall: the fixture's GAIA tree has an editable variant
+        # since GH #123, and a wall's index stays raw and read-only.
+        gaia_entry.unit.unit_const = _WALL_CONST
         gaia_entry.unit.rotation = 37
         window.units_panel.show_unit(gaia_entry)
         assert window.units_panel.unit_field_labels["rotation"].text() == "37"

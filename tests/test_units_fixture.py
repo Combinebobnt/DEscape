@@ -142,7 +142,8 @@ def test_every_unit_raw_slice_matches_its_game_style_reserialization() -> None:
     wrong offset, or a byte_length miscount, would fail this even though both
     sides "agree" about caption encoding.
     """
-    from _fixture_bytes import _game_style_bytes
+    # Via the generator, not `from _fixture_bytes import`: that needs tools/ on sys.path, which only an earlier test put there.
+    _game_style_bytes = _generator()._game_style_bytes
 
     loaded = load_map_and_units(FIXTURE_PATH)
     for player, entry, raw in _raw_unit_slices(loaded):

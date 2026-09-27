@@ -1,5 +1,5 @@
 {
-  "_comment": "terrain_id -> AoE2DE terrain texture filename (resources/_common/terrain/textures/2x/). Pure factual id/filename correspondence extracted from the game's own data table via genieutils-py, not game asset content itself -- the .dds files are never bundled here.",
+  "_comment": "terrain_id -> AoE2DE terrain texture filename (resources/_common/terrain/textures/2x/). Pure factual id/filename correspondence extracted from the game's own data table via genieutils-py, not game asset content itself -- the .dds files are never bundled here. Regenerate with tools/gen_terrain_texture_map.py.",
   "mapping": {
     "0": "g_grs.dds",
     "1": "g_wtr.dds",
@@ -38,6 +38,9 @@
     "129": "g_bla.dds",
     "13": "g_pal.dds",
     "130": "g_wt6.dds",
+    "131": "g_for.dds",
+    "132": "g_snf.dds",
+    "133": "g_for.dds",
     "14": "g_pal.dds",
     "15": "g_wtr.dds",
     "16": "g_grs.dds",

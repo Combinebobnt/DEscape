@@ -74,8 +74,8 @@ jobs:
         env:
           DESCAPE_REQUIRE_NATIVE: '1'
         run: |
-          python -m pip install pytest pytest-qt ruff==0.16.3
-          xvfb-run -a python -m pytest
+          python -m pip install pytest pytest-qt pytest-xdist ruff==0.16.3
+          xvfb-run -a python -m pytest -n auto --maxprocesses 16 --dist loadgroup
 
       - name: Build frozen bundle
         if: runner.os != 'Linux'

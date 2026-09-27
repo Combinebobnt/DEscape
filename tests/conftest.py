@@ -207,13 +207,18 @@ def mouse_event(kind, pos, button, buttons):
 _FONT_REFERENCE_TEXT = "Global Victory: Standard"
 
 
+def pytest_configure(config) -> None:
+    """Fires the font/DPI pin at session start, ahead of any fixture. Not left
+    to pytest_report_header: `--no-header` skips that hook."""
+    if PYQT5_AVAILABLE:
+        ensure_qapp()
+
+
 def pytest_report_header(config) -> str | None:
     """Records the resolved test font metrics in every run's header, so a CI
-    log shows them. Also fires the font/DPI pin at session start, ahead of
-    any fixture."""
+    log shows them."""
     if not PYQT5_AVAILABLE:
         return None
-    ensure_qapp()
     from PyQt5.QtGui import QFontInfo, QFontMetrics
     from PyQt5.QtWidgets import QApplication
 
@@ -397,12 +402,28 @@ def run_check(fn, *args) -> None:
         pytest.fail(detail)
 
 
+# Under xdist the controller never collects, so each worker reports its deselected count back through workeroutput.
+_WORKER_DESELECTED: list[int] = []
+
+
+def pytest_deselected(items) -> None:
+    if items and hasattr(items[0].config, "workeroutput"):
+        output = items[0].config.workeroutput
+        output["deselected"] = output.get("deselected", 0) + len(items)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error) -> None:
+    _WORKER_DESELECTED.append(getattr(node, "workeroutput", {}).get("deselected", 0))
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     """'Silent skips must not read as green' (see the Tiers section this
     implements): one line naming how much of the run was deselected or
     skipped, so an empty examples/ or a default `-m` run doesn't look
     indistinguishable from full coverage."""
-    deselected = len(terminalreporter.stats.get("deselected", []))
+    # Every worker collects and deselects the same full set, so take one count, not the sum.
+    deselected = len(terminalreporter.stats.get("deselected", [])) or max(_WORKER_DESELECTED, default=0)
     skipped = len(terminalreporter.stats.get("skipped", []))
     if deselected or skipped:
         terminalreporter.write_line(

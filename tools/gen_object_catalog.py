@@ -9,7 +9,11 @@ Pure factual id/field correspondence data extracted via genieutils-py, same
 reasoning as terrain_texture_map.json/tree_unit_ids.json -- commits integers
 and the .dat's own short internal codes only, never a display string.
 An object's `no_graphic` key is present (always True) only when its .dat
-standing_graphic[0] is -1; unit_kind.invisible_consts() is derived from it.
+standing_graphic[0] is -1 or the .dat's own `BLANK` graphic (no art file);
+unit_kind.invisible_consts() is derived from it. The 2026-09-22 game patch
+moved 20 helper consts (Empty TC annex, sheep/mole annexes, ...) from -1 to
+`BLANK`, so the game treats the two alike; the user decided (2026-09-26) that
+this also covers the consts that already pointed at `BLANK` (flares, debris).
 Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
@@ -26,7 +30,11 @@ import json
 from pathlib import Path
 
 
-def _object_entries(units: list) -> dict[str, dict]:
+def _blank_graphic_ids(graphics: list) -> frozenset[int]:
+    return frozenset(i for i, g in enumerate(graphics) if g is not None and g.name.strip().upper() == "BLANK")
+
+
+def _object_entries(units: list, blank_ids: frozenset[int]) -> dict[str, dict]:
     entries: dict[str, dict] = {}
     for unit_const, unit in enumerate(units):
         if unit is None or not unit.name:
@@ -40,7 +48,7 @@ def _object_entries(units: list) -> dict[str, dict]:
             "code": unit.name,
         }
         # Omitted when false, so the committed diff is only the ~200 consts that need it.
-        if unit.standing_graphic[0] == -1:
+        if unit.standing_graphic[0] == -1 or unit.standing_graphic[0] in blank_ids:
             entries[str(unit_const)]["no_graphic"] = True
     return entries
 
@@ -78,7 +86,10 @@ def main() -> None:
     # civs[0] (Gaia) carries the master unit list -- every other civ's own
     # list is a copy with per-civ stat overrides, same source
     # gen_tree_unit_ids.py already reads.
-    objects = _object_entries(data.civs[0].units)
+    blank_ids = _blank_graphic_ids(data.graphics)
+    if not blank_ids:
+        raise SystemExit("No BLANK graphic in the .dat; the no_graphic rule needs re-checking")
+    objects = _object_entries(data.civs[0].units, blank_ids)
     techs = _tech_entries(data.techs)
 
     out_path = Path(__file__).resolve().parent.parent / "descape" / "object_catalog.json"

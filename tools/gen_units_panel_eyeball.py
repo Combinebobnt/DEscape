@@ -13,7 +13,8 @@ Captures, at MIN_USEFUL_WIDTH and a comfortable width:
    rotation note (a real facing const, not a variant one -- see
    _ANGLE_ROTATION_CONST's own comment for why this isn't a building).
    Then a Trebuchet: the facing spinbox ranges 0..31 (GH #61).
-3. A tree selected -- Hit points only, combat rows gone, rotation note visible.
+3. A tree selected -- Hit points only, combat rows gone, Rotation an
+   editable variant number (GH #123).
 4. Group mode: an agreeing pair of archers, then a mixed archers + tree
    selection (mixed owner/name/X, the "won't rotate" note), then an archer
    + trebuchet pair facing one way (a 32-direction scale, GH #61).
@@ -164,7 +165,7 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
     window.units_panel.show_unit(_entry_for(window, 105))
     written.append(_grab_inspector(window, out_dir / f"w{width}_2b_trebuchet_inspector.png"))
 
-    # 3. A tree selected -- Hit points only, rotation note visible.
+    # 3. A tree selected -- Hit points only, Rotation shows its variant (GH #123).
     window.units_panel.show_unit(_entry_for(window, 102))
     path = out_dir / f"w{width}_3_tree_selected.png"
     _grab(window, path)

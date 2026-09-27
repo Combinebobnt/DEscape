@@ -150,6 +150,28 @@ def test_point_of_view_survives_every_other_version(version: str) -> None:
     assert player_fields.POV_Y_FIELD in ids
 
 
+def test_pov_bounds_is_unset_to_last_tile_per_axis() -> None:
+    """GH #117: X reads width and Y height separately (a 120x168 case), and
+    -1 stays in range as Reset View's unset sentinel (GH #22)."""
+    assert player_fields.pov_bounds(player_fields.POV_X_FIELD, 120, 168) == (-1, 119)
+    assert player_fields.pov_bounds(player_fields.POV_Y_FIELD, 120, 168) == (-1, 167)
+    assert player_fields.POV_UNSET == -1
+
+
+def test_pov_bounds_leaves_the_specs_int32_range_alone() -> None:
+    """_is_representable() reads the spec range; narrowing it would turn an
+    off-map stored POV into a read-only label."""
+    specs = {s.field_id: s for s in player_fields._SPECS}
+    for field_id in (player_fields.POV_X_FIELD, player_fields.POV_Y_FIELD):
+        assert specs[field_id].minimum == -(2**31)
+        assert specs[field_id].maximum == 2**31 - 1
+
+
+def test_pov_bounds_refuses_a_non_pov_field() -> None:
+    with pytest.raises(ValueError):
+        player_fields.pov_bounds("food", 120, 120)
+
+
 def test_a_missing_section_drops_every_spec_in_it() -> None:
     overrides = {
         (s.section, s.retriever): None for s in player_fields._SPECS if s.section == "Map"
@@ -280,8 +302,9 @@ def test_every_spec_resolves_to_a_scalar_for_every_p1_to_p8_player() -> None:
 
 
 def test_ai_files_is_never_read() -> None:
-    """The maintainer plan's hard requirement: a single row must not be able
-    to dump a multi-megabyte embedded .ai script."""
+    """No spec reads ai_files: a single row must not be able to dump a
+    multi-megabyte embedded .ai script. Only ai_scripts and the personality
+    splices (OptionsEditModel, scenario_write) touch it (GH #126)."""
     assert "ai_files" not in {(s.section, s.retriever) for s in player_fields._SPECS}
 
 

@@ -84,6 +84,14 @@ _patch_disables() runs after _assemble_body() and before _patch_messages().
 Three splices can now apply in one save, which is what
 tests/test_disables_write_path.py's combined case exists to pin.
 
+GH #126's AI personality adds two more, so the full order after the
+fixed-offset patches (which include each edited player's ai_type byte) is:
+_assemble_body() (Units/Triggers), _patch_ai_library() (the Files library,
+which ends the body, so it is addressed from the end), _patch_disables()
+(front of Options), _patch_personality() (PlayerDataTwo's ai_names/ai_files,
+below Options and above Messages), _patch_messages(), then
+_patch_player_data_1() (offset 0).
+
 See tests/test_write_path.py, tests/test_trigger_write_path.py,
 tests/test_units_write_path.py, and tests/test_player_write_path.py for the
 evidence.
@@ -104,6 +112,8 @@ from descape.options_model import (
     diplomacy_write_supported,
     disables_write_supported,
     options_write_supported,
+    personality_custom_supported,
+    personality_write_supported,
     player_count_write_supported,
     players_write_supported,
 )
@@ -358,6 +368,57 @@ def _patch_disables(body: bytes, scenario: LoadedScenario, options: OptionsEditM
         "disables splice length mismatch"
     )
     return new_body
+
+
+def _patch_ai_library(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with the Files AI library (ai_files_present to the end)
+    rebuilt for the pending personalities; a no-op when it would not change.
+
+    The highest-offset splice, so first after _assemble_body(). That step may
+    have resized Units/Triggers, so the load-time region is translated by the
+    body's length change: Files ends the body (ai_library_layout() asserts
+    files_section_end == len(body)), so its offsets hold relative to the end.
+    Refuses a region that does not start inside Files."""
+    resize = options.serialize_ai_library_resize()
+    if resize is None:
+        return body
+    start, end, replacement = resize
+    original = scenario.decompressed_body
+    if not (0 <= scenario.files_section_start <= start <= end == len(original)):
+        raise WriteBlockedError(
+            f"An AI library splice at {start}..{end} falls outside the Files region "
+            f"this write path owns ({scenario.files_section_start}..{len(original)})."
+        )
+    shift = len(body) - len(original)
+    assert body[start + shift :] == original[start:], (
+        "something patched inside the Files library before its splice"
+    )
+    return body[: start + shift] + replacement
+
+
+def _patch_personality(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with PlayerDataTwo's ai_names + ai_files region spliced
+    for the pending personalities; a no-op without one. After
+    _patch_disables() (Options sits above PlayerDataTwo) and before
+    _patch_messages() (Messages sits below it), so every offset used here is
+    still load-time. The ai_type bytes were patched in place earlier and
+    shift with this splice. Refuses a region starting before PlayerDataTwo
+    or reaching its ai_type array."""
+    resize = options.serialize_personality_resize(body)
+    if resize is None:
+        return body
+    start, end, replacement = resize
+    section_start = scenario.player_data_two_section_end - scenario._scenario.sections["PlayerDataTwo"].byte_length
+    ai_type_start = options.personality_layout.ai_type.offset
+    if not (0 <= section_start <= start <= end <= ai_type_start):
+        raise WriteBlockedError(
+            f"A personality splice at {start}..{end} falls outside the PlayerDataTwo "
+            f"region this write path owns ({section_start}..{ai_type_start})."
+        )
+    assert body[start:end] == scenario.decompressed_body[start:end], (
+        "something patched inside the personality region before its splice"
+    )
+    return body[:start] + replacement + body[end:]
 
 
 def _patch_messages(body: bytes, scenario: LoadedScenario, messages: MessagesEditModel) -> bytes:
@@ -622,6 +683,17 @@ def write_scenario(
                 "This file's per-player disable lists no longer verify -- splicing "
                 "would land at an offset that can't be trusted."
             )
+        if options.has_personality_edits:
+            if not personality_write_supported(scenario):
+                raise WriteBlockedError(
+                    "This file's AI personality block no longer verifies -- splicing "
+                    "would land at an offset that can't be trusted."
+                )
+            if options.personality_custom_supported and not personality_custom_supported(scenario):
+                raise WriteBlockedError(
+                    "This file's AI script library no longer verifies -- splicing "
+                    "would land at an offset that can't be trusted."
+                )
         header_bytes = _patch_header_player_count(header_bytes, options)
         patched_body = _patch_options(patched_body, scenario, options)
 
@@ -663,7 +735,9 @@ def write_scenario(
         # same reason: serialize_disables_resize() already no-ops cleanly for
         # a model with no pending disable-list edit, and this keeps the whole
         # descending-offset ordering rule readable in one place.
+        patched_body = _patch_ai_library(patched_body, scenario, options)
         patched_body = _patch_disables(patched_body, scenario, options)
+        patched_body = _patch_personality(patched_body, scenario, options)
 
     if messages is not None and messages.has_edits:
         patched_body = _patch_messages(patched_body, scenario, messages)

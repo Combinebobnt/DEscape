@@ -15,6 +15,16 @@
 # No default: falls back to flat colors if unset everywhere.
 aoe2de_install: /path/to/steamapps/common/AoE2DE
 
+# Path to your AoE2:DE profile folder, the one holding numeric per-account
+# folders with resources/ and mods/ inside. Only read, never written, and
+# optional: without it only the install's own content is offered. Also
+# settable via the AOE2DE_PROFILE_PATH env var (checked first). Default:
+# detected, as %USERPROFILE%\Games\Age of Empires 2 DE on Windows, or on
+# Linux as the Proton prefix beside aoe2de_install's Steam library
+# (steamapps/compatdata/813780/pfx/drive_c/users/steamuser/Games/...).
+# See content_roots.py's module docstring.
+# aoe2de_profile: /path/to/Games/Age of Empires 2 DE
+
 # Language folder under the install's resources/ (e.g. de, fr, es) that
 # trigger reference pickers resolve real object/tech display names from --
 # see object_catalog.py's resolve_name(). Only takes effect with
@@ -65,6 +75,13 @@ distance_tick_interval: 5
 # In Units mode, a count badge over every spot where a unit is hidden under
 # another, View > Show Stacked-Unit Badges. Default: true.
 stack_badges: true
+
+# Where each stacked-unit badge sits on its tile, Settings > Appearance.
+# One of bottom_right, bottom_left, top_right, top_left, above.
+# Anything else falls back to the default on read. The four corners tuck the
+# badge inside the tile; above is the original look.
+# Default: bottom_right.
+stack_badge_position: bottom_right
 
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.
@@ -192,6 +209,7 @@ keybinds:
   filter_show_gaia: ''
   filter_show_trees: ''
   filter_show_walls: ''
+  filter_show_buildings: ''
   filter_show_eye_candy: ''
   filter_show_invisible: ''
   filter_show_garrisoned: ''
@@ -265,6 +283,7 @@ overlay_colors:
   unit_select: '#50aaff'
   unit_select_fill: '#50aaff'
   unit_stack: '#ffd24a'
+  unit_stack_background: '#000000'
   footprint_outline: '#e65ae6'
   range_ring: '#9ee65a'
   ruler_line: '#ff8228'

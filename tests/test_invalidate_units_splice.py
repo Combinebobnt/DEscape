@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render, render_cache, unit_sprites
 from descape.render import (
     elevations_and_proj,
     render_terrain_iso_with_proj,
@@ -30,7 +30,14 @@ from descape.render import (
     sloped_elevations_and_proj,
     tile_pixels_for_map,
 )
-from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice, _splice_eligible
+from descape.render_cache import (
+    FlatChunkCache,
+    IsoChunkCache,
+    SlopedChunkCache,
+    UnitSplice,
+    _batch_splice_eligible,
+    _splice_eligible,
+)
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_filter import UnitFilter
@@ -489,6 +496,131 @@ def test_a_reassign_across_the_player_filter_matches_a_fresh_cache(style, shown,
     assert np.array_equal(stitched, _fresh_render(style, scenario, False, unit_filter))
 
 
+# --- Draw stroke-end batches (stroke-end repaint splice plan, Steps 1-2) ----
+
+
+def _remove_splice(scenario, player_id: int, unit) -> UnitSplice:
+    """A remove_many() entry: deleted by identity, like the model does."""
+    index = next(i for i, u in enumerate(scenario.unit_manager.units[player_id]) if u is unit)
+    return _delete_splice(scenario, player_id, index, unit)
+
+
+def _apply_batch(cache, splices: list[UnitSplice]) -> None:
+    cache.invalidate_units(splices)
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_remove_and_add_on_one_tile_splices_and_matches_a_fresh_render(style, sprites, request, monkeypatch):
+    """Draw's forest-over-forest shape: the old unit goes, a new one lands on
+    the same tile. The add is listed FIRST: applying it before the removal
+    would pop the add's own sprite slot, so this also pins removals-first."""
+    if sprites:
+        request.getfixturevalue("sprite_install")
+    const = SPRITE_CONST if sprites else MILL_CONST
+    scenario = _scenario()
+    _place(scenario, 3, MILL_CONST, *ELSEWHERE_TILE)  # unrelated occupant, far away
+    old = _place(scenario, 1, const, *MILL_TILE)
+    assert scenario.team_indices[1] != scenario.team_indices[2], "players 1 and 2 share a tint"
+    cache = _make_cache(style, scenario, sprites=sprites)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    before = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0).copy()
+    counts = _call_counts(monkeypatch)
+
+    removal = _remove_splice(scenario, 1, old)
+    # Another player, so the swap is visible on screen.
+    add = _add_splice(scenario, 2, _place(scenario, 2, const, *MILL_TILE))
+    batch = [add, removal]
+    assert not _splice_eligible(cache.units_by_tile, add), "the per-splice guard should reject this"
+    assert _batch_splice_eligible(cache.units_by_tile, batch), "fixture is not testing the splice path"
+    _apply_batch(cache, batch)
+
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    assert not np.array_equal(stitched, before), "the swap changed nothing on screen"
+    full = _oracle(style, scenario, sprites=sprites)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_two_removals_sharing_a_tile_splice_and_match_a_fresh_render(style, sprites, request, monkeypatch):
+    if sprites:
+        request.getfixturevalue("sprite_install")
+    const = SPRITE_CONST if sprites else MILL_CONST
+    scenario = _scenario()
+    first = _place(scenario, 0, const, *MILL_TILE)
+    second = _place(scenario, 0, const, *MILL_TILE)
+    cache = _make_cache(style, scenario, sprites=sprites)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    before = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0).copy()
+    counts = _call_counts(monkeypatch)
+
+    batch = [_remove_splice(scenario, 0, first), _remove_splice(scenario, 0, second)]
+    assert _batch_splice_eligible(cache.units_by_tile, batch)
+    _apply_batch(cache, batch)
+
+    assert counts == {"building_bboxes": 0, "sprites": 0}
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert not np.array_equal(stitched, before), "the removals changed nothing on screen"
+    full = _oracle(style, scenario, sprites=sprites)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+@pytest.mark.parametrize("with_add", [False, True])
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_removal_beside_a_non_batch_occupant_falls_back(style, with_add, monkeypatch):
+    """The non-vacuity control: a removal pops every slot on its tile, so a
+    unit on that tile the batch doesn't name must force the wholesale path."""
+    scenario = _scenario()
+    _place(scenario, 1, MILL_CONST, *MILL_TILE)  # stays, not in the batch
+    doomed = _place(scenario, 0, MILL_CONST, *MILL_TILE)
+    cache = _make_cache(style, scenario)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    counts = _call_counts(monkeypatch)
+
+    batch = [_remove_splice(scenario, 0, doomed)]
+    if with_add:
+        batch.append(_add_splice(scenario, 0, _place(scenario, 0, MILL_CONST, *MILL_TILE)))
+    assert not _batch_splice_eligible(cache.units_by_tile, batch)
+    _apply_batch(cache, batch)
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)  # Iso's fallback is lazy
+
+    assert counts["building_bboxes"] >= 1, "a shared tile should have taken the wholesale fallback"
+    full = _oracle(style, scenario)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_two_adds_onto_one_tile_fall_back(style):
+    scenario = _scenario()
+    cache = _make_cache(style, scenario)
+    batch = [_add_splice(scenario, 0, _place(scenario, 0, MILL_CONST, *MILL_TILE)) for _ in range(2)]
+    assert not _batch_splice_eligible(cache.units_by_tile, batch)
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_batch_over_the_cap_falls_back(style, monkeypatch):
+    scenario = _scenario()
+    doomed = [_place(scenario, 0, MILL_CONST, 20.0 + 4 * i, 20.0) for i in range(3)]
+    cache = _make_cache(style, scenario)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    batch = [_remove_splice(scenario, 0, u) for u in doomed]
+    assert _batch_splice_eligible(cache.units_by_tile, batch)
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 2)
+    assert not _batch_splice_eligible(cache.units_by_tile, batch)
+    counts = _call_counts(monkeypatch)
+
+    _apply_batch(cache, batch)
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+
+    assert counts["building_bboxes"] >= 1, "an over-cap batch should have taken the wholesale fallback"
+    full = _oracle(style, scenario)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+
+
 # --- Flat's row splice (convert-and-flat-unit-splice plan, Step 2) ----------
 
 FLAT_MIPS = (0, 1)
@@ -667,6 +799,47 @@ def test_ineligible_flat_batches_fall_back_to_wholesale(case, monkeypatch):
     cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
 
     assert counts["rows"] >= 1, "an ineligible batch should have rebuilt the rows"
+    _assert_flat_matches_fresh(cache, scenario, False)
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_a_flat_remove_and_tail_add_on_one_tile_splices(sprites, request, monkeypatch):
+    """Draw's forward stroke: remove_many() then add_many(), which appends."""
+    if sprites:
+        request.getfixturevalue("sprite_install")
+    const = SPRITE_CONST if sprites else MILL_CONST
+    scenario = _flat_scenario(const)
+    extra = _place(scenario, 0, const, 20.5, 40.5)  # GAIA's block now has two rows
+    cache = _flat_cache(scenario, sprites=sprites)
+    counts = _flat_counts(monkeypatch)
+
+    removal = _remove_splice(scenario, 0, scenario.unit_manager.units[0][0])
+    add = _add_splice(scenario, 0, _place(scenario, 0, const, extra.x, extra.y))
+    batch = [removal, _remove_splice(scenario, 0, extra), add]
+    assert cache._flat_splice_eligible(batch), "fixture is not testing the splice path"
+    _apply_batch(cache, batch)
+
+    _flat_renders(cache)
+    assert counts == {"rows": 0, "icons": 0}, "the splice path rebuilt a whole walk"
+    _assert_flat_matches_fresh(cache, scenario, sprites)
+
+
+def test_a_flat_mid_block_insert_falls_back(monkeypatch):
+    """Undo puts a removed unit back at its original index, not the block's
+    end, which _splice_rows() cannot express."""
+    scenario = _flat_scenario(MILL_CONST)
+    _place(scenario, 0, MILL_CONST, 20.5, 40.5)
+    cache = _flat_cache(scenario)
+    counts = _flat_counts(monkeypatch)
+
+    restored = Unit(30.5, 40.5, MILL_CONST)
+    scenario.unit_manager.units[0].insert(0, restored)
+    batch = [UnitSplice(0, 0, restored, None, _own_tile(restored), (), _occupied(scenario, restored))]
+    assert not cache._flat_splice_eligible(batch)
+    _apply_batch(cache, batch)
+
+    _flat_renders(cache)
+    assert counts["rows"] >= 1, "a mid-block insert should have rebuilt the rows"
     _assert_flat_matches_fresh(cache, scenario, False)
 
 

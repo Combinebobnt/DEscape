@@ -43,13 +43,14 @@ pytestmark = [
 # excluded for the same reason: param_widget == "" like Elevate, but shows
 # its own param group (the three paste-filter checkboxes, gated on
 # _current_tool == "select" rather than on ToolDef.param_widget) -- see
-# tests/test_region_select.py's own visibility test.
+# tests/test_region_select.py's own visibility test. Ruler likewise shows
+# its own Clear rulers button (GH #108/#109); see tests/test_ruler_viewer.py.
 # Triggers-only tools (Create Objects) are excluded for the same reason as
 # the Units-only ones; tests/test_create_objects_tool.py covers them.
 _TERRAIN_MODE_TOOLS = [
     t
     for t in settings.TOOLS
-    if viewer_common.tool_applicable(t.tool_id, "terrain") and t.tool_id not in ("eyedropper", "select")
+    if viewer_common.tool_applicable(t.tool_id, "terrain") and t.tool_id not in ("eyedropper", "select", "ruler")
 ]
 
 # Which of the two single-valued params (if either) is expected to be

@@ -293,6 +293,40 @@ def set_stack_badges(enabled: bool) -> None:
     _save_config(config)
 
 
+# GH #100: where each stack badge sits on its tile, Settings > Appearance.
+# Tucked positions sit inside the tile against the named edge (iso) or corner (square).
+STACK_BADGE_POSITIONS: list[tuple[str, str]] = [
+    ("bottom_right", "Bottom-right"),
+    ("bottom_left", "Bottom-left"),
+    ("top_right", "Top-right"),
+    ("top_left", "Top-left"),
+    ("above", "Above the tile (original)"),
+]
+STACK_BADGE_POSITION_DEFAULT = "bottom_right"
+_STACK_BADGE_POSITION_IDS = tuple(pid for pid, _label in STACK_BADGE_POSITIONS)
+_stack_badge_position: str | None = None
+
+
+def get_stack_badge_position() -> str:
+    """One of STACK_BADGE_POSITIONS' ids; an off-list config value falls back
+    to the default (get_distance_tick_interval's membership-gated shape)."""
+    global _stack_badge_position
+    if _stack_badge_position is None:
+        raw = _load_config().get("stack_badge_position")
+        _stack_badge_position = raw if raw in _STACK_BADGE_POSITION_IDS else STACK_BADGE_POSITION_DEFAULT
+    return _stack_badge_position
+
+
+def set_stack_badge_position(position: str) -> None:
+    if position not in _STACK_BADGE_POSITION_IDS:
+        raise ValueError(f"stack_badge_position must be one of {list(_STACK_BADGE_POSITION_IDS)}, got {position!r}")
+    global _stack_badge_position
+    _stack_badge_position = position
+    config = _load_config()
+    config["stack_badge_position"] = position
+    _save_config(config)
+
+
 # View > Colour Selection by Owner: the Units-mode selection outline takes each
 # owner's player colour (GAIA keeps unit_select). Persisted, on by default.
 _selection_by_owner: bool | None = None
@@ -601,7 +635,8 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_hover", "Unit hover outline", "#ffffff"),
     ("unit_select", "Selection outline", "#50aaff"),
     ("unit_select_fill", "Selection fill", "#50aaff"),
-    ("unit_stack", "Stacked-unit badge", "#ffd24a"),
+    ("unit_stack", "Stacked-unit badge text", "#ffd24a"),
+    ("unit_stack_background", "Stacked-unit badge background", "#000000"),
     ("footprint_outline", "Footprint outlines", "#e65ae6"),
     ("range_ring", "Range ring", "#9ee65a"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
@@ -1287,6 +1322,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_show_gaia", "Show GAIA", ""),
     ("filter_show_trees", "Show Trees", ""),
     ("filter_show_walls", "Show Walls", ""),
+    ("filter_show_buildings", "Show Buildings", ""),
     ("filter_show_eye_candy", "Show Eye Candy", ""),
     ("filter_show_invisible", "Show Invisible Objects", ""),
     ("filter_show_garrisoned", "Show Garrisoned Units", ""),

@@ -186,6 +186,21 @@
       "family": "shallow_water",
       "raw": 4
     },
+    "131": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "132": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "133": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
     "14": {
       "climate": "temperate",
       "family": "land",

@@ -228,6 +228,7 @@ _TOGGLE_ACTION_IDS = (
     "filter_show_gaia",
     "filter_show_trees",
     "filter_show_walls",
+    "filter_show_buildings",
     "filter_show_eye_candy",
     "filter_show_invisible",
     "filter_show_garrisoned",

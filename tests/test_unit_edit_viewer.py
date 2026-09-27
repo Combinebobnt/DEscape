@@ -1149,6 +1149,60 @@ def test_units_in_scene_rect_finds_units_under_the_marquee() -> None:
         _close(window)
 
 
+_REF_HOUSE_P1 = 200
+
+
+def _old_marquee_tile_bbox(map_view, rect: QRectF):
+    """The pre-#114 iso marquee's tile bbox: _pick_tile sampled on a tile_px
+    grid across rect."""
+    step = map_view._tile_pixels
+    left, top, right, bottom = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom())
+    tiles = [
+        tile
+        for y in [*range(top, bottom, step), bottom]
+        for x in [*range(left, right, step), right]
+        if (tile := map_view._pick_tile(QPointF(x, y))) is not None
+    ]
+    txs, tys = [t[0] for t in tiles], [t[1] for t in tiles]
+    return min(txs), min(tys), max(txs) + 1, max(tys) + 1
+
+
+@pytest.mark.parametrize(
+    ("style", "map_view_style"),
+    [("Stepped", "stepped"), ("Sloped", "sloped"), ("Flat", "stepped")],
+    ids=["stepped", "sloped", "flat-isometric"],
+)
+def test_iso_marquee_selects_by_on_screen_anchor(style: str, map_view_style: str) -> None:
+    """GH #114. Flat keeps Isometric View checked here, so it takes the
+    Stepped path. A small rect around the house's footprint centre returns
+    exactly it; a wide strip well below every unit returns nothing, though
+    the old tile-bbox rule's diamond reached up over the units."""
+    from descape import iso_geometry, unit_pick
+
+    window = _window_with_style(style)
+    try:
+        map_view = window.map_view
+        assert map_view._terrain_style == map_view_style
+        assert window.iso_action.isChecked()
+        assert not map_view._iso_elevations.any(), "fixture is flat, so every anchor has rise 0"
+        index = map_view._unit_index
+        proj = map_view._iso_proj
+        house = next(e for e in index.entries if e.unit.reference_id == _REF_HOUSE_P1)
+        tx0, tx1, ty0, ty1 = render.unit_tile_bounds(house.unit, map_view._map_width, map_view._map_height)
+        ax, ay = iso_geometry.map_point_to_screen((tx0 + tx1) / 2, (ty0 + ty1) / 2, 0, proj)
+
+        keys = map_view._units_in_scene_rect(QRectF(ax - 4, ay - 4, 8, 8))
+        assert keys == [(house.player_id, _REF_HOUSE_P1)]
+
+        strip = QRectF(300, ay + 160, 1100, 4)
+        assert unit_pick.units_in_rect(index, *_old_marquee_tile_bbox(map_view, strip)), (
+            "the old rule's diamond must reach a unit here or this proves nothing"
+        )
+        assert map_view._units_in_scene_rect(strip) == []
+    finally:
+        _close(window)
+
+
 # --- b3: rotate ---------------------------------------------------------------
 
 _REF_ARCHER_P1 = 201  # type 70, angle_count 16 -- rotation IS an angle
@@ -1206,7 +1260,7 @@ def test_rotate_skips_a_wall_and_leaves_it_untouched() -> None:
 
         assert entry.unit.rotation == before
         assert not window.edit_history.is_dirty, "a fully-skipped rotate must record nothing"
-        assert "not an angle" in window.status_log.toPlainText()
+        assert "no facing or variant to change" in window.status_log.toPlainText()
     finally:
         _close(window)
 
@@ -1429,6 +1483,159 @@ def test_the_variant_actions_need_a_selection() -> None:
         assert all(not a.isEnabled() for a in window._variant_actions)
         _select(window, _REF_TREE_OAK)
         assert all(a.isEnabled() for a in window._variant_actions)
+    finally:
+        _close(window)
+
+
+# --- GH #123: Rotate and the Rotation field cycle a tree's variant -----------
+
+
+def _variant(unit) -> int:
+    from descape import unit_rotation, unit_variant
+
+    const = unit.unit_const
+    count = unit_variant.variant_count_for(const)
+    return unit_variant.variant_of(unit.rotation, unit_rotation.angle_count_for(const), count)
+
+
+@pytest.mark.parametrize("direction", [1, -1])
+def test_a_fine_rotate_on_a_tree_matches_the_cycle_variant_step(direction) -> None:
+    """Rotate ↻ (+1) == Next Variant (+1), so `.` and `'` agree on a tree."""
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        window.on_unit_variant(direction)
+        via_cycle = entry.unit.rotation
+        window.undo()
+
+        window.on_unit_rotate(direction)
+
+        assert entry.unit.rotation == via_cycle
+        assert entry.unit.rotation == 7.0 + direction
+        assert f"Cycled Tree Oak to variant {7 + direction}/42" in window.status_log.toPlainText()
+        window.undo()
+        assert entry.unit.rotation == 7.0
+    finally:
+        _close(window)
+
+
+def test_a_fine_rotate_wraps_at_the_last_variant() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        entry.unit.rotation = 41.0
+        window.on_unit_rotate(1)
+        assert entry.unit.rotation == 0.0
+    finally:
+        _close(window)
+
+
+def test_rotate_writes_a_tree_variant_as_a_literal_integer() -> None:
+    window = _window()
+    try:
+        entries = _select(window, _REF_TREE_OAK, _REF_TREE_PINE)
+        for _ in range(3):
+            window.on_unit_rotate_coarse(1)
+            window.on_unit_rotate(-1)
+        for entry in entries:
+            assert isinstance(entry.unit.rotation, float)
+            assert entry.unit.rotation == int(entry.unit.rotation)
+            assert 0 <= entry.unit.rotation < 42
+    finally:
+        _close(window)
+
+
+def test_a_coarse_rotate_steps_each_tree_by_its_own_quarter() -> None:
+    from descape import unit_rotation
+
+    window = _window()
+    try:
+        entries = _select(window, _REF_TREE_OAK, _REF_TREE_PINE)
+        by_ref = {e.unit.reference_id: e.unit for e in entries}
+        oak_before, pine_before = _variant(by_ref[_REF_TREE_OAK]), _variant(by_ref[_REF_TREE_PINE])
+        records_before = len(window.edit_history.records)
+
+        window.on_unit_rotate_coarse(1)
+
+        assert _variant(by_ref[_REF_TREE_OAK]) == (oak_before + unit_rotation.quarter_turn_steps(42)) % 42
+        assert _variant(by_ref[_REF_TREE_PINE]) == (pine_before + unit_rotation.quarter_turn_steps(27)) % 27
+        assert len(window.edit_history.records) == records_before + 1
+    finally:
+        _close(window)
+
+
+def test_rotate_on_an_archer_tree_and_wall_turns_cycles_and_skips_in_one_record() -> None:
+    from descape import unit_rotation
+
+    window = _window()
+    try:
+        entries = _select(window, _REF_ARCHER_P1, _REF_TREE_OAK, _REF_WALL)
+        by_ref = {e.unit.reference_id: e.unit for e in entries}
+        before = {ref: unit.rotation for ref, unit in by_ref.items()}
+        records_before = len(window.edit_history.records)
+
+        window.on_unit_rotate(1)
+
+        assert by_ref[_REF_ARCHER_P1].rotation == pytest.approx(unit_rotation.rotate_step(before[_REF_ARCHER_P1], 16, 1))
+        assert by_ref[_REF_TREE_OAK].rotation == 8.0
+        assert by_ref[_REF_WALL].rotation == before[_REF_WALL]
+        assert len(window.edit_history.records) == records_before + 1
+        status = window.status_log.toPlainText()
+        assert "Rotated 1 unit, cycled 1 object's variant" in status
+        assert "1 skipped (no facing or variant to change)" in status
+
+        window.undo()
+        assert {ref: unit.rotation for ref, unit in by_ref.items()} == before
+    finally:
+        _close(window)
+
+
+def test_typing_a_variant_on_a_single_tree_is_one_undoable_record() -> None:
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_TREE_OAK)
+        spin = window.units_panel.unit_field_editors["rotation"]
+        assert spin.isVisibleTo(window.units_panel.unit_inspector_grid)
+        assert (spin.maximum(), spin.value()) == (41, 7)
+        records_before = len(window.edit_history.records)
+
+        spin.setValue(30)
+
+        assert entry.unit.rotation == 30.0
+        assert len(window.edit_history.records) == records_before + 1
+        assert spin.value() == 30
+        window.undo()
+        assert entry.unit.rotation == 7.0
+    finally:
+        _close(window)
+
+
+def test_typing_a_variant_on_a_tree_group_sets_both_in_one_record() -> None:
+    window = _window()
+    try:
+        entries = _select(window, _REF_TREE_OAK, _REF_TREE_PINE)
+        before = {e.unit.reference_id: e.unit.rotation for e in entries}
+        spin = window.units_panel.unit_field_editors["rotation"]
+        assert spin.maximum() == 26
+        records_before = len(window.edit_history.records)
+
+        spin.setValue(3)
+
+        assert [e.unit.rotation for e in entries] == [3.0, 3.0]
+        assert len(window.edit_history.records) == records_before + 1
+        assert "Set variant on 2 units" in [r.label for r in window.edit_history.records][-1]
+        window.undo()
+        assert {e.unit.reference_id: e.unit.rotation for e in entries} == before
+    finally:
+        _close(window)
+
+
+def test_typing_the_current_variant_records_nothing() -> None:
+    window = _window()
+    try:
+        _select(window, _REF_TREE_OAK)
+        window._on_unit_field_changed(_field("rotation"), 7)
+        assert not window.edit_history.is_dirty
     finally:
         _close(window)
 
@@ -1842,10 +2049,28 @@ def test_a_no_op_group_edit_records_nothing() -> None:
         _close(window)
 
 
-def test_a_rotation_on_a_group_with_no_angle_member_records_nothing() -> None:
+def test_a_rotation_on_a_group_with_no_angle_member_writes_the_tree_and_leaves_the_wall() -> None:
+    """GH #123: no ANGLE member makes the field a variant number, so the tree
+    takes it and the wall, which the game re-derives, stays verbatim."""
     window = _window()
     try:
-        _select(window, _REF_TREE_OAK, _REF_WALL)
+        entries = _select(window, _REF_TREE_OAK, _REF_WALL)
+        by_ref = {e.unit.reference_id: e.unit for e in entries}
+        wall_before = by_ref[_REF_WALL].rotation
+
+        window._on_unit_field_changed(_field("rotation"), 1.0)
+
+        assert by_ref[_REF_TREE_OAK].rotation == 1.0
+        assert by_ref[_REF_WALL].rotation == wall_before
+        assert "(1 skipped: not rotatable)" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_rotation_on_a_wall_only_group_records_nothing() -> None:
+    window = _window()
+    try:
+        _select(window, _REF_WALL, _REF_HOUSE)
         window._on_unit_field_changed(_field("rotation"), 1.0)
         assert not window.edit_history.is_dirty
     finally:

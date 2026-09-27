@@ -636,8 +636,9 @@ class UnitEditModel:
         value is derived, not picked.
 
         Scope, refused loudly rather than silently no-op'd like every other
-        exception in that list: the 8 rotation_variant_eligible() wall
-        consts (angle_count == 5) and an index in range(5). Gates are
+        exception in that list: the 9 rotation_variant_eligible() wall
+        consts (8 walls plus Aqueduct, angle_count == 5) and an index in
+        range(5). Gates are
         excluded by that predicate and must stay excluded -- they have
         angle_count == 1 and their orientation lives in the const.
 

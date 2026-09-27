@@ -106,6 +106,7 @@ def test_a_list_reference_shows_one_line_per_id() -> None:
 def test_a_long_list_is_capped_at_eight_lines() -> None:
     from descape.trigger_panel import TriggerPanel
 
+    conftest.ensure_qapp()
     panel = TriggerPanel()
     panel.describe_unit_reference = lambda ref_id: f"unit {ref_id}"
     text = panel._unit_list_text(tuple(range(11)))

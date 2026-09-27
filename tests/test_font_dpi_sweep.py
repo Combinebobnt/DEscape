@@ -26,6 +26,8 @@ ROOT = Path(__file__).resolve().parent.parent
 pytestmark = [
     pytest.mark.gui,
     pytest.mark.skipif(not PYQT5_AVAILABLE, reason="PyQt5 not importable"),
+    # Under --dist loadgroup, one worker runs every case, so sweep_runs starts its children once.
+    pytest.mark.xdist_group("font_dpi_sweep"),
 ]
 
 _SWEPT = (72, 96, 100, 110, 120, 144, 168)
@@ -40,8 +42,9 @@ def sweep_runs():
     for dpi in _SWEPT:
         env = dict(os.environ)
         env[FONT_DPI_OVERRIDE_ENV] = str(dpi)
+        # no:xdist keeps a parallel parent from fanning each child out into workers of its own.
         procs[dpi] = subprocess.Popen(
-            [sys.executable, "-m", "pytest", "-m", "font_sensitive", "-q", "-p", "no:cacheprovider", "tests"],
+            [sys.executable, "-m", "pytest", "-m", "font_sensitive", "-q", "-p", "no:cacheprovider", "-p", "no:xdist", "tests"],
             cwd=ROOT,
             env=env,
             stdout=subprocess.PIPE,

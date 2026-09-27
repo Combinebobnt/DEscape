@@ -5,8 +5,8 @@ Both sets are derived from the committed .dat tables rather than transcribed,
 so the thing worth testing is not their contents but their BOUNDARIES: that
 `class == 27` alone was not used (it drags in 27 invisible scaffolding
 consts), that gates are in, that trees / resources / cliffs are out, and that
-the one deliberate divergence from unit_sprites.wall_connector_consts() is
-exactly Aqueduct. Each of those is a decision the module's docstring argues
+the set equals unit_sprites.wall_connector_consts() now that Aqueduct is a
+full wall (GH #110). Each of those is a decision the module's docstring argues
 for; a test here is what stops a later session quietly re-deciding it.
 
 The corpus-marked test at the bottom re-measures the coverage claim against
@@ -23,7 +23,7 @@ from descape.terrain_palette import TREE_UNIT_IDS
 
 # Hand-picked representatives, each named for why it is in this list.
 WALL2 = 117  # the corpus's most-placed wall, 4437 placements
-AQUEDUCT = 231  # class 27, angle_count 5 -- the connector-set divergence
+AQUEDUCT = 231  # class 27, angle_count 5 -- a full wall since GH #110
 FENCE = 1062  # the low-placement-count wall, in on structure not on volume
 STONE_GATE_CLOSED = 64  # one of the 96 gate consts, orientation lives here
 TWAL = 208  # class 27, NO graphic entry, 0 placements -- stays out
@@ -36,7 +36,7 @@ HRICH_D = 647  # the TODO entry's WRONG example: class 11, type 30, 0 placements
 GOLD_MINE = 66  # GOLDM -- a resource, the thing the user is looking *for*
 STONE_MINE = 102  # STONM, class 8
 BERRY_BUSH = 59  # FORAG, class 7
-FLARE = 112  # class 30, type 10 -- in, and deliberately so
+FLARE = 112  # class 30, type 10, BLANK graphic -- invisible, not eye candy
 
 
 def test_wall_consts_is_the_nine_walls_plus_ninety_six_gates() -> None:
@@ -68,32 +68,30 @@ def test_twal_has_no_graphic_entry_and_stays_out() -> None:
     assert TWAL not in unit_kind.wall_consts()
 
 
-def test_the_only_divergence_from_the_connector_set_is_aqueduct() -> None:
+def test_wall_consts_equals_the_connector_set() -> None:
     """unit_sprites.wall_connector_consts() answers a different question --
     which consts get a stored index RE-DERIVED from a neighbour mask, a
-    write-path concern -- and AGENTS.md carries an open [NEEDS DECISION] on
-    whether Aqueduct belongs there. That question does not transfer: hiding
-    an aqueduct when you asked to hide walls is what you want. Pinning the
-    delta in both directions is what keeps the divergence asserted rather
-    than accidental, and stops a later session "fixing" either set to match
-    the other."""
+    write-path concern -- but since GH #110 made Aqueduct a full wall the two
+    sets agree exactly. Pinning the delta in both directions keeps that
+    asserted rather than accidental."""
     from descape import unit_sprites
 
     walls = unit_kind.wall_consts()
     connectors = unit_sprites.wall_connector_consts()
-    assert walls - connectors == {AQUEDUCT}
+    assert AQUEDUCT in walls
+    assert walls - connectors == set()
     assert connectors - walls == set()
 
 
-def test_wall_consts_matches_unit_sprites_rotation_variant_consts_plus_aqueduct() -> None:
-    """The 8-const frozenset unit_sprites hand-keeps is re-derived here
+def test_wall_consts_matches_unit_sprites_rotation_variant_consts() -> None:
+    """The 9-const frozenset unit_sprites hand-keeps is re-derived here
     rather than imported (that module pulls numpy and a configured install,
     which would take unit_filter.py off the leaf list). This is the check
     that the two cannot silently drift apart."""
     from descape import gate_orientation, unit_sprites
 
     gates = {const for group in gate_orientation.groups().values() for const in group}
-    assert unit_kind.wall_consts() - gates - {AQUEDUCT} == set(unit_sprites._ROTATION_VARIANT_CONSTS)
+    assert unit_kind.wall_consts() - gates == set(unit_sprites._ROTATION_VARIANT_CONSTS)
 
 
 def test_eye_candy_consts_excludes_trees_resources_and_cliffs() -> None:
@@ -101,7 +99,7 @@ def test_eye_candy_consts_excludes_trees_resources_and_cliffs() -> None:
     from pathlib import Path
 
     candy = unit_kind.eye_candy_consts()
-    assert len(candy) == 387
+    assert len(candy) == 389
     assert candy.isdisjoint(TREE_UNIT_IDS), "show_trees owns those"
 
     objects = json.loads((Path(unit_kind.__file__).parent / "object_catalog.json").read_text())["objects"]
@@ -122,13 +120,15 @@ def test_the_todo_entrys_const_pointer_is_corrected() -> None:
     assert HRICH_D not in candy
 
 
-def test_flares_are_in_and_that_is_deliberate() -> None:
-    """The one arguable consequence of the measured derivation. Flares are
-    cosmetic markers, so hiding them under "eye candy" is right; carving them
-    out by hand would break the measured-not-judged property. The real flags
-    are type 20 and never in the set at all."""
+def test_blank_graphic_flares_are_invisible_not_eye_candy() -> None:
+    """FLARE and its class-11 family stand on the .dat's BLANK graphic, so they
+    are invisible_consts() (decided 2026-09-26), and the subtraction keeps them
+    out of eye candy. FLR_R 201 has its own graphic and stays eye candy. The
+    real flags are type 20 and never in either set."""
     candy = unit_kind.eye_candy_consts()
-    assert FLARE in candy
+    invisible = unit_kind.invisible_consts()
+    assert {FLARE, 274, 332, 697, 1689, 1785} <= invisible
+    assert FLARE not in candy and 201 in candy
     assert 1150 not in candy and 1151 not in candy and 1307 not in candy
 
 
@@ -147,25 +147,25 @@ INVISIBLE_OBJECTS = {1291, 2551, 2553, 2555, 2563}  # Invisible Object A-E, clas
 MAP_REVEALERS = {837, 1774, 1775}  # Map Revealer / Medium / Giant, class 30
 BLOCKERS = {1776, 2423, 2424}  # Blocker, Blocker 1x3, Blocker 3x1, class 14
 FARM = 50  # no unit_graphic_map.json entry, but real art in the game
-FLARE4 = 697
 FLAME4 = 1336
+FLARE4 = 697  # BLANK graphic, so invisible since 2026-09-26
 
 
 def test_invisible_consts_holds_the_objects_revealers_and_blockers() -> None:
     invisible = unit_kind.invisible_consts()
     assert invisible >= INVISIBLE_OBJECTS | MAP_REVEALERS | BLOCKERS
-    assert len(invisible) == 84
+    assert len(invisible) == 115
 
 
 def test_invisible_consts_is_no_dat_graphic_not_no_map_entry() -> None:
-    """FARM, FLARE4 and FLAME4 have no unit_graphic_map.json entry, but the
-    .dat gives each a standing graphic: they are art gaps, not invisible."""
+    """FARM and FLAME4 have no unit_graphic_map.json entry, but the .dat gives
+    each a real standing graphic: they are art gaps, not invisible."""
     import json
     from pathlib import Path
 
     graphics = json.loads((Path(unit_kind.__file__).parent / "unit_graphic_map.json").read_text())["graphics"]
     invisible = unit_kind.invisible_consts()
-    for const in (FARM, FLARE4, FLAME4):
+    for const in (FARM, FLAME4):
         assert str(const) not in graphics, f"{const} gained a map entry; pick another counterexample"
         assert const not in invisible
 
@@ -178,6 +178,41 @@ def test_invisible_consts_is_disjoint_from_walls_and_eye_candy() -> None:
     assert invisible.isdisjoint(unit_kind.wall_consts())
     assert invisible.isdisjoint(TREE_UNIT_IDS)
     assert GRASS_GREEN in unit_kind.eye_candy_consts()
+
+
+# GH #120: the 11 consts building_consts() subtracts beyond walls -- the 10
+# mobile packed/unpacked siege (classes 51/54) plus 1192 GTAC2 (class 39).
+MOBILE_SIEGE = {42, 1690, 331, 1691, 479, 444, 682, 683, 729, 730}
+GTAC2 = 1192
+TREBUCHET = 42  # TREBU, class 54
+FARM_CONST = FARM  # class 49, the farm-drape case
+
+
+def test_building_consts_is_building_spans_minus_walls_minus_the_named_delta() -> None:
+    """Pinned as a literal delta, the way the connector-set equality is,
+    so a later session cannot quietly re-decide which .dat buildings count."""
+    from descape.terrain_palette import BUILDING_TILE_SPANS
+
+    buildings = unit_kind.building_consts()
+    assert set(BUILDING_TILE_SPANS) - unit_kind.wall_consts() - buildings == MOBILE_SIEGE | {GTAC2}
+    assert len(buildings) == 375
+    assert TREBUCHET not in buildings and GTAC2 not in buildings
+    assert FARM_CONST in buildings
+
+
+def test_building_consts_is_disjoint_from_walls_trees_and_eye_candy() -> None:
+    buildings = unit_kind.building_consts()
+    assert buildings.isdisjoint(unit_kind.wall_consts())
+    assert buildings.isdisjoint(TREE_UNIT_IDS)
+    assert buildings.isdisjoint(unit_kind.eye_candy_consts())
+
+
+def test_building_consts_overlaps_invisible_and_that_is_allowed() -> None:
+    """46 consts (Empty TC annex and others) are in both. UnitFilter ANDs its
+    gates, so either toggle hides them; disjointness is not extended here."""
+    overlap = unit_kind.building_consts() & unit_kind.invisible_consts()
+    assert EMPTY_TC_ANNEX in overlap
+    assert len(overlap) == 46
 
 
 def test_the_module_stays_a_stdlib_only_leaf() -> None:
@@ -296,12 +331,14 @@ def test_the_invisible_set_matches_its_measured_corpus_placements(corpus_files, 
                 placed[unit.unit_const] += 1
         files.update(seen)
 
-    assert set(placed) <= INVISIBLE_OBJECTS | MAP_REVEALERS | BLOCKERS | {EMPTY_TC_ANNEX}, placed
+    assert set(placed) <= INVISIBLE_OBJECTS | MAP_REVEALERS | BLOCKERS | {EMPTY_TC_ANNEX, FLARE4}, placed
     if not request.config.getoption("--corpus-full"):
         assert placed, "the quick corpus carries revealers; this test would prove nothing"
         return
     assert placed[837] == 459 and files[837] == 8
     assert placed[1774] == 50 and placed[1775] == 3
     assert placed[1776] == 36 and placed[2424] == 21 and placed[2423] == 16
-    assert placed[1291] == 17 and files[1291] == 9
+    # 1291 re-measured 2026-09-26 over 21 files (8tp3w9j adds 8); FLARE4 is one R4_LeLoi_4 cluster.
+    assert placed[1291] == 25 and files[1291] == 10
     assert placed[EMPTY_TC_ANNEX] == 10
+    assert placed[FLARE4] == 230 and files[FLARE4] == 1

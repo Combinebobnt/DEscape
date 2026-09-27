@@ -10,7 +10,7 @@ import copy
 import math
 import weakref
 from collections.abc import Generator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 import numpy as np
@@ -4159,6 +4159,60 @@ def _resolve_unit_sprite(
     )
 
 
+@dataclass(frozen=True)
+class SpriteMemo:
+    """Per-unit _SpriteContribution memo for one chunk-cache level, so a
+    wholesale sprite-layer rebuild re-resolves only the units whose inputs
+    changed and re-merges the rest (2026-09-25 sprite-contribution memo plan).
+
+    `invariants` is everything _resolve_unit_sprite() reads that is the same
+    for every unit of a walk (see _sprite_memo_invariants()). A walk given a
+    memo whose invariants differ treats it as empty, so a Layers flip, a proj
+    change or a Stepped/Sloped mix-up can never serve a stale contribution,
+    whatever order a caller swaps its state in.
+
+    `entries` maps id(unit) to (unit, key, contribution). Holding the unit
+    keeps its id from being reused while the entry lives; the `is` check on
+    lookup guards it anyway. contribution may be None (resolved to nothing).
+    The unit filter is not part of either: matches() runs before every
+    lookup, since a garrison edit changes it without touching any key field.
+
+    Never mutated after construction: a walk builds a fresh one holding only
+    the units it saw, so deleted units drop out, and a warm still walking an
+    older memo keeps getting correct (fully keyed) answers from it."""
+
+    invariants: tuple = ()
+    entries: dict = field(default_factory=dict)
+
+
+def _sprite_memo_invariants(proj, mm, corner_rise, with_farms, tree_scale, hero_glow) -> tuple:
+    return (proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow)
+
+
+def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, player_id: int, i: int, unit) -> tuple:
+    """Every per-unit input of _resolve_unit_sprite() that isn't a memo
+    invariant. `heights` is elevations (Stepped) or corner_rise (Sloped) as
+    nested lists, read with the resolver's own indices so an elevation edit
+    under a unit changes its key; Sloped keys the four corners, which with
+    x/y fully determine unit_rise_px(). An index the resolver would fail on
+    keys as None and the resolver decides."""
+    ux, uy = int(unit.x), int(unit.y)
+    try:
+        if sloped:
+            row, below = heights[uy], heights[uy + 1]
+            rise = (row[ux], row[ux + 1], below[ux], below[ux + 1])
+        else:
+            rise = heights[uy][ux]
+    except IndexError:
+        rise = None
+    return (
+        unit.x, unit.y, unit.unit_const,
+        overrides.get((player_id, i), stored_rotation(player_id, unit)),
+        getattr(unit, "reference_id", None), player_id,
+        scenario.team_indices[player_id], scenario.player_colors[player_id], rise,
+    )
+
+
 def sprite_draws_by_anchor_sliced(
     scenario: LoadedScenario,
     proj: iso_geometry.IsoProjection,
@@ -4168,7 +4222,8 @@ def sprite_draws_by_anchor_sliced(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
-) -> Generator[None, None, SpriteLayer]:
+    memo: SpriteMemo | None = None,
+) -> Generator[None, None, SpriteLayer | tuple[SpriteLayer, SpriteMemo]]:
     """sprite_draws_by_anchor() as a resumable generator -- one yield per
     unit, so level_warm.LevelWarmer can advance it a few milliseconds at a
     time and resume on the next event-loop tick. See that function for what
@@ -4185,20 +4240,53 @@ def sprite_draws_by_anchor_sliced(
     that skips most of them -- a filtered-out unit costs a resume, not a
     whole unbounded run. Batch D's D2: the per-unit resolution itself is
     _resolve_unit_sprite() -- this loop only does the yield and the
-    accumulation into by_anchor/bboxes/skip_ids/farm_by_tile."""
+    accumulation into by_anchor/bboxes/skip_ids/farm_by_tile.
+
+    memo (a SpriteMemo, possibly empty): reuse its contributions for units
+    whose key is unchanged and return (layer, fresh memo) instead of the
+    layer alone. None keeps the exact memo-free walk. The merge below copies
+    out of every contribution, never aliasing its lists, so a memoized one
+    stays untouched by later layer splices."""
     overrides = wall_variant_rotation_overrides(scenario)
     by_anchor: dict[tuple[int, int], list] = {}
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     skip_ids: set[int] = set()
     farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+    if memo is not None:
+        invariants = _sprite_memo_invariants(
+            proj, scenario.map_manager, corner_rise, with_farms, tree_scale, hero_glow
+        )
+        old = memo.entries if memo.invariants == invariants else {}
+        entries: dict[int, tuple] = {}
+        sloped = corner_rise is not None
+        # A snapshot: a warm that outlives an edit under a unit is refused at install.
+        heights = (corner_rise if sloped else elevations).tolist()
 
     for player_id, units in enumerate(scenario.unit_manager.units):
         for i, unit in enumerate(units):
             yield
-            contribution = _resolve_unit_sprite(
-                scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                player_id, i, unit, tree_scale, hero_glow,
-            )
+            if memo is None:
+                contribution = _resolve_unit_sprite(
+                    scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
+                    player_id, i, unit, tree_scale, hero_glow,
+                )
+            else:
+                if not unit_filter.matches(player_id, unit):
+                    # Carried over unchecked, so re-showing a filter costs no resolves.
+                    entry = old.get(id(unit))
+                    if entry is not None:
+                        entries[id(unit)] = entry
+                    continue
+                key = _sprite_memo_key(scenario, heights, sloped, overrides, player_id, i, unit)
+                entry = old.get(id(unit))
+                if entry is not None and entry[0] is unit and entry[1] == key:
+                    contribution = entry[2]
+                else:
+                    contribution = _resolve_unit_sprite(
+                        scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
+                        player_id, i, unit, tree_scale, hero_glow,
+                    )
+                entries[id(unit)] = (unit, key, contribution)
             if contribution is None:
                 continue
             if contribution.farm_tiles:
@@ -4217,9 +4305,12 @@ def sprite_draws_by_anchor_sliced(
                     max(bbox[3], own[3]),
                 )
             skip_ids.add(contribution.skip_id)
-    return SpriteLayer(
+    layer = SpriteLayer(
         by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile
     )
+    if memo is None:
+        return layer
+    return layer, SpriteMemo(invariants, entries)
 
 
 def merge_sprite_bboxes(

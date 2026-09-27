@@ -58,6 +58,10 @@ class UnitFilter:
     no standing graphic (Invisible Object A-E, Map Revealers, Blockers), which
     the game never draws and DEscape otherwise shows as a coloured box.
 
+    show_buildings (GH #120) is the fifth: every building except walls, gates
+    and mobile siege (unit_kind.building_consts()). Owner-blind like the rest;
+    the Player 1..8 checks already cover "hide everything of one player's".
+
     show_garrisoned (GH #42) is the one per-unit gate rather than a const or
     owner one: a unit whose garrisoned_in_id names another unit is inside that
     unit in game, and the file stores it at the host's own point, so with it
@@ -70,6 +74,7 @@ class UnitFilter:
     show_gaia: bool = True
     show_trees: bool = True
     show_walls: bool = True
+    show_buildings: bool = True
     show_eye_candy: bool = True
     show_invisible: bool = True
     show_garrisoned: bool = True
@@ -81,15 +86,16 @@ class UnitFilter:
     def matches(self, player_id: int, unit) -> bool:
         """Whether this unit, owned by player_id, should be drawn/picked.
 
-        Seven independent gates, ANDed. Order between them doesn't matter
+        Eight independent gates, ANDed. Order between them doesn't matter
         (they never disagree about a unit, only about why it's hidden), but
         which field governs which gate does:
 
         - Trees are gated by show_trees regardless of owner, matching
           _unit_color()'s own "dark green regardless of owner" rule. A tree
           assigned to a real player is still a tree.
-        - Walls (and gates), eye candy and invisible objects are gated the same owner-blind way,
-          which is why the four const gates all sit ahead of the owner ones.
+        - Walls (and gates), buildings, eye candy and invisible objects are gated the same
+          owner-blind way, which is why the five const gates all sit ahead of the owner ones.
+          A const in both building_consts() and invisible_consts() is hidden by either.
         - A garrisoned unit is gated by show_garrisoned regardless of owner
           or kind, and -1 (no host) and a self-reference (legal on disk, and
           its own unit's deletion guard already excludes it) both read as
@@ -103,6 +109,8 @@ class UnitFilter:
         if not self.show_trees and unit.unit_const in TREE_UNIT_IDS:
             return False
         if not self.show_walls and unit.unit_const in unit_kind.wall_consts():
+            return False
+        if not self.show_buildings and unit.unit_const in unit_kind.building_consts():
             return False
         if not self.show_eye_candy and unit.unit_const in unit_kind.eye_candy_consts():
             return False
@@ -129,6 +137,7 @@ class UnitFilter:
             self.show_gaia
             and self.show_trees
             and self.show_walls
+            and self.show_buildings
             and self.show_eye_candy
             and self.show_invisible
             and self.show_garrisoned

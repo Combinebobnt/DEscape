@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 from PyQt5.QtCore import Qt
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QSpinBox
 
 from descape.unit_filter import GAIA_PLAYER_ID
@@ -35,6 +36,7 @@ _TREE_CONST = 349  # a real GAIA doodad -- rotation is a variant index, not an a
 _ARCHER_CONST = 4  # a real creatable unit -- rotation is a genuine angle
 _TOWER_CONST = 79  # Watch Tower -- a real garrison host, 5 places
 _GATE_CONST = 64  # stone gate, ne orientation, angle_count 1
+_WALL_CONST = 117  # stone wall -- VARIANT, not rotatable
 
 
 @dataclass
@@ -122,7 +124,8 @@ def test_rotation_editor_visible_for_an_angle_const_hidden_for_a_variant_const()
     assert panel.unit_field_editors["rotation"].isVisibleTo(panel.unit_inspector_grid)
     assert not panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
 
-    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=37))
+    # A wall, not a tree: a tree's variant is editable since GH #123.
+    panel.show_unit(_entry(unit_const=_WALL_CONST, rotation=37))
     assert not panel.unit_field_editors["rotation"].isVisibleTo(panel.unit_inspector_grid)
     assert panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
     assert panel.unit_field_labels["rotation"].text() == "37"
@@ -331,8 +334,6 @@ def test_catalog_tree_uses_click_focus() -> None:
 
 # --- GH #71: group mode ------------------------------------------------------
 
-_WALL_CONST = 117  # stone wall -- VARIANT, not rotatable
-
 
 def test_show_group_shows_the_grid_and_keeps_the_count_line() -> None:
     panel = _panel()
@@ -392,9 +393,9 @@ def test_group_rotation_is_mixed_across_angle_members() -> None:
     assert not panel.unit_rotation_note.isVisibleTo(panel)
 
 
-def test_group_with_no_angle_member_shows_na_and_hides_the_editor() -> None:
+def test_group_with_no_editable_member_shows_na_and_hides_the_editor() -> None:
     panel = _panel()
-    panel.show_group([_entry(unit_const=_TREE_CONST, rotation=7), _entry(unit_const=_WALL_CONST, rotation=2)])
+    panel.show_group([_entry(unit_const=_GATE_CONST, rotation=7), _entry(unit_const=_WALL_CONST, rotation=2)])
     grid = panel.unit_inspector_grid
     assert not panel.unit_field_editors["rotation"].isVisibleTo(grid)
     assert panel.unit_field_labels["rotation"].isVisibleTo(grid)
@@ -423,10 +424,10 @@ def test_show_unit_after_group_restores_single_unit_state() -> None:
 
 def test_group_note_text_is_restored_for_a_single_variant_unit() -> None:
     panel = _panel()
-    panel.show_group([_entry(), _entry(unit_const=_TREE_CONST, rotation=7)])
-    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=7))
+    panel.show_group([_entry(), _entry(unit_const=_WALL_CONST, rotation=2)])
+    panel.show_unit(_entry(unit_const=_WALL_CONST, rotation=2))
     assert panel.unit_rotation_note.text().startswith("Rotation is shown as a facing")
-    assert panel.unit_field_labels["rotation"].text() == "7"
+    assert panel.unit_field_labels["rotation"].text() == "2"
 
 
 def test_populating_across_single_group_transitions_reports_nothing() -> None:
@@ -459,6 +460,111 @@ def test_a_genuine_group_edit_reports_but_the_mixed_placeholder_does_not() -> No
     combo.setCurrentIndex(combo.findData(5))
     combo.setCurrentIndex(0)
     assert received == [("x", 50.0), ("player", 5)]
+
+
+# --- GH #118: X/Y/Z clamp to the map ------------------------------------------
+
+
+def _map_panel(size=(120, 120), **kwargs):
+    return _panel(map_size=lambda: size, **kwargs)
+
+
+def _type(spin, text: str) -> None:
+    """Real keystrokes over the whole text, then Return. The validator
+    rejects a keystroke that would leave the range, so "500" lands as 50."""
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin, text)
+    QTest.keyClick(spin, Qt.Key_Return)
+
+
+def test_x_cannot_be_typed_or_stepped_past_the_map_edge() -> None:
+    received = []
+    panel = _map_panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry())
+    x_spin = panel.unit_field_editors["x"]
+    _type(x_spin, "500")
+    assert x_spin.value() == 50.0  # the third digit was refused
+    _type(x_spin, "-5")
+    assert x_spin.value() == 50.0  # the minus sign was refused
+    x_spin.setValue(500.0)  # a wheel/step or programmatic set clamps instead
+    assert x_spin.value() == pytest.approx(119.99)
+    x_spin.setValue(-5.0)
+    assert x_spin.value() == 0.0
+    assert received == [("x", 50.0), ("x", pytest.approx(119.99)), ("x", 0.0)]
+
+
+def test_x_and_y_use_the_width_and_height_separately() -> None:
+    panel = _map_panel(size=(120, 168))
+    panel.show_unit(_entry())
+    assert panel.unit_field_editors["x"].maximum() == pytest.approx(119.99)
+    assert panel.unit_field_editors["y"].maximum() == pytest.approx(167.99)
+
+
+def test_z_caps_at_the_elevation_limit() -> None:
+    panel = _map_panel()
+    panel.show_unit(_entry())
+    z_spin = panel.unit_field_editors["z"]
+    _type(z_spin, "40")
+    assert z_spin.value() == 4.0
+    z_spin.setValue(40.0)
+    assert z_spin.value() == 15.0
+    assert z_spin.minimum() == 0.0
+
+
+def test_an_off_map_stored_x_shows_as_stored_without_an_edit() -> None:
+    """Widen, don't clamp. The in-map unit first narrows the range, so this
+    guards show_unit's range-before-value ordering: set the other way round,
+    999 would silently clamp to the previous unit's 119.99."""
+    received = []
+    panel = _map_panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(x=4.5))
+    assert panel.unit_field_editors["x"].maximum() == pytest.approx(119.99)
+    panel.show_unit(_entry(x=999.0))
+    x_spin = panel.unit_field_editors["x"]
+    assert x_spin.text() == "999.00"
+    assert x_spin.maximum() == 999.0
+    # The next in-map unit narrows it again.
+    panel.show_unit(_entry(x=4.5))
+    assert x_spin.maximum() == pytest.approx(119.99)
+    assert received == []
+
+
+def test_a_group_with_an_off_map_member_widens_and_still_shows_mixed() -> None:
+    panel = _map_panel()
+    panel.show_group([_entry(x=4.5), _entry(x=999.0)])
+    x_spin = panel.unit_field_editors["x"]
+    assert x_spin.text() == "(mixed)"
+    assert x_spin.maximum() == 999.0
+
+
+def test_the_mixed_sentinel_sits_one_display_step_below_the_live_minimum() -> None:
+    received = []
+    panel = _map_panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_group([_entry(x=4.5), _entry(x=9.5)])
+    x_spin = panel.unit_field_editors["x"]
+    assert x_spin.minimum() == pytest.approx(-0.01)
+    assert x_spin.value() == x_spin.minimum()
+    # Nothing off-map is reachable in mixed mode: -0.5 clamps onto the sentinel.
+    x_spin.setValue(1.5)
+    x_spin.setValue(-0.5)
+    assert x_spin.text() == "(mixed)"
+    assert received == [("x", 1.5)]
+    received.clear()
+    # An off-map member moves the sentinel below its own value.
+    panel.show_group([_entry(x=-5.0), _entry(x=9.5)])
+    assert x_spin.minimum() == pytest.approx(-5.01)
+    x_spin.setValue(x_spin.minimum())
+    assert received == []
+
+
+def test_no_map_keeps_the_wide_fallback_range() -> None:
+    panel = _panel(map_size=lambda: None)
+    panel.show_unit(_entry())
+    for field_id in ("x", "y", "z"):
+        spin = panel.unit_field_editors[field_id]
+        assert (spin.minimum(), spin.maximum()) == (-(2**15), 2**15)
+    panel.show_group([_entry(x=1.5), _entry(x=2.5)])
+    assert panel.unit_field_editors["x"].minimum() == -(2**15) - 0.01
 
 
 # --- GH #61: whole-number facings --------------------------------------------
@@ -577,6 +683,88 @@ def test_a_mixed_facing_group_then_a_single_unit_restores_the_minimum() -> None:
     panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
     panel.show_unit(_entry(unit_const=_TREBUCHET_CONST))
     assert (_rotation_spin(panel).minimum(), _rotation_spin(panel).maximum()) == (0, 31)
+
+
+# --- GH #123: the Rotation field shows a tree's variant --------------------
+
+_PINE_CONST = 350  # 27 variants; _TREE_CONST (oak) has 42
+
+
+def test_a_single_tree_shows_an_editable_variant_spinbox() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=37.0))
+    spin = _rotation_spin(panel)
+    grid = panel.unit_inspector_grid
+    assert spin.isVisibleTo(grid)
+    assert not panel.unit_field_labels["rotation"].isVisibleTo(grid)
+    assert (spin.minimum(), spin.maximum()) == (0, 41)
+    assert spin.value() == 37
+    assert spin.toolTip() == "Variant 37 of 42 (stored: 37)"
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert received == []
+
+
+def test_switching_variant_and_facing_units_sets_range_before_value() -> None:
+    """An oak's variant 37 must not clamp to the pine's 0..26 shown before it."""
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(unit_const=_PINE_CONST, rotation=20.0))
+    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=37.0))
+    assert _rotation_spin(panel).value() == 37
+    panel.show_unit(_entry(unit_const=_TREBUCHET_CONST, rotation=math.pi))
+    assert _rotation_spin(panel).value() == 16
+    assert received == []
+
+
+def test_a_variant_wheel_step_reports_the_next_variant_and_wraps() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=41.0))
+    _rotation_spin(panel).stepBy(1)
+    assert received == [("rotation", 0)]
+
+
+def test_an_oak_and_pine_group_edits_the_fewest_variants() -> None:
+    panel = _panel()
+    panel.show_group([_entry(unit_const=_TREE_CONST, rotation=5.0), _entry(unit_const=_PINE_CONST, rotation=5.0)])
+    spin = _rotation_spin(panel)
+    assert spin.maximum() == 26
+    assert spin.text() == "5"
+    assert "the fewest any selected object has" in spin.toolTip()
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+
+
+def test_a_tree_group_beyond_the_shared_range_can_only_show_mixed() -> None:
+    """An oak at 35 exceeds a pine's 0..26, but then the two differ, so the
+    box reads "(mixed)" rather than a clamped 26."""
+    panel = _panel()
+    panel.show_group([_entry(unit_const=_TREE_CONST, rotation=35.0), _entry(unit_const=_PINE_CONST, rotation=5.0)])
+    assert _rotation_spin(panel).text() == "(mixed)"
+
+
+def test_an_archer_and_tree_group_is_facing_mode_and_the_note_counts_the_tree() -> None:
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.5), _entry(unit_const=_TREE_CONST, rotation=7.0)])
+    spin = _rotation_spin(panel)
+    assert spin.maximum() == 15
+    assert spin.text() == "1"
+    assert panel.unit_rotation_note.isVisibleTo(panel)
+    note = panel.unit_rotation_note.text()
+    assert note.startswith("1 of 2 selected won't rotate")
+    assert "Rotate buttons" in note
+
+
+def test_a_tree_and_wall_group_is_variant_mode_and_the_note_counts_the_wall() -> None:
+    panel = _panel()
+    panel.show_group([_entry(unit_const=_TREE_CONST, rotation=7.0), _entry(unit_const=_WALL_CONST, rotation=2.0)])
+    spin = _rotation_spin(panel)
+    assert spin.isVisibleTo(panel.unit_inspector_grid)
+    assert (spin.minimum(), spin.maximum()) == (0, 41)
+    assert spin.text() == "7"
+    note = panel.unit_rotation_note.text()
+    assert note.startswith("1 of 2 selected won't rotate")
+    assert "walls" in note
 
 
 # --- GH #42: the Garrison block -----------------------------------------

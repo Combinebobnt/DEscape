@@ -45,9 +45,9 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import constant_picker, disables_fields, object_catalog
+from descape import constant_picker, disables_fields, object_catalog, player_labels
 from descape.value_picker import PickerItem, ValuePickerView
-from descape.viewer_common import _swatch_icon
+from descape.viewer_common import _add_player_item
 
 # Tab order, and the in-game editor's own: Buildings, Units, Techs. Not
 # disables_fields.CATEGORIES, which is the order the *bytes* are in.
@@ -214,9 +214,11 @@ class DisablesDialog(QDialog):
     def __init__(
         self,
         current: Mapping[tuple[str, int], Sequence[int]],
-        player_colors: Mapping[int, tuple[int, int, int]] | None = None,
+        player_colors: Sequence[tuple[int, int, int]] | None = None,
         on_accept=None,
         parent=None,
+        *,
+        labels=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Disabled Objects")
@@ -230,13 +232,11 @@ class DisablesDialog(QDialog):
         layout = QVBoxLayout(self)
 
         self.player_combo = QComboBox()
+        # Row i is pid i + 1. player_colors is pid-indexed (scenario.player_colors),
+        # so a `pid in colors` membership test never matched and no swatch drew.
+        labels = labels or player_labels.DEFAULT_LABELS
         for player_id in range(1, disables_fields.NUM_LIST_PLAYERS + 1):
-            colors = player_colors or {}
-            label = f"P{player_id}"
-            if player_id in colors:
-                self.player_combo.addItem(_swatch_icon(colors[player_id]), label)
-            else:
-                self.player_combo.addItem(label)
+            _add_player_item(self.player_combo, player_id, labels, player_colors)
         self.player_combo.currentIndexChanged.connect(self._on_player_changed)
         layout.addWidget(self.player_combo)
 

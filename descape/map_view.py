@@ -276,6 +276,10 @@ class MapView(QGraphicsView):
     RULER_GLOW_Z = 11.7
     RULER_Z = 12.0
     RULER_LABEL_Z = 13.0
+    # Pinned rulers (GH #108/#109): just under the live pair, so a pending
+    # measurement reads over finished ones. Static, no glow.
+    PINNED_RULER_Z = 11.9
+    PINNED_RULER_LABEL_Z = 12.9
 
     # Phase 2.8's Select tool. Teal by default, distinct from the unit
     # marquee's default blue or the edit highlight's default gold -- this
@@ -415,7 +419,10 @@ class MapView(QGraphicsView):
         # rebuilt per set_source() like _edge_tick_item.
         self._stack_badge_item: StackBadgeItem | None = None
         self._stack_badges_enabled = settings.get_stack_badges()
+        self._stack_badge_position = settings.get_stack_badge_position()
         self._stack_groups: dict = {}
+        # Anchors skipped while hidden; rebuilt when the layer next shows.
+        self._stack_badges_stale = False
         # View > Player Cameras: the pushed marker list survives a
         # set_source() (it is scenario state, not scene state), the items do
         # not -- scene().clear() destroys them, so they are rebuilt from the
@@ -443,10 +450,15 @@ class MapView(QGraphicsView):
         # Fired once per COMPLETED measurement, never per drag frame; see
         # _report_ruler for the edge it triggers on.
         self._on_ruler_measured = on_ruler_measured
-        # Fired on every live update (including mid-drag) and with None on
-        # every clear, unlike on_ruler_measured above -- this is what backs
-        # a status-bar readout that has to track the drag, not just its end.
+        # Fired on every live update (including mid-drag) and on every clear
+        # (with the newest pinned ruler, or None), unlike on_ruler_measured
+        # above: see _emit_ruler_status for the rule.
         self._on_ruler_changed = on_ruler_changed
+        # GH #108/#109: finished measurements stay on the map until removed.
+        self._pinned_rulers = ruler.PinnedRulers()
+        self._pinned_ruler_items: list[QGraphicsItem] = []
+        # Fired with the pinned count on every change. Assigned by the window, like on_unit_pick.
+        self.on_pinned_rulers_changed = lambda count: None
         # Fired whenever the fit-relative zoom percentage may have changed --
         # see zoom_percent_of_fit() and its three call sites (wheelEvent,
         # _capture_zoom_baseline, clear_image) -- so a status-bar readout can
@@ -560,10 +572,10 @@ class MapView(QGraphicsView):
         # b2.3, the eleventh injected callable. on_marquee_select(keys,
         # modifiers) fires once a completed marquee drag (a press-drag-
         # release on EMPTY ground past UNIT_DRAG_THRESHOLD_PX, Pan tool,
-        # Units mode) is resolved to tile space -- keys are the (player_id,
-        # reference_id) pairs of every unit units_in_rect() found, already
-        # filter-respecting. A drag that never exceeds the threshold is a
-        # plain click, already handled by the on_click_select() call
+        # Units mode) is resolved to units -- keys are the (player_id,
+        # reference_id) pairs of every unit _units_in_scene_rect() found,
+        # already filter-respecting. A drag that never exceeds the threshold
+        # is a plain click, already handled by the on_click_select() call
         # mousePressEvent makes unconditionally at press time (see that
         # method's own comment on why the click fires regardless).
         self._on_marquee_select = on_marquee_select
@@ -891,6 +903,8 @@ class MapView(QGraphicsView):
                 item.setBrush(QBrush(self._ruler_glow_color))
             self._ruler_label_item.setBrush(QBrush(self._ruler_label_color))
             self._ruler_label_item.setPen(QPen(self._ruler_label_outline, 0))
+        if self._pinned_ruler_items:
+            self._rebuild_pinned_rulers()
         if self._region_fill_item is not None:
             self._region_fill_item.setBrush(QBrush(self._region_fill_color))
             self._region_outline_item.setPen(self._region_outline_pen)
@@ -901,6 +915,7 @@ class MapView(QGraphicsView):
             self._region_ants_item.setPen(ants_pen)
         if self._stack_badge_item is not None:
             self._stack_badge_item.set_color(QColor(settings.get_overlay_color("unit_stack")))
+            self._stack_badge_item.set_background_color(QColor(settings.get_overlay_color("unit_stack_background")))
         if self._analysis_marker_item is not None:
             self._analysis_marker_item.set_color(QColor(settings.get_overlay_color("analysis_marker")))
         if self._trigger_items:
@@ -925,10 +940,15 @@ class MapView(QGraphicsView):
         """Settings > Appearance's re-entry point for the ruler label
         font-size spinbox -- apply_overlay_colors()'s sibling, same
         deleted-item guard (the Settings dialog is reachable with no map
-        open). No-op with no live label: _create_ruler_items() already reads
+        open). Pinned rulers are rebuilt; the live half is a no-op with no
+        live label: _create_ruler_items() already reads
         settings.get_ruler_label_font_px() directly, so the next measurement
         picks up the new size with no extra plumbing needed."""
-        if self.scene() is None or self._ruler_label_item is None:
+        if self.scene() is None:
+            return
+        # Before the live-label guard: pinned labels exist without a live one.
+        self._rebuild_pinned_rulers()
+        if self._ruler_label_item is None:
             return
         # Rebuilt from map_overlay_font rather than the item's own font, so
         # this stays the carve-out font even if a live app-font change ever
@@ -951,14 +971,9 @@ class MapView(QGraphicsView):
         self._repad_edge_ticks()
 
     def set_zoom_anchor_mode(self, centered_on_cursor: bool) -> None:
-        # QGraphicsView.scale() zooms around whatever transformationAnchor is
-        # currently set to -- AnchorViewCenter (the default, "zoom in overall")
-        # or AnchorUnderMouse ("zoom in centered on mouse cursor location").
-        # Setting this once here means wheelEvent's plain self.scale(...) call
-        # doesn't need to know or care which mode is active.
-        self.setTransformationAnchor(
-            QGraphicsView.AnchorUnderMouse if centered_on_cursor else QGraphicsView.AnchorViewCenter
-        )
+        # wheelEvent anchors by hand; Qt's AnchorUnderMouse reads a stale point after a pan (GH #146).
+        self._zoom_on_cursor = centered_on_cursor
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
 
     def set_brush(self, size: int, shape: str) -> None:
         """Updates the brush the hover-preview highlight (and, via
@@ -1029,8 +1044,8 @@ class MapView(QGraphicsView):
         if mode == self._mode:
             return
         self._mode = mode
-        # Same reasoning as the tool switch: a measurement made in one mode
-        # has no owner in the next.
+        # Same reasoning as the tool switch: a pending measurement has no owner
+        # in the next mode. Pinned rulers stay.
         self._clear_ruler()
         if mode != "units":
             self._clear_unit_hover()
@@ -1127,24 +1142,72 @@ class MapView(QGraphicsView):
         """The stack members (top-first) anchored at `tile`, or None."""
         return self._stack_groups.get(tile)
 
+    def _stack_badges_shown(self) -> bool:
+        return self._stack_badges_enabled and self._mode == "units" and bool(self._stack_groups)
+
     def _rebuild_stack_badges(self) -> None:
+        """Skipped while hidden (Sloped anchors cost ~0.1 ms per stack, per elevation
+        touch); _sync_stack_badges_visible rebuilds on show."""
         if self._stack_badge_item is None:
             return
+        if not self._stack_badges_shown():
+            self._stack_badges_stale = True
+            self._stack_badge_item.setVisible(False)
+            return
+        self._stack_badges_stale = False
         badges = []
         for (tx, ty), members in self._stack_groups.items():
-            polygon = self._tile_polygon(tx, ty)
-            if polygon is None:
+            anchors = self._stack_badge_anchor(tx, ty)
+            if anchors is None:
                 continue
-            rect = polygon.boundingRect()
-            badges.append((QPointF(rect.center().x(), rect.top()), len(members)))
+            badges.append((anchors[0], anchors[1], len(members)))
+        self._stack_badge_item.set_placement(self._stack_badge_position != "above")
         self._stack_badge_item.set_badges(badges)
         self._sync_stack_badges_visible()
 
+    # GH #100: position id -> the _tile_edge_points side it tucks against.
+    # The sides are grid-neighbour names that are also the iso screen quadrants.
+    _STACK_BADGE_SIDES: ClassVar[dict[str, str]] = {
+        "bottom_right": "right", "bottom_left": "left", "top_right": "up_right", "top_left": "up_left",
+    }
+
+    def _stack_badge_anchor(self, tile_x: int, tile_y: int) -> tuple[QPointF, QPointF] | None:
+        """(anchor, centre) in scene coords for a badge on this tile. Iso on
+        screen: the named side's midpoint (midpoints survive Flat-iso's linear
+        view transform). Square: the side's first point, its named corner.
+        `above`: the screen top vertex in iso, the top-edge centre in square."""
+        polygon = self._tile_polygon(tile_x, tile_y)
+        if polygon is None:
+            return None
+        centre = polygon.boundingRect().center()
+        iso = self._isometric or self._terrain_style in _ELEVATED_STYLES
+        position = self._stack_badge_position
+        if position == "above":
+            points = self._tile_edge_points(tile_x, tile_y, "up_left")
+            if points is None:
+                return None
+            anchor = QPointF(points[-1]) if iso else (points[0] + points[-1]) / 2.0
+            return anchor, centre
+        points = self._tile_edge_points(tile_x, tile_y, self._STACK_BADGE_SIDES[position])
+        if points is None:
+            return None
+        anchor = (points[0] + points[-1]) / 2.0 if iso else QPointF(points[0])
+        return anchor, centre
+
+    def set_stack_badge_position(self, position: str) -> None:
+        """Settings > Appearance's badge position: stores it and re-anchors the live item."""
+        self._stack_badge_position = position
+        self._rebuild_stack_badges()
+
     def _sync_stack_badges_visible(self) -> None:
-        if self._stack_badge_item is not None:
-            self._stack_badge_item.setVisible(
-                self._stack_badges_enabled and self._mode == "units" and bool(self._stack_groups)
-            )
+        if self._stack_badge_item is None:
+            return
+        shown = self._stack_badges_shown()
+        if shown and self._stack_badges_stale:
+            # Rebuilds, then calls back here with the flag cleared.
+            self._rebuild_stack_badges()
+            return
+        self._stack_badge_item.setVisible(shown)
 
     def set_stack_badges(self, enabled: bool) -> None:
         """Shows or hides the stacked-unit badges. Nothing is baked into
@@ -1498,62 +1561,46 @@ class MapView(QGraphicsView):
             self.scene().removeItem(self._unit_ghost_item)
             self._unit_ghost_item = None
 
-    def _scene_rect_to_tile_rect(self, rect: QRectF) -> tuple[int, int, int, int] | None:
-        """A tile-space bounding box covering `rect`, half-open
-        ([tx0, tx1), [ty0, ty1)), clamped to the map -- the marquee's own
-        screen-to-tile conversion, kept here rather than in unit_pick.py
-        because it is real per-style geometry (see units_in_rect()'s own
-        docstring on why that module stays style-agnostic).
-
-        Flat's is exact -- its tile grid is an axis-aligned pixel division,
-        same arithmetic _pick_tile() already uses. Stepped/Sloped have no
-        closed-form rectangle inverse (the same reason _pick_tile's own
-        docstring gives for why even a single POINT needs a numeric
-        approach there), so this samples _pick_tile() on a grid across
-        `rect` at tile-pixel spacing and takes the bounding box of whatever
-        resolves. A marquee is a convenience gesture, not a precision hit-
-        test, and grid density here matches the per-pixel cost
-        mouseMoveEvent already pays continuously while hovering -- this
-        just does it for one release event instead of every frame.
-        """
+    def _flat_scene_rect_to_tile_rect(self, rect: QRectF) -> tuple[int, int, int, int] | None:
+        """Flat only: the exact half-open tile rect under `rect`, clamped to the map."""
         if self._map_width is None or self._map_height is None:
             return None
-        if self._terrain_style == "flat":
-            tp = self._tile_pixels or 1
-            tx0 = max(0, int(rect.left() // tp))
-            ty0 = max(0, int(rect.top() // tp))
-            tx1 = min(self._map_width, int(rect.right() // tp) + 1)
-            ty1 = min(self._map_height, int(rect.bottom() // tp) + 1)
-            return (tx0, ty0, tx1, ty1) if tx0 < tx1 and ty0 < ty1 else None
-
-        step = max(1, self._tile_pixels or 1)
-        left, top = int(rect.left()), int(rect.top())
-        right, bottom = int(rect.right()), int(rect.bottom())
-        xs = [*range(left, right, step), right]
-        ys = [*range(top, bottom, step), bottom]
-        tiles = [
-            tile
-            for y in ys
-            for x in xs
-            if (tile := self._pick_tile(QPointF(x, y))) is not None
-        ]
-        if not tiles:
-            return None
-        txs = [t[0] for t in tiles]
-        tys = [t[1] for t in tiles]
-        return (min(txs), min(tys), max(txs) + 1, max(tys) + 1)
+        tp = self._tile_pixels or 1
+        tx0 = max(0, int(rect.left() // tp))
+        ty0 = max(0, int(rect.top() // tp))
+        tx1 = min(self._map_width, int(rect.right() // tp) + 1)
+        ty1 = min(self._map_height, int(rect.bottom() // tp) + 1)
+        return (tx0, ty0, tx1, ty1) if tx0 < tx1 and ty0 < ty1 else None
 
     def _units_in_scene_rect(self, rect: QRectF) -> list[tuple[int, int]]:
         """The (player_id, reference_id) keys of every unit the marquee
         `rect` (scene/screen pixel space) covers -- already filter-
         respecting, since unit_pick.build_index() never inserted a filtered
-        unit into the index in the first place."""
+        unit into the index in the first place.
+
+        Flat selects any unit with a footprint tile in the box. Stepped and
+        Sloped (Flat + Isometric View included) select by on-screen anchor,
+        GH #114: a tile bbox is a diamond on screen there."""
         if self._unit_index is None:
             return []
-        tile_rect = self._scene_rect_to_tile_rect(rect)
-        if tile_rect is None:
-            return []
-        entries = unit_pick.units_in_rect(self._unit_index, *tile_rect)
+        if self._terrain_style == "flat":
+            tile_rect = self._flat_scene_rect_to_tile_rect(rect)
+            if tile_rect is None:
+                return []
+            entries = unit_pick.units_in_rect(self._unit_index, *tile_rect)
+        else:
+            cache = self._sloped_cache()
+            entries = unit_pick.units_in_screen_rect(
+                self._unit_index,
+                self._terrain_style,
+                rect.left(),
+                rect.top(),
+                rect.right(),
+                rect.bottom(),
+                elevations=self._iso_elevations,
+                proj=self._iso_proj,
+                corner_rise=None if cache is None else cache.corner_rise,
+            )
         return [unit_pick.unit_key(e.player_id, e.unit) for e in entries]
 
     def pick_unit_at(self, pos: QPointF, tile=unit_pick.UNRESOLVED_TILE):
@@ -1613,9 +1660,8 @@ class MapView(QGraphicsView):
         # tool) must not linger until then.
         self._clear_highlight()
         self._clear_pan_highlight()
-        # A measurement belongs to the Ruler, so leaving the tool drops it
-        # rather than stranding an inert line on the map that nothing on
-        # screen explains.
+        # A pending measurement belongs to the Ruler, so leaving the tool
+        # drops it. Finished ones are pinned and stay (GH #108/#109).
         if tool != TOOL_RULER:
             self._clear_ruler()
         # An in-progress select drag belongs to the Select tool the same way
@@ -1714,8 +1760,8 @@ class MapView(QGraphicsView):
 
         A separate method rather than a widened `_pick_tile`, deliberately:
         `_pick_tile` has many callers (`_pos_on_map`, `mouseMoveEvent`,
-        `_scene_rect_to_tile_rect`, `pick_unit_at`, `on_unit_place`,
-        `on_unit_move`) and every one of them wants an integer tile.
+        `pick_unit_at`, `on_unit_place`, `on_unit_move`) and every one of
+        them wants an integer tile.
 
         The float is carried past the `int()` truncation the tile path does,
         which is what actually caps precision at one pixel -- Sloped still
@@ -1814,11 +1860,17 @@ class MapView(QGraphicsView):
         # The Ruler, deliberately ABOVE the Units branch below rather than
         # beside the tool checks under it: that branch is independent of the
         # active tool, so it would otherwise swallow every ruler click in
-        # Units mode. Right button cancels, a gesture that needs no keyboard
-        # focus; either button mutates nothing.
+        # Units mode. Right button cancels a pending measurement, or else
+        # removes the pinned ruler whose endpoint it hits; either button mutates nothing.
         if self._tool == TOOL_RULER:
             if event.button() == Qt.RightButton:
-                self._clear_ruler()
+                pos = self.mapToScene(event.pos())
+                if self._ruler.state != ruler.STATE_IDLE:
+                    self._clear_ruler()
+                elif self._pos_on_map(pos):
+                    tile = self._pick_tile(pos)
+                    if tile is not None and self._pinned_rulers.remove_at(tile) is not None:
+                        self._pinned_rulers_changed()
             elif event.button() == Qt.LeftButton:
                 pos = self.mapToScene(event.pos())
                 # _pos_on_map, NOT "_pick_tile is not None": Flat's integer
@@ -3203,13 +3255,20 @@ class MapView(QGraphicsView):
         pending one logs nothing, and starting a fresh measurement from a
         finished one does not re-log the old result."""
         if previous_state != ruler.STATE_DONE and self._ruler.state == ruler.STATE_DONE:
-            self._on_ruler_measured(self._ruler.measurement)
+            measurement = self._ruler.measurement
+            self._on_ruler_measured(measurement)
+            # GH #108/#109: the finished measurement becomes a pinned ruler and
+            # the live session goes back to IDLE. Zero length is logged, not pinned.
+            pinned = self._pinned_rulers.add(measurement)
+            self._remove_live_ruler()
+            if pinned:
+                self._pinned_rulers_changed()
+            else:
+                self._emit_ruler_status()
 
-    def _clear_ruler(self) -> None:
-        """Drops the measurement AND its items. Removes from the scene
-        explicitly, unlike the clear_image/set_source paths where
-        scene().clear() has already destroyed the C++ objects and only the
-        Python-side references need forgetting."""
+    def _remove_live_ruler(self) -> None:
+        """Drops the live session and its items, leaving pinned rulers and the
+        status bar alone."""
         self._ruler.clear()
         if self._ruler_line_item is not None:
             self.scene().removeItem(self._ruler_line_item)
@@ -3217,7 +3276,97 @@ class MapView(QGraphicsView):
                 self.scene().removeItem(item)
             self.scene().removeItem(self._ruler_label_item)
         self._forget_ruler_items()
-        self._on_ruler_changed(None)
+
+    def _clear_ruler(self) -> None:
+        """Drops the live measurement AND its items; pinned rulers stay. Removes
+        from the scene explicitly, unlike the clear_image/set_source paths where
+        scene().clear() has already destroyed the C++ objects and only the
+        Python-side references need forgetting."""
+        self._remove_live_ruler()
+        self._emit_ruler_status()
+
+    def _emit_ruler_status(self) -> None:
+        """The status-bar rule in one place: the live measurement while one is
+        pending, otherwise the newest pinned one, otherwise None."""
+        if self._ruler.state != ruler.STATE_IDLE:
+            self._on_ruler_changed(self._ruler.measurement)
+        else:
+            self._on_ruler_changed(self._pinned_rulers.newest)
+
+    def _pinned_rulers_changed(self) -> None:
+        self._rebuild_pinned_rulers()
+        self._emit_ruler_status()
+        self.on_pinned_rulers_changed(len(self._pinned_rulers))
+
+    def pinned_ruler_count(self) -> int:
+        return len(self._pinned_rulers)
+
+    def clear_rulers(self) -> None:
+        """The Clear rulers button: the live measurement and every pinned one."""
+        self._remove_live_ruler()
+        had_pinned = len(self._pinned_rulers) > 0
+        self._pinned_rulers.clear()
+        if had_pinned:
+            self._pinned_rulers_changed()
+        else:
+            self._emit_ruler_status()
+
+    def _drop_pinned_rulers(self) -> None:
+        """For a new document or File > Close, after scene().clear() destroyed the items."""
+        self._pinned_ruler_items = []
+        if len(self._pinned_rulers):
+            self._pinned_rulers.clear()
+            self.on_pinned_rulers_changed(0)
+
+    def _rebuild_pinned_rulers(self) -> None:
+        """Rebuilds every pinned ruler against the CURRENT projection, the
+        _rebuild_trigger_overlay pattern: one path for every line and endpoint
+        outline, one device-space label per ruler anchored at its b end."""
+        scene = self.scene()
+        if scene is None:
+            return
+        for item in self._pinned_ruler_items:
+            scene.removeItem(item)
+        self._pinned_ruler_items = []
+        if not len(self._pinned_rulers):
+            return
+        path = QPainterPath()
+        labels: list[tuple[QPointF, str]] = []
+        for m in self._pinned_rulers:
+            # Guards a future map resize: a ruler off the map is skipped, not drawn.
+            if not (self._on_map(m.a) and self._on_map(m.b)):
+                continue
+            anchor_a, anchor_b = self._ruler_anchor(m.a), self._ruler_anchor(m.b)
+            if anchor_a is None or anchor_b is None:
+                continue
+            path.moveTo(anchor_a)
+            path.lineTo(anchor_b)
+            for tile in (m.a, m.b):
+                polygon = self._tile_polygon(*tile)
+                if polygon is not None:
+                    path.addPolygon(polygon)
+                    path.closeSubpath()
+            labels.append((anchor_b, ruler.format_measurement(m)))
+        if not path.isEmpty():
+            item = scene.addPath(path, self._ruler_pen)
+            item.setZValue(self.PINNED_RULER_Z)
+            self._pinned_ruler_items.append(item)
+        font = map_overlay_font(settings.get_ruler_label_font_px())
+        font.setBold(True)
+        for anchor, text in labels:
+            label = scene.addSimpleText(text)
+            label.setFont(font)
+            label.setBrush(QBrush(self._ruler_label_color))
+            label.setPen(QPen(self._ruler_label_outline, 0))
+            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+            label.setZValue(self.PINNED_RULER_LABEL_Z)
+            label.setPos(anchor)
+            box = label.boundingRect()
+            label.setTransform(QTransform.fromTranslate(-box.width() / 2.0, -box.height() - self.RULER_LABEL_GAP_PX))
+            self._pinned_ruler_items.append(label)
+        # Pinned items never take a click: Units-mode selection and the Ruler's own presses go through.
+        for item in self._pinned_ruler_items:
+            item.setAcceptedMouseButtons(Qt.NoButton)
 
     def _forget_ruler_items(self) -> None:
         """The one choke point every clear gesture funnels through, which is
@@ -3332,10 +3481,11 @@ class MapView(QGraphicsView):
         self._unit_ghost_item = None
         # Same hazard as the tick item above, and the same fix: forget the
         # destroyed items, and drop the measurement itself, since File > Close
-        # leaves no map for it to refer to.
+        # leaves no map for it to refer to. Pinned rulers go too.
         self._ruler.clear()
         self._forget_ruler_items()
-        self._on_ruler_changed(None)
+        self._drop_pinned_rulers()
+        self._emit_ruler_status()
         # Same reasoning for a shape drag: File > Close mid-drag leaves no
         # map for the release to commit against.
         self._shape_anchor = None
@@ -3657,10 +3807,14 @@ class MapView(QGraphicsView):
         # The Ruler's items went with scene().clear(). The measurement is
         # dropped rather than re-anchored for the same reason the selection
         # below is: set_source() means a new scenario or a style switch, and
-        # neither guarantees the old tiles still mean anything.
+        # neither guarantees the old tiles still mean anything. Pinned rulers
+        # follow self._region's rule: kept on a same-document redraw, rebuilt below.
         self._ruler.clear()
         self._forget_ruler_items()
-        self._on_ruler_changed(None)
+        self._pinned_ruler_items = []
+        if reset_view:
+            self._drop_pinned_rulers()
+        self._emit_ruler_status()
         # scene().clear() destroyed the rubber band's items too, and a
         # shape anchored on the old map's tiles means nothing on the new one.
         self._shape_anchor = None
@@ -3795,9 +3949,15 @@ class MapView(QGraphicsView):
         # Empty until the caller installs an index via set_unit_index().
         tile_extent = 2 * proj.half_w if iso_proj is not None else tile_pixels
         self._stack_groups = {}
-        self._stack_badge_item = StackBadgeItem(tile_extent, QColor(settings.get_overlay_color("unit_stack")))
+        self._stack_badge_item = StackBadgeItem(
+            tile_extent,
+            QColor(settings.get_overlay_color("unit_stack")),
+            QColor(settings.get_overlay_color("unit_stack_background")),
+        )
+        self._stack_badge_item.set_placement(self._stack_badge_position != "above")
         self._stack_badge_item.setZValue(self.UNIT_STACK_Z)
         self._stack_badge_item.setVisible(False)
+        self._stack_badges_stale = True
         self.scene().addItem(self._stack_badge_item)
 
         # Ends with set_isometric(), which funnels into
@@ -3819,6 +3979,7 @@ class MapView(QGraphicsView):
         self._rebuild_camera_markers()
         self._rebuild_analysis_markers()
         self._rebuild_trigger_overlay()
+        self._rebuild_pinned_rulers()
         # Forces the next poll fire to notify regardless of what it finds:
         # without this, a cache swap whose new viewport_chunk_target()
         # happens to equal the OLD document's last-recorded one (same mip,
@@ -3885,6 +4046,8 @@ class MapView(QGraphicsView):
 
     def set_isometric(self, enabled: bool) -> None:
         self._isometric = enabled
+        # GH #100: Flat's badge anchors differ between square and iso views.
+        self._rebuild_stack_badges()
         self.resetTransform()
         restore = self._pending_view_restore
         self._pending_view_restore = None
@@ -4351,7 +4514,7 @@ class MapView(QGraphicsView):
         return self._analysis_marker_item
 
     def _analysis_anchor_point(self, tile: tuple[int, int] | None) -> QPointF | None:
-        """A tile's top vertex, as _rebuild_stack_badges() anchors badges."""
+        """A tile's bounding-rect top-centre (the top vertex in Stepped/Sloped)."""
         if tile is None or self._map_width is None or self._map_height is None:
             return None
         tile_x, tile_y = tile
@@ -4429,6 +4592,11 @@ class MapView(QGraphicsView):
         self._rebuild_analysis_markers()
         # _tile_polygon reads the elevations, so Stepped and Sloped rings move. O(perimeter).
         self._rebuild_trigger_overlay()
+        # Same for a pinned ruler's endpoints: at most a handful of items.
+        self._rebuild_pinned_rulers()
+        # Stack badges anchor on the tile outline too (GH #100). Two outline lookups per
+        # stack, but only in Units mode: elevation tools are Terrain-only, so a stroke skips it.
+        self._rebuild_stack_badges()
 
     def schedule_footprint_refresh(self) -> None:
         if self._footprint_refresh_pending or self._footprint_item is None:
@@ -4577,7 +4745,11 @@ class MapView(QGraphicsView):
         if notches == 0:
             return
         factor = 1.25**notches if notches > 0 else 0.8 ** -notches
+        anchor = event.position().toPoint() if self._zoom_on_cursor else self.viewport().rect().center()
+        before = self.mapToScene(anchor)
         self.scale(factor, factor)
+        drift = self.mapFromScene(before) - anchor
+        self._scroll_by(drift.x(), drift.y())
         self._note_viewport_changed()
         self._on_zoom_changed()
 

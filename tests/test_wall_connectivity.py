@@ -125,8 +125,8 @@ _OLD_HAND_CONNECTOR_CONSTS = frozenset({
 })
 
 
-def test_wall_connector_consts_has_104_members():
-    assert len(unit_sprites.wall_connector_consts()) == 104
+def test_wall_connector_consts_has_105_members():
+    assert len(unit_sprites.wall_connector_consts()) == 105
 
 
 def test_wall_connector_consts_is_a_strict_superset_of_the_old_hand_kept_set():
@@ -147,12 +147,12 @@ def test_wall_connector_consts_contains_every_palisade_closed_orientation():
     assert {789, 797, 793, 801} <= unit_sprites.wall_connector_consts()
 
 
-def test_wall_connector_consts_excludes_aqueduct():
-    """231 (Aqueduct) is a recorded, open decision (2026-09-12 generated-
-    replacement plan's [NEEDS DECISION] entry), not an accidental omission:
-    no wall neighbours an Aqueduct anywhere in the corpus, so its connector
-    membership can't be corpus-validated the way the gate half was."""
-    assert 231 not in unit_sprites.wall_connector_consts()
+def test_wall_connector_consts_includes_aqueduct():
+    """231 (Aqueduct) is a user decision (2026-09-26, GH #110: treat it as a
+    full wall), not a measurement: no wall neighbours an Aqueduct anywhere in
+    the corpus, so its connector membership can't be corpus-validated the
+    way the gate half was."""
+    assert 231 in unit_sprites.wall_connector_consts()
 
 
 def test_wall_connector_consts_excludes_the_colliding_corner_const():

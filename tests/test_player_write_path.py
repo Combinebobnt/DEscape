@@ -324,7 +324,7 @@ def test_write_targets_field_count_matches_specs_for_across_the_corpus(scenario_
     if not pf.verify_player_block(loaded):
         pytest.skip(f"{scenario_path.name}: player block fails verification on this file")
     targets = pf.write_targets(loaded)
-    tier1_specs = {s.field_id for s in pf.specs_for(loaded) if s.field_id not in pf._NEVER_WRITABLE}
+    tier1_specs = {s.field_id for s in pf.specs_for(loaded) if s.field_id not in pf._NOT_BYTE_PATCHED}
     field_ids = {key.split(":")[1] for key in targets}
     assert field_ids == tier1_specs, scenario_path.name
     for field_id in field_ids:

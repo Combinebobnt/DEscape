@@ -2,9 +2,9 @@
 (GH #98, which folded the 2026-09-19 Wall Run tool into Place Unit) -- the
 wiring, not the geometry.
 
-Picking one of the 8 wall consts in the Units catalog turns Place Unit into
-a drag_shape path: MapView commits it through on_shape_commit(tiles) rather
-than on_unit_place(). Most tests below drive MapView's own press/move/release
+Picking one of the 9 wall-family consts (8 walls plus Aqueduct, GH #110) in
+the Units catalog turns Place Unit into a drag_shape path: MapView commits
+it through on_shape_commit(tiles) rather than on_unit_place(). Most tests below drive MapView's own press/move/release
 handlers with real QMouseEvents (the technique tests/test_shape_tools_viewer.py
 documents), because the routing decision itself -- wall const or not, latched
 at press -- is what changed.
@@ -33,7 +33,7 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe
 WALL = 117  # Stone Wall
 PALISADE = 72  # Palisade Wall, another wall const
 GATE = 64  # Stone Gate, one orientation: not a wall-run const
-AQUEDUCT = 231  # class 27 with 5 variants, but not a wall
+AQUEDUCT = 231  # class 27 with 5 variants, a full wall since GH #110
 VILLAGER = 83
 GAIA_PLAYER_ID = 0
 PLAYER = 1
@@ -204,10 +204,10 @@ def test_a_single_click_next_to_a_wall_joins_and_reshapes_it():
         _close(window)
 
 
-def test_a_wall_beside_an_aqueduct_neither_joins_nor_rewrites_it():
-    """GH #52's Aqueduct step, DEscape half. Aqueduct (231) is class 27 and
-    has 5 angles like a wall, but is no wall connector. The wall between the
-    Aqueduct and a second wall stays a run end (2), not a mid-run (0)."""
+def test_a_wall_beside_an_aqueduct_joins_it():
+    """GH #110: Aqueduct (231) is a full wall. The wall between the Aqueduct
+    and a second wall becomes a mid-run (0), and the Aqueduct's own index is
+    re-derived as the run end it now is (2)."""
     window = _window()
     try:
         model = window._ensure_unit_edits()
@@ -219,8 +219,40 @@ def test_a_wall_beside_an_aqueduct_neither_joins_nor_rewrites_it():
             _release(window.map_view, tile)
         inner = next(u for u in window.scenario.unit_manager.units[PLAYER] if (u.x, u.y) == (49.5, 50.5))
         assert inner.unit_const == WALL
-        assert inner.rotation == 2.0
-        assert aqueduct.rotation == 3.0
+        assert inner.rotation == 0.0
+        assert aqueduct.rotation == 2.0
+    finally:
+        _close(window)
+
+
+def test_an_aqueduct_drag_places_the_same_run_as_a_stone_wall():
+    window = _window(AQUEDUCT)
+    try:
+        before = _unit_count(window)
+        _drag(window.map_view, (20, 40), (25, 40))
+        assert _unit_count(window) == before + 6
+        placed = window.scenario.unit_manager.units[PLAYER][-6:]
+        assert all(u.unit_const == AQUEDUCT for u in placed)
+        assert [u.rotation for u in placed] == [2.0, 0.0, 0.0, 0.0, 0.0, 2.0]
+        assert all(u.initial_animation_frame == 0 for u in placed)
+    finally:
+        _close(window)
+
+
+def test_a_single_click_aqueduct_joins_its_neighbour():
+    """Three clicks along x: the third flanks the first-clicked Aqueduct, so
+    that click's own record reshapes it to a mid-run (0)."""
+    window = _window(AQUEDUCT)
+    try:
+        for tile in ((50, 50), (51, 50), (49, 50)):
+            _press(window.map_view, tile)
+            _release(window.map_view, tile)
+        units = window.scenario.unit_manager.units[PLAYER]
+        middle = next(u for u in units if (u.x, u.y) == (50.5, 50.5))
+        assert middle.unit_const == AQUEDUCT
+        assert middle.rotation == 0.0
+        assert units[-1].rotation == 2.0
+        assert len(window.edit_history.records) == 3
     finally:
         _close(window)
 

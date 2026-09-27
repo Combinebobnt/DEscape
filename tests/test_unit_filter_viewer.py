@@ -402,6 +402,60 @@ def test_a_hidden_invisible_object_is_unpickable() -> None:
         conftest.close_window(window)
 
 
+# --- GH #120: Show Buildings ----------------------------------------------
+
+_HOUSE_CONST = 70  # HOUS, a unit_kind.building_consts() member
+
+
+def test_show_buildings_ships_checked_and_reaches_the_cache_and_summary() -> None:
+    window = conftest.blank_window()
+    try:
+        assert window.show_buildings_action.isChecked()
+        window.show_buildings_action.setChecked(False)
+        assert window._unit_filter == app_default(show_buildings=False)
+        assert window._cache.unit_filter == app_default(show_buildings=False)
+        assert "buildings hidden" in window._filter_summary()
+    finally:
+        conftest.close_window(window)
+
+
+def test_show_all_and_hide_all_cover_show_buildings() -> None:
+    window = conftest.blank_window()
+    try:
+        window.filter_hide_all_action.trigger()
+        assert not window.show_buildings_action.isChecked()
+        window.filter_show_all_action.trigger()
+        assert window.show_buildings_action.isChecked()
+        for action in (window.filter_show_all_action, window.filter_hide_all_action):
+            assert "Buildings" in action.toolTip()
+    finally:
+        conftest.close_window(window)
+
+
+def test_show_buildings_is_bound_as_a_rebindable_action() -> None:
+    window = conftest.blank_window()
+    try:
+        assert window._keybind_actions["filter_show_buildings"] is window.show_buildings_action
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_hidden_building_is_unpickable() -> None:
+    window = conftest.blank_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        _unit, pos = _place_wall(window, _HOUSE_CONST)
+        mv = window.map_view
+        assert mv.pick_unit_at(pos) is not None, "the building was unpickable to begin with"
+
+        window.show_buildings_action.setChecked(False)
+        assert mv.pick_unit_at(pos) is None
+        window.show_buildings_action.setChecked(True)
+        assert mv.pick_unit_at(pos) is not None
+    finally:
+        conftest.close_window(window)
+
+
 # --- GH #42: Show Garrisoned Units --------------------------------------
 
 

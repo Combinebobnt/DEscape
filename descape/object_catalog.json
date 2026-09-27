@@ -76,7 +76,7 @@
     },
     "1006": {
       "class": 22,
-      "code": "CARAV",
+      "code": "ECARAV",
       "hidden": false,
       "icon": 497,
       "string_id": 5133,
@@ -1089,6 +1089,7 @@
       "code": "FLARE",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 5316,
       "type": 10
     },
@@ -1729,6 +1730,7 @@
       "code": "GTAC2",
       "hidden": true,
       "icon": 36,
+      "no_graphic": true,
       "string_id": 5185,
       "type": 80
     },
@@ -2664,7 +2666,7 @@
     },
     "1298": {
       "class": 12,
-      "code": "JARL",
+      "code": "JARLB",
       "hidden": false,
       "icon": 188,
       "string_id": 5702,
@@ -2899,7 +2901,7 @@
       "code": "ROCKX2",
       "hidden": false,
       "icon": -1,
-      "string_id": 5527,
+      "string_id": 21300,
       "type": 10
     },
     "1324": {
@@ -5538,6 +5540,7 @@
       "code": "FLAGX",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 20
     },
@@ -5801,6 +5804,7 @@
       "code": "Trophy None",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 80
     },
@@ -6154,6 +6158,7 @@
       "code": "FLARE5",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21059,
       "type": 10
     },
@@ -7019,6 +7024,7 @@
       "code": "FLARE5",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 21109,
       "type": 10
     },
@@ -8268,6 +8274,14 @@
       "string_id": 5698,
       "type": 70
     },
+    "1924": {
+      "class": 10,
+      "code": "WALRUS",
+      "hidden": false,
+      "icon": 936,
+      "string_id": 21389,
+      "type": 70
+    },
     "1925": {
       "class": 11,
       "code": "Projectile Fire Lancer ",
@@ -8428,6 +8442,14 @@
       "icon": 428,
       "string_id": 5598,
       "type": 70
+    },
+    "1943": {
+      "class": 14,
+      "code": "WEAPONSTACKSB",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21394,
+      "type": 10
     },
     "1944": {
       "class": 12,
@@ -8629,6 +8651,14 @@
       "string_id": 5365,
       "type": 70
     },
+    "1967": {
+      "class": 14,
+      "code": "ROCKMOSSY",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21380,
+      "type": 10
+    },
     "1968": {
       "class": 0,
       "code": "FIREARCHER",
@@ -8748,6 +8778,14 @@
       "icon": 435,
       "string_id": 21198,
       "type": 70
+    },
+    "1981": {
+      "class": 14,
+      "code": "Kelp Seaweeds",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21381,
+      "type": 20
     },
     "1982": {
       "class": 11,
@@ -9229,6 +9267,14 @@
       "string_id": 5352,
       "type": 70
     },
+    "2035": {
+      "class": 14,
+      "code": "BBURNEDE",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21383,
+      "type": 10
+    },
     "2036": {
       "class": 59,
       "code": "HZHUGELIANG",
@@ -9237,6 +9283,14 @@
       "string_id": 5353,
       "type": 70
     },
+    "2037": {
+      "class": 14,
+      "code": "Bridge Piece End 1x1",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21384,
+      "type": 80
+    },
     "2038": {
       "class": 6,
       "code": "ZHANGFEI",
@@ -9244,6 +9298,14 @@
       "icon": 446,
       "string_id": 5354,
       "type": 70
+    },
+    "2039": {
+      "class": 14,
+      "code": "Bridge Piece End 1x2",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21385,
+      "type": 80
     },
     "204": {
       "class": 19,
@@ -9261,6 +9323,14 @@
       "string_id": 5355,
       "type": 70
     },
+    "2041": {
+      "class": 14,
+      "code": "Bridge Piece End 2x1",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21386,
+      "type": 80
+    },
     "2042": {
       "class": 36,
       "code": "HSUNQUAN",
@@ -9268,6 +9338,14 @@
       "icon": 448,
       "string_id": 5356,
       "type": 70
+    },
+    "2043": {
+      "class": 14,
+      "code": "Bridge Piece Middle 1x1",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21387,
+      "type": 80
     },
     "2044": {
       "class": 0,
@@ -9387,6 +9465,7 @@
       "code": "Projectile GSTRIKE",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 60
     },
@@ -9483,6 +9562,7 @@
       "code": "KONGMING",
       "hidden": true,
       "icon": 94,
+      "no_graphic": true,
       "string_id": 5325,
       "type": 80
     },
@@ -9571,6 +9651,7 @@
       "code": "Pasture Annex Fences",
       "hidden": true,
       "icon": 96,
+      "no_graphic": true,
       "string_id": -1,
       "type": 80
     },
@@ -9596,6 +9677,14 @@
       "hidden": true,
       "icon": 96,
       "string_id": -1,
+      "type": 80
+    },
+    "2081": {
+      "class": 14,
+      "code": "Bridge Rails",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21388,
       "type": 80
     },
     "2082": {
@@ -13412,6 +13501,14 @@
       "string_id": 5509,
       "type": 80
     },
+    "2559": {
+      "class": 3,
+      "code": "LONGHOUSEA",
+      "hidden": false,
+      "icon": 34,
+      "string_id": 21390,
+      "type": 80
+    },
     "256": {
       "class": 40,
       "code": "PILE3",
@@ -13426,6 +13523,14 @@
       "hidden": true,
       "icon": 98,
       "string_id": 5509,
+      "type": 80
+    },
+    "2561": {
+      "class": 3,
+      "code": "LONGHOUSEB",
+      "hidden": false,
+      "icon": 34,
+      "string_id": 21391,
       "type": 80
     },
     "2562": {
@@ -13458,6 +13563,7 @@
       "code": "GUECHA_D0",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -13548,6 +13654,30 @@
       "icon": -1,
       "string_id": 0,
       "type": 60
+    },
+    "2576": {
+      "class": 14,
+      "code": "TORCHC",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21393,
+      "type": 20
+    },
+    "2577": {
+      "class": 30,
+      "code": "FLOTSAM",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21395,
+      "type": 20
+    },
+    "2578": {
+      "class": 11,
+      "code": "RAVEN",
+      "hidden": false,
+      "icon": 934,
+      "string_id": 21396,
+      "type": 70
     },
     "2579": {
       "class": 0,
@@ -13754,7 +13884,7 @@
       "class": 3,
       "code": "WOODENFORT",
       "hidden": false,
-      "icon": 8,
+      "icon": 9,
       "string_id": 21281,
       "type": 80
     },
@@ -13886,6 +14016,42 @@
       "string_id": 21331,
       "type": 70
     },
+    "2616": {
+      "class": 14,
+      "code": "Invisible Spawner A",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21350,
+      "type": 80
+    },
+    "2617": {
+      "class": 14,
+      "code": "Invisible Spawner B",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21351,
+      "type": 80
+    },
+    "2618": {
+      "class": 14,
+      "code": "Invisible Spawner C",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21352,
+      "type": 80
+    },
+    "2619": {
+      "class": 14,
+      "code": "Invisible Spawner D",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21353,
+      "type": 80
+    },
     "262": {
       "class": 41,
       "code": "PFOOD",
@@ -13894,6 +14060,24 @@
       "string_id": 5324,
       "type": 70
     },
+    "2620": {
+      "class": 14,
+      "code": "Invisible Spawner E",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21354,
+      "type": 80
+    },
+    "2621": {
+      "class": 14,
+      "code": "Invisible Spawner F",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21355,
+      "type": 80
+    },
     "2622": {
       "class": 11,
       "code": "Trail Rope",
@@ -13901,6 +14085,14 @@
       "icon": -1,
       "string_id": 0,
       "type": 20
+    },
+    "2623": {
+      "class": 11,
+      "code": "Projectile Harald",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
     },
     "2624": {
       "class": 64,
@@ -14078,6 +14270,42 @@
       "icon": -1,
       "string_id": 21296,
       "type": 10
+    },
+    "2645": {
+      "class": 14,
+      "code": "Invisible Spawner G",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21356,
+      "type": 80
+    },
+    "2646": {
+      "class": 14,
+      "code": "Invisible Spawner H",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21357,
+      "type": 80
+    },
+    "2647": {
+      "class": 14,
+      "code": "Invisible Spawner I",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21358,
+      "type": 80
+    },
+    "2648": {
+      "class": 14,
+      "code": "Invisible Spawner I",
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 21359,
+      "type": 80
     },
     "265": {
       "class": 34,
@@ -14351,6 +14579,86 @@
       "string_id": 0,
       "type": 10
     },
+    "2700": {
+      "class": 36,
+      "code": "Mounted Crossbowman",
+      "hidden": false,
+      "icon": 900,
+      "string_id": 5527,
+      "type": 70
+    },
+    "2701": {
+      "class": 36,
+      "code": "Heavy Mounted Crossbowman",
+      "hidden": false,
+      "icon": 901,
+      "string_id": 5528,
+      "type": 70
+    },
+    "2702": {
+      "class": 11,
+      "code": "Projectile Hearth Troop",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "2703": {
+      "class": 6,
+      "code": "Varangian Guard",
+      "hidden": false,
+      "icon": 902,
+      "string_id": 5530,
+      "type": 70
+    },
+    "2704": {
+      "class": 6,
+      "code": "Elite Varangian Guard",
+      "hidden": false,
+      "icon": 903,
+      "string_id": 5531,
+      "type": 70
+    },
+    "2705": {
+      "class": 6,
+      "code": "Hearth Troop",
+      "hidden": false,
+      "icon": 904,
+      "string_id": 5532,
+      "type": 70
+    },
+    "2706": {
+      "class": 6,
+      "code": "Elite Hearth Troop",
+      "hidden": false,
+      "icon": 905,
+      "string_id": 5533,
+      "type": 70
+    },
+    "2707": {
+      "class": 11,
+      "code": "Projectile Elite Hearth Troop",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "2708": {
+      "class": 12,
+      "code": "Jarl",
+      "hidden": false,
+      "icon": 906,
+      "string_id": 5535,
+      "type": 70
+    },
+    "2709": {
+      "class": 12,
+      "code": "Elite Jarl",
+      "hidden": false,
+      "icon": 907,
+      "string_id": 5537,
+      "type": 70
+    },
     "271": {
       "class": 34,
       "code": "Cliff (Default) 08",
@@ -14358,6 +14666,89 @@
       "icon": -1,
       "string_id": 0,
       "type": 10
+    },
+    "2710": {
+      "class": 11,
+      "code": "Projectile Gothikon",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "2711": {
+      "class": 6,
+      "code": "Jomsviking",
+      "hidden": false,
+      "icon": 908,
+      "string_id": 5539,
+      "type": 70
+    },
+    "2712": {
+      "class": 6,
+      "code": "Elite Jomsviking",
+      "hidden": false,
+      "icon": 909,
+      "string_id": 5541,
+      "type": 70
+    },
+    "2713": {
+      "class": 11,
+      "code": "Projectile Jomsviking",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "2714": {
+      "class": 61,
+      "code": "VMREPAIRER",
+      "hidden": false,
+      "icon": 330,
+      "string_id": 5127,
+      "type": 70
+    },
+    "2715": {
+      "class": 61,
+      "code": "VFREPAIRER",
+      "hidden": false,
+      "icon": 329,
+      "string_id": 5127,
+      "type": 70
+    },
+    "2716": {
+      "class": 27,
+      "code": "Castle/TC Infantry Discount Removal",
+      "hidden": true,
+      "icon": 40,
+      "no_graphic": true,
+      "string_id": 0,
+      "type": 80
+    },
+    "2717": {
+      "class": 27,
+      "code": "Castle/TC Infantry Discount",
+      "hidden": true,
+      "icon": 40,
+      "no_graphic": true,
+      "string_id": 0,
+      "type": 80
+    },
+    "2718": {
+      "class": 27,
+      "code": "Empty Castle Annex",
+      "hidden": true,
+      "icon": 40,
+      "no_graphic": true,
+      "string_id": 0,
+      "type": 80
+    },
+    "2719": {
+      "class": 11,
+      "code": "Projectile Jarl",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
     },
     "272": {
       "class": 34,
@@ -14367,13 +14758,254 @@
       "string_id": 0,
       "type": 10
     },
+    "2720": {
+      "class": 11,
+      "code": "Projectile EliteJarl",
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "2721": {
+      "class": 6,
+      "code": "HARALD",
+      "hidden": false,
+      "icon": 921,
+      "string_id": 21342,
+      "type": 70
+    },
+    "2722": {
+      "class": 6,
+      "code": "HULFO",
+      "hidden": false,
+      "icon": 929,
+      "string_id": 21343,
+      "type": 70
+    },
+    "2723": {
+      "class": 6,
+      "code": "HHALL",
+      "hidden": false,
+      "icon": 920,
+      "string_id": 21344,
+      "type": 70
+    },
+    "2724": {
+      "class": 12,
+      "code": "HTOST",
+      "hidden": false,
+      "icon": 928,
+      "string_id": 21345,
+      "type": 70
+    },
+    "2725": {
+      "class": 6,
+      "code": "HFINN",
+      "hidden": false,
+      "icon": 919,
+      "string_id": 21346,
+      "type": 70
+    },
+    "2726": {
+      "class": 6,
+      "code": "HKALF",
+      "hidden": false,
+      "icon": 924,
+      "string_id": 21347,
+      "type": 70
+    },
+    "2727": {
+      "class": 0,
+      "code": "HEINAR",
+      "hidden": false,
+      "icon": 918,
+      "string_id": 21348,
+      "type": 70
+    },
+    "2728": {
+      "class": 22,
+      "code": "HLNGS",
+      "hidden": false,
+      "icon": 595,
+      "string_id": 21349,
+      "type": 70
+    },
+    "2729": {
+      "class": 38,
+      "code": "LEGITEM",
+      "hidden": true,
+      "icon": 594,
+      "string_id": 21360,
+      "type": 70
+    },
+    "2730": {
+      "class": 59,
+      "code": "Wheeled Ship",
+      "hidden": false,
+      "icon": 40,
+      "string_id": 21361,
+      "type": 70
+    },
+    "2731": {
+      "class": 15,
+      "code": "SPRUCE",
+      "hidden": false,
+      "icon": 32,
+      "string_id": 21362,
+      "type": 10
+    },
+    "2732": {
+      "class": 15,
+      "code": "SPRUCESNOW",
+      "hidden": false,
+      "icon": 32,
+      "string_id": 21363,
+      "type": 10
+    },
+    "2733": {
+      "class": 15,
+      "code": "BUSH4",
+      "hidden": false,
+      "icon": 32,
+      "string_id": 21368,
+      "type": 10
+    },
+    "2734": {
+      "class": 14,
+      "code": "ROCKSNOW",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21367,
+      "type": 10
+    },
+    "2735": {
+      "class": 9,
+      "code": "SEAL",
+      "hidden": false,
+      "icon": 935,
+      "string_id": 21364,
+      "type": 70
+    },
+    "2736": {
+      "class": 10,
+      "code": "LYNX",
+      "hidden": false,
+      "icon": 932,
+      "string_id": 21365,
+      "type": 70
+    },
+    "2737": {
+      "class": 10,
+      "code": "ELK",
+      "hidden": false,
+      "icon": 931,
+      "string_id": 21366,
+      "type": 70
+    },
+    "2738": {
+      "class": 14,
+      "code": "RUNESTONES",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21369,
+      "type": 10
+    },
+    "2739": {
+      "class": 9,
+      "code": "PHEASANT",
+      "hidden": false,
+      "icon": 933,
+      "string_id": 21370,
+      "type": 70
+    },
     "274": {
       "class": 11,
       "code": "FLARE2",
       "hidden": false,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 5316,
       "type": 10
+    },
+    "2740": {
+      "class": 14,
+      "code": "DRIFTWOODG",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21371,
+      "type": 10
+    },
+    "2741": {
+      "class": 30,
+      "code": "DRIFTWOODW",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21372,
+      "type": 20
+    },
+    "2742": {
+      "class": 11,
+      "code": "FLAMINGBIRD",
+      "hidden": false,
+      "icon": 283,
+      "string_id": 21373,
+      "type": 70
+    },
+    "2743": {
+      "class": 14,
+      "code": "Plant Heather",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21374,
+      "type": 10
+    },
+    "2744": {
+      "class": 14,
+      "code": "BBURNEDD",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21375,
+      "type": 10
+    },
+    "2745": {
+      "class": 3,
+      "code": "ARMTENTF",
+      "hidden": false,
+      "icon": 76,
+      "string_id": 21376,
+      "type": 80
+    },
+    "2746": {
+      "class": 30,
+      "code": "SPWKC",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21377,
+      "type": 20
+    },
+    "2747": {
+      "class": 14,
+      "code": "NORSECOLUMN",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21378,
+      "type": 10
+    },
+    "2748": {
+      "class": 14,
+      "code": "WOODENROAD",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21379,
+      "type": 10
+    },
+    "2749": {
+      "class": 30,
+      "code": "NORSEBANNER",
+      "hidden": false,
+      "icon": -1,
+      "string_id": 21382,
+      "type": 20
     },
     "275": {
       "class": 12,
@@ -14668,7 +15300,7 @@
       "code": "HCUAUT",
       "hidden": false,
       "icon": 146,
-      "string_id": 5530,
+      "string_id": 21303,
       "type": 70
     },
     "308": {
@@ -14892,6 +15524,7 @@
       "code": "FLARE3",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 5316,
       "type": 10
     },
@@ -15580,6 +16213,7 @@
       "code": "DEBRI",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 10
     },
@@ -15588,6 +16222,7 @@
       "code": "DUSTC",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -15604,6 +16239,7 @@
       "code": "BDEBR",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 10
     },
@@ -15628,6 +16264,7 @@
       "code": "CANGA_D",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 30
     },
@@ -15667,7 +16304,7 @@
       "class": 6,
       "code": "HHAHA",
       "hidden": false,
-      "icon": 118,
+      "icon": 923,
       "string_id": 5293,
       "type": 70
     },
@@ -17492,7 +18129,7 @@
       "code": "HEROF",
       "hidden": false,
       "icon": 62,
-      "string_id": 5529,
+      "string_id": 21302,
       "type": 70
     },
     "633": {
@@ -17508,7 +18145,7 @@
       "code": "HMETZ",
       "hidden": false,
       "icon": 59,
-      "string_id": 5531,
+      "string_id": 21304,
       "type": 70
     },
     "635": {
@@ -17524,7 +18161,7 @@
       "code": "HBERT",
       "hidden": false,
       "icon": 61,
-      "string_id": 5533,
+      "string_id": 21306,
       "type": 70
     },
     "637": {
@@ -17532,7 +18169,7 @@
       "code": "TMPHVN",
       "hidden": false,
       "icon": 11,
-      "string_id": 5528,
+      "string_id": 21301,
       "type": 80
     },
     "638": {
@@ -17540,7 +18177,7 @@
       "code": "HALEN",
       "hidden": false,
       "icon": 65,
-      "string_id": 5535,
+      "string_id": 21307,
       "type": 70
     },
     "639": {
@@ -17564,7 +18201,7 @@
       "code": "HHIRE",
       "hidden": false,
       "icon": 51,
-      "string_id": 5537,
+      "string_id": 21308,
       "type": 70
     },
     "641": {
@@ -17580,7 +18217,7 @@
       "code": "HGRAV",
       "hidden": false,
       "icon": 66,
-      "string_id": 5539,
+      "string_id": 21309,
       "type": 70
     },
     "643": {
@@ -17597,7 +18234,7 @@
       "code": "HLORR",
       "hidden": false,
       "icon": 67,
-      "string_id": 5541,
+      "string_id": 21310,
       "type": 70
     },
     "645": {
@@ -17614,7 +18251,7 @@
       "code": "HRICH",
       "hidden": false,
       "icon": 343,
-      "string_id": 5543,
+      "string_id": 21311,
       "type": 70
     },
     "647": {
@@ -17631,7 +18268,7 @@
       "code": "HJOSS",
       "hidden": false,
       "icon": 56,
-      "string_id": 5545,
+      "string_id": 21312,
       "type": 70
     },
     "649": {
@@ -17656,7 +18293,7 @@
       "code": "HBURE",
       "hidden": false,
       "icon": 68,
-      "string_id": 5547,
+      "string_id": 21313,
       "type": 70
     },
     "651": {
@@ -17673,7 +18310,7 @@
       "code": "HFALS",
       "hidden": false,
       "icon": 69,
-      "string_id": 5549,
+      "string_id": 21314,
       "type": 70
     },
     "653": {
@@ -17698,7 +18335,7 @@
       "code": "MSQUE",
       "hidden": false,
       "icon": 12,
-      "string_id": 5552,
+      "string_id": 21315,
       "type": 80
     },
     "656": {
@@ -17898,7 +18535,7 @@
       "code": "HREY",
       "hidden": false,
       "icon": 70,
-      "string_id": 5560,
+      "string_id": 21317,
       "type": 70
     },
     "679": {
@@ -17923,7 +18560,7 @@
       "code": "HMOT",
       "hidden": false,
       "icon": 75,
-      "string_id": 5562,
+      "string_id": 21318,
       "type": 70
     },
     "681": {
@@ -17940,7 +18577,7 @@
       "code": "HBNB",
       "hidden": false,
       "icon": 94,
-      "string_id": 5564,
+      "string_id": 21319,
       "type": 80
     },
     "683": {
@@ -17948,7 +18585,7 @@
       "code": "HGOS",
       "hidden": false,
       "icon": 94,
-      "string_id": 5565,
+      "string_id": 21320,
       "type": 80
     },
     "684": {
@@ -17956,7 +18593,7 @@
       "code": "HTAT",
       "hidden": false,
       "icon": 45,
-      "string_id": 5566,
+      "string_id": 21321,
       "type": 80
     },
     "685": {
@@ -17964,7 +18601,7 @@
       "code": "HTOF",
       "hidden": false,
       "icon": 45,
-      "string_id": 5567,
+      "string_id": 21322,
       "type": 80
     },
     "686": {
@@ -17972,7 +18609,7 @@
       "code": "HAOE",
       "hidden": false,
       "icon": 77,
-      "string_id": 5568,
+      "string_id": 21323,
       "type": 70
     },
     "687": {
@@ -17988,7 +18625,7 @@
       "code": "HPTC",
       "hidden": true,
       "icon": -1,
-      "string_id": 5570,
+      "string_id": 21325,
       "type": 70
     },
     "689": {
@@ -17996,7 +18633,7 @@
       "code": "HPYR",
       "hidden": false,
       "icon": 57,
-      "string_id": 5571,
+      "string_id": 21326,
       "type": 80
     },
     "69": {
@@ -18068,6 +18705,7 @@
       "code": "FLARE4",
       "hidden": true,
       "icon": -1,
+      "no_graphic": true,
       "string_id": 0,
       "type": 10
     },
@@ -18606,7 +19244,7 @@
       "code": "BBURNED",
       "hidden": false,
       "icon": -1,
-      "string_id": 5532,
+      "string_id": 21305,
       "type": 10
     },
     "759": {
@@ -19761,7 +20399,7 @@
       "code": "DWOLF",
       "hidden": false,
       "icon": 7,
-      "string_id": 5553,
+      "string_id": 21316,
       "type": 70
     },
     "890": {
@@ -19842,7 +20480,7 @@
       "code": "ARCHCON",
       "hidden": false,
       "icon": 37,
-      "string_id": 5569,
+      "string_id": 21324,
       "type": 80
     },
     "9": {
@@ -20010,7 +20648,7 @@
       "code": "ROCKX2",
       "hidden": true,
       "icon": -1,
-      "string_id": 5527,
+      "string_id": 21300,
       "type": 10
     },
     "919": {
@@ -20202,6 +20840,7 @@
       "code": "BRSRK",
       "hidden": true,
       "icon": 9,
+      "no_graphic": true,
       "string_id": 0,
       "type": 70
     },
@@ -21483,12 +22122,6 @@
       "icon": -1,
       "string_id": 421071
     },
-    "1199": {
-      "civ": -1,
-      "code": "C-Bonus, Lumberjack food + Double-Bit Axe",
-      "icon": -1,
-      "string_id": 7000
-    },
     "12": {
       "civ": -1,
       "code": "Crop rotation",
@@ -21498,18 +22131,6 @@
     "120": {
       "civ": -1,
       "code": "Shadow Node for Age Two",
-      "icon": -1,
-      "string_id": 7000
-    },
-    "1200": {
-      "civ": -1,
-      "code": "C-Bonus, Lumberjack food + Bow Saw",
-      "icon": -1,
-      "string_id": 7000
-    },
-    "1201": {
-      "civ": -1,
-      "code": "C-Bonus, Lumberjack food + Two-Man Saw",
       "icon": -1,
       "string_id": 7000
     },
@@ -21668,6 +22289,24 @@
       "code": "Hippagretai",
       "icon": 161,
       "string_id": 407057
+    },
+    "1227": {
+      "civ": 54,
+      "code": "Macedonians full tech tree",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1228": {
+      "civ": 55,
+      "code": "Thracians full tech tree",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1229": {
+      "civ": 56,
+      "code": "Puru full tech tree",
+      "icon": -1,
+      "string_id": 7000
     },
     "123": {
       "civ": -1,
@@ -22767,11 +23406,89 @@
       "icon": 0,
       "string_id": 0
     },
+    "1450": {
+      "civ": -1,
+      "code": "Mounted Crossbowman (Make avail)",
+      "icon": 75,
+      "string_id": -1
+    },
+    "1451": {
+      "civ": -1,
+      "code": "Heavy Mounted Crossbowman",
+      "icon": 77,
+      "string_id": 507008
+    },
+    "1452": {
+      "civ": -1,
+      "code": "Cranequins",
+      "icon": 56,
+      "string_id": 507024
+    },
+    "1453": {
+      "civ": -1,
+      "code": "Varangian Guard (make avail)",
+      "icon": -1,
+      "string_id": -1
+    },
+    "1454": {
+      "civ": -1,
+      "code": "Elite Varangian Guard",
+      "icon": 72,
+      "string_id": 507010
+    },
+    "1458": {
+      "civ": 60,
+      "code": "Saxons",
+      "icon": -1,
+      "string_id": -1
+    },
+    "1459": {
+      "civ": 61,
+      "code": "Varangians",
+      "icon": -1,
+      "string_id": -1
+    },
     "146": {
       "civ": -1,
       "code": "Shadow University -- Age Three",
       "icon": -1,
       "string_id": 7000
+    },
+    "1460": {
+      "civ": 62,
+      "code": "Danes",
+      "icon": -1,
+      "string_id": -1
+    },
+    "1461": {
+      "civ": 60,
+      "code": "Hearth Troop (make avail)",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1462": {
+      "civ": 60,
+      "code": "Elite Hearth Troop",
+      "icon": 105,
+      "string_id": 507011
+    },
+    "1464": {
+      "civ": 60,
+      "code": "Shield Wall",
+      "icon": 107,
+      "string_id": 507013
+    },
+    "1465": {
+      "civ": 60,
+      "code": "C-Bonus, Dropsites +35 food, +10 stone",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1469": {
+      "civ": 60,
+      "code": "C-Bonus, Castle/TC Foot Soldiers Discount",
+      "icon": -1,
+      "string_id": 0
     },
     "147": {
       "civ": -1,
@@ -22779,15 +23496,177 @@
       "icon": -1,
       "string_id": 7000
     },
+    "1470": {
+      "civ": 60,
+      "code": "C-Bonus, Longboats and Catapult Galleon +20% HP",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1471": {
+      "civ": 61,
+      "code": "Jarl (make avail)",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1472": {
+      "civ": 61,
+      "code": "Elite Jarl",
+      "icon": 105,
+      "string_id": 507014
+    },
+    "1473": {
+      "civ": 61,
+      "code": "Vendel Legacy",
+      "icon": 33,
+      "string_id": 507015
+    },
+    "1474": {
+      "civ": 61,
+      "code": "Gothikon",
+      "icon": 107,
+      "string_id": 507016
+    },
+    "1475": {
+      "civ": 61,
+      "code": "C-Bonus, gold from sheep, hunt, fishing ships",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1476": {
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
+    },
+    "1477": {
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
+    },
+    "1478": {
+      "civ": 61,
+      "code": "C-Bonus, VG attack +25% faster",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1479": {
+      "civ": 61,
+      "code": "C-Bonus, Lonbgoats and Catapult Galleon attack +15% faster",
+      "icon": -1,
+      "string_id": 0
+    },
     "148": {
       "civ": -1,
       "code": "MRKT TDWS (make avail)",
       "icon": -1,
       "string_id": 7000
     },
+    "1481": {
+      "civ": 62,
+      "code": "Jomsviking (make avail)",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1482": {
+      "civ": 62,
+      "code": "Elite Jomsviking ",
+      "icon": 105,
+      "string_id": 507017
+    },
+    "1483": {
+      "civ": 62,
+      "code": "Northmen's Fury",
+      "icon": 107,
+      "string_id": 507018
+    },
+    "1484": {
+      "civ": 62,
+      "code": "Hamask",
+      "icon": 33,
+      "string_id": 507019
+    },
+    "1485": {
+      "civ": 62,
+      "code": "C-Bonus, Razing Bounty",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1486": {
+      "civ": 62,
+      "code": "C-Bonus, Longboats & VG move +10% faster",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1488": {
+      "civ": 61,
+      "code": "C-Bonus, VG +33% more gold",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1489": {
+      "civ": 61,
+      "code": "C-Bonus, Bloodlines +65% more effective",
+      "icon": -1,
+      "string_id": 0
+    },
     "149": {
       "civ": -1,
       "code": "Siege Wksp (make avail)",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1490": {
+      "civ": 61,
+      "code": "C-Bonus, Caravan +65% more effective",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1491": {
+      "civ": 60,
+      "code": "Clerical Recruitment",
+      "icon": 33,
+      "string_id": 507020
+    },
+    "1492": {
+      "civ": 62,
+      "code": "C-Bonus, Barracks & Siege Workshop upgrades no gold",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1493": {
+      "civ": 60,
+      "code": "C-Bonus, Towers and Castles x2 arrows",
+      "icon": -1,
+      "string_id": 0
+    },
+    "1494": {
+      "civ": 62,
+      "code": "C-Bonus, Villagers & Fishing Ships +10% food",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1495": {
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
+    },
+    "1496": {
+      "civ": 2,
+      "code": "Ordonnance Companies",
+      "icon": 33,
+      "string_id": 507025
+    },
+    "1497": {
+      "civ": -1,
+      "code": "Castle/TC Destroyed",
+      "icon": -1,
+      "string_id": 7000
+    },
+    "1498": {
+      "civ": -1,
+      "code": "Castle/TC Built",
       "icon": -1,
       "string_id": 7000
     },
@@ -23002,10 +23881,10 @@
       "string_id": 0
     },
     "172": {
-      "civ": -1,
-      "code": "Bombard (make avail)",
-      "icon": -1,
-      "string_id": 7000
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
     },
     "173": {
       "civ": 0,
@@ -23668,8 +24547,8 @@
       "string_id": 7000
     },
     "272": {
-      "civ": 11,
-      "code": "Longboat (make avail)",
+      "civ": -1,
+      "code": "Longship (make avail)",
       "icon": -1,
       "string_id": 7000
     },
@@ -23752,10 +24631,10 @@
       "string_id": 7000
     },
     "285": {
-      "civ": 10,
-      "code": "C-Bonus, Free Chemistry",
-      "icon": -1,
-      "string_id": 7000
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
     },
     "286": {
       "civ": 12,
@@ -24334,9 +25213,9 @@
       "string_id": 7388
     },
     "372": {
-      "civ": 11,
+      "civ": -1,
       "code": "Unique Heroic Viking LBT",
-      "icon": 105,
+      "icon": 68,
       "string_id": 7393
     },
     "373": {
@@ -27226,16 +28105,16 @@
       "string_id": 7000
     },
     "806": {
-      "civ": 38,
-      "code": "Stone Mining gold generation increase",
-      "icon": -1,
-      "string_id": 7000
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
     },
     "807": {
-      "civ": 38,
-      "code": "Stone Shaft Mining gold generation increase",
-      "icon": -1,
-      "string_id": 7000
+      "civ": 0,
+      "code": "New Research",
+      "icon": 0,
+      "string_id": 0
     },
     "808": {
       "civ": 39,
@@ -27550,7 +28429,7 @@
       "string_id": 7000
     },
     "855": {
-      "civ": 42,
+      "civ": 0,
       "code": "C-Bonus, Docks garrison",
       "icon": -1,
       "string_id": 7000

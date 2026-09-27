@@ -64,6 +64,7 @@ MEMOIZED_GLOBALS = (
     "_range_rings",
     "_camera_markers",
     "_trigger_overlay",
+    "_stack_badge_position",
 )
 
 

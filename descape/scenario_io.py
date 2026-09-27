@@ -387,6 +387,11 @@ class LoadedScenario:
     # requires defaulted fields to come after all non-defaulted ones.
     unit_gen: int = 0
 
+    # Files section bounds within decompressed_body, captured by parse_triggers()'s
+    # walk (the only time it is known); -1 until then, or if the structure has no Files.
+    files_section_start: int = -1
+    files_section_end: int = -1
+
 
 def retriever_length(retriever: Any) -> int:
     """Parsed byte length of one already-loaded retriever.
@@ -976,13 +981,17 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
             igen = IncrementalGenerator(name="Triggers", file_content=loaded.trigger_tail)
             started = False
             triggers_end_in_tail = -1
+            files_span_in_tail = (-1, -1)
             for section_name in scenario.structure:
                 if not started and section_name != "Triggers":
                     continue
                 started = True
+                section_start = igen.progress
                 scenario._create_and_load_section(section_name, igen)
                 if section_name == "Triggers":
                     triggers_end_in_tail = igen.progress
+                if section_name == "Files":
+                    files_span_in_tail = (section_start, igen.progress)
             manager = TriggerManager.construct(scenario.uuid)
             for trigger, entry in zip(
                 manager.triggers, scenario.sections["Triggers"].retriever_map["trigger_data"].data or [], strict=True
@@ -1003,6 +1012,9 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     loaded.trigger_read_supported = True
     loaded.trigger_write_supported = _trigger_alignment_ok(loaded.trigger_tail, igen)
     loaded.triggers_section_end = loaded.units_section_end + triggers_end_in_tail
+    if files_span_in_tail[0] >= 0:
+        loaded.files_section_start = loaded.units_section_end + files_span_in_tail[0]
+        loaded.files_section_end = loaded.units_section_end + files_span_in_tail[1]
     scenario._object_manager.managers["Trigger"] = manager
     loaded._trigger_manager = manager
     return manager

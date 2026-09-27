@@ -8,9 +8,10 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 ## Running
 
 ```
-./run_all_tests.sh                                  # default tier -- ~19 min for 5318 tests, no corpus needed (Linux/Mac)
+./run_all_tests.sh                                  # default tier, in parallel -- ~2.5 min for ~7150 tests, no corpus needed (Linux/Mac)
 run_all_tests.bat                                   # same, for Windows
-.venv/bin/python3 -m pytest                         # same thing, invoked directly
+./run_all_tests.sh -n 0                             # same tier, serially -- ~29 min
+.venv/bin/python3 -m pytest                         # same tier, invoked directly: serial, see below
 bash tools/ci_parity.sh [tag]                       # same tier as CI sees it (corpus, install, examples/ hidden); run before every tag
 
 ./run_corpus_quick.sh                                # corpus/gui tier, QUICK_CORPUS_NAMES only -- ~11 min, the default
@@ -26,6 +27,37 @@ bash tools/ci_parity.sh [tag]                       # same tier as CI sees it (c
 around the default tier only -- they exist so there's one obvious command
 for "did I break anything," not a shortcut for the corpus tier, which
 still needs the `-m` flag spelled out above.
+
+**Parallel runs.** The wrappers, `tools/ci_parity.sh` and CI run the tier
+under pytest-xdist (`requirements-dev.txt`) with `-n auto --maxprocesses 16
+--dist loadgroup`: one worker per CPU, capped at 16. Arguments you pass come
+last and win, so `-n 0` runs serially and `--maxprocesses 32` lifts the cap.
+Measured on a 32-thread, 61 GB machine (2026-09-25), all with the same 7093
+passed, 50 skipped, 609 deselected:
+
+| workers | wall time | extra memory in use |
+|---|---|---|
+| serial | 28:55 | 4.9 GB peak RSS |
+| 8 | 3:56 | 5.9 GB |
+| 16 (the cap) | 2:22 to 2:34 | 6.9 to 7.5 GB |
+| 32 | 2:07 | 9.8 GB |
+
+Past 16 workers the gain flattens (11% for 43% more memory), hence the cap.
+`pytest.ini`'s addopts deliberately stays serial: `test_font_dpi_sweep.py`
+and `test_collection_env.py` spawn child pytests that inherit addopts (and
+`PYTEST_ADDOPTS`), so a `-n` there would fan out again in every child.
+`--dist loadgroup` keeps the DPI sweep's seven cases on one worker so its
+module fixture starts its seven subprocesses once, not once per worker.
+
+A modal `QMessageBox` hang stalls one worker and with it the whole run, just
+as silently as serially; wrap runs in `timeout 1800` when working near
+trigger edits. To check no file depends on an earlier one having run, run
+each alone in a fresh process (exit 5 is a file whose every test is
+corpus/slow, so it is fine). From the repo root:
+
+```
+ls tests/test_*.py | xargs -P 16 -I{} sh -c '.venv/bin/python3 -m pytest --no-header -q -p no:cacheprovider {} > /dev/null 2>&1; s=$?; [ $s -eq 0 ] || [ $s -eq 5 ] || echo FAIL {}'
+```
 
 `test_lint.py` (default tier, runs `ruff check .`, see `ruff.toml`) fails
 outright, not skips, if ruff isn't installed. `.venv/bin/python3 -m pip install

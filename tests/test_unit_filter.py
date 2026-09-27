@@ -522,6 +522,57 @@ def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
     assert remaining == [], f"a hidden unit was left in {remaining}"
 
 
+# --- GH #120: Show Buildings ---------------------------------------------
+#
+# Its own fixture, for the same reason _kind_scenario() has one: adding a
+# building there would rewrite that block's kept-set oracles.
+
+_HOUSE_CONST = 70  # HOUS, class 3, a unit_kind.building_consts() member
+_TREBUCHET_CONST = 42  # TREBU, class 54: a .dat building that stays visible
+
+
+def _building_scenario() -> FakeScenario:
+    """A building under GAIA and under a real player (the gate is owner-blind),
+    plus the walls, gate, trebuchet and plain unit it must leave alone."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[GAIA_PLAYER_ID] = [SyntheticUnit(x=2.0, y=2.0, unit_const=_HOUSE_CONST)]
+    units_by_player[1] = [
+        SyntheticUnit(x=6.0, y=6.0, unit_const=_HOUSE_CONST),
+        SyntheticUnit(x=9.5, y=6.5, unit_const=_WALL_CONST),
+        SyntheticUnit(x=11.5, y=6.5, unit_const=_GATE_CONST),
+        SyntheticUnit(x=6.5, y=11.5, unit_const=_TREBUCHET_CONST),
+        SyntheticUnit(x=9.5, y=11.5, unit_const=_PLAIN_CONST),
+    ]
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+def test_show_buildings_false_hides_buildings_under_every_owner_and_nothing_else() -> None:
+    from descape import unit_kind
+
+    assert _HOUSE_CONST in unit_kind.building_consts()
+    scn = _building_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_buildings=False))
+    assert {u.unit_const for _pid, u in visible} == {_WALL_CONST, _GATE_CONST, _TREBUCHET_CONST, _PLAIN_CONST}
+    assert all(pid == 1 for pid, _ in visible), "the GAIA house must be hidden too"
+
+
+def test_is_default_false_for_show_buildings() -> None:
+    assert not UnitFilter(show_buildings=False).is_default
+    assert UnitFilter(show_buildings=True).is_default
+
+
+def test_every_compositor_round_trips_the_building_gate_byte_identically() -> None:
+    scn = _building_scenario()
+    for make in (_flat_cache, _iso_cache, _sloped_cache):
+        cache = make(scn, UnitFilter())
+        before = _whole_canvas(cache).copy()
+        cache.set_unit_filter(UnitFilter(show_buildings=False))
+        assert not np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: changed no pixels"
+        cache.set_unit_filter(UnitFilter())
+        assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: did not restore"
+
+
 # --- GH #42: Show Garrisoned Units --------------------------------------
 
 

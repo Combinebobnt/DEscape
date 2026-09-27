@@ -43,6 +43,8 @@ _ROTATION_VARIANT_CONSTS + gate_orientation.groups() union) scores 99.00%
 `walls-only` alone scores 93.46% (n=5180). The 98.7%/96.9% figures once
 quoted for this decision predate this script and are not re-derivable; the
 96.9% in particular was a *towers* measurement, never a `class == 39` one.
+Re-measured 2026-09-26 after Aqueduct (231) joined the wall family (GH #110),
+on a larger examples/: `shipped` 99.03% (n=5359; n=5349 just before).
 
 **--diff-sets A B** prints the override rows that differ between two named
 sets. `shipped` against `hand` is **0 rows** by measurement -- the expected

@@ -39,6 +39,7 @@ from descape.unit_pick import (
     unit_polygons,
     unit_rise_px_for,
     units_in_rect,
+    units_in_screen_rect,
 )
 from testkit.fakes import (
     FakeScenario,
@@ -1062,6 +1063,239 @@ def test_units_in_rect_respects_the_filter() -> None:
     index = build_index(scn, UnitFilter(show_trees=False))
     found = units_in_rect(index, 3, 3, 5, 4)
     assert found == []
+
+
+# --- units_in_screen_rect (GH #114) ---------------------------------------
+
+
+def _footprint_anchor(entry, rise_px: int, proj) -> tuple[int, int]:
+    """Where the unit's drawn footprint centre lands on screen, re-derived
+    here rather than through unit_pick: bbox midpoint on a span > 1 axis,
+    the stored coordinate on a span-1 axis."""
+    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+    cx = (tx0 + tx1) / 2 if tx1 - tx0 > 1 else entry.unit.x
+    cy = (ty0 + ty1) / 2 if ty1 - ty0 > 1 else entry.unit.y
+    return iso_geometry.map_point_to_screen(cx, cy, rise_px, proj)
+
+
+def _stepped_anchor(entry, elevations, proj) -> tuple[int, int]:
+    return _footprint_anchor(entry, int(elevations[entry.own_y, entry.own_x]) * proj.elev_step, proj)
+
+
+def _around(point, pad: int = 3) -> tuple[int, int, int, int]:
+    x, y = point
+    return x - pad, y - pad, x + pad, y + pad
+
+
+def _old_marquee_orders(index, rect, elevations, proj) -> list[int]:
+    """The pre-#114 Stepped marquee, replicated: sample the terrain tile on a
+    tile_px grid across the rect, take the tiles' bounding box, and return
+    every unit with a footprint tile in it."""
+    left, top, right, bottom = rect
+    step = proj.tile_px
+    tiles = [
+        tile
+        for y in [*range(top, bottom, step), bottom]
+        for x in [*range(left, right, step), right]
+        if (tile := iso_geometry.screen_to_tile(x, y, elevations, proj)) is not None
+    ]
+    if not tiles:
+        return []
+    txs, tys = [t[0] for t in tiles], [t[1] for t in tiles]
+    return [e.order for e in units_in_rect(index, min(txs), min(tys), max(txs) + 1, max(tys) + 1)]
+
+
+def test_marquee_strip_below_a_base_selects_only_what_stands_in_it() -> None:
+    """GH #114's screenshot case. A wide, thin strip through the stack below
+    the raised base: the old tile-bbox rule's diamond reached up into the
+    base and grabbed the building; the anchor rule returns only the stack."""
+    scn = _scenario(elevated=True)
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    stack = [e for e in index.entries if e.player_id == 2]
+    building = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST and e.player_id == 1)
+    ax, ay = _stepped_anchor(stack[0], elevations, proj)
+    rect = (ax - 144, ay - 14, ax + 196, ay + 16)
+
+    _bx, by = _stepped_anchor(building, elevations, proj)
+    assert not rect[1] <= by <= rect[3], "the building's anchor must lie outside the strip"
+    assert building.order in _old_marquee_orders(index, rect, elevations, proj), (
+        "fixture no longer reproduces the old diamond overshoot; this test would prove nothing"
+    )
+
+    found = units_in_screen_rect(index, "stepped", *rect, elevations=elevations, proj=proj)
+    assert found == stack
+
+
+def test_sloped_marquee_selects_an_elevated_unit_where_it_is_drawn() -> None:
+    scn = _scenario(ramped=True)
+    index = build_index(scn)
+    _elevations, corner_rise, proj = _sloped_geometry(scn)
+    entry = next(e for e in index.entries if e.player_id == 4)
+    rise = _unit_rise(entry, corner_rise)
+    assert rise > 6, "the unit must stand visibly above its ground tile or this proves nothing"
+
+    raised = _around(_footprint_anchor(entry, rise, proj))
+    ground = _around(_footprint_anchor(entry, 0, proj))
+    kwargs = {"proj": proj, "corner_rise": corner_rise}
+    assert units_in_screen_rect(index, "sloped", *raised, **kwargs) == [entry]
+    assert units_in_screen_rect(index, "sloped", *ground, **kwargs) == []
+
+
+def test_marquee_selects_a_building_by_its_footprint_centre_not_a_corner() -> None:
+    scn = _stack_scenario((10.5, 10.5, _BUILDING_CONST))
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    (building,) = index.entries
+    tx0, _tx1, ty0, _ty1 = render.unit_tile_bounds(building.unit, MAP_W, MAP_H)
+    corner = iso_geometry.map_point_to_screen(tx0 + 0.5, ty0 + 0.5, 0, proj)
+    kwargs = {"elevations": elevations, "proj": proj}
+    assert units_in_screen_rect(index, "stepped", *_around(corner), **kwargs) == []
+    centre = _stepped_anchor(building, elevations, proj)
+    assert units_in_screen_rect(index, "stepped", *_around(centre), **kwargs) == [building]
+
+
+def test_marquee_selects_an_off_centre_unit_by_its_real_position() -> None:
+    scn = _stack_scenario((6.9, 6.5, _PLAIN_CONST))
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    (entry,) = index.entries
+    kwargs = {"elevations": elevations, "proj": proj}
+    tile_centre = iso_geometry.map_point_to_screen(6.5, 6.5, 0, proj)
+    real = iso_geometry.map_point_to_screen(6.9, 6.5, 0, proj)
+    assert units_in_screen_rect(index, "stepped", *_around(tile_centre), **kwargs) == []
+    assert units_in_screen_rect(index, "stepped", *_around(real), **kwargs) == [entry]
+
+
+def test_marquee_over_a_stack_returns_every_member() -> None:
+    scn = _scenario()
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    stack = [e for e in index.entries if e.player_id == 2]
+    assert len(stack) == 2
+    rect = _around(_stepped_anchor(stack[0], elevations, proj))
+    assert units_in_screen_rect(index, "stepped", *rect, elevations=elevations, proj=proj) == stack
+
+
+def test_marquee_whole_canvas_returns_every_entry_in_order() -> None:
+    scn = _scenario(elevated=True)
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    rect = (0, 0, proj.canvas_w, proj.canvas_h)
+    assert units_in_screen_rect(index, "stepped", *rect, elevations=elevations, proj=proj) == index.entries
+
+
+def test_screen_rect_marquee_never_returns_a_filtered_unit() -> None:
+    scn = _scenario()
+    elevations, proj = render.elevations_and_proj(scn)
+    shown = build_index(scn)
+    tree = next(e for e in shown.entries if e.unit.unit_const == _TREE_CONST)
+    rect = _around(_stepped_anchor(tree, elevations, proj))
+    kwargs = {"elevations": elevations, "proj": proj}
+    assert units_in_screen_rect(shown, "stepped", *rect, **kwargs) == [tree]
+    hidden = build_index(scn, UnitFilter(show_trees=False))
+    assert units_in_screen_rect(hidden, "stepped", *rect, **kwargs) == []
+
+
+def _dense_scenario(base: FakeScenario, count: int = 600) -> FakeScenario:
+    """`base`'s terrain with `count` random units on top: more entries than
+    most rects' tile bbox has tiles, so the by_tile path actually runs."""
+    rng = np.random.default_rng(RNG_SEED)
+    consts = [_PLAIN_CONST, _TREE_CONST, _BUILDING_CONST, _GATE_CONST]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[3] = [
+        SyntheticUnit(
+            x=round(float(rng.uniform(0, MAP_W)), 1),
+            y=round(float(rng.uniform(0, MAP_H)), 1),
+            unit_const=consts[int(rng.integers(len(consts)))],
+            reference_id=i + 1,
+        )
+        for i in range(count)
+    ]
+    return FakeScenario(MAP_W, MAP_H, list(base.map_manager.terrain), units_by_player)
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_screen_rect_prefilters_agree_with_a_plain_anchor_scan(style: str) -> None:
+    """The by_tile and rise-band prefilters must be pure optimisations: an
+    under-enumeration would silently read as "nothing there". Random rects,
+    thin strips, partly off-canvas ones and small ones, against a scan that
+    anchor-tests every entry."""
+    scn = _dense_scenario(_scenario(elevated=style == "stepped", ramped=style == "sloped"))
+    if style == "stepped":
+        elevations, proj = render.elevations_and_proj(scn)
+        kwargs = {"elevations": elevations, "proj": proj}
+    else:
+        _elevations, corner_rise, proj = _sloped_geometry(scn)
+        kwargs = {"corner_rise": corner_rise, "proj": proj}
+    index = build_index(scn)
+    anchors = []
+    for entry in index.entries:
+        if style == "stepped":
+            anchors.append(_stepped_anchor(entry, elevations, proj))
+        else:
+            anchors.append(_footprint_anchor(entry, _unit_rise(entry, corner_rise), proj))
+
+    rng = np.random.default_rng(RNG_SEED)
+    hits = 0
+    for i in range(600):
+        if i % 3 == 0:
+            # Tight rects near a real anchor, so the positive case is sampled too.
+            ax, ay = anchors[int(rng.integers(len(anchors)))]
+            left, top = ax - int(rng.integers(0, 40)), ay - int(rng.integers(0, 40))
+            w, h = int(rng.integers(0, 80)), int(rng.integers(0, 80))
+        else:
+            left = int(rng.integers(-200, proj.canvas_w))
+            top = int(rng.integers(-200, proj.canvas_h))
+            w = int(rng.integers(0, proj.canvas_w))
+            h = int(rng.integers(0, 12)) if i % 3 == 1 else int(rng.integers(0, proj.canvas_h))
+        right, bottom = left + w, top + h
+        expected = [
+            e for e, (ax, ay) in zip(index.entries, anchors, strict=True) if left <= ax <= right and top <= ay <= bottom
+        ]
+        got = units_in_screen_rect(index, style, left, top, right, bottom, **kwargs)
+        assert got == expected, f"rect {(left, top, right, bottom)}"
+        hits += bool(expected)
+    assert hits > 100, "too few non-empty rects sampled for this to prove anything"
+    # Degenerate rects exactly on each anchor: the closed edges, and the
+    # rounding margin a unit on a tile boundary (x = n.0) needs.
+    for entry, (ax, ay) in zip(index.entries, anchors, strict=True):
+        assert entry in units_in_screen_rect(index, style, ax, ay, ax, ay, **kwargs)
+
+
+def test_screen_rect_marquee_skips_an_entry_moved_off_map() -> None:
+    """patch_index_for_move keeps the entry of a unit moved off-map; the
+    whole-canvas scan must skip it rather than index past the height field."""
+    scn = _stack_scenario((10.5, 10.5, _BUILDING_CONST), (6.5, 6.5, _PLAIN_CONST))
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    building, plain = index.entries
+    for entry in (building, plain):
+        old_bounds = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+        entry.unit.x = entry.unit.y = MAP_W + 5.5
+        unit_pick.patch_index_for_move(scn, index, entry.player_id, entry.unit, old_bounds)
+    rect = (0, 0, proj.canvas_w, proj.canvas_h)
+    assert units_in_screen_rect(index, "stepped", *rect, elevations=elevations, proj=proj) == []
+
+
+@pytest.mark.parametrize("style", ["flat", "hexagonal"])
+def test_screen_rect_marquee_rejects_other_styles(style: str) -> None:
+    index = build_index(_scenario())
+    with pytest.raises(ValueError):
+        units_in_screen_rect(index, style, 0, 0, 100, 100)
+
+
+def test_screen_rect_marquee_is_empty_without_its_height_field() -> None:
+    scn = _scenario()
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    _elev, corner_rise, sloped_proj = _sloped_geometry(scn)
+    rect = (0, 0, proj.canvas_w, proj.canvas_h)
+    assert units_in_screen_rect(index, "stepped", *rect, proj=proj) == []
+    assert units_in_screen_rect(index, "stepped", *rect, elevations=elevations) == []
+    # Stepped's arguments are the wrong height field for Sloped.
+    assert units_in_screen_rect(index, "sloped", *rect, elevations=elevations, proj=sloped_proj) == []
+    assert units_in_screen_rect(index, "sloped", *rect, corner_rise=corner_rise) == []
 
 
 # --- Part 2: diagonal gates' sparse footprint ---------------------------

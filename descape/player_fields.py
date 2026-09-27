@@ -1,4 +1,4 @@
-"""Qt-free specs for the read-only Players mode's fields -- default-tier
+"""Qt-free specs for the Players mode's fields -- default-tier
 testable without a QApplication, and it keeps the panel itself dumb. Mirrors
 descape/option_fields.py's shape, but is a separate dataclass and a separate
 `_SPECS` tuple on purpose: sharing OptionFieldSpec/OptionsEditModel would be
@@ -38,11 +38,13 @@ from AoE2ScenarioParser.datasets.object_support import Civilization, Civilizatio
 from AoE2ScenarioParser.datasets.players import ColorId
 from AoE2ScenarioParser.helper.bytes_conversions import fixed_chars_to_bytes
 
+from descape import ai_scripts
 from descape.option_fields import CHECKBOX, COMBO, SPINBOX
-from descape.scenario_io import LoadedScenario, retriever_length
+from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
 TEXT = "text"  # a plain read-only string row -- option_fields.py has no
 # equivalent kind because none of its specs are ever string-valued.
+PERSONALITY = "personality"  # GH #126's AI combo; its choices come from ai_scripts, not the spec.
 
 
 class PlayerArrayLayout(Enum):
@@ -57,11 +59,8 @@ class PlayerArrayLayout(Enum):
     # lock_personality, food/wood/gold/stone/color -- i.e. PlayerDataTwo's
     # `resources` -- and active/human/civilization/architecture_set, i.e.
     # DataHeader's `player_data_1`). ai_type and ai_names are not in the
-    # library's object model at all (see the maintainer plan's "not
-    # confirmed" note on ai_type) but sit in the same PlayerDataTwo section
-    # with the same repeat-16 shape as resources/ai_type's siblings, so this
-    # layout is assumed for them by direct analogy, not independently
-    # measured.
+    # library's object model at all, but in-game saves confirm this layout
+    # for them (GH #126: P3's, P5's and P6's personalities at indices 2, 4, 5).
     P1_TO_P8_THEN_GAIA = "p1_to_p8_then_gaia"
 
     # gaia_first_params, player_manager.py:87-89 (initial_player_view_x/y,
@@ -95,7 +94,7 @@ class PlayerFieldSpec:
     group: str  # panel group box title, e.g. "Identity"
     section: str  # scenario section name, e.g. "PlayerDataTwo"
     retriever: str  # retriever name within that section, e.g. "resources"
-    kind: str  # CHECKBOX / COMBO / SPINBOX / TEXT
+    kind: str  # CHECKBOX / COMBO / SPINBOX / TEXT / PERSONALITY
     layout: PlayerArrayLayout
     struct_field: str | None = None  # for struct-array retrievers, e.g.
     # "resources" + "player_color" -- None means the retriever's own repeated
@@ -112,10 +111,9 @@ class PlayerFieldSpec:
 
 _STARTING_AGE_CHOICES = tuple((m.value, m.name.replace("_", " ").title()) for m in StartingAge)
 _COLOR_CHOICES = tuple((m.value, m.name.title()) for m in ColorId if not m.name.startswith("INVALID"))
-# Domain {0,1,2} on every corpus file, but nothing in AoE2ScenarioParser
-# documents what it means -- see the maintainer plan's "not confirmed" note.
-# Labelled honestly rather than guessed.
-_PLAYER_TYPE_CHOICES = ((0, "Unknown (0)"), (1, "Unknown (1)"), (2, "Unknown (2)"))
+# ai_type follows Personality, not the Human/Computer/Either control:
+# confirmed by in-game saves (GH #126 Step 0) and the name-class corpus census.
+_PLAYER_TYPE_CHOICES = ((0, "Custom"), (1, "Standard"), (2, "None"))
 
 
 _SPECS: tuple[PlayerFieldSpec, ...] = (
@@ -204,17 +202,18 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
 
     # -- AI -------------------------------------------------------------------
     PlayerFieldSpec(
-        "player_type", "Player type", "AI",
+        "player_type", "AI type", "AI",
         "PlayerDataTwo", "ai_type", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
         choices=_PLAYER_TYPE_CHOICES,
-        tooltip="Unconfirmed -- a hypothesis for the in-game 'Player Type' "
-                "dropdown, not documented anywhere in AoE2ScenarioParser.",
+        tooltip="Which kind of Personality this player has: a custom .ai "
+                "script, Standard or None. Set by picking a Personality.",
     ),
     PlayerFieldSpec(
         "personality", "Personality", "AI",
-        "PlayerDataTwo", "ai_names", TEXT, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
-        tooltip="ai_files (the embedded .ai script source, up to several "
-                "MB) is deliberately never read -- this field is name-only.",
+        "PlayerDataTwo", "ai_names", PERSONALITY, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
+        tooltip="The AI script this player runs when a computer controls it. "
+                "Custom AIs come from the game's ai folder, your profile and "
+                "subscribed mods.",
     ),
     PlayerFieldSpec(
         "base_priority", "Base priority", "AI",
@@ -252,6 +251,22 @@ POV_UNSET = -1
 # See specs_for()'s docstring: the one scenario version whose Point of View
 # array the library frames one byte early.
 _MISALIGNED_POV_VERSION = "1.41"
+
+
+def pov_bounds(field_id: str, width: int, height: int) -> tuple[int, int]:
+    """A Point of View spinbox's map range (GH #117): POV_UNSET up to the last
+    tile index on that axis, X from `width` and Y from `height`.
+
+    The specs' own int32 minimum/maximum stay as they are, since
+    _is_representable() reads them: narrowing those would turn an off-map
+    stored POV into a read-only label the user could not pull back in."""
+    if field_id == POV_X_FIELD:
+        size = width
+    elif field_id == POV_Y_FIELD:
+        size = height
+    else:
+        raise ValueError(f"{field_id!r} is not a Point of View field")
+    return POV_UNSET, size - 1
 
 
 def _retriever_present(
@@ -454,10 +469,13 @@ _STR16_LENGTH_STRUCT = struct.Struct("<h")
 # since Civilization's membership is fixed.
 _ENCODABLE_CIVILIZATIONS = frozenset(m.value for m in Civilization)
 
-# Never writable, regardless of specs_for()'s presence check: player_type's
-# semantics are unconfirmed (the maintainer plan's decision 2) and
-# personality is a variable-length string no byte patch could reach.
-_NEVER_WRITABLE = frozenset({"player_type", "personality"})
+# Never written as its own row: player_type (ai_type) is written only as
+# part of a Personality choice, never by itself (GH #126).
+_NEVER_WRITABLE = frozenset({"player_type"})
+# Writable, but through the personality locator and splices (GH #126 Step
+# 4), never through write_targets()/verify_player_block().
+_OWN_WRITE_PATH = frozenset({"personality"})
+_NOT_BYTE_PATCHED = _NEVER_WRITABLE | _OWN_WRITE_PATH
 
 # civilization/architecture are NOT in _NEVER_WRITABLE: below scenario
 # version 1.56 both are a plain fixed-width u32, writable through
@@ -1177,7 +1195,7 @@ def _resolve_all(loaded: LoadedScenario) -> dict[str, tuple[_Resolved, ...]]:
     """
     out: dict[str, tuple[_Resolved, ...]] = {}
     for spec in specs_for(loaded):
-        if spec.field_id in _NEVER_WRITABLE:
+        if spec.field_id in _NOT_BYTE_PATCHED:
             continue
         is_str16 = (
             spec.field_id in _STR16_CAPABLE_FIELDS
@@ -1270,7 +1288,7 @@ def verify_player_block(loaded: LoadedScenario) -> bool:
             return False
 
     for spec in specs_for(loaded):
-        if spec.field_id in _NEVER_WRITABLE or spec.layout is not PlayerArrayLayout.P1_TO_P8_THEN_GAIA:
+        if spec.field_id in _NOT_BYTE_PATCHED or spec.layout is not PlayerArrayLayout.P1_TO_P8_THEN_GAIA:
             continue
         if spec.field_id in _STR16_CAPABLE_FIELDS and _player_data_1_field_codec(loaded, spec.struct_field) == "str16":
             # Step B: with the variable-stride locator able to reach index
@@ -1348,3 +1366,345 @@ def encode_target(target: PlayerWriteTarget, value: int | str) -> bytes:
             )
         return packed
     return _CODEC_STRUCT[target.codec].pack(value)
+
+
+# == AI personality locator (GH #126) =========================================
+#
+# Its own path, never part of write_targets()/verify_player_block(): a
+# personality-only verify failure must not turn the whole Players tab
+# read-only. Two independent pieces:
+#
+# - PlayerDataTwo's ai_names (str16 x16), ai_files (AIStruct x16) and ai_type
+#   (u8 x16), located by a backward walk from player_data_two_section_end and
+#   then confirmed by a forward walk that reads every string length prefix
+#   from the body itself, never from a re-serialisation.
+# - Files.ai_files, the custom-AI library after Triggers, located inside the
+#   Files bounds parse_triggers() records, with the same raw-prefix walk.
+#   Its AI2Struct strings are not in the library's no-trailing-NUL list, so a
+#   re-serialised length can drift by one; only raw prefixes are trusted.
+
+_PERSONALITY_WANTED = frozenset({"ai_names", "ai_files", "ai_type"})
+# The library packs every str length prefix signed (_combine_int_str(signed=True)).
+_STR_PREFIX_STRUCTS = {2: struct.Struct("<h"), 4: struct.Struct("<i")}
+_STR16_MAX_PAYLOAD = 0x7FFF
+_STR32_MAX_PAYLOAD = 0x7FFF_FFFF
+_U32 = struct.Struct("<I")
+
+
+@dataclass(frozen=True)
+class PersonalityLayout:
+    """Verified byte spans within decompressed_body, one per array slot
+    (P1..P8, GAIA, then filler 9..15; PlayerArrayLayout.P1_TO_P8_THEN_GAIA).
+    Each ai_names span is the whole str16 (prefix + payload), each ai_files
+    span the whole AIStruct entry. ai_names is immediately followed by
+    ai_files on every structure, so `region` is one contiguous span."""
+
+    ai_names: tuple[FieldOffset, ...]
+    ai_files: tuple[FieldOffset, ...]
+    ai_type: FieldOffset
+
+    @property
+    def region(self) -> tuple[int, int]:
+        last = self.ai_files[-1]
+        return self.ai_names[0].offset, last.offset + last.length
+
+    def ai_type_target(self, player_id: int) -> PlayerWriteTarget:
+        """P1..P8's ai_type byte. GAIA and 9..15 are never written."""
+        if not 1 <= player_id <= NUM_PLAYERS:
+            raise ValueError(f"player_id must be 1..{NUM_PLAYERS}, got {player_id}")
+        index = PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for(player_id)
+        return PlayerWriteTarget(self.ai_type.offset + index, 1, "u8")
+
+
+@dataclass(frozen=True)
+class AiLibraryEntry:
+    span: FieldOffset  # the whole AI2Struct entry (two str32s)
+    name: bytes  # ai_file_name's raw stored payload, the library key
+
+
+@dataclass(frozen=True)
+class AiLibraryLayout:
+    """Verified spans of Files' custom-AI library. number_of_ai_files has
+    length 0 when ai_files_present is 0 (the library's own repeat rule), as
+    on blank_map and ring75."""
+
+    ai_files_present: FieldOffset
+    number_of_ai_files: FieldOffset
+    ai_files: FieldOffset
+    entries: tuple[AiLibraryEntry, ...]
+
+
+def _raw_str_end(body: bytes, pos: int, prefix_len: int) -> int | None:
+    """End of the length-prefixed string starting at `pos`, read from `body`."""
+    prefix = _STR_PREFIX_STRUCTS.get(prefix_len)
+    if prefix is None or pos < 0 or pos + prefix_len > len(body):
+        return None
+    (length,) = prefix.unpack_from(body, pos)
+    end = pos + prefix_len + length
+    if length < 0 or end > len(body):
+        return None
+    return end
+
+
+def _raw_entry_end(body: bytes, pos: int, entry) -> int | None:
+    """End of one struct entry starting at `pos`; None unless the raw walk
+    equals the entry's parse-time byte_length."""
+    start = pos
+    for retriever in entry.retriever_map.values():
+        pos = _raw_retriever_end(body, pos, retriever)
+        if pos is None:
+            return None
+    return pos if pos - start == entry.byte_length else None
+
+
+def _raw_retriever_end(body: bytes, pos: int, retriever) -> int | None:
+    """End of `retriever` if it starts at `pos`: str prefixes read raw,
+    struct entries walked raw, fixed-width fields by retriever_length()."""
+    datatype = retriever.datatype
+    if datatype.type == "str":
+        for _ in range(datatype.repeat):
+            pos = _raw_str_end(body, pos, datatype.length)
+            if pos is None:
+                return None
+        return pos
+    if datatype.type == "struct":
+        for entry in retriever.data or []:
+            pos = _raw_entry_end(body, pos, entry)
+            if pos is None:
+                return None
+        return pos
+    return pos + retriever_length(retriever)
+
+
+def _raw_spans(body: bytes, pos: int, retriever) -> tuple[FieldOffset, ...] | None:
+    """One span per element of a str array or struct array starting at `pos`."""
+    datatype = retriever.datatype
+    spans = []
+    if datatype.type == "str":
+        for _ in range(datatype.repeat):
+            end = _raw_str_end(body, pos, datatype.length)
+            if end is None:
+                return None
+            spans.append(FieldOffset(pos, end - pos))
+            pos = end
+    elif datatype.type == "struct":
+        for entry in retriever.data or []:
+            end = _raw_entry_end(body, pos, entry)
+            if end is None:
+                return None
+            spans.append(FieldOffset(pos, end - pos))
+            pos = end
+    else:
+        return None
+    return tuple(spans)
+
+
+def personality_layout(loaded: LoadedScenario) -> PersonalityLayout | None:
+    """The verified PlayerDataTwo personality spans, or None (fail closed).
+
+    Trusted only when all of these agree: the backward walk from
+    player_data_two_section_end (fixed-width fields and struct byte_lengths
+    only, plus ai_names' own length for its start); a forward walk from that
+    start reading every str16/str32 prefix raw, which must land on the
+    backward walk's ai_files and ai_type offsets and on the section end; each
+    ai_names payload equal to its parsed value's UTF-8 bytes (so a latin-1
+    fallback or a trailing NUL fails); and the ai_type bytes equal to the
+    parsed u8s. Shaped like scenario_io._verify_messages_block()."""
+    retrievers = _retriever_map(loaded, "PlayerDataTwo")
+    if retrievers is None:
+        return None
+    section_end = loaded.player_data_two_section_end
+    bases = _backward_offsets(retrievers, section_end, _PERSONALITY_WANTED)
+    if bases is None or not bases.keys() >= _PERSONALITY_WANTED:
+        return None
+    order = list(retrievers)
+    if order.index("ai_files") != order.index("ai_names") + 1:
+        return None
+
+    body = loaded.decompressed_body
+    names = _raw_spans(body, bases["ai_names"].offset, retrievers["ai_names"])
+    if names is None or not names or names[-1].offset + names[-1].length != bases["ai_files"].offset:
+        return None
+    files = _raw_spans(body, bases["ai_files"].offset, retrievers["ai_files"])
+    if files is None or not files:
+        return None
+    pos = files[-1].offset + files[-1].length
+    for name in order[order.index("ai_files") + 1 :]:
+        if name == "ai_type" and pos != bases["ai_type"].offset:
+            return None
+        pos = _raw_retriever_end(body, pos, retrievers[name])
+        if pos is None:
+            return None
+    if pos != section_end:
+        return None
+
+    ai_type = bases["ai_type"]
+    type_values = retrievers["ai_type"].data
+    if not len(names) == len(files) == ai_type.length == len(type_values):
+        return None
+    if body[ai_type.offset : ai_type.offset + ai_type.length] != bytes(type_values):
+        return None
+    prefix_len = retrievers["ai_names"].datatype.length
+    for span, value in zip(names, retrievers["ai_names"].data, strict=True):
+        if not isinstance(value, str):
+            return None
+        if body[span.offset + prefix_len : span.offset + span.length] != value.encode("utf-8"):
+            return None
+    return PersonalityLayout(names, files, ai_type)
+
+
+def verify_personality_block(loaded: LoadedScenario) -> bool:
+    """The PlayerDataTwo half of the personality gates; see personality_layout()."""
+    return personality_layout(loaded) is not None
+
+
+_AI_LIBRARY_WANTED = frozenset({"ai_files_present", "number_of_ai_files", "ai_files"})
+
+
+def _library_name_matches(payload: bytes, value) -> bool:
+    # Parsing strips one trailing NUL from these (they are not in _no_string_trail).
+    if not isinstance(value, str):
+        return False
+    encoded = value.encode("utf-8")
+    return payload in (encoded, encoded + b"\x00")
+
+
+def ai_library_layout(loaded: LoadedScenario) -> AiLibraryLayout | None:
+    """The verified Files.ai_files library spans, or None (fail closed).
+
+    Runs parse_triggers() (memoized) since Files is only reached through
+    it, so None on a file whose trigger parse fails (the 1.54/3.9 set) and
+    on a structure with no Files section (1.36/1.37, v1.21). Otherwise a
+    forward walk of every Files retriever from files_section_start, str
+    prefixes read raw, must land on files_section_end, which must be the end
+    of the body; ai_files_present/number_of_ai_files must agree with the
+    parsed entry count; and every entry's raw name must match its parsed one.
+    """
+    if parse_triggers(loaded) is None:
+        return None
+    files_section = loaded._scenario.sections.get("Files")
+    start, end = loaded.files_section_start, loaded.files_section_end
+    body = loaded.decompressed_body
+    if files_section is None or start < 0 or end != len(body):
+        return None
+    retrievers = files_section.retriever_map
+    if not retrievers.keys() >= _AI_LIBRARY_WANTED:
+        return None
+
+    offsets: dict[str, FieldOffset] = {}
+    pos = start
+    for name, retriever in retrievers.items():
+        next_pos = _raw_retriever_end(body, pos, retriever)
+        if next_pos is None:
+            return None
+        offsets[name] = FieldOffset(pos, next_pos - pos)
+        pos = next_pos
+    if pos != end:
+        return None
+
+    present, count, array = offsets["ai_files_present"], offsets["number_of_ai_files"], offsets["ai_files"]
+    if present.length != _U32.size or count.length not in (0, _U32.size):
+        return None
+    # ai_files_present is number_of_ai_files' repeat (0 or 1) on every structure.
+    present_value = _U32.unpack_from(body, present.offset)[0]
+    if present_value not in (0, 1) or count.length != _U32.size * present_value:
+        return None
+    entries_data = retrievers["ai_files"].data or []
+    stored_count = _U32.unpack_from(body, count.offset)[0] if count.length else 0
+    if stored_count != len(entries_data):
+        return None
+
+    spans = _raw_spans(body, array.offset, retrievers["ai_files"])
+    if spans is None:
+        return None
+    entries = []
+    for span, entry in zip(spans, entries_data, strict=True):
+        name_retriever = entry.retriever_map.get("ai_file_name")
+        if name_retriever is None:
+            return None
+        name_end = _raw_str_end(body, span.offset, name_retriever.datatype.length)
+        if name_end is None:
+            return None
+        payload = body[span.offset + name_retriever.datatype.length : name_end]
+        if not _library_name_matches(payload, name_retriever.data):
+            return None
+        entries.append(AiLibraryEntry(span, bytes(payload)))
+    return AiLibraryLayout(present, count, array, tuple(entries))
+
+
+def verify_ai_library_block(loaded: LoadedScenario) -> bool:
+    """The Files half of personality_custom_supported(); see ai_library_layout()."""
+    return ai_library_layout(loaded) is not None
+
+
+def encode_name_str16(value: str) -> bytes:
+    """An ai_names value as stored: signed int16 length + UTF-8, no trailing
+    NUL (ai_names is in the library's no-trailing-NUL list). Sibling to
+    _encode_str16(), which only accepts Civilization members."""
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError(f"{value!r} is not a storable AI name")
+    payload = value.encode("utf-8")
+    if len(payload) > _STR16_MAX_PAYLOAD:
+        raise ValueError(f"AI name is {len(payload)} bytes, over the str16 limit")
+    return _STR_PREFIX_STRUCTS[2].pack(len(payload)) + payload
+
+
+def encode_str32(payload: bytes) -> bytes:
+    """A str32 (signed int32 length + payload) for AI text and library
+    entries. Bytes only: script text is carried verbatim, never re-encoded,
+    and no trailing NUL is added or removed."""
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError(f"encode_str32 takes bytes, got {type(payload).__name__}")
+    if len(payload) > _STR32_MAX_PAYLOAD:
+        raise ValueError(f"{len(payload)} bytes is over the str32 limit")
+    return _STR_PREFIX_STRUCTS[4].pack(len(payload)) + bytes(payload)
+
+
+# == AI personality entries (GH #126 Step 4) ==================================
+
+PERSONALITY_FIELD_PREFIX = "personality:"
+# AIStruct.unknown: 8 zero bytes on every row the editor writes (Step 0).
+AI_FILE_UNKNOWN = bytes(8)
+
+
+def personality_field_id(player_id: int) -> str:
+    """OptionsEditModel's private id for P1..P8's personality (never GAIA)."""
+    if not 1 <= player_id <= NUM_PLAYERS:
+        raise ValueError(f"player_id must be 1..{NUM_PLAYERS}, got {player_id}")
+    return f"{PERSONALITY_FIELD_PREFIX}{player_id}"
+
+
+def parse_personality_field_id(field_id: str) -> int:
+    if not field_id.startswith(PERSONALITY_FIELD_PREFIX):
+        raise ValueError(f"{field_id!r} is not a personality field id")
+    return int(field_id[len(PERSONALITY_FIELD_PREFIX) :])
+
+
+def _raw_str32_payload(body: bytes, pos: int) -> bytes:
+    (length,) = _STR_PREFIX_STRUCTS[4].unpack_from(body, pos)
+    return bytes(body[pos + 4 : pos + 4 + length])
+
+
+def ai_file_text(body: bytes, span: FieldOffset) -> bytes:
+    """An AIStruct's ai_per_file_text payload, read raw (8 unknown bytes first)."""
+    return _raw_str32_payload(body, span.offset + len(AI_FILE_UNKNOWN))
+
+
+def ai_library_entry_text(body: bytes, entry: AiLibraryEntry) -> bytes:
+    """A Files library entry's ai_file payload, read raw after its name."""
+    return _raw_str32_payload(body, entry.span.offset + 4 + len(entry.name))
+
+
+def stored_personalities(loaded: LoadedScenario, layout: PersonalityLayout):
+    """P1..P8's stored personality as synthetic, already-resolved choices
+    keyed "stored:N", holding the file's own name, ai_type and text."""
+    body = loaded.decompressed_body
+    names = loaded._scenario.sections["PlayerDataTwo"].retriever_map["ai_names"].data
+    index_for = PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for
+    stored = {}
+    for player_id in range(1, NUM_PLAYERS + 1):
+        i = index_for(player_id)
+        stored[player_id] = ai_scripts.stored_choice(
+            f"stored:{player_id}", names[i], body[layout.ai_type.offset + i], ai_file_text(body, layout.ai_files[i]), ()
+        )
+    return stored

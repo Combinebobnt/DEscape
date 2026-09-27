@@ -143,3 +143,40 @@ class RulerSession:
         self._state = STATE_IDLE
         self._a = None
         self._b = None
+
+
+class PinnedRulers:
+    """Finished measurements that stay on the map (GH #108/#109), oldest first.
+    Session-only view state: never scenario data, history or config."""
+
+    def __init__(self) -> None:
+        self._items: list[Measurement] = []
+
+    def add(self, m: Measurement) -> bool:
+        """False for a zero-length measurement, which is never pinned."""
+        if m.a == m.b:
+            return False
+        self._items.append(m)
+        return True
+
+    def remove_at(self, tile: Tile) -> Measurement | None:
+        """Removes the NEWEST ruler with an endpoint on `tile`, so on a shared
+        chain joint the last one drawn goes first."""
+        for i in range(len(self._items) - 1, -1, -1):
+            m = self._items[i]
+            if tile in (m.a, m.b):
+                return self._items.pop(i)
+        return None
+
+    def clear(self) -> None:
+        self._items = []
+
+    @property
+    def newest(self) -> Measurement | None:
+        return self._items[-1] if self._items else None
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self):
+        return iter(list(self._items))

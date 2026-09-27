@@ -201,12 +201,15 @@ def flush(label: str) -> None:
         mean_step = total / n
         max_step = max(_step_totals)
         phase_line = " ".join(
-            f"{name} {_phase_sums.get(name, 0.0) / n:.1f}" for name in _phase_order
+            f"{name} {_phase_sums[name] / n:.1f}" for name in _phase_order if name in _phase_sums
         )
         lines.append(
             f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f}){backend}"
         )
         lines.append(f"  | {phase_line}")
+        if _current_step:
+            # Phases after the last step(): the stroke-end handler's own split.
+            lines.append("  | end: " + " ".join(f"{name} {ms:.1f}" for name, ms in _current_step.items()))
     if _repaint_durations:
         if n:
             lines.append(f"  | {_repaint_summary()}")

@@ -31,12 +31,15 @@ OptionsEditModel, at the bottom of this module, is the write half built on
 those offsets: one in-place byte patch per changed scalar, no offset shift,
 and nothing at all for a document that was only browsed.
 
-It also carries four additive field sets that are not offset-walked here at
+It also carries five additive field sets that are not offset-walked here at
 all, each behind its own independent gate: the Diplomacy grid, the Players
-mode rows, Number of Players, and -- the one exception to "no offset shift"
--- the per-player disable lists, which are variable-length and so ride a
-region splice (serialize_disables_resize()) rather than serialize_patches().
-See descape/disables_fields.py.
+mode rows, Number of Players, and two exceptions to "no offset shift". The
+per-player disable lists are variable-length and so ride a region splice
+(serialize_disables_resize()) rather than serialize_patches(); see
+descape/disables_fields.py. Each player's AI personality (GH #126) patches
+its ai_type byte in place but rides two splices for the rest:
+serialize_personality_resize() (PlayerDataTwo's names and embedded scripts)
+and serialize_ai_library_resize() (the Files AI script library).
 """
 
 from __future__ import annotations
@@ -45,7 +48,8 @@ import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from descape import disables_fields, player_fields
+from descape import ai_scripts, disables_fields, player_fields
+from descape.ai_scripts import AiChoice
 from descape.diplomacy_fields import (
     allied_victory_offsets,
     stance_offsets,
@@ -256,6 +260,22 @@ def players_write_supported(loaded: LoadedScenario) -> bool:
     return player_fields.verify_player_block(loaded)
 
 
+def personality_write_supported(loaded: LoadedScenario) -> bool:
+    """Whether a player's AI personality can be set to Standard, None or
+    its own stored value (GH #126): the PlayerDataTwo personality locator
+    plus players_write_supported(). Never folded into that gate: a
+    personality-only failure must leave every other Players row writable."""
+    return player_fields.verify_personality_block(loaded) and players_write_supported(loaded)
+
+
+def personality_custom_supported(loaded: LoadedScenario) -> bool:
+    """Whether a custom (.ai file) personality can be written, which also
+    adds its scripts to the Files library: the PlayerDataTwo locator plus
+    the Files library locator. Forces the lazy trigger parse; False where
+    that parse fails or the structure has no Files section (the 1.37 file)."""
+    return player_fields.verify_personality_block(loaded) and player_fields.verify_ai_library_block(loaded)
+
+
 def player_count_write_supported(loaded: LoadedScenario) -> bool:
     """Whether Number of Players can be written back.
 
@@ -417,6 +437,25 @@ class OptionsEditModel:
                 self._original[field_id] = disables_fields.current_ids(loaded, category, player_id)
             self._disables_field_ids = frozenset(disables_fields.all_field_ids())
 
+        # GH #126 AI personality, P1..P8 only: a sixth additive set under
+        # "personality:N", gated by personality_write_supported(). The value is
+        # an ai_scripts.AiChoice key; every choice ever set is cached here (the
+        # file's own bytes as a synthetic "stored" choice) so undo/redo never
+        # re-reads disk. ai_type is written by this entry, never player_type.
+        self._personality_field_ids: frozenset[str] = frozenset()
+        self._personality_choices: dict[str, AiChoice] = {}
+        self._personality_layout: player_fields.PersonalityLayout | None = None
+        self._custom_supported: bool | None = None
+        if personality_write_supported(loaded):
+            self._personality_layout = player_fields.personality_layout(loaded)
+            for player_id, original in player_fields.stored_personalities(loaded, self._personality_layout).items():
+                field_id = player_fields.personality_field_id(player_id)
+                self._personality_choices[original.key] = original
+                self._original[field_id] = original.key
+            self._personality_field_ids = frozenset(
+                player_fields.personality_field_id(p) for p in range(1, player_fields.NUM_PLAYERS + 1)
+            )
+
         # field_id -> the value the user set, present only while it differs
         # from what the file holds. Setting a field back to its original value
         # removes it, so a change made and undone leaves has_edits False rather
@@ -477,6 +516,53 @@ class OptionsEditModel:
         Also the gate on whether the region is spliced at all."""
         return any(field_id in self._disables_field_ids for field_id in self._pending)
 
+    @property
+    def personality_supported(self) -> bool:
+        """Whether this model was seeded with the personality entries."""
+        return bool(self._personality_field_ids)
+
+    @property
+    def personality_layout(self) -> player_fields.PersonalityLayout | None:
+        return self._personality_layout
+
+    @property
+    def has_personality_edits(self) -> bool:
+        """The signal scenario_write.py re-gates personality_write_supported() on."""
+        return any(field_id in self._personality_field_ids for field_id in self._pending)
+
+    @property
+    def personality_custom_supported(self) -> bool:
+        """personality_custom_supported() for this file, computed once: it
+        forces the lazy trigger parse, so it is not run at construction."""
+        if self._custom_supported is None:
+            self._custom_supported = self.personality_supported and personality_custom_supported(self.loaded)
+        return self._custom_supported
+
+    def original_personality(self, player_id: int) -> AiChoice:
+        return self._personality_choices[self._original[player_fields.personality_field_id(player_id)]]
+
+    def current_personality(self, player_id: int) -> AiChoice:
+        return self._personality_choices[self.current_value(player_fields.personality_field_id(player_id))]
+
+    def set_personality(self, player_id: int, choice: AiChoice) -> None:
+        """Set P1..P8's personality to an already-resolved choice (the viewer
+        resolves it, so this model stays disk-free). A choice whose stored
+        name and ai_type equal the file's own is the row the file displays
+        as, so selecting it restores the original bytes rather than writing
+        the choice's. Same undo contract as set_value()."""
+        field_id = player_fields.personality_field_id(player_id)
+        if field_id not in self._personality_field_ids:
+            raise KeyError("AI personality is not writable on this file")
+        if not choice.resolved:
+            raise ValueError(f"{choice.key!r} has not been resolved")
+        original = self.original_personality(player_id)
+        if ai_scripts.matches_stored(choice, original.stored_name, original.ai_type):
+            key = original.key
+        else:
+            key = choice.key
+            self._personality_choices.setdefault(key, choice)
+        self.set_value(field_id, key)
+
     def original_value(self, field_id: str) -> OptionValue:
         return self._original[field_id]
 
@@ -530,6 +616,20 @@ class OptionsEditModel:
                 self._pending[field_id] = ids
             return
 
+        if field_id in self._personality_field_ids:
+            # The value is a cached choice key; set_personality() is the
+            # front door, and an undo/redo replays a key it already cached.
+            choice = self._personality_choices.get(value) if isinstance(value, str) else None
+            if choice is None:
+                raise KeyError(f"{value!r} is not a personality choice this model has cached")
+            if value != self._original[field_id] and choice.is_custom and not self.personality_custom_supported:
+                raise ValueError("a custom AI cannot be written to this file: its Files library does not verify")
+            if value == self._original[field_id]:
+                self._pending.pop(field_id, None)
+            else:
+                self._pending[field_id] = value
+            return
+
         if field_id in self._player_targets:
             for target in self._player_targets[field_id]:
                 try:
@@ -577,6 +677,13 @@ class OptionsEditModel:
                 # Skipped explicitly rather than by relying on this chain's
                 # ordering -- these ids are in neither _offsets nor
                 # _player_targets, so the final `else` would KeyError.
+                continue
+            if field_id in self._personality_field_ids:
+                # Only the ai_type byte is fixed-width; name and text ride
+                # serialize_personality_resize(). ai_type sits after ai_files,
+                # so that later splice shifts this patch along with it.
+                target = self._personality_layout.ai_type_target(player_fields.parse_personality_field_id(field_id))
+                patches.append((target.offset, bytes([self._personality_choices[value].ai_type])))
                 continue
             if field_id == player_fields.PLAYER_COUNT_FIELD_ID:
                 # Nine locations from one edit: the eight `active` flags
@@ -678,3 +785,97 @@ class OptionsEditModel:
                 continue
             edits[disables_fields.parse_disables_field_id(field_id)] = value
         return disables_fields.disables_splice(self.loaded, edits)
+
+    def _pending_personalities(self) -> dict[int, AiChoice]:
+        return {
+            player_fields.parse_personality_field_id(field_id): self._personality_choices[value]
+            for field_id, value in self._pending.items()
+            if field_id in self._personality_field_ids
+        }
+
+    def serialize_personality_resize(self, body: bytes) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) for PlayerDataTwo's ai_names + ai_files
+        region (contiguous), or None with no pending personality edit.
+        Rebuilt from `body`, the caller's partially patched buffer: every
+        untouched slot's str16/AIStruct is copied byte-for-byte, an edited
+        one gets its name, 8 zero `unknown` bytes and its script text."""
+        pending = self._pending_personalities()
+        if not pending:
+            return None
+        layout = self._personality_layout
+        index_for = player_fields.PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for
+        by_index = {index_for(pid): choice for pid, choice in pending.items()}
+        parts: list[bytes] = []
+        for i, span in enumerate(layout.ai_names):
+            choice = by_index.get(i)
+            if choice is None:
+                parts.append(body[span.offset : span.offset + span.length])
+            else:
+                parts.append(player_fields.encode_name_str16(choice.stored_name))
+        for i, span in enumerate(layout.ai_files):
+            choice = by_index.get(i)
+            if choice is None:
+                parts.append(body[span.offset : span.offset + span.length])
+            else:
+                parts.append(player_fields.AI_FILE_UNKNOWN + player_fields.encode_str32(choice.text))
+        start, end = layout.region
+        return start, end, b"".join(parts)
+
+    def serialize_ai_library_resize(self) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) in *load-time* offsets for the Files
+        library, from ai_files_present to the end of the body, or None when
+        the library would not change. The write path translates it by the
+        body's length change, since Files ends the body.
+
+        The 1.59 editor keeps exactly the load closure of every P1..P8
+        custom row (active or not), so this does too: existing entries
+        that closure still reaches are kept byte-for-byte, new ones are
+        added from the pending choices' libraries (de-duplicated by stem,
+        ignoring .per/.per2), the rest are pruned. Sorted by key, as every
+        corpus library is. None on a file whose Files gate fails: only
+        built-in choices can be pending there, and pruning is skipped."""
+        pending = self._pending_personalities()
+        if not pending or not self.personality_custom_supported:
+            return None
+        layout = player_fields.ai_library_layout(self.loaded)
+        if layout is None:
+            return None
+        body = self.loaded.decompressed_body
+        existing = [
+            (entry.name, bytes(body[entry.span.offset : entry.span.offset + entry.span.length]))
+            for entry in layout.entries
+        ]
+        existing_texts = [(e.name, player_fields.ai_library_entry_text(body, e)) for e in layout.entries]
+        added: list[tuple[bytes, bytes]] = []
+        for _, choice in sorted(pending.items()):
+            added.extend(choice.library)
+        stems = []
+        for pid in range(1, player_fields.NUM_PLAYERS + 1):
+            choice = self.current_personality(pid)
+            if choice.is_custom and choice.stored_name:
+                stems.append(ai_scripts.marker_stem(choice.stored_name))
+        # Existing texts go last so they win the walk (library_closure keeps the last per stem).
+        needed = ai_scripts.library_closure(stems, added + existing_texts)
+
+        kept = [(name, raw) for name, raw in existing if ai_scripts.library_stem(name) in needed]
+        have = {ai_scripts.library_stem(name) for name, _ in kept}
+        new: list[tuple[bytes, bytes]] = []
+        for key, text in added:
+            stem = ai_scripts.library_stem(key)
+            if stem in needed and stem not in have:
+                have.add(stem)
+                new.append((key, player_fields.encode_str32(key) + player_fields.encode_str32(text)))
+        if len(kept) == len(existing) and not new:
+            return None
+        entries = kept + new
+        if [name for name, _ in kept] == sorted(name for name, _ in kept):
+            entries.sort(key=lambda item: item[0])
+        present, count = layout.ai_files_present, layout.number_of_ai_files
+        between = body[present.offset + present.length : count.offset]
+        payload = _U32.pack(1 if entries else 0) + between
+        if entries:
+            payload += _U32.pack(len(entries)) + b"".join(raw for _, raw in entries)
+        return present.offset, len(body), payload
+
+
+_U32 = struct.Struct("<I")

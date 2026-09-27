@@ -18,6 +18,7 @@ import threading
 from typing import ClassVar
 
 import pytest
+from _pytest.faulthandler import fault_handler_stderr_fd_key
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QPushButton
 
@@ -79,7 +80,7 @@ def _fake_dialog(monkeypatch):
 
 
 @pytest.fixture
-def _crash_hooks_installed(monkeypatch):
+def _crash_hooks_installed(monkeypatch, request):
     """Installs the real hooks for one test, then restores everything --
     sys.excepthook/threading.excepthook are process-global, and
     faulthandler.enable() must not leak into unrelated tests."""
@@ -87,6 +88,7 @@ def _crash_hooks_installed(monkeypatch):
 
     old_excepthook = sys.excepthook
     old_thread_excepthook = threading.excepthook
+    faulthandler_was_on = faulthandler.is_enabled()
     viewer_module.install_crash_hooks()
     try:
         yield viewer_module
@@ -94,6 +96,9 @@ def _crash_hooks_installed(monkeypatch):
         sys.excepthook = old_excepthook
         threading.excepthook = old_thread_excepthook
         faulthandler.disable()
+        if faulthandler_was_on:
+            # Back to pytest's own stderr dup, not fd 2, which is the capture file mid-test.
+            faulthandler.enable(file=request.config.stash[fault_handler_stderr_fd_key])
         viewer_module._crash_host_ref = None
         viewer_module._crash_rate_limiter = crash_report.RateLimiter()
 
@@ -103,6 +108,7 @@ def test_unhandled_exception_writes_dump_and_opens_live_dialog(_fake_dialog, _cr
     viewer_module = _crash_hooks_installed
     from descape.viewer import ViewerWindow
 
+    conftest.ensure_qapp()
     window = ViewerWindow()
     window.show()
     QApplication.processEvents()
@@ -141,6 +147,7 @@ def test_pending_reports_are_swept_on_next_launch_and_marked_reported(_fake_dial
     )
     path = crash_report.write_report(text, dump_dir)
 
+    conftest.ensure_qapp()
     window = ViewerWindow()
     window.show()
     QApplication.processEvents()

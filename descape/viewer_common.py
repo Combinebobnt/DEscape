@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFontMetricsF, QIcon, QPixmap, QValidator
 from PyQt5.QtWidgets import (
     QApplication,
@@ -139,6 +140,34 @@ def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:
     pixmap = QPixmap(16, 16)
     pixmap.fill(QColor(*rgb))
     return QIcon(pixmap)
+
+
+def _player_icon(pid: int, colors) -> QIcon:
+    """pid's swatch, or a null icon when there are no colours (no document)."""
+    return QIcon() if colors is None else _swatch_icon(colors[pid])
+
+
+def _set_player_item(combo: QComboBox, index: int, pid: int, labels, colors, suffix: str = "") -> None:
+    """Relabel one player row in place (GH #130): text, uncut tooltip, swatch.
+    `labels` is a player_labels.PlayerLabels; `colors` a pid-indexed RGB sequence or None."""
+    combo.setItemText(index, labels.text[pid] + suffix)
+    combo.setItemData(index, labels.full[pid] + suffix, Qt.ToolTipRole)
+    combo.setItemIcon(index, _player_icon(pid, colors))
+
+
+def _add_player_item(combo: QComboBox, pid: int, labels, colors, data=None) -> None:
+    """Append a player row carrying `data`, labelled as _set_player_item() does."""
+    combo.addItem("", data)
+    _set_player_item(combo, combo.count() - 1, pid, labels, colors)
+
+
+def _relabel_player_rows(combo: QComboBox, labels, colors) -> None:
+    """Relabel every row whose itemData is a pid 0..8. Rows carrying None
+    ("(mixed)", "(differs)") or an out-of-range value ("unknown (v)") are left alone."""
+    for i in range(combo.count()):
+        pid = combo.itemData(i)
+        if isinstance(pid, int) and 0 <= pid < len(labels.text):
+            _set_player_item(combo, i, pid, labels, colors)
 
 
 class _IndeterminateMixin:

@@ -13,6 +13,7 @@ from descape.ruler import (
     STATE_DONE,
     STATE_IDLE,
     STATE_PENDING,
+    PinnedRulers,
     RulerSession,
     format_measurement,
     measure,
@@ -155,3 +156,48 @@ def test_clear_returns_to_idle_from_every_state() -> None:
         session.clear()
         assert session.state == STATE_IDLE
         assert session.endpoints is None
+
+
+# --- PinnedRulers (GH #108/#109) -------------------------------------------
+
+
+def test_pinned_rulers_keep_insertion_order() -> None:
+    pinned = PinnedRulers()
+    assert len(pinned) == 0 and pinned.newest is None
+    first, second = measure((0, 0), (3, 4)), measure((3, 4), (9, 4))
+    assert pinned.add(first) and pinned.add(second)
+    assert list(pinned) == [first, second]
+    assert pinned.newest == second
+    assert len(pinned) == 2
+
+
+def test_remove_at_takes_the_newest_ruler_on_a_shared_endpoint() -> None:
+    pinned = PinnedRulers()
+    first, second, third = measure((0, 0), (3, 4)), measure((3, 4), (9, 4)), measure((20, 20), (22, 22))
+    for m in (first, second, third):
+        pinned.add(m)
+    assert pinned.remove_at((3, 4)) == second
+    assert list(pinned) == [first, third]
+    assert pinned.remove_at((3, 4)) == first
+    assert list(pinned) == [third]
+
+
+def test_remove_at_a_miss_returns_none_and_keeps_everything() -> None:
+    pinned = PinnedRulers()
+    pinned.add(measure((0, 0), (3, 4)))
+    assert pinned.remove_at((1, 1)) is None
+    assert len(pinned) == 1
+
+
+def test_clear_drops_every_pinned_ruler() -> None:
+    pinned = PinnedRulers()
+    pinned.add(measure((0, 0), (3, 4)))
+    pinned.add(measure((5, 5), (6, 6)))
+    pinned.clear()
+    assert len(pinned) == 0 and pinned.newest is None
+
+
+def test_a_zero_length_measurement_is_never_pinned() -> None:
+    pinned = PinnedRulers()
+    assert not pinned.add(measure((4, 4), (4, 4)))
+    assert len(pinned) == 0

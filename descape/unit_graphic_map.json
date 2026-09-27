@@ -2420,7 +2420,7 @@
       "frame_count": 1
     },
     "250": {
-      "graphic_id": 959,
+      "graphic_id": 954,
       "file_name": "u_shp_longboat_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
@@ -8307,7 +8307,7 @@
     },
     "931": {
       "graphic_id": 3995,
-      "file_name": "u_cav_hero_jarl_idleA_x1",
+      "file_name": "u_cav_jarl_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 60
@@ -8552,7 +8552,7 @@
       "frame_count": 1
     },
     "1022": {
-      "graphic_id": 959,
+      "graphic_id": 954,
       "file_name": "u_shp_longboat_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
@@ -10602,7 +10602,7 @@
     },
     "1298": {
       "graphic_id": 3995,
-      "file_name": "u_cav_hero_jarl_idleA_x1",
+      "file_name": "u_cav_jarl_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 60
@@ -13142,7 +13142,7 @@
       "mirroring_mode": 0,
       "frame_count": 1,
       "rotation_is_variant": true,
-      "variant_count": 4
+      "variant_count": 8
     },
     "1568": {
       "graphic_id": 6008,
@@ -14150,7 +14150,7 @@
     },
     "1628": {
       "graphic_id": 3997,
-      "file_name": "u_cav_hero_jarl_decayA_x1",
+      "file_name": "u_cav_jarl_decayA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 30,
@@ -17054,6 +17054,13 @@
       "mirroring_mode": 6,
       "frame_count": 60
     },
+    "1924": {
+      "graphic_id": 19670,
+      "file_name": "a_hunt_walrus_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
     "1925": {
       "graphic_id": 3375,
       "file_name": "p_shot_x1",
@@ -17173,6 +17180,15 @@
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 1
+    },
+    "1943": {
+      "graphic_id": 19688,
+      "file_name": "s_weapon_stacks_b_x1",
+      "angle_count": 6,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 6
     },
     "1944": {
       "graphic_id": 12838,
@@ -17349,6 +17365,15 @@
       "mirroring_mode": 6,
       "frame_count": 60
     },
+    "1967": {
+      "graphic_id": 19659,
+      "file_name": "n_rock_mossy_x1",
+      "angle_count": 9,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 9
+    },
     "1968": {
       "graphic_id": 12752,
       "file_name": "u_arc_fire_archer_idleA_x1",
@@ -17442,6 +17467,15 @@
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 60
+    },
+    "1981": {
+      "graphic_id": 19660,
+      "file_name": "n_plant_kelp_seaweeds_x1",
+      "angle_count": 16,
+      "mirroring_mode": 0,
+      "frame_count": 49,
+      "rotation_is_variant": true,
+      "variant_count": 16
     },
     "1982": {
       "graphic_id": 3378,
@@ -17904,12 +17938,30 @@
       "mirroring_mode": 6,
       "frame_count": 45
     },
+    "2035": {
+      "graphic_id": 19662,
+      "file_name": "s_burned_building_e_x1",
+      "angle_count": 12,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 12
+    },
     "2036": {
       "graphic_id": 12954,
       "file_name": "u_king_hero_zhuge_liang_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 60
+    },
+    "2037": {
+      "graphic_id": 19663,
+      "file_name": "s_bridge_piece_wood_end_a_x1",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
     },
     "2038": {
       "graphic_id": 12950,
@@ -17918,6 +17970,15 @@
       "mirroring_mode": 6,
       "frame_count": 60
     },
+    "2039": {
+      "graphic_id": 19664,
+      "file_name": "s_bridge_piece_wood_end_b_x1",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
     "2040": {
       "graphic_id": 12985,
       "file_name": "u_cav_hero_sun_ce_idleA_x1",
@@ -17925,12 +17986,30 @@
       "mirroring_mode": 6,
       "frame_count": 45
     },
+    "2041": {
+      "graphic_id": 19665,
+      "file_name": "s_bridge_piece_wood_end_c_x1",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
     "2042": {
       "graphic_id": 13000,
       "file_name": "u_cav_hero_sun_quan_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 45
+    },
+    "2043": {
+      "graphic_id": 19666,
+      "file_name": "s_bridge_piece_wood_middle_x1",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
     },
     "2044": {
       "graphic_id": 2845,
@@ -18338,6 +18417,15 @@
           ]
         }
       ]
+    },
+    "2081": {
+      "graphic_id": 19667,
+      "file_name": "s_bridge_piece_wood_rails_x1",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
     },
     "2082": {
       "graphic_id": 12860,
@@ -21685,12 +21773,30 @@
       "mirroring_mode": 0,
       "frame_count": 1
     },
+    "2559": {
+      "graphic_id": 19674,
+      "file_name": "b_nors_longhouse_A_x1",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
     "2560": {
       "graphic_id": 13949,
       "file_name": "b_ande_settlement_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 1
+    },
+    "2561": {
+      "graphic_id": 19681,
+      "file_name": "b_nors_longhouse_B_x1",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
     },
     "2562": {
       "graphic_id": 13181,
@@ -21779,6 +21885,31 @@
       "angle_count": 1,
       "mirroring_mode": 6,
       "frame_count": 30
+    },
+    "2576": {
+      "graphic_id": 19629,
+      "file_name": "s_torch_c_x1",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 60,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "2577": {
+      "graphic_id": 19689,
+      "file_name": "s_flotsam_x1",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 49,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "2578": {
+      "graphic_id": 19697,
+      "file_name": "a_bird_raven_flyA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
     },
     "2579": {
       "graphic_id": 13203,
@@ -22048,6 +22179,15 @@
       "angle_count": 16,
       "mirroring_mode": 6,
       "frame_count": 60
+    },
+    "2623": {
+      "graphic_id": 19527,
+      "file_name": "p_jarl_elite_axe_x1",
+      "angle_count": 32,
+      "mirroring_mode": 6,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
     },
     "2625": {
       "graphic_id": 11397,
@@ -22985,6 +23125,375 @@
           "dy": -43
         }
       ]
+    },
+    "2700": {
+      "graphic_id": 19508,
+      "file_name": "u_cav_crossbowman_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 45
+    },
+    "2701": {
+      "graphic_id": 19514,
+      "file_name": "u_cav_crossbowman_heavy_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 45
+    },
+    "2702": {
+      "graphic_id": 3399,
+      "file_name": "p_spear_x1",
+      "angle_count": 32,
+      "mirroring_mode": 24,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "2703": {
+      "graphic_id": 19533,
+      "file_name": "u_inf_varangian_guard_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2704": {
+      "graphic_id": 19540,
+      "file_name": "u_inf_varangian_guard_elite_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2705": {
+      "graphic_id": 19566,
+      "file_name": "u_inf_hearth_troop_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2706": {
+      "graphic_id": 19573,
+      "file_name": "u_inf_hearth_troop_elite_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2707": {
+      "graphic_id": 3399,
+      "file_name": "p_spear_x1",
+      "angle_count": 32,
+      "mirroring_mode": 24,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "2708": {
+      "graphic_id": 3995,
+      "file_name": "u_cav_jarl_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2709": {
+      "graphic_id": 4425,
+      "file_name": "u_cav_jarl_elite_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2710": {
+      "graphic_id": 19525,
+      "file_name": "p_jarl_axe_x1",
+      "angle_count": 32,
+      "mirroring_mode": 6,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "2711": {
+      "graphic_id": 19547,
+      "file_name": "u_inf_jomsviking_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2712": {
+      "graphic_id": 19554,
+      "file_name": "u_inf_jomsviking_elite_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2713": {
+      "graphic_id": 19557,
+      "file_name": "p_torch_x1",
+      "angle_count": 32,
+      "mirroring_mode": 6,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "2714": {
+      "graphic_id": 1297,
+      "file_name": "u_vil_male_builder_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2715": {
+      "graphic_id": 1206,
+      "file_name": "u_vil_female_builder_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2719": {
+      "graphic_id": 19525,
+      "file_name": "p_jarl_axe_x1",
+      "angle_count": 32,
+      "mirroring_mode": 6,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "2720": {
+      "graphic_id": 19527,
+      "file_name": "p_jarl_elite_axe_x1",
+      "angle_count": 32,
+      "mirroring_mode": 6,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "2721": {
+      "graphic_id": 19581,
+      "file_name": "u_inf_hero_harald_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2722": {
+      "graphic_id": 19594,
+      "file_name": "u_inf_hero_ulf_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2723": {
+      "graphic_id": 19588,
+      "file_name": "u_inf_hero_halldor_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2724": {
+      "graphic_id": 19604,
+      "file_name": "u_cav_hero_tostig_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 45
+    },
+    "2725": {
+      "graphic_id": 2623,
+      "file_name": "u_inf_halberdier_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2726": {
+      "graphic_id": 1154,
+      "file_name": "u_inf_longswordsman_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2727": {
+      "graphic_id": 2867,
+      "file_name": "u_arc_composite_bowman_elite_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2728": {
+      "graphic_id": 960,
+      "file_name": "u_shp_dreki_x1",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1
+    },
+    "2729": {
+      "graphic_id": 19559,
+      "file_name": "s_legendary_item_closed_x1",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "2730": {
+      "graphic_id": 19599,
+      "file_name": "u_misc_wheeled_ship_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2731": {
+      "graphic_id": 19577,
+      "file_name": "n_tree_spruce_x1",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "2732": {
+      "graphic_id": 19609,
+      "file_name": "n_tree_spruce_snow_x1",
+      "angle_count": 12,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 12
+    },
+    "2733": {
+      "graphic_id": 19610,
+      "file_name": "n_tree_bush_d_x1",
+      "angle_count": 8,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 8
+    },
+    "2734": {
+      "graphic_id": 19611,
+      "file_name": "n_rock_snow_x1",
+      "angle_count": 12,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 12
+    },
+    "2735": {
+      "graphic_id": 19614,
+      "file_name": "a_hunt_seal_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2736": {
+      "graphic_id": 19619,
+      "file_name": "a_pred_lynx_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2737": {
+      "graphic_id": 19625,
+      "file_name": "a_hunt_elk_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2738": {
+      "graphic_id": 19608,
+      "file_name": "s_runestones_x1",
+      "angle_count": 11,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 11
+    },
+    "2739": {
+      "graphic_id": 19632,
+      "file_name": "a_hunt_pheasant_idleA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2740": {
+      "graphic_id": 19636,
+      "file_name": "s_driftwood_ground_x1",
+      "angle_count": 6,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 6
+    },
+    "2741": {
+      "graphic_id": 19637,
+      "file_name": "s_driftwood_water_x1",
+      "angle_count": 6,
+      "mirroring_mode": 0,
+      "frame_count": 60,
+      "rotation_is_variant": true,
+      "variant_count": 6
+    },
+    "2742": {
+      "graphic_id": 19641,
+      "file_name": "a_bird_flaming_hoverA_x1",
+      "angle_count": 16,
+      "mirroring_mode": 6,
+      "frame_count": 60
+    },
+    "2743": {
+      "graphic_id": 19644,
+      "file_name": "n_plant_heather_x1",
+      "angle_count": 8,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 8
+    },
+    "2744": {
+      "graphic_id": 19645,
+      "file_name": "s_burned_building_d_x1",
+      "angle_count": 10,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 10
+    },
+    "2745": {
+      "graphic_id": 19647,
+      "file_name": "b_scen_tent_army_f_x1",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
+    },
+    "2746": {
+      "graphic_id": 19653,
+      "file_name": "s_shipwreck_c_x1",
+      "angle_count": 6,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 6
+    },
+    "2747": {
+      "graphic_id": 19654,
+      "file_name": "s_norse_column_x1",
+      "angle_count": 5,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "2748": {
+      "graphic_id": 19655,
+      "file_name": "s_wooden_road_x1",
+      "angle_count": 20,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 20
+    },
+    "2749": {
+      "graphic_id": 19661,
+      "file_name": "s_norse_banner_x1",
+      "angle_count": 4,
+      "mirroring_mode": 6,
+      "frame_count": 90,
+      "rotation_is_variant": true,
+      "variant_count": 4
     }
   }
 }

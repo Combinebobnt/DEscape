@@ -39,6 +39,7 @@ from descape import (
     library_compat,
     messages_fields,
     object_catalog,
+    player_labels,
     trigger_fields,
     trigger_organize,
     unit_references,
@@ -65,7 +66,11 @@ from descape.viewer_common import (
     _fit_combo_width,
     _IndeterminateMixin,
     _make_spinbox,
+    _relabel_player_rows,
 )
+
+# trigger_fields._ENUM_TYPES' key for players.PlayerId; PlayerColorId is a colour, not a player.
+PLAYER_ID_PRESENTATION = "PlayerId"
 
 
 class VariablesDialog(QDialog):
@@ -404,6 +409,9 @@ class TriggerPanel(QWidget):
         self._loaded: LoadedScenario | None = None
         self._vocabulary = None
         self._editable = False
+        # GH #130: PlayerId combos' labels and swatches, pushed by refresh_player_labels().
+        self._player_labels = player_labels.DEFAULT_LABELS
+        self._player_colors = None
         self._rows: list[tuple] = []
         # The (kind, index) refs the property form was last built for. None
         # means "holds nothing", so the next sync always repopulates.
@@ -1722,6 +1730,15 @@ class TriggerPanel(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def refresh_player_labels(self, labels, colors) -> None:
+        """GH #130: store the labels for the next form build and relabel the
+        PlayerId combos already on screen, keeping their "(differs)" and "unknown" rows."""
+        self._player_labels = labels
+        self._player_colors = colors
+        for spec, _kind, _index, widget in self._rows:
+            if spec.presentation == PLAYER_ID_PRESENTATION and isinstance(widget, QComboBox):
+                _relabel_player_rows(widget, labels, colors)
+
     def _current_entry(self) -> tuple[str, int, object] | None:
         """(kind, entry index, live object) for whatever the detail tree has
         selected, or None."""
@@ -2006,6 +2023,8 @@ class TriggerPanel(QWidget):
             self._add_differs_item(widget, indeterminate)
             for label, choice in spec.choices:
                 widget.addItem(f"{label} ({choice})", choice)
+            if spec.presentation == PLAYER_ID_PRESENTATION:
+                _relabel_player_rows(widget, self._player_labels, self._player_colors)
             if not indeterminate and widget.findData(value) < 0 and isinstance(value, int):
                 # A value outside the shipped enum. Kept as its own row rather
                 # than snapped to the nearest legal one, which would rewrite a

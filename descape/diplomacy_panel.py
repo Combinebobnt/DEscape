@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import option_fields, trigger_fields
+from descape import option_fields, player_labels, trigger_fields
 from descape.diplomacy_fields import (
     allied_victory_cell_id,
     allied_victory_value,
@@ -81,7 +81,7 @@ from descape.diplomacy_fields import (
 from descape.map_options_panel import MapOptionsPanel
 from descape.player_fields import defined_player_ids
 from descape.scenario_io import LoadedScenario
-from descape.viewer_common import _make_spinbox, _swatch_icon
+from descape.viewer_common import _add_player_item, _make_spinbox, _set_player_item
 
 # (label, value) pairs for Ally/Neutral/Enemy, reused rather than redefined
 # -- see module docstring. trigger_fields.enum_choices() returns the raw
@@ -165,6 +165,8 @@ class DiplomacyPanel(QWidget):
         # only a refused one, or an undo/redo, does).
         self._pending_values: dict[str, int] = {}
         self._populating = False
+        # GH #130: pushed by refresh_player_labels(), read when the combo is built.
+        self._player_labels = player_labels.DEFAULT_LABELS
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -283,9 +285,7 @@ class DiplomacyPanel(QWidget):
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
             for player_id in self._active_players:
-                self.player_combo.addItem(
-                    _swatch_icon(loaded.player_colors[player_id]), f"P{player_id}"
-                )
+                _add_player_item(self.player_combo, player_id, self._player_labels, loaded.player_colors)
             self.player_combo.setCurrentIndex(0)
             self.player_combo.blockSignals(False)
             self.player_combo.setEnabled(True)
@@ -558,15 +558,13 @@ class DiplomacyPanel(QWidget):
         player."""
         return dict(self._values)
 
-    def refresh_player_swatches(self, loaded) -> None:
-        """Re-icon the player combo from `loaded`'s current player_colors,
-        after a colour edit re-derived them -- PlayersPanel's counterpart,
-        same `same_document` reasoning (see its own docstring). Indexed
-        through _active_players, which is not assumed contiguous from 1.
+    def refresh_player_labels(self, labels, colors) -> None:
+        """Relabel and re-icon the player combo in place (GH #130):
+        PlayersPanel's counterpart, same `same_document` reasoning (see its own
+        docstring). Indexed through _active_players, which is not assumed contiguous from 1.
         """
-        if loaded is None or self.player_combo.count() == 0:
-            return
+        self._player_labels = labels
         for i, player_id in enumerate(self._active_players):
             if i >= self.player_combo.count():
                 break
-            self.player_combo.setItemIcon(i, _swatch_icon(loaded.player_colors[player_id]))
+            _set_player_item(self.player_combo, i, player_id, labels, colors)

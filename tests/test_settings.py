@@ -307,6 +307,42 @@ def test_stack_badges_round_trips_independently_of_distance_ticks(tmp_path: Path
     assert settings.get_distance_ticks() is False
 
 
+# --- GH #100: stack badge position ---------------------------------------
+
+
+def test_the_stack_badge_position_defaults_to_bottom_right(tmp_path: Path) -> None:
+    assert settings.get_stack_badge_position() == "bottom_right"
+    assert settings.STACK_BADGE_POSITION_DEFAULT == "bottom_right"
+    assert [pid for pid, _label in settings.STACK_BADGE_POSITIONS] == [
+        "bottom_right", "bottom_left", "top_right", "top_left", "above"
+    ]
+
+
+@pytest.mark.parametrize("raw", ["centre", "'BOTTOM_RIGHT'", "0", "true", "[above]"])
+def test_an_off_list_stack_badge_position_falls_back(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"stack_badge_position: {raw}\n")
+    assert settings.get_stack_badge_position() == "bottom_right"
+
+
+def test_setting_an_unknown_stack_badge_position_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_stack_badge_position("centre")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("position", [pid for pid, _label in settings.STACK_BADGE_POSITIONS])
+def test_the_stack_badge_position_round_trips(tmp_path: Path, monkeypatch, position: str) -> None:
+    settings.set_stack_badge_position(position)
+    monkeypatch.setattr(settings, "_stack_badge_position", None)
+    assert settings.get_stack_badge_position() == position
+
+
+def test_the_stack_badge_background_colour_row_follows_the_text_row() -> None:
+    ids = [cid for cid, _label, _default in settings.OVERLAY_COLORS]
+    assert ids[ids.index("unit_stack") + 1] == "unit_stack_background"
+    assert settings.get_default_overlay_color("unit_stack_background") == "#000000"
+
+
 def test_a_missing_interval_falls_back_to_the_default(tmp_path: Path) -> None:
     assert settings.get_distance_tick_interval() == edge_ticks.TICK_INTERVAL_DEFAULT
 
