@@ -67,14 +67,23 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
-- **Game data refreshed for the Sept 2026 game update.** The new Norse
-  objects, terrains, trees and heroes render and name correctly, Jarls draw
-  their sprite again, and unit stats match the patch. Flares now count as
+- **Game data refreshed for the Sept 2026 game update.** Jarls draw their
+  sprite again and unit stats match the patch. The update's new objects and
+  terrains draw correctly in a scenario that already has them, but DEscape
+  can't place them yet and names them `UNKNOWN_<id>`. Flares now count as
   invisible objects, so Filters > Show Invisible Objects hides them.
-- **Faster Stepped rendering: part of the renderer is now compiled.** The
-  downloads include it. From source, the launcher builds it on first launch
+- **Faster Stepped and Sloped rendering: the renderer's map drawing is now
+  compiled.** Panning and painting are 2-3x faster, and 5-6x faster zoomed
+  out. The downloads include it. From source, the launcher builds it on first launch
   when a C compiler is present, and otherwise runs the slower built-in
   renderer; see README "Faster renderer (optional C compiler)".
+- **The map just off-screen is ready sooner when you pan.** While the view
+  sits idle, DEscape draws the surrounding map chunks ahead of time, each
+  pause at most about 8 ms, and with the compiled renderer much of that
+  drawing now runs on background threads. Idle time after opening also
+  prepares each zoom level's units ahead of time, so panning zoomed out
+  pauses less. Help > Perf Trace reports it on its `perf view` lines as
+  `warm:`, with the longest pause, the slowest chunk and the background time.
 - **Elevate and Set Elevation no longer lag with sprites on.** An elevation
   edit now updates only the units on the changed tiles instead of rebuilding
   every unit's sprite and footprint.
@@ -85,12 +94,25 @@ content, link the doc instead of summarizing it.
   on dense maps.** Covers Draw strokes, their undo/redo, and undoing a
   Paint Can fill: unchanged units' sprites are reused instead of re-resolved,
   and only the edited area is repainted.
+- **Editing units while a trigger is selected no longer lags on large maps.**
+  Move, nudge, Place, Delete, Rotate and Convert update the trigger reference
+  index for just the edited units instead of rebuilding it for the whole map.
+- **Unit edits in Stepped and Sloped repaint less.** Draw's stroke end, Place,
+  Move, Delete, Rotate, Convert and their undo/redo repaint only the edited
+  units' real sprite extent on the zoom level on screen, not a worst-case pad.
+- **Draw, Elevate and Set Elevation strokes do less work per mouse move.**
+  Each step now checks only the tiles it wrote instead of scanning the whole
+  map, which saves about 3 ms per step (a small-brush Stepped Draw step goes
+  from about 4 ms to under 1 ms). Perf Trace calls this phase `stroke_dirty`
+  now, not `stroke_scan`.
 - **Rotate now steps trees and scenery through their graphic variants**
   (GH #123). The Rotate buttons and keys (`,` `.` `<` `>`, Edit > Rotate
   Selection) and the Units inspector's Rotation field change a tree's or
   scenery object's variant; the quarter-turn keys jump about a quarter of
   its variants. Walls, cliffs, gates and single-frame objects are still
   skipped.
+- **Map Options' "Block humanity team change" is now "Lock co-op alliances"**
+  (GH #43), the name the game's editor shows today.
 
 ### Fixed
 
@@ -117,6 +139,12 @@ content, link the doc instead of summarizing it.
   `perf view` lines. Before, those repaints and any hover time were folded
   into the next drag's line, overstating it, and Convert and Cliff strokes
   were never reported.
+- **Turning off Settings > Preload zoom levels stops all preloading at
+  once**, including the preload started when a file opens. Changing a unit
+  filter also drops preloading done for the old filter.
+- **A tile that an Elevate stroke raises and then lowers back to where it
+  started now repaints.** Before, it could keep showing the in-between height
+  until the next repaint of that area.
 - **`tools/gen_iso_reference_pngs.py` no longer crashes when `--out-dir` is
   outside the repo.** It wrote the PNGs, then failed printing their paths.
 

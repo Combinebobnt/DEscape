@@ -11,32 +11,63 @@ example files, not a hypothetical reading of the code.
 
 set_tile_elevation() below is what the single-point branch would need to do to
 behave like the rectangle branch: assign the tile's elevation directly, then
-run the same MapManager._elevation_tile_recursion() propagation the library's
-own rectangle branch uses.
-Reaching into that private method mirrors this project's existing, documented
-precedent for touching AoE2ScenarioParser internals when its public API
-doesn't cover a case we need -- see descape/scenario_io.py's module docstring.
+run the same propagation the library's own rectangle branch uses
+(MapManager._elevation_tile_recursion()). That propagation is vendored below
+as _elevation_tile_recursion() so it can report every tile it writes, which
+the viewer's live stroke repaint needs; the library's copy returns nothing.
+tests/test_elevation_tools.py checks the two agree on randomized maps.
 """
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 
+from AoE2ScenarioParser.helper.maffs import sign
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 
 
-def set_tile_elevation(mm: MapManager, x: int, y: int, elevation: int) -> None:
+# Adapted from AoE2ScenarioParser (https://github.com/KSneijders/AoE2ScenarioParser),
+# v0.8.3 (commit b763e2e3), AoE2ScenarioParser/objects/managers/map_manager.py,
+# MapManager._elevation_tile_recursion. GPL-3.0, the same license as DEscape;
+# copyright for the original remains with the AoE2ScenarioParser authors.
+# Changed only to take `mm` explicitly and add every written index to `touched`.
+def _elevation_tile_recursion(mm: MapManager, source_tile, xys, touched: set[int], visited=None) -> None:
+    visited = set() if visited is None else visited.copy()
+    x, y = source_tile.xy
+    visited.add((x, y))
+    size = mm.map_size
+    for nx, ny in itertools.product(range(-1, 2), repeat=2):
+        new_x, new_y = x + nx, y + ny
+        if (nx or ny) and (new_x, new_y) not in xys and (new_x, new_y) not in visited:
+            other = mm.get_tile_safe(new_x, new_y)
+            if other is None:
+                continue
+            behind = mm.get_tile_safe(x + nx * 2, y + ny * 2)
+            if behind is not None and other.elevation < source_tile.elevation == behind.elevation:
+                other.elevation = source_tile.elevation
+                touched.add(new_y * size + new_x)
+            elif abs(other.elevation - source_tile.elevation) > 1:
+                other.elevation = source_tile.elevation + int(sign(other.elevation, source_tile.elevation))
+                touched.add(new_y * size + new_x)
+                _elevation_tile_recursion(mm, other, xys, touched, visited)
+
+
+def set_tile_elevation(mm: MapManager, x: int, y: int, elevation: int) -> set[int]:
     """Sets tile (x, y)'s own elevation to `elevation` and propagates to
     neighbors exactly like the in-game brush / MapManager.set_elevation's
-    multi-tile branch does. Requires mm.map_width == mm.map_height (see
+    multi-tile branch does. Returns every flat index written, the target
+    included. Requires mm.map_width == mm.map_height (see
     LoadedScenario.map_is_square) -- MapManager.get_tile raises otherwise,
     same constraint set_elevation itself has."""
     tile = mm.get_tile(x, y)
     tile.elevation = elevation
-    mm._elevation_tile_recursion(tile, {tile.xy})
+    touched = {y * mm.map_size + x}
+    _elevation_tile_recursion(mm, tile, {tile.xy}, touched)
+    return touched
 
 
-def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]]) -> None:
+def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]]) -> set[int]:
     """Multi-tile counterpart to set_tile_elevation() above, for a brush
     footprint -- every (x, y, elevation) in `targets` is assigned first, then
     _elevation_tile_recursion() is run once per target tile with `xys` set to
@@ -54,12 +85,17 @@ def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]])
     over-smooths (observed flood-filling a uniform plateau across a region
     several tiles wider than the brush, instead of a clean per-tile delta).
 
-    Requires mm.map_width == mm.map_height, same as set_tile_elevation()."""
+    Returns every flat index written: all targets (even ones already at
+    their value) plus every propagated tile. Requires mm.map_width ==
+    mm.map_height, same as set_tile_elevation()."""
     footprint = {(x, y) for x, y, _ in targets}
+    size = mm.map_size
+    touched = {y * size + x for x, y in footprint}
     tiles = []
     for x, y, elevation in targets:
         tile = mm.get_tile(x, y)
         tile.elevation = elevation
         tiles.append(tile)
     for tile in tiles:
-        mm._elevation_tile_recursion(tile, footprint)
+        _elevation_tile_recursion(mm, tile, footprint, touched)
+    return touched

@@ -381,11 +381,19 @@ def _splice_any_batch(monkeypatch) -> None:
     """The blank template has too few units for a batch to beat Flat's
     wholesale rebuild (viewer._SPLICE_COST_RATIO), and a whole resident canvas
     against a small offscreen viewport would make Stepped/Sloped evict rather
-    than patch (viewer._SCOPED_PATCH_AREA_RATIO), so pin both off."""
+    than patch (viewer._SCOPED_/_TIGHT_PATCH_AREA_RATIO), so pin both off."""
     import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "_SPLICE_COST_RATIO", 0)
-    monkeypatch.setattr(viewer_module, "_SCOPED_PATCH_AREA_RATIO", {"stepped": float("inf"), "sloped": float("inf")})
+    _pin_area_ratio(monkeypatch, float("inf"))
+
+
+def _pin_area_ratio(monkeypatch, value: float) -> None:
+    """Sets both the reach-path and the tight-split area ratio, for every style."""
+    import descape.viewer as viewer_module
+
+    for name in ("_SCOPED_PATCH_AREA_RATIO", "_TIGHT_PATCH_AREA_RATIO"):
+        monkeypatch.setattr(viewer_module, name, {"stepped": value, "sloped": value})
 
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
@@ -426,7 +434,12 @@ def _spy_evictions(window, monkeypatch) -> list:
     """Every bbox window._cache.invalidate_region() evicts from here on."""
     evictions = []
     real_evict = window._cache.invalidate_region
-    monkeypatch.setattr(window._cache, "invalidate_region", lambda bbox: (evictions.append(bbox), real_evict(bbox)))
+
+    def evict(bbox, levels=None):
+        evictions.append(bbox)
+        return real_evict(bbox, levels=levels)
+
+    monkeypatch.setattr(window._cache, "invalidate_region", evict)
     return evictions
 
 
@@ -440,13 +453,11 @@ def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(style, sprit
     the whole canvas. Undo and redo take the same path. With sprites, the
     contested unit is a real sprite, so the memo-backed rebuild is what the
     pixel oracle checks."""
-    import descape.viewer as viewer_module
-
     if sprites:
         request.getfixturevalue("sprite_install")
     _splice_any_batch(monkeypatch)
     if repaint == "evict":
-        monkeypatch.setattr(viewer_module, "_SCOPED_PATCH_AREA_RATIO", {"stepped": 0, "sloped": 0})
+        _pin_area_ratio(monkeypatch, 0)
     window = _styled_window(style)
     try:
         # A configured real install turns sprites on by default, so set both states explicitly.
@@ -526,9 +537,7 @@ def test_a_sloped_stroke_patches_its_bbox_eagerly(monkeypatch) -> None:
 def test_a_single_unit_edit_always_patches(monkeypatch) -> None:
     """The area rule is for batch callers only: a single-unit tool keeps its
     eager patch even when every batch would evict."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "_SCOPED_PATCH_AREA_RATIO", {"stepped": 0, "sloped": 0})
+    _pin_area_ratio(monkeypatch, 0)
     window = _styled_window("Stepped")
     try:
         _canvas(window)

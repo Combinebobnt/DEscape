@@ -247,12 +247,157 @@ def test_multi_step_stroke_hands_each_change_to_apply_dirty_exactly_once() -> No
         last_state: dict[int, tuple[int, int, int]] = {}
         for report in reports:
             for i, state in report.items():
-                assert state != start[i], f"index {i} reported dirty at its stroke-start state"
-                assert state != last_state.get(i), f"index {i} reported again at a state already shown"
+                # Start state is reportable only as a revert from something already shown.
+                assert state != last_state.get(i, start[i]), f"index {i} reported at a state already shown"
                 last_state[i] = state
-        for i in changed:
-            assert last_state[i] == final[i], f"index {i} was last shown at {last_state[i]}, ended at {final[i]}"
+        for i, shown in last_state.items():
+            assert shown == final[i], f"index {i} was last shown at {shown}, ended at {final[i]}"
     finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _record_apply_dirty(window):
+    """Wraps window._apply_dirty; returns the list each call appends its
+    index set to. Undo with `del window._apply_dirty`."""
+    calls: list[set[int]] = []
+    original = window._apply_dirty
+
+    def recording(dirty_indices) -> None:
+        calls.append(set(dirty_indices))
+        original(dirty_indices)
+
+    window._apply_dirty = recording
+    return calls
+
+
+def test_a_tile_returned_to_its_stroke_start_state_is_repainted() -> None:
+    """Batch F Track S's intended behaviour change. Raising (40, 40) from 1
+    to 2 ramps (41, 40) from 0 to 1; a Shift-lower on (41, 40) then takes
+    both back to their start states. The old O(map) scan never re-reported
+    a tile once it matched the start again, so both stayed stale on screen."""
+    from PyQt5.QtCore import Qt
+
+    from descape.edit_history import tile_state
+
+    window = _edit_window("set_level")
+    try:
+        mm = window.scenario.map_manager
+        window.elevation_level_spin.setValue(1)
+        _stroke(window, 40, 40)
+        window._on_tool_selected("elevation")
+        start = {i: tile_state(mm.terrain[i]) for i in (40 * mm.map_width + 40, 40 * mm.map_width + 41)}
+        hill, ramp = start
+
+        calls = _record_apply_dirty(window)
+        try:
+            window.on_edit_stroke_start()
+            window.on_edit_stroke_tile(40, 40, 0)
+            assert mm.get_tile(40, 40).elevation == 2 and mm.get_tile(41, 40).elevation == 1
+            window.on_edit_stroke_tile(41, 40, Qt.ShiftModifier)
+            assert mm.get_tile(40, 40).elevation == 1 and mm.get_tile(41, 40).elevation == 0
+            window.on_edit_stroke_end()
+        finally:
+            del window._apply_dirty
+
+        assert {hill, ramp} <= calls[0]
+        assert {hill, ramp} <= calls[1], "the revert to the stroke-start state was not repainted"
+        assert {i: tile_state(mm.terrain[i]) for i in start} == start
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _full_scan_guard(window, events):
+    """Drives one stroke of `events` ((tiles, modifiers) per mouse event) and
+    asserts, after each, that _apply_dirty got exactly the full-map oracle:
+    every index whose state differs from the last state handed over, or from
+    the stroke-start state if never handed over."""
+    from descape.edit_history import tile_state
+
+    mm = window.scenario.map_manager
+    start = [tile_state(t) for t in mm.terrain]
+    ref_seen: dict[int, tuple[int, int, int]] = {}
+    calls = _record_apply_dirty(window)
+    try:
+        window.on_edit_stroke_start()
+        for n, (tiles, modifiers) in enumerate(events):
+            before = len(calls)
+            window.on_edit_stroke_tiles(tiles, modifiers)
+            got = set().union(*calls[before:])
+            ref = set()
+            for i, t in enumerate(mm.terrain):
+                state = tile_state(t)
+                if state != ref_seen.get(i, start[i]):
+                    ref_seen[i] = state
+                    ref.add(i)
+            assert got == ref, f"event {n}: missing {sorted(ref - got)[:8]}, extra {sorted(got - ref)[:8]}"
+        window.on_edit_stroke_end()
+    finally:
+        del window._apply_dirty
+    return calls
+
+
+def _path(y: int, x0: int, n: int) -> list[tuple[int, int]]:
+    return [(x0 + k, y) for k in range(n)]
+
+
+def _guard_case(case: str):
+    from PyQt5.QtCore import Qt
+
+    shift = Qt.ShiftModifier
+    if case == "draw":
+        window = _edit_window("draw")
+        window.brush_size_spin.setValue(3)
+        events = [(_path(40, 30 + 3 * k, 3), 0) for k in range(5)]
+    elif case == "beach_draw":
+        window = _beach_window(beach_id=None, width=2)
+        window.brush_size_spin.setValue(3)
+        events = [(_path(40, 30 + 3 * k, 3), 0) for k in range(5)]
+    else:
+        # A level-4 hill first, so Elevate's propagation has slopes to work on.
+        window = _edit_window("set_level")
+        window.brush_size_spin.setValue(3)
+        window.elevation_level_spin.setValue(4)
+        _stroke(window, 40, 40)
+        if case == "set_level":
+            window.elevation_level_spin.setValue(1)
+            events = [(_path(40, 34 + 2 * k, 2), 0) for k in range(6)]
+        else:
+            window._on_tool_selected("elevation")
+            if case == "elevate":
+                events = [(_path(40, 34 + 2 * k, 2), 0) for k in range(6)]
+            elif case == "lower":
+                events = [(_path(40, 34 + 2 * k, 2), shift) for k in range(6)]
+            else:  # Shift toggled mid-drag, back and forth over the hill
+                events = [(_path(40 + (k % 2), 34 + 2 * k, 2), shift if k % 2 else 0) for k in range(6)]
+    return window, events
+
+
+@pytest.mark.parametrize("case", ["draw", "beach_draw", "elevate", "lower", "shift_toggle", "set_level"])
+def test_live_stroke_repaint_set_equals_a_full_map_scan(case) -> None:
+    window, events = _guard_case(case)
+    try:
+        calls = _full_scan_guard(window, events)
+        assert sum(len(c) for c in calls) > len(events), "the stroke repainted almost nothing; the guard is vacuous"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_full_scan_guard_catches_an_unreported_beach_ring(monkeypatch) -> None:
+    """Control: the ring's indices dropped from `touched` must fail the guard."""
+    import descape.viewer as viewer_module
+
+    real = viewer_module.apply_beach_ring
+    monkeypatch.setattr(viewer_module, "apply_beach_ring", lambda *a, **k: (real(*a, **k), [])[1])
+    window, events = _guard_case("beach_draw")
+    try:
+        with pytest.raises(AssertionError, match="missing"):
+            _full_scan_guard(window, events)
+    finally:
+        if window.edit_history.in_stroke:
+            window.on_edit_stroke_end()
         window.edit_history.mark_saved()
         window.close()
 

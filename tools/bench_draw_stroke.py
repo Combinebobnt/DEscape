@@ -10,7 +10,8 @@ mip 0 first -- exactly what being on screen does before any edit.
 
 Each step is broken into phases so a per-stroke stutter can be attributed to
 a cause instead of guessed at:
-  stroke_scan      EditHistory.stroke_dirty_indices
+  stroke_dirty     EditHistory.stroke_new_dirty over the tiles the step
+                    wrote (the viewer's own call, O(touched))
   bbox             dirty_screen_bbox_iso/_sloped (Flat: a bare tile-rect
                     union, no elevation term, so this phase is ~0 there)
   refresh_sources  cache._refresh_source_caches(), fed the elevation-changed
@@ -44,7 +45,7 @@ chunks before patch() and its patched chunks after. bbox-w/bbox-h are
 reported separately because only y carries the elevation sweep.
 
 ms/step is felt latency, the number to optimize. ms/dirty-tile divides by
-the count that matters for the cost model: stroke_dirty_indices dedupes the
+the count that matters for the cost model: stroke_new_dirty dedupes the
 stroke's own footprint, so a one-tile cursor advance at brush 9 adds only
 the leading edge, not the whole brush's tile count -- the cost is
 sublinear-per-tile even where ms/step looks flat. Both are reported so
@@ -66,7 +67,7 @@ sys.path.insert(0, str(ROOT))
 from descape import composite_backend, iso_geometry, render
 from descape.beach_edges import apply_beach_ring
 from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
-from descape.edit_history import EditHistory, tile_state
+from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tiles_elevation
 from descape.render import (
     dirty_screen_bbox_iso,
@@ -238,7 +239,7 @@ def _run_stroke(
         if not footprint:
             continue
         if edit == "elevation":
-            set_tiles_elevation(
+            touched = set_tiles_elevation(
                 mm, [(tx, ty, min(iso_geometry.MAX_ELEVATION, mm.get_tile(tx, ty).elevation + 1)) for tx, ty in footprint]
             )
         else:
@@ -251,19 +252,16 @@ def _run_stroke(
                 tile = mm.get_tile(tx, ty)
                 tile.terrain_id = paint_id
                 tile.layer = -1
+            touched = {ty * mm.map_width + tx for tx, ty in footprint}
             if beach_width:
-                apply_beach_ring(mm, footprint, paint_id, None, beach_width)
+                touched.update(apply_beach_ring(mm, footprint, paint_id, None, beach_width))
         # The CORE only, never the ring -- see the water/beach plan's hazard
         # 1, and ViewerWindow.on_edit_stroke_tile, which this mirrors.
         stroke_painted.update(footprint)
 
         t0 = time.perf_counter()
-        all_dirty = hist.stroke_dirty_indices(mm.terrain)
+        new_dirty = hist.stroke_new_dirty(touched, mm.terrain, stroke_seen_state)
         scan_ms.append(_ms(time.perf_counter() - t0))
-
-        new_dirty = {i for i in all_dirty if tile_state(mm.terrain[i]) != stroke_seen_state.get(i)}
-        for i in all_dirty:
-            stroke_seen_state[i] = tile_state(mm.terrain[i])
         dirty_counts.append(len(new_dirty))
 
         if style == "flat":
@@ -322,7 +320,7 @@ def _run_stroke(
         f"bbox-px={mean(bbox_areas):9.0f} bbox-w={mean(bbox_ws):6.0f} bbox-h={mean(bbox_hs):6.0f} "
         + (f"diff-floor-h={mean(floor_hs):6.0f} " if edit == "elevation" else "")
         + "| "
-        f"scan={mean(scan_ms):5.2f} bbox={mean(bbox_ms):5.2f} "
+        f"dirty={mean(scan_ms):5.2f} bbox={mean(bbox_ms):5.2f} "
         f"refresh_sources={mean(phase_totals['refresh_sources']):6.2f} "
         f"level_rebuild={mean(phase_totals['level_rebuild']):6.2f} "
         f"bystander_scan={mean(phase_totals['bystander_scan']):5.2f} "

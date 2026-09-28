@@ -18,12 +18,16 @@ Rules, each with its reason:
 - A reference_id placed twice: the first unit wins and the id goes in
   `duplicates`, so describe() can say so.
 - None and -1 both mean unset.
+- patch_reference_index() updates a built index per render_cache.UnitSplice
+  in place and refuses (returns False) any splice whose outcome depends on
+  list order: a duplicated id, an add onto a present id, a remove of an
+  absent one, or an owner that does not match. The caller then rebuilds.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
@@ -47,6 +51,8 @@ class UnitRef:
 class ReferenceIndex:
     by_id: Mapping[int, UnitRef]
     duplicates: frozenset[int]
+    # The dict behind by_id's proxy, for patch_reference_index(); None = not patchable.
+    _entries: dict[int, UnitRef] | None = field(default=None, compare=False, repr=False)
 
     def get(self, ref_id: Any) -> UnitRef | None:
         return self.by_id.get(ref_id) if isinstance(ref_id, int) and not isinstance(ref_id, bool) else None
@@ -72,14 +78,58 @@ def build_reference_index(loaded) -> ReferenceIndex:
         if ref_id in by_id:
             duplicates.add(ref_id)
             continue
-        by_id[ref_id] = UnitRef(
-            reference_id=ref_id,
-            player_id=player_id,
-            unit_const=int(unit.unit_const),
-            own_tile=(int(unit.x), int(unit.y)),
-            bounds=unit_tile_bounds(unit, width, height),
-        )
-    return ReferenceIndex(MappingProxyType(by_id), frozenset(duplicates))
+        by_id[ref_id] = _unit_ref(ref_id, player_id, unit, width, height)
+    return ReferenceIndex(MappingProxyType(by_id), frozenset(duplicates), by_id)
+
+
+def _unit_ref(ref_id: int, player_id: int, unit, width: int, height: int) -> UnitRef:
+    return UnitRef(
+        reference_id=ref_id,
+        player_id=player_id,
+        unit_const=int(unit.unit_const),
+        own_tile=(int(unit.x), int(unit.y)),
+        bounds=unit_tile_bounds(unit, width, height),
+    )
+
+
+def patch_reference_index(index: ReferenceIndex, loaded, changed: Iterable[Any]) -> bool:
+    """Brings `index` in step with one unit edit, mutating it in place.
+
+    `changed` is the edit's render_cache.UnitSplice list, applied in order
+    (a membership undo lists its removals before its arrivals, and a shared
+    id relies on that). old_own_tile None is an add, new_own_tile None a
+    removal, anything else a move, field edit, const swap or reassign; the
+    tile lists are never read, since an off-map unit has none either way.
+
+    False means some splice's result depends on list order or disagrees
+    with the index, which is then left part-patched: the caller must drop
+    it and rebuild. Only for an index no one else holds (the viewer's own).
+    """
+    entries = index._entries
+    if entries is None:
+        return False
+    mm = loaded.map_manager
+    width, height = mm.map_width, mm.map_height
+    for splice in changed:
+        unit = splice.unit
+        ref_id = int(unit.reference_id)
+        # First-wins among duplicates follows player and list order, which reassign and remove change.
+        if ref_id in index.duplicates:
+            return False
+        existing = entries.get(ref_id)
+        if splice.old_own_tile is None:
+            if existing is not None:
+                return False
+            entries[ref_id] = _unit_ref(ref_id, splice.player_id, unit, width, height)
+            continue
+        owner = splice.player_id if splice.old_player_id is None else splice.old_player_id
+        if existing is None or existing.player_id != owner:
+            return False
+        if splice.new_own_tile is None:
+            del entries[ref_id]
+        else:
+            entries[ref_id] = _unit_ref(ref_id, splice.player_id, unit, width, height)
+    return True
 
 
 def unit_reference_fields(definition: Any, presentation: Mapping[str, str]) -> tuple[str, ...]:

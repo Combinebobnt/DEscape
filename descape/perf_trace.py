@@ -15,13 +15,21 @@ A step is one mouse event that entered new tiles. Through v0.8 it was one
 cursor tile; after it, an event's gap-filled cursor path (Draw, Elevate,
 Set Elevation) is one step, so ms/step can read higher than older logs at
 the same per-tile cost. Compare per-tile cost across that change with care.
+Logs from before Batch F Track S call the stroke bookkeeping phase
+stroke_scan (an O(map) scan); it is stroke_dirty now, O(tiles written).
 
 repaint is tracked separately from the step-nested phases (pick, highlight,
-stroke_scan, bbox, patch, invalidate): Qt's paint() fires on a paint event
+stroke_dirty, bbox, patch, invalidate): Qt's paint() fires on a paint event
 AFTER invalidate_region() schedules one, not synchronously inside
 mouseMoveEvent, so it never nests inside a step() boundary -- reported as
 its own call count/total/max instead of being forced into a ms/step
 column it cannot honestly belong to.
+
+Margin-warm ticks (descape.margin_warm) are idle-time work outside any
+step, so they are reported the same way, as a `warm:` bucket on the `perf
+view` line. It shows the longest tick and the longest single chunk
+separately: the tick is budgeted, so only the chunk figure says whether one
+chunk alone is too slow to fit a budget.
 
 A drag is bracketed by MapView's begin_drag()/end_drag(). Hover moves time
 pick/highlight too, so begin_drag() drops what hover left in the open step,
@@ -47,6 +55,11 @@ _step_totals: list[float] = []
 _phase_sums: dict[str, float] = {}
 _phase_order: list[str] = []
 _repaint_durations: list[float] = []
+# One (tick_ms, chunks, slowest_chunk_ms) per margin-warm tick.
+_warm_ticks: list[tuple[float, int, float]] = []
+# Kernel ms per chunk run on a margin-warm worker thread, timed there and
+# recorded on arrival, so this module stays GUI-thread-only.
+_warm_worker: list[float] = []
 _armed_label: str | None = None
 _drag_active = False
 # Called on every repaint recorded outside a drag; viewer_canvas installs a
@@ -99,6 +112,27 @@ def phase(name: str):
     return _PhaseTimer(name)
 
 
+def warm_tick(tick_ms: float, chunks: int, slowest_chunk_ms: float) -> None:
+    """Records one margin-warm tick. Like a repaint, it restarts the idle
+    flush outside a drag, so the `perf view` line waits for the warm to go
+    quiet instead of splitting it."""
+    if not _enabled:
+        return
+    _warm_ticks.append((tick_ms, chunks, slowest_chunk_ms))
+    if _idle_scheduler is not None and not _drag_active:
+        _idle_scheduler()
+
+
+def warm_worker(kernel_ms: float) -> None:
+    """Records one worker-thread chunk kernel, on the GUI thread once its
+    result arrives. Same idle-flush restart as warm_tick()."""
+    if not _enabled:
+        return
+    _warm_worker.append(kernel_ms)
+    if _idle_scheduler is not None and not _drag_active:
+        _idle_scheduler()
+
+
 def arm(label: str) -> None:
     """Records a pending flush label for the next first_paint_done() call --
     the load path's way of capturing the deferred first-composite cost
@@ -141,12 +175,35 @@ def _repaint_summary() -> str:
     return f"repaint: {len(r)} calls, {sum(r):.0f}ms total (max {max(r):.1f})"
 
 
+def _warm_summary() -> str:
+    """`max chunk` is GUI-thread time per chunk; for a worker chunk that is
+    its preparation only, with the kernel under `worker`."""
+    w, k = _warm_ticks, _warm_worker
+    parts = []
+    if w:
+        parts.append(
+            f"{len(w)} ticks, {sum(t[1] for t in w)} chunks, {sum(t[0] for t in w):.0f}ms total "
+            f"(max tick {max(t[0] for t in w):.1f}, max chunk {max(t[2] for t in w):.1f})"
+        )
+    if k:
+        parts.append(f"worker {len(k)} chunks, {sum(k):.0f}ms total (max {max(k):.1f})")
+    return "warm: " + ", ".join(parts)
+
+
 def _flush_view() -> None:
-    """Logs pending repaints as a `perf view` line and clears only those."""
-    global _repaint_durations
+    """Logs pending repaints and warm ticks as a `perf view` line and clears
+    only those."""
+    global _repaint_durations, _warm_ticks, _warm_worker
+    parts = []
     if _repaint_durations:
-        debug_log.log(f"perf view: {_repaint_summary()}, composite {composite_backend.active_backend()}")
+        parts.append(_repaint_summary())
+    if _warm_ticks or _warm_worker:
+        parts.append(_warm_summary())
+    if parts:
+        debug_log.log(f"perf view: {', '.join(parts)}, composite {composite_backend.active_backend()}")
         _repaint_durations = []
+        _warm_ticks = []
+        _warm_worker = []
 
 
 def begin_drag() -> None:

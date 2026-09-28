@@ -39,10 +39,17 @@ Three things measured per real corpus file, per style, per mip level:
   fact 3 is right that the layer build dominates.
 
 `--per-chunk` replaces all of the above with a per-chunk distribution: one
-timed get_chunk() per chunk of the mip-0 grid, per style, over `--repeats`
-fresh caches (see _bench_per_chunk). That is the margin-warm tick cost the
-single-rect columns above only approximate (an unaligned 512px rect can
-touch up to four chunks).
+timed get_chunk() per chunk of the mip-0 grid (or `--mip N`'s), per style,
+over `--repeats` fresh caches (see _bench_per_chunk). That is the margin-warm
+unit of work the single-rect columns above only approximate (an unaligned
+512px rect can touch up to four chunks). A margin-warm tick runs as many
+chunks as fit margin_warm.BUDGET_MS, so `--per-tick` drains the same grid
+through a real MarginWarmer and reports what each tick costs (see
+_bench_per_tick).
+
+A level warm in both modes includes the unit-pack pre-derive the app runs in
+idle ticks after it (render_cache.pack_warm_job); `--lazy-pack` skips it, so
+the chunk figures include first-touch derivation instead.
 """
 
 from __future__ import annotations
@@ -55,7 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, composite_backend, render, unit_sprites
+from descape import asset_source, composite_backend, margin_warm, perf_trace, render, unit_sprites
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 
@@ -92,8 +99,24 @@ def _sloped_cache(scenario) -> SlopedChunkCache:
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True)
 
 
+# --lazy-pack: skip the unit-pack pre-derive, so first-touch chunks derive
+# their own tiles (the pre-2026-09-27 path), for an A/B in one build.
+LAZY_PACK = False
+_APP = None
+
+
+def _pack_warm(cache, mip: int) -> None:
+    """Drives the LevelWarmer's pack derive to completion, as the app does
+    in idle ticks after a level warm."""
+    job = None if LAZY_PACK else cache.pack_warm_job(mip)
+    if job is not None:
+        for _ in job.gen:
+            pass
+
+
 def _iso_level_warm(cache: IsoChunkCache, mip: int) -> None:
     cache._level(mip)
+    _pack_warm(cache, mip)
 
 
 def _flat_level_warm(cache: FlatChunkCache, mip: int) -> None:
@@ -197,8 +220,8 @@ def _bench_sloped(scenario) -> list[str]:
 
 
 def _sloped_level_warm(cache: SlopedChunkCache, mip: int) -> None:
-    # Construction already built everything (see _bench_sloped's docstring).
-    pass
+    # Construction built everything but the pack (see _bench_sloped's docstring).
+    _pack_warm(cache, mip)
 
 
 _PER_CHUNK_STYLES = {
@@ -222,11 +245,13 @@ def _dist(label: str, samples: list[float]) -> str:
     )
 
 
-def _bench_per_chunk(scenario, style: str, repeats: int) -> list[str]:
-    """--per-chunk mode: one timed get_chunk(0, cx, cy) per chunk of the
-    whole mip-0 grid, on a level-warm cache -- exactly MarginWarmer.tick()'s
-    unit of work. Mip 0 because it is Sloped's only level, so it is the one
-    level all three styles can be compared on.
+def _bench_per_chunk(scenario, style: str, repeats: int, mip: int = 0) -> list[str]:
+    """--per-chunk mode: one timed get_chunk(mip, cx, cy) per chunk of the
+    whole level-`mip` grid, on a level-warm cache -- exactly the unit of
+    work MarginWarmer.tick() packs into its budget. Mip 0 by default because it is
+    Sloped's only level, so it is the one level all three styles can be
+    compared on; --mip takes the cache's own level index (negative is
+    coarser) and a style without that level is reported and skipped.
 
     Run 1 starts from cleared sprite caches (cold); later runs build a fresh
     chunk cache but keep the process-wide sprite caches (warm), which is the
@@ -236,20 +261,24 @@ def _bench_per_chunk(scenario, style: str, repeats: int) -> list[str]:
     make_cache, level_warm = _PER_CHUNK_STYLES[style]
     cold: dict[str, list[float]] = {"all": [], "centre": []}
     warm: dict[str, list[float]] = {"all": [], "centre": []}
-    lines = [f"    {style} (mip 0, {repeats} run(s)):"]
+    lines = []
     for run in range(repeats):
         if run == 0:
             unit_sprites.clear_caches()
         start = time.perf_counter()
         cache = make_cache(scenario)
-        level_warm(cache, 0)
+        if mip not in cache.mip_levels():
+            return [f"    {style}: no mip {mip} (levels {cache.mip_levels()}), skipped"]
+        if run == 0:
+            lines.append(f"    {style} (mip {mip}, tile_px {cache.mip_tile_px(mip)}, {repeats} run(s)):")
+        level_warm(cache, mip)
         setup = time.perf_counter() - start
-        canvas_w, canvas_h = cache.canvas_dims(0)
+        canvas_w, canvas_h = cache.canvas_dims(mip)
         nx, ny = -(-canvas_w // cache.chunk_px), -(-canvas_h // cache.chunk_px)
         into = cold if run == 0 else warm
         for cy in range(ny):
             for cx in range(nx):
-                t = _time(lambda c=cache, cx=cx, cy=cy: c.get_chunk(0, cx, cy))
+                t = _time(lambda c=cache, cx=cx, cy=cy: c.get_chunk(mip, cx, cy))
                 into["all"].append(t)
                 if nx // 4 <= cx < nx - nx // 4 and ny // 4 <= cy < ny - ny // 4:
                     into["centre"].append(t)
@@ -267,12 +296,96 @@ def _bench_per_chunk(scenario, style: str, repeats: int) -> list[str]:
     return lines
 
 
-def bench_file_per_chunk(path: Path, styles: list[str], repeats: int) -> str:
+def _bench_per_tick(scenario, style: str, repeats: int, mip: int = 0) -> list[str]:
+    """--per-tick mode: the whole level-`mip` grid queued on a real
+    MarginWarmer and drained by the real Qt event loop (timer ticks, worker
+    results), so each figure is what one idle tick costs on the GUI thread
+    under margin_warm.BUDGET_MS. Tick figures come from Perf Trace's own
+    warm_tick hook. "chunk" is the GUI-thread cost per chunk: get_chunk(),
+    or prepare_chunk_job() for a chunk handed to a worker; "worker" is the
+    kernel on the pool. "drain" is wall time to warm the whole grid.
+    `--workers 0` is the synchronous (pre-T2) path. Same cold/warm runs as
+    --per-chunk."""
+    from PyQt5.QtCore import QEventLoop
+    from PyQt5.QtWidgets import QApplication
+
+    # Module-held: a QApplication freed between files strands margin_warm's
+    # process-wide result bridge, and the next file's drain waits forever.
+    global _APP
+    app = _APP = QApplication.instance() or QApplication(["bench_preload"])
+    make_cache, level_warm = _PER_CHUNK_STYLES[style]
+    ticks: dict[str, list[float]] = {"cold": [], "warm": []}
+    per_tick: dict[str, list[int]] = {"cold": [], "warm": []}
+    chunks: dict[str, list[float]] = {"cold": [], "warm": []}
+    worker: dict[str, list[float]] = {"cold": [], "warm": []}
+    drains: dict[str, list[float]] = {"cold": [], "warm": []}
+    lines = []
+    perf_trace.enable(True)
+    for run in range(repeats):
+        if run == 0:
+            unit_sprites.clear_caches()
+        cache = make_cache(scenario)
+        if mip not in cache.mip_levels():
+            return [f"    {style}: no mip {mip} (levels {cache.mip_levels()}), skipped"]
+        if run == 0:
+            lines.append(
+                f"    {style} (mip {mip}, tile_px {cache.mip_tile_px(mip)}, "
+                f"budget {margin_warm.BUDGET_MS}ms, {margin_warm.WORKERS} worker(s), {repeats} run(s)):"
+            )
+        setup = _time(lambda c=cache: level_warm(c, mip))
+        canvas_w, canvas_h = cache.canvas_dims(mip)
+        nx, ny = -(-canvas_w // cache.chunk_px), -(-canvas_h // cache.chunk_px)
+        bucket = "cold" if run == 0 else "warm"
+        lines.append(f"      run {run + 1}: level warm {_ms(setup)} (idle ticks in-app, not per-chunk)")
+        # A None prepare is followed by get_chunk() for the same chunk: one sample.
+        declined = [False]
+        for name in ("get_chunk", "prepare_chunk_job"):
+            real = getattr(cache, name)
+
+            def timed(*a, _real=real, _into=chunks[bucket], _name=name):
+                t0 = time.perf_counter()
+                result = _real(*a)
+                elapsed = time.perf_counter() - t0
+                if _name == "get_chunk" and declined[0]:
+                    _into[-1] += elapsed
+                else:
+                    _into.append(elapsed)
+                declined[0] = _name == "prepare_chunk_job" and result is None
+                return result
+
+            setattr(cache, name, timed)
+        perf_trace._warm_ticks.clear()
+        perf_trace._warm_worker.clear()
+        warmer = margin_warm.MarginWarmer()
+        t0 = time.perf_counter()
+        warmer.start(cache, mip, [(cx, cy) for cy in range(ny) for cx in range(nx)])
+        while warmer.is_active:
+            app.processEvents(QEventLoop.WaitForMoreEvents)
+        drains[bucket].append(time.perf_counter() - t0)
+        ticks[bucket].extend(t[0] / 1000 for t in perf_trace._warm_ticks)
+        per_tick[bucket].extend(t[1] for t in perf_trace._warm_ticks)
+        worker[bucket].extend(k / 1000 for k in perf_trace._warm_worker)
+        del cache
+    perf_trace.enable(False)
+    for bucket in ("cold", "warm"):
+        if not ticks[bucket]:
+            continue
+        mean_chunks = sum(per_tick[bucket]) / len(per_tick[bucket])
+        lines.append(f"      {_dist(f'{bucket} tick', ticks[bucket])} | {mean_chunks:.1f} chunks/tick")
+        lines.append(f"      {_dist(f'{bucket} chunk', chunks[bucket])}")
+        if worker[bucket]:
+            lines.append(f"      {_dist(f'{bucket} worker', worker[bucket])}")
+        lines.append(f"      {bucket} drain: {' / '.join(_ms(d) for d in drains[bucket])}")
+    return lines
+
+
+def bench_file_per_chunk(path: Path, styles: list[str], repeats: int, mip: int = 0, per_tick: bool = False) -> str:
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
     lines = [f"  {path.name} ({mm.map_width}x{mm.map_height})"]
+    bench = _bench_per_tick if per_tick else _bench_per_chunk
     for style in styles:
-        lines.extend(_bench_per_chunk(scenario, style, repeats))
+        lines.extend(bench(scenario, style, repeats, mip))
     return "\n".join(lines)
 
 
@@ -299,11 +412,30 @@ def main() -> None:
         help="Time get_chunk() over the whole mip-0 grid per style instead (margin-warm tick cost)",
     )
     parser.add_argument(
-        "--styles", default="stepped,flat,sloped",
-        help="Comma-separated styles for --per-chunk (default: all three)",
+        "--per-tick", action="store_true",
+        help="Drain the whole grid through a real MarginWarmer and time each budgeted tick instead",
     )
-    parser.add_argument("--repeats", type=int, default=3, help="Fresh caches per style for --per-chunk")
+    parser.add_argument(
+        "--styles", default="stepped,flat,sloped",
+        help="Comma-separated styles for --per-chunk/--per-tick (default: all three)",
+    )
+    parser.add_argument("--repeats", type=int, default=3, help="Fresh caches per style for --per-chunk/--per-tick")
+    parser.add_argument(
+        "--mip", type=int, default=0,
+        help="Level index for --per-chunk/--per-tick (the cache's own: 0 is the reference, negative is coarser)",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=margin_warm.WORKERS,
+        help=f"Kernel worker threads for --per-tick (default {margin_warm.WORKERS}; 0 keeps every chunk on the GUI thread)",
+    )
+    parser.add_argument(
+        "--lazy-pack", action="store_true",
+        help="Skip the unit-pack pre-derive after the level warm, so chunks derive their own tiles on first touch",
+    )
     args = parser.parse_args()
+    margin_warm.WORKERS = args.workers
+    global LAZY_PACK
+    LAZY_PACK = args.lazy_pack
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     unknown = [s for s in styles if s not in _PER_CHUNK_STYLES]
     if unknown:
@@ -327,7 +459,10 @@ def main() -> None:
     print(f"Chunk-preload bench -- install {asset_source.get_install_path()}")
     print(composite_backend.describe())
     for path in files:
-        print(bench_file_per_chunk(path, styles, args.repeats) if args.per_chunk else bench_file(path))
+        if args.per_chunk or args.per_tick:
+            print(bench_file_per_chunk(path, styles, args.repeats, args.mip, per_tick=args.per_tick))
+        else:
+            print(bench_file(path))
     print(f"\nMeasured {len(files)} file(s). See this module's docstring for what each line means.")
 
 

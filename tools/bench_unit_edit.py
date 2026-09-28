@@ -41,6 +41,12 @@ install) and mips 0 and 1 resident before each edit:
     wholesale (changed=None) or with one UnitSplice per unit, plus the
     lazy source rebuild each style owes on its resident levels.
 
+--bbox-only runs just the sprite-bbox plan's Step 0 row instead: a Move of
+the largest movable building, patching today's MAX_SPRITE_REACH-padded bbox
+against the one tools/_tight_bbox.py sizes from real sprite extents, and, on
+a build that has them, the one the caches' own sprite_extent_before()/after()
+size (the `lane` row, what the viewer's tight path runs).
+
 Informational only, matching tools/bench_pick_plane_patch.py's convention:
 always runs, never pass/fail. Read the ratio each phase takes of the total,
 not the absolute ms -- this machine drifts 15-20% across a run.
@@ -342,6 +348,123 @@ def _convert_section(path: Path, style: str, chunk_px: int) -> list[str]:
     return lines
 
 
+def _big_movable_building(scenario) -> tuple[int, int, object]:
+    """(player, index, unit): the non-GAIA unit with the largest span whose
+    footprint, and that footprint shifted +1 in x, hold no other unit, and
+    whose const splices, so a Move of it takes the splice path."""
+    manager = scenario.unit_manager
+    mm = scenario.map_manager
+    occupancy: dict[tuple[int, int], list] = {}
+    for units in manager.units:
+        for u in units:
+            for tile in render.unit_occupied_tiles(u, mm.map_width, mm.map_height) or ():
+                occupancy.setdefault(tile, []).append(u)
+    best = None
+    for player in range(1, len(manager.units)):
+        for index, u in enumerate(manager.units[player]):
+            if u.unit_const in unit_sprites.wall_connector_consts():
+                continue
+            if unit_sprites.rotation_variant_eligible(u.unit_const):
+                continue
+            tiles = render.unit_occupied_tiles(u, mm.map_width, mm.map_height)
+            if not tiles or int(u.x) + 2 >= mm.map_width:
+                continue
+            shifted = {(x + 1, y) for x, y in tiles}
+            if any(o is not u for t in {*tiles, *shifted} for o in occupancy.get(t, ())):
+                continue
+            span = len(tiles)
+            if best is None or span > best[0]:
+                best = (span, player, index, u)
+    if best is None:
+        raise RuntimeError("no movable building found")
+    return best[1], best[2], best[3]
+
+
+def _bbox_section(path: Path, style: str, chunk_px: int) -> list[str]:
+    """Sprite-bbox plan Step 0's single-unit row: Move a large building +1
+    tile with sprites on, then patch today's reach-padded bbox or the tight
+    one (tools/_tight_bbox.py), timing splice + bbox + patch. Mip 0 only is
+    resident and visible, the cache-only analogue of a zoomed-in view."""
+    import _tight_bbox
+
+    from descape import render_cache
+
+    REACH_FALLBACK = getattr(render_cache, "REACH_FALLBACK", None)
+    scenario = load_map_and_units(path)
+    cache = _make_cache(style, scenario, chunk_px, sprites=True)
+    model = UnitEditModel(scenario)
+    history = EditHistory()
+    player, index, unit = _big_movable_building(scenario)
+    orig_x, orig_y, orig_z = unit.x, unit.y, unit.z
+    if style == "stepped":
+        cache._level(0)
+    # A viewport centred on the building, so the patch lands in resident chunks.
+    own, _tiles = _footprint(scenario, unit)
+    bx0, by0, bx1, by1 = _tight_bbox.pre_extent(
+        cache, [UnitSplice(player, index, unit, own, own, _tiles, _tiles)], [0]
+    )
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    vw, vh = min(VIEWPORT_W, canvas_w), min(VIEWPORT_H, canvas_h)
+    vx0 = max(0, min(canvas_w - vw, (bx0 + bx1 - vw) // 2))
+    vy0 = max(0, min(canvas_h - vh, (by0 + by1 - vh) // 2))
+    viewport = (vx0, vy0, vx0 + vw, vy0 + vh)
+    cache.render_rect(*viewport)
+    totals: dict[str, float] = {}
+    shown: dict[str, str] = {}
+
+    def run(mode: str, dx: float, timed: bool) -> None:
+        old_own, old_tiles = _footprint(scenario, unit)
+        model.begin_unit_edit([player])
+        model.set_position(unit, orig_x + dx, orig_y, orig_z)
+        model.commit_unit_edit("bench bbox move", history, push=False)
+        new_own, new_tiles = _footprint(scenario, unit)
+        changed = [UnitSplice(player, index, unit, old_own, new_own, old_tiles, new_tiles)]
+        t0 = time.perf_counter()
+        fallback = "-"
+        if mode == "tight":
+            fallback = _tight_bbox.fallback_reason(cache, changed, 0)
+            pre = _tight_bbox.pre_extent(cache, changed, [0])
+        elif mode == "lane":
+            pre = cache.sprite_extent_before(changed, 0)
+        cache.invalidate_units(changed)
+        if mode == "tight" and fallback == _tight_bbox.NONE:
+            post = _tight_bbox.post_extent(cache, changed, [0])
+            bbox = _tight_bbox.tight_bbox(cache, changed, pre, post)
+        elif mode == "lane" and pre is not REACH_FALLBACK:
+            fallback = "none"
+            post = cache.sprite_extent_after(changed, 0)
+            bbox = _tight_bbox.tight_bbox(cache, changed, pre, post)
+        else:
+            fallback = "reach" if mode == "lane" else fallback
+            bbox = _tight_bbox.dirty_bbox(cache, changed, with_sprites=True)
+        cache.patch(bbox, elevation_changed=set())
+        elapsed = (time.perf_counter() - t0) * 1000
+        if timed:
+            totals[mode] = totals.get(mode, 0.0) + elapsed
+        today = _tight_bbox.dirty_bbox(cache, changed, with_sprites=True)
+        boxes[mode] = bbox
+        shown[mode] = f"fb {fallback} {_tight_bbox.describe(cache, bbox)} sub {_tight_bbox.contains(today, bbox)}"
+        cache.render_rect(*viewport)
+
+    # lane: the shipped cache API (sprite_extent_before/after), on a build that has it.
+    modes = ("today", "tight", *(("lane",) if hasattr(cache, "sprite_extent_before") else ()))
+    boxes: dict[str, tuple] = {}
+    for mode in modes:
+        run(mode, 1, False)  # warm-up
+        run(mode, 0, False)
+        for _ in range(SPRITE_REPEATS):
+            run(mode, 1, True)
+            run(mode, 0, True)
+    lines = [f"  [{style}, sprites on] Move const={unit.unit_const} player={player} +1 tile, mip 0 resident"]
+    lines.extend(
+        f"    {mode:>6} splice+bbox+patch {totals[mode] / (2 * SPRITE_REPEATS):7.2f}ms | {shown[mode]}"
+        for mode in modes
+    )
+    if "lane" in boxes:
+        lines.append(f"    lane bbox == tight bbox (last move back): {boxes['lane'] == boxes['tight']}")
+    return lines
+
+
 def bench(path: Path, chunk_px: int = DEFAULT_CHUNK_PX) -> str:
     lines = [f"  {path.name}"]
 
@@ -375,12 +498,18 @@ def main() -> None:
         "scenario", type=Path, nargs="?", default=ROOT / "examples" / CORPUS_FILE, help="A .aoe2scenario file"
     )
     parser.add_argument("--chunk-px", type=int, default=DEFAULT_CHUNK_PX)
+    parser.add_argument("--bbox-only", action="store_true", help="Only the sprite-bbox single-unit rows")
     args = parser.parse_args()
 
     if not args.scenario.exists():
         print(f"no such file: {args.scenario}", file=sys.stderr)
         sys.exit(1)
 
+    if args.bbox_only:
+        print(f"  {args.scenario.name}")
+        for style in ("stepped", "sloped"):
+            print("\n".join(_bbox_section(args.scenario, style, args.chunk_px)), flush=True)
+        return
     print(bench(args.scenario, args.chunk_px))
 
 

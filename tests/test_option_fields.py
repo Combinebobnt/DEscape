@@ -199,9 +199,9 @@ def test_every_spec_carries_a_tooltip() -> None:
         assert spec.tooltip.strip(), f"{spec.field_id} has no tooltip"
 
 
-def test_block_humanity_team_change_tooltip_names_lock_coop_alliances() -> None:
-    """GH #43: the label matches the in-game editor, so the tooltip carries the
-    name users search for instead."""
+def test_lock_coop_alliances_label_matches_the_game_and_tooltip_keeps_old_name() -> None:
+    """GH #43: the label follows the game's current "Lock Co-op Alliances", and
+    the tooltip keeps the older "Block Humanity Team Change" name findable."""
     spec = next(s for s in option_fields._SPECS if s.field_id == "lock_coop_alliances")
-    assert spec.label == "Block humanity team change"
-    assert "co-op alliances" in spec.tooltip.lower()
+    assert spec.label == "Lock co-op alliances"
+    assert "block humanity team change" in spec.tooltip.lower()

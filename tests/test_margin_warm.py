@@ -36,7 +36,7 @@ class _FakeCache:
     driver geometry is testable with no scenario, no PyQt5, no QApplication.
     """
 
-    def __init__(self, canvas_dims, chunk_px: int = 512, mip_scales=None, resident_mips=()):
+    def __init__(self, canvas_dims, chunk_px: int = 512, mip_scales=None, resident_mips=(), clock=None):
         self._canvas_dims = canvas_dims  # {mip: (w, h)}
         self.chunk_px = chunk_px
         self._mip_scales = mip_scales or {}
@@ -44,6 +44,9 @@ class _FakeCache:
         self._cache: set[tuple[int, int, int]] = set()
         self.get_chunk_calls: list[tuple[int, int, int]] = []
         self.fail_on: set[tuple[int, int, int]] = set()
+        # With a _Clock, each get_chunk advances it by cost_ms[(cx, cy)] (default 1ms).
+        self._clock = clock
+        self.cost_ms: dict[tuple[int, int], float] = {}
 
     def canvas_dims(self, mip: int = 0):
         return self._canvas_dims[mip]
@@ -61,9 +64,35 @@ class _FakeCache:
         key = (mip, cx, cy)
         if key in self.fail_on:
             raise RuntimeError("boom")
+        if self._clock is not None:
+            self._clock.t += self.cost_ms.get((cx, cy), 1.0) / 1000.0
         self.get_chunk_calls.append(key)
         self._cache.add(key)
         return key
+
+
+class _Clock:
+    """margin_warm._now's stand-in: time moves only when a fake chunk runs."""
+
+    def __init__(self) -> None:
+        self.t = 100.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+@pytest.fixture
+def clock(monkeypatch) -> _Clock:
+    fake = _Clock()
+    monkeypatch.setattr(margin_warm, "_now", fake)
+    return fake
+
+
+@pytest.fixture
+def one_chunk_ticks(monkeypatch) -> None:
+    """A zero budget degenerates to exactly one chunk per tick, the pre-T1
+    contract, which the queue/cancel/drain tests below are written against."""
+    monkeypatch.setattr(margin_warm, "BUDGET_MS", 0)
 
 
 class _Rect:
@@ -151,7 +180,8 @@ def test_ring_with_no_lead_has_no_favoured_side() -> None:
 # --- MarginWarmer: the driver contract --------------------------------------
 
 
-def test_margin_warmer_one_get_chunk_per_tick() -> None:
+@pytest.mark.usefixtures("one_chunk_ticks")
+def test_margin_warmer_zero_budget_warms_exactly_one_chunk_per_tick() -> None:
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     warmer = margin_warm.MarginWarmer()
     warmer.start(cache, 0, [(1, 1), (2, 2), (3, 3)])
@@ -166,6 +196,7 @@ def test_margin_warmer_one_get_chunk_per_tick() -> None:
     assert not warmer.is_active
 
 
+@pytest.mark.usefixtures("one_chunk_ticks")
 def test_margin_warmer_cancel_drops_the_rest() -> None:
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     warmer = margin_warm.MarginWarmer()
@@ -179,6 +210,7 @@ def test_margin_warmer_cancel_drops_the_rest() -> None:
     assert cache.get_chunk_calls == [(0, 1, 1)]
 
 
+@pytest.mark.usefixtures("one_chunk_ticks")
 def test_margin_warmer_start_replaces_an_in_flight_ring() -> None:
     """The retarget check -- A4's whole mechanism is start() replacing
     whatever was queued outright, with no separate retarget API."""
@@ -224,6 +256,7 @@ def test_margin_warmer_logs_and_continues_past_a_bad_chunk(monkeypatch) -> None:
     assert cache.get_chunk_calls == [(0, 1, 1), (0, 3, 3)]
 
 
+@pytest.mark.usefixtures("one_chunk_ticks")
 def test_margin_warmer_on_drained_fires_once_the_queue_empties() -> None:
     """2026-09-07 plan's load-time margin warm, Step 3: on_drained is the
     hook _pump_load_warm() chains the next neighbour mip's chunks off of."""
@@ -271,6 +304,7 @@ def test_margin_warmer_pauses_while_a_mouse_button_is_held(monkeypatch) -> None:
     assert warmer.is_active
 
 
+@pytest.mark.usefixtures("one_chunk_ticks")
 def test_margin_warmer_resumes_and_drains_on_release(monkeypatch) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
@@ -336,6 +370,7 @@ def test_wheel_driven_retarget_is_unaffected_by_the_held_gate() -> None:
     assert cache.get_chunk_calls == [(0, 1, 1)]
 
 
+@pytest.mark.usefixtures("one_chunk_ticks")
 def test_margin_warmer_on_drained_does_not_fire_on_cancel() -> None:
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     warmer = margin_warm.MarginWarmer()
@@ -344,6 +379,291 @@ def test_margin_warmer_on_drained_does_not_fire_on_cancel() -> None:
     warmer.tick()
     warmer.cancel()
     assert drained == [], "a cancelled queue never drained -- the callback must not fire"
+
+
+# --- MarginWarmer: the budgeted tick (Batch F T1) ----------------------------
+
+
+def test_budgeted_tick_warms_several_chunks_while_the_next_still_fits(clock) -> None:
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(i, 0) for i in range(8)])
+
+    # 2.5ms chunks, 8ms budget: after two (5ms) a third fits, after three (7.5ms) a fourth doesn't.
+    for i in range(8):
+        cache.cost_ms[(i, 0)] = 2.5
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 1, 0), (0, 2, 0)]
+    assert warmer.tick() is True
+    assert len(cache.get_chunk_calls) == 6
+
+
+def test_budgeted_tick_stops_when_the_slowest_chunk_so_far_would_overrun(clock) -> None:
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    cache.cost_ms[(0, 0)] = 5.0
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [(0, 0, 0)], "5ms + a predicted 5ms passes 8ms, so the tick must stop"
+
+
+def test_budgeted_tick_always_runs_one_chunk_even_past_the_budget(clock) -> None:
+    """Otherwise a chunk slower than the budget would never be warmed."""
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    cache.cost_ms[(0, 0)] = 20.0
+    cache.cost_ms[(1, 0)] = 20.0
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [(0, 0, 0)]
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 1, 0)]
+
+
+def test_budgeted_tick_logs_a_bad_chunk_and_continues_in_the_same_tick(clock, monkeypatch) -> None:
+    from descape import debug_log
+
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    cache.fail_on.add((0, 1, 0))
+    logged = []
+    monkeypatch.setattr(debug_log, "log", logged.append)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0), (2, 0)])
+
+    assert warmer.tick() is False
+    assert logged, "the failing chunk was never logged -- vacuous"
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 2, 0)]
+
+
+def test_budgeted_tick_ends_at_the_drain_and_leaves_a_chained_queue_for_the_next_tick(clock) -> None:
+    """on_drained may start() a fresh queue on this same warmer (the load warm
+    chains the next mip that way); that queue must not be eaten by the budget
+    left in the tick that drained the first one."""
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    warmer = margin_warm.MarginWarmer()
+    drained = []
+
+    def chain() -> None:
+        drained.append(True)
+        warmer.start(cache, 0, [(9, 9)])
+
+    warmer.start(cache, 0, [(0, 0), (1, 0)], on_drained=chain)
+    assert warmer.tick() is False
+    assert drained == [True]
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 1, 0)]
+    assert warmer.is_active, "the chained queue was dropped or consumed"
+
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls[-1] == (0, 9, 9)
+    assert drained == [True], "on_drained is per start(), and the chained start() passed none"
+
+
+def test_budgeted_tick_reports_tick_and_slowest_chunk_to_perf_trace(clock, monkeypatch) -> None:
+    from descape import perf_trace
+
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    monkeypatch.setattr(perf_trace, "_warm_ticks", [])
+    monkeypatch.setattr(perf_trace, "_idle_scheduler", None)
+    cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    cache.cost_ms[(0, 0)] = 1.0
+    cache.cost_ms[(1, 0)] = 4.0
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0), (2, 0)])
+
+    warmer.tick()
+    [(tick_ms, chunks, slowest_ms)] = perf_trace._warm_ticks
+    assert chunks == 2, "1ms then 4ms; 5ms + a predicted 4ms passes 8ms"
+    assert tick_ms == pytest.approx(5.0)
+    assert slowest_ms == pytest.approx(4.0)
+
+
+# --- MarginWarmer: worker threads (Batch F T2) -------------------------------
+
+
+class _FakeJob:
+    def __init__(self, key, epoch) -> None:
+        self.key = key
+        self.epoch = epoch
+
+    def run(self) -> bool:
+        return True
+
+
+class _JobCache(_FakeCache):
+    """_FakeCache plus render_cache's worker hooks, with install_chunk()'s
+    epoch rule; prepare costs cost_ms on the clock, the job itself nothing."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.epoch = 0
+        self.prepared: list[tuple[int, int, int]] = []
+        self.installed: list[tuple[int, int, int]] = []
+
+    def prepare_chunk_job(self, mip, cx, cy):
+        key = (mip, cx, cy)
+        if self._clock is not None:
+            self._clock.t += self.cost_ms.get((cx, cy), 1.0) / 1000.0
+        self.prepared.append(key)
+        return _FakeJob(key, self.epoch)
+
+    def install_chunk(self, job, painted) -> bool:
+        if not painted or job.epoch != self.epoch or job.key in self._cache:
+            return False
+        self._cache.add(job.key)
+        self.installed.append(job.key)
+        return True
+
+
+class _InlineExecutor:
+    """Runs a job at submit(); its result still arrives by queued signal."""
+
+    def submit(self, fn, *args):
+        fn(*args)
+
+
+@pytest.fixture
+def inline_pool(monkeypatch):
+    conftest.ensure_qapp()
+    monkeypatch.setattr(margin_warm, "_executor", _InlineExecutor())
+    monkeypatch.setattr(margin_warm, "WORKERS", 2)
+
+
+def _pump(warmer, limit: int = 200) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    for _ in range(limit):
+        if not warmer.is_active:
+            return
+        QApplication.processEvents()
+    pytest.fail("the warm never drained")
+
+
+def test_pooled_chunks_install_only_when_the_event_loop_delivers_them(inline_pool) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+
+    assert warmer.tick() is True
+    assert cache.prepared == [(0, 0, 0), (0, 1, 0)]
+    assert cache.installed == [], "a result installed inside the tick, not via the queued signal"
+    assert cache.get_chunk_calls == [], "a job-capable chunk ran synchronously"
+    assert warmer.is_active, "chunks in flight must keep the warm active"
+
+    _pump(warmer)
+    assert cache.installed == [(0, 0, 0), (0, 1, 0)]
+
+
+def test_pooled_tick_stops_at_workers_in_flight_and_resumes_on_a_result(inline_pool, clock) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
+    warmer = margin_warm.MarginWarmer()
+    chunks = [(i, 0) for i in range(5)]
+    warmer.start(cache, 0, chunks)
+
+    assert warmer.tick() is True
+    assert len(cache.prepared) == 2, "1ms preps fit the budget, so only the in-flight cap can stop at 2"
+    assert not warmer._timer.isActive(), "a full pool must stop the idle timer, not spin it"
+
+    _pump(warmer)
+    assert cache.installed == [(0, cx, cy) for cx, cy in chunks]
+
+
+def test_on_drained_waits_for_the_last_in_flight_result(inline_pool) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    drained = []
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)], on_drained=lambda: drained.append(len(cache.installed)))
+
+    assert warmer.tick() is True, "the queue is empty but a chunk is still in flight"
+    assert drained == []
+    _pump(warmer)
+    assert drained == [1], "on_drained fired before the in-flight chunk landed, or more than once"
+
+
+def test_cancel_drops_in_flight_results_and_never_fires_on_drained(inline_pool) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    drained = []
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)], on_drained=lambda: drained.append(True))
+    warmer.tick()
+    warmer.cancel()
+
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    assert cache.prepared, "nothing was dispatched -- vacuous"
+    assert cache.installed == []
+    assert drained == []
+    assert not warmer.is_active
+
+
+def test_a_retarget_drops_the_previous_rings_results(inline_pool) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)])
+    warmer.tick()
+    warmer.start(cache, 0, [(5, 5)])
+
+    _pump(warmer)
+    assert cache.installed == [(0, 5, 5)]
+
+
+def test_a_mutation_before_delivery_rejects_the_result(inline_pool) -> None:
+    """The epoch rule seen from the driver: the chunk is dropped, not
+    installed stale, and the warm still drains."""
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)])
+    warmer.tick()
+    cache.epoch += 1
+
+    _pump(warmer)
+    assert cache.prepared == [(0, 0, 0)]
+    assert cache.installed == []
+    assert not cache.has_chunk(0, 0, 0)
+
+
+def test_a_worker_exception_is_logged_and_the_warm_continues(inline_pool, monkeypatch) -> None:
+    from descape import debug_log
+
+    logged = []
+    monkeypatch.setattr(debug_log, "log", logged.append)
+    monkeypatch.setattr(_FakeJob, "run", lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+
+    _pump(warmer)
+    assert len(logged) == 2 and "boom" in logged[0]
+    assert cache.installed == []
+
+
+def test_run_to_completion_requeues_chunks_already_in_flight(inline_pool) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0), (2, 0)])
+    warmer.tick()
+    assert warmer._in_flight, "nothing in flight -- vacuous"
+
+    warmer.run_to_completion()
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    assert sorted(cache.get_chunk_calls) == [(0, 0, 0), (0, 1, 0), (0, 2, 0)]
+    assert cache.installed == [], "an abandoned result installed after the synchronous drain"
+    assert not warmer.is_active
+
+
+def test_no_workers_keeps_every_chunk_synchronous(inline_pool, monkeypatch) -> None:
+    monkeypatch.setattr(margin_warm, "WORKERS", 0)
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+
+    assert warmer.tick() is False
+    assert cache.prepared == []
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 1, 0)]
 
 
 # --- load_warm_chunks: centre range unioned with one ring -------------------
@@ -661,6 +981,27 @@ def test_on_viewport_changed_warms_a_ring_that_bounds_residency() -> None:
         conftest.close_window(window)
 
 
+@pytest.mark.gui
+def test_a_real_windows_margin_warm_reaches_the_perf_view_line(monkeypatch) -> None:
+    """Batch F T1: the warm: bucket is fed by the viewer's own warmer, not
+    only by a hand-driven one."""
+    from descape import debug_log, perf_trace
+
+    monkeypatch.setattr(perf_trace, "_warm_ticks", [])
+    monkeypatch.setattr(perf_trace, "_repaint_durations", [])
+    window = _zoomed_window()
+    try:
+        window._on_viewport_changed()
+        assert window._margin_warmer.is_active, "no ring was queued -- vacuous"
+        monkeypatch.setattr(perf_trace, "_enabled", True)
+        debug_log.clear()
+        window._margin_warmer.run_to_completion()
+        perf_trace.flush_idle()
+        assert "warm: " in debug_log.get_log_text()
+    finally:
+        conftest.close_window(window)
+
+
 # --- viewport_chunk_target_at / the load-time warm --------------------------
 
 
@@ -737,5 +1078,56 @@ def test_load_scenario_warms_both_neighbour_mips_chunks_with_no_pan_or_zoom() ->
                 assert window._cache.has_chunk(mip, cx, cy), (
                     f"chunk {(cx, cy)} at mip {mip} was never warmed by the load-time warm"
                 )
+    finally:
+        conftest.close_window(window)
+
+
+def _window_with_a_load_warm_in_flight(monkeypatch):
+    """A Stepped window whose level warm has drained, so the load-time warm
+    is ticking. monkeypatch pins the setting so a slot that writes it can't
+    leak past teardown."""
+    from descape import settings
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = conftest.stepped_window(FIXTURE_PATH)
+    window._level_warmer.run_to_completion()
+    assert window._load_warmer.is_active, "no load warm started -- vacuous"
+    return window
+
+
+@pytest.mark.gui
+def test_turning_preload_off_drops_the_load_warm_and_its_queue(monkeypatch) -> None:
+    """Batch F T0: the toggle used to cancel only the level and margin
+    warms, so the load warm kept ticking with the setting off."""
+    from descape.viewer import SettingsDialog
+
+    window = _window_with_a_load_warm_in_flight(monkeypatch)
+    try:
+        dialog = SettingsDialog(window)
+        dialog._on_preload_zoom_levels_toggled(False)
+
+        assert not window._load_warmer.is_active
+        assert not window._load_warm_queue
+        assert not window._level_warmer.is_active
+        assert not window._margin_warmer.is_active
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_unit_filter_change_drops_every_in_flight_warm(monkeypatch) -> None:
+    """Batch F T0: _on_filter_changed() used to call set_unit_filter() with
+    warms still in flight, so a load-warm tick could rebuild a whole stale
+    level. Goes through the real menu signal."""
+    window = _window_with_a_load_warm_in_flight(monkeypatch)
+    try:
+        window._on_viewport_changed()
+        window.show_trees_action.setChecked(False)
+
+        assert window._cache.unit_filter.show_trees is False, "the filter never changed -- vacuous"
+        assert not window._load_warmer.is_active
+        assert not window._load_warm_queue
+        assert not window._margin_warmer.is_active
+        assert not window._level_warmer.is_active
     finally:
         conftest.close_window(window)

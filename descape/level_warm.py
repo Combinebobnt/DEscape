@@ -1,4 +1,5 @@
-"""Incremental warm of a mip level's sprite layer, sliced across QTimer ticks
+"""Incremental warm of a mip level's sprite layer, and then of its native unit
+pack's pending tiles (maintainer plan 2026-09-27), sliced across QTimer ticks
 on the main thread (maintainer plan 2026-09-04).
 
 **No threads, deliberately, and that is the design rather than a shortcut.**
@@ -147,39 +148,60 @@ class LevelWarmer(_IdleTimerDriver):
         self._queue: list = []
         self._job = None
         self._job_mip: int | None = None
+        self._job_notify = False
         self._on_job_done = None
 
     @property
     def is_active(self) -> bool:
         return self._job is not None or bool(self._queue)
 
-    def start(self, cache, mips, *, on_job_done=None) -> None:
+    def start(self, cache, mips, *, pack_only=(), on_job_done=None) -> set[int]:
         """Queues `mips` on `cache`, replacing any warm already in flight.
 
-        A level with nothing worth warming is not queued at all -- the
-        cache's own level_warm_job() decides that (sprites off, units off, or
-        the level already current), and it is asked HERE rather than at tick
-        time, so an all-no-op start leaves is_active False and schedules no
-        timer at all. That also fixes each job's revalidation baseline at
-        warm start, which is the window the plan's predicates are stated
-        over; building the generator itself runs none of the walk.
+        Each mip gets its sprite-layer job, then its unit-pack derive
+        (cache.pack_warm_job, maintainer plan 2026-09-27) chained after it.
+        `pack_only` mips not in `mips` get just the derive, queued last.
 
-        `on_job_done`, if given, is called with a mip once THAT mip's job
-        finishes (2026-09-07 plan's load-time margin warm, Step 2) --
+        A job with nothing worth doing is not queued at all -- the cache's
+        own level_warm_job()/pack_warm_job() decide that (sprites off, units
+        off, numpy, or the level already current), and they are asked HERE
+        rather than at tick time, so an all-no-op start leaves is_active
+        False and schedules no timer at all. That also fixes each job's
+        revalidation baseline at warm start, which is the window the plan's
+        predicates are stated over; building the generator itself runs none
+        of the walk.
+
+        `on_job_done`, if given, is called with a `mips` entry once the LAST
+        job queued for it finishes (2026-09-07 plan's load-time margin warm,
+        Step 2), so a neighbour's load warm starts after its pack derive --
         whether it installed cleanly or was dropped mid-walk (see tick()),
         since either way there is nothing left to wait for on that mip. It
-        does NOT fire for a mip that never got a job queued at all (nothing
-        worth warming, or already current): a caller that also needs those
-        covered checks cache.is_level_resident(mip) itself right after
-        start() returns, rather than this method inferring which is which."""
+        never fires for a `pack_only` mip, nor for a mip that got no job at
+        all: returns the set of mips it will fire for, and a caller that
+        also needs the rest covered checks cache.is_level_resident(mip)
+        itself right after start() returns."""
         self.cancel()
-        jobs = [(mip, job) for mip, job in ((mip, cache.level_warm_job(mip)) for mip in mips) if job is not None]
+        jobs = []
+        for mip in mips:
+            level_job = cache.level_warm_job(mip)
+            pack_job = cache.pack_warm_job(mip, after_level_warm=level_job is not None)
+            if level_job is not None:
+                jobs.append((mip, level_job, pack_job is None))
+            if pack_job is not None:
+                jobs.append((mip, pack_job, True))
+        for mip in pack_only:
+            if mip in mips:
+                continue
+            pack_job = cache.pack_warm_job(mip)
+            if pack_job is not None:
+                jobs.append((mip, pack_job, False))
         if not jobs:
-            return
+            return set()
         self._cache = cache
         self._queue = jobs
         self._on_job_done = on_job_done
         self._schedule()
+        return {mip for mip, _job, notify in jobs if notify}
 
     def cancel(self) -> None:
         """Drops the in-flight job and the queue. Called by every path that
@@ -194,6 +216,7 @@ class LevelWarmer(_IdleTimerDriver):
         callback must never fire for it."""
         self._job = None
         self._job_mip = None
+        self._job_notify = False
         self._queue = []
         self._cache = None
         self._on_job_done = None
@@ -234,13 +257,13 @@ class LevelWarmer(_IdleTimerDriver):
                 return True
 
     def _notify_job_done(self) -> None:
-        if self._on_job_done is not None:
+        if self._job_notify and self._on_job_done is not None:
             self._on_job_done(self._job_mip)
 
     def _start_next_job(self) -> bool:
         if not self._queue:
             return False
-        self._job_mip, self._job = self._queue.pop(0)
+        self._job_mip, self._job, self._job_notify = self._queue.pop(0)
         return True
 
     def _install(self, job, payload) -> None:

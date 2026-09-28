@@ -33,26 +33,47 @@ region with Trees/Eye candy on, then its undo: a non-Draw wholesale caller.
 --force-wholesale sends _after_unit_mutation's `changed` to None, i.e. the
 pre-splice path, for a same-build comparison row. --cap overrides
 render_cache.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover.
---area-ratio overrides viewer._SCOPED_PATCH_AREA_RATIO for every style (inf:
+--area-ratio overrides viewer._SCOPED_PATCH_AREA_RATIO and, where present,
+_TIGHT_PATCH_AREA_RATIO for every style (inf:
 always patch the bbox eagerly, 0: always evict it), for finding the crossover.
 
 --styles takes stepped, sloped, flat (the default Flat + Isometric View, an
 IsoChunkCache) and flat2d (Isometric View off: FlatChunkCache).
 
+The sprite-bbox plan's split repaint (ViewerWindow._repaint_unit_edit_split:
+the visible level sized from real sprite extents, other resident levels
+evicting the reach-padded bbox) is reported per row. --bbox reach forces its
+REACH_FALLBACK, i.e. the pre-split code path, for a same-build comparison.
+The bench also runs on a build without the split, where every unit edit
+reports R-base. --zoom-cycle zooms out one mip and back before the strokes,
+leaving a second level resident.
+
 Columns:
   path       lazy: the handler evicted the whole canvas (the next paint
              recomposites the viewport); evict: it evicted only a bbox's
-             chunks; otherwise splice or scoped (invalidate_units() spliced,
-             or rebuilt its sources: a _refresh_source_caches() call from
-             inside it) with the bbox patched eagerly. An evict row's
-             invalidate_units() may have spliced or rebuilt.
+             chunks at the visible level; otherwise splice or scoped
+             (invalidate_units() spliced, or rebuilt its sources: a
+             _refresh_source_caches() call from inside it) with the bbox
+             patched eagerly. An evict row's invalidate_units() may have
+             spliced or rebuilt. Suffix for a unit edit: :T the tight split
+             ran; :R-<why> the reach bbox did (wall, visible: no resident
+             chunks at the visible mip, unbuilt, off: sprites off, flat:
+             Flat 2D, forced: --bbox reach, base: a build without the split)
   units      unit count before -> after
   handler    the release (or undo) handler's own wall time
   paint      sum of MapCanvasItem.paint time until the canvas goes quiet
   | ...      named sub-timings inside the handler (nested: patch and
-             invalidate_units are also counted inside apply_dirty/after_units),
-             then `area` when the viewer priced a batch patch: patch_area()
-             over the visible chunks' area, the ratio _if_spliceable() tests
+             invalidate_units are also counted inside apply_dirty/after_units;
+             unit_patch is the patch/evict time inside _patch_unit_edit_cache
+             alone; rebuild_in_patch the stale Stepped level rebuild inside
+             it), then rebuild_in_paint (the same inside the next paint), evict_others (evictions of non-visible levels only),
+             and `area` when the viewer priced a batch patch: patch_area() over
+             the visible chunks' area, the ratio _patch_area_exceeds_viewport() tests
+  bbox line  (Stepped/Sloped unit edits) tight / reach: dims, patch_area()
+             over every resident level and resident chunks per level
+             (mip:count) each would touch; sub: whether tight lies inside
+             reach (it must); probe: ms spent on these diagnostics, excluded
+             from handler
 """
 
 from __future__ import annotations
@@ -70,6 +91,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import _tight_bbox
 
 from testkit import qt_window, settings_isolation
 
@@ -123,17 +146,48 @@ def _pump_until_quiet(paints: list, quiet_s: float = 0.4, cap_s: float = 8.0) ->
 _MISSING = object()
 
 
+# True while MapCanvasItem.paint runs, so a Stepped level rebuild is timed only inside the paint.
+_IN_PAINT = [False]
+
+
+def _fallback_kind(cache, changed, mip) -> str:
+    """Why sprite_extent_before()/after() answered REACH_FALLBACK, mirroring
+    _ChunkCacheBase._extent_fallback()'s checks in order."""
+    from descape.render_cache import _const_splice_eligible
+
+    if any(not _const_splice_eligible(s.unit) for s in changed):
+        return "wall"
+    if mip is None or mip not in cache.resident_levels():
+        return "visible"
+    return "unbuilt"
+
+
 class _Timers:
     """Instance-attribute wrappers around the handler's named sub-steps.
-    Installed per window/cache and only recording while `armed`."""
+    Installed per window/cache and only recording while `armed`.
 
-    def __init__(self) -> None:
+    Runs against a build with or without the sprite-bbox split repaint
+    (ViewerWindow._repaint_unit_edit_split): without it every unit edit
+    reports the reach path as `R-base`."""
+
+    def __init__(self, force_reach: bool = False) -> None:
         self.armed = False
+        self.force_reach = force_reach
         self.ms: dict[str, float] = {}
         self.wholesale = 0
         self.lazy = 0
         self.evict = 0
+        self.evict_others = 0
         self.area: float | None = None
+        self.unit_edits = 0
+        self.tight_ran = 0
+        self.fallback: str | None = None
+        self.bbox_lines: list[str] = []
+        # Bench diagnostics only (bbox descriptions, the comparison reach bbox), excluded from handler.
+        self.probe_ms = 0.0
+        self._in_unit_edit = False
+        self._level_depth = 0
+        self.rebuild_in_paint = 0.0
         # (owner, attr, the instance attribute it replaced or _MISSING), in install order.
         self._installed: list[tuple[object, str, object]] = []
 
@@ -141,7 +195,12 @@ class _Timers:
         self._installed.append((owner, attr, vars(owner).get(attr, _MISSING)))
         setattr(owner, attr, value)
 
-    def _wrap(self, owner, attr: str, label: str) -> None:
+    def _add(self, label: str, t0: float) -> None:
+        self.ms[label] = self.ms.get(label, 0.0) + (time.perf_counter() - t0) * 1000
+
+    def _wrap(self, owner, attr: str, label: str, unit_label: str | None = None) -> None:
+        """Times `attr` under `label`; with unit_label, time spent inside
+        _patch_unit_edit_cache() is also summed under it."""
         inner = getattr(owner, attr)
 
         def timed(*args, **kwargs):
@@ -151,7 +210,9 @@ class _Timers:
             try:
                 return inner(*args, **kwargs)
             finally:
-                self.ms[label] = self.ms.get(label, 0.0) + (time.perf_counter() - t0) * 1000
+                self._add(label, t0)
+                if unit_label and self._in_unit_edit:
+                    self._add(unit_label, t0)
 
         self._replace(owner, attr, timed)
 
@@ -163,11 +224,83 @@ class _Timers:
                 owner = getattr(owner, p)
             self._wrap(owner, attr, label)
         self.install_cache(window._cache, window.map_view)
+        self._install_unit_edit_probe(window)
+
+    def _install_unit_edit_probe(self, window) -> None:
+        """Marks _patch_unit_edit_cache() (for unit_patch), whether the tight
+        split ran, why not when it didn't, and the bbox(es) it was sized with."""
+        from descape import render_cache
+
+        # Absent on a build without the split; then no extent wrapper is installed either.
+        REACH_FALLBACK = getattr(render_cache, "REACH_FALLBACK", object())
+        cache = window._cache
+        inner_edit = window._patch_unit_edit_cache
+        split = getattr(window, "_repaint_unit_edit_split", None)
+        inner_bbox = window._unit_edit_bbox
+
+        def patch_unit_edit_cache(changed, *args, **kwargs):
+            if not self.armed:
+                return inner_edit(changed, *args, **kwargs)
+            self.unit_edits += 1
+            self._in_unit_edit = True
+            try:
+                return inner_edit(changed, *args, **kwargs)
+            finally:
+                self._in_unit_edit = False
+
+        self._replace(window, "_patch_unit_edit_cache", patch_unit_edit_cache)
+
+        def unit_edit_bbox(changed, *args, **kwargs):
+            result = inner_bbox(changed, *args, **kwargs)
+            if not self.armed or result[0] is None:
+                return result
+            t0 = time.perf_counter()
+            tight = bool(args or kwargs) and all(a is not REACH_FALLBACK for a in (*args, *kwargs.values()))
+            if tight:
+                reach, _ = inner_bbox(changed)
+                self.bbox_lines.append(
+                    f"tight {_tight_bbox.describe(cache, result[0])} | reach {_tight_bbox.describe(cache, reach)} | "
+                    f"sub {_tight_bbox.contains(reach, result[0])}"
+                )
+            elif not self.bbox_lines or not self.bbox_lines[-1].startswith("tight"):
+                # The split's own reach call (for the other levels) is already described above.
+                self.bbox_lines.append(f"reach {_tight_bbox.describe(cache, result[0])}")
+            self.probe_ms += (time.perf_counter() - t0) * 1000
+            return result
+
+        self._replace(window, "_unit_edit_bbox", unit_edit_bbox)
+
+        if split is not None:
+            def repaint_split(*args, **kwargs):
+                if self.armed:
+                    self.tight_ran += 1
+                return split(*args, **kwargs)
+
+            self._replace(window, "_repaint_unit_edit_split", repaint_split)
+
+        for attr in ("sprite_extent_before", "sprite_extent_after"):
+            inner_extent = getattr(cache, attr, None)
+            if inner_extent is None:
+                continue
+
+            def extent(changed, mip, *args, _inner=inner_extent, **kwargs):
+                result = _inner(changed, mip, *args, **kwargs)
+                if self.force_reach:
+                    result = REACH_FALLBACK
+                if self.armed and result is REACH_FALLBACK and self.fallback in (None, "none"):
+                    t0 = time.perf_counter()
+                    self.fallback = "forced" if self.force_reach else _fallback_kind(cache, changed, mip)
+                    self.probe_ms += (time.perf_counter() - t0) * 1000
+                elif self.armed and self.fallback is None:
+                    self.fallback = "none"
+                return result
+
+            self._replace(cache, attr, extent)
 
     def install_cache(self, cache, view) -> None:
         for label, attr in _CACHE_TIMERS:
             if hasattr(cache, attr):
-                self._wrap(cache, attr, label)
+                self._wrap(cache, attr, label, unit_label="unit_patch" if attr == "patch" else None)
         # Wholesale = a source rebuild from inside invalidate_units(); patch()
         # and Flat's patch_rects() call _refresh_source_caches() too.
         inner_refresh, inner_invalidate = cache._refresh_source_caches, cache.invalidate_units
@@ -189,19 +322,29 @@ class _Timers:
         self._replace(cache, "invalidate_units", invalidate)
         inner_evict = cache.invalidate_region
 
-        def evict(bbox):
-            if self.armed:
-                if tuple(bbox) == (0, 0, *cache.canvas_dims(0)):
-                    self.lazy += 1
-                else:
-                    self.evict += 1
-            return inner_evict(bbox)
+        def evict(bbox, *args, **kwargs):
+            if not self.armed:
+                return inner_evict(bbox, *args, **kwargs)
+            levels = args[0] if args else kwargs.get("levels")
+            target = view.viewport_chunk_target()
+            if levels is not None and (target is None or target[0] not in levels):
+                self.evict_others += 1
+            elif tuple(bbox) == (0, 0, *cache.canvas_dims(0)):
+                self.lazy += 1
+            else:
+                self.evict += 1
+            t0 = time.perf_counter()
+            try:
+                return inner_evict(bbox, *args, **kwargs)
+            finally:
+                if self._in_unit_edit:
+                    self._add("unit_patch", t0)
 
         self._replace(cache, "invalidate_region", evict)
         inner_area = cache.patch_area
 
-        def area(bbox):
-            result = inner_area(bbox)
+        def area(bbox, *args, **kwargs):
+            result = inner_area(bbox, *args, **kwargs)
             target = view.viewport_chunk_target()
             if self.armed and target is not None:
                 _mip, cx0, cy0, cx1, cy1 = target
@@ -209,6 +352,26 @@ class _Timers:
             return result
 
         self._replace(cache, "patch_area", area)
+        inner_level = getattr(cache, "_level", None)
+        if inner_level is not None:
+            def level(mip, *args, **kwargs):
+                # A stale level's rebuild, outermost call only, inside the next paint or the unit patch.
+                lvl = cache._levels.get(mip)
+                where = "paint" if _IN_PAINT[0] else "patch" if self.armed and self._in_unit_edit else None
+                if self._level_depth or where is None or lvl is None or lvl.gen == cache._source_gen:
+                    where = None
+                self._level_depth += 1
+                t0 = time.perf_counter()
+                try:
+                    return inner_level(mip, *args, **kwargs)
+                finally:
+                    self._level_depth -= 1
+                    if where == "paint":
+                        self.rebuild_in_paint += (time.perf_counter() - t0) * 1000
+                    elif where == "patch":
+                        self._add("rebuild_in_patch", t0)
+
+            self._replace(cache, "_level", level)
 
     def uninstall(self) -> None:
         # Reverse order, restoring what each wrapper replaced (e.g. --force-wholesale's).
@@ -225,7 +388,28 @@ class _Timers:
         self.wholesale = 0
         self.lazy = 0
         self.evict = 0
+        self.evict_others = 0
         self.area = None
+        self.unit_edits = 0
+        self.tight_ran = 0
+        self.fallback = None
+        self.bbox_lines = []
+        self.probe_ms = 0.0
+        self.rebuild_in_paint = 0.0
+
+    def bbox_kind(self, cache) -> str:
+        """The path column's suffix: T when the tight split ran, else R-<why>."""
+        if not self.unit_edits:
+            return ""
+        if self.tight_ran:
+            return ":T"
+        if self.fallback not in (None, "none"):
+            return f":R-{self.fallback}"
+        if type(cache).__name__ == "FlatChunkCache":
+            return ":R-flat"
+        if not cache.sprites_enabled:
+            return ":R-off"
+        return ":R-base" if self.fallback is None else ":R-nobbox"
 
 
 def _stroke_tiles(kind: str, w: int, h: int) -> list[tuple[int, int]]:
@@ -244,7 +428,7 @@ def _unit_count(window) -> int:
     return sum(len(units) for units in window.scenario.unit_manager.units)
 
 
-def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float, int, dict, str]:
+def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float, int, dict, str, list[str]]:
     """Runs `action` (the handler under test), then pumps the next paint(s)."""
     _pump(0.2)
     # A gen-2 pass over ~13k units otherwise lands at random inside a handler (~300ms).
@@ -254,24 +438,35 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
     timers.armed = True
     t0 = time.perf_counter()
     action()
-    handler_ms = (time.perf_counter() - t0) * 1000
+    handler_ms = (time.perf_counter() - t0) * 1000 - timers.probe_ms
     timers.armed = False
     _pump_until_quiet(paints)
     path = "lazy" if timers.lazy else "evict" if timers.evict else "scoped" if timers.wholesale else "splice"
+    path += timers.bbox_kind(window._cache)
     ms = dict(timers.ms)
+    if timers.rebuild_in_paint:
+        ms["rebuild_in_paint"] = timers.rebuild_in_paint
+    if timers.evict_others:
+        ms["evict_others"] = timers.evict_others
     if timers.area is not None:
         ms["area"] = timers.area
-    return handler_ms, sum(paints), len(paints), ms, path
+    if timers.bbox_lines:
+        ms["probe"] = timers.probe_ms
+    return handler_ms, sum(paints), len(paints), ms, path, list(timers.bbox_lines)
 
 
 def _row(label: str, result, before: int, after: int) -> str:
-    handler_ms, paint_ms, n_paints, ms, path = result
-    subs = " ".join(f"{k} {v:.2f}" if k == "area" else f"{k} {v:.1f}" for k, v in ms.items())
-    return (
-        f"      {label:8s} {path:9s} units {before}->{after} "
+    handler_ms, paint_ms, n_paints, ms, path, bbox_lines = result
+    subs = " ".join(
+        f"{k} {v:.2f}" if k == "area" else f"{k} {v}" if k == "evict_others" else f"{k} {v:.1f}"
+        for k, v in ms.items()
+    )
+    line = (
+        f"      {label:8s} {path:14s} units {before}->{after} "
         f"handler {handler_ms:7.1f}ms  paint {paint_ms:7.1f}ms ({n_paints})  "
         f"total {handler_ms + paint_ms:7.1f}ms | {subs}"
     )
+    return "\n".join([line, *(f"        bbox {b}" for b in bbox_lines)])
 
 
 def _run_case(window, timers: _Timers, paints: list, kind: str, brush: int, seed: int) -> list[str]:
@@ -366,8 +561,22 @@ def _set_sprites(window, on: bool) -> None:
     assert window._cache.sprites_enabled == on, "sprite toggle did not reach the cache"
 
 
+def _zoom_cycle(window) -> None:
+    """Zooms out to half scale (one mip coarser) and back, leaving that
+    level's chunks resident beside mip 0's, the way a user who zooms does."""
+    from PyQt5.QtGui import QTransform
+
+    view = window.map_view
+    mm = window.scenario.map_manager
+    for scale in (0.5, 1.0):
+        view.setTransform(QTransform.fromScale(scale, scale))
+        view.center_on_tile(mm.map_width // 2, mm.map_height // 2)
+        _pump(4.0)
+
+
 def _bench_file(
-    path: Path, styles, brushes, kinds, sprite_modes, resident: str, force_wholesale: bool, tool: str = "draw"
+    path: Path, styles, brushes, kinds, sprite_modes, resident: str, force_wholesale: bool, tool: str = "draw",
+    force_reach: bool = False, zoom_cycle: bool = False,
 ) -> list[str]:
     from PyQt5.QtGui import QTransform
 
@@ -380,7 +589,11 @@ def _bench_file(
 
     def timed_paint(self, *a, **k):
         t0 = time.perf_counter()
-        orig_paint(self, *a, **k)
+        _IN_PAINT[0] = True
+        try:
+            orig_paint(self, *a, **k)
+        finally:
+            _IN_PAINT[0] = False
         paints.append((time.perf_counter() - t0) * 1000)
 
     viewer_canvas.MapCanvasItem.paint = timed_paint
@@ -423,13 +636,17 @@ def _bench_file(
                 if resident == "canvas":
                     canvas_w, canvas_h = window._cache.canvas_dims(0)
                     window._cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
-                timers = _Timers()
+                if zoom_cycle:
+                    _zoom_cycle(window)
+                timers = _Timers(force_reach)
                 timers.install(window)
                 vp = view.viewport()
+                target = view.viewport_chunk_target()
                 emit(
                     f"    style={style} sprites={sprites} resident={resident} "
                     f"viewport {vp.width()}x{vp.height()} units {_unit_count(window)} "
-                    f"cache {type(window._cache).__name__}"
+                    f"cache {type(window._cache).__name__} "
+                    f"mips {_tight_bbox.resident_levels(window._cache)} visible {target and target[0]}"
                 )
                 try:
                     if tool == "fill":
@@ -463,11 +680,18 @@ def main() -> None:
     parser.add_argument("--force-wholesale", action="store_true")
     parser.add_argument("--cap", type=int, help="Override render_cache.UNIT_SPLICE_MAX_UNITS")
     parser.add_argument("--area-ratio", type=float, help="Override viewer._SCOPED_PATCH_AREA_RATIO")
+    parser.add_argument(
+        "--bbox", choices=("auto", "reach"), default="auto",
+        help="auto: whatever the viewer picks; reach: force the reach-padded fallback",
+    )
+    parser.add_argument("--zoom-cycle", action="store_true", help="Zoom out one mip and back before the strokes")
     args = parser.parse_args()
     if args.area_ratio is not None:
         from descape import viewer
 
         viewer._SCOPED_PATCH_AREA_RATIO = dict.fromkeys(viewer._SCOPED_PATCH_AREA_RATIO, args.area_ratio)
+        if hasattr(viewer, "_TIGHT_PATCH_AREA_RATIO"):
+            viewer._TIGHT_PATCH_AREA_RATIO = dict.fromkeys(viewer._TIGHT_PATCH_AREA_RATIO, args.area_ratio)
     if args.cap is not None:
         from descape import render_cache
 
@@ -491,7 +715,10 @@ def main() -> None:
             if not path.exists():
                 print(f"  {name} skipped (not found in {args.scenario_dir})")
                 continue
-            _bench_file(path, styles, brushes, kinds, sprite_modes, args.resident, args.force_wholesale, args.tool)
+            _bench_file(
+                path, styles, brushes, kinds, sprite_modes, args.resident, args.force_wholesale, args.tool,
+                force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle,
+            )
 
 
 if __name__ == "__main__":

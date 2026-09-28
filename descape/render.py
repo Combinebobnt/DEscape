@@ -428,7 +428,7 @@ def _contact_ramp(tile_px: int, rise_px: int, side: str) -> int:
     return int(min(span[junction][0], ramp))
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=2048)  # N2 fetches 105 per level per composite; four levels must not thrash
 def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     """float32 darkening factors aligned 1:1 with
     iso_geometry.shadow_quad_indices(tile_px, rise_px, side)'s own output
@@ -640,6 +640,17 @@ def _clipped_paint(
     img[ay, ax] = values
 
 
+def _clipped_paint_solid(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, color, *, extent=None) -> None:
+    """_clipped_paint with one (r, g, b) for every pixel: farm outlines and
+    unit marks."""
+    native = composite_backend.native
+    if native is not None:
+        r, g, b = color
+        native.paint_solid(img, base_y, base_x, dst_y, dst_x, r, g, b)
+        return
+    _clipped_paint(img, base_y, base_x, dst_y, dst_x, np.full((dst_y.shape[0], 3), color, dtype=np.uint8), extent=extent)
+
+
 def _clipped_paint_rgba(img: np.ndarray, base_y: int, base_x: int, rgba: np.ndarray) -> None:
     """Alpha-composites an (h, w, 4) uint8 block onto img at (base_y, base_x),
     clipping to img's bounds -- _clipped_paint()'s counterpart for sprites
@@ -658,6 +669,10 @@ def _clipped_paint_rgba(img: np.ndarray, base_y: int, base_x: int, rgba: np.ndar
     thing being drawn into it" reasoning _clipped_paint()'s docstring gives
     applies here, only more often -- a sprite is far larger than a tile
     diamond, so partial containment is the normal case, not the edge one."""
+    native = composite_backend.native
+    if native is not None:
+        native.blit_rgba(img, base_y, base_x, rgba)
+        return
     h, w = rgba.shape[:2]
     ih, iw = img.shape[:2]
     sy0, sx0 = max(0, -base_y), max(0, -base_x)
@@ -678,7 +693,11 @@ def _clipped_lerp(
 ) -> None:
     """img[base_y+dst_y, base_x+dst_x] lerped towards target_rgb by alpha/255,
     in place and clipped like _clipped_darken. target_rgb and alpha broadcast
-    per pixel as (n, 3) and (n, 1), or as a constant."""
+    per pixel as (n, 3) and (n, 1), or as a constant (numpy only)."""
+    native = composite_backend.native
+    if native is not None and np.ndim(target_rgb) == 2 and np.ndim(alpha) == 2:
+        native.lerp(img, base_y, base_x, dst_y, dst_x, target_rgb, alpha)
+        return
     if extent is not None:
         y_lo, y_hi, x_lo, x_hi = extent
         h, w = img.shape[0], img.shape[1]
@@ -948,27 +967,24 @@ def _render_tile_iso(
         r, g, b = color_for_terrain_id(terrain_id)
         top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
+    # Every paint is collected first, in paint order, then run on one backend
+    # below, so the gates stay shared and the native call is one per tile.
+    skirts = []
     for side, drop_px in (("left", drop_left), ("right", drop_right)):
         if drop_px <= 0:
             continue  # map edge, or not higher than that neighbor -- no visible drop
         dst_y, dst_x, src_y, src_x = iso_geometry.skirt_quad_indices(tile_px, drop_px, side)
-        skirt = _skirt_lut(side)[top_block[src_y, src_x]]
         # Same producer, same key: the extent memo rides the very arrays
         # the line above just fetched. See iso_geometry.index_extent.
         extent = iso_geometry.index_extent(iso_geometry.skirt_quad_indices, tile_px, drop_px, side)
-        _clipped_paint(img, base_y, base_x, dst_y, dst_x, skirt, extent=extent)
+        skirts.append((dst_y, dst_x, src_y, src_x, _skirt_lut(side), extent))
 
-    dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(tile_px)
-    native = composite_backend.native
-    if native is not None:
-        native.paint_diamond(img, base_y, base_x, dst_y, dst_x, src_y, src_x, top_block)
-    else:
-        extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
-        _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
+    diamond = iso_geometry.diamond_indices(tile_px)
+    darkens = []
 
     # Seam line: a 1px contour along this tile's OWN two up-screen diamond
     # edges wherever the neighbor behind that edge is lower -- this tile's
-    # own pixels, so it has to run after the top-face paint just above, and
+    # own pixels, so it has to run after the top-face paint, and
     # before the contact-shadow loop below only for readability (the two
     # write disjoint rows: the seam is at tops[c], the band strictly above
     # it, off this diamond entirely).
@@ -986,7 +1002,7 @@ def _render_tile_iso(
         seam_qualified = True
         seam_dst_y, seam_dst_x = iso_geometry.seam_edge_indices(tile_px, side)
         extent = iso_geometry.index_extent(iso_geometry.seam_edge_indices, tile_px, side)
-        _clipped_darken(img, base_y, base_x, seam_dst_y, seam_dst_x, _seam_factors(tile_px, side), extent=extent)
+        darkens.append((seam_dst_y, seam_dst_x, _seam_factors(tile_px, side), extent))
 
     # The two apex columns, once, if EITHER side qualified -- they belong
     # to neither side's range (see iso_geometry.seam_apex_indices): the old
@@ -998,7 +1014,7 @@ def _render_tile_iso(
     if seam_qualified:
         apex_dst_y, apex_dst_x = iso_geometry.seam_apex_indices(tile_px)
         extent = iso_geometry.index_extent(iso_geometry.seam_apex_indices, tile_px)
-        _clipped_darken(img, base_y, base_x, apex_dst_y, apex_dst_x, _seam_factors(tile_px, "apex"), extent=extent)
+        darkens.append((apex_dst_y, apex_dst_x, _seam_factors(tile_px, "apex"), extent))
 
     # Contact shadow: darkens whatever's ALREADY painted behind this tile
     # (a smaller-d, earlier-painted tile in depth_order) when this tile is
@@ -1024,9 +1040,7 @@ def _render_tile_iso(
         # Never None here: the .size guard just above already returned on
         # the only empty case, and index_extent returns None only for that.
         extent = iso_geometry.index_extent(iso_geometry.shadow_quad_indices, tile_px, rise_px, side)
-        _clipped_darken(
-            img, base_y, base_x, s_dst_y, s_dst_x, _shadow_factors(tile_px, rise_px, side), extent=extent
-        )
+        darkens.append((s_dst_y, s_dst_x, _shadow_factors(tile_px, rise_px, side), extent))
 
     # The band's two apex columns, once, onto the DIAGONAL back neighbor
     # (x+1, y-1). Neither side of the loop above can reach them: each
@@ -1057,8 +1071,7 @@ def _render_tile_iso(
         if a_dst_y.size:
             # Non-None for the same reason the band's own extent is.
             extent = iso_geometry.index_extent(iso_geometry.shadow_apex_indices, tile_px, rise_diag, sides)
-            factors = _shadow_factors(tile_px, rise_diag, "apex_" + sides)
-            _clipped_darken(img, base_y, base_x, a_dst_y, a_dst_x, factors, extent=extent)
+            darkens.append((a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_diag, "apex_" + sides), extent))
 
     # The receiving neighbour's two apex columns at an INNER corner, where two
     # casters one screen-row apart both shadow the same lower tile N and
@@ -1084,8 +1097,19 @@ def _render_tile_iso(
         t_dst_y, t_dst_x, _depth, _span = iso_geometry.shadow_tip_indices(tile_px, rise_px, side)
         if t_dst_y.size:
             extent = iso_geometry.index_extent(iso_geometry.shadow_tip_indices, tile_px, rise_px, side)
-            factors = _shadow_factors(tile_px, rise_px, "tip_" + side)
-            _clipped_darken(img, base_y, base_x, t_dst_y, t_dst_x, factors, extent=extent)
+            darkens.append((t_dst_y, t_dst_x, _shadow_factors(tile_px, rise_px, "tip_" + side), extent))
+
+    native = composite_backend.native
+    if native is not None:
+        native.render_tile_iso(img, base_y, base_x, top_block, skirts, diamond, darkens)
+        return
+    for dst_y, dst_x, src_y, src_x, lut, extent in skirts:
+        _clipped_paint(img, base_y, base_x, dst_y, dst_x, lut[top_block[src_y, src_x]], extent=extent)
+    dst_y, dst_x, src_y, src_x = diamond
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _clipped_paint(img, base_y, base_x, dst_y, dst_x, top_block[src_y, src_x], extent=extent)
+    for dst_y, dst_x, factors, extent in darkens:
+        _clipped_darken(img, base_y, base_x, dst_y, dst_x, factors, extent=extent)
 
 
 def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
@@ -1908,6 +1932,50 @@ def _bystander_candidates(
     return combined[order]
 
 
+def _rect_candidates(scenario, x0, y0, x1, y1, proj, with_units, building_bboxes, bystander_grid) -> np.ndarray:
+    """composite_rect_iso/_sloped's ordered candidates: the rect's terrain
+    tiles plus its bystander buildings, in depth order."""
+    w, h = scenario.map_manager.map_width, scenario.map_manager.map_height
+    candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
+    if with_units and building_bboxes:
+        candidates = _bystander_candidates(candidates, building_bboxes, bystander_grid, x0, y0, x1, y1, w)
+    return candidates
+
+
+def prepare_rect_native(
+    sloped: bool, scenario: LoadedScenario, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray,
+    proj: iso_geometry.IsoProjection, tile_px: int, building_bboxes: dict, with_units: bool,
+    bystander_grid: BystanderGrid | None, layers: LayerState, grid: GridBake, unit_pack,
+) -> tuple | None:
+    """composite_rect_iso (heights = elevations) or composite_rect_sloped
+    (heights = corner_rise) with every Python step done here and only the
+    nogil kernel left, for margin_warm's worker threads (Batch F T2).
+
+    Returns (kernel, scratch, args, holds): kernel(scratch, *args) paints what
+    the composite would return, or returns False having painted nothing (take
+    the per-tile path). None when this rect has no whole-rect native path. The
+    args own snapshots of every input the GUI thread writes in place; holds
+    keeps the unit pack alive, since the kernel reaches its sprite pixels
+    through raw addresses the pack alone owns."""
+    native = composite_backend.native
+    if native is None or unit_pack is None:
+        return None
+    candidates = _rect_candidates(scenario, x0, y0, x1, y1, proj, with_units, building_bboxes, bystander_grid)
+    if not candidates.shape[0]:
+        return None
+    from descape import native_composite
+
+    prepare = native_composite.prepare_sloped if sloped else native_composite.prepare_iso
+    args = prepare(
+        scenario, x0, y0, candidates, heights, proj, tile_px, unit_pack if with_units else None,
+        layers.terrain_textures, grid, share=True,
+    )
+    if args is None:
+        return None
+    kernel = native.composite_sloped if sloped else native.composite_iso
+    return kernel, np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8), args, (unit_pack,)
+
+
 def composite_rect_iso(
     scenario: LoadedScenario,
     x0: int,
@@ -1924,6 +1992,7 @@ def composite_rect_iso(
     bystander_grid: BystanderGrid | None = None,
     layers: LayerState = DEFAULT_LAYERS,
     grid: GridBake = DEFAULT_GRID,
+    unit_pack=None,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -1971,14 +2040,16 @@ def composite_rect_iso(
 
     Never mutates elevations -- only dirty_screen_bbox_iso() does that (see
     its own docstring for why that separation matters for chunk-order
-    independence)."""
+    independence).
+
+    unit_pack (Batch F N2): the level's native_composite.UnitPack, built from
+    this same units_by_tile and sprites (or native_composite.NO_UNITS when
+    with_units is off). Given one and the native backend, the whole loop
+    below runs as one native call; without one, native runs per tile."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
-    candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
-
-    if with_units and building_bboxes:
-        candidates = _bystander_candidates(candidates, building_bboxes, bystander_grid, x0, y0, x1, y1, w)
+    candidates = _rect_candidates(scenario, x0, y0, x1, y1, proj, with_units, building_bboxes, bystander_grid)
 
     # Scratch canvas local to the rect, not the full map -- composited tiles
     # write into it via _render_tile_iso's offset/clip support (a candidate
@@ -2000,6 +2071,15 @@ def composite_rect_iso(
     # check_full_coverage) would have painted there, units included.
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
+    native = composite_backend.native
+    if native is not None and unit_pack is not None and candidates.shape[0]:
+        from descape import native_composite
+
+        if native_composite.composite_iso(
+            native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
+            unit_pack if with_units else None, layers.terrain_textures, grid,
+        ):
+            return scratch
     # .tolist() unboxes in C, and every candidate is already clamped on-map
     # (tiles_in_screen_rect + unit_occupied_tiles), so get_tile's checks can't fire.
     for cx, cy in candidates.tolist():
@@ -2210,8 +2290,12 @@ def _render_tile_sloped(
         r, g, b = color_for_terrain_id(terrain_id)
         top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
-    top = top_block[src_y, src_x]
     shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
+    native = composite_backend.native
+    if native is not None:
+        native.paint_sloped(img, base_y, base_x, dst_y, dst_x, src_y, src_x, uv_idx, top_block, shade)
+        return
+    top = top_block[src_y, src_x]
     shaded = np.clip(top.astype(np.float32) * shade[uv_idx][:, None], 0, 255).astype(np.uint8)
     _clipped_paint(img, base_y, base_x, dst_y, dst_x, shaded, extent=extent)
 
@@ -2371,24 +2455,49 @@ def _draw_unit_sloped(
         base_x, base_y, dst_y, dst_x, _src_y, _src_x, _uv_idx = _sloped_tile_quad(
             tx, ty, tile_px, proj, *corners, offset
         )
-        values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
         # *corners is the raw (d_nw, d_ne, d_sw, d_se) _sloped_tile_quad
         # just keyed sloped_quad_indices on, byte for byte.
         extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, *corners)
-        _clipped_paint(img, base_y, base_x, dst_y, dst_x, values, extent=extent)
+        _clipped_paint_solid(img, base_y, base_x, dst_y, dst_x, color, extent=extent)
         return
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
-    values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
     off_x, off_y = offset
+    base_y, base_x = _sloped_mark_base(unit, tx, ty, rise_px, proj)
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _clipped_paint_solid(img, base_y - off_y, base_x - off_x, dst_y, dst_x, color, extent=extent)
+
+
+def _sloped_mark_base(unit, tx: int, ty: int, rise_px: int, proj: iso_geometry.IsoProjection) -> tuple[int, int]:
+    """(base_y, base_x) of a Sloped plain-diamond mark on footprint tile (tx, ty)."""
     # Positioned by its CENTRE, the same way _draw_unit_iso is (free
     # placement, Stage 1). rise_px is an int, so a zero paint offset reduces
     # this to tile_screen_origin(tx, ty, 0) shifted up by rise_px exactly --
     # the expression this line used to be, byte for byte.
     dx, dy = unit_paint_offset(unit)
     cx, cy = iso_geometry.map_point_to_screen(tx + 0.5 + dx, ty + 0.5 + dy, rise_px, proj)
-    base_x, base_y = cx - proj.half_w, cy - proj.half_h
-    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
-    _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values, extent=extent)
+    return cy - proj.half_h, cx - proj.half_w
+
+
+def _sloped_mark_conforms(unit) -> bool:
+    """Whether a Sloped mark paints its own tile's warped quad (see
+    _paint_tile_and_units_sloped) rather than a plain diamond."""
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    return span_x <= 1 and span_y <= 1 and unit_paint_offset(unit) == (0.0, 0.0)
+
+
+def _sloped_mark_rise(unit, corner_rise: np.ndarray) -> int:
+    ux, uy = int(unit.x), int(unit.y)
+    return iso_geometry.unit_rise_px(corner_rise, ux, uy, unit.x - ux, unit.y - uy)
+
+
+def _unit_mark_sloped(
+    unit, tx: int, ty: int, proj: iso_geometry.IsoProjection, corner_rise: np.ndarray
+) -> tuple[int, int] | None:
+    """The native UnitPack's view of one Sloped mark: None when it conforms to
+    its tile's quad, else its plain diamond's (base_y, base_x)."""
+    if _sloped_mark_conforms(unit):
+        return None
+    return _sloped_mark_base(unit, tx, ty, _sloped_mark_rise(unit, corner_rise), proj)
 
 
 def _paint_tile_and_units_sloped(
@@ -2488,16 +2597,14 @@ def _paint_tile_and_units_sloped(
         base_x, base_y, _dst_y, _dst_x, _sy, _sx, _uv = _sloped_tile_quad(
             tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset
         )
-        color_arr = np.array(outline_color, dtype=np.uint8)
         for bit, side in _FARM_EDGE_BITS:
             if not (edge_mask & bit):
                 continue
             edge_dst_y, edge_dst_x = iso_geometry.sloped_tile_edge_indices(tile_px, side, d_nw, d_ne, d_sw, d_se)
-            values = np.broadcast_to(color_arr, (edge_dst_y.size, 3))
             extent = iso_geometry.index_extent(
                 iso_geometry.sloped_tile_edge_indices, tile_px, side, d_nw, d_ne, d_sw, d_se
             )
-            _clipped_paint(img, base_y, base_x, edge_dst_y, edge_dst_x, values, extent=extent)
+            _clipped_paint_solid(img, base_y, base_x, edge_dst_y, edge_dst_x, outline_color, extent=extent)
     if grid.paints:
         # Same slot and reasoning as Stepped's. _sloped_tile_quad's base, not
         # tile_screen_origin's, and corners normalized the way its frame is.
@@ -2509,8 +2616,7 @@ def _paint_tile_and_units_sloped(
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
             continue  # its sprite paints instead, once, at its anchor tile
-        span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
-        if span_x <= 1 and span_y <= 1 and unit_paint_offset(unit) == (0.0, 0.0):
+        if _sloped_mark_conforms(unit):
             # This unit's own tile IS its whole footprint (see
             # unit_tile_bounds' invariant), and units_by_tile only ever
             # buckets it there -- so `tile` here already IS that tile, and
@@ -2525,8 +2631,7 @@ def _paint_tile_and_units_sloped(
             corners = (d_nw, d_ne, d_sw, d_se)
             _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, 0, corners=corners, offset=offset)
             continue
-        ux, uy = int(unit.x), int(unit.y)
-        rise_px = iso_geometry.unit_rise_px(corner_rise, ux, uy, unit.x - ux, unit.y - uy)
+        rise_px = _sloped_mark_rise(unit, corner_rise)
         _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset)
 
     # Sprites last within this tile's step, mirroring _paint_tile_and_units_iso's
@@ -2669,6 +2774,7 @@ def composite_rect_sloped(
     bystander_grid: BystanderGrid | None = None,
     layers: LayerState = DEFAULT_LAYERS,
     grid: GridBake = DEFAULT_GRID,
+    unit_pack=None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -2694,17 +2800,25 @@ def composite_rect_sloped(
 
     layers: same contract composite_rect_iso() documents -- only the
     terrain-textures half is applied here; the farm half is already baked
-    into whatever `sprites` was built with."""
+    into whatever `sprites` was built with.
+
+    unit_pack: same N2 contract as composite_rect_iso()'s."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
-    candidates = iso_geometry.tiles_in_screen_rect(x0, y0, x1, y1, w, h, proj)
-
-    if with_units and building_bboxes:
-        candidates = _bystander_candidates(candidates, building_bboxes, bystander_grid, x0, y0, x1, y1, w)
+    candidates = _rect_candidates(scenario, x0, y0, x1, y1, proj, with_units, building_bboxes, bystander_grid)
 
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
+    native = composite_backend.native
+    if native is not None and unit_pack is not None and candidates.shape[0]:
+        from descape import native_composite
+
+        if native_composite.composite_sloped(
+            native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
+            unit_pack if with_units else None, layers.terrain_textures, grid,
+        ):
+            return scratch
     # Same direct terrain index as composite_rect_iso, same clamping argument.
     for cx, cy in candidates.tolist():
         tile = mm.terrain[cy * w + cx]
@@ -3747,10 +3861,17 @@ def _draw_unit_iso(
     dropped anything unit_tile_bounds() rejects, which is why the index
     below is safe. offset/clipping mirror _render_tile_iso()'s own
     scratch-canvas contract, for refresh_region_iso()'s incremental redraw."""
-    elevation = int(elevations[int(unit.y), int(unit.x)])
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
-    values = np.full((dst_y.shape[0], 3), color, dtype=np.uint8)
     off_x, off_y = offset
+    base_y, base_x = _unit_mark_base_iso(unit, tx, ty, proj, elevations)
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _clipped_paint_solid(img, base_y - off_y, base_x - off_x, dst_y, dst_x, color, extent=extent)
+
+
+def _unit_mark_base_iso(unit, tx: int, ty: int, proj: iso_geometry.IsoProjection, elevations) -> tuple[int, int]:
+    """(base_y, base_x) of a Stepped mark's diamond on footprint tile (tx, ty),
+    shared by _draw_unit_iso and the native UnitPack."""
+    elevation = int(elevations[int(unit.y), int(unit.x)])
     # The diamond is positioned by its CENTRE (free placement, Stage 1), so a
     # span-1 unit's mark follows its sub-tile position instead of snapping to
     # (tx, ty). map_point_to_screen(tx + 0.5, ty + 0.5, elevation * elev_step)
@@ -3760,9 +3881,7 @@ def _draw_unit_iso(
     cx, cy = iso_geometry.map_point_to_screen(
         tx + 0.5 + dx, ty + 0.5 + dy, elevation * proj.elev_step, proj
     )
-    base_x, base_y = cx - proj.half_w, cy - proj.half_h
-    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
-    _clipped_paint(img, base_y - off_y, base_x - off_x, dst_y, dst_x, values, extent=extent)
+    return cy - proj.half_h, cx - proj.half_w
 
 
 def _unit_screen_bbox_iso(
@@ -4403,14 +4522,12 @@ def _paint_tile_and_units_iso(
         base_x, base_y = iso_geometry.tile_screen_origin(tile.x, tile.y, int(elevations[tile.y, tile.x]), proj)
         base_x -= off_x
         base_y -= off_y
-        color_arr = np.array(outline_color, dtype=np.uint8)
         for bit, side in _FARM_EDGE_BITS:
             if not (edge_mask & bit):
                 continue
             dst_y, dst_x = iso_geometry.tile_edge_indices(tile_px, side)
-            values = np.broadcast_to(color_arr, (dst_y.size, 3))
             extent = iso_geometry.index_extent(iso_geometry.tile_edge_indices, tile_px, side)
-            _clipped_paint(img, base_y, base_x, dst_y, dst_x, values, extent=extent)
+            _clipped_paint_solid(img, base_y, base_x, dst_y, dst_x, outline_color, extent=extent)
     if grid.paints:
         # After this tile's terrain, before its units: a sprite paints at the
         # footprint tile LAST in depth_order (unit_sprites.sprite_anchor_tile),

@@ -29,16 +29,15 @@ on-screen render stale -- both invisible until a user hits Ctrl+Z.
 Two entry points, for two callers:
 - apply(label, tiles, mutate_fn) -- one-shot: snapshot, run mutate_fn(), diff,
   record. Used by tests and any non-interactive caller.
-- begin_stroke()/stroke_dirty_indices()/commit_stroke() -- split apart so
-  viewer.py's drag-painting can apply a brush per newly-touched tile *live*
-  (querying stroke_dirty_indices() after each touch to know what to
-  incrementally re-render) while still recording the whole drag as a single
-  undo step at release. apply() is implemented on top of these three.
+- begin_stroke()/stroke_new_dirty()/commit_stroke() -- split apart so
+  viewer.py's drag-painting can apply a brush per mouse event *live*
+  (asking stroke_new_dirty() which of the tiles it wrote need re-rendering)
+  while still recording the whole drag as a single undo step at release. apply() is implemented on top of these three.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -547,16 +546,36 @@ class EditHistory:
         self._stroke_before = [tile_state(t) for t in tiles]
 
     def stroke_dirty_indices(self, tiles: Sequence) -> list[int]:
-        """Cumulative set of tile indices changed since begin_stroke() --
-        for live incremental re-render mid-drag (see viewer.py's stroke
-        handling: it calls this after every newly-touched tile and diffs
-        against what it saw last time, to redraw only what's newly dirty).
-        A plain linear scan is cheap enough at this project's map sizes
-        (tens of thousands of tiles) to call once per touched tile."""
+        """Cumulative set of tile indices changed since begin_stroke(), by
+        an O(map) scan. The live repaint uses stroke_new_dirty() instead;
+        this stays as the oracle for tests and benches."""
         if self._stroke_before is None:
             raise RuntimeError("stroke_dirty_indices() called with no stroke in progress")
         before = self._stroke_before
         return [i for i, t in enumerate(tiles) if tile_state(t) != before[i]]
+
+    def stroke_start_state(self, i: int) -> TileState:
+        """Tile `i`'s state as of begin_stroke()."""
+        if self._stroke_before is None:
+            raise RuntimeError("stroke_start_state() called with no stroke in progress")
+        return self._stroke_before[i]
+
+    def stroke_new_dirty(self, touched: Iterable[int], tiles: Sequence, seen: dict[int, TileState]) -> set[int]:
+        """The live stroke repaint set: of the indices a mutation reports
+        writing, those whose state differs from the last state handed to the
+        repaint (`seen`, updated in place), or from the stroke-start state if
+        never handed over. A tile edited and then returned to its start state
+        is therefore repainted. Cost is O(touched), not O(map)."""
+        if self._stroke_before is None:
+            raise RuntimeError("stroke_new_dirty() called with no stroke in progress")
+        before = self._stroke_before
+        new_dirty = set()
+        for i in touched:
+            state = tile_state(tiles[i])
+            if state != seen.get(i, before[i]):
+                seen[i] = state
+                new_dirty.add(i)
+        return new_dirty
 
     def abort_stroke(self) -> None:
         """Discards the in-progress snapshot without recording anything.
@@ -696,7 +715,7 @@ class EditHistory:
         -- e.g. via MapManager.set_elevation or a direct terrain_id
         assignment), diff, record. Used by tests and any non-interactive
         caller; viewer.py's drag-painting uses begin_stroke/
-        stroke_dirty_indices/commit_stroke directly instead, for live
+        stroke_new_dirty/commit_stroke directly instead, for live
         per-tile feedback during a drag rather than only at its end."""
         self.begin_stroke(tiles)
         mutate_fn()

@@ -23,6 +23,8 @@ def _fresh_trace_state(monkeypatch):
     monkeypatch.setattr(perf_trace, "_phase_sums", {})
     monkeypatch.setattr(perf_trace, "_phase_order", [])
     monkeypatch.setattr(perf_trace, "_repaint_durations", [])
+    monkeypatch.setattr(perf_trace, "_warm_ticks", [])
+    monkeypatch.setattr(perf_trace, "_warm_worker", [])
     monkeypatch.setattr(perf_trace, "_armed_label", None)
     monkeypatch.setattr(perf_trace, "_drag_active", False)
 
@@ -223,6 +225,61 @@ def test_end_drag_after_the_viewer_flushed_logs_nothing_more():
     perf_trace.flush("paint-terrain")
     perf_trace.end_drag("draw")
     assert debug_log.get_log_text().count("perf drag") == 1
+
+
+def test_warm_tick_is_a_no_op_while_disabled():
+    perf_trace.warm_tick(5.0, 2, 3.0)
+    assert perf_trace._warm_ticks == []
+
+
+def test_warm_ticks_join_repaints_on_the_view_line_with_max_tick_and_max_chunk():
+    """Max chunk is its own figure: under a budget, max tick alone can't say
+    whether one chunk is too slow to fit (Batch F T2's trigger)."""
+    perf_trace.enable(True)
+    _repaint()
+    perf_trace.warm_tick(7.5, 3, 2.5)
+    perf_trace.warm_tick(9.0, 1, 9.0)
+    perf_trace.flush_idle()
+    text = debug_log.get_log_text()
+    assert "perf view: repaint: 1 calls" in text
+    assert "warm: 2 ticks, 4 chunks, 16ms total (max tick 9.0, max chunk 9.0)" in text
+    assert perf_trace._warm_ticks == []
+
+
+def test_warm_ticks_alone_still_flush_a_view_line():
+    perf_trace.enable(True)
+    perf_trace.warm_tick(4.0, 2, 2.2)
+    perf_trace.flush_idle()
+    assert "perf view: warm: 1 ticks, 2 chunks, 4ms total (max tick 4.0, max chunk 2.2), composite" in (
+        debug_log.get_log_text()
+    )
+
+
+def test_worker_kernels_join_the_warm_bucket_and_can_flush_alone():
+    """A pooled chunk's kernel lands after its tick, so it may be the only
+    warm figure left at the next flush."""
+    perf_trace.enable(True)
+    perf_trace.warm_tick(3.0, 2, 1.6)
+    perf_trace.warm_worker(1.2)
+    perf_trace.warm_worker(2.4)
+    perf_trace.flush_idle()
+    perf_trace.warm_worker(5.0)
+    perf_trace.flush_idle()
+    text = debug_log.get_log_text()
+    assert "warm: 1 ticks, 2 chunks, 3ms total (max tick 3.0, max chunk 1.6), worker 2 chunks, 4ms total (max 2.4)" in text
+    assert "perf view: warm: worker 1 chunks, 5ms total (max 5.0), composite" in text
+    assert perf_trace._warm_worker == []
+
+
+def test_the_idle_scheduler_runs_on_warm_ticks_outside_a_drag_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(perf_trace, "_idle_scheduler", lambda: calls.append(1))
+    perf_trace.enable(True)
+    perf_trace.warm_tick(1.0, 1, 1.0)
+    assert len(calls) == 1
+    perf_trace.begin_drag()
+    perf_trace.warm_tick(1.0, 1, 1.0)
+    assert len(calls) == 1
 
 
 def test_the_idle_scheduler_runs_on_repaints_outside_a_drag_only(monkeypatch):

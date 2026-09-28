@@ -115,6 +115,82 @@ def test_the_fixture_index_matches_the_generator() -> None:
     assert gen.DANGLING_REFERENCE_ID not in index.by_id
 
 
+# -- patch_reference_index ------------------------------------------------------
+
+
+def _splice(player_id, unit, old_own, new_own, old_player_id=None):
+    from descape.render_cache import UnitSplice
+
+    # The tile lists are never read by the patch: empty on both sides here.
+    return UnitSplice(player_id, 0, unit, old_own, new_own, (), (), old_player_id=old_player_id)
+
+
+def _own(unit):
+    return (int(unit.x), int(unit.y))
+
+
+def _assert_matches_fresh(index, loaded) -> None:
+    fresh = unit_references.build_reference_index(loaded)
+    assert dict(index.by_id) == dict(fresh.by_id)
+    assert index.duplicates == fresh.duplicates
+
+
+def test_a_patch_follows_a_move_a_const_swap_an_add_a_remove_and_a_reassign() -> None:
+    archer, house, gate = _unit(10), _unit(11, _HOUSE, 41.0, 63.0), _unit(12, x=5.5, y=5.5)
+    loaded = _loaded({1: [archer, house], 2: [gate]})
+    index = unit_references.build_reference_index(loaded)
+
+    old = _own(archer)
+    archer.x, archer.y = 118.5, 3.5
+    assert unit_references.patch_reference_index(index, loaded, [_splice(1, archer, old, _own(archer))])
+    _assert_matches_fresh(index, loaded)
+
+    old = _own(gate)
+    gate.unit_const, gate.x = _HOUSE, 7.0
+    assert unit_references.patch_reference_index(index, loaded, [_splice(2, gate, old, _own(gate))])
+    _assert_matches_fresh(index, loaded)
+
+    added = _unit(13, x=130.5, y=1.5)  # off the map: no tiles, still an add
+    loaded.unit_manager.units[0].append(added)
+    loaded.unit_manager.units[1].remove(house)
+    changed = [_splice(1, house, _own(house), None), _splice(0, added, None, _own(added))]
+    assert unit_references.patch_reference_index(index, loaded, changed)
+    _assert_matches_fresh(index, loaded)
+
+    loaded.unit_manager.units[1].remove(archer)
+    loaded.unit_manager.units[3].append(archer)
+    assert unit_references.patch_reference_index(
+        index, loaded, [_splice(3, archer, _own(archer), _own(archer), old_player_id=1)]
+    )
+    _assert_matches_fresh(index, loaded)
+
+
+def test_a_removal_then_an_arrival_of_the_same_id_patches_in_list_order() -> None:
+    leaving, arriving = _unit(20, x=1.5, y=1.5), _unit(20, x=9.5, y=9.5)
+    loaded = _loaded({0: [leaving]})
+    index = unit_references.build_reference_index(loaded)
+    loaded.unit_manager.units[0][:] = [arriving]
+    changed = [_splice(0, leaving, _own(leaving), None), _splice(0, arriving, None, _own(arriving))]
+    assert unit_references.patch_reference_index(index, loaded, changed)
+    _assert_matches_fresh(index, loaded)
+
+
+def test_a_patch_refuses_what_depends_on_list_order_or_disagrees_with_the_index() -> None:
+    first, second, lone = _unit(7, x=1.5, y=1.5), _unit(7, x=2.5, y=2.5), _unit(8)
+    loaded = _loaded({1: [first, lone], 2: [second]})
+
+    def refused(splice) -> bool:
+        index = unit_references.build_reference_index(loaded)
+        return not unit_references.patch_reference_index(index, loaded, [splice])
+
+    assert refused(_splice(2, second, _own(second), _own(second))), "a duplicated id"
+    assert refused(_splice(1, lone, None, _own(lone))), "an add onto a present id"
+    assert refused(_splice(1, _unit(99), _own(lone), None)), "a removal of an absent id"
+    assert refused(_splice(4, lone, _own(lone), _own(lone))), "an owner the index does not hold"
+    assert refused(_splice(4, lone, _own(lone), _own(lone), old_player_id=3)), "a reassign from the wrong owner"
+    assert not unit_references.patch_reference_index(unit_references.EMPTY_INDEX, loaded, [])
+
+
 # -- references_in and describe ----------------------------------------------
 
 

@@ -143,7 +143,6 @@ from descape.edit_history import (
     OptionsDiffRecord,
     TileDiffRecord,
     UnitDiffRecord,
-    tile_state,
 )
 from descape.elevation_tools import set_tiles_elevation
 from descape.fill_tools import contiguous_region, flood_fill_terrain
@@ -188,6 +187,7 @@ from descape.render import (
     wall_variant_rotation_overrides,
 )
 from descape.render_cache import (
+    REACH_FALLBACK,
     FlatChunkCache,
     IsoChunkCache,
     SlopedChunkCache,
@@ -472,6 +472,9 @@ _SPLICE_COST_RATIO = 16
 # multiple of the visible chunks' area, else evict the bbox's chunks for the next paint. Measured
 # with tools/bench_stroke_end.py --area-ratio: see _patch_area_exceeds_viewport().
 _SCOPED_PATCH_AREA_RATIO = {"stepped": 0.05, "sloped": 1.0}
+# The same rule for the tight visible-level split (_repaint_unit_edit_split()), which patches
+# one level only; the shared ratio above stays for the reach-padded fallback.
+_TIGHT_PATCH_AREA_RATIO = {"stepped": 0.3, "sloped": 1.0}
 
 # Display-only sentinel assigned to LoadedScenario.path for a File > New map.
 # Deliberately relative and non-existent: LoadedScenario.path is only ever read
@@ -1012,9 +1015,9 @@ class SettingsDialog(QDialog):
         self._window._log_status(f"UI font: {shown_family}, {shown_size}")
 
     def _on_preload_zoom_levels_toggled(self, enabled: bool) -> None:
-        """Persists only -- turning it OFF also cancels both warms already in
-        flight (the neighbour-level layer warm AND the margin-ring chunk
-        warm, maintainer plan 2026-09-07's A6), so the choice takes effect
+        """Persists only -- turning it OFF also cancels every warm already in
+        flight through _cancel_warms() (the level warm, the margin-ring warm,
+        and the load-time warm with its queue), so the choice takes effect
         immediately rather than once queued work happens to finish. Turning
         it ON does not start either retroactively: the level warm's
         neighbours are derived from the fit baseline at open time (and the
@@ -1022,8 +1025,7 @@ class SettingsDialog(QDialog):
         starts from the next viewport-changed poll fire."""
         settings.set_preload_zoom_levels(enabled)
         if not enabled:
-            self._window._level_warmer.cancel()
-            self._window._margin_warmer.cancel()
+            self._window._cancel_warms()
         self._window._log_status(f"Preload zoom levels: {'on' if enabled else 'off'}")
 
     def _update_graphics_quality_label(self, quality: int) -> None:
@@ -4599,8 +4601,13 @@ class ViewerWindow(QMainWindow):
         baked into chunk PIXELS), and then MapView.invalidate_region()
         schedules the actual Qt repaint. Doing only the first leaves the old
         pixels on screen until something else happens to repaint them.
+
+        _cancel_warms() comes first, for the reason _on_layer_toggled()
+        gives: a warm in flight was built against the old filter, and a
+        margin-warm tick would rebuild a whole stale level inside itself.
         """
         self._unit_filter = self._current_unit_filter()
+        self._cancel_warms()
         if self.scenario is None or self._cache is None:
             return
         self._cache.set_unit_filter(self._unit_filter)
@@ -5738,9 +5745,19 @@ class ViewerWindow(QMainWindow):
     def _describe_unit_reference(self, ref_id) -> str:
         return unit_references.describe(self._unit_reference_index(), ref_id)
 
+    def _patch_unit_ref_index(self, changed: list[UnitSplice] | None) -> None:
+        """Keeps the trigger reference index in step with a unit edit: patched
+        per splice when `changed` is given, else dropped for a lazy rebuild
+        (as is one unit_references.patch_reference_index() refuses)."""
+        index = self._unit_ref_index
+        if index is None:
+            return
+        if changed is None or not unit_references.patch_reference_index(index, self.scenario, changed):
+            self._unit_ref_index = None
+
     def _on_unit_references_moved(self) -> None:
-        """A unit mutation can move, remove or reassign what a trigger names."""
-        self._unit_ref_index = None
+        """A unit mutation can move, remove or reassign what a trigger names.
+        The index itself is already patched or dropped (_patch_unit_ref_index())."""
         self.trigger_panel.refresh_unit_reference_labels()
         # The held ref, not a panel read: undo is global, and the panel may sit unrefreshed.
         self._refresh_trigger_overlay()
@@ -7702,10 +7719,10 @@ class ViewerWindow(QMainWindow):
         # _apply_dirty. A dict, not a set of indices: elevation propagation
         # can change one tile SEVERAL times over a single drag, and a
         # membership-only set silently drops every change after the first --
-        # see on_edit_stroke_tile's own comment.
+        # see _apply_stroke_dirty and tests/test_stroke_elevation_sync.py.
         self._stroke_seen_state: dict[int, tuple[int, int, int]] = {}
         # Painted-tile dedupe for this stroke, keyed on the actual tile a
-        # brush touched -- see on_edit_stroke_tile's own comment for why
+        # brush touched -- see _mutate_stroke_tile's own comment for why
         # this must be separate from MapView._stroke_touched (which is
         # keyed on the CURSOR tile, and is only a cheap early-out, not a
         # correctness guarantee once a brush is bigger than one tile).
@@ -7731,8 +7748,9 @@ class ViewerWindow(QMainWindow):
     def on_edit_stroke_tiles(self, tiles, modifiers) -> None:
         """MapView's per-event stroke entry: `tiles` is the cursor path in
         order. Mutates tile by tile exactly as that many single-tile calls
-        would (Elevate's propagation order depends on it), then runs the
-        O(map) stroke scan and _apply_dirty once for the whole event."""
+        would (Elevate's propagation order depends on it), then works out
+        the repaint set from the tiles written and runs _apply_dirty once
+        for the whole event."""
         if self.scenario is None:
             return
         if self._current_tool == "convert":
@@ -7748,11 +7766,11 @@ class ViewerWindow(QMainWindow):
             return
         label = _STROKE_LABELS.get(self._current_tool, "Edit")
         with self._close_stroke_on_error(label):
-            changed = False
+            touched: set[int] = set()
             for x, y in tiles:
-                changed |= self._mutate_stroke_tile(x, y, modifiers)
-            if changed:
-                self._apply_stroke_dirty()
+                touched |= self._mutate_stroke_tile(x, y, modifiers)
+            if touched:
+                self._apply_stroke_dirty(touched)
 
     @contextmanager
     def _close_stroke_on_error(self, label: str):
@@ -7777,8 +7795,9 @@ class ViewerWindow(QMainWindow):
                     self._apply_dirty(touched)
             raise
 
-    def _mutate_stroke_tile(self, x: int, y: int, modifiers) -> bool:
-        """One cursor tile's footprint edit. True if it wrote anything."""
+    def _mutate_stroke_tile(self, x: int, y: int, modifiers) -> set[int]:
+        """One cursor tile's footprint edit. Returns every flat index it
+        wrote (propagation and beach ring included), empty if none."""
         mm = self.scenario.map_manager
         # Every drag tool reaching this method today (terrain/elevation/
         # set_level) has supports_brush=True, so this is BRUSH_TOOLS in
@@ -7801,10 +7820,11 @@ class ViewerWindow(QMainWindow):
         # tile that overlapped it, not once per stroke.
         footprint = [t for t in footprint if t not in self._stroke_painted]
         if not footprint:
-            return False
+            return set()
 
         if self._current_tool == "draw":
             terrain_id = self.terrain_panel.terrain_id()
+            width = mm.map_width
             for tx, ty in footprint:
                 tile = mm.get_tile(tx, ty)
                 tile.terrain_id = terrain_id
@@ -7813,17 +7833,16 @@ class ViewerWindow(QMainWindow):
                 # terrain_id would make this tool's own render lie about what
                 # the game will actually show.
                 tile.layer = -1
+            touched = {ty * width + tx for tx, ty in footprint}
             # The shoreline, laid AFTER the core so a tile this touch just
-            # made water can never be beached, and strictly BEFORE the
-            # stroke_dirty_indices block below -- after it, the ring tiles
-            # would stay unpainted on screen until the next cursor touch,
-            # which reads as a rendering bug. `footprint` is already the
-            # dedupe-filtered core, which is correct: a tile skipped because
-            # an earlier touch painted it is already water, and its ring was
-            # laid then.
+            # made water can never be beached. Its ring indices must be in
+            # `touched`, or they stay unpainted until a later event.
+            # `footprint` is already the dedupe-filtered core, which is
+            # correct: a tile skipped because an earlier touch painted it is
+            # already water, and its ring was laid then.
             beach_on, beach_id, beach_width = self._stroke_auto_beach
             if beach_on:
-                apply_beach_ring(mm, footprint, terrain_id, beach_id, beach_width)
+                touched.update(apply_beach_ring(mm, footprint, terrain_id, beach_id, beach_width))
         elif self._current_tool == "elevation":
             delta = -1 if modifiers & Qt.ShiftModifier else 1
             # Clamp to the legal range Set Elevation's spinbox already
@@ -7849,54 +7868,24 @@ class ViewerWindow(QMainWindow):
                 (tx, ty, max(0, min(ELEVATION_LEVEL_MAX, mm.get_tile(tx, ty).elevation + delta)))
                 for tx, ty in footprint
             ]
-            set_tiles_elevation(mm, targets)
+            touched = set_tiles_elevation(mm, targets)
         elif self._current_tool == "set_level":
             level = self.elevation_level_spin.value()
-            set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
+            touched = set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
         else:
-            return False
+            return set()
 
         self._stroke_painted.update(footprint)
-        return True
+        return touched
 
-    def _apply_stroke_dirty(self) -> None:
-        mm = self.scenario.map_manager
-        # Cumulative dirty set since stroke start, minus what's already been
-        # redrawn AT ITS CURRENT STATE this stroke -- avoids repainting the
-        # same tile repeatedly as the drag continues over tiles elevation
-        # propagation already touched. See EditHistory.stroke_dirty_indices's
-        # docstring for the cost of this (a linear scan) at this project's map
-        # sizes -- this is exactly why it runs once per mouse event (after
-        # every footprint on the event's gap-filled cursor path is written),
-        # never once per brush or path tile: doing that would multiply an
-        # already-O(map) scan on every mouse-move. Same warning on_fill's
-        # own docstring carries for its single full-map fill.
-        #
-        # Compared on STATE, not on index membership. stroke_dirty_indices is
-        # cumulative (everything differing from the stroke-start snapshot), so
-        # once a tile appears it stays for the rest of the drag -- and
-        # set_tiles_elevation's propagation routinely changes one tile several
-        # times as the brush moves over it. Subtracting a plain set of indices
-        # therefore synced each tile exactly once, at its FIRST value, and
-        # froze it there: _apply_dirty -> dirty_screen_bbox_iso is the only
-        # thing that writes MapView._iso_elevations, so that snapshot drifted
-        # permanently out of sync with tile.elevation. Measured on one
-        # 8-step Set Elevation drag: 131 tiles wrong, 35 of them sitting at
-        # elevation 6 while the snapshot still read lower, some off by 2.
-        # Top faces still looked right (they render from tile.elevation), but
-        # the hover highlight and screen_to_tile hit-testing read the array,
-        # and _render_tile_iso mixes the two when it computes skirt/contact-
-        # shadow deltas as tile.elevation - elevations[neighbour].
-        with perf_trace.phase("stroke_scan"):
-            all_dirty = self.edit_history.stroke_dirty_indices(mm.terrain)
-        # One tile_state() per cumulative dirty index, not two passes over it:
-        # _stroke_seen_state only moves where the state actually changed.
-        new_dirty = set()
-        for i in all_dirty:
-            state = tile_state(mm.terrain[i])
-            if state != self._stroke_seen_state.get(i):
-                self._stroke_seen_state[i] = state
-                new_dirty.add(i)
+    def _apply_stroke_dirty(self, touched: set[int]) -> None:
+        # Compared on STATE, not index membership: propagation re-changes one
+        # tile several times per drag, and each change must reach _apply_dirty,
+        # the only writer of MapView._iso_elevations (tests/test_stroke_elevation_sync.py).
+        with perf_trace.phase("stroke_dirty"):
+            new_dirty = self.edit_history.stroke_new_dirty(
+                touched, self.scenario.map_manager.terrain, self._stroke_seen_state
+            )
         self._apply_dirty(new_dirty)
 
     def on_edit_stroke_end(self) -> None:
@@ -7939,8 +7928,8 @@ class ViewerWindow(QMainWindow):
         can never disagree with the previewed one.
 
         Shaped like on_fill() rather than the stroke handlers, for the same
-        reason: there is no live drag to give feedback during, so the O(map)
-        stroke_dirty_indices() scan per touched tile buys nothing here.
+        reason: there is no live drag to give feedback during, so per-event
+        stroke bookkeeping buys nothing here.
         Routed through _apply_terrain_unit_plan() too, so Trees/Eye candy
         follow a painted line exactly as they follow a Draw stroke. Wrapped
         in on_fill()'s busy/wait-cursor guard: a full-map filled rectangle
@@ -8649,10 +8638,8 @@ class ViewerWindow(QMainWindow):
         stroke handlers above. Shaped like paste_region() just above, not like
         on_edit_stroke_tile(): begin_stroke/build_stroke_record once at the
         end (via _apply_terrain_unit_plan()) rather than
-        begin_stroke/stroke_dirty_indices/commit_stroke, since there's no
-        drag to give live feedback during and stroke_dirty_indices() is an
-        O(map) scan per call -- fine once per touched brush tile, far too
-        slow once per filled tile. `modifiers` is accepted only for
+        begin_stroke/stroke_new_dirty/commit_stroke, since there's no
+        drag to give live feedback during. `modifiers` is accepted only for
         signature symmetry with on_edit_stroke_tile/on_click_edit and is
         deliberately ignored -- a fill has no Shift/right-button inverse.
 
@@ -8777,8 +8764,8 @@ class ViewerWindow(QMainWindow):
         """Map mirroring's apply path (mirror_tools.plan_mirror -> here),
         called by MirrorDialog for both Preview and Apply. Copies on_fill()'s
         busy-guard/single-history-record/incremental-repaint shape near-
-        verbatim -- see that method's own docstring for why (no stroke, and
-        stroke_dirty_indices() is an O(map) scan per call).
+        verbatim -- see that method's own docstring for why (no live drag
+        to give feedback during).
 
         Returns None -- refusing to apply, no record pushed -- when
         plan.elevation_violations is non-empty: that check exists precisely
@@ -10241,7 +10228,9 @@ class ViewerWindow(QMainWindow):
         # Above the mode gate, not at the literal tail: undo is global, so a
         # unit edit reverted from Terrain mode must re-arm the warm too.
         self._start_level_warm()
-        self._unit_ref_index = None
+        # Before the defer_index return: each Convert flush patches its own batch.
+        with perf_trace.phase("unit_refs"):
+            self._patch_unit_ref_index(changed)
         if defer_index:
             return
         with perf_trace.phase("unit_refs"):
@@ -10279,11 +10268,27 @@ class ViewerWindow(QMainWindow):
         rebuild internally for one or more entries (a wall/connector const,
         or a tile shared with another unit -- see render_cache.
         _splice_eligible()) -- that only changes how the SOURCE data got
-        refreshed, never how much of the canvas needs recompositing: the
-        bbox below is sized from `changed`'s own footprints regardless,
-        which is always a safe (over-)approximation of what a full source
-        refresh could have moved on screen, since nothing but this edit's
-        own unit(s) actually changed.
+        refreshed, never how much of the canvas needs recompositing, since
+        nothing but this edit's own unit(s) actually changed.
+
+        Stepped/Sloped with sprites on size the VISIBLE level's repaint
+        (map_view.viewport_chunk_target()'s mip) from the edited units' real
+        extents: the tile term (terrain, marks' footprints, farm tiles) plus
+        cache.sprite_extent_before(), read from that level's layer, and
+        cache.sprite_extent_after(), resolved per unit. Every other resident
+        level evicts today's reach-padded bbox instead, so no non-visible level
+        is resolved or recomposited here. Qt repaints only the visible level.
+
+        Ordering constraint: on a CompositeDiffRecord undo the terrain
+        child's _apply_dirty() runs before this method, and the pre side must
+        be read after it and before invalidate_units(), which replaces the
+        layer it reads. So it must not be hoisted out of this method.
+
+        Today's reach-padded bbox, on every resident level, is kept whenever
+        the tight one can't be trusted (render_cache.REACH_FALLBACK): a wall,
+        connector or rotation-variant const, whose neighbours' art changes too
+        and which today's 650 px pad covers, or a visible level holding no
+        resident chunks. With sprites off that same call is already exact.
 
         Flat has no elevation term and no dirty_screen_bbox_* counterpart --
         mirrors _apply_dirty_render's own Flat branch, patching one rect per
@@ -10297,6 +10302,12 @@ class ViewerWindow(QMainWindow):
         # Convert's stroke end can drain an empty list; Flat would treat [] as wholesale.
         if not changed:
             return
+        pre = post = REACH_FALLBACK
+        visible_mip = None
+        if self._render_style != "flat" and self._cache.sprites_enabled:
+            target = self.map_view.viewport_chunk_target()
+            visible_mip = None if target is None else target[0]
+            pre = self._cache.sprite_extent_before(changed, visible_mip)
         with perf_trace.phase("unit_sources"):
             self._cache.invalidate_units(changed)
         old_tiles = {t for s in changed for t in s.old_tiles}
@@ -10313,6 +10324,13 @@ class ViewerWindow(QMainWindow):
             for rect in rects:
                 self.map_view.invalidate_region(rect)
             return
+        if pre is not REACH_FALLBACK:
+            post = self._cache.sprite_extent_after(changed, visible_mip)
+        if post is not REACH_FALLBACK:
+            bbox, elevation_changed = self._unit_edit_bbox(changed, pre, post)
+            if bbox is not None:
+                self._repaint_unit_edit_split(changed, bbox, elevation_changed, visible_mip, batch)
+                return
         bbox, elevation_changed = self._unit_edit_bbox(changed)
         if bbox is None:
             # Defensive, not expected (see dirty_screen_bbox_iso's own
@@ -10330,28 +10348,84 @@ class ViewerWindow(QMainWindow):
                 self._cache.patch(bbox, elevation_changed=elevation_changed)
         self.map_view.invalidate_region(bbox)
 
-    def _patch_area_exceeds_viewport(self, bbox: tuple[int, int, int, int]) -> bool:
-        """Whether patch(bbox) would recomposite more than
-        _SCOPED_PATCH_AREA_RATIO of the visible chunks' area. Past that,
-        patching sub-rects eagerly costs more than evicting the bbox's chunks
-        and recompositing the visible ones whole at the next paint, since a
-        sprite-reach-widened sub-rect repaints its bystanders per chunk.
-        Measured on old-allies and Joan 1: Stepped evicts cheaper from an area
-        of ~0.05 up, sprites on or off; Sloped, whose chunk recomposite is
-        the warp, patches cheaper at every measured area (to 0.55), so its
-        1.0 is an extrapolated bound."""
+    def _repaint_unit_edit_split(
+        self, changed: list[UnitSplice], bbox: tuple[int, int, int, int], elevation_changed: set,
+        visible_mip: int, batch: bool,
+    ) -> None:
+        """_patch_unit_edit_cache()'s tight branch: the visible level patches
+        or evicts `bbox` by the usual area rule, priced on that level alone
+        since no other level is patched; every other resident level evicts
+        today's reach-padded bbox, which costs nothing until it is shown."""
+        others = [mip for mip in self._cache.resident_levels() if mip != visible_mip]
+        reach = None
+        if others:
+            reach, _ = self._unit_edit_bbox(changed)
+            if reach is None:
+                reach = (0, 0, *self._cache.canvas_dims(0))
+        visible = (visible_mip,)
+        evict = batch and self._patch_area_exceeds_viewport(bbox, levels=visible, tight=True)
+        # Sizing stays outside the phase, as in the reach branch, so unit_patch times cache work only.
+        with perf_trace.phase("unit_patch"):
+            if reach is not None:
+                self._cache.invalidate_region(reach, levels=others)
+            if evict:
+                self._cache.invalidate_region(bbox, levels=visible)
+            else:
+                self._cache.patch(bbox, elevation_changed=elevation_changed, levels=visible)
+        self.map_view.invalidate_region(bbox)
+
+    def _patch_area_exceeds_viewport(self, bbox: tuple[int, int, int, int], levels=None, tight: bool = False) -> bool:
+        """Whether patch(bbox, levels=levels) would recomposite more than
+        _SCOPED_PATCH_AREA_RATIO (or _TIGHT_PATCH_AREA_RATIO when `tight`)
+        of the visible chunks' area. Past that,
+        patching eagerly costs more than evicting the bbox's chunks and
+        recompositing the visible ones whole at the next paint.
+
+        Re-measured 2026-09-27 on old-allies and Joan 1, sprites on
+        (tools/bench_stroke_end.py --area-ratio). The ratios are set by the
+        reach-padded path (levels None). There, a Stepped patch also
+        composites every other resident level, whose layer a batch edit left
+        stale, so it pays that level's rebuild too (in-patch rebuild ~100 ms
+        vs ~47 ms with one level, old-allies), where evicting defers it to
+        the next zoom-out. The sub-rect recomposite itself is only 3-7 ms
+        dearer than the whole-chunk one. So Stepped evicts cheaper at every
+        measured reach area (0.25-0.64, by 40-73 ms), as the 2026-09-26 fit
+        found from ~0.05 up; Flat (iso), one level, by 2-67 ms at 0.24-0.62,
+        cause not isolated. Sloped, whose chunk recomposite is the warp,
+        recomposites cheaper by patching at every measured area (to 0.55;
+        totals within noise on old-allies), so its 1.0 is an extrapolated bound.
+
+        The tight split (_repaint_unit_edit_split(), levels=(visible,))
+        patches cheaper than it evicts at every area it reaches, 0.05-0.3
+        (by ~3 ms, crossover extrapolated past the splice cap, ~0.4-0.55).
+        The shared Stepped value would evict there early and put old-allies
+        short b1 on the boundary, so the split takes its own ratio,
+        _TIGHT_PATCH_AREA_RATIO (Stepped 0.3, the top of the measured range;
+        Sloped unchanged, its evict edge at 0.22-0.3 is within noise)."""
         target = self.map_view.viewport_chunk_target()
         if target is None:
             return False
         _mip, cx0, cy0, cx1, cy1 = target
         visible = (cx1 - cx0 + 1) * (cy1 - cy0 + 1) * self._cache.chunk_px**2
-        return self._cache.patch_area(bbox) > _SCOPED_PATCH_AREA_RATIO[self._render_style] * visible
+        ratios = _TIGHT_PATCH_AREA_RATIO if tight else _SCOPED_PATCH_AREA_RATIO
+        return self._cache.patch_area(bbox, levels=levels) > ratios[self._render_style] * visible
 
-    def _unit_edit_bbox(self, changed: list[UnitSplice]) -> tuple[tuple[int, int, int, int] | None, set]:
+    def _unit_edit_bbox(
+        self, changed: list[UnitSplice], pre=REACH_FALLBACK, post=REACH_FALLBACK
+    ) -> tuple[tuple[int, int, int, int] | None, set]:
         """Stepped/Sloped: the reference-canvas bbox `changed`'s old and new
         footprints could have touched, and the elevation-changed set the
-        dirty-bbox helper fills (always empty for a unit edit). Reads only
-        scenario state, so it can be sized before invalidate_units() runs."""
+        dirty-bbox helper fills (always empty for a unit edit).
+
+        With pre/post left at REACH_FALLBACK this is today's reach-padded
+        bbox, sized from scenario state alone. Given the cache's
+        sprite_extent_before()/after() (reference bboxes or None), the sprite
+        term is those real extents instead: the tile term without sprite
+        reach, unioned with both and clamped to the reference canvas. Either
+        way, dirty_screen_bbox_*() writes the touched tiles' elevations back
+        into the shared array, a no-op for a unit edit."""
+        tight = pre is not REACH_FALLBACK and post is not REACH_FALLBACK
+        with_sprites = self._cache.sprites_enabled and not tight
         old_tiles = {t for s in changed for t in s.old_tiles}
         touched = old_tiles | {t for s in changed for t in s.new_tiles}
         width = self.scenario.map_manager.map_width
@@ -10360,15 +10434,23 @@ class ViewerWindow(QMainWindow):
         if self._render_style == "stepped":
             bbox = dirty_screen_bbox_iso(
                 self.scenario, dirty_indices, self._iso_elevations, self._iso_proj, with_units=True,
-                with_sprites=self._cache.sprites_enabled, elevation_changed=elevation_changed,
+                with_sprites=with_sprites, elevation_changed=elevation_changed,
                 flatten_elevations=(self._terrain_style == "flat"), extra_anchor_tiles=old_tiles,
             )
         else:
             bbox = dirty_screen_bbox_sloped(
                 self.scenario, dirty_indices, self._iso_elevations, self._iso_proj, with_units=True,
-                with_sprites=self._cache.sprites_enabled, elevation_changed=elevation_changed,
+                with_sprites=with_sprites, elevation_changed=elevation_changed,
                 extra_anchor_tiles=old_tiles,
             )
+        if tight and bbox is not None:
+            x0, y0, x1, y1 = bbox
+            for extent in (pre, post):
+                if extent is not None:
+                    x0, y0 = min(x0, extent[0]), min(y0, extent[1])
+                    x1, y1 = max(x1, extent[2]), max(y1, extent[3])
+            canvas_w, canvas_h = self._cache.canvas_dims(0)
+            bbox = (max(0, x0), max(0, y0), min(canvas_w, x1), min(canvas_h, y1))
         return bbox, elevation_changed
 
     def _update_edit_actions(self) -> None:
@@ -11183,16 +11265,21 @@ class ViewerWindow(QMainWindow):
         # paint actually selects is the DEVICE-space one, so a HiDPI window
         # would otherwise warm the neighbours of a level it never paints.
         mips = level_warm.neighbour_mips(self._cache, fit * self.map_view.devicePixelRatioF())
-        self._level_warmer.start(self._cache, mips, on_job_done=self._queue_load_warm)
-        # A mip level_warm_job() found nothing to warm for (already current)
-        # fires no on_job_done at all -- check its residency here, once,
-        # rather than the callback ever having to distinguish "no job" from
-        # "job not done yet". The common file-open case is neither (every
-        # neighbour mip starts non-resident), so this loop is usually a
-        # no-op; see _queue_load_warm's own guard for why it's still safe
-        # to call unconditionally.
+        # The current mip's pack derive too: a wholesale rebuild drops its
+        # pack, and Sloped has no neighbours at all.
+        target = self.map_view.viewport_chunk_target()
+        pack_only = (target[0],) if target is not None else ()
+        notifying = self._level_warmer.start(
+            self._cache, mips, pack_only=pack_only, on_job_done=self._queue_load_warm,
+        )
+        # A mip with no queued job fires no on_job_done at all -- check its
+        # residency here, once, rather than the callback ever having to
+        # distinguish "no job" from "job not done yet". A mip that will
+        # notify must not start here too: its load warm would run before its
+        # pack derive, and be queued twice.
         for mip in mips:
-            self._queue_load_warm(mip)
+            if mip not in notifying:
+                self._queue_load_warm(mip)
 
     def _queue_load_warm(self, mip: int) -> None:
         """Queues the load-time chunk warm for one neighbour mip once its

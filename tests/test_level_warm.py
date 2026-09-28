@@ -23,10 +23,12 @@ files, where the unit mix is one nobody wrote a fixture for.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+from test_native_composite import native_kernel  # noqa: F401 -- a fixture
 
-from descape import asset_source, level_warm, render, unit_sprites
+from descape import asset_source, composite_backend, level_warm, render, unit_sprites
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import PLAYER_COLORS
 
@@ -488,7 +490,7 @@ def _in_flight_jobs(warmer) -> list:
     running. Returns the objects themselves, not their ids: the caller
     compares them by identity across a cancel, and an id of a dropped job can
     legitimately be reused by the job that replaces it."""
-    jobs = [job for _, job in warmer._queue]
+    jobs = [job for _, job, _notify in warmer._queue]
     if warmer._job is not None:
         jobs.append(warmer._job)
     return jobs
@@ -550,3 +552,128 @@ def test_a_terrain_edit_re_arms_the_level_warm(monkeypatch) -> None:
         assert window._level_warmer.is_active, "B1's tail re-arm queued nothing"
     finally:
         _close(window)
+
+
+# --- unit-pack pre-derive chaining (maintainer plan 2026-09-27) -------------
+
+UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
+
+
+def _pack_pending(cache, mip: int) -> int | None:
+    """None while the level has no current pack, else its pending tile count."""
+    pack = cache._unit_pack_of(mip, create=False)
+    return None if pack is None else int(pack.pending().size)
+
+
+def test_on_job_done_fires_after_each_neighbours_pack_derive(native_kernel, sprite_install, mixed_scenario) -> None:  # noqa: F811
+    """Each neighbour's pack derive runs right after its level warm and
+    carries the notify; a pack_only mip is derived last and never notifies."""
+    with composite_backend.use_backend("native"):
+        cache = _iso_cache(mixed_scenario)
+        cache._level(0)
+        warmer = level_warm.LevelWarmer()
+        seen = []
+        notifying = warmer.start(
+            cache, [-1, 1], pack_only=[0], on_job_done=lambda m: seen.append((m, _pack_pending(cache, m))),
+        )
+        assert notifying == {-1, 1}
+        assert [(m, notify) for m, _job, notify in warmer._queue] == [
+            (-1, False), (-1, True), (1, False), (1, True), (0, False),
+        ]
+        warmer.run_to_completion()
+    assert seen == [(-1, 0), (1, 0)]
+    assert _pack_pending(cache, 0) == 0
+
+
+def test_on_job_done_does_not_fire_for_a_cancelled_pack_derive(
+    native_kernel, sprite_install, mixed_scenario, monkeypatch,  # noqa: F811
+) -> None:
+    from descape import render_cache
+
+    monkeypatch.setattr(render_cache, "PACK_WARM_TILES", 1)
+    monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
+    with composite_backend.use_backend("native"):
+        cache = _iso_cache(mixed_scenario)
+        warmer = level_warm.LevelWarmer()
+        done = []
+        warmer.start(cache, [1], on_job_done=done.append)
+
+        def mid_derive() -> bool:
+            pack = cache._unit_pack_of(1, create=False)
+            return pack is not None and pack.ready[pack.has].any() and pack.pending().size > 0
+
+        while not mid_derive():
+            assert warmer.tick(), "the derive finished without a mid-walk point -- vacuous"
+        warmer.cancel()
+        warmer.run_to_completion()
+    assert done == []
+
+
+@pytest.mark.gui
+def test_a_neighbours_load_warm_starts_only_after_its_pack_derive(native_kernel, monkeypatch) -> None:  # noqa: F811
+    """Resident neighbours whose packs were dropped have only a derive left:
+    their load warm must wait for it, and be queued once."""
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    with composite_backend.use_backend("native"):
+        window = conftest.stepped_window(UNITS_FIXTURE)
+        try:
+            cache = window._cache
+            window._level_warmer.run_to_completion()
+            fit = window.map_view._fit_baseline_scale() * window.map_view.devicePixelRatioF()
+            mips = level_warm.neighbour_mips(cache, fit)
+            assert mips, "the fit level has no neighbours on this ladder -- vacuous"
+            for m in mips:
+                cache._level(m)
+                cache._levels[m].unit_pack = None
+            calls = []
+            real = window._queue_load_warm
+
+            def spy(mip):
+                calls.append((mip, _pack_pending(cache, mip)))
+                real(mip)
+
+            monkeypatch.setattr(window, "_queue_load_warm", spy)
+            window._start_level_warm()
+            window._level_warmer.run_to_completion()
+            assert sorted(calls) == sorted((m, 0) for m in mips)
+        finally:
+            conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_the_viewport_mip_is_pre_derived_and_an_idle_re_arm_queues_nothing(native_kernel, monkeypatch) -> None:  # noqa: F811
+    """A resident viewport level whose pack was dropped (a splice onto a stale
+    pack does that) gets a pack-only derive; once nothing is pending anywhere,
+    the per-stroke-step re-arm leaves the LevelWarmer idle."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    with composite_backend.use_backend("native"):
+        window = conftest.stepped_window(UNITS_FIXTURE)
+        try:
+            cache = window._cache
+            QApplication.processEvents()
+            window._level_warmer.run_to_completion()
+            target = window.map_view.viewport_chunk_target()
+            assert target is not None
+            mip = target[0]
+            assert cache.is_level_resident(mip), "the first paint never built the viewport's level -- vacuous"
+            cache._levels[mip].unit_pack = None
+
+            window._start_level_warm()
+            assert (mip, False) in [(m, notify) for m, _job, notify in window._level_warmer._queue]
+            window._level_warmer.run_to_completion()
+            assert _pack_pending(cache, mip) == 0
+
+            window._apply_dirty([0])
+            assert not window._level_warmer.is_active, "a re-arm with nothing pending started a timer"
+        finally:
+            conftest.close_window(window)

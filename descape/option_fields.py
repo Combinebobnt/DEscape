@@ -180,11 +180,12 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
         # different semantics. _is_representable() is what enforces that.
     ),
     OptionFieldSpec(
-        "lock_coop_alliances", "Block humanity team change", "Map",
+        "lock_coop_alliances", "Lock co-op alliances", "Map",
         "Map", "lock_coop_alliances", CHECKBOX,
         tooltip=(
-            "Locks co-op alliances: human players cannot change their team or "
-            "diplomacy with each other in-game."
+            "Human players cannot change their team or diplomacy with each "
+            "other in-game. Older game versions called this Block Humanity "
+            "Team Change."
         ),
     ),
     OptionFieldSpec(

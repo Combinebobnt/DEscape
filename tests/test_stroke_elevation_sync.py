@@ -1,7 +1,7 @@
 """Verifies MapView._iso_elevations stays in sync with tile.elevation across
 a brush stroke whose elevation propagation re-changes tiles mid-drag.
 
-Root cause being guarded: ViewerWindow.on_edit_stroke_tile used to compute
+Root cause being guarded: ViewerWindow's stroke handler used to compute
 its incremental repaint set as `stroke_dirty_indices(...) - seen_indices`.
 stroke_dirty_indices is CUMULATIVE (everything differing from the
 stroke-start snapshot), so once a tile appeared it stayed for the rest of
@@ -31,17 +31,18 @@ from __future__ import annotations
 import pytest
 
 from descape import brush, render
-from descape.edit_history import EditHistory, tile_state
+from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tiles_elevation
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 
 def _drag(scenario, elevations, proj, level, steps, *, state_keyed):
-    """Replays ViewerWindow.on_edit_stroke_tile's dirty-set bookkeeping.
+    """Replays ViewerWindow._apply_stroke_dirty's bookkeeping.
 
-    state_keyed=True is the fixed behaviour (compare last-applied STATE);
-    False is the old index-membership version, kept so the tests can show
-    the guard actually discriminates rather than passing vacuously.
+    state_keyed=True is the live path: set_tiles_elevation's touched set
+    through EditHistory.stroke_new_dirty (compares last-applied STATE).
+    False is the old index-membership version over the O(map) scan, kept so
+    the tests can show the guard actually discriminates.
     """
     mm = scenario.map_manager
     history = EditHistory()
@@ -50,16 +51,11 @@ def _drag(scenario, elevations, proj, level, steps, *, state_keyed):
     seen_indices: set[int] = set()
     for i in range(steps):
         footprint = brush.brush_tiles(40 + i, 40, 5, "circle", mm.map_width, mm.map_height)
-        set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
-        all_dirty = history.stroke_dirty_indices(mm.terrain)
+        touched = set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
         if state_keyed:
-            new_dirty = set()
-            for i2 in all_dirty:
-                state = tile_state(mm.terrain[i2])
-                if state != seen_state.get(i2):
-                    seen_state[i2] = state
-                    new_dirty.add(i2)
+            new_dirty = history.stroke_new_dirty(touched, mm.terrain, seen_state)
         else:
+            all_dirty = history.stroke_dirty_indices(mm.terrain)
             new_dirty = set(all_dirty) - seen_indices
             seen_indices = set(all_dirty)
         render.dirty_screen_bbox_iso(scenario, new_dirty, elevations, proj, with_units=True)

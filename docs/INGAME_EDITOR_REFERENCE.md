@@ -57,7 +57,7 @@ Options
 ├─ Disable Objects: Full List <-> Disabled List (Buildings/Units/Techs)
 ├─ Collide & Correcting
 ├─ Villager Force Drop
-└─ Block Humanity Team Change
+└─ Lock Co-op Alliances
 
 Players (per-player)
 ├─ Number of Players
@@ -202,7 +202,7 @@ projection. DEscape's View > Distance Ticks letters each edge this way.
 - **Disable Objects**: move Buildings/Units/Techs between a Full List and Disabled List; the guide notes triggers are the better way to do this.
 - **Collide & Correcting**: stationary units auto-step aside for moving units passing through.
 - **Villager Force Drop**: villagers lose carried resources the instant their task changes, rather than only once they start the new task.
-- **Block Humanity Team Change**: locks teams for human players only.
+- **Lock Co-op Alliances** (formerly Block Humanity Team Change): locks teams for human players only.
 
 ## 5. Players
 
