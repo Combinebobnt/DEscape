@@ -144,7 +144,7 @@ successfully from it. Only checked on Linux so far — that covers the manual
 steps and the logic `LAUNCH_DEscape_Windows.bat` shares with the `.sh` script,
 but the `.bat` file itself has not been run on a real Windows machine; the
 Windows steps above
-are believed correct but unverified in practice.
+are believed to be correct but unverified in practice.
 
 `AoE2ScenarioParser` is version-pinned rather than just listed, specifically
 because `descape/scenario_io.py` reaches into several of its *private* methods
