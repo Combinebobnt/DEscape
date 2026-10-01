@@ -37,12 +37,23 @@ a cause instead of guessed at:
   composite        the residual: the real _composite_rect() call's own
                     time, minus the bystander figure above.
 
+--styles takes stepped, sloped, flat (top-down, FlatChunkCache) and flat-iso
+(Flat with Isometric View on: an IsoChunkCache on an all-zero elevation
+array, bbox'd with flatten_elevations=True, built the way the viewer's
+_render_current() builds it).
+
 --edit elevation swaps the terrain-paint stroke for Elevate's +1 raise
-(elevation_tools.set_tiles_elevation, propagation included), Stepped/Sloped
-only, square maps only. It adds a diff-floor column: the y-extent of the
-pixels that actually changed inside the bbox, read as the cache's unpatched
-chunks before patch() and its patched chunks after. bbox-w/bbox-h are
-reported separately because only y carries the elevation sweep.
+(elevation_tools.set_tiles_elevation, propagation included), square maps
+only. It adds two diff columns, both read as the cache's unpatched chunks
+before patch() and its patched chunks after. diff-floor-h (the iso styles)
+is the y-extent of the pixels that actually changed inside the bbox;
+bbox-w/bbox-h are reported separately because only y carries the elevation
+sweep. changed-px (every style) is the count of pixels that changed over
+the whole stroke. For flat and flat-iso it should be 0: Flat draws no
+elevation cue, so an Elevate step recomposites pixels that come out
+byte-identical. That is the fact the viewer's Flat Elevate skip rests on.
+This bench times the render pipeline, not the viewer's gate, so its flat
+numbers don't drop with that skip; bench_gui_drag.py measures the viewer.
 
 ms/step is felt latency, the number to optimize. ms/dirty-tile divides by
 the count that matters for the cost model: stroke_new_dirty dedupes the
@@ -124,8 +135,13 @@ def _make_cache(style: str, scenario, sprites: bool):
         cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites)
         cache.set_sprites_enabled(sprites)
         return cache, elevations, proj, tile_px
+    if style == "flat-iso":
+        elevations, proj = elevations_and_proj(scenario)
+        elevations = np.zeros_like(elevations)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites)
+        return cache, elevations, proj, tile_px
     if style == "flat":
-        cache = FlatChunkCache(scenario, tile_px)
+        cache = FlatChunkCache(scenario, tile_px, sprites=sprites)
         return cache, None, None, tile_px
     raise ValueError(style)
 
@@ -204,14 +220,22 @@ def _diff_y_extent(before, after) -> int:
     return int(rows[-1] - rows[0] + 1) if rows.size else 0
 
 
+def _changed_px(before, after) -> int:
+    """How many pixels differ between two same-shaped crops."""
+    return int((before != after).any(axis=2).sum())
+
+
 def _run_stroke(
     path: Path, style: str, brush_size: int, sprites: bool, edit: str = "paint", beach_width: int = 0
 ) -> str:
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
-    if edit == "elevation" and (style == "flat" or mm.map_width != mm.map_height):
-        return f"  {path.name:32s} style={style:7s} skipped (elevation mode needs Stepped/Sloped and a square map)"
+    if edit == "elevation" and mm.map_width != mm.map_height:
+        return f"  {path.name:32s} style={style:8s} skipped (elevation mode needs a square map)"
     cache, elevations, proj, tile_px = _make_cache(style, scenario, sprites)
+    # Flat + Isometric View patches exactly like Stepped, just on a zeroed array.
+    patch_style = "stepped" if style == "flat-iso" else style
+    diff = edit == "elevation"
 
     # Realize the chunks covering the whole canvas at mip 0 first -- see
     # this module's docstring for why an unprimed cache times nothing.
@@ -226,6 +250,7 @@ def _run_stroke(
 
     scan_ms, bbox_ms, dirty_counts, bbox_areas = [], [], [], []
     bbox_ws, bbox_hs, floor_hs = [], [], []
+    changed_px = 0
     phase_totals = {"refresh_sources": [], "level_rebuild": [], "bystander_scan": [], "composite": []}
 
     for step in range(STROKE_LEN):
@@ -272,17 +297,25 @@ def _run_stroke(
             bbox_areas.append(sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects))
             phases = dict.fromkeys(phase_totals, 0.0)
             for rect in rects:
+                before = cache.render_rect(*rect, mip=0).copy() if diff else None
                 step_phases = _patch_phased(cache, style, rect)
+                if before is not None:
+                    changed_px += _changed_px(before, cache.render_rect(*rect, mip=0))
                 for k in phase_totals:
                     phases[k] += step_phases[k]
         else:
-            bbox_fn = dirty_screen_bbox_iso if style == "stepped" else dirty_screen_bbox_sloped
             elevation_changed: set = set()
             t0 = time.perf_counter()
-            bbox = bbox_fn(
-                scenario, new_dirty, elevations, proj, with_units=True, with_sprites=cache.sprites_enabled,
-                elevation_changed=elevation_changed,
-            )
+            if style == "sloped":
+                bbox = dirty_screen_bbox_sloped(
+                    scenario, new_dirty, elevations, proj, with_units=True, with_sprites=cache.sprites_enabled,
+                    elevation_changed=elevation_changed,
+                )
+            else:
+                bbox = dirty_screen_bbox_iso(
+                    scenario, new_dirty, elevations, proj, with_units=True, with_sprites=cache.sprites_enabled,
+                    elevation_changed=elevation_changed, flatten_elevations=(style == "flat-iso"),
+                )
             bbox_ms.append(_ms(time.perf_counter() - t0))
             if bbox is None:
                 bbox_areas.append(0)
@@ -292,10 +325,12 @@ def _run_stroke(
                 bbox_ws.append(bbox[2] - bbox[0])
                 bbox_hs.append(bbox[3] - bbox[1])
                 # Unpatched resident chunks still hold the pre-edit pixels.
-                before = cache.render_rect(*bbox, mip=0).copy() if edit == "elevation" else None
-                phases = _patch_phased(cache, style, bbox, elevation_changed)
+                before = cache.render_rect(*bbox, mip=0).copy() if diff else None
+                phases = _patch_phased(cache, patch_style, bbox, elevation_changed)
                 if before is not None:
-                    floor_hs.append(_diff_y_extent(before, cache.render_rect(*bbox, mip=0)))
+                    after = cache.render_rect(*bbox, mip=0)
+                    floor_hs.append(_diff_y_extent(before, after))
+                    changed_px += _changed_px(before, after)
 
         for k, totals in phase_totals.items():
             totals.append(phases[k])
@@ -315,10 +350,11 @@ def _run_stroke(
     ms_per_tile = mean_step / mean_dirty if mean_dirty else 0.0
 
     return (
-        f"  {path.name:32s} style={style:7s} brush={brush_size} sprites={sprites!s:5s} "
+        f"  {path.name:32s} style={style:8s} brush={brush_size} sprites={sprites!s:5s} "
         f"ms/step={mean_step:7.2f} ms/dirty-tile={ms_per_tile:6.3f} dirty-tiles={mean_dirty:5.1f} "
         f"bbox-px={mean(bbox_areas):9.0f} bbox-w={mean(bbox_ws):6.0f} bbox-h={mean(bbox_hs):6.0f} "
-        + (f"diff-floor-h={mean(floor_hs):6.0f} " if edit == "elevation" else "")
+        + (f"diff-floor-h={mean(floor_hs):6.0f} " if diff and style != "flat" else "")
+        + (f"changed-px={changed_px:8d} " if diff else "")
         + "| "
         f"dirty={mean(scan_ms):5.2f} bbox={mean(bbox_ms):5.2f} "
         f"refresh_sources={mean(phase_totals['refresh_sources']):6.2f} "
@@ -333,7 +369,11 @@ def main() -> None:
     parser.add_argument(
         "scenario_dir", type=Path, nargs="?", default=ROOT / "examples", help="Directory of .aoe2scenario files"
     )
-    parser.add_argument("--styles", default="stepped,sloped,flat", help="Comma-separated: stepped,sloped,flat")
+    parser.add_argument(
+        "--styles",
+        default="stepped,sloped,flat",
+        help="Comma-separated: stepped,sloped,flat,flat-iso (flat is top-down, flat-iso is Flat with Isometric View)",
+    )
     parser.add_argument("--edit", choices=("paint", "elevation"), default="paint", help="Stroke kind")
     parser.add_argument(
         "--beach-width",

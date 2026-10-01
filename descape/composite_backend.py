@@ -2,9 +2,9 @@
 (descape/_composite_native.pyx, built by tools/build_native.py) or the numpy
 code it replaces, which stays as the fallback and the byte-identity oracle.
 
-render.py reads `native` at call time, never caching it, so use_backend()
-can flip it mid-process (tests/test_native_composite.py runs both backends
-in one process). DESCAPE_COMPOSITE=numpy|native forces one at import; forcing
+render.py and sld_decoder.py read `native` at call time, never caching it,
+so use_backend() can flip it mid-process (tests/test_native_composite.py and
+tests/test_sld_native.py run both backends in one process). DESCAPE_COMPOSITE=numpy|native forces one at import; forcing
 native when it can't load raises rather than silently running numpy.
 """
 
@@ -16,7 +16,7 @@ from types import ModuleType
 
 # Must equal _composite_native.KERNEL_ABI; a stale build from an older
 # checkout is ignored until rebuilt, never run against newer callers.
-EXPECTED_KERNEL_ABI = 3
+EXPECTED_KERNEL_ABI = 4
 
 BACKENDS = ("numpy", "native")
 

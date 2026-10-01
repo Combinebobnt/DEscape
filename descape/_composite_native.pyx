@@ -2,7 +2,8 @@
 """Native composite kernel. Built by tools/build_native.py; selected by
 descape/composite_backend.py, which falls back to numpy when this is missing
 or its KERNEL_ABI doesn't match. Every function must stay byte-identical to
-the numpy code it replaces (tests/test_native_composite.py).
+the numpy code it replaces (tests/test_native_composite.py, and
+tests/test_sld_native.py for the SLD walk and decode at the end).
 
 Arithmetic mirrors numpy's dtypes exactly: opaque scatters are uint8, darken
 and slope shade are float32 multiplies truncated to uint8 (never a double
@@ -10,12 +11,13 @@ temporary), and the lerp and rgba blit are integer (t*a + d*(255-a)) // 255.
 No index producer repeats a destination within one call, so writing in place
 reads each pixel once, the same as numpy's fancy-index read-modify-write."""
 
-from libc.stdint cimport int32_t, int64_t, uint8_t, uint16_t, uint64_t, uintptr_t
+from libc.stdint cimport int32_t, int64_t, uint8_t, uint16_t, uint32_t, uint64_t, uintptr_t
 from libc.stdlib cimport free, malloc
+from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 3
+KERNEL_ABI = 4
 
 
 cdef inline bint _gather_scatter(
@@ -746,3 +748,332 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                                 &dm, 0, &q, shp, by, bx, off_x, off_y)
     finally:
         free(srcs)
+
+
+# ---------------------------------------------------------------------------
+# SLD: descape/sld_decoder.py's per-file walk and per-layer delta-chain decode.
+# Both return a failure sentinel wherever the Python code would raise; the
+# caller then re-runs the Python code to raise the exact SLDError.
+
+# SLDFile's flat index record widths (sld_decoder._LAYER_FIELDS/_FRAME_FIELDS).
+DEF SLD_LAYER_FIELDS = 11
+DEF SLD_FRAME_FIELDS = 8
+DEF SLD_KINDS = 5
+DEF SLD_DELTA_FLAG = 0x80
+DEF SLD_BLOCK_BYTES = 8
+
+
+cdef inline uint32_t _u16(const uint8_t* p) noexcept nogil:
+    return p[0] | (<uint32_t>p[1] << 8)
+
+
+cdef inline uint32_t _u32(const uint8_t* p) noexcept nogil:
+    return p[0] | (<uint32_t>p[1] << 8) | (<uint32_t>p[2] << 16) | (<uint32_t>p[3] << 24)
+
+
+def sld_walk(const uint8_t[::1] data, Py_ssize_t layout_tag, Py_ssize_t frame_count,
+             uint32_t[::1] frames, uint32_t[::1] layers, uint32_t[:, ::1] chains, int64_t[::1] chain_len):
+    """SLDFile._walk's frame loop, after its header checks. frames holds
+    frame_count records, layers 4 per frame (OUTLINE is never recorded),
+    chains (5, frame_count). Returns the layer count, or -1 where the Python
+    walk would raise."""
+    cdef int64_t size = data.shape[0], result
+    if layout_tag < 0 or frame_count < 0:
+        raise ValueError("layout_tag and frame_count must be non-negative")
+    if frames.shape[0] < frame_count * SLD_FRAME_FIELDS or layers.shape[0] < frame_count * 4 * SLD_LAYER_FIELDS:
+        raise ValueError("output buffers too small for frame_count")
+    if chains.shape[0] != SLD_KINDS or chains.shape[1] < frame_count or chain_len.shape[0] != SLD_KINDS:
+        raise ValueError("chains must be (5, >= frame_count) and chain_len 5 long")
+    if frame_count == 0:
+        chain_len[:] = 0
+        return 0
+    with nogil:
+        result = _sld_walk(&data[0] if size else NULL, size, layout_tag, frame_count,
+                           &frames[0], &layers[0], &chains[0, 0], chains.shape[1], &chain_len[0])
+    return result
+
+
+cdef int64_t _sld_walk(const uint8_t* d, int64_t size, int64_t layout_tag, int64_t frame_count,
+                       uint32_t* frames, uint32_t* layers, uint32_t* chains, int64_t chain_stride,
+                       int64_t* chain_len) noexcept nogil:
+    cdef int64_t offset = layout_tag, start, length, command_offset
+    cdef int64_t layer_id = 0, first_layer, position
+    cdef uint32_t width, height, hotspot_x, hotspot_y, frame_type, frame_index
+    cdef uint32_t x1, y1, x2, y2, flag0, flag1, command_count
+    cdef uint32_t main_x1, main_y1, main_w, main_h, bx1, by1, bw, bh
+    cdef int kind
+    cdef uint32_t* rec
+    for kind in range(SLD_KINDS):
+        chain_len[kind] = 0
+    for position in range(frame_count):
+        if offset + 12 > size:
+            return -1
+        width = _u16(d + offset)
+        height = _u16(d + offset + 2)
+        hotspot_x = _u16(d + offset + 4)
+        hotspot_y = _u16(d + offset + 6)
+        frame_type = d[offset + 8]
+        frame_index = _u16(d + offset + 10)
+        offset += 12
+        first_layer = layer_id
+        main_x1 = main_y1 = main_w = main_h = 0
+        for kind in range(SLD_KINDS):
+            if not (frame_type & (1 << kind)):
+                continue
+            start = offset
+            if kind == 0 or kind == 1:
+                if start + 16 > size:
+                    return -1
+                length = _u32(d + start)
+                if length < 4 or start + length > size:
+                    return -1
+                x1 = _u16(d + start + 4)
+                y1 = _u16(d + start + 6)
+                x2 = _u16(d + start + 8)
+                y2 = _u16(d + start + 10)
+                flag0 = d[start + 12]
+                flag1 = d[start + 13]
+                command_count = _u16(d + start + 14)
+                if x2 < x1 or y2 < y1:
+                    return -1
+                bx1, by1, bw, bh = x1, y1, x2 - x1, y2 - y1
+                if kind == 0:
+                    main_x1, main_y1, main_w, main_h = bx1, by1, bw, bh
+                command_offset = start + 16
+            elif kind == 2:
+                if start + 4 > size:
+                    return -1
+                length = _u32(d + start)
+                if length < 4 or start + length > size:
+                    return -1
+                offset = start + length
+                offset += (layout_tag - offset) & 3
+                continue
+            else:
+                if start + 8 > size:
+                    return -1
+                length = _u32(d + start)
+                if length < 4 or start + length > size:
+                    return -1
+                flag0 = d[start + 4]
+                flag1 = d[start + 5]
+                command_count = _u16(d + start + 6)
+                bx1, by1, bw, bh = main_x1, main_y1, main_w, main_h
+                command_offset = start + 8
+            if command_offset + 2 * <int64_t>command_count > size:
+                return -1
+            rec = &layers[layer_id * SLD_LAYER_FIELDS]
+            rec[0] = kind
+            rec[1] = bx1
+            rec[2] = by1
+            rec[3] = bw
+            rec[4] = bh
+            rec[5] = flag0
+            rec[6] = flag1
+            rec[7] = frame_index
+            rec[8] = command_count
+            rec[9] = <uint32_t>command_offset
+            rec[10] = <uint32_t>chain_len[kind]
+            chains[kind * chain_stride + chain_len[kind]] = <uint32_t>layer_id
+            chain_len[kind] += 1
+            layer_id += 1
+            offset = start + length
+            offset += (layout_tag - offset) & 3
+        rec = &frames[position * SLD_FRAME_FIELDS]
+        rec[0] = width
+        rec[1] = height
+        rec[2] = hotspot_x
+        rec[3] = hotspot_y
+        rec[4] = frame_type
+        rec[5] = frame_index
+        rec[6] = <uint32_t>first_layer
+        rec[7] = <uint32_t>(layer_id - first_layer)
+    return layer_id
+
+
+cdef inline int64_t _floor_div4(int64_t a) noexcept nogil:
+    """Python's a // 4: cdivision truncates toward zero instead."""
+    cdef int64_t q = a / 4
+    if a % 4 != 0 and a < 0:
+        q -= 1
+    return q
+
+
+cdef inline void _bc1_block(const uint8_t* raw, uint8_t* out) noexcept nogil:
+    """sld_decoder.decode_bc1_blocks for one block: 16 RGBA pixels, row-major."""
+    cdef int c0[3]
+    cdef int c1[3]
+    cdef uint8_t pal[16]
+    cdef bint opaque = _u16(raw) > _u16(raw + 2)
+    cdef int ch, p, idx
+    c0[0] = ((raw[1] & 0xF8) >> 3) * 8
+    c0[1] = (((raw[1] & 0x07) << 3) + ((raw[0] & 0xE0) >> 5)) * 4
+    c0[2] = (raw[0] & 0x1F) * 8
+    c1[0] = ((raw[3] & 0xF8) >> 3) * 8
+    c1[1] = (((raw[3] & 0x07) << 3) + ((raw[2] & 0xE0) >> 5)) * 4
+    c1[2] = (raw[2] & 0x1F) * 8
+    for ch in range(3):
+        pal[ch] = <uint8_t>c0[ch]
+        pal[4 + ch] = <uint8_t>c1[ch]
+        if opaque:
+            pal[8 + ch] = <uint8_t>((2 * c0[ch] + c1[ch] + 1) / 3)
+            pal[12 + ch] = <uint8_t>((c0[ch] + 2 * c1[ch] + 1) / 3)
+        else:
+            pal[8 + ch] = <uint8_t>((c0[ch] + c1[ch]) / 2)
+            pal[12 + ch] = 0
+    pal[3] = 255
+    pal[7] = 255
+    pal[11] = 255
+    pal[15] = 255 if opaque else 0
+    for p in range(16):
+        idx = (raw[4 + (p >> 2)] >> (2 * (p & 3))) & 3
+        memcpy(out + 4 * p, pal + 4 * idx, 4)
+
+
+cdef inline void _bc4_block(const uint8_t* raw, uint8_t* out) noexcept nogil:
+    """sld_decoder.decode_bc4_blocks for one block: the value in R, alpha in A."""
+    cdef int a0 = raw[0], a1 = raw[1], step, p, idx
+    cdef bint wide = a0 > a1
+    cdef uint8_t values[8]
+    cdef uint8_t alpha[8]
+    cdef uint32_t group
+    values[0] = <uint8_t>a0
+    values[1] = <uint8_t>a1
+    for step in range(1, 6):
+        if wide:
+            values[step + 1] = <uint8_t>(((7 - step) * a0 + step * a1) / 7)
+        elif step < 5:
+            values[step + 1] = <uint8_t>(((5 - step) * a0 + step * a1) / 5)
+        else:
+            values[step + 1] = 0
+    values[7] = <uint8_t>((a0 + 6 * a1) / 7) if wide else 255
+    for p in range(8):
+        alpha[p] = 255
+    if not wide:
+        alpha[6] = 0
+    for p in range(16):
+        if p < 8:
+            group = raw[2] | (<uint32_t>raw[3] << 8) | (<uint32_t>raw[4] << 16)
+            idx = (group >> (3 * p)) & 7
+        else:
+            group = raw[5] | (<uint32_t>raw[6] << 8) | (<uint32_t>raw[7] << 16)
+            idx = (group >> (3 * (p - 8))) & 7
+        out[4 * p] = values[idx]
+        out[4 * p + 1] = 0
+        out[4 * p + 2] = 0
+        out[4 * p + 3] = alpha[idx]
+
+
+cdef bint _decode_link(const uint8_t* d, int64_t size, const uint32_t* rec, bint bc1,
+                       uint8_t* out, const uint8_t* prev, const uint32_t* prev_rec) noexcept nogil:
+    """SLDFile._decode_blocks for one link into out, (block_count, 16, 4).
+    prev is the previous link's blocks, or NULL for a chain's first link.
+    False where _decode_blocks would raise."""
+    cdef int64_t wb = rec[3] / 4, hb = rec[4] / 4, block_count = wb * hb
+    cdef int64_t command_count = rec[8], command_offset = rec[9]
+    cdef int64_t block_offset = command_offset + 2 * command_count
+    cdef int64_t filled = 0, drawn = 0, position = 0, k, dest, n, x, y
+    cdef int64_t pwb = 0, phb = 0, dx = 0, dy = 0
+    cdef bint delta = prev != NULL and (rec[5] & SLD_DELTA_FLAG) != 0 and rec[7] > 0
+    cdef uint8_t skip, draw
+    for k in range(command_count):
+        filled += d[command_offset + 2 * k] + d[command_offset + 2 * k + 1]
+        drawn += d[command_offset + 2 * k + 1]
+    if filled > block_count:
+        return False
+    if drawn and block_offset + SLD_BLOCK_BYTES * drawn > size:
+        return False
+    memset(out, 0, block_count * 64)
+    if delta:
+        pwb = prev_rec[3] / 4
+        phb = prev_rec[4] / 4
+        dx = _floor_div4(<int64_t>rec[1] - <int64_t>prev_rec[1])
+        dy = _floor_div4(<int64_t>rec[2] - <int64_t>prev_rec[2])
+        if wb == 0 or pwb == 0 or phb == 0:
+            delta = False
+    drawn = 0
+    for k in range(command_count):
+        skip = d[command_offset + 2 * k]
+        draw = d[command_offset + 2 * k + 1]
+        if delta:
+            for dest in range(position, position + skip):
+                x = dest % wb + dx
+                y = dest / wb + dy
+                if 0 <= x < pwb and 0 <= y < phb:
+                    memcpy(out + 64 * dest, prev + 64 * (x + y * pwb), 64)
+        position += skip
+        for n in range(draw):
+            if bc1:
+                _bc1_block(d + block_offset + SLD_BLOCK_BYTES * drawn, out + 64 * position)
+            else:
+                _bc4_block(d + block_offset + SLD_BLOCK_BYTES * drawn, out + 64 * position)
+            drawn += 1
+            position += 1
+    return True
+
+
+def sld_decode_layer(const uint8_t[::1] data, const uint32_t[::1] layers, const uint32_t[::1] chain,
+                     Py_ssize_t layer_id, bint bc1, uint8_t[:, :, ::1] canvas):
+    """SLDFile._decode_layer_blocks, _blocks_to_image and _paste_on_canvas for
+    one layer: resolves its delta chain back to the nearest non-delta link,
+    decodes forward and pastes the result, clipped, onto the zeroed (h, w, 4)
+    canvas. False, with canvas unspecified, where the Python would raise."""
+    cdef int64_t size = data.shape[0], n_layers = layers.shape[0] // SLD_LAYER_FIELDS
+    cdef const uint8_t* d = &data[0] if size else NULL
+    cdef const uint32_t* rec
+    cdef const uint32_t* prev_rec = NULL
+    cdef int64_t position, root, p, wb, hb, most = 0, iy, ix, copy_h, copy_w, x0, y0, by, bx
+    cdef uint8_t* cur
+    cdef uint8_t* prev
+    cdef uint8_t* tmp
+    cdef bint ok = True
+    if not 0 <= layer_id < n_layers or canvas.shape[2] != 4:
+        raise ValueError("layer_id outside layers, or canvas not (h, w, 4)")
+    rec = &layers[layer_id * SLD_LAYER_FIELDS]
+    position = rec[10]
+    if position >= chain.shape[0] or chain[position] != layer_id:
+        raise ValueError("chain does not hold layer_id at its chain position")
+    root = position
+    while root > 0:
+        rec = &layers[chain[root] * SLD_LAYER_FIELDS]
+        if not ((rec[5] & SLD_DELTA_FLAG) and rec[7] > 0):
+            break
+        root -= 1
+    for p in range(root, position + 1):
+        rec = &layers[chain[p] * SLD_LAYER_FIELDS]
+        if (rec[3] / 4) * (rec[4] / 4) > most:
+            most = (rec[3] / 4) * (rec[4] / 4)
+    cur = <uint8_t*>malloc(max(most, 1) * 64)
+    prev = <uint8_t*>malloc(max(most, 1) * 64)
+    if cur == NULL or prev == NULL:
+        free(cur)
+        free(prev)
+        raise MemoryError()
+    try:
+        with nogil:
+            for p in range(root, position + 1):
+                rec = &layers[chain[p] * SLD_LAYER_FIELDS]
+                if not _decode_link(d, size, rec, bc1, cur, prev if p > root else NULL, prev_rec):
+                    ok = False
+                    break
+                prev_rec = rec
+                tmp = prev
+                prev = cur
+                cur = tmp
+            if ok:
+                # prev now holds the last link's blocks; rec is that layer.
+                wb = rec[3] / 4
+                hb = rec[4] / 4
+                x0 = rec[1]
+                y0 = rec[2]
+                copy_h = min(hb * 4, canvas.shape[0] - y0)
+                copy_w = min(wb * 4, canvas.shape[1] - x0)
+                for iy in range(copy_h):
+                    by = iy >> 2
+                    for ix in range(copy_w):
+                        bx = ix >> 2
+                        memcpy(&canvas[y0 + iy, x0 + ix, 0], prev + 64 * (by * wb + bx) + 4 * (4 * (iy & 3) + (ix & 3)), 4)
+    finally:
+        free(cur)
+        free(prev)
+    return ok

@@ -4,9 +4,9 @@ REM what that covers. For the corpus/gui tier, see run_corpus_quick.bat
 REM (~15 min, the default scope) and run_corpus_stress.bat (~27 min, the
 REM complete corpus).
 REM
-REM Parallel via pytest-xdist: one worker per CPU, capped at 16 (past that the
-REM gain flattens). Arguments come last, so -n 0 runs serially and
-REM --maxprocesses 32 lifts the cap.
+REM Parallel via pytest-xdist: one worker per CPU, capped at 8 so the machine
+REM stays usable. Arguments come last, so -n 0 runs serially and
+REM --maxprocesses 16 raises the cap.
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
@@ -14,4 +14,4 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-.venv\Scripts\python.exe -m pytest -n auto --maxprocesses 16 --dist loadgroup %*
+.venv\Scripts\python.exe -m pytest -n auto --maxprocesses 8 --dist loadgroup %*

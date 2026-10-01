@@ -132,6 +132,7 @@ class UnitsPanel(QWidget):
         self,
         on_unit_field=None,
         on_place_requested=None,
+        on_pending_changed=None,
         on_garrison_add=None,
         on_garrison_delete=None,
         on_garrison_navigate=None,
@@ -146,6 +147,8 @@ class UnitsPanel(QWidget):
         # callbacks have.
         self._on_unit_field = on_unit_field or (lambda *args: None)
         self._on_place_requested = on_place_requested or (lambda *args: None)
+        # GH #128: the picked object or the owner changed, so Place Unit's ghost re-resolves.
+        self._on_pending_changed = on_pending_changed or (lambda *args: None)
         self._on_garrison_add = on_garrison_add or (lambda *args: None)
         self._on_garrison_delete = on_garrison_delete or (lambda *args: None)
         self._on_garrison_navigate = on_garrison_navigate or (lambda *args: None)
@@ -224,6 +227,7 @@ class UnitsPanel(QWidget):
         for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
             _add_player_item(self.owner_combo, player_id, self._player_labels, self._player_colors, player_id)
         self.owner_combo.setCurrentIndex(1)  # Player 1, preserved default
+        self.owner_combo.currentIndexChanged.connect(lambda _index: self._on_pending_changed())
         owner_row.addWidget(self.owner_combo, stretch=1)
         pane_layout.addLayout(owner_row)
         return pane
@@ -253,6 +257,7 @@ class UnitsPanel(QWidget):
         # widget assertion. The tooltip is the cheap fix that keeps the
         # label one line.
         self.placing_label.setToolTip(name)
+        self._on_pending_changed()
 
     def selected_object_const(self) -> int | None:
         return self._pending_object_const

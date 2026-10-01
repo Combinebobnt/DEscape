@@ -128,6 +128,54 @@ def test_a_pause_starts_a_fresh_mip_budget() -> None:
         conftest.close_window(window)
 
 
+def test_a_roll_that_keeps_going_crosses_one_level_per_gap() -> None:
+    """A rate limit, not a stop: a roll with no pause re-anchors its budget
+    once WHEEL_GESTURE_GAP_S has passed since the last crossing (2026-09-30
+    stress log: continuous rolling stuck at 603% of fit until the wheel idled).
+    The time since the crossing is staged by backdating the budget stamp only;
+    the last-event stamp stays fresh, so the gesture itself never ends."""
+    window = _window()
+    try:
+        view = window.map_view
+        levels = view._canvas_item._cache.mip_levels()
+        first_mip = view.viewport_chunk_target()[0]
+        if first_mip + 2 > levels[-1]:
+            pytest.skip("ladder has no room for two levels of zoom-in")
+        _wheel_units(view, 1200)
+        mid_mip = view.viewport_chunk_target()[0]
+        assert mid_mip == first_mip + 1
+        _wheel_units(view, 1200)
+        assert view.viewport_chunk_target()[0] == mid_mip, "a second crossing inside the gap"
+        view._wheel_budget_t -= view.WHEEL_GESTURE_GAP_S
+        gesture_before = view._wheel_dir, view._wheel_last_t
+        _wheel_units(view, 1200)
+        assert view.viewport_chunk_target()[0] == mid_mip + 1, "a continuing roll stayed refused past the gap"
+        assert gesture_before[0] == view._wheel_dir and view._wheel_last_t >= gesture_before[1]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("up", [True, False])
+def test_the_last_detent_lands_exactly_on_the_zoom_bound(up) -> None:
+    """A detent that would overshoot the ceiling (floor) is clamped onto it,
+    so the readout reaches 6400% (50%) instead of stopping one step short."""
+    window = _window()
+    try:
+        view = window.map_view
+        for _ in range(80):
+            before = _scale(view)
+            view._end_wheel_gesture()
+            _wheel_units(view, 120 if up else -120)
+            if _scale(view) == before:
+                break
+        else:
+            pytest.fail("never reached the zoom bound")
+        want = view.MAX_ZOOM_MULTIPLE_OF_FIT if up else view.MIN_ZOOM_FRACTION_OF_FIT
+        assert view.zoom_percent_of_fit() == pytest.approx(want * 100, rel=1e-6)
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_reversal_after_a_whole_detent_starts_a_new_gesture() -> None:
     """Reversing is the other way a gesture ends, and it has to work off the
     running direction rather than the residual: whole detents leave a

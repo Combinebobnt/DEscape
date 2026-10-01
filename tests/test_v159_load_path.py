@@ -50,7 +50,8 @@ def _unit(loaded, reference_id: int) -> Unit:
 def _save_and_reload(loaded, tmp_path, name: str, **models):
     out = tmp_path / f"{name}.aoe2scenario"
     write_scenario(loaded, out, backup=False, **models)
-    return load_map_and_units(out)
+    # The library walk: read_capture_flags() reads the parsed slots.
+    return load_map_and_units(out, fast_units=False)
 
 
 # -- the fixture itself -------------------------------------------------------
@@ -254,7 +255,7 @@ def test_paste_region_keeps_capture_flag(tmp_path) -> None:
 
         out = tmp_path / "paste.aoe2scenario"
         write_scenario(window.scenario, out, backup=False, **window._edit_model_kwargs())
-        reloaded = load_map_and_units(out)
+        reloaded = load_map_and_units(out, fast_units=False)
         flags = gen.read_capture_flags(reloaded)
         pasted = {
             int(u.x) - 40: flags[u.reference_id]
@@ -293,7 +294,7 @@ def test_mirroring_keeps_capture_flag(tmp_path) -> None:
 
         out = tmp_path / "mirror.aoe2scenario"
         write_scenario(loaded, out, backup=False, **window._edit_model_kwargs())
-        flags = gen.read_capture_flags(load_map_and_units(out))
+        flags = gen.read_capture_flags(load_map_and_units(out, fast_units=False))
         by_position = {
             (round(float(u.x), 3), round(float(u.y), 3)): u.reference_id for units in loaded.unit_manager.units for u in units
         }
@@ -357,10 +358,12 @@ def test_the_carrier_table_is_exactly_what_repo_structures_add(cls, struct_name)
 
 
 def test_the_carrier_is_dormant_before_1_59() -> None:
-    loaded = load_map_and_units("tests/fixtures/units_120x120.aoe2scenario")
+    loaded = load_map_and_units("tests/fixtures/units_120x120.aoe2scenario", fast_units=False)
     entry = loaded._scenario.sections["Units"].retriever_map["players_units"].data[0].retriever_map["units"].data[0]
     assert unlinked_fields.active_fields(Unit, entry.retriever_map) == []
     assert not any(hasattr(u, "capture_flag") for units in loaded.unit_manager.units for u in units)
+    fast = load_map_and_units("tests/fixtures/units_120x120.aoe2scenario")
+    assert not any(hasattr(u, "capture_flag") for units in fast.unit_manager.units for u in units)
 
 
 def test_scenario_io_names_the_repo_versions() -> None:
@@ -372,10 +375,10 @@ def test_scenario_io_names_the_repo_versions() -> None:
 REAL_V159 = Path(__file__).resolve().parent.parent / "examples" / "8tp3w9j.aoe2scenario"
 
 
-def _real_v159():
+def _real_v159(fast_units: bool = True):
     if not REAL_V159.is_file():
         pytest.skip(f"{REAL_V159.name} is not in examples/")
-    return load_map_and_units(REAL_V159)
+    return load_map_and_units(REAL_V159, fast_units=fast_units)
 
 
 def _raw_flags(loaded) -> dict[int, int]:
@@ -401,7 +404,7 @@ def test_real_file_delete_then_move_keeps_flags_by_reference(tmp_path) -> None:
     """The review's measured case: delete GAIA ref 12004 (Once), move its
     list neighbour 14802 (Default); 14802 must still save as Default."""
     loaded = _real_v159()
-    before = _raw_flags(loaded)
+    before = _raw_flags(_real_v159(fast_units=False))
     assert (before[12004], before[14802]) == (1, -1)
     gaia = loaded.unit_manager.units[0]
     index = next(i for i, u in enumerate(gaia) if u.reference_id == 12004)

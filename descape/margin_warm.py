@@ -43,7 +43,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from descape import debug_log, perf_trace
+from descape import debug_log, gc_hold, perf_trace
 from descape.level_warm import _IdleTimerDriver
 
 # Wall-clock budget per tick: the 8ms warm-tick budget Batch F's gates use.
@@ -281,9 +281,9 @@ class MarginWarmer(_IdleTimerDriver):
     drag has no speed cap). Wheel and keyboard pans hold no button and are
     unaffected. Applies equally to both MarginWarmer instances (the
     navigation ring and the load-time _load_warmer) since it lives here
-    rather than in each call site."""
-
-    HELD_INTERVAL_MS = 50
+    rather than in each call site. The gate itself is
+    level_warm._IdleTimerDriver._held_backoff(), shared with LevelWarmer
+    since the 2026-09-29 warm-tick plan."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -355,6 +355,7 @@ class MarginWarmer(_IdleTimerDriver):
         self._token += 1
         self._in_flight = []
         self._stop_timer()
+        gc_hold.idle_soon()
 
     def tick(self) -> bool:
         """Warms chunks until the next one would not fit BUDGET_MS (at least
@@ -381,13 +382,12 @@ class MarginWarmer(_IdleTimerDriver):
         off instead (see class docstring) -- the queue is left untouched,
         so this always returns True here: the timer only ever reaches this
         branch with a non-empty queue, since a drained queue stops the
-        timer before it can fire again."""
-        from PyQt5.QtWidgets import QApplication
-
-        if QApplication.mouseButtons():
-            self._set_interval(self.HELD_INTERVAL_MS)
+        timer before it can fire again. An overdue gc hold's collect is a
+        whole tick too (_IdleTimerDriver._overdue_collect)."""
+        if self._held_backoff():
             return True
-        self._set_interval(0)
+        if self._overdue_collect():
+            return True
 
         if not self._queue:
             if self._in_flight:
@@ -399,27 +399,29 @@ class MarginWarmer(_IdleTimerDriver):
         deadline = start + BUDGET_MS / 1000.0
         slowest = 0.0
         chunks = 0
-        while self._queue:
-            if pooled and len(self._in_flight) >= WORKERS:
-                break
-            before = _now()
-            if chunks and before + slowest >= deadline:
-                break
-            cx, cy = self._queue.pop(0)
-            try:
-                job = self._cache.prepare_chunk_job(self._mip, cx, cy) if pooled else None
-                if job is None:
-                    self._cache.get_chunk(self._mip, cx, cy)
-                else:
-                    self._in_flight.append((cx, cy))
-                    _pool().submit(_run_job, self._on_result, self._token, job, _result_bridge())
-            except Exception as exc:  # noqa: BLE001
-                # Same reasoning as LevelWarmer.tick()'s blanket handler: a
-                # margin warm is an optimization, not worth propagating an
-                # exception into the Qt event loop over.
-                debug_log.log(f"margin warm: dropped a chunk ({exc!r})")
-            slowest = max(slowest, _now() - before)
-            chunks += 1
+        # Tags level builds a chunk triggers, so a slow tick names its cause.
+        with perf_trace.where("margin-warm"):
+            while self._queue:
+                if pooled and len(self._in_flight) >= WORKERS:
+                    break
+                before = _now()
+                if chunks and before + slowest >= deadline:
+                    break
+                cx, cy = self._queue.pop(0)
+                try:
+                    job = self._cache.prepare_chunk_job(self._mip, cx, cy) if pooled else None
+                    if job is None:
+                        self._cache.get_chunk(self._mip, cx, cy)
+                    else:
+                        self._in_flight.append((cx, cy))
+                        _pool().submit(_run_job, self._on_result, self._token, job, _result_bridge())
+                except Exception as exc:  # noqa: BLE001
+                    # Same reasoning as LevelWarmer.tick()'s blanket handler: a
+                    # margin warm is an optimization, not worth propagating an
+                    # exception into the Qt event loop over.
+                    debug_log.log(f"margin warm: dropped a chunk ({exc!r})")
+                slowest = max(slowest, _now() - before)
+                chunks += 1
         if chunks:
             perf_trace.warm_tick((_now() - start) * 1000, chunks, slowest * 1000)
         if self._queue or self._in_flight:
@@ -443,7 +445,8 @@ class MarginWarmer(_IdleTimerDriver):
         try:
             if isinstance(outcome, Exception):
                 raise outcome
-            self._cache.install_chunk(job, outcome)
+            with perf_trace.phase("margin_install"):
+                self._cache.install_chunk(job, outcome)
         except Exception as exc:  # noqa: BLE001
             debug_log.log(f"margin warm: dropped a chunk ({exc!r})")
         perf_trace.warm_worker(worker_ms)
@@ -454,6 +457,8 @@ class MarginWarmer(_IdleTimerDriver):
 
     def _drained(self) -> bool:
         self._stop_timer()
+        # Before the callback: a chained start() it makes re-engages and cancels this.
+        gc_hold.idle_soon()
         callback, self._on_drained = self._on_drained, None
         if callback is not None:
             callback()

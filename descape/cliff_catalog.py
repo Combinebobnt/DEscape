@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-from descape import object_catalog, unit_sprites
+from descape import asset_source, object_catalog, unit_sprites
 
 # Falls back to the .dat's angle_count when no install is configured (no
 # .sld to read a real frame count from) -- unit_sprites.variant_index()'s
@@ -42,10 +42,12 @@ def families() -> dict[str, tuple[CliffPiece, ...]]:
     """
     graphics = unit_sprites.graphic_map()
     grouped: dict[str, list[CliffPiece]] = {}
+    # One config.yaml parse for all 96 pieces, not one each (~0.27 s at launch).
+    lang = asset_source.get_language()
     for const in sorted(unit_sprites.cliff_consts()):
         entry = graphics.get(const)
         family = str(entry["file_name"]) if entry else f"const_{const}"
-        label = object_catalog.object_name(const) or str(const)
+        label = object_catalog.object_name(const, lang) or str(const)
         grouped.setdefault(family, []).append(CliffPiece(unit_const=const, label=label))
     return {family: tuple(pieces) for family, pieces in grouped.items()}
 
@@ -74,7 +76,11 @@ def piece_suffix(unit_const: int) -> int | None:
     keeping its own copy of the regex, so the table and its consumers
     can't disagree about what a suffix is.
     """
-    match = _SUFFIX_RE.search(object_catalog.object_name(unit_const) or "")
+    return _label_suffix(object_catalog.object_name(unit_const) or "")
+
+
+def _label_suffix(label: str) -> int | None:
+    match = _SUFFIX_RE.search(label)
     return int(match.group(1)) if match else None
 
 
@@ -92,7 +98,8 @@ def piece_for_suffix(unit_const: int, suffix: int) -> int | None:
     for pieces in families().values():
         if not any(p.unit_const == unit_const for p in pieces):
             continue
-        matches = [p.unit_const for p in pieces if piece_suffix(p.unit_const) == suffix]
+        # p.label is the name piece_suffix() would re-resolve, one config.yaml parse per piece.
+        matches = [p.unit_const for p in pieces if _label_suffix(p.label) == suffix]
         if not matches:
             return None
         return min(matches, key=lambda const: (abs(const - unit_const), const))

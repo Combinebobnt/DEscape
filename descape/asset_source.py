@@ -25,11 +25,15 @@ import os
 import re
 import shutil
 import sys
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
 import platformdirs
 import yaml
+
+from descape import perf_trace
 
 APP_NAME = "DEscape"
 
@@ -128,14 +132,21 @@ def set_install_path_override(path: Path | None) -> None:
     instead of returning stale pre-override results."""
     global _override_path
     _override_path = path
+    clear_install_caches()
+
+
+def clear_install_caches() -> None:
+    """Drops every cache downstream of the install path, leaving the override
+    as it is. The test suite calls this before each test (see tests/conftest.py)."""
     get_install_path.cache_clear()
     get_terrain_texture_path.cache_clear()
     get_terrain_average_color.cache_clear()
-    get_terrain_texture_array.cache_clear()
     # Path-keyed rather than id-keyed, so a changed install that resolves to
     # a same-named file under a different root would otherwise keep serving
-    # the old swatch.
+    # the old swatch or texture.
     _terrain_thumbnail_for_path.cache_clear()
+    _terrain_texture_for_path.cache_clear()
+    _forget_prefetches()
     _string_table.cache_clear()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
@@ -156,11 +167,11 @@ def set_install_path_override(path: Path | None) -> None:
 def get_language() -> str:
     """config.yaml's "language" key -- an install language folder name
     under resources/ (e.g. "en", "de", "fr") -- or DEFAULT_LANGUAGE if unset
-    or unreadable. Not cached, unlike get_install_path(): it is a small file
-    read only when a catalog name is (re)resolved, which object_catalog.py's
-    own caching already makes infrequent, and caching it here too would add
-    another cache set_install_path_override() has no real reason to know
-    about clearing."""
+    or unreadable. Not cached, unlike get_install_path(): caching it here would
+    add another cache set_install_path_override() has no real reason to know
+    about clearing. Each call is a full YAML parse (~3 ms on a real config),
+    so object_catalog.py's bulk builders call it once per build and pass the
+    result down rather than once per row."""
     if CONFIG_PATH.is_file():
         try:
             config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
@@ -262,21 +273,25 @@ def get_terrain_texture_path(terrain_id: int) -> Path | None:
 def get_terrain_average_color(terrain_id: int) -> tuple[int, int, int] | None:
     """Average color of the real texture for terrain_id, or None if unavailable.
     Cheap way to get authentic-ish colors without a full texture-blitting
-    renderer."""
-    path = get_terrain_texture_path(terrain_id)
-    if path is None:
+    renderer.
+
+    Derived from get_terrain_texture_array()'s cached 512x512 array, not the
+    2048x2048 .dds: the textured renderer has already decoded every terrain on
+    screen, so a Copy Region thumbnail costs a 32x32 resize instead of ~20 ms of
+    decode per terrain. One definition whatever is cached. Measured against the
+    .dds-derived average: 133 of 134 terrains identical, terrain 23 (g_wt3.dds)
+    one step lower on red. The cost: textures-off rendering now loads that 512²
+    array (~0.8 MB) for each terrain on the map; with textures on it is resident
+    anyway."""
+    arr = get_terrain_texture_array(terrain_id)
+    if arr is None:
         return None
+    import numpy as np
     from PIL import Image
 
-    with Image.open(path) as img:
-        rgb = img.convert("RGB")
-        # Sampling is plenty for an average -- these textures are large (2048x2048).
-        small = rgb.resize((32, 32))
-        pixels = list(small.getdata())
-    n = len(pixels)
-    r = sum(p[0] for p in pixels) // n
-    g = sum(p[1] for p in pixels) // n
-    b = sum(p[2] for p in pixels) // n
+    # Sampling is plenty for an average. Integer floor mean per channel.
+    pixels = np.asarray(Image.fromarray(arr).resize((32, 32))).reshape(-1, 3)
+    r, g, b = (int(total) // len(pixels) for total in pixels.sum(axis=0, dtype=np.int64))
     return (r, g, b)
 
 
@@ -306,8 +321,8 @@ def get_terrain_thumbnail(terrain_id: int, px: int = TERRAIN_THUMBNAIL_PX):
     back to terrain_palette.color_for_terrain_id.
 
     Deliberately NOT built from get_terrain_texture_array(): that cache
-    holds a 512x512x3 array per id and evicts nothing at 131 < 256, so
-    filling a browser would warm ~103MB in the renderer's own cache for
+    holds a 512x512x3 array per file and evicts nothing at 85 < 256, so
+    filling a browser would warm ~67MB in the renderer's own cache for
     textures the open map may never touch. At 64px the whole catalog is
     ~1.6MB, and only the 85 distinct files are ever decoded."""
     path = get_terrain_texture_path(terrain_id)
@@ -316,9 +331,8 @@ def get_terrain_thumbnail(terrain_id: int, px: int = TERRAIN_THUMBNAIL_PX):
     return _terrain_thumbnail_for_path(path, px)
 
 
-@lru_cache(maxsize=256)
 def get_terrain_texture_array(terrain_id: int):
-    """The real texture for terrain_id as an (LOADED_TEXTURE_SIZE,
+    """The real texture for terrain_id as a read-only (LOADED_TEXTURE_SIZE,
     LOADED_TEXTURE_SIZE, 3) uint8 numpy array, or None if unavailable --
     either no install is configured, or this terrain_id has no known texture.
     Backs real per-tile texture blitting in render.py; see
@@ -326,10 +340,92 @@ def get_terrain_texture_array(terrain_id: int):
     path = get_terrain_texture_path(terrain_id)
     if path is None:
         return None
+    return _terrain_texture_for_path(path)
 
+
+@lru_cache(maxsize=256)
+def _terrain_texture_for_path(path: Path):
+    """get_terrain_texture_array's load, keyed on the FILE like
+    _terrain_thumbnail_for_path: a map's 37 ids resolve to 26 files. Read-only,
+    since ids sharing a file share the array; consumers only crop views.
+    Takes a prefetched load's result (waiting if it is still running) rather
+    than decoding the file a second time; a worker's exception raises here."""
+    with _prefetch_lock:
+        entry = _pending.pop(path, None)
+        generation = _generation
+    if entry is not None and entry[0] == generation:
+        with perf_trace.texture_wait():
+            arr = entry[1].result()
+    else:
+        with perf_trace.texture_load():
+            arr = _load_texture(path)
+    with _prefetch_lock:
+        if generation == _generation:
+            _loaded.add(path)
+    return arr
+
+
+def _load_texture(path: Path):
+    """Decode and resize one texture file. Any thread: PIL releases the GIL."""
     import numpy as np
     from PIL import Image
 
     with Image.open(path) as img:
         rgb = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
-        return np.array(rgb)
+        arr = np.array(rgb)
+    arr.flags.writeable = False
+    return arr
+
+
+# Texture prefetch pool, sized like margin_warm.WORKERS (not imported: that
+# module pulls in Qt). Created on first use; tests swap in an inline executor.
+PREFETCH_WORKERS = min(4, max(1, (os.cpu_count() or 2) - 1))
+_prefetch_executor = None
+# path -> (generation, Future) for prefetched loads no get has taken yet.
+_pending: dict[Path, tuple[int, Future]] = {}
+# Paths _terrain_texture_for_path has cached: lru_cache has no membership test.
+_loaded: set[Path] = set()
+_prefetch_lock = threading.Lock()
+# Bumped by clear_install_caches(), so a load from before it is never served.
+_generation = 0
+
+
+def _prefetch_pool():
+    global _prefetch_executor
+    if _prefetch_executor is None:
+        _prefetch_executor = ThreadPoolExecutor(max_workers=PREFETCH_WORKERS, thread_name_prefix="texture-prefetch")
+    return _prefetch_executor
+
+
+def _prefetch_load(path: Path):
+    with perf_trace.texture_prefetch():
+        return _load_texture(path)
+
+
+def prefetch_terrain_textures(terrain_ids) -> int:
+    """Starts loading the texture files behind terrain_ids on a small thread
+    pool, so a render that needs them later waits on the load already in
+    flight instead of decoding each on the GUI thread. Files already cached or
+    already pending are skipped, as are ids with no texture. Returns the
+    number of loads submitted."""
+    submitted = 0
+    for terrain_id in terrain_ids:
+        path = get_terrain_texture_path(int(terrain_id))
+        if path is None:
+            continue
+        with _prefetch_lock:
+            if path in _loaded or path in _pending:
+                continue
+            _pending[path] = (_generation, _prefetch_pool().submit(_prefetch_load, path))
+        submitted += 1
+    return submitted
+
+
+def _forget_prefetches() -> None:
+    """clear_install_caches()'s half for the prefetch: pending loads are
+    dropped (a running one finishes, unserved) and the generation moves on."""
+    global _generation
+    with _prefetch_lock:
+        _generation += 1
+        _pending.clear()
+        _loaded.clear()

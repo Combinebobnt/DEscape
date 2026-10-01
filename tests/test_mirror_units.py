@@ -362,6 +362,40 @@ def test_a_non_zero_source_slice_still_emits_the_sources_own_orbit():
     assert [(i.x, i.y) for i in plan.images] == [(5.5, 5.5)]
 
 
+@pytest.mark.parametrize("mode_id", [1, 2, 3, 4, 5, 6, 9])
+def test_an_off_parity_building_is_not_its_own_straddler(mode_id):
+    """A 4x4 anchored half a tile off (corpus Mills and Castles) re-anchors
+    through identity onto other tiles, so emitting identity refused every mirror."""
+    source = _at(CASTLE, mode_id)
+    source.x += 0.5
+    source.y += 0.5
+    plan = _plan([source], mode_id=mode_id)
+    assert plan.straddling == []
+    assert "id" not in {image.element for image in plan.images}
+    assert len(plan.images) == len(MODE_BY_ID[mode_id].group) - 1
+
+
+@pytest.mark.parametrize(("mode_id", "anchor"), [(2, 33.5), (5, 31.5)])
+def test_an_off_parity_building_mapped_onto_its_own_footprint_is_deduped(mode_id, anchor):
+    """On the axis, d (or r2 at the centre) maps the footprint onto itself; the
+    image's whole-tile anchor differs from the off-parity source's raw one."""
+    on_axis = FakeUnit(CASTLE, anchor, anchor)
+    assert (int(anchor) * N + int(anchor)) in plan_mirror(FakeMapManager(), mode_id, 0, False, False).source_indices
+    plan = _plan([on_axis], mode_id=mode_id)
+    assert plan.straddling == []
+    assert plan.images == []
+
+
+@pytest.mark.parametrize(("mode_id", "slice_index", "owners"), [(1, 1, [2]), (6, 2, [4, 5, 2])])
+def test_ownership_rotation_counts_slices_from_the_source_slice(mode_id, slice_index, owners):
+    """Measured bug: a 2-way mirror from slice 1 kept the source owner, since
+    steps were counted from slice 0. Images come in group order."""
+    x, y = _source_tiles(mode_id, slice_index, margin=1)[0]
+    source = FakeUnit(OAK, x + 0.5, y + 0.5, player=1)
+    plan = _plan([source], mode_id=mode_id, slice_index=slice_index, player_ids=[1, 2, 4, 5], ownership_steps=1)
+    assert [image.player for image in plan.images] == owners
+
+
 # --- the real-file leg ---------------------------------------------------------
 
 
@@ -638,6 +672,20 @@ def test_six_way_ownership_hands_the_wedges_consecutive_owners():
     unit = FakeUnit(OAK, *_wedge_point(8), player=1)
     plan, _ = _angular_plan([unit], player_ids=[1, 2, 3, 4, 5, 6], ownership_steps=1)
     assert [image.player for image in plan.images] == [2, 3, 4, 5, 6]
+
+
+def test_six_way_ownership_counts_wedges_from_the_source_wedge():
+    unit = FakeUnit(OAK, *_wedge_point(8, slice_index=2), player=1)
+    plan, _ = _angular_plan([unit], slice_index=2, player_ids=[1, 2, 3, 4, 5, 6], ownership_steps=1)
+    assert [image.player for image in plan.images] == [5, 6, 2, 3, 4]
+
+
+def test_an_off_parity_building_is_not_its_own_straddler_in_an_angular_mode():
+    x, y = _wedge_point(12)
+    castle = FakeUnit(CASTLE, round(x) + 0.5, round(y) + 0.5)
+    plan, _ = _angular_plan([castle])
+    assert plan.straddling == []
+    assert AngularElement(0, False) not in {image.element for image in plan.images}
 
 
 def test_an_angle_consts_facing_turns_with_the_rotation():

@@ -480,6 +480,202 @@ def test_a_unit_edit_made_outside_units_mode_still_reaches_the_outlines() -> Non
         conftest.close_window(window)
 
 
+# --- outlines off: nothing built while hidden, rebuilt on enable ------------
+
+
+def _expected_points(view) -> set[tuple[float, float]]:
+    """Freshly recomputed from the live index and heights, the hover cue's geometry."""
+    points = set()
+    for entry in unit_pick.footprint_entries(view._unit_index, view._footprint_scope):
+        for polygon in view._unit_polygons_for(entry) or []:
+            points |= {(round(x, 3), round(y, 3)) for x, y in polygon}
+    return points
+
+
+def _drawn_points(view) -> set[tuple[float, float]]:
+    path = view._footprint_item.path()
+    return {(round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3)) for i in range(path.elementCount())}
+
+
+def _units_window_outlines_off():
+    """Blank template in Units mode with outlines left at their default, off."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    assert settings.get_footprint_outlines() is False
+    window.mode_combo.setCurrentText("Units")
+    window.show()
+    QApplication.processEvents()
+    assert window.mode == "units"
+    return window
+
+
+def _place(window, const: int, tile: tuple[int, int]) -> None:
+    placed_before = sum(len(units) for units in window.scenario.unit_manager.units)
+    window.units_panel.select_object(const)
+    window.on_unit_place(window.map_view._tile_polygon(*tile).boundingRect().center(), None)
+    assert sum(len(units) for units in window.scenario.unit_manager.units) == placed_before + 1, "no place"
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_unit_placed_with_outlines_off_is_outlined_once_they_are_enabled() -> None:
+    """The hidden path is not built, and enabling rebuilds from the live index."""
+    window = _units_window_outlines_off()
+    try:
+        view = window.map_view
+        _place(window, _TOWN_CENTRE, (50, 50))
+        assert view._footprint_item.path().elementCount() == 0, "the hidden path was built"
+        window.footprint_action.setChecked(True)
+        (entry,) = [e for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
+        placed = {(round(x, 3), round(y, 3)) for polygon in view._unit_polygons_for(entry) for x, y in polygon}
+        drawn = _drawn_points(view)
+        assert placed and placed <= drawn
+        assert drawn == _expected_points(view)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_an_elevation_edit_with_outlines_off_is_outlined_at_the_new_height_once_enabled() -> None:
+    """No refresh is queued per touch while hidden; enabling draws the new heights."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _units_window_outlines_off()
+    try:
+        view = window.map_view
+        _place(window, _TOWN_CENTRE, (20, 20))
+        at_old_height = _expected_points(view)
+        window.mode_combo.setCurrentText("Terrain")
+        assert view._unit_index is not None
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(20, 20, Qt.NoModifier)
+        assert not view._footprint_refresh_pending, "a hidden overlay queued a rebuild"
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        window.footprint_action.setChecked(True)
+        drawn = _drawn_points(view)
+        assert drawn == _expected_points(view)
+        assert drawn != at_old_height, "the edit did not move the outline"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_unit_edit_with_outlines_off_builds_no_outline_geometry(monkeypatch) -> None:
+    """A Move rather than a Place: Place selects the placed unit, whose cue is
+    also unit_polygons(). Both reach refresh_after_index_patch() alike."""
+    window = _units_window_outlines_off()
+    try:
+        view = window.map_view
+        _place(window, _TOWN_CENTRE, (50, 50))
+        window._selection = []
+        view.set_unit_selection([])
+        (entry,) = [e for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
+        start_x = entry.unit.x
+        calls = []
+        real = unit_pick.unit_polygons
+        monkeypatch.setattr(unit_pick, "unit_polygons", lambda *a, **k: calls.append(1) or real(*a, **k))
+        window._move_units(window._ensure_unit_edits(), [entry], 1.0, 0.0, "Move unit")
+        assert entry.unit.x == pytest.approx(start_x + 1.0), "the move did not happen"
+        assert calls == []
+    finally:
+        conftest.close_window(window)
+
+
+def _count_footprint_builds(monkeypatch, view) -> list[int]:
+    calls: list[int] = []
+    real = view._unit_polygons_for
+    monkeypatch.setattr(view, "_unit_polygons_for", lambda entry: calls.append(1) or real(entry))
+    return calls
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_an_elevation_stroke_with_outlines_off_builds_no_outline_geometry_through_its_release(monkeypatch) -> None:
+    """set-elevation-untimed-stalls plan 4a: nothing is built by the whole stroke,
+    release and event-loop turn included, not only nothing queued mid-stroke."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _units_window_outlines_off()
+    try:
+        view = window.map_view
+        _place(window, _TOWN_CENTRE, (20, 20))
+        window.mode_combo.setCurrentText("Terrain")
+        assert view._unit_index is not None, "no live index -- vacuous"
+        before = window.scenario.map_manager.get_tile(20, 20).elevation
+        calls = _count_footprint_builds(monkeypatch, view)
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(20, 20, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        assert window.scenario.map_manager.get_tile(20, 20).elevation != before, "the stroke wrote nothing"
+        assert calls == []
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_scope_change_with_outlines_off_builds_nothing_and_is_drawn_once_enabled(monkeypatch) -> None:
+    """set-elevation-untimed-stalls plan 4a: the hidden overlay skips the scope's
+    rebuild, and enabling draws the new scope (the villager only `all` outlines)."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _units_window_outlines_off()
+    try:
+        view = window.map_view
+        _place(window, _TOWN_CENTRE, (50, 50))
+        _place(window, _VILLAGER, (30, 30))
+        assert view._footprint_scope == unit_pick.FOOTPRINT_SCOPE_MULTITILE
+        calls = _count_footprint_builds(monkeypatch, view)
+        window._on_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
+        QApplication.processEvents()
+        assert calls == [], "the hidden overlay was rebuilt for the new scope"
+        window.footprint_action.setChecked(True)
+        (villager,) = [e for e in view._unit_index.entries if e.unit.unit_const == _VILLAGER]
+        villager_points = {(round(x, 3), round(y, 3)) for p in view._unit_polygons_for(villager) for x, y in p}
+        drawn = _drawn_points(view)
+        assert villager_points and villager_points <= drawn, "enabling drew the old scope"
+        assert drawn == _expected_points(view)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_place_that_stacks_adds_a_badge_and_a_move_that_stacks_nothing_skips_the_rebuild() -> None:
+    window = _units_window_outlines_off()
+    view = window.map_view
+    try:
+        assert settings.get_stack_badges() is True
+        _place(window, _VILLAGER, (40, 40))
+        _place(window, _VILLAGER, (40, 40))
+        assert len(view._stack_groups) == 1, "the second villager did not stack"
+        assert view._stack_badge_item.badge_texts() == ["2"]
+        _place(window, _TOWN_CENTRE, (60, 60))
+        window._selection = []
+        view.set_unit_selection([])
+        (entry,) = [e for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
+        start_x = entry.unit.x
+        rebuilds = []
+        real = view._rebuild_stack_badges
+        view._rebuild_stack_badges = lambda: (rebuilds.append(1), real())[1]
+        window._move_units(window._ensure_unit_edits(), [entry], 1.0, 0.0, "Move unit")
+        assert entry.unit.x == pytest.approx(start_x + 1.0), "the move did not happen"
+        assert rebuilds == []
+        assert view._stack_badge_item.badge_texts() == ["2"]
+    finally:
+        view.__dict__.pop("_rebuild_stack_badges", None)
+        conftest.close_window(window)
+
+
 _FARM = 50
 
 

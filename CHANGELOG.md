@@ -22,7 +22,7 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
-## [Unreleased]
+## [0.9] - 2026-10-01
 
 ### Added
 
@@ -30,6 +30,17 @@ content, link the doc instead of summarizing it.
   triggers read, edit and save as usual. Known limit: each unit's capture
   setting and the Object Visible Multiplayer condition's "allow in fog" are
   kept through edits, copies and saves, but not shown or editable yet.
+- **Help > Perf Trace covers one-shot edits, level builds and stalls.** Place,
+  Move, Nudge, Undo, Paste, Fill, zoom and style switches get `perf op` lines
+  (a held key's repeats merge into one), zoom-level builds and preload ticks
+  say where they ran, and any freeze over 150 ms gets a `perf stall` line.
+- **Perf Trace names garbage collection and splits more of the wait.** A full
+  collection shows as `gc gen2` on the line it landed in; the load's first
+  paint, mode switches and the slowest zoom-level warm tick now show their parts.
+- **Perf Trace says how much of a stall it traced.** Each `perf stall` line ends
+  with the traced share of the freeze and its three biggest parts, drag lines
+  show wall time and the untimed rest, and a stroke's press, snapshot and
+  release plus work deferred between events are now traced.
 - **`tools/release_render_diff.py`: pixel-diff the map render against a
   release** (GH #87). Renders each scenario at `v0.6` and at this checkout in
   every view, sprites off and on, and fails on any pixel that differs outside
@@ -64,9 +75,90 @@ content, link the doc instead of summarizing it.
   joins an existing one, and neighbours reshape. Aqueducts and walls now
   connect to each other. Cycle Variant no longer applies to Aqueducts, since
   their shape comes from their neighbours.
+- **Place Unit previews the picked object under the cursor** (GH #128): a
+  translucent copy, in the picked owner's colour, exactly where a click will
+  place it. Flat shows a coloured mark. Walls keep their drag preview.
 
 ### Changed
 
+- **Paste Region and undoing it are faster in Stepped and Sloped.** A paste
+  no longer rebuilds every unit's tile index, nor does its undo or redo
+  when the paste changed heights or held under about 1000 units, and an undo of
+  a paste with height changes builds the visible level once instead of twice.
+- **Maps open faster: the first paint loads terrain textures once per file, on
+  background threads while the view builds** (old-allies first paint 1395 ->
+  450 ms). Help > Perf Trace names the texture loads and waits on its load, op
+  and view lines.
+- **Place Unit and Move no longer rebuild the hidden Footprint Outlines path
+  on every edit** (about 30 ms faster in Stepped, 110 ms in Sloped on large
+  maps with outlines off).
+- **Switching back to Units mode is faster.** Re-entering it with no unit edit
+  in between, or any entry with Footprint Outlines on, takes about 5 ms
+  instead of 30-60 ms on large maps.
+- **Fewer hitches while zoom levels preload.** Python's full garbage
+  collection now waits until preloading goes idle instead of landing inside a
+  preload step, including right after a paste or an elevation stroke.
+- **Startup is about 4 s faster and the first unit selection after loading no
+  longer stalls.** Catalog names were re-reading config.yaml once per row.
+- **Startup is another ~0.25 s faster.** The Cliff tool's piece list read
+  config.yaml once per piece; the Disabled Objects dialog now reads it at most
+  once per list too.
+- **Copy Region is several times faster and Paste Region no longer rebuilds
+  the visible level twice.** The copy thumbnail reuses the terrain textures
+  already loaded, and a paste with units rebuilds the view once and places its
+  units faster.
+- **Drawing terrain with Trees or Eye candy on, undoing it, and moving a group
+  of units no longer rebuild every unit layer** when an edited tile is shared
+  with another unit, so releasing a stroke takes about a third as long.
+- **Zooming in pauses far less on the first visit to a level** with unit
+  sprites on: scaling and tinting unit art is several times cheaper, and the
+  zoom levels warmed in the background now follow the level in view.
+- **Less of a hitch after releasing a large Elevate or Set Elevation stroke.**
+  Zoom levels not on screen now catch up on the edit in idle-time steps
+  instead of one ~60 ms pause, and that idle-time work waits while a mouse
+  button is held. Each idle-time step now stays within about 12 ms plus one
+  small piece of work, instead of pausing 20-30 ms while a zoom level is put
+  together.
+- **The first save after editing units no longer pauses on large maps.**
+- **Zoomed-out first paint with unit sprites on is about a third faster** on
+  large maps, Flat included. Unit art is tinted to player colour after it is
+  scaled down, and sprite frames decode only the layers and area actually
+  drawn.
+- **Paint and Elevate drags no longer hitch on a one-off memory cleanup.**
+  Python's garbage collector is held off while the mouse is down, so its
+  full sweep of the loaded map can't land in the middle of a stroke.
+- **Fast Convert and Cliff drags no longer skip tiles.** A quick Convert drag
+  converts every unit under the line, and a quick Cliff drag lays the same
+  chain as a slow one instead of cutting diagonally across the corner.
+- **Convert drags over walls, gates and shared tiles no longer hitch.** Those
+  units are recoloured in place instead of every unit's art being rebuilt,
+  now in Flat view too, and Stepped/Sloped repaint only around them.
+- **Elevate no longer stalls next to stacked units or decorated buildings.**
+  Units sharing a tile now update in place in Stepped and Sloped. A step that
+  still can't (a very large edit) rebuilds only the zoom level on screen, and
+  the other visited levels catch up in idle time, so zooming out stays smooth.
+- **Elevate drags over units in Stepped view are about three times as fast.**
+  Each step now updates only the buildings it moved, instead of re-indexing
+  every building on the map, and the zoom levels kept ready off screen catch
+  up once after the stroke. Sloped view and Convert drags get a smaller speedup.
+- **No more random short pauses while editing a large map.** An opened map's
+  data is set aside from Python's garbage collector, at the cost of a
+  one-time pause of about 0.1 s at the end of each open.
+- **Elevate and Set Elevation no longer redraw the map in Flat view**, where
+  elevation isn't drawn.
+- **Large scenarios open faster and File > New Map is near-instant.** Terrain
+  is read straight from the file instead of tile by tile. New Map's log line
+  now also shows the time spent generating the blank map.
+- **Unit-heavy scenarios open much faster, and the first unit edit starts
+  sooner.** Units are read straight from the file too.
+- **Faster first open of unit-heavy maps, and faster first zoom into each
+  level or switch to Sloped.** Sprite files are no longer re-read and
+  re-parsed for every sprite frame, and their index holds far less memory.
+  Decoded frames are now shared across zoom levels (up to 128 MB), so on the
+  largest maps a first zoom into a new level takes under half as long.
+- **Faster first paint of unit-heavy maps.** Each sprite file is now read
+  once per level build and decoded by the compiled renderer. From source,
+  the fast renderer rebuilds itself once on the next launch.
 - **Game data refreshed for the Sept 2026 game update.** Jarls draw their
   sprite again and unit stats match the patch. The update's new objects and
   terrains draw correctly in a scenario that already has them, but DEscape
@@ -84,6 +176,7 @@ content, link the doc instead of summarizing it.
   prepares each zoom level's units ahead of time, so panning zoomed out
   pauses less. Help > Perf Trace reports it on its `perf view` lines as
   `warm:`, with the longest pause, the slowest chunk and the background time.
+  Zoomed all the way out, each chunk now takes about half as long to prepare.
 - **Elevate and Set Elevation no longer lag with sprites on.** An elevation
   edit now updates only the units on the changed tiles instead of rebuilding
   every unit's sprite and footprint.
@@ -116,6 +209,12 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Pick from map no longer offers a unit that was removed by an edit made
+  outside Units mode.**
+- **Rolling the mouse wheel steadily zooms all the way in or out.** A
+  continuous roll used to stop at the next zoom level and ignore the wheel
+  until you paused. The last notch now also lands exactly on the 6400% / 50%
+  limit instead of one step short of it.
 - **Zooming right after a pan no longer jumps the view to a map corner**
   (GH #146). It happened when the mouse wasn't moved between a middle-drag
   pan, or a pan pushed against the scroll limit, and the next wheel notch.
@@ -147,6 +246,11 @@ content, link the doc instead of summarizing it.
   until the next repaint of that area.
 - **`tools/gen_iso_reference_pngs.py` no longer crashes when `--out-dir` is
   outside the repo.** It wrote the PNGs, then failed printing their paths.
+- **Mirror Map with Units no longer refuses because of a building placed half
+  a tile off the grid** (often a Mill, Castle or Siege Workshop), which blocked
+  every mirror sourced from the slice holding it. Rotate ownership also counts
+  slices from the chosen source slice: mirroring from any slice but the first
+  used to keep or skip owners.
 
 ## [0.8] - 2026-09-23
 

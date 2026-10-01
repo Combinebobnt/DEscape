@@ -212,6 +212,27 @@ def test_cliff_catalog_covers_every_cliff_const():
     assert len(pieces) == 96
 
 
+def test_cliff_catalog_resolves_the_language_once(monkeypatch):
+    """get_language() parses config.yaml uncached; labelling each of the 96
+    pieces with its own call cost ~0.27 s of every app launch."""
+    from descape import cliff_catalog
+
+    real_get_language = asset_source.get_language
+    calls = []
+
+    def counting_get_language() -> str:
+        calls.append(1)
+        return real_get_language()
+
+    monkeypatch.setattr(asset_source, "get_language", counting_get_language)
+    cliff_catalog.families.cache_clear()
+    try:
+        cliff_catalog.families()
+    finally:
+        cliff_catalog.families.cache_clear()
+    assert len(calls) == 1
+
+
 def test_distinct_stored_indices_give_distinct_cliff_shapes():
     """The frames are SHAPES, so different indices must produce different
     pixels. Before the fix every cliff resolved index 0, which is exactly the

@@ -325,3 +325,128 @@ def test_copy_in_terrain_mode_captures_units_with_no_live_pick_index() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+_BLOCK_LEVEL = 3  # >= 2, or a paste onto flat ground propagates no skirt at all
+
+
+def _skirt_window(anchor: tuple[int, int]):
+    """A 3x3 level-3 block copied from (0, 0), and uneven ground east of
+    `anchor`: a level-3 tile two columns past the block's middle row, so the
+    tile between them takes elevation_tools' `behind` branch while the rest
+    of the ring takes the `> 1` branch. Returns (window, rect, between)."""
+    window = _window()
+    _make_region(window, 0, 0, 3, 3, _TERRAIN_A, elevation=_BLOCK_LEVEL)
+    ax, ay = anchor
+    window._on_tool_selected("set_level")
+    window.elevation_level_spin.setValue(_BLOCK_LEVEL)
+    window.on_edit_stroke_start()
+    window.on_edit_stroke_tile(ax + 4, ay + 1, 0)
+    window.on_edit_stroke_end()
+    window._on_tool_selected("select")
+    window.edit_history.reset()
+    window.paste_terrain_check.setChecked(True)
+    window.paste_elevation_check.setChecked(True)
+    window.paste_units_check.setChecked(False)
+    window.on_hover(anchor)
+    mm = window.scenario.map_manager
+    w = mm.map_width
+    rect = {y * w + x for y in range(max(0, ay), min(mm.map_height, ay + 3)) for x in range(max(0, ax), min(w, ax + 3))}
+    between = (ay + 1) * w + ax + 3
+    assert mm.terrain[between].elevation == _BLOCK_LEVEL - 1  # lower than the plateau behind it
+    return window, rect, between
+
+
+def _paste_record_guard(window):
+    """Pastes once and asserts the paste's tile record equals a full-map diff
+    against the pre-paste state. Returns the record's changes."""
+    from descape.edit_history import tile_state
+
+    mm = window.scenario.map_manager
+    start = [tile_state(t) for t in mm.terrain]
+    history = window.edit_history
+    real_build = history.build_stroke_record
+    built = []
+
+    def build(*args, **kwargs):
+        built.append(real_build(*args, **kwargs))
+        return built[-1]
+
+    history.build_stroke_record = build
+    try:
+        window.paste_region()
+    finally:
+        del history.build_stroke_record
+    oracle = [(i, start[i], tile_state(t)) for i, t in enumerate(mm.terrain) if tile_state(t) != start[i]]
+    (record,) = built
+    got = record.changes if record is not None else []
+    assert got == oracle, f"missing {sorted({c[0] for c in oracle} - {c[0] for c in got})[:8]}"
+    return got
+
+
+@pytest.mark.parametrize("anchor", [(30, 30), (-1, 50)], ids=["interior", "clipped"])
+def test_a_paste_whose_skirt_leaves_the_block_records_the_full_map_diff(anchor) -> None:
+    window, rect, between = _skirt_window(anchor)
+    try:
+        changes = _paste_record_guard(window)
+        recorded = {i for i, _old, new in changes}
+        assert recorded - rect - {between}, "no skirt outside the block; the guard is vacuous"
+        assert between in recorded, "the `behind` branch never wrote; its capture is untested"
+        assert window.scenario.map_manager.terrain[between].elevation == _BLOCK_LEVEL
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_paste_record_guard_catches_an_uncaptured_skirt(monkeypatch) -> None:
+    """Control: a set_tiles_elevation that writes the skirt without reporting
+    it through before_write must fail the guard."""
+    import descape.viewer as viewer_module
+
+    real = viewer_module.set_tiles_elevation
+    window, _rect, _between = _skirt_window((30, 30))
+    monkeypatch.setattr(viewer_module, "set_tiles_elevation", lambda mm, targets, before_write=None: real(mm, targets))
+    try:
+        with pytest.raises(AssertionError, match="missing"):
+            _paste_record_guard(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_paste_raising_mid_skirt_still_records_every_tile_it_wrote(monkeypatch) -> None:
+    """The raise lands inside the skirt, after some of it is written. The
+    stroke closes through _close_stroke_on_error, whose unscoped-looking
+    commit diffs the scoped captures: terrain, targets and the written part
+    of the skirt."""
+    import descape.viewer as viewer_module
+    from descape.edit_history import TileDiffRecord, tile_state
+
+    real = viewer_module.set_tiles_elevation
+    captured: list[int] = []
+
+    def raising(mm, targets, before_write=None):
+        def capture(i):
+            if len(captured) == 4:
+                raise RuntimeError("boom mid-skirt")
+            before_write(i)
+            captured.append(i)
+
+        return real(mm, targets, before_write=capture)
+
+    window, rect, _between = _skirt_window((30, 30))
+    monkeypatch.setattr(viewer_module, "set_tiles_elevation", raising)
+    try:
+        mm = window.scenario.map_manager
+        start = [tile_state(t) for t in mm.terrain]
+        with pytest.raises(RuntimeError, match="boom"):
+            window.paste_region()
+        assert not window.edit_history.in_stroke
+        oracle = [(i, start[i], tile_state(t)) for i, t in enumerate(mm.terrain) if tile_state(t) != start[i]]
+        assert len(captured) == 4 and {i for i, _o, _n in oracle} - rect, "the raise came before any skirt write"
+        record = window.edit_history.records[-1]
+        assert isinstance(record, TileDiffRecord)
+        assert record.changes == oracle
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

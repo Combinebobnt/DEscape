@@ -51,11 +51,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 from descape import asset_source, debug_log, editor_markers, gate_orientation, unit_kind
-from descape.sld_decoder import SLDError, load_sld
+from descape.sld_decoder import LayerKind, SLDError, load_sld
 
 GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
 GRAPHICS_SUBPATH = "resources/_common/drs/graphics"
@@ -191,10 +192,37 @@ TEAM_COLORS = (
 # nothing. It is not enough for a capacity to be "big"; it has to exceed a
 # real file's distinct-key count, or it is worse than no cache at all.
 #
-# Entry count, not a byte budget: cropping to the ink bbox makes a native
-# entry small and roughly uniform (~200KB measured), unlike the scaled cache
-# below.
-NATIVE_CACHE_SIZE = 256
+# A BYTE budget, not an entry count: cropped entries are far from uniform.
+# Measured 2026-09-28 on old-allies-final-v2 with the cache uncapped: every
+# mip level shares one 1116-key set (the key has no scale in it), 74.1MB in
+# total, median 28KB, mean 66KB, max 3.0MB per entry. The old 256-entry cap
+# held under a quarter of that, so each new zoom level re-decoded ~900 delta
+# chains (1.24-1.33s per new level); holding the whole set cut that to
+# 0.40-0.51s. 128MB covers that file with headroom for a larger one.
+NATIVE_CACHE_BYTES = 128 * 1024 * 1024
+
+# One walked, data-released SLDFile per .sld file name, or _MISS for a file
+# that won't read. Hit by every native miss and every sld_frame_count(), so a
+# file is walked once per process instead of once per missed frame.
+#
+# An entry count, and sized on the other side of the same failure the comment
+# above records: the worst corpus file touches 341 distinct files at one level,
+# and the whole unit_graphic_map.json names 1666. 1024 is 3x the worst measured
+# file, so no real scenario thrashes it, while still bounding what several
+# scenarios opened in one process leave resident (nothing clears this on close).
+SLD_INDEX_CACHE_SIZE = 1024
+
+# The .sld bytes behind _sld_index_cache, per file name, so a native miss
+# decodes from the bytes its walk already read instead of re-reading the file.
+# A BYTE budget: files run from a few KB to 6MB.
+#
+# Measured 2026-09-28 (cold Stepped mip -2, units resolve interleaved by
+# player): old-allies-final-v2 read 1457 whole .sld files, 1083MB, over 341
+# distinct files holding 248MB. At 64MB it reads 372 (74.5% hit rate against
+# a 76.6% ceiling), at 32MB 415, at 8MB 505; June and Dos Pilas need under
+# 32MB for a read per file. Holding all 248MB for the last 31 re-reads is not
+# worth it, so 64MB.
+SLD_BYTES_CACHE_BYTES = 64 * 1024 * 1024
 
 # A BYTE budget, like ICON_CACHE_BYTES below -- see _ByteLRU for why an entry
 # cap cannot work here. This used to be an _LRU entry cap (SCALED_CACHE_SIZE =
@@ -232,7 +260,7 @@ SCALED_CACHE_BYTES = 256 * 1024 * 1024
 # first-pass 64MB the tile_px=128 level alone did not fit, and its WARM
 # rebuild ran in 4181ms against a 4023ms cold one -- every entry evicted
 # before reuse, the cache costing memory and buying nothing, which is the same
-# failure NATIVE_CACHE_SIZE/SCALED_CACHE_BYTES's own comment records. 128MB
+# failure NATIVE_CACHE_BYTES/SCALED_CACHE_BYTES's own comment records. 128MB
 # clears that file's whole ladder; in practice only resident levels are ever
 # built (see FlatChunkCache._level_icons' laziness), so one or two of those
 # four is the normal steady state.
@@ -301,7 +329,8 @@ class _ByteLRU(OrderedDict):
     FOOTPRINT-sized on top of that -- a 1x1 unit at tile_px=16 is ~1KB and a
     4x4 Town Centre at tile_px=128 is ~1MB -- so any single entry count is
     either wasteful at one end of that spread or thrashing at the other. See
-    SCALED_CACHE_BYTES and ICON_CACHE_BYTES for the two measured budgets.
+    NATIVE_CACHE_BYTES, SCALED_CACHE_BYTES and ICON_CACHE_BYTES for the three
+    measured budgets.
     """
 
     def __init__(self, capacity_bytes: int):
@@ -314,7 +343,14 @@ class _ByteLRU(OrderedDict):
         # A _MISS costs nothing to hold and (see below) a great deal to
         # re-derive, so it is charged a nominal byte rather than 0 -- at 0 an
         # unbounded number of them could accumulate.
-        return value.rgba.nbytes if isinstance(value, SpriteDraw) else 1
+        if isinstance(value, SpriteDraw):
+            return value.rgba.nbytes
+        if isinstance(value, tuple):
+            # A native entry: (main, playercolor or None, hotspot_x, hotspot_y).
+            return value[0].nbytes + (0 if value[1] is None else value[1].nbytes)
+        if isinstance(value, bytes):
+            return len(value)
+        return 1
 
     def get_or_none(self, key):
         if key in self:
@@ -339,7 +375,9 @@ class _ByteLRU(OrderedDict):
         self._bytes = 0
 
 
-_native_cache = _LRU(NATIVE_CACHE_SIZE)
+_native_cache = _ByteLRU(NATIVE_CACHE_BYTES)
+_sld_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
+_sld_bytes_cache = _ByteLRU(SLD_BYTES_CACHE_BYTES)
 _scaled_cache = _ByteLRU(SCALED_CACHE_BYTES)
 _icon_cache = _ByteLRU(ICON_CACHE_BYTES)
 
@@ -366,12 +404,21 @@ _icon_cache = _ByteLRU(ICON_CACHE_BYTES)
 _MISS = object()
 
 
+def cache_counts() -> tuple[int, int]:
+    """(SLD files indexed, native frames decoded), misses included. Read-only,
+    for Perf Trace's cold-sprite deltas; a capped cache's evictions hide
+    decodes from them."""
+    return len(_sld_index_cache), len(_native_cache)
+
+
 def clear_caches() -> None:
     """Drops every LRU. For tests, and for a settings change that repoints the
     install path -- a cached array outlives the file it came from otherwise,
     and every one of these remembers MISSES too, so a first-time install
     configuration would keep serving "no sprite" without this."""
     _native_cache.clear()
+    _sld_index_cache.clear()
+    _sld_bytes_cache.clear()
     _scaled_cache.clear()
     _icon_cache.clear()
     sld_frame_count.cache_clear()
@@ -850,14 +897,40 @@ def sld_frame_count(file_name: str) -> int | None:
     exposes the same count to the *dispatch* so variant_index() can range-check
     against it instead of against angle_count.
 
-    Cheap enough to be a plain lru_cache: load_sld() parses the header and
-    frame table, never a frame's pixels. Cleared by clear_caches() with the
+    Reads the walked index _native_frame() shares (_sld_index), so asking for
+    the count costs no walk of its own. Cleared by clear_caches() with the
     rest, since an install-path change invalidates it."""
+    sld = _sld_index(file_name)
+    return None if sld is None else int(sld.frame_count)
+
+
+def _sld_index(file_name: str):
+    """The file's walked SLDFile, holding no bytes, or None when there is no
+    install or the file won't read. Both answers are cached except "no install",
+    which _native_frame() explains. The bytes the walk read go to
+    _sld_bytes_cache for the decodes that follow."""
     directory = _graphics_dir()
     if directory is None:
         return None
+    hit = _sld_index_cache.get_or_none(file_name)
+    if hit is not None:
+        return None if hit is _MISS else hit
     sld = load_sld(directory / f"{file_name}.sld")
-    return None if sld is None else int(sld.frame_count)
+    if sld is not None:
+        _sld_bytes_cache.put(file_name, sld.release_data())
+    _sld_index_cache.put(file_name, _MISS if sld is None else sld)
+    return sld
+
+
+def _sld_bytes(directory: Path, file_name: str) -> bytes:
+    """The file's bytes for a decode: the ones its walk read while they are
+    still cached, else a fresh read. A fresh read of a file that changed since
+    its walk is refused by decode_frame()'s length check."""
+    data = _sld_bytes_cache.get_or_none(file_name)
+    if data is None:
+        data = (directory / f"{file_name}.sld").read_bytes()
+        _sld_bytes_cache.put(file_name, data)
+    return data
 
 
 def _native_frame(file_name: str, frame_index: int):
@@ -865,7 +938,8 @@ def _native_frame(file_name: str, frame_index: int):
 
     Swallows every failure into None on purpose -- see the module docstring.
     decode_frame() is the half that RAISES (SLDError, on a command stream that
-    overruns its own block grid); load_sld() is the half that never does.
+    overruns its own block grid, or a file whose length changed since its walk);
+    load_sld() is the half that never does.
     """
     key = (file_name, frame_index)
     hit = _native_cache.get_or_none(key)
@@ -879,7 +953,7 @@ def _native_frame(file_name: str, frame_index: int):
         # (file_name, frame_index). Costs nothing to re-derive either --
         # get_install_path() is itself lru_cached.
         return None
-    sld = load_sld(directory / f"{file_name}.sld")
+    sld = _sld_index(file_name)
     if sld is None:
         _native_cache.put(key, _MISS)
         return None
@@ -889,8 +963,13 @@ def _native_frame(file_name: str, frame_index: int):
         _native_cache.put(key, _MISS)
         return None
     try:
-        frame = sld.decode_frame(frame_index)
-    except SLDError as exc:
+        frame = sld.decode_frame(
+            frame_index,
+            _sld_bytes(directory, file_name),
+            kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
+            window_to_main=True,
+        )
+    except (SLDError, OSError) as exc:
         debug_log.log(f"sprite: {file_name} frame {frame_index} failed to decode: {exc}")
         _native_cache.put(key, _MISS)
         return None
@@ -899,6 +978,7 @@ def _native_frame(file_name: str, frame_index: int):
         return None
     # DAMAGE is deliberately not composited: it is a packed mask that BC1
     # happens to carry, not colour. SHADOW and OUTLINE are likewise skipped.
+    # Neither DAMAGE nor SHADOW is even decoded any more: see kinds= above.
     value = _cropped_to_ink(frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y)
     if value is None:
         _native_cache.put(key, _MISS)
@@ -940,26 +1020,37 @@ def _cropped_to_ink(main: np.ndarray, playercolor: np.ndarray | None, hx: int, h
 
 def _tinted(main: np.ndarray, playercolor: np.ndarray | None, team: tuple[int, int, int]):
     """main * team, applied through playercolor's coverage. See the module
-    docstring for why this is a multiply and not a palette lookup."""
+    docstring for why this is a multiply and not a palette lookup.
+
+    Only covered pixels (alpha > 0 and a non-zero strength) run the float
+    math. An uncovered pixel's result is exactly its own rgb (integers up to
+    255 are exact in float32), so skipping it leaves the same bytes. Past the
+    early return the result is always a copy, even with nothing covered."""
     if playercolor is None or team == (255, 255, 255):
         return main
-    rgb = main[..., :3].astype(np.float32)
-    cov = np.where(playercolor[..., 3] > 0, playercolor[..., 0], 0).astype(np.float32) / 255.0
-    cov = cov[..., None]
-    t = np.array(team, dtype=np.float32) / 255.0
     out = main.copy()
-    out[..., :3] = np.clip(rgb * (1 - cov) + rgb * t * cov, 0, 255).astype(np.uint8)
+    covered = (playercolor[..., 3] > 0) & (playercolor[..., 0] > 0)
+    rgb = main[covered, :3].astype(np.float32)
+    cov = (playercolor[covered, 0].astype(np.float32) / 255.0)[:, None]
+    t = np.array(team, dtype=np.float32) / 255.0
+    out[covered, :3] = np.clip(rgb * (1 - cov) + rgb * t * cov, 0, 255).astype(np.uint8)
     return out
 
 
 def _resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Nearest-neighbour box resample. Deliberately not Pillow: this module
-    stays Qt-free and image-library-free like the rest of the render path, and
-    a sprite shrunk to tile scale is being decimated, not enlarged."""
+    """Nearest-neighbour resample of an (H, W, 4) uint8 array: a decimation
+    below level 0, an enlargement above it. Deliberately not Pillow: this
+    module stays Qt-free and image-library-free like the rest of the render
+    path.
+
+    Each pixel moves as one uint32, rows then columns, which is the same
+    gather as a per-pixel fancy index without copying a 4-byte sub-array per
+    pixel. The view raises on any other shape or dtype."""
     src_h, src_w = rgba.shape[:2]
     ys = np.minimum((np.arange(height) * src_h) // height, src_h - 1)
     xs = np.minimum((np.arange(width) * src_w) // width, src_w - 1)
-    return rgba[ys[:, None], xs[None, :]]
+    packed = np.ascontiguousarray(rgba).view(np.uint32).reshape(src_h, src_w)
+    return packed.take(ys, axis=0).take(xs, axis=1).view(np.uint8).reshape(height, width, 4)
 
 
 def sprite_scale(half_w: int) -> float:
@@ -1131,8 +1222,12 @@ def _draw_for_entry(
 
     width = max(1, round(main.shape[1] * scale))
     height = max(1, round(main.shape[0] * scale))
+    # Tint the decimated pair: a gather and a per-pixel tint commute exactly, and
+    # a native-size tint was ~16x the pixels at mip -2.
+    small_main = _resize_rgba(main, width, height)
+    small_pc = None if playercolor is None else _resize_rgba(playercolor, width, height)
     draw = SpriteDraw(
-        rgba=_resize_rgba(_tinted(main, playercolor, team), width, height),
+        rgba=_tinted(small_main, small_pc, team),
         hotspot_x=round(hx * scale),
         hotspot_y=round(hy * scale),
     )
@@ -1277,29 +1372,38 @@ def _source_over(dst: np.ndarray, base_y: int, base_x: int, src: np.ndarray) -> 
     view[..., 3:4] = np.clip(out_a * 255.0, 0, 255).astype(np.uint8)
 
 
+class _NativePiece(NamedTuple):
+    """One UNTINTED piece of _native_pieces_for()'s walk: _native_frame()'s
+    cropped layers plus the piece's unscaled dx/dy."""
+
+    main: np.ndarray
+    playercolor: np.ndarray | None
+    hotspot_x: int
+    hotspot_y: int
+    dx: int
+    dy: int
+
+
 def _native_piece(
-    unit_const: int, entry: dict, rotation: float, team,
+    unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
     seed: int | None = None, piece_index: int = 0,
-) -> SpriteDraw | None:
-    """One piece resolved and tinted at NATIVE scale -- _draw_for_entry()'s
-    body with the scaling and the _scaled_cache put both left out."""
-    native = _native_frame(
+):
+    """One piece's untinted (main, playercolor, hotspot_x, hotspot_y) at
+    NATIVE scale, or None. The tint is _build_icon()'s call: which array size
+    it runs at depends on the piece count and the footprint."""
+    return _native_frame(
         entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg, seed, piece_index)
     )
-    if native is None:
-        return None
-    main, playercolor, hx, hy = native
-    return SpriteDraw(rgba=_tinted(main, playercolor, team), hotspot_x=hx, hotspot_y=hy)
 
 
 def _native_pieces_for(
-    unit_const: int, entry: dict, rotation: float, team,
+    unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
     seed: int | None = None,
-) -> list[SpritePiece]:
-    """sprite_pieces_for()'s walk at native scale: same marked-parent
-    rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
+) -> list[_NativePiece]:
+    """sprite_pieces_for()'s walk at native scale, UNTINTED: same
+    marked-parent rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
 
     `angle_offset_deg` reaches each piece's own _frame_for() rather than being
     resolved once for the parent: a piece can carry a different angle_count,
@@ -1315,18 +1419,18 @@ def _native_pieces_for(
     cached uncropped" finding fixed (7.27x -> 1.14x composite, ~8x memory)."""
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        draw = _native_piece(unit_const, entry, rotation, team, angle_offset_deg)
-        return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
+        native = _native_piece(unit_const, entry, rotation, angle_offset_deg)
+        return [] if native is None else [_NativePiece(*native, 0, 0)]
 
-    result: list[SpritePiece] = []
+    result: list[_NativePiece] = []
     for index, piece in enumerate(pieces_data):
-        draw = _native_piece(piece["unit_id"], piece, rotation, team, angle_offset_deg, seed, index)
-        if draw is None:
+        native = _native_piece(piece["unit_id"], piece, rotation, angle_offset_deg, seed, index)
+        if native is None:
             # Marked parent, not list position -- see sprite_pieces_for().
             if piece.get("parent"):
                 return []
             continue
-        result.append(SpritePiece(draw=draw, dx=int(piece["dx"]), dy=int(piece["dy"])))
+        result.append(_NativePiece(*native, int(piece["dx"]), int(piece["dy"])))
     return result
 
 
@@ -1335,8 +1439,8 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     list order (which sprite_pieces_for() already establishes as depth order).
 
     A single piece IS the assembly -- returned as-is rather than copied
-    through a composite, which is the overwhelmingly common case (every
-    non-composite unit_const) and the one worth not paying for."""
+    through a composite. _build_icon() no longer sends it here (it tints a
+    single piece at whichever size is smaller), but the case stays exact."""
     if not pieces:
         return None
     if len(pieces) == 1:
@@ -1455,15 +1559,26 @@ def _build_icon(
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG, seed: int | None = None,
 ) -> SpriteDraw | None:
     """icon_for()'s uncached body."""
-    assembly = _assembled_native(
-        _native_pieces_for(unit_const, entry, rotation, team, angle_offset_deg, seed)
-    )
-    if assembly is None:
+    pieces = _native_pieces_for(unit_const, entry, rotation, angle_offset_deg, seed)
+    if not pieces:
         return None
-    cropped = _cropped_to_ink(assembly, None, 0, 0)
-    if cropped is None:
-        return None
-    ink = cropped[0]
+    if len(pieces) == 1:
+        cropped = _cropped_to_ink(pieces[0].main, pieces[0].playercolor, 0, 0)
+        if cropped is None:
+            return None
+        ink, ink_pc = cropped[0], cropped[1]
+    else:
+        assembly = _assembled_native([
+            SpritePiece(
+                draw=SpriteDraw(rgba=_tinted(p.main, p.playercolor, team), hotspot_x=p.hotspot_x, hotspot_y=p.hotspot_y),
+                dx=p.dx, dy=p.dy,
+            )
+            for p in pieces
+        ])
+        cropped = _cropped_to_ink(assembly, None, 0, 0)
+        if cropped is None:
+            return None
+        ink, ink_pc = cropped[0], None
     ink_h, ink_w = ink.shape[:2]
     scale = min(fw / ink_w, fh / ink_h)
     # The min(fw/fh, ...) clamp is a guard, not a live correction, and that was
@@ -1476,7 +1591,16 @@ def _build_icon(
     # icon inside its footprint at all.
     iw = min(fw, max(1, round(ink_w * scale)))
     ih = min(fh, max(1, round(ink_h * scale)))
-    return SpriteDraw(rgba=_resize_rgba(ink, iw, ih), hotspot_x=0, hotspot_y=0)
+    if len(pieces) > 1:
+        return SpriteDraw(rgba=_resize_rgba(ink, iw, ih), hotspot_x=0, hotspot_y=0)
+    # Tint commutes with the crop/resize gathers, so tint whichever array is
+    # smaller; composites stay native above because the blend doesn't commute.
+    if iw * ih < ink_w * ink_h:
+        small_pc = None if ink_pc is None else _resize_rgba(ink_pc, iw, ih)
+        rgba = _tinted(_resize_rgba(ink, iw, ih), small_pc, team)
+    else:
+        rgba = _resize_rgba(_tinted(ink, ink_pc, team), iw, ih)
+    return SpriteDraw(rgba=rgba, hotspot_x=0, hotspot_y=0)
 
 
 def anchor_tile_coords(

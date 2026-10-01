@@ -7,13 +7,17 @@ tables, and a per-level UnitPack of marks, sprites and farms. The numpy path
 in render.py stays the byte-identity oracle (tests/test_native_composite.py).
 
 What is read live on every call, never cached here, so nothing can go stale
-under an edit: terrain ids (~30ns a tile), elevations and corner_rise, the
-textures (from asset_source's own lru, held only for the call), and every
-factor, LUT, shade and grid-stamp table (from render's lru caches, which tests
-rebind and cache_clear()). Cached across calls: pure index geometry keyed by
-(tile_px, elev_step) or by a normalized Sloped shape, and the UnitPack, which
-its owning cache refreshes through the same splice funnels that update its
-SpriteLayer (see UnitPack).
+under an edit: elevations and corner_rise, the textures (from asset_source's
+own lru, held only for the call), and every factor, LUT, shade and grid-stamp
+table (from render's lru caches, which tests rebind and cache_clear()).
+Cached across calls: pure index geometry keyed by (tile_px, elev_step) or by a
+normalized Sloped shape, and the UnitPack, which its owning cache refreshes
+through the same splice funnels that update its SpriteLayer (see UnitPack).
+
+Terrain ids are read live too, unless the caller passes `terrain_ids`: a flat
+per-tile mirror its owning chunk cache keeps and refreshes in patch() and
+invalidate_region(). Scattered live reads cost ~1 ms a heavy chunk in cache
+misses; a gather from the mirror costs microseconds.
 """
 
 from __future__ import annotations
@@ -407,6 +411,8 @@ class UnitPack:
         self.n = need
         self.farm_tid[t_arr] = -1
         self.farm_mask[t_arr] = 0
+        # The kernel never reads it behind a cleared mask; zeroed so a refreshed pack equals a fresh one.
+        self.farm_rgb.reshape(-1, 3)[t_arr] = 0
         for t, (terrain_id, color, mask) in zip(farm_ts, farm_vals, strict=True):
             self.farm_tid[t] = terrain_id
             self.farm_mask[t] = mask
@@ -460,10 +466,27 @@ def _terrain_ids(scenario, idx: np.ndarray) -> np.ndarray:
     return np.fromiter(map(_TERRAIN_ID, tiles), dtype=np.int64, count=idx.size)
 
 
+# Upper bound for _dense_unique over terrain ids (farm override ids included).
+TERRAIN_ID_BOUND = 4096
+
+
+def _dense_unique(values: np.ndarray, bound: int) -> tuple[np.ndarray, np.ndarray]:
+    """np.unique(values, return_inverse=True) with a flat inverse, via a
+    presence mask and cumsum remap for values in [0, bound)."""
+    flat = values.reshape(-1)
+    if flat.size == 0 or int(flat.min()) < 0 or int(flat.max()) >= bound:
+        uniq, inverse = np.unique(flat, return_inverse=True)
+        return uniq, inverse.reshape(-1)
+    present = np.zeros(bound, dtype=bool)
+    present[flat] = True
+    remap = np.cumsum(present, dtype=np.intp) - 1
+    return np.flatnonzero(present).astype(values.dtype, copy=False), remap[flat]
+
+
 def _textures(tids: np.ndarray, tile_px: int, textures: bool) -> tuple[np.ndarray, tuple] | None:
     """(per-candidate slot, (texture list, flat colours, sizes)), or None for
     a texture the kernel can't crop the way the numpy path does."""
-    uniq, slots = np.unique(tids, return_inverse=True)
+    uniq, slots = _dense_unique(tids, TERRAIN_ID_BOUND)
     arrays: list = []
     flat = np.zeros((max(uniq.size, 1), 3), dtype=np.uint8)
     sizes = np.zeros(max(uniq.size, 1), dtype=np.int64)
@@ -518,7 +541,8 @@ def _grid_stamps(tile_px: int, grid, keys: np.ndarray, split=None) -> tuple[np.n
     ints: an _edge_states key for Stepped, or a pair id that `split` maps to
     (edge key, normalized Sloped corners). Stamps come from
     render._grid_stamp_iso's lru on every call."""
-    uniq, inv = np.unique(keys, return_inverse=True)
+    # A Stepped key is 4 base-3 digits; Sloped pair ids have no tight bound.
+    uniq, inv = _dense_unique(keys, 81) if split is None else np.unique(keys, return_inverse=True)
     parts, sid_of = [], np.full(uniq.size, -1, dtype=np.int32)
     for i, key in enumerate(uniq.tolist()):
         edge_key, corners = (key, None) if split is None else split(key)
@@ -549,8 +573,8 @@ def _units_of(pack) -> UnitPack | None:
     return None if pack is None or pack is NO_UNITS else pack
 
 
-def _tex_ids(scenario, idx, pack: UnitPack | None) -> np.ndarray:
-    tids = _terrain_ids(scenario, idx)
+def _tex_ids(scenario, idx, pack: UnitPack | None, terrain_ids: np.ndarray | None = None) -> np.ndarray:
+    tids = _terrain_ids(scenario, idx) if terrain_ids is None else terrain_ids[idx]
     if pack is not None:
         pack.ensure(idx)
     if pack is not None and pack.has_farms:
@@ -560,23 +584,26 @@ def _tex_ids(scenario, idx, pack: UnitPack | None) -> np.ndarray:
 
 
 def composite_iso(native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
-                  pack: UnitPack | None, textures: bool, grid) -> bool:
+                  pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None) -> bool:
     """render.composite_rect_iso's loop, natively. False (nothing painted)
     means the caller must take the per-tile path."""
-    args = prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack, textures, grid)
+    args = prepare_iso(
+        scenario, x0, y0, candidates, elevations, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
+    )
     return args is not None and native.composite_iso(scratch, *args)
 
 
 def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: UnitPack | None,
-                textures: bool, grid, share: bool = False) -> tuple | None:
+                textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None) -> tuple | None:
     """native.composite_iso's arguments after the scratch, or None for the
     per-tile path. share=True is for a call on another thread: elevations is
-    copied and the pack is marked shared (UnitPack.kernel_units)."""
+    copied and the pack is marked shared (UnitPack.kernel_units). terrain_ids
+    is the owning cache's per-tile mirror, None to read the tiles live."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     pack = _units_of(pack)
     cx, cy, idx = _candidate_arrays(candidates, w)
-    tex = _textures(_tex_ids(scenario, idx, pack), tile_px, textures)
+    tex = _textures(_tex_ids(scenario, idx, pack, terrain_ids), tile_px, textures)
     if tex is None:
         return None
     slots, tex_tables = tex
@@ -598,9 +625,11 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
 
 
 def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
-                     pack: UnitPack | None, textures: bool, grid) -> bool:
+                     pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None) -> bool:
     """render.composite_rect_sloped's loop, natively; same False contract."""
-    args = prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack, textures, grid)
+    args = prepare_sloped(
+        scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
+    )
     if args is None:
         return False
     native.composite_sloped(scratch, *args)
@@ -608,14 +637,14 @@ def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise,
 
 
 def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack: UnitPack | None,
-                   textures: bool, grid, share: bool = False) -> tuple | None:
+                   textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None) -> tuple | None:
     """prepare_iso() for native.composite_sloped. corner_rise needs no copy:
     SlopedChunkCache replaces it on every refresh, never writes it in place."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     pack = _units_of(pack)
     cx, cy, idx = _candidate_arrays(candidates, w)
-    tex = _textures(_tex_ids(scenario, idx, pack), tile_px, textures)
+    tex = _textures(_tex_ids(scenario, idx, pack, terrain_ids), tile_px, textures)
     if tex is None:
         return None
     slots, tex_tables = tex

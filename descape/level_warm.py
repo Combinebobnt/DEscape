@@ -28,42 +28,46 @@ from __future__ import annotations
 
 import time
 
-from descape import debug_log
+from descape import debug_log, gc_hold, perf_trace
 
 # Wall-clock budget per tick. PROVISIONAL -- to be tuned against the in-app
 # pass, not derived. The measured per-unit slice floor is 10.3ms (one cold
 # .sld decode), which is the lower bound this cannot go under.
 #
-# The honest worst tick is NOT 12ms, and not the 22ms the budget-plus-one-
-# decode arithmetic suggests either: a level's final step runs
-# _building_bboxes_iso whole (unsliced, correctly -- it is ~4ms on a small
-# map), and render_cache's own measurements put it at 15-20ms on a real one.
-# So a tick that spends its whole budget and then finishes a level lands
-# nearer 30ms. Still bounded, which is the entire point next to the threaded
-# design's uncontrolled 221ms, but the number to tune against is that one.
+# The honest worst tick is the budget plus one step. Since the 2026-09-29
+# warm-tick plan a level's assembly is sliced too (render.ASSEMBLY_SLICE),
+# its install only commits, and a job's unsliced first step (walk setup,
+# UnitPack(), a flush) only starts a tick, so the step past the budget is a
+# unit's resolve (one cold decode, ~10ms) or an assembly slice.
 BUDGET_MS = 12
+
+# The tick's clock, a module attribute so tests can drive it deterministically.
+_now = time.perf_counter
 
 
 def neighbour_mips(cache, scale: float) -> list[int]:
-    """The levels worth warming for a view sitting at `scale`: the opening
-    level's NEIGHBOURS, clamped to the enumerated ladder -- never the opening
-    level itself.
+    """neighbour_mips_of() the level a view sitting at `scale` paints."""
+    return neighbour_mips_of(cache, cache.mip_for_scale(scale))
+
+
+def neighbour_mips_of(cache, mip: int) -> list[int]:
+    """The levels worth warming around `mip`: the anchor level's NEIGHBOURS,
+    clamped to the enumerated ladder -- never the anchor level itself.
 
     That exclusion is the part that looks like an omission. Warming the
-    opening level would duplicate work that always loses the race: a level is
+    anchor level would duplicate work that always loses the race: a level is
     ~700ms of compute, i.e. ~60 ticks, and the canvas's first Qt paint is
     dispatched by the same event loop long before 60 idle ticks elapse, so the
     paint builds that level synchronously regardless. What this feature
     removes is the FIRST-ZOOM stutter, which is the neighbours. (Putting the
-    opening level back in the set would still be safe -- the install
+    anchor level back in the set would still be safe -- the install
     predicates in render_cache's level_warm_job() drop a result the paint
     already built -- just wasteful.)
 
     Empty for a single-level ladder, which is Sloped and any small map whose
     tile_px has no exact power-of-two neighbour."""
     levels = cache.mip_levels()
-    opening = cache.mip_for_scale(scale)
-    return [mip for mip in (opening - 1, opening + 1) if levels[0] <= mip <= levels[-1]]
+    return [m for m in (mip - 1, mip + 1) if levels[0] <= m <= levels[-1]]
 
 
 class _IdleTimerDriver:
@@ -80,10 +84,22 @@ class _IdleTimerDriver:
     implement tick() -> bool (True while work remains, False once drained),
     calling self._schedule() from its own start() and self._stop_timer()
     from its own cancel() and from tick() itself once drained -- exactly
-    what LevelWarmer below does."""
+    what LevelWarmer below does.
+
+    **Both warmers pause while any mouse button is held** (_held_backoff;
+    MarginWarmer's item 23, shared since the 2026-09-29 warm-tick plan). A
+    mouse pan or stroke delivers discrete move events, so the 0ms timer would
+    still fire in the gaps between them and land a tick mid-drag as a hitch;
+    for LevelWarmer that tick could also flush a level mid-stroke, which the
+    per-step re-arm would repeat every gap. Wheel and keyboard pans hold no
+    button and are unaffected."""
+
+    HELD_INTERVAL_MS = 50
 
     def __init__(self) -> None:
         self._timer = None
+        # The deferred gen-2 collect waits until every registered driver is idle.
+        gc_hold.register(self)
 
     def tick(self) -> bool:
         raise NotImplementedError
@@ -103,8 +119,7 @@ class _IdleTimerDriver:
         after a file opens (or, for MarginWarmer, between poll fires), not
         to compete with input. A mouse-held pan is different: move events
         are discrete, so the 0ms timer still fires in the gaps between them
-        unless the subclass itself backs off (MarginWarmer.tick() does, via
-        _set_interval()).
+        unless the tick backs off (both subclasses do, via _held_backoff()).
 
         Created here rather than in __init__ so a driver can be constructed
         and driven (run_to_completion) with no QApplication at all. With no
@@ -115,6 +130,8 @@ class _IdleTimerDriver:
 
         if QApplication.instance() is None:
             return
+        # Full collections wait until warming stops (gc_hold); headless never holds.
+        gc_hold.engage()
         if self._timer is None:
             self._timer = QTimer()
             self._timer.setInterval(0)
@@ -127,11 +144,35 @@ class _IdleTimerDriver:
 
     def _set_interval(self, ms: int) -> None:
         """Retargets the already-started timer's fire interval without
-        stopping it -- MarginWarmer's mouse-held backoff uses this rather
+        stopping it -- the mouse-held backoff (_held_backoff) uses this rather
         than a fresh _schedule() call, which would also (re)start a timer
         that may not be running yet at __init__ time."""
         if self._timer is not None:
             self._timer.setInterval(ms)
+
+    def _held_backoff(self) -> bool:
+        """True while a mouse button is held, with the timer backed off to
+        HELD_INTERVAL_MS so the early-returning tick doesn't spin a core; else
+        restores 0ms and returns False. Headless, mouseButtons() reads
+        NoButton, so run_to_completion() is unaffected."""
+        from PyQt5.QtWidgets import QApplication
+
+        if QApplication.mouseButtons():
+            self._set_interval(self.HELD_INTERVAL_MS)
+            return True
+        self._set_interval(0)
+        return False
+
+    @staticmethod
+    def _overdue_collect() -> bool:
+        """True after running a gc hold's overdue collect (gc_hold.HOLD_MAX_S),
+        which is then the tick's only work, as with a job's unsliced first step.
+        The warm is still running, so the hold resumes with a fresh start."""
+        if not gc_hold.overdue():
+            return False
+        gc_hold.release("overdue")
+        gc_hold.engage()
+        return True
 
 
 class LevelWarmer(_IdleTimerDriver):
@@ -150,6 +191,12 @@ class LevelWarmer(_IdleTimerDriver):
         self._job_mip: int | None = None
         self._job_notify = False
         self._on_job_done = None
+        # Install ms this tick, for Perf Trace; None while it is off.
+        self._tick_installs: list[float] | None = None
+        # This tick's ms per step label (`walk -1 setup`, `install`...); None while off.
+        self._tick_split: dict[str, float] | None = None
+        # The current job has not stepped yet: its first step is unsliced setup.
+        self._job_fresh = False
 
     @property
     def is_active(self) -> bool:
@@ -221,6 +268,7 @@ class LevelWarmer(_IdleTimerDriver):
         self._cache = None
         self._on_job_done = None
         self._stop_timer()
+        gc_hold.idle_soon()
 
     def tick(self) -> bool:
         """Advances the current job for up to BUDGET_MS. Returns True while
@@ -228,15 +276,48 @@ class LevelWarmer(_IdleTimerDriver):
         timer is stopped).
 
         The budget is checked AFTER at least one step, so a tick always makes
-        progress -- a zero-length budget would otherwise spin forever."""
-        deadline = time.perf_counter() + BUDGET_MS / 1000.0
+        progress -- a zero-length budget would otherwise spin forever. A job
+        starts only at the top of a tick and its completion ends the tick
+        (2026-09-29 warm-tick plan), so its unsliced first step never lands
+        after a spent budget.
+
+        While a mouse button is held, advances nothing and returns True (see
+        _IdleTimerDriver._held_backoff), before Perf Trace counts a tick. An
+        overdue gc hold's collect is a whole tick too (_overdue_collect)."""
+        if self._held_backoff():
+            return True
+        if self._overdue_collect():
+            return True
+        if not perf_trace.is_enabled():
+            return self._tick()
+        start = time.perf_counter()
+        gc0 = perf_trace.gc_ms()
+        self._tick_installs = []
+        self._tick_split = {}
+        try:
+            with perf_trace.where("level-warm"):
+                return self._tick()
+        finally:
+            gc1 = perf_trace.gc_ms()
+            gc_ms = None if gc0 is None or gc1 is None else gc1 - gc0
+            perf_trace.level_warm_tick((time.perf_counter() - start) * 1000, self._tick_installs, self._tick_split, gc_ms)
+            self._tick_installs = None
+            self._tick_split = None
+
+    def _tick(self) -> bool:
+        deadline = _now() + BUDGET_MS / 1000.0
+        # A job's first step only runs at the top of a tick: its setup (the
+        # walk's pre-yield work, UnitPack(), a flush) is unsliced.
+        if self._job is None and not self._start_next_job():
+            return self._more()
         while True:
-            if self._job is None and not self._start_next_job():
-                self._stop_timer()
-                return False
             job = self._job
             try:
-                next(job.gen)
+                if self._tick_split is None:
+                    self._job_fresh = False
+                    next(job.gen)
+                else:
+                    self._timed_next(job)
             except StopIteration as done:
                 # MUST be caught before the blanket handler below --
                 # StopIteration is an Exception subclass, so the other order
@@ -253,22 +334,58 @@ class LevelWarmer(_IdleTimerDriver):
                 self._job = None
                 debug_log.log(f"level warm: dropped a level mid-walk ({exc!r})")
                 self._notify_job_done()
-            if time.perf_counter() >= deadline:
+            if self._job is None:
+                # A finished job ends the tick (on_job_done may have run a
+                # load-warm queue build); the next job starts on a fresh one.
+                return self._more()
+            if _now() >= deadline:
                 return True
+
+    def _more(self) -> bool:
+        """True while jobs remain queued; else stops the timer (drained)."""
+        if self._queue:
+            return True
+        self._stop_timer()
+        gc_hold.idle_soon()
+        return False
+
+    def _timed_next(self, job) -> None:
+        """next(job.gen) with its ms added to the tick's split, labelled by job
+        kind and mip; a job's first step is labelled `setup` apart."""
+        label = f"{job.kind} {self._job_mip}"
+        if self._job_fresh:
+            self._job_fresh = False
+            label += " setup"
+        t0 = _now()
+        try:
+            next(job.gen)
+        finally:
+            self._split_add(label, (_now() - t0) * 1000)
+
+    def _split_add(self, label: str, ms: float) -> None:
+        if self._tick_split is not None:
+            self._tick_split[label] = self._tick_split.get(label, 0.0) + ms
 
     def _notify_job_done(self) -> None:
         if self._job_notify and self._on_job_done is not None:
+            t0 = _now()
             self._on_job_done(self._job_mip)
+            self._split_add("done", (_now() - t0) * 1000)
 
     def _start_next_job(self) -> bool:
         if not self._queue:
             return False
         self._job_mip, self._job, self._job_notify = self._queue.pop(0)
+        self._job_fresh = True
         return True
 
     def _install(self, job, payload) -> None:
         try:
-            job.install(payload)
+            with perf_trace.level("install", self._job_mip) as ev:
+                job.install(payload)
+            if ev is not None and self._tick_installs is not None:
+                self._tick_installs.append(ev.ms)
+                self._split_add("install", ev.ms)
         except Exception as exc:  # noqa: BLE001
             # Same reasoning as tick()'s handler, and NOT covered by it: this
             # runs inside that method's `except StopIteration` block, so an

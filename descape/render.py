@@ -1277,10 +1277,35 @@ def _building_bboxes_iso(
 
     extra_top_px is passed straight through to _unit_screen_bbox_iso() --
     see that function for why only Sloped ever passes a nonzero value, and
-    why it is a top-edge-only widening."""
+    why it is a top-edge-only widening.
+
+    A drain of _building_bboxes_iso_sliced(), the only copy of the loop."""
+    return _drain(_building_bboxes_iso_sliced(scenario, w, h, proj, elevations, extra_top_px, unit_filter))
+
+
+# Units or keys per step of a sliced level assembly (IsoChunkCache._assemble_level).
+ASSEMBLY_SLICE = 512
+
+
+def _building_bboxes_iso_sliced(
+    scenario: LoadedScenario,
+    w: int,
+    h: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    extra_top_px: int = 0,
+    unit_filter: UnitFilter = UnitFilter(),
+) -> Generator[None, None, dict[tuple[int, int], tuple[int, int, int, int]]]:
+    """_building_bboxes_iso() as a resumable generator: at most ASSEMBLY_SLICE
+    units per step, filtered-out ones included. The dict is the return value."""
+    step = ASSEMBLY_SLICE
+    seen = 0
     out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     for player_id, units in enumerate(scenario.unit_manager.units):
         for unit in units:
+            if seen and seen % step == 0:
+                yield
+            seen += 1
             if not unit_filter.matches(player_id, unit):
                 continue
             bbox = _building_bbox_for(unit, w, h, proj, elevations, extra_top_px)
@@ -1372,6 +1397,7 @@ def _dirty_screen_bbox(
     elevation_changed: set | None = None,
     flatten_elevations: bool = False,
     extra_anchor_tiles: set[tuple[int, int]] | None = None,
+    units_changed: bool = False,
 ) -> tuple[int, int, int, int] | None:
     """Shared body of dirty_screen_bbox_iso()/dirty_screen_bbox_sloped() --
     see the former's docstring for the full contract, which is this
@@ -1390,12 +1416,12 @@ def _dirty_screen_bbox(
     already inside tile_screen_bounds_swept() via proj.corner_headroom_px.
 
     sprite_band_radius (Track P3-g6): how far the with_sprites band below
-    dilates dirty_xy before seeding itself. 0 (the default) uses bare
-    dirty_xy, exact for Stepped -- see that block's own comment for why only
-    an edit to a sprite's OWN centre tile can move it there. Sloped's anchor
-    instead reads its own tile's four CORNERS, each shared with up to four
-    tiles, so an edit to any tile in a changed tile's 3x3 neighbourhood can
-    move a Sloped sprite; its caller passes 1 instead (F2).
+    dilates its trigger set (see units_changed) before seeding itself. 0 (the
+    default) uses it bare, exact for Stepped -- see that block's own comment
+    for why only an edit to a sprite's OWN centre tile can move it there.
+    Sloped's anchor instead reads its own tile's four CORNERS, each shared
+    with up to four tiles, so an edit to any tile in a changed tile's 3x3
+    neighbourhood can move a Sloped sprite; its caller passes 1 instead (F2).
 
     unit_band_radius (draw-perf seed-dilation plan Step 3): the mirror-image
     parameter for the exact-footprint seed union below -- how far a changed
@@ -1444,7 +1470,20 @@ def _dirty_screen_bbox(
     dirty_indices, since that is what gets them into `dilated` in the
     first place; this parameter only keeps them from being dropped by the
     anchor-tiles intersection once they're there. None (the default) is
-    every non-unit-edit caller's exact prior behavior."""
+    every non-unit-edit caller's exact prior behavior. Only matters when
+    units_changed is set: without it the band never seeds from dirty_xy, so
+    an old footprint tile whose elevation didn't move is never in `dilated`.
+
+    units_changed (sprite-band terrain-only gate): whether this edit may have
+    added, moved, removed or re-resolved a unit. When set, the with_sprites
+    band seeds from every dirty tile, since a unit edit moves a sprite with
+    no elevation change at all. When clear (the default), it seeds from
+    elevation_changed_local alone: the only other thing that moves a sprite
+    is its anchor's height, and a terrain-only repaint under one is already
+    covered by the bystander index. Explicit rather than inferred from
+    extra_anchor_tiles, which is an empty set for a pure add, and required
+    under flatten_elevations, where elevation_changed_local is always empty.
+    ViewerWindow._unit_edit_bbox() is the one caller that passes True."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -1500,11 +1539,12 @@ def _dirty_screen_bbox(
     # every dirty tile regardless of whether anything elevation-related
     # changed at all. Skipped entirely when elevation_changed_local is empty
     # (the terrain-paint-only case, which is most edits) -- no unit scan
-    # runs, matching the with_sprites own-tile-scan block below.
+    # runs. The with_sprites band below gates the same way unless the
+    # caller says units_changed.
     #
     # Dilates the (small) TRIGGER set, not a per-anchor ring scan over every
-    # unit. The with_sprites block below now dilates dirty_xy the same way
-    # for its own band (Batch A6).
+    # unit. The with_sprites block below dilates its own trigger set the same
+    # way for its band (Batch A6).
     # Footprint tile -> the own tiles of units drawn on it. A footprint is
     # drawn at its unit's own-tile height, which the footprint tile's own
     # neighbourhood can be too far away to see.
@@ -1559,14 +1599,14 @@ def _dirty_screen_bbox(
     if with_sprites:
         # Three things a reader would otherwise have to re-derive:
         #
-        # DIRTY, not seed. sprite_draws_by_anchor computes a sprite's anchor x
-        # with no elevation term at all, and its anchor y from elevations[
-        # unit.y, unit.x] -- the unit's OWN centre tile. So only an edit to
-        # that tile can MOVE a sprite; a terrain tile repainted underneath one,
-        # or occlusion revealed by a neighbour, is already covered by
-        # composite_rect_iso's bystander set via merge_sprite_bboxes. Widening
-        # per dirty tile rather than per dilated seed tile is exact here, not
-        # an optimisation.
+        # MOVED tiles, not dirty (and never seed). sprite_draws_by_anchor
+        # computes a sprite's anchor x with no elevation term at all, and its
+        # anchor y from elevations[unit.y, unit.x] -- the unit's OWN centre
+        # tile. So only an elevation change on that tile, or a unit edit, can
+        # MOVE a sprite; a terrain tile repainted underneath one, or occlusion
+        # revealed by a neighbour, is already covered by composite_rect_iso's
+        # bystander set via merge_sprite_bboxes. Widening per moved tile
+        # (every dirty tile when units_changed) is exact, not an optimisation.
         #
         # The elevation sweep, over the same observed range as the seed union
         # above: the sprite's stale position sits at the anchor's pre-edit
@@ -1616,27 +1656,27 @@ def _dirty_screen_bbox(
         # band_tiles is the set of ANCHOR tiles to pad around, not dirty
         # tiles: the padding below must be centered on where the sprite
         # actually sits (an anchor's own tile_screen_origin), never on
-        # whichever dirty tile happened to trigger it -- those can be
+        # whichever trigger tile happened to catch it -- those can be
         # different tiles under Sloped's ring (radius=1). An anchor is
-        # triggered when some dirty tile falls within its own radius-ring
+        # triggered when some trigger tile falls within its own radius-ring
         # (Stepped, radius=0: only the anchor tile itself; Sloped, radius=1:
         # its 3x3 neighbourhood, since a Sloped anchor reads its tile's four
         # shared corners).
-        # Batch A6: dilate the small dirty set once and intersect rather than
-        # ringing every anchor. radius 0 gives dilated == dirty_xy (Stepped).
+        # Batch A6: dilate the small trigger set once and intersect rather than
+        # ringing every anchor. radius 0 leaves it undilated (Stepped).
         r = sprite_band_radius
+        trigger = dirty_xy if units_changed else elevation_changed_local
         dilated = {
             (tx + dx, ty + dy)
-            for tx, ty in dirty_xy
+            for tx, ty in trigger
             for dx in range(-r, r + 1)
             for dy in range(-r, r + 1)
         }
         band_tiles = dilated & live_anchor_tiles
         # Unit MOVES: a terrain/elevation-only caller passes no
-        # extra_anchor_tiles, so live_anchor_tiles is exactly today's live
-        # anchor set and this reduces to the pre-D3 behavior. D5's unit-edit
-        # wiring is the caller that passes the pre-edit footprint tiles --
-        # see extra_anchor_tiles' own docstring above.
+        # extra_anchor_tiles and no units_changed, so this pads only anchors
+        # whose own height moved. D5's unit-edit wiring passes both, see
+        # extra_anchor_tiles' and units_changed's own docstrings above.
         band = [(x, y) for x, y in band_tiles if 0 <= x < w and 0 <= y < h]
         if band:
             bxs = np.array([x for x, _ in band], dtype=np.int64)
@@ -1673,6 +1713,7 @@ def dirty_screen_bbox_iso(
     elevation_changed: set | None = None,
     flatten_elevations: bool = False,
     extra_anchor_tiles: set[tuple[int, int]] | None = None,
+    units_changed: bool = False,
 ) -> tuple[int, int, int, int] | None:
     """The (x0, y0, x1, y1) canvas-pixel bbox a just-applied edit could have
     invalidated -- refresh_region_iso()'s original "half 1" (dirty tiles ->
@@ -1715,8 +1756,10 @@ def dirty_screen_bbox_iso(
     flatten_elevations (Flat+Isometric plan, F2): see _dirty_screen_bbox()'s
     own docstring. Only ViewerWindow's Flat+Iso render path passes True.
 
-    extra_anchor_tiles (Batch D's D3): see _dirty_screen_bbox()'s own
-    docstring -- passed straight through."""
+    extra_anchor_tiles (Batch D's D3) and units_changed: see
+    _dirty_screen_bbox()'s own docstring -- passed straight through. Only a
+    unit edit passes units_changed=True; a terrain or elevation edit leaves it
+    False, which pads sprite reach only around anchors whose height moved."""
     # with_sprites is a PARAMETER as of P3-g's toggle, not a module global read
     # at call time: sprites are per-cache now, so this function cannot look the
     # answer up itself. The caller's obligation is therefore load-bearing --
@@ -1734,6 +1777,7 @@ def dirty_screen_bbox_iso(
         scenario, dirty_indices, elevations, proj, _canvas_pixel_dims(proj), with_units,
         with_sprites=with_units and with_sprites, elevation_changed=elevation_changed,
         flatten_elevations=flatten_elevations, extra_anchor_tiles=extra_anchor_tiles,
+        units_changed=units_changed,
     )
 
 
@@ -1746,6 +1790,7 @@ def dirty_screen_bbox_sloped(
     with_sprites: bool = False,
     elevation_changed: set | None = None,
     extra_anchor_tiles: set[tuple[int, int]] | None = None,
+    units_changed: bool = False,
 ) -> tuple[int, int, int, int] | None:
     """Sloped's counterpart to dirty_screen_bbox_iso() -- Track C4's Step 3.
     Identical contract, including the in-place elevations mutation (Risk #6:
@@ -1788,9 +1833,9 @@ def dirty_screen_bbox_sloped(
 
     - the sprite band's SEED (F2): a Sloped anchor reads its own tile's four
       corners rather than its centre tile alone (see
-      _dirty_screen_bbox's own with_sprites comment for why DIRTY, not
-      SEED, is exact for Stepped), so every tile in the one-tile ring around
-      each dirty tile can move a sprite, not just the dirty tile itself.
+      _dirty_screen_bbox's own with_sprites comment for why MOVED tiles, not
+      SEED, are exact for Stepped), so every tile in the one-tile ring around
+      each moved tile can move a sprite, not just that tile itself.
     - the canvas clamp widens to _canvas_pixel_dims(proj) (the Step 0 fix):
       SlopedChunkCache.canvas_dims() reports that same wider bound once
       sprites are on, and this function's own final clamp must agree, or a
@@ -1800,13 +1845,15 @@ def dirty_screen_bbox_sloped(
     elevation_changed: same optional out-param as dirty_screen_bbox_iso()'s
     own -- only SlopedChunkCache.patch()'s caller needs it.
 
-    extra_anchor_tiles (Batch D's D3): see _dirty_screen_bbox()'s own
-    docstring -- passed straight through."""
+    extra_anchor_tiles (Batch D's D3) and units_changed: see
+    _dirty_screen_bbox()'s own docstring -- passed straight through, same
+    contract as dirty_screen_bbox_iso()'s."""
     canvas_dims = _canvas_pixel_dims(proj) if with_sprites else (proj.canvas_w, proj.canvas_h)
     return _dirty_screen_bbox(
         scenario, dirty_indices, elevations, proj, canvas_dims, with_units,
         with_sprites=with_sprites, sprite_band_radius=1 if with_sprites else 0,
         unit_band_radius=1, elevation_changed=elevation_changed, extra_anchor_tiles=extra_anchor_tiles,
+        units_changed=units_changed,
     )
 
 
@@ -1854,16 +1901,77 @@ def build_bystander_grid(
     with sx1 >= sx0 and half_w >= 2, its y extent likewise; a sprite piece's
     is _draw_for_entry's max(1, ...) width/height; merge_sprite_bboxes only
     ever grows a bbox), so this pins that argument rather than guarding a
-    case that happens."""
+    case that happens.
+
+    A drain of build_bystander_grid_sliced(), the only copy of the loop."""
+    return _drain(build_bystander_grid_sliced(building_bboxes, cell_px))
+
+
+def build_bystander_grid_sliced(
+    building_bboxes: dict[tuple[int, int], tuple[int, int, int, int]], cell_px: int
+) -> Generator[None, None, BystanderGrid]:
+    """build_bystander_grid() as a resumable generator, at most ASSEMBLY_SLICE
+    keys per step. The grid is the return value."""
+    step = ASSEMBLY_SLICE
     cells: dict[tuple[int, int], list] = {}
-    for key, bbox in building_bboxes.items():
-        ux0, uy0, ux1, uy1 = bbox
-        assert ux1 > ux0 and uy1 > uy0, f"degenerate building bbox at {key}: {bbox}"
+    for seen, (key, bbox) in enumerate(building_bboxes.items()):
+        if seen and seen % step == 0:
+            yield
         entry = (key, bbox)
-        for gy in range(uy0 // cell_px, (uy1 - 1) // cell_px + 1):
-            for gx in range(ux0 // cell_px, (ux1 - 1) // cell_px + 1):
-                cells.setdefault((gx, gy), []).append(entry)
+        for cell in _bbox_cells(key, bbox, cell_px):
+            cells.setdefault(cell, []).append(entry)
     return BystanderGrid(cell_px=cell_px, cells={k: tuple(v) for k, v in cells.items()})
+
+
+def _bbox_cells(key, bbox: tuple[int, int, int, int], cell_px: int):
+    """Every cell a half-open bbox covers, after build_bystander_grid()'s
+    degenerate-bbox assert. The one conversion the build and the patch share."""
+    ux0, uy0, ux1, uy1 = bbox
+    assert ux1 > ux0 and uy1 > uy0, f"degenerate building bbox at {key}: {bbox}"
+    for gy in range(uy0 // cell_px, (uy1 - 1) // cell_px + 1):
+        for gx in range(ux0 // cell_px, (ux1 - 1) // cell_px + 1):
+            yield gx, gy
+
+
+def patch_bystander_grid(
+    grid: BystanderGrid,
+    old_bboxes: dict[tuple[int, int], tuple[int, int, int, int] | None],
+    building_bboxes: dict[tuple[int, int], tuple[int, int, int, int]],
+) -> BystanderGrid:
+    """grid, built over building_bboxes before a splice rewrote the keys in
+    old_bboxes (key -> its bbox before, None if absent), brought up to date
+    with building_bboxes as it is now. Equal to build_bystander_grid() of the
+    current dict up to entry order within a cell, which cannot reach a pixel:
+    _bystander_candidates() dedupes and re-sorts into a total depth order.
+
+    Only the cells an old or new bbox of a changed key covers are rebuilt,
+    into a copy of cells, so the input grid is never mutated. A key whose bbox
+    did not change is dropped first, and a batch with none left returns grid
+    itself. A cell left empty is deleted, as the full build never stores one."""
+    changed = {k: old for k, old in old_bboxes.items() if building_bboxes.get(k) != old}
+    if not changed:
+        return grid
+    c = grid.cell_px
+    affected: set[tuple[int, int]] = set()
+    added: dict[tuple[int, int], list] = {}
+    for key, old in changed.items():
+        if old is not None:
+            affected.update(_bbox_cells(key, old, c))
+        new = building_bboxes.get(key)
+        if new is not None:
+            entry = (key, new)
+            for cell in _bbox_cells(key, new, c):
+                affected.add(cell)
+                added.setdefault(cell, []).append(entry)
+    cells = dict(grid.cells)
+    for cell in affected:
+        entries = [e for e in cells.get(cell, ()) if e[0] not in changed]
+        entries.extend(added.get(cell, ()))
+        if entries:
+            cells[cell] = tuple(entries)
+        else:
+            cells.pop(cell, None)
+    return BystanderGrid(cell_px=c, cells=cells)
 
 
 def _bystander_candidates(
@@ -1946,6 +2054,7 @@ def prepare_rect_native(
     sloped: bool, scenario: LoadedScenario, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray,
     proj: iso_geometry.IsoProjection, tile_px: int, building_bboxes: dict, with_units: bool,
     bystander_grid: BystanderGrid | None, layers: LayerState, grid: GridBake, unit_pack,
+    terrain_ids: np.ndarray | None = None,
 ) -> tuple | None:
     """composite_rect_iso (heights = elevations) or composite_rect_sloped
     (heights = corner_rise) with every Python step done here and only the
@@ -1956,7 +2065,8 @@ def prepare_rect_native(
     the per-tile path). None when this rect has no whole-rect native path. The
     args own snapshots of every input the GUI thread writes in place; holds
     keeps the unit pack alive, since the kernel reaches its sprite pixels
-    through raw addresses the pack alone owns."""
+    through raw addresses the pack alone owns. terrain_ids: the calling
+    cache's per-tile mirror (native_composite's docstring), None reads live."""
     native = composite_backend.native
     if native is None or unit_pack is None:
         return None
@@ -1968,7 +2078,7 @@ def prepare_rect_native(
     prepare = native_composite.prepare_sloped if sloped else native_composite.prepare_iso
     args = prepare(
         scenario, x0, y0, candidates, heights, proj, tile_px, unit_pack if with_units else None,
-        layers.terrain_textures, grid, share=True,
+        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids,
     )
     if args is None:
         return None
@@ -1993,6 +2103,7 @@ def composite_rect_iso(
     layers: LayerState = DEFAULT_LAYERS,
     grid: GridBake = DEFAULT_GRID,
     unit_pack=None,
+    terrain_ids: np.ndarray | None = None,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -2045,7 +2156,11 @@ def composite_rect_iso(
     unit_pack (Batch F N2): the level's native_composite.UnitPack, built from
     this same units_by_tile and sprites (or native_composite.NO_UNITS when
     with_units is off). Given one and the native backend, the whole loop
-    below runs as one native call; without one, native runs per tile."""
+    below runs as one native call; without one, native runs per tile.
+
+    terrain_ids: the calling cache's per-tile terrain-id mirror for that
+    native call (see native_composite's docstring). None reads the tiles
+    live; the per-tile loop below always does."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -2077,7 +2192,7 @@ def composite_rect_iso(
 
         if native_composite.composite_iso(
             native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
-            unit_pack if with_units else None, layers.terrain_textures, grid,
+            unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
         ):
             return scratch
     # .tolist() unboxes in C, and every candidate is already clamped on-map
@@ -2775,6 +2890,7 @@ def composite_rect_sloped(
     layers: LayerState = DEFAULT_LAYERS,
     grid: GridBake = DEFAULT_GRID,
     unit_pack=None,
+    terrain_ids: np.ndarray | None = None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -2802,7 +2918,7 @@ def composite_rect_sloped(
     terrain-textures half is applied here; the farm half is already baked
     into whatever `sprites` was built with.
 
-    unit_pack: same N2 contract as composite_rect_iso()'s."""
+    unit_pack, terrain_ids: same N2 contract as composite_rect_iso()'s."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -2816,7 +2932,7 @@ def composite_rect_sloped(
 
         if native_composite.composite_sloped(
             native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
-            unit_pack if with_units else None, layers.terrain_textures, grid,
+            unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
         ):
             return scratch
     # Same direct terrain index as composite_rect_iso, same clamping argument.
@@ -4332,6 +4448,35 @@ def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, pla
     )
 
 
+def _accumulate_contribution(
+    contribution: _SpriteContribution,
+    by_anchor: dict[tuple[int, int], list],
+    bboxes: dict[tuple[int, int], tuple[int, int, int, int]],
+    skip_ids: set[int],
+    farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]],
+) -> None:
+    """Merges one unit's contribution into a layer's four collections, in
+    place. The wholesale walk and the chunk caches' unit splice both call it,
+    so a splice that feeds units in walk order builds the walk's exact layer.
+    Copies out of the contribution, never aliasing its lists."""
+    if contribution.farm_tiles:
+        # Later unit wins on overlap -- overlapping farms can't
+        # happen in-game, but a scenario file can contain them, and a
+        # byte-identity test needs a deterministic answer.
+        farm_by_tile.update(contribution.farm_tiles)
+    for key, piece_draws in contribution.by_anchor.items():
+        by_anchor.setdefault(key, []).extend(piece_draws)
+        own = contribution.bboxes[key]
+        bbox = bboxes.get(key)
+        bboxes[key] = own if bbox is None else (
+            min(bbox[0], own[0]),
+            min(bbox[1], own[1]),
+            max(bbox[2], own[2]),
+            max(bbox[3], own[3]),
+        )
+    skip_ids.add(contribution.skip_id)
+
+
 def sprite_draws_by_anchor_sliced(
     scenario: LoadedScenario,
     proj: iso_geometry.IsoProjection,
@@ -4406,24 +4551,8 @@ def sprite_draws_by_anchor_sliced(
                         player_id, i, unit, tree_scale, hero_glow,
                     )
                 entries[id(unit)] = (unit, key, contribution)
-            if contribution is None:
-                continue
-            if contribution.farm_tiles:
-                # Later unit wins on overlap -- overlapping farms can't
-                # happen in-game, but a scenario file can contain them, and a
-                # byte-identity test needs a deterministic answer.
-                farm_by_tile.update(contribution.farm_tiles)
-            for key, piece_draws in contribution.by_anchor.items():
-                by_anchor.setdefault(key, []).extend(piece_draws)
-                own = contribution.bboxes[key]
-                bbox = bboxes.get(key)
-                bboxes[key] = own if bbox is None else (
-                    min(bbox[0], own[0]),
-                    min(bbox[1], own[1]),
-                    max(bbox[2], own[2]),
-                    max(bbox[3], own[3]),
-                )
-            skip_ids.add(contribution.skip_id)
+            if contribution is not None:
+                _accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
     layer = SpriteLayer(
         by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile
     )
@@ -4448,11 +4577,24 @@ def merge_sprite_bboxes(
     while a unit that fell back to a mark keeps today's behaviour exactly.
 
     Only ever grows a bbox, never shrinks one -- a coarser bystander flag is a
-    no-op extra paint, per composite_rect_iso's own accepted tradeoff."""
+    no-op extra paint, per composite_rect_iso's own accepted tradeoff.
+
+    A drain of merge_sprite_bboxes_sliced(), the only copy of the loop."""
+    return _drain(merge_sprite_bboxes_sliced(building_bboxes, sprites))
+
+
+def merge_sprite_bboxes_sliced(
+    building_bboxes: dict[tuple[int, int], tuple[int, int, int, int]], sprites: SpriteLayer
+) -> Generator[None, None, dict[tuple[int, int], tuple[int, int, int, int]]]:
+    """merge_sprite_bboxes() as a resumable generator, at most ASSEMBLY_SLICE
+    sprite keys per step. The merged dict is the return value."""
     if not sprites.bboxes:
         return building_bboxes
+    step = ASSEMBLY_SLICE
     merged = dict(building_bboxes)
-    for key, bbox in sprites.bboxes.items():
+    for seen, (key, bbox) in enumerate(sprites.bboxes.items()):
+        if seen and seen % step == 0:
+            yield
         prior = merged.get(key)
         merged[key] = bbox if prior is None else (
             min(prior[0], bbox[0]),

@@ -69,8 +69,8 @@ def _place_stable(scenario) -> None:
 def test_the_variant_fourteen_decoder_reaches_sprite_for():
     """The decode path end to end, below the renderer.
 
-    Guards the specific regression that matters: if `_advance` ever loses its
-    header-relative alignment, this returns None and the Stable silently drops
+    Guards the specific regression that matters: if the walk's layer padding
+    ever loses its header-relative alignment, this returns None and the Stable silently drops
     back to a coloured mark with no test failing anywhere else.
     """
     _require_install()

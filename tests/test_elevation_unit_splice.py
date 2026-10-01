@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from test_bystander_grid_patch import grid_state
 from test_invalidate_units_splice import (
     MILL_CONST,
     Unit,
     _call_counts,
+    _decorated_mill,
+    shared_art_install,  # noqa: F401 -- pytest fixture, imported for its name
     slotted_composite_install,  # noqa: F401 -- pytest fixture, imported for its name
 )
 from test_sprite_edit_bbox import REACH_NAMES, sprite_install  # noqa: F401 -- fixture
@@ -129,19 +132,19 @@ def _assert_pixels_match(style: str, cache, scenario, sprites: bool, counts=None
 
 
 def _source_state(cache, mip: int = 0):
-    """building_bboxes and the SpriteLayer as plain comparable values. A
-    SpriteDraw holds an ndarray, so draws compare by identity: both caches
-    get theirs from unit_sprites' own memo."""
+    """building_bboxes, its bystander grid and the SpriteLayer as plain
+    comparable values. A SpriteDraw holds an ndarray, so draws compare by
+    identity: both caches get theirs from unit_sprites' own memo."""
     if isinstance(cache, IsoChunkCache):
         lvl = cache._level(mip)
-        bboxes, sprites = lvl.building_bboxes, lvl.sprites
+        bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
     else:
-        bboxes, sprites = cache.building_bboxes, cache.sprites
+        bboxes, sprites, grid = cache.building_bboxes, cache.sprites, cache.bystander_grid
     layer = None if sprites is None else (
         {k: [(id(d), px, py) for d, px, py in v] for k, v in sprites.by_anchor.items()},
         dict(sprites.bboxes), sprites.skip_ids, dict(sprites.farm_by_tile),
     )
-    return dict(bboxes), layer
+    return dict(bboxes), layer, grid_state(grid)
 
 
 def _assert_matches_fresh_cache(style: str, cache, scenario, sprites: bool, unit_filter=UnitFilter()) -> None:
@@ -323,6 +326,178 @@ def test_a_filtered_out_unit_stays_absent(style, sprite_install, monkeypatch):  
     assert _source_state(cache) == _source_state(fresh)
 
 
+# --- shared tiles splice their whole component (2026-09-28 plan) ------------
+# shared_art_install draws MILL_CONST and SPRITE_CONST with one team-tinted
+# graphic, so co-occupants overlap on screen and paint order shows as pixels.
+
+
+def _splice_calls(monkeypatch) -> list:
+    """Every _elevation_splices() result, in call order."""
+    calls = []
+    real = render_cache._elevation_splices
+
+    def recorded(*args, **kwargs):
+        out = real(*args, **kwargs)
+        calls.append(out)
+        return out
+
+    monkeypatch.setattr(render_cache, "_elevation_splices", recorded)
+    return calls
+
+
+def _component(calls) -> list[int]:
+    """The one splice call's unit ids, in the order it spliced them. Ids, since
+    the fixture Unit is a dataclass: two stacked units compare equal."""
+    assert len(calls) == 1 and calls[0] is not None, f"expected one component splice, got {calls}"
+    return [id(s.unit) for s in calls[0]]
+
+
+def _ids(*units) -> list[int]:
+    return [id(u) for u in units]
+
+
+def _assert_spliced(style, cache, scenario, sprites, counts, unit_filter=UnitFilter()) -> None:
+    """No wholesale walk, then source state and pixels equal a fresh cache's
+    (and the oracle's, unfiltered)."""
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    _no_wholesale(counts)
+    fresh = _make_cache(style, scenario, sprites=sprites, unit_filter=unit_filter)
+    assert _source_state(cache) == _source_state(fresh)
+    assert np.array_equal(stitched, fresh.render_rect(0, 0, canvas_w, canvas_h, mip=0))
+    if unit_filter == UnitFilter():
+        assert np.array_equal(stitched, _oracle(style, scenario, sprites)[:canvas_h, :canvas_w])
+
+
+@pytest.mark.parametrize("owners", [(1, 2), (2, 1)], ids=["low-first", "high-first"])
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("style", STYLES)
+def test_a_shared_own_tile_splices(style, sprites, owners, shared_art_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    placed = [_place(scenario, p, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5) for p in owners]
+    cache = _make_cache(style, scenario, sprites=sprites)
+    before = _source_state(cache)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _raise(style, cache, scenario, [UNIT_TILE])
+
+    walk = [u for _, u in sorted(zip(owners, placed, strict=True), key=lambda pu: pu[0])]
+    assert _component(calls) == _ids(*walk), "the component is not in walk order"
+    # Sprites off, a centred 1x1 unit holds no source key at all.
+    assert _source_state(cache) != before or not sprites, "the raise moved nothing, so this proves nothing"
+    _assert_spliced(style, cache, scenario, sprites, counts)
+
+
+@pytest.mark.parametrize("raised", ["mill", "decoration"])
+@pytest.mark.parametrize(("mill_owner", "decor_owner"), [(1, 3), (3, 1)])
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("style", STYLES)
+def test_a_decorated_mill_splices_as_one_component(
+    style, sprites, mill_owner, decor_owner, raised, shared_art_install, monkeypatch  # noqa: F811
+):
+    """Raising either one's own tile re-derives both, in walk order: in one
+    owner order the raised unit sorts after its co-occupant."""
+    scenario = _scenario()
+    mill, decor = _decorated_mill(scenario, mill_owner, decor_owner)
+    cache = _make_cache(style, scenario, sprites=sprites)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    target = mill if raised == "mill" else decor
+    _raise(style, cache, scenario, [(int(target.x), int(target.y))])
+
+    want = [mill, decor] if mill_owner < decor_owner else [decor, mill]
+    assert _component(calls) == _ids(*want)
+    _assert_spliced(style, cache, scenario, sprites, counts)
+
+
+def _mill_chain(scenario):
+    """Mills A-B-C overlapping in a row (owners 5, 3, 1), plus one far away."""
+    a = _place(scenario, 5, MILL_CONST, 60.0, 60.0)  # x 59..60
+    b = _place(scenario, 3, MILL_CONST, 61.0, 60.0)  # x 60..61
+    c = _place(scenario, 1, MILL_CONST, 62.0, 60.0)  # x 61..62
+    _place(scenario, 3, MILL_CONST, 30.0, 30.0)
+    return a, b, c
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("style", STYLES)
+def test_a_chain_component_re_derives_units_off_the_raised_tile(style, sprites, shared_art_install, monkeypatch):  # noqa: F811
+    """Only A's own tile rises; C shares no tile with A but does with B."""
+    scenario = _scenario()
+    a, b, c = _mill_chain(scenario)
+    cache = _make_cache(style, scenario, sprites=sprites)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _raise(style, cache, scenario, [(60, 60)])
+
+    assert _component(calls) == _ids(c, b, a), "the component is not [C, B, A] in walk order"
+    _assert_spliced(style, cache, scenario, sprites, counts)
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+@pytest.mark.parametrize("style", STYLES)
+def test_a_filter_hidden_co_occupant_stays_out_of_the_component(style, sprites, shared_art_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    mill, decor = _decorated_mill(scenario, 1, 3)
+    hidden = _place(scenario, 2, SPRITE_CONST, decor.x, decor.y)
+    unit_filter = UnitFilter(players=frozenset({1, 3}))
+    cache = _make_cache(style, scenario, sprites=sprites, unit_filter=unit_filter)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _raise(style, cache, scenario, [(int(decor.x), int(decor.y))])
+
+    component = _component(calls)
+    assert id(hidden) not in component
+    assert component == _ids(mill, decor)
+    _assert_spliced(style, cache, scenario, sprites, counts, unit_filter)
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_a_sloped_neighbour_pair_is_seeded_by_the_dilation(sprites, shared_art_install, monkeypatch):  # noqa: F811
+    """The shared tile is one off the raised tile, so only Sloped's radius-1
+    dilation reaches it."""
+    scenario = _scenario()
+    pair = [_place(scenario, p, SPRITE_CONST, NEIGHBOUR_TILE[0] + 0.5, NEIGHBOUR_TILE[1] + 0.5) for p in (2, 1)]
+    cache = _make_cache("sloped", scenario, sprites=sprites)
+    before = _source_state(cache)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _raise("sloped", cache, scenario, [UNIT_TILE])
+
+    assert _component(calls) == _ids(*pair[::-1])
+    assert _source_state(cache) != before or not sprites, "the pair did not move with the raised corners"
+    _assert_spliced("sloped", cache, scenario, sprites, counts)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_a_wall_in_a_shared_component_keeps_its_neighbour_derived_shape(style, wall_install, monkeypatch):
+    """A Mill overlapping the run's end wall pulls it into the component (on
+    Stepped as a co-occupant, not a seed), and it must re-derive with the real
+    overrides, not {}."""
+    scenario = _scenario()
+    radian = 2 * (2 * np.pi / 5)
+    walls = [_place(scenario, 1, WALL_CONST, x + 0.5, UNIT_TILE[1] + 0.5, radian) for x in (39, 40, 41)]
+    mill = _place(scenario, 2, MILL_CONST, 42.0, 41.0)  # x 41..42, y 40..41: shares the (41, 40) wall's tile
+    overrides = render.wall_variant_rotation_overrides(scenario)
+    assert any(unit_sprites.variant_index(WALL_CONST, v) != 2 for v in overrides.values()), (
+        "every override equals the stored variant, so {} and the real dict coincide"
+    )
+    cache = _make_cache(style, scenario, sprites=True)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _raise(style, cache, scenario, [(42, 41)])
+
+    component = _component(calls)
+    assert id(walls[2]) in component and id(mill) in component
+    _assert_spliced(style, cache, scenario, True, counts)
+
+
 # --- fallbacks --------------------------------------------------------------
 
 
@@ -332,14 +507,14 @@ def _assert_fell_back(cache, counts) -> None:
 
 
 @pytest.mark.parametrize("style", STYLES)
-def test_a_shared_own_tile_falls_back(style, sprite_install, monkeypatch):  # noqa: F811
+def test_a_component_over_the_cap_falls_back(style, shared_art_install, monkeypatch):  # noqa: F811
     scenario = _scenario()
-    _place(scenario, 1, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
-    _place(scenario, 2, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+    _mill_chain(scenario)
     cache = _make_cache(style, scenario, sprites=True)
+    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
     counts = _call_counts(monkeypatch)
 
-    _raise(style, cache, scenario, [UNIT_TILE])
+    _raise(style, cache, scenario, [(60, 60)])
 
     _assert_fell_back(cache, counts)
     _assert_pixels_match(style, cache, scenario, True)
@@ -419,7 +594,10 @@ def test_a_warm_started_before_an_elevation_splice_is_refused(sprite_install):  
 def test_a_brush_9_elevate_stroke_matches_a_fresh_render(style, sprite_install, monkeypatch):  # noqa: F811
     """A real multi-step Elevate drag through ViewerWindow, with NO repaint of
     the whole canvas afterwards: this checks the dirty bbox and the splice
-    together, the way the app composes them."""
+    together, the way the app composes them. A stacked sprite pair (a shared
+    by_anchor key, so paint order is in pixels) and a Mill with a unit on its
+    anchor tile (MILL_CONST has no art here, so that one checks the bbox union
+    and the component walk) make it the end-to-end shared-tile check."""
     window = conftest.terrain_edit_window()
     try:
         scenario = window.scenario
@@ -429,6 +607,10 @@ def test_a_brush_9_elevate_stroke_matches_a_fresh_render(style, sprite_install, 
         for x, y in ((32.5, 40.5), (36.5, 37.5), (40.5, 43.5), (47.5, 40.5)):
             units.add(1, SPRITE_CONST, x, y)
         units.add(2, MILL_CONST, 44.0, 38.0)
+        units.add(3, SPRITE_CONST, 34.5, 41.5)
+        units.add(2, SPRITE_CONST, 34.5, 41.5)
+        units.add(1, SPRITE_CONST, 37.5, 41.5)  # the Mill below's sprite anchor tile, (37, 41)
+        units.add(3, MILL_CONST, 38.0, 41.0)  # x 37..38, y 40..41
         # A style round trip rebuilds the cache from the edited scenario.
         other = "Sloped" if style == "Stepped" else "Stepped"
         window.terrain_style_combo.setCurrentText(other)
@@ -451,5 +633,167 @@ def test_a_brush_9_elevate_stroke_matches_a_fresh_render(style, sprite_install, 
         _no_wholesale(counts)
         full = _oracle(style.lower(), scenario, True)
         assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+    finally:
+        conftest.close_window(window)
+
+
+# --- a gen-bumping step rebuilds the visible level only -------------------
+
+
+def _keys_over(cache, mip: int, bbox) -> set:
+    lx0, ly0, lx1, ly1 = cache._bbox_to_level(mip, bbox)
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, lx0, ly0, lx1, ly1)
+    return {(mip, cx, cy) for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)}
+
+
+def test_rebuild_levels_leaves_another_stale_level_stale_and_evicts_only_its_bbox(
+    sprite_install, monkeypatch,  # noqa: F811
+):
+    """A stacked pair over a cap of 1 makes the elevation splice fall back (gen
+    bump). With rebuild_levels=(0,) only level 0 rebuilds; level -1's chunks
+    over the bbox are evicted and the rest kept, and both levels still match a
+    fresh cache."""
+    scenario = _scenario()
+    _place(scenario, 1, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+    _place(scenario, 2, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+    cache = _make_cache("stepped", scenario, sprites=True)
+    cache.render_rect(0, 0, *cache.canvas_dims(-1), mip=-1)
+    assert cache.is_level_resident(-1)
+    resident_before = {k for k in cache._cache if k[0] == -1}
+    gen = cache._source_gen
+    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 1)
+    counts = _call_counts(monkeypatch)
+
+    mm = scenario.map_manager
+    before = [t.elevation for t in mm.terrain]
+    set_tiles_elevation(mm, [(*UNIT_TILE, BASE_ELEVATION + 1)])
+    dirty = [i for i, t in enumerate(mm.terrain) if t.elevation != before[i]]
+    changed: set = set()
+    bbox = dirty_screen_bbox_iso(
+        scenario, dirty, cache.elevations, cache.proj, with_units=True, with_sprites=True, elevation_changed=changed,
+    )
+    cache.patch(bbox, elevation_changed=changed, rebuild_levels=(0,))
+
+    assert cache._source_gen > gen, "the splice did not fall back -- vacuous"
+    assert cache.is_level_resident(0), "the visible level was not rebuilt"
+    assert not cache.is_level_resident(-1), "the other level was rebuilt inside the patch"
+    assert counts["building_bboxes"] == 1, "a level other than 0 rebuilt its bboxes"
+    over = _keys_over(cache, -1, bbox)
+    kept = {k for k in cache._cache if k[0] == -1}
+    assert not kept & over, "a stale level's chunk over the bbox survived"
+    assert kept == resident_before - over, "chunks off the bbox were evicted too"
+    assert kept, "every level -1 chunk lay over the bbox -- vacuous"
+
+    fresh = _make_cache("stepped", scenario, sprites=True)
+    for key in sorted(k for k in cache._cache if k[0] == 0):
+        assert np.array_equal(cache._cache[key], fresh.get_chunk(*key)), f"patched {key} differs from a fresh cache"
+    for key in sorted(resident_before):
+        assert np.array_equal(cache.get_chunk(*key), fresh.get_chunk(*key)), f"level -1 {key} differs from a fresh cache"
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_gen_bumping_elevate_step_in_a_shown_window_rebuilds_the_visible_level_only(
+    sprite_install, monkeypatch,  # noqa: F811
+):
+    """The viewer's Stepped branch passes the viewport's mip as rebuild_levels.
+    Needs a SHOWN window: with no viewport target it keeps rebuilding every level.
+    A stacked pair over a cap of 1 forces the gen bump."""
+    window = conftest.shown_terrain_window()
+    try:
+        scenario = window.scenario
+        scenario.map_manager.get_tile(*BUMP_TILE).elevation = 1
+        units = window._ensure_unit_edits()
+        units.add(1, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+        units.add(2, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.terrain_style_combo.setCurrentText("Stepped")
+        cache = window._cache
+        assert cache.sprites_enabled
+        visible = window.map_view.viewport_chunk_target()[0]
+        other = visible + 1
+        for mip in (visible, other):
+            cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+        assert cache.is_level_resident(other)
+        gen = cache._source_gen
+        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 1)
+
+        window._on_tool_selected("elevation")
+        window.brush_size_spin.setValue(1)
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(*UNIT_TILE, 0)
+        window.on_edit_stroke_end()
+
+        assert window._cache is cache, "the stroke rebuilt the cache"
+        assert cache._source_gen > gen, "the splice did not fall back -- vacuous"
+        assert cache.is_level_resident(visible)
+        assert not cache.is_level_resident(other), "the non-visible level rebuilt inside the stroke"
+        mm = scenario.map_manager
+        fresh = IsoChunkCache(
+            scenario, window._iso_elevations.copy(), window._iso_proj,
+            tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True,
+        )
+        for mip in (visible, other):
+            dims = cache.canvas_dims(mip)
+            assert np.array_equal(cache.render_rect(0, 0, *dims, mip=mip), fresh.render_rect(0, 0, *dims, mip=mip)), (
+                f"level {mip} differs from a fresh cache"
+            )
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_the_level_warm_after_a_gen_bumping_step_rebuilds_a_stale_non_neighbour_level(
+    sprite_install, monkeypatch,  # noqa: F811
+):
+    """After a gen-bump step leaves a resident level stale, the stroke-end level
+    warm rebuilds it even when it is not a neighbour of the opening level.
+    A stacked pair over a cap of 1 forces the gen bump."""
+    from PyQt5.QtGui import QTransform
+
+    from descape import level_warm, settings
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = conftest.shown_terrain_window()
+    try:
+        scenario = window.scenario
+        scenario.map_manager.get_tile(*BUMP_TILE).elevation = 1
+        units = window._ensure_unit_edits()
+        units.add(1, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+        units.add(2, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.terrain_style_combo.setCurrentText("Stepped")
+        cache = window._cache
+        view = window.map_view
+        view.setTransform(QTransform())
+        visible = view.viewport_chunk_target()[0]
+        neighbours = level_warm.neighbour_mips(cache, view._fit_baseline_scale() * view.devicePixelRatioF())
+        others = [m for m in cache.mip_levels() if m != visible and m not in neighbours]
+        assert others, "every level is visible or a neighbour -- vacuous"
+        other = others[0]
+        for mip in (visible, other):
+            cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+        gen = cache._source_gen
+        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 1)
+
+        window._on_tool_selected("elevation")
+        window.brush_size_spin.setValue(1)
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(*UNIT_TILE, 0)
+        window.on_edit_stroke_end()
+
+        assert cache._source_gen > gen, "the splice did not fall back -- vacuous"
+        assert not cache.is_level_resident(other), "the stroke itself rebuilt the other level -- vacuous"
+        window._level_warmer.run_to_completion()
+        assert window._cache is cache
+        assert cache.is_level_resident(other), "the level warm left the stale level stale"
+        mm = scenario.map_manager
+        fresh = IsoChunkCache(
+            scenario, window._iso_elevations.copy(), window._iso_proj,
+            tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True,
+        )
+        dims = cache.canvas_dims(other)
+        assert np.array_equal(cache.render_rect(0, 0, *dims, mip=other), fresh.render_rect(0, 0, *dims, mip=other))
     finally:
         conftest.close_window(window)

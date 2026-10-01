@@ -37,7 +37,7 @@ import pytest
 from descape import asset_source, iso_geometry, render, unit_sprites
 from descape.elevation_tools import set_tile_elevation
 from descape.render import dirty_screen_bbox_iso, render_terrain_iso_with_proj
-from descape.render_cache import IsoChunkCache
+from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 import conftest
@@ -449,7 +449,7 @@ def test_a_unit_move_with_extra_anchor_tiles_covers_both_old_and_new_sprite_rect
     dirty = [_terrain_index(mm, old_x, old_y), _terrain_index(mm, new_x, new_y)]
     bbox = dirty_screen_bbox_iso(
         scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
-        elevation_changed=set(), extra_anchor_tiles={(old_x, old_y)},
+        elevation_changed=set(), extra_anchor_tiles={(old_x, old_y)}, units_changed=True,
     )
     assert bbox is not None
     for e in (BASE_ELEVATION,):
@@ -484,8 +484,8 @@ def test_without_extra_anchor_tiles_the_same_move_misses_the_old_sprite_rect(
     dirty = [_terrain_index(mm, old_x, old_y), _terrain_index(mm, new_x, new_y)]
     bbox = dirty_screen_bbox_iso(
         scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
-        elevation_changed=set(),
-    )  # no extra_anchor_tiles
+        elevation_changed=set(), units_changed=True,
+    )  # no extra_anchor_tiles; units_changed so the band runs and only the old anchor is missing
     assert bbox is not None
     for e in (BASE_ELEVATION,):
         assert not _covers(bbox, old_rects[e]), (
@@ -526,7 +526,7 @@ def test_extra_anchor_tiles_covers_a_multi_tile_old_footprint_not_just_the_ancho
 
     bbox = dirty_screen_bbox_iso(
         scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
-        elevation_changed=set(), extra_anchor_tiles=old_footprint,
+        elevation_changed=set(), extra_anchor_tiles=old_footprint, units_changed=True,
     )
     assert bbox is not None
     for e, rect in old_rects.items():
@@ -534,6 +534,37 @@ def test_extra_anchor_tiles_covers_a_multi_tile_old_footprint_not_just_the_ancho
             f"bbox {bbox} misses the OLD (4, 1)-span sprite rect {rect} at {e} -- "
             f"extra_anchor_tiles must carry the WHOLE old footprint, not just one tile"
         )
+
+
+def test_a_pure_add_covers_the_new_sprite_rect_through_units_changed(sprite_install):
+    """A pure add has no old footprint, so extra_anchor_tiles is an EMPTY set
+    and only units_changed can put the new anchor in the band. This is why
+    the flag is explicit rather than inferred from `if extra_anchor_tiles:`.
+    The scenario already holds the unit (the post-add state); elevations and
+    the anchor memo don't depend on the add having happened in-process."""
+    scenario = _fixture_scenario()
+    mm = scenario.map_manager
+    elevations, proj = render.elevations_and_proj(scenario)
+    unit = scenario.unit_manager.units[1][0]
+    new_rect = _clamped(_sprite_rect(scenario, proj, BASE_ELEVATION), proj)
+
+    footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    dirty = [i for i, t in enumerate(mm.terrain) if (int(t.x), int(t.y)) in footprint]
+
+    def bbox(units_changed):
+        return dirty_screen_bbox_iso(
+            scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True,
+            elevation_changed=set(), extra_anchor_tiles=set(), units_changed=units_changed,
+        )
+
+    added = bbox(True)
+    assert added is not None
+    assert _covers(added, new_rect), f"bbox {added} misses the ADDED sprite rect {new_rect}"
+    unflagged = bbox(False)
+    assert not _covers(unflagged, new_rect), (
+        f"bbox {unflagged} covers the added sprite rect {new_rect} without units_changed, "
+        f"so this test no longer proves the flag is load-bearing"
+    )
 
 
 # --- the oracle ---------------------------------------------------------
@@ -600,6 +631,77 @@ def test_patch_after_edit_matches_a_fresh_full_render(sprite_install, monkeypatc
         "the widening is not what makes the first half pass -- the sprite is sitting "
         "inside the pre-existing dilation and this oracle is vacuous"
     )
+
+
+# Not the template's own 0, so the paint changes every pixel of the tile.
+PAINT_TERRAIN_ID = 14
+
+
+def _terrain_only_cache(style: str, scenario):
+    mm = scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    if style == "stepped":
+        elevations, proj = render.elevations_and_proj(scenario)
+        return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True), proj
+    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True), proj
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_terrain_only_paint_under_a_sprite_skips_the_band_and_matches_a_fresh_render(sprite_install, style):
+    """A live Draw step: a terrain paint on the sprite's OWN tile, no elevation
+    change, no unit edit. Nothing can move the sprite, so the bbox must equal
+    the with_sprites=False one, and patching just that must still equal a
+    fresh full render: the sprite over the repainted tile comes back through
+    the bystander index, not through the band.
+
+    The mutation half: the same paint with units_changed=True must still grow
+    the bbox on all four sides, so the equality is the gate at work and not a
+    band that could never have fired here. The numpy-backend counterpart of
+    test_native_composite.py's terrain paint, which needs the native kernel."""
+    scenario = _fixture_scenario()
+    mm = scenario.map_manager
+    cache, proj = _terrain_only_cache(style, scenario)
+    canvas_w, canvas_h = cache.canvas_dims()
+    cache.render_rect(0, 0, canvas_w, canvas_h)  # warm every chunk, PRE-edit
+
+    tile_x0, tile_y0 = iso_geometry.tile_screen_origin(EDIT_X, EDIT_Y, BASE_ELEVATION, proj)
+    tile_rect = (int(tile_x0), int(tile_y0), int(tile_x0) + 2 * proj.half_w, int(tile_y0) + 2 * proj.half_h)
+    assert _covers(_sprite_rect(scenario, proj, BASE_ELEVATION), tile_rect), (
+        "fixture assumption: the painted tile must sit under the sprite, or the bystander redraw goes untested"
+    )
+
+    index = _terrain_index(mm, EDIT_X, EDIT_Y)
+    mm.terrain[index].terrain_id = PAINT_TERRAIN_ID
+    bbox_fn = dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+
+    off = bbox_fn(scenario, [index], cache.elevations.copy(), proj, with_units=True, with_sprites=False)
+    flagged = bbox_fn(
+        scenario, [index], cache.elevations.copy(), proj, with_units=True, with_sprites=True, units_changed=True
+    )
+    changed: set = set()
+    bbox = bbox_fn(
+        scenario, [index], cache.elevations, proj, with_units=True, with_sprites=True, elevation_changed=changed
+    )
+    assert not changed, "fixture assumption: a terrain paint moves no elevation"
+    assert bbox is not None and off is not None and flagged is not None
+    assert bbox == off, f"terrain-only bbox {bbox} != sprites-off bbox {off}: the band fired on a paint that moves no sprite"
+    grew = (bbox[0] - flagged[0], bbox[1] - flagged[1], flagged[2] - bbox[2], flagged[3] - bbox[3])
+    assert all(g > 0 for g in grew), (
+        f"units_changed=True gave {flagged}, not wider than {bbox} on every side (grew {grew}): "
+        f"the band would not have fired here anyway, so the equality above proves nothing"
+    )
+
+    cache.patch(bbox, elevation_changed=changed)
+    if style == "stepped":
+        full, _elev, _proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
+    else:
+        full, _elev, _corner, _proj = render.render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    got = cache.render_rect(0, 0, canvas_w, canvas_h)
+    want = full[:canvas_h, :canvas_w]
+    if not np.array_equal(got, want):
+        ys, xs = np.nonzero(np.any(got != want, axis=-1))
+        pytest.fail(f"{style}: {ys.size} px differ from a fresh render after the paint, first at (y={ys[0]}, x={xs[0]})")
 
 
 def _warm_both_levels(cache, probe):

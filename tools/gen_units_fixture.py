@@ -167,7 +167,7 @@ def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
     boundaries descape/scenario_write.py's units branch will use, hand-rolled
     here so the generator stays independent of the code its output tests.
     """
-    loaded = load_map_and_units(donor_path)
+    loaded = load_map_and_units(donor_path, fast_units=False)
     _build_units(loaded)
 
     players_units = loaded._scenario.sections["Units"].retriever_map["players_units"].data

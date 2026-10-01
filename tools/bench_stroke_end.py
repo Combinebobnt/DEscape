@@ -306,15 +306,15 @@ class _Timers:
         inner_refresh, inner_invalidate = cache._refresh_source_caches, cache.invalidate_units
         inside = [False]
 
-        def spy(elevation_changed=None):
+        def spy(elevation_changed=None, **kwargs):
             if self.armed and inside[0]:
                 self.wholesale += 1
-            return inner_refresh(elevation_changed)
+            return inner_refresh(elevation_changed, **kwargs)
 
-        def invalidate(changed=None):
+        def invalidate(changed=None, **kwargs):
             inside[0] = True
             try:
-                return inner_invalidate(changed)
+                return inner_invalidate(changed, **kwargs)
             finally:
                 inside[0] = False
 

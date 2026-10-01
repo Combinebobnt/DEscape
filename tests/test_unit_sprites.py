@@ -29,17 +29,20 @@ from __future__ import annotations
 
 import math
 import struct
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from descape import asset_source, unit_sprites
+from descape import asset_source, sld_decoder, unit_sprites
 
 MAGIC = b"SLDX"
 _HEADER = struct.Struct("<4s4HI")
 _FRAME_HEADER = struct.Struct("<4H2BH")
 
 MAIN = 0x01
+SHADOW = 0x02
+DAMAGE = 0x08
 PLAYERCOLOR = 0x10
 
 CANVAS = 8
@@ -61,7 +64,7 @@ def bc4_solid(value: int = 255) -> bytes:
 
 
 def _layer(kind: int, blocks: list[bytes], box) -> bytes:
-    if kind == MAIN:
+    if kind in (MAIN, SHADOW):
         body = struct.pack("<4H2B", *box, 0, 1)
     else:
         body = struct.pack("<2B", 0, 1)
@@ -692,7 +695,7 @@ def test_a_frame_that_fails_to_decode_falls_back(install, monkeypatch):
     install.write(build_sld(4))
     install.register()
 
-    def boom(self, index):
+    def boom(self, index, data=None, **kwargs):
         raise unit_sprites.SLDError("synthetic")
 
     monkeypatch.setattr("descape.sld_decoder.SLDFile.decode_frame", boom)
@@ -736,6 +739,15 @@ def test_the_tint_is_a_multiply_and_only_inside_the_mask():
     assert differ[:2, :].all() and not differ[2:, :].any()
 
 
+def test_the_tint_never_touches_alpha():
+    """Load-bearing for _build_icon's single-piece reorder: the ink bbox is
+    read off alpha, so tinting before or after the crop must see one bbox."""
+    rng = np.random.default_rng(3)
+    main, pc = _random_layers(rng, 23, 17)
+    for team in (*unit_sprites.TEAM_COLORS, (0, 0, 0), (37, 201, 90)):
+        assert np.array_equal(unit_sprites._tinted(main, pc, team)[..., 3], main[..., 3])
+
+
 def test_partial_coverage_blends_rather_than_switching():
     main = np.zeros((1, 1, 4), np.uint8)
     main[..., :3] = 200
@@ -745,6 +757,240 @@ def test_partial_coverage_blends_rather_than_switching():
     out = unit_sprites._tinted(main, mask, (255, 0, 0))
     assert out[0, 0, 0] == 200
     assert 90 < out[0, 0, 1] < 110  # halfway between 200 and 0
+
+
+def _random_layers(rng, h, w):
+    """A main/playercolor pair shaped like _cropped_to_ink's output: partial
+    coverage, alpha-0 holes in both, and a mask whose red channel varies."""
+    main = rng.integers(0, 256, (h, w, 4), dtype=np.uint8)
+    main[..., 3][rng.random((h, w)) < 0.3] = 0
+    pc = rng.integers(0, 256, (h, w, 4), dtype=np.uint8)
+    pc[..., 3][rng.random((h, w)) < 0.4] = 0
+    return main, pc
+
+
+@pytest.mark.parametrize(("h", "w", "out_h", "out_w"), [
+    (13, 7, 1, 1), (40, 25, 7, 4), (37, 53, 6, 9), (9, 9, 9, 9), (64, 48, 11, 13), (5, 3, 1, 2),
+])
+def test_resize_and_tint_commute(h, w, out_h, out_w):
+    """_draw_for_entry tints AFTER the resize (cold-build perf, 2026-09-28).
+    That is only exact because _resize_rgba is a pure gather and _tinted is
+    per-pixel; this pins that, including None playercolor and a white team."""
+    rng = np.random.default_rng(h * 1000 + w)
+    main, pc = _random_layers(rng, h, w)
+    for team in [(255, 0, 0), (37, 201, 90), (0, 0, 0), (255, 255, 255)]:
+        for mask in (pc, None):
+            small_main = unit_sprites._resize_rgba(main, out_w, out_h)
+            small_pc = None if mask is None else unit_sprites._resize_rgba(mask, out_w, out_h)
+            after = unit_sprites._tinted(small_main, small_pc, team)
+            before = unit_sprites._resize_rgba(unit_sprites._tinted(main, mask, team), out_w, out_h)
+            assert np.array_equal(after, before)
+
+
+def test_a_tinted_sprite_is_the_resized_tint_and_tints_the_small_pair(install, monkeypatch):
+    """sprite_for with a non-GAIA team equals resize(_tinted(native)), on a
+    random-content native frame, and _tinted only ever sees the decimated pair.
+    The second half is what fails if the tint moves back to native size."""
+    install.write(build_sld(4))
+    install.register(angle_count=1, frame_count=1)
+    rng = np.random.default_rng(7)
+    main, pc = _random_layers(rng, 90, 70)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 35, 80))
+    seen = []
+    real_tinted = unit_sprites._tinted
+
+    def spy(m, p, team):
+        seen.append(m.shape)
+        return real_tinted(m, p, team)
+
+    monkeypatch.setattr(unit_sprites, "_tinted", spy)
+    unit_sprites.clear_caches()
+    team_index = 3
+    draw = unit_sprites.sprite_for(CONST, 0.0, team_index, 32)
+    team = unit_sprites.TEAM_COLORS[team_index]
+    want = unit_sprites._resize_rgba(real_tinted(main, pc, team), *draw.rgba.shape[1::-1])
+    assert draw.rgba.shape[:2] != main.shape[:2]
+    assert np.array_equal(draw.rgba, want)
+    assert seen == [draw.rgba.shape]
+
+
+# --- the uint32 gather and the covered-only tint (zoom sprite walk) ----
+
+
+def _reference_resize(rgba, width, height):
+    """_resize_rgba as it was before 2026-09-29: a per-pixel fancy index."""
+    src_h, src_w = rgba.shape[:2]
+    ys = np.minimum((np.arange(height) * src_h) // height, src_h - 1)
+    xs = np.minimum((np.arange(width) * src_w) // width, src_w - 1)
+    return rgba[ys[:, None], xs[None, :]]
+
+
+def _reference_tint(main, playercolor, team):
+    """_tinted as it was before 2026-09-29: float32 math over every pixel."""
+    if playercolor is None or team == (255, 255, 255):
+        return main
+    rgb = main[..., :3].astype(np.float32)
+    cov = np.where(playercolor[..., 3] > 0, playercolor[..., 0], 0).astype(np.float32) / 255.0
+    cov = cov[..., None]
+    t = np.array(team, dtype=np.float32) / 255.0
+    out = main.copy()
+    out[..., :3] = np.clip(rgb * (1 - cov) + rgb * t * cov, 0, 255).astype(np.uint8)
+    return out
+
+
+_TEAMS = (*unit_sprites.TEAM_COLORS, (0, 0, 0), (37, 201, 90), (255, 255, 0))
+
+
+@pytest.mark.parametrize(("h", "w", "out_h", "out_w"), [
+    (13, 7, 1, 1), (40, 25, 7, 4), (37, 53, 6, 9), (9, 9, 9, 9), (5, 3, 1, 2),
+    (30, 21, 40, 28), (21, 30, 28, 40), (17, 11, 34, 22), (7, 5, 23, 13),
+    (1, 1, 5, 3), (3, 8, 1, 17), (1, 9, 4, 1),
+])
+def test_resize_matches_the_fancy_index_gather(h, w, out_h, out_w):
+    """Downscale, identity, upscale (x1.33 both ways round, x2, odd sizes) and
+    1-px sources and results, every case non-square in at least one side so a
+    swapped row/column gather cannot pass."""
+    rng = np.random.default_rng(h * 1000 + w * 10 + out_h)
+    src = rng.integers(0, 256, (h, w, 4), dtype=np.uint8)
+    before = src.copy()
+    got = unit_sprites._resize_rgba(src, out_w, out_h)
+    want = _reference_resize(before, out_w, out_h)
+    assert got.dtype == np.uint8 and got.shape == want.shape == (out_h, out_w, 4)
+    assert np.array_equal(got, want)
+    assert np.array_equal(src, before)
+    assert not np.shares_memory(got, src)
+
+
+def test_resize_gathers_from_a_non_contiguous_view():
+    rng = np.random.default_rng(9)
+    big = rng.integers(0, 256, (40, 30, 4), dtype=np.uint8)
+    view = big[3:35:2, ::3]
+    assert not view.flags.c_contiguous
+    assert np.array_equal(unit_sprites._resize_rgba(view, 13, 21), _reference_resize(view, 13, 21))
+
+
+@pytest.mark.parametrize("shape_dtype", [((6, 5, 3), np.uint8), ((6, 5, 4), np.float32), ((6, 5, 8), np.uint8)])
+def test_resize_refuses_anything_but_rgba_uint8(shape_dtype):
+    """The uint32 view is only the same gather for (H, W, 4) uint8."""
+    shape, dtype = shape_dtype
+    with pytest.raises(ValueError):
+        unit_sprites._resize_rgba(np.zeros(shape, dtype=dtype), 3, 4)
+
+
+def _coverage(rng, pc, kind):
+    """pc reshaped into one coverage pattern: sparse, dense, none at all, or
+    alpha set everywhere with a zero strength (red) on some of it."""
+    pc = pc.copy()
+    if kind == "sparse":
+        pc[..., 3][rng.random(pc.shape[:2]) < 0.9] = 0
+    elif kind == "dense":
+        pc[..., 3] = 255
+        pc[..., 0] = rng.integers(1, 256, pc.shape[:2], dtype=np.uint8)
+    elif kind == "none":
+        pc[..., 3] = 0
+    elif kind == "zero_strength":
+        pc[..., 3] = 255
+        pc[..., 0][rng.random(pc.shape[:2]) < 0.5] = 0
+    return pc
+
+
+@pytest.mark.parametrize("kind", ["random", "sparse", "dense", "none", "zero_strength"])
+@pytest.mark.parametrize(("h", "w"), [(23, 17), (1, 1), (8, 31)])
+def test_tint_matches_the_whole_array_float_path(kind, h, w):
+    """Byte-identical to the unmasked tint for every TEAM_COLORS entry and a
+    few off-palette teams; inputs untouched; a fresh array past the early
+    return even when nothing is covered, and `main` itself at it."""
+    rng = np.random.default_rng(h * 100 + w)
+    main, pc = _random_layers(rng, h, w)
+    pc = _coverage(rng, pc, kind)
+    main_before, pc_before = main.copy(), pc.copy()
+    for team in _TEAMS:
+        got = unit_sprites._tinted(main, pc, team)
+        assert np.array_equal(main, main_before) and np.array_equal(pc, pc_before), "the tint wrote to its inputs"
+        assert np.array_equal(got, _reference_tint(main_before, pc_before, team))
+        if team == (255, 255, 255):
+            assert got is main
+        else:
+            assert got is not main and not np.shares_memory(got, main)
+
+
+def test_tint_with_no_playercolor_is_main_itself():
+    main, _pc = _random_layers(np.random.default_rng(4), 6, 9)
+    for team in _TEAMS:
+        assert unit_sprites._tinted(main, None, team) is main
+
+
+@pytest.mark.parametrize("category", ["invisible", "revealer", "blocker", "other"])
+def test_marker_tint_matches_on_its_own_coverage(category):
+    """marker_for's coverage is LANCZOS-resampled, so it has partial strengths
+    and alpha-without-strength fringes that random layers only approximate."""
+    from descape import editor_markers
+
+    unit_sprites.marker_for.cache_clear()
+    for half_w in (8, 32):
+        main, coverage, _hx, _hy = editor_markers.marker_layers(category, half_w)
+        assert main.dtype == coverage.dtype == np.uint8
+        assert main.ndim == coverage.ndim == 3 and main.shape == coverage.shape and main.shape[2] == 4
+        for team_index, team in enumerate(unit_sprites.TEAM_COLORS):
+            got = unit_sprites.marker_for(category, team_index, half_w).rgba
+            assert np.array_equal(got, _reference_tint(main, coverage, team))
+
+
+def _shape_spies(monkeypatch):
+    """Spies on _tinted/_resize_rgba that record each array argument's
+    (shape, dtype) and forward to the real functions."""
+    seen = {"tint": [], "resize": []}
+    real_tint, real_resize = unit_sprites._tinted, unit_sprites._resize_rgba
+
+    def tint(m, p, team):
+        seen["tint"].extend((a.shape, a.dtype) for a in (m, p) if a is not None)
+        return real_tint(m, p, team)
+
+    def resize(a, width, height):
+        seen["resize"].append((a.shape, a.dtype))
+        return real_resize(a, width, height)
+
+    monkeypatch.setattr(unit_sprites, "_tinted", tint)
+    monkeypatch.setattr(unit_sprites, "_resize_rgba", resize)
+    return seen
+
+
+def _all_rgba_uint8(records) -> bool:
+    return bool(records) and all(len(s) == 3 and s[2] == 4 and d == np.uint8 for s, d in records)
+
+
+def test_the_sprite_draw_passes_rgba_uint8(install, monkeypatch):
+    install.write(build_sld(4))
+    install.register(angle_count=1, frame_count=1)
+    seen = _shape_spies(monkeypatch)
+    unit_sprites.clear_caches()
+    assert unit_sprites.sprite_for(CONST, 0.0, 3, 32) is not None
+    assert _all_rgba_uint8(seen["tint"]) and _all_rgba_uint8(seen["resize"])
+
+
+@pytest.mark.parametrize(("fw", "fh"), [(32, 32), (256, 256)])
+def test_a_single_piece_icon_passes_rgba_uint8(install, monkeypatch, fw, fh):
+    """Both of _build_icon's single-piece branches (tint the icon, tint the ink)."""
+    install.write(build_sld(1))
+    install.register(angle_count=1, frame_count=1)
+    rng = np.random.default_rng(11)
+    main, pc = _random_layers(rng, 90, 70)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 35, 80))
+    seen = _shape_spies(monkeypatch)
+    unit_sprites.clear_caches()
+    assert unit_sprites.icon_for(CONST, 0.0, 3, fw, fh) is not None
+    assert _all_rgba_uint8(seen["tint"]) and _all_rgba_uint8(seen["resize"])
+
+
+def test_a_composite_icon_passes_rgba_uint8(install, monkeypatch):
+    _register_tall_composite(install)
+    rng = np.random.default_rng(5)
+    main, pc = _random_layers(rng, 12, 10)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 5, 6))
+    seen = _shape_spies(monkeypatch)
+    unit_sprites.clear_caches()
+    assert unit_sprites.icon_for(CONST, 0.0, 2, 32, 32) is not None
+    assert _all_rgba_uint8(seen["tint"]) and _all_rgba_uint8(seen["resize"])
 
 
 # --- anchoring and scale ----------------------------------------------
@@ -933,6 +1179,22 @@ def test_the_scaled_cache_evicts_rather_than_growing(install, monkeypatch):
     assert len(unit_sprites._scaled_cache) == 2
 
 
+def test_the_native_cache_evicts_by_both_arrays_bytes(install, monkeypatch):
+    """_native_cache is a byte budget too (NATIVE_CACHE_BYTES): a cropped
+    entry ranges from 84B to 3MB on the corpus. An entry is charged for its
+    main AND playercolor arrays, so a budget of exactly one entry holds one."""
+    install.write(build_sld(4))
+    install.register(angle_count=4, frame_count=1)
+    main, pc, _hx, _hy = unit_sprites._native_frame(FILE_NAME, 0)
+    entry_bytes = main.nbytes + (0 if pc is None else pc.nbytes)
+    assert unit_sprites._native_cache._bytes == entry_bytes
+    monkeypatch.setattr(unit_sprites, "_native_cache", unit_sprites._ByteLRU(2 * entry_bytes))
+    for i in range(4):
+        assert unit_sprites._native_frame(FILE_NAME, i) is not None
+    assert len(unit_sprites._native_cache) == 2
+    assert unit_sprites._native_cache._bytes == 2 * entry_bytes
+
+
 def test_an_unresolvable_key_is_cached_so_it_is_not_re_walked(install, monkeypatch):
     """Caching the MISS is not an optimization, it is what makes the cache
     work at all: discovering that a unit resolves nowhere costs a full SLDFile
@@ -943,7 +1205,7 @@ def test_an_unresolvable_key_is_cached_so_it_is_not_re_walked(install, monkeypat
     install.register(angle_count=4, frame_count=3)  # claims 12 frames, 2 exist
     calls = []
     real = unit_sprites.load_sld
-    monkeypatch.setattr(unit_sprites, "load_sld", lambda p: (calls.append(p), real(p))[1])
+    monkeypatch.setattr(unit_sprites, "load_sld", lambda p, **k: (calls.append(p), real(p, **k))[1])
 
     for _ in range(5):
         assert unit_sprites.sprite_for(CONST, math.pi, 1, 32) is None
@@ -954,10 +1216,240 @@ def test_a_missing_file_is_also_cached_as_a_miss(install, monkeypatch):
     install.register(file_name="t_absent_x1")
     calls = []
     real = unit_sprites.load_sld
-    monkeypatch.setattr(unit_sprites, "load_sld", lambda p: (calls.append(p), real(p))[1])
+    monkeypatch.setattr(unit_sprites, "load_sld", lambda p, **k: (calls.append(p), real(p, **k))[1])
     for _ in range(5):
         assert unit_sprites.sprite_for(CONST, 0.0, 1, 32) is None
     assert len(calls) == 1
+
+
+def _count_walks(monkeypatch) -> list:
+    calls = []
+    real = unit_sprites.load_sld
+    monkeypatch.setattr(unit_sprites, "load_sld", lambda p, **k: (calls.append(p), real(p, **k))[1])
+    return calls
+
+
+def test_a_file_is_walked_once_across_scales_even_when_the_native_cache_thrashes(install, monkeypatch):
+    """The cold-first-paint cost (2026-09-27): a big file needed ~1100 native
+    frames per zoom level against the then 256-entry _native_cache, so each
+    new level missed them all again, and each miss used to re-walk its whole
+    .sld. A one-entry native cache models that thrash; the file must still be
+    walked once, by the index, while every miss still decodes."""
+    install.write(build_sld(4))
+    install.register(angle_count=4, frame_count=1)
+    monkeypatch.setattr(unit_sprites, "_native_cache", unit_sprites._LRU(1))
+    walks = _count_walks(monkeypatch)
+    decodes = []
+    real_decode = sld_decoder.SLDFile.decode_frame
+    monkeypatch.setattr(
+        sld_decoder.SLDFile, "decode_frame",
+        lambda s, i, d=None, **kw: decodes.append(i) or real_decode(s, i, d, **kw),
+    )
+
+    for half_w in (32, 16):
+        for a in range(4):
+            assert unit_sprites.sprite_for(CONST, 2 * math.pi * a / 4, 1, half_w) is not None
+    assert len(decodes) == 8, "the native cache did not miss on every resolve, so this proves nothing"
+    assert len(walks) == 1, f"walked the file {len(walks)} times"
+
+
+def test_sld_frame_count_and_native_frame_share_one_walk(install, monkeypatch):
+    install.write(build_sld(4))
+    install.register()
+    walks = _count_walks(monkeypatch)
+
+    assert unit_sprites.sld_frame_count(FILE_NAME) == 4
+    assert unit_sprites._native_frame(FILE_NAME, 0) is not None
+    assert len(walks) == 1
+
+
+def test_an_unreadable_file_is_negative_cached_in_the_index(install, monkeypatch):
+    """Same _MISS reasoning as the native cache, one level down: a native miss
+    on another frame of a file already known to be unreadable must not try it
+    again."""
+    install.write(b"not an sld at all")
+    install.register(angle_count=4, frame_count=1)
+    monkeypatch.setattr(unit_sprites, "_native_cache", unit_sprites._LRU(1))
+    walks = _count_walks(monkeypatch)
+
+    for a in range(4):
+        assert unit_sprites.sprite_for(CONST, 2 * math.pi * a / 4, 1, 32) is None
+    assert unit_sprites.sld_frame_count(FILE_NAME) is None
+    assert len(walks) == 1
+    assert unit_sprites._sld_index_cache[FILE_NAME] is unit_sprites._MISS
+
+
+@pytest.mark.parametrize("change", ["rewritten", "moved_away"])
+def test_a_file_that_changes_after_its_walk_falls_back_to_the_mark(install, change):
+    """The index holds no bytes, so a decode whose bytes were evicted from
+    _sld_bytes_cache re-reads the file. One that changed length (SLDError) or
+    vanished (OSError) since its walk falls back to the coloured mark rather
+    than decoding from stale offsets or raising."""
+    install.write(build_sld(4))
+    install.register(angle_count=1, frame_count=1)
+    assert unit_sprites._native_frame(FILE_NAME, 0) is not None
+
+    path = install.graphics / f"{FILE_NAME}.sld"
+    if change == "rewritten":
+        install.write(build_sld(5))
+    else:
+        path.rename(path.with_suffix(".gone"))
+    unit_sprites._sld_bytes_cache.clear()
+    assert unit_sprites._native_frame(FILE_NAME, 1) is None
+
+
+@pytest.mark.parametrize("change", ["rewritten", "moved_away"])
+def test_a_file_that_changes_while_its_bytes_are_cached_draws_the_walked_frame(install, change):
+    """The cached bytes are the ones the index walked, so they stay consistent
+    with it: the walked file keeps drawing until clear_caches(), which an
+    install change reaches, the same as _native_cache's decoded frames."""
+    install.write(build_sld(4))
+    install.register(angle_count=1, frame_count=1)
+    assert unit_sprites._native_frame(FILE_NAME, 0) is not None
+    walked = sld_decoder.SLDFile(build_sld(4)).decode_frame(1)
+    want = unit_sprites._cropped_to_ink(walked.main, walked.playercolor, walked.hotspot_x, walked.hotspot_y)
+
+    path = install.graphics / f"{FILE_NAME}.sld"
+    if change == "rewritten":
+        install.write(build_sld(5))
+    else:
+        path.rename(path.with_suffix(".gone"))
+    got = unit_sprites._native_frame(FILE_NAME, 1)
+    assert got is not None
+    assert np.array_equal(got[0], want[0]) and got[2:] == want[2:]
+
+    unit_sprites.clear_caches()
+    if change == "rewritten":
+        assert unit_sprites.sld_frame_count(FILE_NAME) == 5
+    else:
+        assert unit_sprites._native_frame(FILE_NAME, 1) is None
+
+
+# BC1's three-colour mode (c0 <= c1) with every index 3: a fully transparent block.
+BC1_CLEAR = struct.pack("<HH", 0, 0) + b"\xff" * 4
+
+
+def _every_kind_sld(main_box=(8, 4, 20, 20)) -> bytes:
+    """One 32x32 frame carrying MAIN, SHADOW, DAMAGE and PLAYERCOLOR. MAIN's box
+    sits off the origin with its top block row and left block column clear,
+    so PLAYERCOLOR (full coverage over MAIN's box, its only box) inks pixels
+    outside MAIN's ink; SHADOW covers the whole canvas on a box of its own."""
+    canvas = 32
+    x1, y1, x2, y2 = main_box
+    cols, rows = (x2 - x1) // 4, (y2 - y1) // 4
+    main = [BC1_CLEAR if r == 0 or c == 0 else bc1_solid(0x0800 * (r * cols + c + 1)) for r in range(rows)
+            for c in range(cols)]
+    layers = (
+        (MAIN, main, main_box),
+        (SHADOW, [bc4_solid(90)] * 64, (0, 0, canvas, canvas)),
+        (DAMAGE, [bc1_solid(0x07E0)] * len(main), None),
+        (PLAYERCOLOR, [bc4_solid()] * len(main), None),
+    )
+    out = bytearray(_HEADER.pack(MAGIC, 4, 1, 0, 16, 0))
+    out += _FRAME_HEADER.pack(canvas, canvas, 16, 24, MAIN | SHADOW | DAMAGE | PLAYERCOLOR, 0, 0)
+    for kind, blocks, box in layers:
+        out += _layer(kind, blocks, box)
+        out += bytes([0xAA]) * ((4 - len(out)) % 4)
+    return bytes(out)
+
+
+def test_native_frame_decodes_only_main_and_playercolor_inside_mains_box(install, monkeypatch):
+    """_native_frame reads MAIN, PLAYERCOLOR and the hotspot, so SHADOW and
+    DAMAGE are never decoded: the per-layer decode on either backend sees
+    neither. It also decodes into MAIN's box, not the canvas, so the result is
+    checked against the unfiltered, whole-canvas decode cropped to MAIN's ink:
+    same pixels, PLAYERCOLOR trimmed to MAIN's ink, hotspot on the same pixel."""
+    data = _every_kind_sld()
+    install.write(data)
+    install.register(angle_count=1, frame_count=1)
+    walked = sld_decoder.SLDFile(data)
+    assert {layer.kind.name for layer in walked.frames[0].layers} == {"MAIN", "SHADOW", "DAMAGE", "PLAYERCOLOR"}
+    full = walked.decode_frame(0)
+    assert full.shadow is not None and full.damage is not None
+    want = unit_sprites._cropped_to_ink(full.main, full.playercolor, full.hotspot_x, full.hotspot_y)
+    # Non-vacuity: PLAYERCOLOR inks outside MAIN's ink, SHADOW outside MAIN's box.
+    assert full.playercolor[4:8, 8:20, 3].all() and not full.main[4:8, 8:20, 3].any()
+    assert full.shadow[0:4, :, 3].all() and want[0].shape == (12, 8, 4) and want[2:] == (4, 16)
+
+    seen = []
+    for name in ("_decode_layer_native", "_decode_layer_image"):
+        real = getattr(sld_decoder.SLDFile, name)
+
+        def counted(self, *args, _real=real, **kwargs):
+            seen.append(next(a for a in args if isinstance(a, sld_decoder.SLDLayer)).kind.name)
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(sld_decoder.SLDFile, name, counted)
+    got = unit_sprites._native_frame(FILE_NAME, 0)
+
+    assert sorted(set(seen)) == ["MAIN", "PLAYERCOLOR"], seen
+    assert got is not None
+    assert np.array_equal(got[0], want[0]) and np.array_equal(got[1], want[1]) and got[2:] == want[2:]
+
+
+@pytest.mark.parametrize("main_box", [(24, 20, 36, 36), (32, 4, 40, 12), (4, 32, 12, 40)])
+def test_native_frame_matches_the_whole_canvas_crop_when_mains_box_leaves_the_canvas(install, main_box):
+    """A box past the right/bottom edge is clipped to the canvas before the
+    window is cut. One starting at or past the edge windows to zero size and
+    is a MISS, as its all-transparent whole canvas always was."""
+    data = _every_kind_sld(main_box)
+    install.write(data)
+    install.register(angle_count=1, frame_count=1)
+    full = sld_decoder.SLDFile(data).decode_frame(0)
+    want = unit_sprites._cropped_to_ink(full.main, full.playercolor, full.hotspot_x, full.hotspot_y)
+
+    got = unit_sprites._native_frame(FILE_NAME, 0)
+
+    if main_box[0] >= 32 or main_box[1] >= 32:
+        assert want is None and got is None
+        assert unit_sprites._native_cache[(FILE_NAME, 0)] is unit_sprites._MISS
+    else:
+        assert want is not None and want[0].shape == (8, 4, 4)
+        assert np.array_equal(got[0], want[0]) and np.array_equal(got[1], want[1]) and got[2:] == want[2:]
+
+
+def test_a_file_is_read_once_for_its_walk_and_every_decode(install, monkeypatch):
+    """Cold first paint re-read each .sld once per decoded frame (1457 whole-
+    file reads over 341 files on old-allies, 2026-09-28). The walk's bytes now
+    serve every decode while they stay in _sld_bytes_cache."""
+    install.write(build_sld(4))
+    install.register(angle_count=4, frame_count=1)
+    reads = []
+    real_read = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda p: (reads.append(p.name), real_read(p))[1])
+
+    for i in range(4):
+        assert unit_sprites._native_frame(FILE_NAME, i) is not None
+    assert reads == [f"{FILE_NAME}.sld"]
+    assert unit_sprites._sld_bytes_cache._bytes == len(build_sld(4))
+
+
+def test_an_evicted_files_bytes_are_read_again_and_recached(install, monkeypatch):
+    install.write(build_sld(4))
+    install.write(build_sld(4, colour_base=7), name="t_other_x1")
+    install.register(angle_count=4, frame_count=1)
+    size = len(build_sld(4))
+    monkeypatch.setattr(unit_sprites, "_sld_bytes_cache", unit_sprites._ByteLRU(size))
+    reads = []
+    real_read = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda p: (reads.append(p.name), real_read(p))[1])
+
+    assert unit_sprites._native_frame(FILE_NAME, 0) is not None
+    assert unit_sprites._native_frame("t_other_x1", 0) is not None
+    assert list(unit_sprites._sld_bytes_cache) == ["t_other_x1"]
+    assert unit_sprites._native_frame(FILE_NAME, 1) is not None
+    assert unit_sprites._native_frame(FILE_NAME, 2) is not None
+    assert reads == [f"{FILE_NAME}.sld", "t_other_x1.sld", f"{FILE_NAME}.sld"]
+
+
+def test_clear_caches_drops_the_sld_bytes(install):
+    install.write(build_sld(4))
+    install.register()
+    assert unit_sprites._native_frame(FILE_NAME, 0) is not None
+    assert FILE_NAME in unit_sprites._sld_bytes_cache
+    unit_sprites.clear_caches()
+    assert len(unit_sprites._sld_bytes_cache) == 0
+    assert unit_sprites._sld_bytes_cache._bytes == 0
 
 
 def test_the_sprite_is_cropped_to_its_ink_and_the_hotspot_follows(install):
@@ -1008,6 +1500,20 @@ def test_clear_caches_drops_a_stale_install(install):
     assert len(unit_sprites._native_cache) == 1
     unit_sprites.clear_caches()
     assert len(unit_sprites._native_cache) == 0
+
+
+def test_clear_caches_drops_the_sld_index(install):
+    """The index remembers a file's frame table, so without this an install
+    change (or a game update) keeps answering from the old file."""
+    install.write(build_sld(4))
+    install.register()
+    assert unit_sprites.sld_frame_count(FILE_NAME) == 4
+    assert FILE_NAME in unit_sprites._sld_index_cache
+
+    install.write(build_sld(6))
+    unit_sprites.clear_caches()
+    assert len(unit_sprites._sld_index_cache) == 0
+    assert unit_sprites.sld_frame_count(FILE_NAME) == 6
 
 
 # --- sprite_pieces_for (composite buildings) ---------------------------
@@ -1196,6 +1702,73 @@ def test_a_composite_icon_is_the_whole_assembly_not_the_parent_piece(install):
 
     assert parent_only.rgba.shape[:2] == (32, 32)
     assert composite.rgba.shape[:2] != parent_only.rgba.shape[:2]
+
+
+def _tint_spy(monkeypatch):
+    seen = []
+    real = unit_sprites._tinted
+
+    def spy(m, p, team):
+        seen.append(m.shape)
+        return real(m, p, team)
+
+    monkeypatch.setattr(unit_sprites, "_tinted", spy)
+    return seen, real
+
+
+@pytest.mark.parametrize(("fw", "fh", "tints_small"), [(32, 32, True), (256, 256, False)])
+def test_a_single_piece_icon_tints_the_smaller_of_native_and_footprint(
+    install, monkeypatch, fw, fh, tints_small
+):
+    """The icon equals resize(crop(_tinted(native))) whichever side is tinted,
+    and _tinted sees the smaller array: the icon when the footprint shrinks the
+    ink, the native ink when it enlarges it. The transparent margin is a test
+    device (real frames arrive cropped): it makes a misaligned playercolor crop
+    show up as a pixel mismatch."""
+    install.write(build_sld(1))
+    install.register(angle_count=1, frame_count=1)
+    rng = np.random.default_rng(11)
+    main, pc = _random_layers(rng, 90, 70)
+    main[:4, :, 3] = 0
+    main[-3:, :, 3] = 0
+    main[:, :5, 3] = 0
+    main[:, -2:, 3] = 0
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 35, 80))
+    seen, real_tinted = _tint_spy(monkeypatch)
+    unit_sprites.clear_caches()
+    team_index = 3
+    team = unit_sprites.TEAM_COLORS[team_index]
+    icon = unit_sprites.icon_for(CONST, 0.0, team_index, fw, fh)
+
+    ink = unit_sprites._cropped_to_ink(real_tinted(main, pc, team), None, 0, 0)[0]
+    ih, iw = icon.rgba.shape[:2]
+    assert (iw * ih < ink.shape[0] * ink.shape[1]) == tints_small
+    assert np.array_equal(icon.rgba, unit_sprites._resize_rgba(ink, iw, ih))
+    assert seen == [icon.rgba.shape if tints_small else ink.shape]
+
+
+def test_a_composite_icon_still_tints_each_piece_at_native_before_the_blend(install, monkeypatch):
+    """Composites keep the old order: each piece tints through its own mask at
+    native size, then the float source-over. Random, semi-transparent 12-tall
+    pieces 8px apart overlap, so the blend is not a plain paste here."""
+    _register_tall_composite(install)
+    rng = np.random.default_rng(5)
+    main, pc = _random_layers(rng, 12, 10)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 5, 6))
+    seen, real_tinted = _tint_spy(monkeypatch)
+    unit_sprites.clear_caches()
+    team_index = 2
+    team = unit_sprites.TEAM_COLORS[team_index]
+    icon = unit_sprites.icon_for(CONST, 0.0, team_index, 32, 32)
+
+    tinted = unit_sprites.SpriteDraw(rgba=real_tinted(main, pc, team), hotspot_x=5, hotspot_y=6)
+    old = unit_sprites._assembled_native([
+        unit_sprites.SpritePiece(draw=tinted, dx=0, dy=0),
+        unit_sprites.SpritePiece(draw=tinted, dx=0, dy=8),
+    ])
+    ink = unit_sprites._cropped_to_ink(old, None, 0, 0)[0]
+    assert seen == [main.shape, main.shape]
+    assert np.array_equal(icon.rgba, unit_sprites._resize_rgba(ink, *icon.rgba.shape[1::-1]))
 
 
 def test_an_unresolvable_icon_falls_back_to_none(install):

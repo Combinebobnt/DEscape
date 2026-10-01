@@ -770,6 +770,8 @@ def test_close_then_reopen_leaves_no_stale_group_refs() -> None:
         window.scenario.unit_manager.units[1].append(
             SyntheticUnit(x=8.5, y=8.5, unit_const=_BUILDING_CONST, reference_id=102)
         )
+        # The load built the index in Units mode, and re-entry reuses it, so announce the append.
+        window._after_unit_mutation()
         window.mode_combo.setCurrentText("View")
         window.mode_combo.setCurrentText("Units")
         mv.set_unit_selection([_entry_for(window, 1)])

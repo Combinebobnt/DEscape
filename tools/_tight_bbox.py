@@ -161,11 +161,12 @@ def dirty_bbox(cache, changed, with_sprites: bool, flatten: bool = False):
         return render.dirty_screen_bbox_iso(
             scenario, dirty, cache.elevations, cache._levels[0].proj, with_units=True,
             with_sprites=with_sprites, elevation_changed=set(), flatten_elevations=flatten,
-            extra_anchor_tiles=old_tiles,
+            extra_anchor_tiles=old_tiles, units_changed=True,
         )
     return render.dirty_screen_bbox_sloped(
         scenario, dirty, cache.elevations, cache.proj, with_units=True,
         with_sprites=with_sprites, elevation_changed=set(), extra_anchor_tiles=old_tiles,
+        units_changed=True,
     )
 
 

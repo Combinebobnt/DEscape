@@ -1036,8 +1036,8 @@ def plan_mirror_units(
     angular = mode.angular
     # The element that carries a SOURCE unit onto each destination slice:
     # destination slice h is sourced through h . source^-1, which is the whole
-    # group again but re-indexed, so a non-zero slice_index still yields
-    # identity first (a source unit's own position).
+    # group again but re-indexed, so the identity sits at elements[slice_index]
+    # and slice h is (h - slice_index) slices along from the source.
     elements: list[Element]
     if angular is not None:
         inverse = angular_invert(angular.elements[slice_index])
@@ -1090,9 +1090,15 @@ def plan_mirror_units(
     for unit in sources:
         span_x, span_y = tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
         is_gate = gate_orientation.is_gate(unit.unit_const)
-        seen = {_key(unit.x, unit.y)}
+        # Images are re-anchored on whole tiles, so an off-parity building's
+        # image onto its own footprint matches its canonical anchor, not its raw one.
+        seen = {_key(unit.x, unit.y), _key(*_image_position(unit.unit_const, unit.x, unit.y, n, "id"))}
         reported_span = False
         for index, element in enumerate(elements):
+            # The source itself stays put. Re-anchoring an off-parity building
+            # through identity lands it half a tile off, where it would "straddle" itself.
+            if element == "id" or element == ANGULAR_IDENTITY:
+                continue
             # Stage 2b: a gate's orientation lives in its const, so the image
             # gets the sibling the element maps it to -- and its anchor comes
             # from that sibling's own span, which is why the const is resolved
@@ -1124,7 +1130,9 @@ def plan_mirror_units(
                 UnitImage(
                     source=unit,
                     element=element,
-                    player=_rotated_owner(unit.player, player_ids, index * ownership_steps),
+                    player=_rotated_owner(
+                        unit.player, player_ids, (index - slice_index) % len(elements) * ownership_steps
+                    ),
                     unit_const=new_const,
                     x=x,
                     y=y,

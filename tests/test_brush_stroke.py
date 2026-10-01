@@ -402,6 +402,89 @@ def test_the_full_scan_guard_catches_an_unreported_beach_ring(monkeypatch) -> No
         window.close()
 
 
+def _release_record_guard(window, events):
+    """Drives one stroke and asserts the release's tile record (diffed over
+    the stroke's reported writes only) equals a full-map diff against the
+    stroke-start state. Returns the record's changes."""
+    from descape.edit_history import tile_state
+
+    mm = window.scenario.map_manager
+    start = [tile_state(t) for t in mm.terrain]
+    history = window.edit_history
+    real_build = history.build_stroke_record
+    built = []
+
+    def build(*args, **kwargs):
+        built.append(real_build(*args, **kwargs))
+        return built[-1]
+
+    history.build_stroke_record = build
+    try:
+        window.on_edit_stroke_start()
+        for tiles, modifiers in events:
+            window.on_edit_stroke_tiles(tiles, modifiers)
+        window.on_edit_stroke_end()
+    finally:
+        del history.build_stroke_record
+    oracle = [(i, start[i], tile_state(t)) for i, t in enumerate(mm.terrain) if tile_state(t) != start[i]]
+    (record,) = built
+    got = record.changes if record is not None else []
+    assert got == oracle, f"missing {sorted({c[0] for c in oracle} - {c[0] for c in got})[:8]}"
+    return got
+
+
+@pytest.mark.parametrize("case", ["draw", "beach_draw", "elevate", "lower", "shift_toggle", "set_level"])
+def test_the_release_record_equals_a_full_map_diff(case) -> None:
+    window, events = _guard_case(case)
+    try:
+        changes = _release_record_guard(window, events)
+        assert len(changes) > len(events), "the stroke changed almost nothing; the guard is vacuous"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_release_record_drops_a_tile_changed_then_restored() -> None:
+    """Raise (40, 40) on a level-1 hill (ramping its ring), Shift-lower
+    (41, 40) back (restoring both of those), then raise (60, 60): both are
+    written during the stroke but must not be recorded."""
+    from PyQt5.QtCore import Qt
+
+    window = _edit_window("set_level")
+    try:
+        mm = window.scenario.map_manager
+        window.elevation_level_spin.setValue(1)
+        _stroke(window, 40, 40)
+        window._on_tool_selected("elevation")
+        events = [([(40, 40)], 0), ([(41, 40)], Qt.ShiftModifier), ([(60, 60)], 0)]
+        changes = _release_record_guard(window, events)
+        recorded = {i for i, _old, _new in changes}
+        w = mm.map_width
+        assert 60 * w + 60 in recorded and 40 * w + 39 in recorded
+        assert not recorded & {40 * w + 40, 40 * w + 41}, "a restored tile was recorded"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_release_record_guard_catches_an_unreported_beach_ring(monkeypatch) -> None:
+    """Control: a mutation that under-reports its writes must fail the guard,
+    or the touched-only diff could silently drop tiles from undo."""
+    import descape.viewer as viewer_module
+
+    real = viewer_module.apply_beach_ring
+    monkeypatch.setattr(viewer_module, "apply_beach_ring", lambda *a, **k: (real(*a, **k), [])[1])
+    window, events = _guard_case("beach_draw")
+    try:
+        with pytest.raises(AssertionError, match="missing"):
+            _release_record_guard(window, events)
+    finally:
+        if window.edit_history.in_stroke:
+            window.on_edit_stroke_end()
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_paint_can_ignores_brush_size() -> None:
     window = _edit_window("fill")
     try:
@@ -601,6 +684,67 @@ def test_the_pulse_pauses_for_the_stroke_and_resumes_on_release() -> None:
         assert not map_view._stroke_active
         assert map_view._pulse_timer.isActive(), "the release should resume it"
     finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gc_is_off_for_the_stroke_and_back_on_after_release() -> None:
+    """A full collection mid-stroke was a 20-45 ms step spike on June."""
+    import gc
+
+    window = _edit_window("draw")
+    try:
+        _shown_flat(window)
+        map_view = window.map_view
+        _press(map_view, (40, 40))
+        assert not gc.isenabled(), "the stroke should hold gc off"
+        _release(map_view, (40, 40))
+        assert gc.isenabled(), "the release should turn it back on"
+    finally:
+        gc.enable()
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("closer", ["leave", "clear_image", "window_close"])
+def test_every_stroke_closing_path_turns_gc_back_on(closer: str) -> None:
+    import gc
+
+    from PyQt5.QtCore import QEvent
+
+    window = _edit_window("draw")
+    try:
+        _shown_flat(window)
+        map_view = window.map_view
+        _press(map_view, (40, 40))
+        assert not gc.isenabled()
+        window.edit_history.mark_saved()
+        if closer == "leave":
+            map_view.leaveEvent(QEvent(QEvent.Leave))
+        elif closer == "clear_image":
+            map_view.clear_image()
+        else:
+            window.close()
+        assert gc.isenabled(), f"{closer} left gc disabled"
+    finally:
+        gc.enable()
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_stroke_does_not_enable_gc_someone_else_disabled() -> None:
+    import gc
+
+    window = _edit_window("draw")
+    try:
+        _shown_flat(window)
+        map_view = window.map_view
+        gc.disable()
+        _press(map_view, (40, 40))
+        _release(map_view, (40, 40))
+        assert not gc.isenabled(), "the stroke re-enabled gc it never disabled"
+    finally:
+        gc.enable()
         window.edit_history.mark_saved()
         window.close()
 

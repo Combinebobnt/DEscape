@@ -272,7 +272,7 @@ def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
     output tests. Both splices are cut from the donor's own offsets in one
     expression, since the first one shifts everything after it.
     """
-    loaded = load_map_and_units(donor_path)
+    loaded = load_map_and_units(donor_path, fast_units=False)
     _build_units(loaded)
     _build_triggers(loaded)
 

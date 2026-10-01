@@ -794,6 +794,211 @@ def test_pack_warm_has_nothing_to_do(native_kernel, sprite_install, fake_farm, s
         assert SlopedChunkCache(scenario, s_elev, corner_rise, s_proj, tile_px, sprites=True).pack_warm_job(0) is None
 
 
+# --- terrain-id mirror and dense unique (maintainer plan 2026-09-27) --------
+
+# A horizontal run of tiles on screen, wide enough to cross several chunks.
+MIRROR_TILES = [(EDIT_X + k, EDIT_Y + k) for k in range(-12, 13)]
+
+
+def _mirror_cache(style: str, scenario, chunk_px: int = 512):
+    mm = scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    if style == "stepped":
+        elevations, proj = render.elevations_and_proj(scenario)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, chunk_px=chunk_px, sprites=False)
+    else:
+        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=chunk_px, sprites=False)
+    cache.set_grid(grid_bake(True, 60, 2))
+    return cache
+
+
+def _mirror_bbox(cache, style: str, scenario) -> tuple[int, int, int, int]:
+    """The viewer's dirty bbox over MIRROR_TILES, for a terrain-only paint."""
+    w = scenario.map_manager.map_width
+    changed: set = set()
+    bbox_fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox = bbox_fn(
+        scenario, [y * w + x for x, y in MIRROR_TILES], cache.elevations, cache.proj, with_units=True,
+        with_sprites=False, elevation_changed=changed,
+    )
+    assert bbox is not None and not changed, "a terrain-only paint moved an elevation"
+    return bbox
+
+
+def _paint_mirror_tiles(cache, style: str, scenario) -> tuple[int, int, int, int]:
+    """Paints MIRROR_TILES a new id, then takes the viewer's dirty bbox."""
+    w = scenario.map_manager.map_width
+    for x, y in MIRROR_TILES:
+        scenario.map_manager.terrain[y * w + x].terrain_id = NEW_TERRAIN_ID
+    return _mirror_bbox(cache, style, scenario)
+
+
+def _chunks_over(cache, mip: int, bbox) -> list[tuple[int, int, int]]:
+    canvas_w, canvas_h = cache.canvas_dims(mip)
+    lx0, ly0, lx1, ly1 = cache._bbox_to_level(mip, bbox)
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, max(0, lx0), max(0, ly0), min(canvas_w, lx1), min(canvas_h, ly1))
+    return [(mip, cx, cy) for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)]
+
+
+def _chunk_from(cache, key, how: str) -> np.ndarray:
+    if how == "get_chunk":
+        return cache.get_chunk(*key)
+    assert not cache.has_chunk(*key), f"{key} is cached, so prepare_chunk_job would decline"
+    job = cache.prepare_chunk_job(*key)
+    assert job is not None, f"{key}: no worker-safe path -- vacuous"
+    assert job.run(), f"{key}: the kernel declined"
+    return job.scratch
+
+
+def _assert_mirror_checks(style: str, checks, before: dict, after: dict) -> None:
+    """checks: (what, key, got). Every `what` must hold a chunk the edit changed."""
+    changed: dict[str, int] = {}
+    for what, key, got in checks:
+        changed[what] = changed.get(what, 0) + (not np.array_equal(before[key], after[key]))
+        if not np.array_equal(got, after[key]):
+            ys, _xs = np.nonzero(np.any(got != after[key], axis=-1))
+            pytest.fail(f"{style} {what} chunk {key}: {ys.size} px differ from a fresh cache after the paint")
+    vacuous = [what for what, n in changed.items() if not n]
+    assert not vacuous, f"{style}: the paint changed no {vacuous} chunk -- vacuous"
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_the_terrain_id_mirror_is_refreshed_by_patch(
+    native_kernel, sprite_install, fake_farm, synthetic_textures, style,  # noqa: F811
+):
+    """A paint patched into a live native cache reaches a patched cached
+    chunk, a worker job and a get_chunk() at uncached chunks, all equal to a
+    fresh cache built after the paint (whose mirror is read from the tiles)."""
+    scenario = _sloped_scenario()
+    chunk_px = 512 if style == "stepped" else 128
+    with composite_backend.use_backend("native"):
+        cache = _mirror_cache(style, scenario, chunk_px)
+        bbox = _mirror_bbox(cache, style, scenario)
+        if style == "stepped":
+            cache.render_rect(0, 0, *cache.canvas_dims(-2), mip=-2)
+            plan = [("patched", k) for k in _chunks_over(cache, -2, bbox)]
+            plan += [("worker job", k) for k in _chunks_over(cache, -1, bbox)]
+            plan += [("get_chunk", k) for k in _chunks_over(cache, 0, bbox)]
+        else:
+            over = _chunks_over(cache, 0, bbox)
+            for key in over[0::3]:
+                cache.get_chunk(*key)
+            hows = ("patched", "worker job", "get_chunk")
+            plan = [(hows[i % 3], k) for i, k in enumerate(over)]
+        probe = _mirror_cache(style, scenario, chunk_px)
+        before = {k: probe.get_chunk(*k).copy() for _what, k in plan}
+
+        assert _paint_mirror_tiles(cache, style, scenario) == bbox
+        cache.patch(bbox, elevation_changed=set())
+        fresh = _mirror_cache(style, scenario, chunk_px)
+        after = {k: fresh.get_chunk(*k) for _what, k in plan}
+        checks = []
+        for what, key in plan:
+            if what == "patched":
+                assert cache.has_chunk(*key), f"{key} was not cached before the patch"
+                checks.append((what, key, cache._cache[key]))
+            else:
+                checks.append((what, key, _chunk_from(cache, key, "get_chunk" if what == "get_chunk" else "job")))
+    _assert_mirror_checks(style, checks, before, after)
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_the_terrain_id_mirror_is_refreshed_by_invalidate_region(
+    native_kernel, sprite_install, fake_farm, synthetic_textures, style,  # noqa: F811
+):
+    """Same paint, through invalidate_region(bbox): the evicted chunks come
+    back equal to a fresh cache, by get_chunk() and by worker job."""
+    scenario = _sloped_scenario()
+    mip, chunk_px = (-2, 512) if style == "stepped" else (0, 128)
+    with composite_backend.use_backend("native"):
+        cache = _mirror_cache(style, scenario, chunk_px)
+        bbox = _mirror_bbox(cache, style, scenario)
+        over = _chunks_over(cache, mip, bbox)
+        before = {k: cache.get_chunk(*k).copy() for k in over}
+
+        assert _paint_mirror_tiles(cache, style, scenario) == bbox
+        cache.invalidate_region(bbox)
+        assert not any(cache.has_chunk(*k) for k in over), "invalidate_region left a chunk over the bbox"
+        fresh = _mirror_cache(style, scenario, chunk_px)
+        after = {k: fresh.get_chunk(*k) for k in over}
+        checks = []
+        for i, key in enumerate(over):
+            how = "get_chunk" if i % 2 == 0 else "worker job"
+            checks.append((how, key, _chunk_from(cache, key, "get_chunk" if how == "get_chunk" else "job")))
+    _assert_mirror_checks(style, checks, before, after)
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_whole_canvas_bbox_rereads_every_tile(native_kernel, monkeypatch, style):
+    scenario = _sloped_scenario()
+    mm = scenario.map_manager
+    with composite_backend.use_backend("native"):
+        cache = _mirror_cache(style, scenario)
+    for tile in mm.terrain[::7]:
+        tile.terrain_id = NEW_TERRAIN_ID
+    want = native_composite._terrain_ids(scenario, np.arange(mm.map_width * mm.map_height))
+    assert not np.array_equal(cache._terrain_ids, want), "the mirror already matched -- vacuous"
+
+    def enumerate_rect(*_args):
+        raise AssertionError("a whole-canvas refresh enumerated the rect instead of reading every tile")
+
+    monkeypatch.setattr(iso_geometry, "tiles_in_screen_rect", enumerate_rect)
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+    assert cache._terrain_ids.dtype == np.int64
+    assert np.array_equal(cache._terrain_ids, want)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.int32])
+def test_dense_unique_matches_np_unique(monkeypatch, dtype):
+    rng = np.random.default_rng(20260927)
+    bound = 111
+    cases = {
+        "random": rng.integers(0, bound, size=5000).astype(dtype),
+        "sparse": rng.choice(np.array([0, 3, 17, 110], dtype=dtype), size=300),
+        "one value": np.full(40, 17, dtype=dtype),
+        "empty": np.zeros(0, dtype=dtype),
+        "negative": np.array([5, -1, 5, 2], dtype=dtype),
+        "at the bound": np.array([5, bound, 0], dtype=dtype),
+    }
+    for name, values in cases.items():
+        want_uniq, want_inv = np.unique(values, return_inverse=True)
+        uniq, inv = native_composite._dense_unique(values, bound)
+        assert uniq.dtype == values.dtype and np.array_equal(uniq, want_uniq), name
+        assert inv.ndim == 1 and np.array_equal(inv, want_inv.reshape(-1)), name
+        assert np.array_equal(uniq[inv], values), name
+
+    def no_unique(*_args, **_kwargs):
+        raise AssertionError("bounded values fell back to np.unique")
+
+    monkeypatch.setattr(np, "unique", no_unique)
+    uniq, inv = native_composite._dense_unique(cases["random"], bound)
+    assert np.array_equal(uniq[inv], cases["random"])
+
+
+def test_no_terrain_id_mirror_off_native(sprite_install, fake_farm, synthetic_textures):  # noqa: F811
+    """The numpy backend and Flat keep no mirror, and the numpy composite
+    reads live tiles even when a cache holds a wrong one, so it stays an
+    independent oracle for the native path."""
+    scenario = _sloped_scenario()
+    mm = scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    with composite_backend.use_backend("numpy"):
+        caches = {style: _mirror_cache(style, scenario) for style in ("stepped", "sloped")}
+        assert FlatChunkCache(scenario, tile_px)._terrain_ids is None
+        for style, cache in caches.items():
+            assert cache._terrain_ids is None, style
+            key = _chunk_of_tile(cache, EDIT_X, EDIT_Y)
+            want = cache.get_chunk(*key).copy()
+            cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+            cache._terrain_ids = np.full(mm.map_width * mm.map_height, NEW_TERRAIN_ID, dtype=np.int64)
+            assert np.array_equal(cache.get_chunk(*key), want), f"{style}: the numpy path read the mirror"
+    if composite_backend.available():
+        with composite_backend.use_backend("native"):
+            assert FlatChunkCache(scenario, tile_px)._terrain_ids is None
+            assert _mirror_cache("stepped", scenario)._terrain_ids is not None
+
+
 # --- index-producer destination uniqueness --------------------------------
 #
 # A numpy fancy-index read-modify-write reads each destination once; a C loop

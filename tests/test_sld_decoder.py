@@ -29,17 +29,23 @@ walk. No real-file check can catch it.
 
 from __future__ import annotations
 
+import contextlib
+import itertools
+import os
+import re
 import struct
 
 import numpy as np
 import pytest
 
+from descape import asset_source, composite_backend, sld_decoder, unit_sprites
 from descape.sld_decoder import (
     MAGIC,
     DecodedFrame,
     LayerKind,
     SLDError,
     SLDFile,
+    SLDLayer,
     decode_bc1_blocks,
     decode_bc4_blocks,
     load_sld,
@@ -828,3 +834,607 @@ def test_a_box_reaching_past_the_canvas_edge_is_clipped_not_wrapped():
     assert list(main[4, 4]) == [248, 0, 0, 255]
     assert main[0:4, :, 3].max() == 0
     assert main[:, 0:4, 3].max() == 0
+
+
+# -- released data (an index that holds no bytes) ------------------------
+
+
+def _every_layer_kind() -> bytes:
+    """All four decoded kinds plus a skipped OUTLINE in one frame, then a
+    frame whose MAIN is a delta over it."""
+    return build_sld(
+        [
+            Frame(
+                [
+                    Layer(LayerKind.MAIN, box=(0, 0, 8, 4), blocks=[solid_bc1(0x001F), solid_bc1()]),
+                    Layer(LayerKind.SHADOW, box=(0, 0, 8, 8), blocks=[solid_bc4()] * 4),
+                    Layer(LayerKind.OUTLINE),
+                    Layer(LayerKind.DAMAGE, blocks=[solid_bc1(0x07E0)] * 2),
+                    Layer(LayerKind.PLAYERCOLOR, blocks=[solid_bc4(64)] * 2),
+                ],
+                canvas=(8, 8),
+            ),
+            Frame(
+                [Layer(LayerKind.MAIN, box=(0, 0, 8, 4), flag0=0x80, commands=[(1, 1)], blocks=[solid_bc1(0x0800)])],
+                canvas=(8, 8),
+            ),
+        ]
+    )
+
+
+def _released_fixtures() -> dict[str, bytes]:
+    return {
+        "delta_chain": _delta_chain(5),
+        "every_layer_kind": _every_layer_kind(),
+        "variant_14_delta": build_sld(
+            [
+                Frame([Layer(LayerKind.MAIN, box=(0, 0, 4, 4), commands=[(0, 1)], blocks=[solid_bc1()])]),
+                Frame([Layer(LayerKind.MAIN, box=(0, 0, 4, 4), flag0=0x80, commands=[(1, 0)], blocks=[])]),
+            ],
+            layout_tag=14,
+        ),
+    }
+
+
+def _assert_same_frame(got: DecodedFrame, want: DecodedFrame) -> None:
+    assert (got.width, got.height, got.hotspot_x, got.hotspot_y) == (
+        want.width,
+        want.height,
+        want.hotspot_x,
+        want.hotspot_y,
+    )
+    for kind in ("main", "shadow", "damage", "playercolor"):
+        a, b = getattr(got, kind), getattr(want, kind)
+        assert (a is None) == (b is None), kind
+        if a is not None:
+            assert np.array_equal(a, b), kind
+
+
+@pytest.mark.parametrize("name", sorted(_released_fixtures()))
+def test_decoding_with_released_data_matches_decoding_with_the_bytes_held(name):
+    """unit_sprites caches indexes walked with keep_data=False and passes each
+    decode the file's bytes. Every pixel has to come out as it did when the
+    index held them, and decoding must not stash the bytes back on the shared
+    index."""
+    data = _released_fixtures()[name]
+    held = SLDFile(data)
+    released = SLDFile(data, keep_data=False)
+
+    assert released.data is None
+    assert released.byte_length == len(data) == held.byte_length
+    assert released.frame_count == held.frame_count > 1
+    for index in range(held.frame_count):
+        _assert_same_frame(released.decode_frame(index, bytes(data)), held.decode_frame(index))
+    assert released.data is None
+
+
+def test_load_sld_can_release_the_bytes(tmp_path):
+    path = tmp_path / "t.sld"
+    path.write_bytes(_delta_chain(2))
+
+    sld = load_sld(path, keep_data=False)
+
+    assert sld is not None and sld.data is None and sld.frame_count == 3
+    assert load_sld(path).data == path.read_bytes()
+
+
+def test_a_released_index_decoded_without_bytes_raises_sld_error():
+    """SLDError, not a TypeError from inside numpy: a rendering caller only
+    catches the former."""
+    with pytest.raises(SLDError, match="keep_data=False"):
+        SLDFile(_delta_chain(1), keep_data=False).decode_frame(1)
+
+
+@pytest.mark.parametrize("change", ["grown", "shrunk"])
+def test_a_file_whose_length_changed_since_its_walk_raises_sld_error(change):
+    """The cached index's offsets belong to the bytes it walked. A file
+    replaced on disk (a game update) is refused rather than decoded from
+    offsets into the wrong bytes. Grown by pad bytes on purpose: the frame
+    still decodes cleanly from those bytes, so only the length check stops it."""
+    data = _delta_chain(3)
+    changed = data + bytes([PAD_BYTE]) * 4 if change == "grown" else data[:-1]
+    sld = SLDFile(data, keep_data=False)
+
+    with pytest.raises(SLDError, match="changed on disk"):
+        sld.decode_frame(3, changed)
+    with pytest.raises(SLDError, match="changed on disk"):
+        sld.decode_frame(3, changed, kinds=())
+    assert sld.decode_frame(3, data).main[0, 0, 0] == 248
+
+
+# -- decoding only some layers -------------------------------------------
+
+_DECODED_KINDS = {
+    "main": LayerKind.MAIN,
+    "shadow": LayerKind.SHADOW,
+    "damage": LayerKind.DAMAGE,
+    "playercolor": LayerKind.PLAYERCOLOR,
+}
+
+
+def _kinds_fixtures() -> dict[str, bytes]:
+    """Every decoded kind in one frame (plus a MAIN delta), and a delta SHADOW."""
+    return {
+        "every_layer_kind": _every_layer_kind(),
+        "shadow_delta": _delta_chain(3, kind=LayerKind.SHADOW, block=solid_bc4(90)),
+    }
+
+
+def _refusing_kernel():
+    return type("Refusing", (), {"sld_decode_layer": staticmethod(lambda *_args: False)})()
+
+
+@pytest.mark.parametrize("backend", ["numpy", "native", "refused"])
+@pytest.mark.parametrize("name", sorted(_kinds_fixtures()))
+def test_a_kinds_filter_leaves_the_other_layers_undecoded_and_the_kept_ones_unchanged(
+    backend, name, monkeypatch
+):
+    """unit_sprites reads only MAIN and PLAYERCOLOR, so it asks for only those.
+    Every subset of the four kinds, on every frame: a filtered field is None, a
+    kept one equals the unfiltered decode's. The kernel-refusal fallback counts
+    one disagreement per layer it decodes, so it also shows a filtered layer is
+    skipped before any decode, not decoded and dropped."""
+    if backend != "numpy" and not composite_backend.available():
+        if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+            pytest.fail(f"DESCAPE_REQUIRE_NATIVE=1 but {composite_backend.unavailable_reason}")
+        pytest.skip(composite_backend.unavailable_reason)
+    data = _kinds_fixtures()[name]
+    with composite_backend.use_backend("numpy"):
+        sld = SLDFile(data)
+        want = [sld.decode_frame(index) for index in range(sld.frame_count)]
+    fields = tuple(_DECODED_KINDS)
+    subsets = [c for n in range(len(fields) + 1) for c in itertools.combinations(fields, n)]
+
+    if backend == "refused":
+        # Not inside use_backend: monkeypatch's undo would then put back the real
+        # kernel use_backend swapped in, leaking native into every later test.
+        monkeypatch.setattr(composite_backend, "native", _refusing_kernel())
+        backend_context = contextlib.nullcontext()
+    else:
+        backend_context = composite_backend.use_backend(backend)
+    with backend_context:
+        kept_seen = 0
+        for index, full in enumerate(want):
+            for subset in subsets:
+                before = sld_decoder.native_disagreements
+                got = sld.decode_frame(index, kinds=[_DECODED_KINDS[f] for f in subset])
+                assert (got.width, got.height, got.hotspot_x, got.hotspot_y) == (
+                    full.width, full.height, full.hotspot_x, full.hotspot_y
+                )
+                kept = 0
+                for field in fields:
+                    a, b = getattr(got, field), getattr(full, field)
+                    if field not in subset:
+                        assert a is None, (index, subset, field)
+                        continue
+                    assert (a is None) == (b is None), (index, subset, field)
+                    if b is not None:
+                        assert np.array_equal(a, b), (index, subset, field)
+                        kept += 1
+                if backend == "refused":
+                    assert sld_decoder.native_disagreements - before == kept, (index, subset)
+                kept_seen += kept
+    assert kept_seen > 0
+    assert any(full.shadow is not None for full in want)
+
+
+# -- the walk against a step-by-step reference ---------------------------
+
+
+def reference_walk(data: bytes) -> list[tuple]:
+    """The walk as it stood before it was flattened for speed (2026-09-28),
+    transcribed step by step: one unpack per field, IntFlag tests, checks in
+    their original order. The decoder's walk must agree with it on every field
+    of every layer and on every error message.
+
+    Each frame comes back as (width, height, hotspot_x, hotspot_y, frame_type,
+    frame_index, layers), each layer as _layer_fields() spells it out.
+    """
+    try:
+        magic, _version, frame_count, _unknown1, layout_tag = struct.unpack_from("<4s4H", data, 0)
+    except struct.error as exc:
+        raise SLDError(f"too short to hold an SLD header ({len(data)} bytes)") from exc
+    if magic != MAGIC:
+        raise SLDError(f"not an SLD file: magic {magic!r}")
+    if layout_tag not in (14, 16):
+        raise SLDError(f"unsupported layout variant {layout_tag} (only 14 or 16 is readable)")
+    if len(data) < layout_tag:
+        raise SLDError(f"too short to hold an SLD header ({len(data)} bytes)")
+
+    chains = dict.fromkeys(_LAYER_ORDER, 0)
+    frames = []
+    offset = layout_tag
+    for position in range(frame_count):
+        try:
+            width, height, hotspot_x, hotspot_y, frame_type, _unknown5, frame_index = _FRAME_HEADER.unpack_from(data, offset)
+        except struct.error as exc:
+            raise SLDError(f"frame {position} header runs past the end of the file") from exc
+        offset += _FRAME_HEADER.size
+        layers = []
+        main_box = None
+        for kind in _LAYER_ORDER:
+            if not frame_type & kind:
+                continue
+            start = offset
+            try:
+                (length,) = struct.unpack_from("<I", data, offset)
+            except struct.error as exc:
+                raise SLDError(f"frame {position} {kind.name} layer length runs past the end of the file") from exc
+            offset += 4
+            if length < 4 or start + length > len(data):
+                raise SLDError(f"frame {position} {kind.name} layer length {length} is out of range")
+            if kind is not LayerKind.OUTLINE:
+                try:
+                    if kind in (LayerKind.MAIN, LayerKind.SHADOW):
+                        x1, y1, x2, y2, flag0, flag1 = struct.unpack_from("<4H2B", data, offset)
+                        offset += 10
+                        box = (x1, y1, x2 - x1, y2 - y1)
+                        if kind is LayerKind.MAIN:
+                            main_box = box
+                    else:
+                        flag0, flag1 = struct.unpack_from("<2B", data, offset)
+                        offset += 2
+                        box = main_box if main_box is not None else (0, 0, 0, 0)
+                    (command_count,) = struct.unpack_from("<H", data, offset)
+                except struct.error as exc:
+                    raise SLDError(f"frame {position} {kind.name} layer header runs past the end of the file") from exc
+                offset += 2
+                if box[2] < 0 or box[3] < 0:
+                    raise SLDError(f"frame {position} {kind.name} layer has a negative bounding box {box}")
+                block_offset = offset + 2 * command_count
+                if block_offset > len(data):
+                    raise SLDError(f"frame {position} {kind.name} command array runs past the end of the file")
+                layers.append((kind, *box, flag0, flag1, frame_index, command_count, offset, block_offset, chains[kind]))
+                chains[kind] += 1
+            end = start + length
+            offset = end + (layout_tag - end) % 4
+        frames.append((width, height, hotspot_x, hotspot_y, frame_type, frame_index, tuple(layers)))
+    return frames
+
+
+def _layer_fields(layer) -> tuple:
+    return (
+        layer.kind,
+        layer.x1,
+        layer.y1,
+        layer.width,
+        layer.height,
+        layer.flag0,
+        layer.flag1,
+        layer.frame_index,
+        layer.command_count,
+        layer.command_offset,
+        layer.block_offset,
+        layer.chain_pos,
+    )
+
+
+def decoder_walk(data: bytes) -> list[tuple]:
+    """The decoder's walk in reference_walk()'s shape, read back through the
+    public SLDFrame/SLDLayer views."""
+    sld = SLDFile(data)
+    for frame in sld.frames:
+        for layer in frame.layers:
+            assert type(layer.kind) is LayerKind
+    return [
+        (f.width, f.height, f.hotspot_x, f.hotspot_y, f.frame_type, f.frame_index, tuple(map(_layer_fields, f.layers)))
+        for f in sld.frames
+    ]
+
+
+def _outcome(walk, data: bytes):
+    try:
+        return "walked", walk(data)
+    except SLDError as exc:
+        return "refused", str(exc)
+
+
+def _mixed_frames() -> list[Frame]:
+    """Every shape the walk branches on: all five kinds with slack, masks with
+    no MAIN (a zero box), an empty frame, frame_type high bits the layer loop
+    must ignore, a box off the origin, a delta, a lone OUTLINE."""
+    return [
+        Frame(
+            [
+                Layer(LayerKind.MAIN, box=(4, 8, 12, 16), blocks=[solid_bc1()] * 4, length_slack=3),
+                Layer(LayerKind.SHADOW, box=(0, 4, 16, 12), blocks=[solid_bc4()] * 8, length_slack=1),
+                Layer(LayerKind.OUTLINE, length_slack=6),
+                Layer(LayerKind.DAMAGE, flag0=0x02, blocks=[solid_bc1(0x07E0)] * 4, length_slack=2),
+                Layer(LayerKind.PLAYERCOLOR, flag1=0x09, blocks=[solid_bc4(64)] * 4),
+            ],
+            canvas=(24, 24),
+            hotspot=(12, 20),
+        ),
+        Frame([Layer(LayerKind.DAMAGE, blocks=[]), Layer(LayerKind.PLAYERCOLOR, commands=[], blocks=[])]),
+        Frame([], frame_type=0),
+        Frame([Layer(LayerKind.MAIN, box=(8, 0, 12, 4), length_slack=1)], frame_type=0xE1, frame_index=9),
+        Frame([Layer(LayerKind.SHADOW, box=(0, 0, 8, 4), blocks=[solid_bc4(9)] * 2)]),
+        Frame([Layer(LayerKind.MAIN, box=(8, 0, 12, 4), flag0=0x81, commands=[(1, 0)], blocks=[])], frame_index=12),
+        Frame([Layer(LayerKind.OUTLINE, length_slack=2)], canvas=(4, 4)),
+        Frame([Layer(LayerKind.MAIN, box=(0, 0, 4, 4), flag0=0x80, commands=[(1, 0)], blocks=[])], frame_index=0),
+    ]
+
+
+def _walk_fixtures() -> dict[str, bytes]:
+    return {
+        "mixed_16": build_sld(_mixed_frames()),
+        "mixed_14": build_sld(_mixed_frames(), layout_tag=14),
+        "every_layer_kind": _every_layer_kind(),
+        "delta_chain": _delta_chain(40),
+        "variant_14_delta": _released_fixtures()["variant_14_delta"],
+    }
+
+
+def reference_decoder(data: bytes):
+    """decode_frame() as it stood over one SLDLayer object per layer, built
+    from reference_walk(): per-kind lists of those objects, resolved back to
+    the nearest non-delta and decoded forward. It reuses the module's own
+    per-layer block decode, which the scalar oracle above pins, so what this
+    checks is the chain resolution and every layer field fed into it."""
+    frames = reference_walk(data)
+    chains = {kind: [] for kind in _LAYER_ORDER}
+    frame_layers = []
+    for frame in frames:
+        layers = tuple(SLDLayer(*fields) for fields in frame[6])
+        for layer in layers:
+            chains[layer.kind].append(layer)
+        frame_layers.append(layers)
+
+    def decode(index: int) -> DecodedFrame:
+        width, height, hotspot_x, hotspot_y = frames[index][:4]
+        arrays = {}
+        for layer in frame_layers[index]:
+            if layer.width <= 0 or layer.height <= 0:
+                continue
+            chain = chains[layer.kind]
+            start = layer.chain_pos
+            while start > 0 and chain[start].is_delta:
+                start -= 1
+            blocks = SLDFile._decode_blocks(None, chain[start], None, None, data)
+            for position in range(start + 1, layer.chain_pos + 1):
+                blocks = SLDFile._decode_blocks(None, chain[position], blocks, chain[position - 1], data)
+            image = sld_decoder._blocks_to_image(blocks, layer.width // 4, layer.height // 4)
+            arrays[layer.kind] = sld_decoder._paste_on_canvas(image, layer.x1, layer.y1, width, height)
+        return DecodedFrame(
+            width,
+            height,
+            hotspot_x,
+            hotspot_y,
+            main=arrays.get(LayerKind.MAIN),
+            shadow=arrays.get(LayerKind.SHADOW),
+            damage=arrays.get(LayerKind.DAMAGE),
+            playercolor=arrays.get(LayerKind.PLAYERCOLOR),
+        )
+
+    return decode
+
+
+def test_frames_reads_back_as_the_sequence_the_frame_list_was():
+    """`frames` used to be a list. It is now a view over the flat index, so the
+    list behaviour callers (tools/scan_sprite_reach.py) rely on is pinned."""
+    sld = SLDFile(_walk_fixtures()["mixed_16"])
+    count = sld.frame_count
+
+    assert len(sld.frames) == count == len(_mixed_frames())
+    assert list(sld.frames) == [sld.frames[i] for i in range(count)]
+    assert sld.frames[-1] == sld.frames[count - 1]
+    assert sld.frames[1:3] == [sld.frames[1], sld.frames[2]]
+    with pytest.raises(IndexError):
+        sld.frames[count]
+    with pytest.raises(IndexError):
+        sld.frames[-count - 1]
+
+
+@pytest.mark.parametrize("name", sorted(_walk_fixtures()))
+def test_every_frame_decodes_as_the_object_per_layer_index_did(name):
+    """The flat index hands decode_frame() layers rebuilt from its arrays and
+    resolves delta chains through arrays of layer ids. Every frame, from held
+    and from released bytes, must match the object-per-layer decode."""
+    data = _walk_fixtures()[name]
+    decode = reference_decoder(data)
+    held, released = SLDFile(data), SLDFile(data, keep_data=False)
+
+    drawn = 0
+    for index in range(held.frame_count):
+        want = decode(index)
+        _assert_same_frame(held.decode_frame(index), want)
+        _assert_same_frame(released.decode_frame(index, data), want)
+        drawn += sum(getattr(want, kind) is not None for kind in ("main", "shadow", "damage", "playercolor"))
+    assert drawn >= held.frame_count - 2
+
+
+@pytest.mark.parametrize("name", sorted(_walk_fixtures()))
+def test_the_walk_records_every_field_the_step_by_step_reference_does(name):
+    """Every frame header field and every located layer's twelve fields, chain
+    positions included, against the reference transcription."""
+    data = _walk_fixtures()[name]
+    reference = reference_walk(data)
+
+    assert sum(len(frame[6]) for frame in reference) > 1
+    assert decoder_walk(data) == reference
+
+
+# -- decoding into MAIN's box --------------------------------------------
+
+
+def _main_window(fields: tuple, width: int, height: int) -> tuple[int, int, int, int]:
+    """MAIN's box clipped to the canvas, from reference_walk's layer fields, or
+    the whole canvas when the frame has no drawable MAIN."""
+    for layer in (SLDLayer(*f) for f in fields):
+        if layer.kind is LayerKind.MAIN and layer.width > 0 and layer.height > 0:
+            return (
+                min(layer.x1, width), min(layer.y1, height),
+                min(layer.x1 + layer.width, width), min(layer.y1 + layer.height, height),
+            )
+    return 0, 0, width, height
+
+
+def _window_fixtures() -> dict[str, bytes]:
+    """The walk fixtures, plus MAIN boxes past the right/bottom edge (clipped)
+    and starting at or past it (zero-size), each with a SHADOW reaching
+    outside MAIN's box so the slice has something to cut."""
+    shadow = Layer(LayerKind.SHADOW, box=(0, 0, 8, 8), blocks=[solid_bc4()] * 4)
+
+    def edge(box):
+        cols, rows = (box[2] - box[0]) // 4, (box[3] - box[1]) // 4
+        return build_sld(
+            [Frame([Layer(LayerKind.MAIN, box=box, blocks=[solid_bc1()] * (cols * rows)), shadow,
+                    Layer(LayerKind.PLAYERCOLOR, blocks=[solid_bc4(64)] * (cols * rows))], canvas=(8, 8))]
+        )
+
+    return {
+        **_walk_fixtures(),
+        "clipped": edge((4, 4, 12, 12)),
+        "off_right": edge((8, 0, 12, 4)),
+        "off_bottom": edge((0, 8, 4, 12)),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_window_fixtures()))
+def test_a_windowed_decode_is_the_whole_canvas_decode_sliced_to_mains_box(name):
+    """Every frame: each array is the unwindowed one sliced to MAIN's box
+    clipped to the canvas, width/height are the window's and the hotspot is
+    rebased onto it, so the hotspot still marks the same pixel."""
+    data = _window_fixtures()[name]
+    reference = reference_walk(data)
+    sld = SLDFile(data)
+
+    narrowed = 0
+    for index, frame in enumerate(reference):
+        width, height, hotspot_x, hotspot_y = frame[:4]
+        x0, y0, x1, y1 = _main_window(frame[6], width, height)
+        full = sld.decode_frame(index)
+        got = sld.decode_frame(index, window_to_main=True)
+        assert (got.width, got.height) == (x1 - x0, y1 - y0), index
+        assert (got.hotspot_x, got.hotspot_y) == (hotspot_x - x0, hotspot_y - y0), index
+        for field in ("main", "shadow", "damage", "playercolor"):
+            a, b = getattr(got, field), getattr(full, field)
+            assert (a is None) == (b is None), (index, field)
+            if b is not None:
+                assert a.shape == (y1 - y0, x1 - x0, 4), (index, field)
+                assert np.array_equal(a, b[y0:y1, x0:x1]), (index, field)
+        narrowed += (x0, y0, x1, y1) != (0, 0, width, height)
+    if name in ("mixed_16", "mixed_14", "clipped", "off_right", "off_bottom"):
+        assert narrowed, "no frame's window differs from its canvas"
+
+
+def test_a_main_box_past_the_canvas_edge_windows_to_the_clipped_box_or_to_nothing():
+    fixtures = _window_fixtures()
+    clipped = SLDFile(fixtures["clipped"]).decode_frame(0, window_to_main=True)
+    assert (clipped.width, clipped.height, clipped.hotspot_x, clipped.hotspot_y) == (4, 4, 0, 0)
+    assert clipped.main[..., 3].all() and clipped.shadow.shape == (4, 4, 4)
+    for name, shape in (("off_right", (4, 0, 4)), ("off_bottom", (0, 4, 4))):
+        empty = SLDFile(fixtures[name]).decode_frame(0, window_to_main=True)
+        assert empty.main.shape == empty.playercolor.shape == empty.shadow.shape == shape, name
+        assert unit_sprites._cropped_to_ink(empty.main, empty.playercolor, empty.hotspot_x, empty.hotspot_y) is None
+
+
+# Bytes from a layer's start to its command array: the u32 length, then a box
+# and two flags (MAIN, SHADOW) or just the flags (DAMAGE, PLAYERCOLOR), then a u16 count.
+_GRAPHICS_HEAD_SIZE = 4 + 10 + 2
+_MASK_HEAD_SIZE = 4 + 2 + 2
+
+# The six ways a layer or frame can fail the walk, as reference_walk() words them.
+_WALK_ERRORS = (
+    r"^frame \d+ header runs past the end of the file",
+    "layer length runs past the end of the file",
+    "is out of range",
+    "layer header runs past the end of the file",
+    "negative bounding box",
+    "command array runs past the end of the file",
+)
+
+
+def walk_variants(data: bytes) -> list[bytes]:
+    """Every prefix of `data`, every byte forced to 0x00 and to 0xFF, and each
+    layer shortened to a bare 4-byte length right at EOF."""
+    variants = [data[:cut] for cut in range(len(data))]
+    variants.extend(
+        data[:position] + bytes([value]) + data[position + 1 :]
+        for position in range(len(data))
+        for value in (0x00, 0xFF)
+        if data[position] != value
+    )
+    for frame in reference_walk(data):
+        for layer in frame[6]:
+            start = layer[9] - (_MASK_HEAD_SIZE if layer[0] in (LayerKind.DAMAGE, LayerKind.PLAYERCOLOR) else _GRAPHICS_HEAD_SIZE)
+            variants.extend(data[:start] + struct.pack("<I", 4) + data[start + 4 : start + 4 + tail] for tail in range(12))
+    return variants
+
+
+@pytest.mark.parametrize("name", ["mixed_16", "mixed_14"])
+def test_every_truncation_and_single_byte_corruption_fails_as_the_reference_does(name):
+    """The flat walk reads a layer's length, sub-header and command count in
+    one unpack, so its failure has to be split back into the error the
+    step-by-step reads would have raised. Every prefix of the file, and every
+    byte forced to 0x00 and to 0xFF, must walk to the same fields or be
+    refused with the same message. So must each layer shortened to a bare
+    4-byte length right at EOF, the one shape where the length checks out but
+    the sub-header after it is missing."""
+    data = _walk_fixtures()[name]
+    seen = set()
+    for variant in walk_variants(data):
+        want = _outcome(reference_walk, variant)
+        assert _outcome(decoder_walk, variant) == want, variant.hex()
+        if want[0] == "refused":
+            seen.update(error for error in _WALK_ERRORS if re.search(error, want[1]))
+    # Non-vacuity: the sweep reached every error the walk can raise.
+    assert seen == set(_WALK_ERRORS)
+
+
+@pytest.mark.corpus
+def test_real_install_files_walk_exactly_as_the_reference_does():
+    """The synthetic fixtures cover every branch; this covers the real shapes
+    those branches were measured against. A fixed sample, every 5th file by
+    name, plus a variant-14 Stable and the trees a big map re-walked most."""
+    root = asset_source.get_install_path()
+    if root is None:
+        pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    directory = root / unit_sprites.GRAPHICS_SUBPATH
+    names = sorted(path.name for path in directory.glob("*.sld"))
+    if not names:
+        pytest.skip(f"no .sld files under {directory}")
+    wanted = {"b_west_stable_age3_x1.sld", "n_tree_oak_x1.sld", "n_tree_autumn_oak_x1.sld", "n_tree_pine_x1.sld"}
+    sample = sorted(set(names[::5]) | (wanted & set(names)))
+
+    walked = 0
+    for file_name in sample:
+        data = (directory / file_name).read_bytes()
+        want = _outcome(reference_walk, data)
+        assert _outcome(decoder_walk, data) == want, file_name
+        walked += want[0] == "walked"
+    assert walked > 0.9 * len(sample)
+
+
+@pytest.mark.corpus
+def test_real_install_frames_decode_as_the_object_per_layer_index_did():
+    """Real delta chains, including the deep tree ones, through the flat index
+    against the object-per-layer decode: first, middle and last frame of every
+    50th file by name, plus the same named files as above."""
+    root = asset_source.get_install_path()
+    if root is None:
+        pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    directory = root / unit_sprites.GRAPHICS_SUBPATH
+    names = sorted(path.name for path in directory.glob("*.sld"))
+    if not names:
+        pytest.skip(f"no .sld files under {directory}")
+    wanted = {"b_west_stable_age3_x1.sld", "n_tree_oak_x1.sld", "n_tree_autumn_oak_x1.sld", "n_tree_pine_x1.sld"}
+    sample = sorted(set(names[::50]) | (wanted & set(names)))
+
+    decoded = 0
+    for file_name in sample:
+        data = (directory / file_name).read_bytes()
+        sld = load_sld(directory / file_name, keep_data=False)
+        if sld is None or sld.frame_count == 0:
+            continue
+        decode = reference_decoder(data)
+        for index in sorted({0, sld.frame_count // 2, sld.frame_count - 1}):
+            try:
+                want = decode(index)
+            except SLDError as exc:
+                with pytest.raises(SLDError, match=re.escape(str(exc))):
+                    sld.decode_frame(index, data)
+                continue
+            _assert_same_frame(sld.decode_frame(index, data), want)
+            decoded += want.main is not None
+    assert decoded > len(sample)

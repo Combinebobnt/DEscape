@@ -335,16 +335,16 @@ def test_the_drag_ghost_takes_the_windows_own_layer_value(sprite_install, monkey
             viewer, "unit_sprite_draws_at",
             lambda *args, **kwargs: (seen.append(kwargs["tree_scale"]), [])[1],
         )
-        monkeypatch.setattr(type(window), "_ghost_rotation_override", lambda self, entry: None)
+        monkeypatch.setattr(window, "_ghost_rotation_override", lambda entry: None)
         ghost = SimpleNamespace(x=5.5, y=5.5, unit_const=CONST, rotation=0.0, reference_id=1)
-        entry = SimpleNamespace(player_id=1, unit=ghost, order=0)
+        entry = SimpleNamespace(player_id=1)
 
         window.layer_actions[SMALL_TREES_LAYER].setChecked(True)
-        assert window._ghost_sprite_draws(entry, ghost) == []
+        assert window._drag_ghost_sprite_draws(entry, ghost) == []
         assert seen == [view_layers.SMALL_TREE_SCALE]
 
         window.layer_actions[SMALL_TREES_LAYER].setChecked(False)
-        window._ghost_sprite_draws(entry, ghost)
+        window._drag_ghost_sprite_draws(entry, ghost)
         assert seen[-1] == 1.0
     finally:
         conftest.close_window(window)

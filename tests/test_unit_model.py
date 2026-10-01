@@ -18,15 +18,16 @@ locality, write-blocked gates) and tests/test_units_undo.py for undo/redo.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-from descape import library_compat
+from descape import library_compat, unit_model
 from descape.edit_history import EditHistory
-from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units, load_map_and_units_from_bytes
 from descape.terrain_units import UnitAddSpec
 from descape.unit_model import (
     UnitEditModel,
@@ -75,9 +76,52 @@ def _poison_unit_caption_fields() -> None:
 # -- 1. construction gate ----------------------------------------------------
 
 
-def test_construction_gate_fires_on_a_corrupted_unit() -> None:
-    """A gate that never fires is not a gate (plan verification item 9)."""
+def _non_canonical_caption_bytes() -> bytes:
+    """The fixture with one empty caption stored as a length-1 lone NUL
+    rather than the game's length 0: it loads fine, but the library
+    serializer (and so the encoder) writes it back as length 0."""
+    from descape.scenario_write import _compress_bytes
+
     loaded = load_map_and_units(FIXTURE_PATH)
+    start, length = loaded.unit_spans[1][0]  # player 1's house, empty caption
+    end = start + length
+    body = loaded.decompressed_body
+    assert body[end - 4 : end] == b"\x00\x00\x00\x00"
+    return loaded.header_bytes + _compress_bytes(body[: end - 4] + b"\x01\x00\x00\x00\x00" + body[end:])
+
+
+@pytest.mark.parametrize("fast_units", [True, False], ids=["encoder-gate", "entry-gate"])
+def test_construction_gate_fires_on_a_unit_that_does_not_reproduce(fast_units: bool, monkeypatch) -> None:
+    """A gate that never fires is not a gate (plan verification item 9): the
+    encoder gate on a fast load, and the entry gate a load whose model
+    scenario_io.unit_codec() refuses falls back to."""
+    from descape import scenario_io
+
+    if not fast_units:
+        monkeypatch.setattr(scenario_io, "unit_codec", lambda loaded: None)
+    loaded = load_map_and_units_from_bytes(_non_canonical_caption_bytes(), "odd.aoe2scenario", fast_units=fast_units)
+    assert loaded.units_write_supported
+    with pytest.raises(UnitEditsUnavailableError, match="reference_id 200"):
+        UnitEditModel(loaded)
+
+
+def test_a_unit_changed_before_the_model_exists_still_constructs() -> None:
+    """The gate checks the file's bytes, not the live Units: a caller that
+    changed a Unit before the lazy first-edit construction (as viewer tests
+    do) still gets a model."""
+    loaded = load_map_and_units(FIXTURE_PATH)
+    _unit(loaded, _REF_HOUSE).rotation += 1.0
+    UnitEditModel(loaded)
+
+
+def test_entry_gate_fires_on_a_corrupted_entry_when_there_is_no_codec(monkeypatch) -> None:
+    """A structure unit_codec() refuses loads through the library walk, and the
+    model falls back to the entry gate, which must still fire."""
+    from descape import scenario_io
+
+    monkeypatch.setattr(scenario_io, "unit_codec", lambda loaded: None)
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
+    UnitEditModel(loaded)  # the clean file passes the entry gate
     players_units = loaded._scenario.sections["Units"].retriever_map["players_units"].data
     entry = players_units[1].retriever_map["units"].data[0]  # player 1's house
     entry.retriever_map["rotation"].set_data(entry.retriever_map["rotation"].data + 1.0)
@@ -125,7 +169,7 @@ def test_the_non_empty_caption_is_left_untouched_by_the_normalizer() -> None:
     unconditionally" design (see _serialize_unit's own docstring): a
     non-empty caption's library form matches its raw on-disk bytes exactly,
     with no stripping."""
-    loaded = load_map_and_units(FIXTURE_PATH)
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
     players_units = loaded._scenario.sections["Units"].retriever_map["players_units"].data
     entry = next(
         e
@@ -335,8 +379,10 @@ def test_reassign_rejects_an_out_of_range_player() -> None:
 def test_reassign_serializes_with_no_per_unit_reserialization() -> None:
     """The provenance test the plan calls for (verification item 7): if
     reassign's blob truly never re-enters the library, serialize() must
-    succeed even when every entry's own get_data_as_bytes() would raise."""
-    loaded, model = _open()
+    succeed even when every entry's own get_data_as_bytes() would raise. On a
+    fast_units=False load, so there are parsed entries to booby-trap."""
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
+    model = UnitEditModel(loaded)
     wall = _unit(loaded, _REF_WALL)
     model.reassign(wall, 1)
 
@@ -348,6 +394,19 @@ def test_reassign_serializes_with_no_per_unit_reserialization() -> None:
             )
 
     model.serialize()  # must not raise
+
+
+def test_reassign_on_a_fast_load_serializes_without_a_commit() -> None:
+    """The fast-load form of the provenance test: a reassign-only serialize()
+    never commits, so the empty unit slots the fast walk left stay empty."""
+    loaded, model = _open()
+    players_units = loaded._scenario.sections["Units"].retriever_map["players_units"].data
+    assert all(pu.retriever_map["units"].data == [] for pu in players_units)
+    model.reassign(_unit(loaded, _REF_WALL), 1)
+
+    section = model.serialize()
+    assert all(pu.retriever_map["units"].data == [] for pu in players_units)
+    assert len(section) == loaded.players_units_end - loaded.units_block_offset
 
 
 def test_add_places_a_new_unit_with_a_reserved_reference_id() -> None:
@@ -471,22 +530,105 @@ def test_add_many_depoisons_before_constructing_units() -> None:
         library_compat.depoison()
 
 
-def test_serialize_depoisons_before_committing_a_dirty_unit() -> None:
-    """Plan 2026-09-12's save-side half: commit()'s push_to_link reads
-    caption_string back via getattr, and a poisoned class's property getter
-    is a data descriptor that shadows the real instance attribute, so a
-    poisoned class raised ScenarioWritingError serializing *any* dirty unit
-    -- not just a newly added one, and independent of Place Unit. Regression
-    for the library_compat.depoison() call at the top of serialize()'s
-    commit branch."""
+def _count_depoisons(monkeypatch) -> list:
+    calls = []
+    real = library_compat.depoison
+    monkeypatch.setattr(library_compat, "depoison", lambda: (calls.append(1), real())[1])
+    return calls
+
+
+def test_batch_adds_depoisons_once_for_a_run_of_adds(monkeypatch) -> None:
+    """Paste Region's ~700 add() calls each walked five classes; inside
+    batch_adds() the walk runs once, and add() outside it still pays its own."""
+    _loaded, model = _open()
+    calls = _count_depoisons(monkeypatch)
+    with model.batch_adds():
+        for i in range(5):
+            model.add(player=1, unit_const=83, x=1.5 + i, y=1.5)
+    assert len(calls) == 1
+    model.add(player=1, unit_const=83, x=9.5, y=1.5)
+    assert len(calls) == 2, "add() after the block must depoison again"
+    model._check_alignment()
+
+
+def test_batch_adds_depoisons_a_poisoned_class_before_the_first_add() -> None:
+    """The same regression as test_add_depoisons_before_constructing_unit,
+    through the batch: the block's own depoison() must run before any Unit(...)."""
+    _loaded, model = _open()
+    _poison_unit_caption_fields()
+    try:
+        with model.batch_adds():
+            unit = model.add(player=0, unit_const=83, x=1.5, y=1.5)
+        assert unit.caption_string_id == -1
+        assert unit.caption_string == ""
+    finally:
+        library_compat.depoison()
+
+
+def test_add_depoisons_again_after_a_batch_that_raised() -> None:
+    _loaded, model = _open()
+    with pytest.raises(ValueError), model.batch_adds():
+        model.add(player=9, unit_const=83, x=1.5, y=1.5)
+    _poison_unit_caption_fields()
+    try:
+        unit = model.add(player=0, unit_const=83, x=1.5, y=1.5)
+        assert unit.caption_string == ""
+    finally:
+        library_compat.depoison()
+
+
+def test_batch_adds_is_refused_inside_a_fields_only_edit() -> None:
+    _loaded, model = _open()
+    model.begin_unit_edit([1], fields_only=True)
+    with pytest.raises(RuntimeError, match="fields_only"), model.batch_adds():
+        pass
+    model.abort_unit_edit()
+
+
+def test_serialize_depoisons_before_encoding_a_dirty_unit() -> None:
+    """Plan 2026-09-12's save-side half: a poisoned class's property getter
+    is a data descriptor that shadows the real instance attribute, so both
+    the encoder's getattr and the commit's push_to_link raised serializing
+    *any* dirty unit, not just a newly added one. Regression for the
+    depoison() at the top of each writer; tests/test_fast_units.py has the
+    real older-document form (corpus)."""
     loaded, model = _open()
     wall = _unit(loaded, _REF_WALL)
     model.set_position(wall, 10.5, 10.5, 0.0)
-    _poison_unit_caption_fields()
     try:
-        model.serialize()  # must not raise ScenarioWritingError
+        _poison_unit_caption_fields()
+        encoded = model.serialize()  # must not raise
+        _poison_unit_caption_fields()
+        assert encoded == model._serialize_via_commit()
     finally:
         library_compat.depoison()
+
+
+@pytest.mark.parametrize("reference_id", [101, _REF_WALL], ids=["doodad-variant-41", "radian-wall"])
+def test_a_moved_unit_saves_its_rotation_bytes_verbatim(reference_id: int, tmp_path: Path) -> None:
+    """AGENTS.md's verbatim rule on the encoder: a GAIA doodad whose rotation
+    is variant index 41.0, and a wall storing its index as 2*2pi/5, moved and
+    saved, keep the rotation field's four bytes exactly."""
+    import struct
+
+    from descape import scenario_io
+    from descape.scenario_write import write_scenario
+
+    loaded, model = _open()
+    unit = _unit(loaded, reference_id)
+    player, index = next((p, i) for p, units in enumerate(loaded.unit_manager.units) for i, u in enumerate(units) if u is unit)
+    fmt = scenario_io.unit_codec(loaded).unit_format
+    offset = struct.calcsize(fmt.fixed.format[: 1 + fmt.fields.index("rotation")])
+    start, _ = loaded.unit_spans[player][index]
+    before = loaded.decompressed_body[start + offset : start + offset + 4]
+
+    model.set_position(unit, unit.x + 1.0, unit.y, unit.z)
+    out = tmp_path / "moved.aoe2scenario"
+    write_scenario(loaded, out, backup=False, units=model)
+    saved = load_map_and_units(out)
+    start, _ = saved.unit_spans[player][index]
+    assert saved.decompressed_body[start + offset : start + offset + 4] == before
+    assert saved.unit_manager.units[player][index].x == unit.x
 
 
 def test_remove_many_deletes_every_unit() -> None:
@@ -529,6 +671,67 @@ def test_remove_many_matches_remove_for_the_same_units() -> None:
 
     assert tree_a not in loaded_a.unit_manager.units[0]
     assert tree_b not in loaded_b.unit_manager.units[0]
+
+
+def _mixed_batch(loaded, model) -> list:
+    """Units from three players, listed out of index order: loaded ones (real
+    blobs, each list's first unit among them) and appended ones (no blob)."""
+    extra = model.add_many(0, [UnitAddSpec(x=5.5 + i, y=5.5, unit_const=349, rotation=0.0, initial_animation_frame=0) for i in range(6)])
+    return [
+        extra[3], _unit(loaded, _REF_ARCHER_P1), extra[0], _unit(loaded, _REF_ARCHER_P2),
+        extra[5], _unit(loaded, _REF_TREE_OAK), _unit(loaded, _REF_VILLAGER_P2),
+    ]
+
+
+def _model_state(loaded, model) -> tuple:
+    model._check_alignment()
+    lists = [[u.reference_id for u in units] for units in loaded.unit_manager.units]
+    return lists, [list(blobs) for blobs in model._blobs], model.serialize()
+
+
+def test_remove_many_by_index_matches_the_whole_list_rewrite(monkeypatch) -> None:
+    """The del-by-index path (a small batch) leaves the three parallel lists,
+    _pos and the serialized section exactly as the whole-list rewrite does."""
+    loaded_a, model_a = _open()
+    model_a.remove_many(_mixed_batch(loaded_a, model_a))
+
+    loaded_b, model_b = _open()
+    monkeypatch.setattr(unit_model, "_REMOVE_BY_INDEX_MAX", 0)
+    model_b.remove_many(_mixed_batch(loaded_b, model_b))
+
+    assert _model_state(loaded_a, model_a) == _model_state(loaded_b, model_b)
+    assert [u.reference_id for u in loaded_a.unit_manager.units[2]] == []
+
+
+def test_a_small_remove_many_never_rewrites_a_whole_list(monkeypatch) -> None:
+    """Non-vacuity for the fast path: a Draw-sized batch must not go through
+    UuidList's whole-list `[:] =`, which re-wraps every unit in the list."""
+    loaded, model = _open()
+    batch = _mixed_batch(loaded, model)
+    rewrites = []
+    uuid_list = type(loaded.unit_manager.units[0])
+    real_setitem = uuid_list.__setitem__
+    monkeypatch.setattr(uuid_list, "__setitem__", lambda self, i, o: (rewrites.append(i), real_setitem(self, i, o))[1])
+
+    model.remove_many(batch)
+    assert rewrites == [], "the small batch rewrote a whole unit list"
+
+    monkeypatch.setattr(unit_model, "_REMOVE_BY_INDEX_MAX", 1)
+    model.remove_many([_unit(loaded, _REF_WALL), _unit(loaded, _REF_VILLAGER_P1)])
+    assert rewrites, "a batch past _REMOVE_BY_INDEX_MAX should take the whole-list rewrite"
+    model._check_alignment()
+
+
+def test_remove_many_skips_an_untracked_unit_as_before() -> None:
+    """A unit the model doesn't track sends the batch down the rewrite path,
+    which removes the tracked ones and leaves the rest alone."""
+    loaded, model = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    stray = copy.copy(_unit(loaded, _REF_ARCHER_P2))
+    model.remove_many([archer, stray])
+    assert archer not in loaded.unit_manager.units[1]
+    assert [u.reference_id for u in loaded.unit_manager.units[2]] == [_REF_ARCHER_P2, _REF_VILLAGER_P2]
+    model._check_alignment()
 
 
 def test_remove_deletes_the_unit() -> None:

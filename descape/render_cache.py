@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from descape import composite_backend, iso_geometry, native_composite, render, settings, unit_sprites
+from descape import composite_backend, iso_geometry, native_composite, perf_trace, render, settings, unit_sprites
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.unit_filter import UnitFilter
@@ -85,8 +85,10 @@ class UnitSplice:
     list, which is safe for Stepped/Sloped because nothing spliced there
     stores another unit's list index: their layers are tile-keyed, removal
     is by `is` identity, and the wall-override memo is keyed on the model's
-    unit generation. Only FlatChunkCache, whose rows are player-ordered,
-    reads old_player_id."""
+    unit generation. FlatChunkCache, whose rows are player-ordered, reads
+    old_player_id for its rows; Stepped/Sloped read it only through
+    is_reassign and is_move, which let a Convert skip the wall const guard
+    and a moved wall take the membership component splice."""
 
     player_id: int
     index: int
@@ -101,11 +103,33 @@ class UnitSplice:
     def changed_tiles(self) -> frozenset[tuple[int, int]]:
         return frozenset(self.old_tiles) | frozenset(self.new_tiles)
 
+    @property
+    def is_reassign(self) -> bool:
+        """A pure Convert: the owner changed and nothing else did. Such an edit
+        moves no unit, so no wall's neighbour mask changes (see _splice_eligible)."""
+        return (
+            self.old_player_id is not None
+            and self.old_tiles == self.new_tiles
+            and self.old_own_tile == self.new_own_tile
+        )
+
+    @property
+    def is_move(self) -> bool:
+        """Present before and after, same owner: Move, Nudge, Set field, a
+        gate orientation swap. For a wall/connector that changes its tiles
+        only. set_position() keeps rotation and list order, and no fields-only
+        edit writes a rotation-variant const's rotation (none is ANGLE or
+        cyclable), so the file's radian verdict and every override key hold.
+        What changes is the neighbour mask of the walls beside its old and
+        new tiles (_connector_neighbours())."""
+        return self.old_own_tile is not None and self.new_own_tile is not None and self.old_player_id is None
+
 
 def _const_splice_eligible(unit) -> bool:
     """The const half of _splice_eligible(), shared with FlatChunkCache's row
     splice: a wall/connector or rotation-variant const's shape is a function
-    of its neighbours, so re-resolving the edited unit alone is not enough."""
+    of its neighbours, so re-resolving the edited unit alone is not enough
+    when it moves. Stepped/Sloped skip it for a pure reassign; Flat does not."""
     return not (
         unit_sprites.rotation_variant_eligible(unit.unit_const)
         or unit.unit_const in unit_sprites.wall_connector_consts()
@@ -143,7 +167,15 @@ def _splice_eligible(units_by_tile: dict, splice: UnitSplice) -> bool:
     - A wall/connector const's override is a function of its NEIGHBOURS
       (render.wall_variant_rotation_overrides' own docstring): moving one
       reshapes up to four other units this splice never touches, and the
-      override dict's own key shifts on any removal.
+      override dict's own key shifts on any removal. A moved one is refused
+      here and spliced by _membership_component_splices(), which re-derives
+      those neighbours too (_batch_splice_refusal()'s `const:move`).
+      A pure reassign (UnitSplice.is_reassign) skips it: the neighbour mask
+      is built over every player's connectors, and stored_rotation() is
+      owner-free for every rotation-variant const, so no wall's shape or the
+      file's radian/integer verdict can change. Only the edited unit's own
+      override key moves, and the splice passes the real, freshly memoized
+      dict (_splice_overrides()).
     - Any tile this edit touches (old or new footprint -- own-tile
       included, since a non-wall/-gate unit's own tile is always a member
       of its own unit_occupied_tiles(), per unit_tile_bounds' own
@@ -153,7 +185,7 @@ def _splice_eligible(units_by_tile: dict, splice: UnitSplice) -> bool:
       unit sharing an own-tile (5 of 16 example files, 20 tiles total --
       e.g. a decoration placed on a building)."""
     unit = splice.unit
-    if not _const_splice_eligible(unit):
+    if not splice.is_reassign and not _const_splice_eligible(unit):
         return False
     # The all(not any(...)) one-liner ruff suggests here double-negates.
     for tile in splice.changed_tiles:  # noqa: SIM110
@@ -178,21 +210,327 @@ def _batch_splice_eligible(units_by_tile: dict, changed: list[UnitSplice]) -> bo
     occupant still rejects, as it does per splice. A single-splice batch gets
     exactly _splice_eligible()'s answer. Callers must apply removals first
     (_removals_first)."""
+    return _batch_splice_refusal(units_by_tile, changed) is None
+
+
+def _const_refusal(changed: list[UnitSplice]) -> str | None:
+    """_batch_splice_refusal()'s const clause over the whole batch. For a
+    wall/connector/rotation-variant unit that is not a pure reassign:
+    `const:add` or `const:remove` (either can flip the file's radian verdict
+    and shift override keys, so wholesale), `const:other` (an owner change
+    that also moved), else `const:move` if one moved, else None."""
+    moved = False
+    for s in changed:
+        if s.is_reassign or _const_splice_eligible(s.unit):
+            continue
+        if s.is_move:
+            moved = True
+        elif s.old_own_tile is None:
+            return "const:add"
+        elif s.new_own_tile is None:
+            return "const:remove"
+        else:
+            return "const:other"
+    return "const:move" if moved else None
+
+
+def _batch_splice_refusal(units_by_tile: dict, changed: list[UnitSplice]) -> str | None:
+    """Which clause of _batch_splice_eligible() refuses `changed`, or None if
+    none does: `cap`, then the const clause over the whole batch
+    (_const_refusal()), then the first of `occupant:foreign` (a unit outside
+    the batch), `occupant:batch` (a batch unit that stays, e.g. one a group
+    Move carries off the tile another lands on) and `claimed` (two batch
+    units landing on one tile). So an occupant or claimed answer means the
+    batch holds no wall/connector const but a reassigned one. `const:move`
+    and those three go on to a component splice (_splice_plan_or_refusal());
+    `cap` and the other const answers are final."""
     if len(changed) > UNIT_SPLICE_MAX_UNITS:
-        return False
+        return "cap"
+    const = _const_refusal(changed)
+    if const is not None:
+        return const
     removed = {id(s.unit) for s in changed if s.new_own_tile is None}
+    batch = {id(s.unit) for s in changed}
     claimed: dict[tuple[int, int], int] = {}
     for s in changed:
         unit = s.unit
-        if not _const_splice_eligible(unit):
-            return False
         for tile in s.changed_tiles:
-            if any(u is not unit and id(u) not in removed for u, _ in units_by_tile.get(tile, ())):
-                return False
+            for u, _ in units_by_tile.get(tile, ()):
+                if u is not unit and id(u) not in removed:
+                    return "occupant:batch" if id(u) in batch else "occupant:foreign"
         for tile in s.new_tiles:
             if claimed.setdefault(tile, id(unit)) != id(unit):
-                return False
-    return True
+                return "claimed"
+    return None
+
+
+# Past this many units in a unit-edit batch's shared-tile component (Convert or
+# not) the batch takes the wholesale path instead. Set 2026-09-29 from old-allies'
+# brush-9 Draw rows: 335-345-unit components splice in 36-55 ms against 100-139 ms
+# wholesale. Matches _ELEV_SPLICE_MAX_UNITS' measured re-anchor cost (~13us/unit).
+_COMPONENT_SPLICE_MAX_UNITS = 1000
+
+
+def _locate(own_index: dict, unit) -> tuple[int, int] | None:
+    """unit's current (player_id, i), from the own-tile index; None if absent."""
+    for player_id, i, u in own_index.get((int(unit.x), int(unit.y)), ()):
+        if u is unit:
+            return player_id, i
+    return None
+
+
+def _shared_tile_component(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, own_index: dict, seeds, cap: int
+) -> list[tuple] | None:
+    """The connected component of units sharing any footprint or own tile with
+    a seed, transitively, sorted into the wholesale walk's order (player-major,
+    then list index). None past `cap` members, or if a unit can't be located.
+
+    Seeds are (player_id, i, unit, own tile, occupied tiles) tuples and are
+    always kept. A tile's neighbours are the units in units_by_tile (visible
+    footprints) and in own_index (every own-tile key). A non-seed the filter
+    hides or that is off-map holds no key and is skipped. Every key on the
+    component's tiles then belongs to component units alone, so re-deriving
+    them all in the returned order reproduces a fresh build exactly (see
+    _reanchor_units' two phases, and _splice_units_by_tile, which drops and
+    re-appends each unit in turn)."""
+    members = {id(seed[2]): seed for seed in seeds}
+    if len(members) > cap:
+        return None
+    tiles = [t for seed in seeds for t in (*seed[4], seed[3]) if t is not None]
+    found, _why = _walk_component(scenario, units_by_tile, unit_filter, own_index, tiles, set(members), cap - len(members))
+    if found is None:
+        return None
+    return sorted([*members.values(), *found], key=lambda m: (m[0], m[1]))
+
+
+def _walk_component(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, own_index: dict, tiles,
+    known: set[int], room: int,
+) -> tuple[list[tuple] | None, str | None]:
+    """The shared-tile walk under both component splices: every unit reachable
+    from `tiles` through a shared footprint or own tile, transitively, as
+    unsorted (player_id, i, unit, own tile, occupied tiles) tuples. Or None and
+    why: `cap` past `room` units found, `none` if one can't be located.
+
+    `known` holds the ids of units the caller already has (seeds, a unit
+    edit's batch). They are never located, returned or walked from, which is
+    what lets a removed batch unit (absent from the post-edit own_index) sit
+    in units_by_tile. A tile's neighbours are the units in units_by_tile
+    (visible footprints) and in own_index (every own-tile key). A unit the
+    filter hides or that is off-map holds no key and is skipped."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    known = set(known)
+    found: list[tuple] = []
+    queue = list(tiles)
+    seen: set[tuple[int, int]] = set()
+    while queue:
+        tile = queue.pop()
+        if tile in seen:
+            continue
+        seen.add(tile)
+        neighbours = list(own_index.get(tile, ()))
+        for u, _color in units_by_tile.get(tile, ()):
+            if id(u) not in known:
+                where = _locate(own_index, u)
+                if where is None:
+                    return None, "none"
+                neighbours.append((*where, u))
+        for player_id, i, u in neighbours:
+            if id(u) in known or not unit_filter.matches(player_id, u):
+                continue
+            occupied = render.unit_occupied_tiles(u, w, h)
+            if occupied is None:
+                continue
+            own = (int(u.x), int(u.y))
+            known.add(id(u))
+            found.append((player_id, i, u, own, tuple(occupied)))
+            if len(found) > room:
+                return None, "cap"
+            queue.extend(occupied)
+            queue.append(own)
+    return found, None
+
+
+def _reassign_component_splices(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+) -> tuple[list[UnitSplice] | None, str | None]:
+    """A Convert batch that _batch_splice_eligible() refused for a shared tile,
+    widened to its _shared_tile_component(), or None and why (`cap`, `none`)
+    when that can't be done.
+
+    A reassign moves no unit, so the component argument holds. Batch units
+    seed it at their new tiles and are always kept, so a filter flip is
+    covered. Each unit is spliced at its CURRENT (player_id, i) as a
+    re-anchor, batch units keeping old_player_id.
+
+    None unless every splice is a pure reassign, or past
+    _COMPONENT_SPLICE_MAX_UNITS component units."""
+    if not all(s.is_reassign for s in changed):
+        return None, "none"
+    if len(changed) > _COMPONENT_SPLICE_MAX_UNITS:
+        return None, "cap"
+    own_index = render.unit_own_tile_index(scenario)
+    batch = {id(s.unit): s for s in changed}
+    seeds = []
+    for s in changed:
+        where = _locate(own_index, s.unit)
+        if where is None:
+            return None, "none"
+        seeds.append((*where, s.unit, s.new_own_tile, s.new_tiles))
+    tiles = [t for seed in seeds for t in (*seed[4], seed[3]) if t is not None]
+    found, why = _walk_component(
+        scenario, units_by_tile, unit_filter, own_index, tiles, set(batch), _COMPONENT_SPLICE_MAX_UNITS - len(seeds)
+    )
+    if found is None:
+        return None, why
+
+    out: list[UnitSplice] = []
+    for player_id, i, unit, own, tiles in sorted([*seeds, *found], key=lambda m: (m[0], m[1])):
+        s = batch.get(id(unit))
+        old_player_id = s.old_player_id if s is not None else None
+        out.append(UnitSplice(player_id, i, unit, own, own, tiles, tiles, old_player_id=old_player_id))
+    return out, None
+
+
+def _connector_neighbours(
+    scenario: LoadedScenario, unit_filter: UnitFilter, own_index: dict, changed: list[UnitSplice], known: set[int]
+) -> list[tuple]:
+    """Every rotation-variant unit outside `known` whose shape a batch
+    connector's move can change, as (player_id, i, unit, own tile, occupied
+    tiles). render._wall_variant_rotation_overrides_uncached() reads a
+    wall's 4-bit orthogonal mask over every connector's tiles, at its bounds'
+    low corner, so a moved connector reshapes only the walls whose low corner
+    is orthogonally beside one of its old or new tiles. Those tiles are
+    dilated by NEIGHBOUR_OFFSETS[:4] (the tiles themselves kept too, which
+    errs wide), looked up in the filter-free own_index, and every 1x1
+    rotation-variant unit there is kept. A hidden or off-map one holds no
+    key and is skipped. Over-inclusion is harmless, a re-anchor being
+    idempotent; under-inclusion would leave a wall stale."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    connectors = unit_sprites.wall_connector_consts()
+    dilated: set[tuple[int, int]] = set()
+    for s in changed:
+        if s.unit.unit_const not in connectors:
+            continue
+        for x, y in (*s.old_tiles, *s.new_tiles):
+            dilated.add((x, y))
+            dilated.update((x + dx, y + dy) for dx, dy, _bit in unit_sprites.NEIGHBOUR_OFFSETS[:4])
+    out: list[tuple] = []
+    seen = set(known)
+    for tile in dilated:
+        for player_id, i, unit in own_index.get(tile, ()):
+            if id(unit) in seen or not unit_sprites.rotation_variant_eligible(unit.unit_const):
+                continue
+            seen.add(id(unit))
+            bounds = render.unit_tile_bounds(unit, w, h)
+            if bounds is None or (bounds[0], bounds[2]) not in dilated or not unit_filter.matches(player_id, unit):
+                continue
+            occupied = render.unit_occupied_tiles(unit, w, h)
+            if occupied is not None:
+                out.append((player_id, i, unit, (int(unit.x), int(unit.y)), tuple(occupied)))
+    return out
+
+
+def _membership_component_splices(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+) -> tuple[list[UnitSplice] | None, str | None]:
+    """A unit-edit batch that is not a pure Convert (Draw's stroke end, its
+    undo/redo, a group Move) and that _batch_splice_eligible() refused for a
+    shared tile or a moved wall/connector (`const:move`), widened to every
+    unit sharing a footprint or own tile with it, transitively. Or None and
+    why: `cap`, `none` (a unit that can't be located) or `const` (an added
+    or removed wall/connector, which _batch_splice_refusal() already sends
+    wholesale).
+
+    Batch splices are kept as they are and never re-located: a removed unit
+    is not in the post-edit own_index. The walk (_walk_component()) starts
+    from every batch splice's old and new tiles and both own tiles. Old tiles
+    find the pre-edit co-occupants, since units_by_tile is still pre-edit
+    here; new tiles find the post-edit ones, the same units, since only batch
+    units moved. So a non-batch unit met on the way did not move, and its
+    own_index (player_id, i) is right: it becomes a re-anchor splice there.
+
+    Order: removals first, then every other splice by (player_id, index), the
+    wholesale walk's order. Batch splices carry their post-edit index, which
+    is what a fresh walk sees. _splice_units_by_tile()'s drop-and-append and
+    _reanchor_units()' clear-then-re-add then leave every bucket and shared
+    key on the component's tiles in fresh-build order.
+
+    A moved wall/connector reshapes walls beside it that share no tile with
+    it: _connector_neighbours() adds them, stationary, as re-anchor splices,
+    and their tiles seed the walk too, so their co-occupants join. Every
+    rotation-variant unit in the plan then resolves with the real overrides
+    (_splice_overrides()), memoized on the edit's own unit_gen bump. None
+    past _COMPONENT_SPLICE_MAX_UNITS units in total, neighbours included."""
+    if any(not s.is_reassign and not s.is_move and not _const_splice_eligible(s.unit) for s in changed):
+        return None, "const"
+    if len(changed) > _COMPONENT_SPLICE_MAX_UNITS:
+        return None, "cap"
+    own_index = render.unit_own_tile_index(scenario)
+    known = {id(s.unit) for s in changed}
+    neighbours = _connector_neighbours(scenario, unit_filter, own_index, changed, known)
+    room = _COMPONENT_SPLICE_MAX_UNITS - len(changed) - len(neighbours)
+    if room < 0:
+        return None, "cap"
+    tiles: list[tuple[int, int]] = []
+    for s in changed:
+        tiles.extend(s.old_tiles)
+        tiles.extend(s.new_tiles)
+        tiles.extend(t for t in (s.old_own_tile, s.new_own_tile) if t is not None)
+    for _p, _i, unit, own, occ in neighbours:
+        tiles.extend(occ)
+        tiles.append(own)
+        known.add(id(unit))
+    found, why = _walk_component(scenario, units_by_tile, unit_filter, own_index, tiles, known, room)
+    if found is None:
+        return None, why
+    reanchors = [UnitSplice(p, i, unit, own, own, occ, occ) for p, i, unit, own, occ in (*neighbours, *found)]
+    staying = [s for s in changed if s.new_own_tile is not None]
+    walk_order = sorted([*staying, *reanchors], key=lambda s: (s.player_id, s.index))
+    return [s for s in changed if s.new_own_tile is None] + walk_order, None
+
+
+def _splice_plan(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+) -> list[UnitSplice] | None:
+    """The splices a Stepped/Sloped unit edit applies, or None for the
+    wholesale path: `changed` itself if _batch_splice_eligible() accepts it,
+    else its shared-tile component (_reassign_component_splices() for a
+    Convert, _membership_component_splices() for everything else).
+    Module-level so can_splice(), invalidate_units() and tools/ share it."""
+    return _splice_plan_or_refusal(scenario, units_by_tile, unit_filter, changed)[0]
+
+
+def _splice_plan_or_refusal(
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+) -> tuple[list[UnitSplice] | None, str | None]:
+    """_splice_plan()'s answer paired with why it is None: the refusing
+    _batch_splice_refusal() clause, plus `/component:<why>` when the component
+    fallback was tried and failed too. Perf Trace's `splice_refused=<reason>`
+    token (_trace_splice_refusal()): `cap`, `const:add`, `const:remove`,
+    `const:other`, or `<clause>/component:<why>` where the clause is
+    `const:move`, `occupant:*` or `claimed`."""
+    reason = _batch_splice_refusal(units_by_tile, changed)
+    if reason is None:
+        return changed, None
+    if reason == "cap" or (reason.startswith("const:") and reason != "const:move"):
+        return None, reason
+    component = _reassign_component_splices if all(s.is_reassign for s in changed) else _membership_component_splices
+    plan, why = component(scenario, units_by_tile, unit_filter, changed)
+    return plan, None if plan is not None else f"{reason}/component:{why}"
+
+
+def _splice_overrides(scenario: LoadedScenario, changed: list[UnitSplice]) -> dict[tuple[int, int], float]:
+    """The wall overrides a unit-edit splice must resolve with: the real dict
+    when any spliced unit reads it (a reassigned or moved wall, or one a
+    moved connector reshapes), else {} to skip the lookup. Memoized on
+    scenario.unit_gen, which reassign() and set_position() bump."""
+    if any(unit_sprites.rotation_variant_eligible(s.unit.unit_const) for s in changed):
+        return render.wall_variant_rotation_overrides(scenario)
+    return {}
 
 
 def _removals_first(changed: list[UnitSplice]) -> list[UnitSplice]:
@@ -204,52 +542,45 @@ def _removals_first(changed: list[UnitSplice]) -> list[UnitSplice]:
 
 # Past this many re-anchored units an elevation patch takes the wholesale path
 # instead. Measured on June Event (14,106 units, sprites on): _reanchor_units
-# plus the bystander-grid rebuild costs ~5ms + 13us/unit, 18ms at 1000, against
-# a 90-320ms wholesale rebuild. A real brush-9 stroke step re-anchors <=132.
+# costs ~1ms + 13us/unit and the bystander-grid patch 0.75ms at 132 keys, 1.8ms
+# at 1000 (a full grid build is ~5.9ms), so ~16ms at 1000 against a 90-320ms
+# wholesale rebuild. A real brush-9 stroke step re-anchors <=132.
 _ELEV_SPLICE_MAX_UNITS = 1000
 
 
 def _elevation_splices(
     scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, tiles
 ) -> list[UnitSplice] | None:
-    """One re-anchor UnitSplice per unit whose OWN tile is in `tiles`, or
-    None when any of them isn't splice-safe (the caller then falls back to
-    its wholesale path for the whole edit, never a partial one).
+    """One re-anchor UnitSplice per member of the _shared_tile_component()
+    seeded by every unit whose OWN tile is in `tiles`, in walk order, or None
+    (the caller then falls back to its wholesale path for the whole edit,
+    never a partial one).
 
     Units the filter hides, or off-map ones, contribute nothing to either
-    layer before or after, so they are skipped rather than spliced. Everyone
-    else must be alone on every tile of its footprint and on its own tile
-    (a wall/gate's own tile need not be in its footprint) in BOTH indexes:
-    units_by_tile catches another unit's footprint or sprite slot there, and
-    the unfiltered own-tile index catches another unit's building_bboxes key
-    there even when that unit's footprint lies elsewhere. Unlike
-    _splice_eligible() there is no const check: an elevation edit moves no
-    unit, so a wall's neighbour-derived override stays valid as long as the
-    caller passes the real one.
+    layer before or after, so they seed nothing. An elevation edit moves no
+    unit, so the component argument holds: a co-occupant whose own tile did
+    not change re-derives to an identical draw, and re-adding it restores the
+    shared key _reanchor_units' clear phase emptied. Unlike _splice_eligible()
+    there is no const check: a wall's neighbour-derived override stays valid
+    as long as the caller passes the real one.
 
-    Also None past _ELEV_SPLICE_MAX_UNITS, where the wholesale rebuild is the
-    cheaper of the two."""
+    None past _ELEV_SPLICE_MAX_UNITS members in total, where the wholesale
+    rebuild is the cheaper of the two."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     own_index = render.unit_own_tile_index(scenario)
-    out: list[UnitSplice] = []
+    seeds = []
     for own in tiles:
         for player_id, i, unit in own_index.get(own, ()):
             if not unit_filter.matches(player_id, unit):
                 continue
             occupied = render.unit_occupied_tiles(unit, w, h)
-            if occupied is None:
-                continue
-            for tile in {*occupied, own}:
-                if any(u is not unit for u, _ in units_by_tile.get(tile, ())):
-                    return None
-                if any(u is not unit for _, _, u in own_index.get(tile, ())):
-                    return None
-            if len(out) >= _ELEV_SPLICE_MAX_UNITS:
-                return None
-            occupied = tuple(occupied)
-            out.append(UnitSplice(player_id, i, unit, own, own, occupied, occupied))
-    return out
+            if occupied is not None:
+                seeds.append((player_id, i, unit, own, tuple(occupied)))
+    members = _shared_tile_component(scenario, units_by_tile, unit_filter, own_index, seeds, _ELEV_SPLICE_MAX_UNITS)
+    if members is None:
+        return None
+    return [UnitSplice(p, i, unit, own, own, occ, occ) for p, i, unit, own, occ in members]
 
 
 def _splice_tiles(splices: list[UnitSplice]) -> set[tuple[int, int]]:
@@ -309,15 +640,18 @@ def _splice_units_by_tile(
     splice runs, every tile it touches holds at most `splice.unit` itself or
     another unit this batch removes, so removing it from its old buckets and
     appending it to its new ones can't clobber another unit's entry or
-    disturb paint order within a shared bucket (there is none).
+    disturb paint order within a shared bucket (there is none). Or under
+    _reassign_component_splices() or _membership_component_splices(), whose
+    list names every unit in each touched bucket: removals first, which only
+    drop, then every other unit in the wholesale order, so each
+    drop-and-append leaves every bucket in that order.
 
     A filtered-out unit still has its OLD buckets cleared before the early
-    return. Today no splice-eligible edit can flip matches() mid-splice (the
-    one const-changing path, gate-orientation cycling, is rejected by
-    _splice_eligible via wall_connector_consts()), so this is defensive --
-    but returning first would leave a stale entry behind the moment some
-    future edit does change what matches() tests, and GH #65's const gates
-    put another two predicates in that blast radius."""
+    return. The one const-changing edit, gate-orientation cycling, now splices
+    as a connector move (_membership_component_splices()), and matches()
+    reads the const through GH #65's const gates, so a sibling the filter
+    treats differently would flip it here: returning first would leave a
+    stale entry behind."""
     _drop_from_tiles(units_by_tile, splice)
     if not unit_filter.matches(splice.player_id, splice.unit):
         return
@@ -342,12 +676,12 @@ def _splice_building_and_sprites(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
 ) -> render.SpriteLayer | None:
-    """_reanchor_units() for a single splice, with overrides {}. {} rather
-    than render.wall_variant_rotation_overrides(scenario): every caller of
-    this form sits behind _splice_eligible(), which excludes every
-    rotation-variant-eligible unit, so a real overrides dict would never be
-    consulted (render._wall_variant_rotation_overrides_uncached's own
-    candidate filter) -- {} just skips paying for the lookup."""
+    """_reanchor_units() for a single splice, with overrides {}. {} is only
+    right for a splice of a unit that isn't rotation-variant-eligible, whose
+    resolve never consults the dict (render._wall_variant_rotation_overrides_
+    uncached's own candidate filter). A wall, reassigned or moved (the
+    membership component splice), must go through _reanchor_units() with
+    _splice_overrides() instead, as both invalidate_units() do."""
     return _reanchor_units(
         building_bboxes, sprites, scenario, proj, elevations, unit_filter, corner_rise,
         extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow,
@@ -368,6 +702,7 @@ def _reanchor_units(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    old_bboxes: dict | None = None,
 ) -> render.SpriteLayer | None:
     """Applies every splice in `splices` to one cache's (or, for Iso, one
     level's) building_bboxes -- keyed by own-tile -- and, if `sprites` is
@@ -388,17 +723,29 @@ def _reanchor_units(
 
     Only valid under a guard that makes every touched key (the unit's
     own-tile for building_bboxes, its per-piece slot tiles, all inside its
-    footprint, for by_anchor/bboxes/farm_by_tile) belong to that splice's
-    unit alone -- _batch_splice_eligible() for unit edits, _elevation_splices()
-    for elevation edits -- so each is a plain delete-then-recompute rather
-    than a subtraction from a union with unknown other contributors. Key
-    sets are disjoint except where a batch removal and an add or move share
-    a tile, which is why unit-edit callers pass _removals_first(): a removal
-    applied after the add would delete the add's slots.
+    footprint, for by_anchor/bboxes/farm_by_tile) belong to the batch's own
+    units alone -- _batch_splice_eligible() for unit edits,
+    _reassign_component_splices() for a Convert on shared tiles,
+    _membership_component_splices() for any other unit edit on shared tiles
+    (removals, then the rest in walk order), _elevation_splices() (the same
+    component) for elevation edits -- so each key is a plain
+    delete-then-recompute rather than a subtraction from a union with unknown
+    other contributors.
 
-    overrides is passed to render._resolve_unit_sprite() as-is: {} is fine
-    under _splice_eligible() (see _splice_building_and_sprites), but an
-    elevation re-anchor admits walls and must pass the real dict.
+    Two phases, so several splices may share a key: every splice's old keys
+    are cleared first, then every contribution is re-added in list order
+    through render._accumulate_contribution(), the wholesale walk's own merge.
+    A list in the walk's order (player-major, then list index) therefore
+    rebuilds a shared key exactly: by_anchor's concatenation order, both bbox
+    unions and farm_by_tile's later-unit-wins. The building part at each key
+    is the union over every splice whose new own tile it is, like
+    render._building_bboxes_iso(). _removals_first() is redundant under this
+    order but harmless.
+
+    overrides is passed to render._resolve_unit_sprite() as-is. {} is fine
+    only when no splice is a wall. A reassign, an elevation re-anchor and a
+    membership component with a moved connector (its reshaped neighbours
+    included) all admit walls and must pass the real dict (_splice_overrides()).
 
     The building part goes through render._building_bbox_for(), the same
     predicate render._building_bboxes_iso() uses, and only for a unit the
@@ -410,7 +757,11 @@ def _reanchor_units(
     hardcoded True would quietly re-admit a farm's terrain override on the
     next move/rotate after the layer was turned off, and a hardcoded 1.0
     would re-inflate a moved tree to full size under Small Trees. hero_glow
-    too: a hardcoded False would drop a moved hero's ring."""
+    too: a hardcoded False would drop a moved hero's ring.
+
+    old_bboxes, if given, receives every building_bboxes key this call
+    rewrites mapped to its value before (None if absent), for
+    render.patch_bystander_grid(). Recorded at the write, so the set is exact."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     if sprites is not None:
@@ -419,80 +770,51 @@ def _reanchor_units(
         skip_ids = set(sprites.skip_ids)
         farm_by_tile = dict(sprites.farm_by_tile)
 
+    # own-tile and sprite-anchor-tile are independent keys (sprite_anchor_tile()
+    # picks the footprint tile LAST in depth order), so every key either side
+    # could write to is collected and reconciled once at the end.
+    touched_keys: set[tuple[int, int]] = set()
+
+    # Phase 1: clear. Every OLD footprint tile, not just sprite_anchor_tile():
+    # a composite's pieces carry their own depth slots across its footprint.
     for splice in splices:
-        unit = splice.unit
-        new_building_bbox = (
-            render._building_bbox_for(unit, w, h, proj, elevations, extra_top_px)
-            if splice.new_own_tile is not None and unit_filter.matches(splice.player_id, unit)
-            else None
-        )
-
+        touched_keys.update(key for key in (splice.old_own_tile, splice.new_own_tile) if key is not None)
         if sprites is None:
-            # No sprite layer, so building_bboxes' only possible content at
-            # either own-tile is this unit's own plain contribution (the guard
-            # rules out anyone else's).
-            for key in (splice.old_own_tile, splice.new_own_tile):
-                if key is not None:
-                    building_bboxes.pop(key, None)
-            if new_building_bbox is not None:
-                building_bboxes[splice.new_own_tile] = new_building_bbox
             continue
-
-        # own-tile and sprite-anchor-tile are independent keys (sprite_anchor_
-        # tile() picks whichever footprint tile is LAST in depth order, not
-        # necessarily the unit's own) -- collect every key either side of this
-        # edit could have written to, so the reconciliation loop below can
-        # recompute each exactly once regardless of how they overlap.
-        touched_keys = {splice.old_own_tile, splice.new_own_tile}
-
-        # Every OLD footprint tile, not just sprite_anchor_tile(old_tiles): a
-        # composite building's pieces carry their own depth slots and land on
-        # several tiles inside that footprint (see render._resolve_unit_sprite).
-        # The guard above is what makes clearing all of them safe -- each holds
-        # this unit alone.
         for tile in splice.old_tiles:
             by_anchor.pop(tile, None)
             bboxes.pop(tile, None)
             farm_by_tile.pop(tile, None)
-            touched_keys.add(tile)
-        skip_ids.discard(id(unit))
+        touched_keys.update(splice.old_tiles)
+        skip_ids.discard(id(splice.unit))
 
-        if splice.new_tiles:
+    # Phase 2: re-add in list order, the building part unioned per own tile.
+    building_parts: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    for splice in splices:
+        unit = splice.unit
+        if splice.new_own_tile is not None and unit_filter.matches(splice.player_id, unit):
+            bbox = render._building_bbox_for(unit, w, h, proj, elevations, extra_top_px)
+            if bbox is not None:
+                key = splice.new_own_tile
+                building_parts[key] = _union_bbox(building_parts.get(key), bbox)
+        if sprites is not None and splice.new_tiles:
             contribution = render._resolve_unit_sprite(
                 scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
                 splice.player_id, splice.index, unit, tree_scale, hero_glow,
             )
             if contribution is not None:
-                skip_ids.add(contribution.skip_id)
-                farm_by_tile.update(contribution.farm_tiles)
-                by_anchor.update(contribution.by_anchor)
-                bboxes.update(contribution.bboxes)
+                render._accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
                 touched_keys.update(contribution.by_anchor)
 
-        # Reconcile building_bboxes at every touched key: the plain building
-        # part exists only at new_own_tile (old_own_tile's own contribution was
-        # this unit's alone, per the guard, and is gone); the sprite part is
-        # whatever bboxes now holds there, already updated above. This is
-        # render.merge_sprite_bboxes()'s own per-key union, restricted to the
-        # handful of keys this edit could have touched.
-        for key in touched_keys:
-            if key is None:
-                continue
-            building_part = new_building_bbox if key == splice.new_own_tile else None
-            sprite_part = bboxes.get(key)
-            if building_part is None and sprite_part is None:
-                building_bboxes.pop(key, None)
-            elif sprite_part is None:
-                building_bboxes[key] = building_part
-            elif building_part is None:
-                building_bboxes[key] = sprite_part
-            else:
-                building_bboxes[key] = (
-                    min(building_part[0], sprite_part[0]),
-                    min(building_part[1], sprite_part[1]),
-                    max(building_part[2], sprite_part[2]),
-                    max(building_part[3], sprite_part[3]),
-                )
+    # Phase 3: render.merge_sprite_bboxes()'s per-key union, over the touched keys only.
+    for key in touched_keys:
+        if old_bboxes is not None:
+            old_bboxes[key] = building_bboxes.get(key)
+        merged = _union_bbox(building_parts.get(key), bboxes.get(key) if sprites is not None else None)
+        if merged is None:
+            building_bboxes.pop(key, None)
+        else:
+            building_bboxes[key] = merged
 
     if sprites is None:
         return None
@@ -518,6 +840,8 @@ class LevelWarmJob:
 
     gen: object
     install: object
+    # Perf Trace's label for this job's steps in a level-warm tick.
+    kind: str = "walk"
 
 
 @dataclass
@@ -599,6 +923,9 @@ class _ChunkCacheBase:
     _mutation_epoch: int = 0
     # Whether _unit_pack_of() exists: Stepped and Sloped keep a native unit pack.
     _has_unit_pack: bool = False
+    # Flat int64 terrain id per tile (y * w + x) for the native composite, or
+    # None (Flat, numpy backend). The default is None, so rebinding is safe.
+    _terrain_ids: np.ndarray | None = None
 
     def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
         """Enumerates the level set ONCE, at construction -- never lazily.
@@ -733,12 +1060,16 @@ class _ChunkCacheBase:
 
     def _extent_fallback(self, changed: list[UnitSplice], mip: int | None) -> bool:
         """Whether a unit edit must be sized with today's reach bbox rather
-        than sprite_extent_before()/after(): a wall, connector or
-        rotation-variant const (its neighbours' art changes too), or a visible
-        level with no resident chunks, or a level whose unit state was never built."""
-        if any(not _const_splice_eligible(s.unit) for s in changed):
+        than sprite_extent_before()/after(): a moved or added wall, connector
+        or rotation-variant const (its neighbours' art changes too), or a
+        visible level with no resident chunks, or a level whose unit state was
+        never built. A pure reassign of one is exempt: it moves nothing, so no
+        neighbour mask changes (see _splice_eligible). Also a level with
+        deferred elevation work: its layer is behind, and flushing here would
+        read units the caller already moved against pre-edit buckets."""
+        if any(not s.is_reassign and not _const_splice_eligible(s.unit) for s in changed):
             return True
-        if mip is None or mip not in self.resident_levels():
+        if mip is None or mip not in self.resident_levels() or self._defers_patch(mip):
             return True
         _proj, sprites, building_bboxes, _rise, _top = self._unit_level_state(mip)
         if building_bboxes is None:
@@ -783,21 +1114,24 @@ class _ChunkCacheBase:
         what the edited units paint at level `mip` now. Resolved per unit
         with _reanchor_units()' own arguments rather than read from the layer,
         since a Stepped level the wholesale fallback left stale has no
-        post-edit layer until its next composite. overrides stay {}: every
-        const that reads them takes REACH_FALLBACK."""
+        post-edit layer until its next composite. overrides are
+        _splice_overrides()': the real dict when a reassigned wall reads it,
+        else {}. A moved one takes REACH_FALLBACK even though its sources now
+        splice: its reshaped neighbours are not in `changed`."""
         if self._extent_fallback(changed, mip):
             return REACH_FALLBACK
         proj, _sprites, _bb, corner_rise, extra_top = self._unit_level_state(mip)
         scenario = self.scenario
         mm = scenario.map_manager
         with_farms, tree_scale, hero_glow = self._layer_resolve_args()
+        overrides = _splice_overrides(scenario, changed)
         box = None
         for s in changed:
             if s.new_own_tile is None or not self.with_units:
                 continue
             if self.sprites_enabled:
                 contribution = render._resolve_unit_sprite(
-                    scenario, proj, self.elevations, self.unit_filter, corner_rise, {}, with_farms,
+                    scenario, proj, self.elevations, self.unit_filter, corner_rise, overrides, with_farms,
                     s.player_id, s.index, s.unit, tree_scale, hero_glow,
                 )
                 if contribution is not None:
@@ -851,8 +1185,15 @@ class _ChunkCacheBase:
     def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
         raise NotImplementedError
 
-    def _refresh_source_caches(self, elevation_changed: set | None = None) -> None:
+    def _refresh_source_caches(self, elevation_changed: set | None = None, splice_levels=None) -> None:
+        """splice_levels: patch()'s rebuild_levels, the levels allowed to do
+        per-level source work now. Only IsoChunkCache's elevation splice reads it."""
         raise NotImplementedError
+
+    def _defers_patch(self, mip: int) -> bool:
+        """Whether a resident level must evict patch()'s chunks rather than
+        composite them: its unit layer has deferred work (IsoChunkCache)."""
+        return False
 
     def can_splice(self, changed: list[UnitSplice] | None) -> bool:
         """Whether invalidate_units(changed) would splice rather than rebuild,
@@ -860,7 +1201,83 @@ class _ChunkCacheBase:
         patch() pays the level rebuild in the handler). Base: never."""
         return False
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
+    def _unit_splice_plan(self, changed: list[UnitSplice] | None) -> list[UnitSplice] | None:
+        """_splice_plan() over this cache's own sources (Stepped/Sloped), or
+        None for the wholesale path. Not memoized: the viewer never asks
+        can_splice() before a Stepped/Sloped invalidate_units()."""
+        if not self.with_units or changed is None:
+            return None
+        return _splice_plan(self.scenario, self.units_by_tile, self.unit_filter, changed)
+
+    def _trace_splice_refusal(self, changed: list[UnitSplice] | None, skipped: bool = False) -> None:
+        """Records why invalidate_units(changed) is about to go wholesale, as a
+        zero-length `splice_refused=<reason>` phase on the open op or stroke end.
+        Recomputed only while Perf Trace is on, and before the sources change.
+        `skipped`: the caller passed splice_levels=False, so the reason is `skipped`."""
+        if changed is None or not self.with_units or not perf_trace.is_enabled():
+            return
+        reason = "skipped" if skipped else _splice_plan_or_refusal(
+            self.scenario, self.units_by_tile, self.unit_filter, changed
+        )[1]
+        with perf_trace.phase(f"splice_refused={reason}"):
+            pass
+
+    def _update_units_by_tile_in_place(self, changed: list[UnitSplice]) -> bool:
+        """units_by_tile brought up to date for a membership-only batch without
+        render._units_by_tile()'s walk over every unit, and _units_version
+        bumped (a unit pack's identity check can't see an in-place mutation).
+        False, touching nothing, unless units are on and every splice is a pure
+        add (old_own_tile None) or a pure removal (new_own_tile None), no unit is
+        on both sides, and each player's adds are exactly the last k units of
+        its list, in `changed` order (FlatChunkCache._flat_splice_eligible()'s
+        tail check). The caller then takes the wholesale rebuild.
+
+        Why this equals a fresh build: buckets are ordered player-major, then
+        by list index. Dropping removals by identity (_drop_from_tiles) keeps
+        that order. A tail add has the highest index for its player, so its
+        fresh-build slot is right after its player's run: after the last entry
+        whose owner is <= its player. The owner of an existing entry is read as
+        `unit.player`, which UnitManager keeps equal to the list a unit sits in
+        (add, reassign and restore all resync it). A filtered-out or off-map
+        add gets no entry, as in _units_by_tile()."""
+        if not self.with_units or not changed:
+            return False
+        adds: dict[int, list[UnitSplice]] = {}
+        removals: list[UnitSplice] = []
+        for s in changed:
+            if s.old_own_tile is None:
+                adds.setdefault(s.player_id, []).append(s)
+            elif s.new_own_tile is None:
+                removals.append(s)
+            else:
+                return False
+        if {id(s.unit) for s in removals} & {id(s.unit) for group in adds.values() for s in group}:
+            return False
+        units = self.scenario.unit_manager.units
+        for player_id, group in adds.items():
+            start = len(units[player_id]) - len(group)
+            for k, s in enumerate(group):
+                if s.index != start + k or units[player_id][s.index] is not s.unit:
+                    return False
+        self._units_version += 1
+        by_tile = self.units_by_tile
+        for s in removals:
+            _drop_from_tiles(by_tile, s)
+        for player_id in sorted(adds):
+            color = self.scenario.player_colors[player_id]
+            for s in adds[player_id]:
+                if not s.new_tiles or not self.unit_filter.matches(player_id, s.unit):
+                    continue
+                entry = (s.unit, render._unit_color(s.unit, color))
+                for tile in s.new_tiles:
+                    bucket = by_tile.setdefault(tile, [])
+                    pos = len(bucket)
+                    while pos and bucket[pos - 1][0].player > player_id:
+                        pos -= 1
+                    bucket.insert(pos, entry)
+        return True
+
+    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
         """Forces this cache's unit-derived structures to rebuild on the next
         composite -- the explicit hook for a unit-editing mutation (place/
         move/delete/reassign), which changes unit.x/y/player without going
@@ -882,6 +1299,9 @@ class _ChunkCacheBase:
         FlatChunkCache overrides this: its _refresh_source_caches() is a
         no-op once unit_draws exists, so it needs the extra del/clear step
         this base version doesn't have to do.
+
+        splice_levels (Stepped/Sloped only): False skips the level splice and
+        tries the in-place units_by_tile update instead. Ignored here and on Flat.
         """
         self._mutation_epoch += 1
         self._refresh_source_caches()
@@ -941,13 +1361,17 @@ class _ChunkCacheBase:
         the level leaves residency or its pack is replaced or goes stale."""
         if not self._has_unit_pack or composite_backend.native is None or not self.with_units:
             return None
+        # A deferring level's pack is refreshed by its flush; reading it here would force one mid-stroke.
+        # after_level_warm: the flush job queued ahead of this one runs it first.
+        if self._defers_patch(mip) and not after_level_warm:
+            return None
         if self.is_level_resident(mip):
             pack = self._unit_pack_of(mip, create=False)
             if pack is not None and pack.pending().size == 0:
                 return None
         elif not after_level_warm:
             return None
-        return LevelWarmJob(gen=self._pack_warm_walk(mip), install=lambda _payload: True)
+        return LevelWarmJob(gen=self._pack_warm_walk(mip), install=lambda _payload: True, kind="pack")
 
     def _pack_warm_walk(self, mip: int):
         if not self.is_level_resident(mip):
@@ -956,7 +1380,11 @@ class _ChunkCacheBase:
         pending = pack.pending()
         for i in range(0, pending.size, PACK_WARM_TILES):
             yield
-            if not self.is_level_resident(mip) or self._unit_pack_of(mip, create=False) is not pack:
+            if (
+                not self.is_level_resident(mip)
+                or self._defers_patch(mip)
+                or self._unit_pack_of(mip, create=False) is not pack
+            ):
                 return
             pack.ensure(pending[i : i + PACK_WARM_TILES])
 
@@ -1096,7 +1524,7 @@ class _ChunkCacheBase:
         return out
 
     def patch(
-        self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, levels=None
+        self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, levels=None, rebuild_levels=None
     ) -> None:
         """"Patch, don't drop": for every chunk CURRENTLY cached, at every
         RESIDENT mip level (only those in `levels`, when given: a unit edit
@@ -1125,7 +1553,7 @@ class _ChunkCacheBase:
         underlying source state itself (elevations, terrain) -- callers
         that need to (dirty_screen_bbox_iso() for Stepped) do so before
         calling this. Refreshes this cache's own per-edit derived state
-        first (self._refresh_source_caches()) -- see each subclass's own
+        first (_refresh_terrain_ids(bbox), then self._refresh_source_caches()) -- see each subclass's own
         docstring for what that means to it.
 
         elevation_changed (draw-perf plan Step 3): the subset of this edit's
@@ -1137,23 +1565,41 @@ class _ChunkCacheBase:
         today's behavior -- every call site that doesn't yet compute this
         set keeps its exact prior cost and correctness. The degenerate-bbox
         check runs BEFORE this call now (it used to run after, paying a full
-        rebuild for a bbox with nothing to patch)."""
+        rebuild for a bbox with nothing to patch).
+
+        rebuild_levels: None (every level may) or the levels allowed to do
+        per-level source work (rebuild or splice) inside this call. A resident
+        level outside it that the refresh left stale (not is_level_resident())
+        evicts bbox's chunks instead of patching them, so a Stepped elevation
+        step that bumps the gen rebuilds the visible level only, not every
+        resident one; the stale level rebuilds when next composited or warmed.
+        A current level outside it defers its elevation splice instead
+        (IsoChunkCache._splice_levels), and any level with deferred work
+        (_defers_patch) evicts too, so no cached chunk shows an unflushed layer."""
         px0, py0, px1, py1 = bbox
         # Before the early return too: the caller may have written elevations in place.
         self._mutation_epoch += 1
         if px1 <= px0 or py1 <= py0:
             return
-        self._refresh_source_caches(elevation_changed)
+        self._refresh_terrain_ids(bbox)
+        self._refresh_source_caches(elevation_changed, splice_levels=rebuild_levels)
         for mip in self._select_levels(levels):
             lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
             if lx1 <= lx0 or ly1 <= ly0:
                 continue
             cx0, cy0 = lx0 // self.chunk_px, ly0 // self.chunk_px
             cx1, cy1 = (lx1 - 1) // self.chunk_px, (ly1 - 1) // self.chunk_px
+            evict = (
+                rebuild_levels is not None and mip not in rebuild_levels and not self.is_level_resident(mip)
+            ) or self._defers_patch(mip)
             for cy in range(cy0, cy1 + 1):
                 for cx in range(cx0, cx1 + 1):
                     chunk = self._cache.get((mip, cx, cy))
                     if chunk is None:
+                        continue
+                    if evict:
+                        self._cache_bytes -= chunk.nbytes
+                        del self._cache[(mip, cx, cy)]
                         continue
                     chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
                     chunk_x1, chunk_y1 = chunk_x0 + chunk.shape[1], chunk_y0 + chunk.shape[0]
@@ -1202,7 +1648,7 @@ class _ChunkCacheBase:
         for rect in rects:
             self.patch(rect)
 
-    def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None) -> None:
+    def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None, terrain_changed: bool = True) -> None:
         """Evicts every cached chunk, at every RESIDENT mip level (only those
         in `levels`, when given), whose
         grid cell (once bbox is converted to that level) intersects it --
@@ -1223,9 +1669,15 @@ class _ChunkCacheBase:
         canvas high edge, leaving stale pixels there. Coarser levels were
         merely over-evicted (harmless); this fixes both directions the same
         way, by computing each resident level's own true chunk-index
-        range instead of reusing the reference's."""
+        range instead of reusing the reference's.
+
+        terrain_changed=False skips the terrain-id mirror re-read, for a
+        caller whose change is not terrain (units, layers, grid, sprites):
+        the whole-canvas re-read costs 2.9 ms at 240x240 and 11 ms at 480x480."""
         _px0, _py0, _px1, _py1 = bbox
         self._mutation_epoch += 1
+        if terrain_changed:
+            self._refresh_terrain_ids(bbox)
         ranges: dict[int, tuple[int, int, int, int]] = {}
         for mip in self._select_levels(levels):
             lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
@@ -1246,6 +1698,38 @@ class _ChunkCacheBase:
             if cx0 <= cx <= cx1 and cy0 <= cy <= cy1:
                 self._cache_bytes -= self._cache[key].nbytes
                 del self._cache[key]
+
+    def _init_terrain_ids(self) -> None:
+        """Builds the terrain-id mirror on the native backend (2.9 ms at 240x240,
+        11 ms at 480x480). A full re-render builds a fresh cache, so a fresh mirror."""
+        if composite_backend.native is None:
+            return
+        mm = self.scenario.map_manager
+        self._terrain_ids = native_composite._terrain_ids(self.scenario, np.arange(mm.map_width * mm.map_height))
+
+    def _refresh_terrain_ids(self, bbox: tuple[int, int, int, int]) -> None:
+        """Re-reads the mirror over bbox (REFERENCE canvas pixels) after a
+        terrain edit. Every in-app terrain write reaches the cache through
+        patch() or invalidate_region() with a bbox that covers each dirty
+        tile's footprint, and tiles_in_screen_rect's swept test returns a
+        superset of the tiles painting into it, so every dirty tile is re-read.
+        A whole-canvas bbox reads every tile directly, which beats the rect
+        enumeration at that size."""
+        if self._terrain_ids is None:
+            return
+        px0, py0, px1, py1 = bbox
+        if px1 <= px0 or py1 <= py0:
+            return
+        mm = self.scenario.map_manager
+        w, h = mm.map_width, mm.map_height
+        canvas_w, canvas_h = self.canvas_dims(0)
+        if px0 <= 0 and py0 <= 0 and px1 >= canvas_w and py1 >= canvas_h:
+            idx = np.arange(w * h)
+        else:
+            tiles = iso_geometry.tiles_in_screen_rect(px0, py0, px1, py1, w, h, self.proj)
+            idx = tiles[:, 1] * w + tiles[:, 0]
+        if idx.size:
+            self._terrain_ids[idx] = native_composite._terrain_ids(self.scenario, idx)
 
     def _refresh_unit_sources(self) -> None:
         """Rebuilds whatever per-cache structure holds units, after the unit
@@ -1275,7 +1759,7 @@ class _ChunkCacheBase:
             return
         self.unit_filter = unit_filter
         self._refresh_unit_sources()
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
 
     def set_layers(self, layers: LayerState) -> None:
         """Swaps the View > Layers state and makes it actually visible.
@@ -1314,7 +1798,7 @@ class _ChunkCacheBase:
         self.layers = layers
         if rebuild:
             self._refresh_unit_sources()
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
 
     def set_grid(self, grid: GridBake) -> None:
         """Swaps the baked View > Grid spec and makes it visible: set_layers()'
@@ -1324,7 +1808,7 @@ class _ChunkCacheBase:
         if grid == self.grid:
             return
         self.grid = grid
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Stores whether this cache composites real .sld sprites -- P3-g's
@@ -1375,7 +1859,7 @@ class _IsoLevel:
     proj: iso_geometry.IsoProjection
     building_bboxes: dict | None = None
     # A5: building_bboxes' own chunk-bucketed index, built beside it in
-    # _install_level so the two can never disagree about which dict they mean.
+    # _assemble_level so the two can never disagree about which dict they mean.
     bystander_grid: render.BystanderGrid | None = None
     gen: int = -1
     # P3-g3. Per-level for the same reason building_bboxes is: a sprite is
@@ -1387,6 +1871,9 @@ class _IsoLevel:
     memo: render.SpriteMemo | None = None
     # Batch F N2's native view of units_by_tile + sprites at this level.
     unit_pack: native_composite.UnitPack | None = None
+    # Elevation tiles whose re-anchor this current level has deferred (an
+    # off-screen level during a Stepped stroke); IsoChunkCache._flush_pending().
+    pending_elev: set[tuple[int, int]] = field(default_factory=set)
 
 
 class IsoChunkCache(_ChunkCacheBase):
@@ -1495,10 +1982,11 @@ class IsoChunkCache(_ChunkCacheBase):
         # Bumped whenever units_by_tile is mutated in place, which a unit
         # pack's identity check can't see.
         self._units_version = 0
+        self._init_terrain_ids()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
-    def _refresh_source_caches(self, elevation_changed: set | None = None) -> None:
+    def _refresh_source_caches(self, elevation_changed: set | None = None, splice_levels=None) -> None:
         """Rebuilds the SHARED, tile-space units_by_tile and bumps the
         source generation counter -- must run whenever elevations could
         have changed underneath this cache (construction, and every
@@ -1529,13 +2017,19 @@ class IsoChunkCache(_ChunkCacheBase):
         gate was accepted on. Stepped reads a unit's OWN tile only
         (_resolve_unit_sprite's elevations[uy, ux], _unit_iso_footprint's own
         floored tile), so the affected units are exactly those whose own
-        tile is in elevation_changed -- radius 0, unlike Sloped's 1. Each
+        tile is in elevation_changed -- radius 0, unlike Sloped's 1 -- plus
+        any unit sharing a tile with one, which re-derives unchanged
+        (_elevation_splices()' component). Each
         already-current level gets one _reanchor_units() call with the real
-        wall overrides (an elevation edit leaves them valid) and a fresh
+        wall overrides (an elevation edit leaves them valid) and a patched
         bystander_grid. A stale level is left stale and rebuilds fully in
         _level(). No gen bump, so _splice_epoch is bumped instead for
-        level_warm_job()'s install predicate. Anything _elevation_splices()
-        can't prove safe bumps the gen, today's wholesale fallback."""
+        level_warm_job()'s install predicate. A component past
+        _ELEV_SPLICE_MAX_UNITS bumps the gen, the wholesale fallback.
+
+        splice_levels (patch()'s rebuild_levels, 2026-09-28 stepped-defer
+        plan): a current level outside it adds elevation_changed to its
+        pending_elev instead of splicing, flushed on its next _level()."""
         if elevation_changed is None:
             self.units_by_tile = render._units_by_tile(self.scenario, self.unit_filter) if self.with_units else {}
             self._source_gen += 1
@@ -1549,28 +2043,85 @@ class IsoChunkCache(_ChunkCacheBase):
         if not splices:
             return
         overrides = render.wall_variant_rotation_overrides(self.scenario)
-        self._splice_levels(splices, overrides, self._units_version)
+        self._splice_levels(splices, overrides, self._units_version, splice_levels, elevation_changed)
 
-    def _splice_levels(self, splices: list[UnitSplice], overrides: dict, old_version: int) -> None:
-        """_reanchor_units() on every already-current level, then its grid and
-        unit pack. Shared by the elevation patch and invalidate_units(); bumps
-        _splice_epoch since neither moves _source_gen. old_version is
-        _units_version before the caller's own units_by_tile splice."""
+    def _splice_levels(
+        self, splices: list[UnitSplice], overrides: dict, old_version: int, levels=None, pending=None
+    ) -> None:
+        """_splice_level() on every already-current level. Shared by the
+        elevation patch and invalidate_units(); bumps _splice_epoch since
+        neither moves _source_gen. old_version is _units_version before the
+        caller's own units_by_tile splice.
+
+        levels (elevation patch only): a current level outside it unions
+        `pending`, the edit's elevation-changed tiles, into its pending_elev
+        instead. Re-anchor is delete-then-recompute from live state, so one
+        flush over a stroke's union equals splicing each step in turn."""
         for mip, lvl in self._levels.items():
             if lvl.gen != self._source_gen:
                 continue
-            old_sprites = lvl.sprites
-            proj, _sprites, _bb, corner_rise, extra_top = self._unit_level_state(mip)
-            lvl.sprites = _reanchor_units(
-                lvl.building_bboxes, lvl.sprites, self.scenario, proj, self.elevations,
-                self.unit_filter, corner_rise, extra_top, splices, overrides, *self._layer_resolve_args(),
-            )
-            lvl.bystander_grid = render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
-            lvl.unit_pack = _refreshed_pack(
-                lvl.unit_pack, splices, self.units_by_tile, old_sprites, old_version, self.elevations,
-                lvl.sprites, self._units_version, self.elevations,
-            )
+            if levels is not None and mip not in levels:
+                lvl.pending_elev |= pending
+                continue
+            self._splice_level(lvl, splices, overrides, old_version)
         self._splice_epoch += 1
+
+    def _splice_level(self, lvl: _IsoLevel, splices: list[UnitSplice], overrides: dict, old_version: int) -> None:
+        """_reanchor_units() on one current level, then its grid (patched over
+        the keys the splice rewrote, not rebuilt) and unit pack. Reads the
+        level directly: this runs inside _flush_pending()."""
+        old_sprites = lvl.sprites
+        old_bboxes: dict = {}
+        lvl.sprites = _reanchor_units(
+            lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
+            self.unit_filter, None, 0, splices, overrides, *self._layer_resolve_args(),
+            old_bboxes=old_bboxes,
+        )
+        lvl.bystander_grid = (
+            render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
+            if lvl.bystander_grid is None
+            else render.patch_bystander_grid(lvl.bystander_grid, old_bboxes, lvl.building_bboxes)
+        )
+        lvl.unit_pack = _refreshed_pack(
+            lvl.unit_pack, splices, self.units_by_tile, old_sprites, old_version, self.elevations,
+            lvl.sprites, self._units_version, self.elevations,
+        )
+
+    def _defers_patch(self, mip: int) -> bool:
+        # A stale level's pending set is moot: its rebuild clears it.
+        lvl = self._levels[mip]
+        return lvl.gen == self._source_gen and bool(lvl.pending_elev)
+
+    def _flush_pending(self, mip: int) -> None:
+        """Applies a current level's deferred elevation re-anchors: one
+        _elevation_splices() over the union, then _splice_level(). A union
+        past _ELEV_SPLICE_MAX_UNITS marks the level stale instead, so
+        _level() rebuilds it wholesale.
+
+        Only valid while units_by_tile agrees with the scenario, which is why
+        _level() is the one caller: between a unit edit and its
+        invalidate_units() the unit has moved but its buckets have not, and
+        a flush there would re-add it at its new tile on top of the old one.
+        invalidate_units() needs no flush of its own: its splice reaches
+        pending levels too (they are current), and the later flush then
+        reads consistent state."""
+        lvl = self._levels[mip]
+        with perf_trace.level("flush", mip) as ev:
+            # Cleared first so nothing reached from the splice below can re-enter.
+            tiles, lvl.pending_elev = lvl.pending_elev, set()
+            if ev is not None:
+                ev.tiles = len(tiles)
+            splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, tiles)
+            if splices is None:
+                if ev is not None:
+                    ev.kind = "flush>rebuild"
+                lvl.gen = -1
+                return
+            if not splices:
+                return
+            overrides = render.wall_variant_rotation_overrides(self.scenario)
+            self._splice_level(lvl, splices, overrides, self._units_version)
+            self._splice_epoch += 1
 
     def _level(self, mip: int) -> _IsoLevel:
         """The mip level's own state, rebuilding its building_bboxes if
@@ -1583,15 +2134,24 @@ class IsoChunkCache(_ChunkCacheBase):
         levels resident), the first edit pays two -- units_by_tile itself
         is still built once per edit regardless of level count, so the
         real cost is bounded by resident level count, not enumerated level
-        count."""
+        count. A current level with deferred elevation work is flushed first
+        (_flush_pending), which may itself mark it stale."""
         lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            self._flush_pending(mip)
         if lvl.gen != self._source_gen:
-            # P3-g3: resolving and decoding sprites is far too expensive to do
-            # per chunk, so it rides this same per-level lazy rebuild.
-            sprites = memo = None
-            if self.with_units and self.sprites_enabled:
-                sprites, memo = render._drain(self._sprite_walk(lvl))
-            self._install_level(mip, sprites, self._source_gen, memo)
+            with perf_trace.level("build", mip) as ev:
+                # P3-g3: resolving and decoding sprites is far too expensive to do
+                # per chunk, so it rides this same per-level lazy rebuild.
+                sprites = memo = None
+                if self.with_units and self.sprites_enabled:
+                    sprites, memo = render._drain(self._sprite_walk(lvl))
+                if ev is not None:
+                    ev.mark("walk")
+                bboxes, grid = render._drain(self._assemble_level(lvl, sprites))
+                self._commit_level(mip, sprites, memo, bboxes, grid, self._source_gen)
+                if ev is not None:
+                    ev.mark("install")
         return lvl
 
     def _sprite_walk(self, lvl: _IsoLevel):
@@ -1605,46 +2165,75 @@ class IsoChunkCache(_ChunkCacheBase):
             memo=lvl.memo or render.SpriteMemo(),
         )
 
-    def _install_level(
-        self, mip: int, sprites: render.SpriteLayer | None, gen: int, memo: render.SpriteMemo | None = None
-    ) -> None:
-        """Assembles and installs a level from an already-built sprite layer
-        -- everything _level() does EXCEPT building that layer.
+    def _assemble_level(self, lvl: _IsoLevel, sprites: render.SpriteLayer | None):
+        """A level's building_bboxes and bystander grid from an already-built
+        sprite layer, as a resumable generator (at most render.ASSEMBLY_SLICE
+        units or keys per step) returning (bboxes, grid). Installs nothing:
+        _commit_level() does that.
 
-        Shared with level_warm_job()'s install closure deliberately: the warm
-        path and the paint path assembling a level two different ways is
-        exactly the divergence class Flat's row-count assert exists to catch,
-        and Stepped has no equivalent tripwire, so the fix here is to have
-        only one copy of the assembly at all.
+        One assembly for both paths: _level() drains it, the warm jobs step it
+        across ticks (2026-09-29 warm-tick plan). Two assemblies would be the
+        divergence class Flat's row-count assert exists to catch, and Stepped
+        has no equivalent tripwire.
 
         merge_sprite_bboxes is what makes composite_rect_iso pull a sprite's
         anchor tile in as a bystander -- without it a sprite clips at its
-        owning chunk's edge."""
-        lvl = self._levels[mip]
+        owning chunk's edge. The grid is built from the MERGED dict."""
         mm = self.scenario.map_manager
-        bboxes = (
-            render._building_bboxes_iso(
+        # Its own step: the walk's last one ends here, not inside the first slice.
+        yield
+        bboxes = {}
+        if self.with_units:
+            bboxes = yield from render._building_bboxes_iso_sliced(
                 self.scenario, mm.map_width, mm.map_height, lvl.proj, self.elevations, unit_filter=self.unit_filter
             )
-            if self.with_units
-            else {}
-        )
         if sprites is not None:
-            bboxes = render.merge_sprite_bboxes(bboxes, sprites)
+            bboxes = yield from render.merge_sprite_bboxes_sliced(bboxes, sprites)
+        grid = yield from render.build_bystander_grid_sliced(bboxes, self.chunk_px)
+        return bboxes, grid
+
+    def _commit_level(
+        self, mip: int, sprites: render.SpriteLayer | None, memo: render.SpriteMemo | None,
+        bboxes: dict, grid: render.BystanderGrid, gen: int,
+    ) -> None:
+        """Installs an assembled level: field assignment only, so a warm's
+        install step costs nothing. The warm's install predicate runs first."""
+        lvl = self._levels[mip]
         lvl.sprites = sprites
         lvl.memo = memo
         lvl.unit_pack = None
+        # A fresh build already reflects every elevation.
+        lvl.pending_elev = set()
         lvl.building_bboxes = bboxes
-        # Built from the MERGED dict, and here rather than in _level(), because
-        # this is the one assembly point the warm install also routes through.
-        lvl.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
+        lvl.bystander_grid = grid
         lvl.gen = gen
+
+    def _rebuild_walk(self, lvl: _IsoLevel):
+        """The sliced level rebuild both warm jobs run: the sprite walk (sprites
+        on), then _assemble_level(). Returns (sprites, memo, bboxes, grid)."""
+        sprites = memo = None
+        if self.with_units and self.sprites_enabled:
+            sprites, memo = yield from self._sprite_walk(lvl)
+        bboxes, grid = yield from self._assemble_level(lvl, sprites)
+        return sprites, memo, bboxes, grid
+
+    def _rebuild_install(self, mip: int, built: tuple, start_gen: int, start_epoch: int) -> bool:
+        """A warm job's install: the three-check predicate (see level_warm_job),
+        then _commit_level()."""
+        if (
+            self._source_gen != start_gen
+            or self._splice_epoch != start_epoch
+            or self._levels[mip].gen == self._source_gen
+        ):
+            return False
+        self._commit_level(mip, *built, start_gen)
+        return True
 
     def can_splice(self, changed: list[UnitSplice] | None) -> bool:
         """Whether invalidate_units(changed) would take its splice path."""
-        return self.with_units and changed is not None and _batch_splice_eligible(self.units_by_tile, changed)
+        return self._unit_splice_plan(changed) is not None
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
+    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
         """Batch D's D4 splice: `changed` (a list of UnitSplice, one per
         single-unit-tool-path edit) lets a Move/Nudge/Rotate/Set field/Place/
         single Delete update units_by_tile and every ALREADY-BUILT level's
@@ -1655,12 +2244,19 @@ class IsoChunkCache(_ChunkCacheBase):
 
         None (unknown -- every pre-D4 caller, plus set_unit_filter()/
         set_sprites_enabled() via _refresh_unit_sources()) keeps today's
-        exact wholesale path via the base class. A non-eligible `changed`
-        (see _batch_splice_eligible()) falls back to that same wholesale path --
+        exact wholesale path via the base class. A `changed` that
+        _splice_plan() can't handle (see _batch_splice_eligible() and the two
+        component splices) falls back to that same wholesale path --
         this method never partially applies a batch: if any entry in
         `changed` isn't splice-safe, ALL of it is covered for free by one
         _refresh_source_caches() call, since that derives fresh from live
-        scenario state regardless of which edits produced it.
+        scenario state regardless of which edits produced it. A batch on
+        shared tiles (a Convert: _reassign_component_splices(); a Draw stroke
+        end, its undo or a group Move: _membership_component_splices())
+        splices its whole component instead of `changed`: that list is built
+        before _units_version moves and before units_by_tile is touched,
+        since its search reads the pre-edit buckets. A wholesale fallback
+        says why on the Perf Trace line (_trace_splice_refusal()).
 
         **Deliberately does NOT bump self._source_gen.** _level()'s
         gen-gated laziness is the whole reason this splice is worth writing
@@ -1679,17 +2275,34 @@ class IsoChunkCache(_ChunkCacheBase):
 
         The whole batch goes through ONE _reanchor_units() call per level,
         so a Convert of N units copies each SpriteLayer dict once, not N
-        times. overrides stays {}: _splice_eligible() excludes every wall."""
+        times. overrides come from _splice_overrides() over the plan: a
+        reassigned wall, a moved one and the walls a moved connector reshapes
+        (_connector_neighbours()) all resolve with the real dict. An added or
+        removed wall/connector still goes wholesale (`const:add`/`const:remove`).
+
+        A refused batch, or any batch with splice_levels=False (the caller knows
+        a later elevation patch will bump the gen anyway, so a level splice would
+        be wasted), first tries _update_units_by_tile_in_place(): units_by_tile
+        does not depend on elevation, so a membership-only batch patches it in
+        place and bumps the gen, leaving every level stale exactly as the
+        wholesale path does. A zero-length `units_in_place` phase marks it."""
         self._mutation_epoch += 1
-        if not self.can_splice(changed):
+        plan = self._unit_splice_plan(changed) if splice_levels else None
+        if plan is None:
+            self._trace_splice_refusal(changed, skipped=not splice_levels)
+            if changed is not None and self._update_units_by_tile_in_place(changed):
+                with perf_trace.phase("units_in_place"):
+                    pass
+                self._source_gen += 1
+                return
             self._refresh_source_caches()
             return
-        changed = _removals_first(changed)
+        changed = _removals_first(plan)
         old_version = self._units_version
         self._units_version += 1
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
-        self._splice_levels(changed, {}, old_version)
+        self._splice_levels(changed, _splice_overrides(self.scenario, changed), old_version)
 
     def level_warm_job(self, mip: int) -> LevelWarmJob | None:
         """Stepped's resumable warm for one level -- see _ChunkCacheBase's
@@ -1709,28 +2322,52 @@ class IsoChunkCache(_ChunkCacheBase):
         one. The third is the opposite case: a real paint got there first
         and built an equivalent level, and overwriting it would throw away a
         layer already wired into the chunk cache to install a fresh copy of
-        the same thing."""
+        the same thing.
+
+        A current level with deferred elevation work gets a flush job instead,
+        sprites on or off (_flush_warm_walk), so no chunk warm or paint pays
+        the flush (2026-09-29 warm-tick plan)."""
+        lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            return self._flush_warm_job(mip)
         if not (self.with_units and self.sprites_enabled):
             return None
-        lvl = self._levels[mip]
         start_gen = self._source_gen
         start_epoch = self._splice_epoch
         if lvl.gen == start_gen:
             return None
-        gen = self._sprite_walk(lvl)
+        # The walk and the assembly both step here; install only commits.
+        return LevelWarmJob(
+            gen=self._rebuild_walk(lvl),
+            install=lambda built: self._rebuild_install(mip, built, start_gen, start_epoch),
+        )
 
-        def install(payload: tuple[render.SpriteLayer, render.SpriteMemo]) -> bool:
-            if (
-                self._source_gen != start_gen
-                or self._splice_epoch != start_epoch
-                or lvl.gen == self._source_gen
-            ):
-                return False
-            sprites, memo = payload
-            self._install_level(mip, sprites, start_gen, memo)
-            return True
+    def _flush_warm_job(self, mip: int) -> LevelWarmJob:
+        """level_warm_job() for a current level with pending tiles: the walk's
+        payload is None when the flush left the level current, else
+        (rebuild, start_gen, start_epoch)."""
 
-        return LevelWarmJob(gen=gen, install=install)
+        def install(payload) -> bool:
+            return payload is None or self._rebuild_install(mip, *payload)
+
+        return LevelWarmJob(gen=self._flush_warm_walk(mip), install=install, kind="flush")
+
+    def _flush_warm_walk(self, mip: int):
+        """_flush_pending() as one step, then, if an over-cap union marked the
+        level stale, level_warm_job()'s sliced rebuild. Re-checks on its first
+        step, since a paint may have flushed the level after start(). Safe
+        between ticks: every mutation cancels warms before it runs and re-arms
+        after invalidate_units(), so units_by_tile agrees with the scenario."""
+        lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            self._flush_pending(mip)
+        if lvl.gen == self._source_gen:
+            return None
+        # Captured after the flush: an under-cap one bumps _splice_epoch.
+        start_gen, start_epoch = self._source_gen, self._splice_epoch
+        yield
+        built = yield from self._rebuild_walk(lvl)
+        return built, start_gen, start_epoch
 
     def is_level_resident(self, mip: int) -> bool:
         """Mirrors level_warm_job()'s own staleness check (`lvl.gen ==
@@ -1742,8 +2379,14 @@ class IsoChunkCache(_ChunkCacheBase):
         since a cheap _building_bboxes_iso-only rebuild isn't worth
         ticking for). tests/test_margin_warm.py pins the two together after
         a completed warm so a future change to one can't silently diverge
-        from the other."""
-        return self._levels[mip].gen == self._source_gen
+        from the other.
+
+        A current level with deferred elevation work is not resident either:
+        get_chunk() would flush it, and an over-cap flush rebuilds it
+        wholesale inside that call. level_warm_job() flushes it instead
+        (2026-09-29 warm-tick plan)."""
+        lvl = self._levels[mip]
+        return lvl.gen == self._source_gen and not lvl.pending_elev
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Turns real .sld sprites on or off on a LIVE cache -- P3-g's toggle.
@@ -1781,7 +2424,7 @@ class IsoChunkCache(_ChunkCacheBase):
         self._refresh_unit_sources()
         for mip in resident:
             self._level(mip)
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
 
     def set_layers(self, layers: LayerState) -> None:
         """The base method plus set_sprites_enabled()'s eager resident-level
@@ -1815,7 +2458,7 @@ class IsoChunkCache(_ChunkCacheBase):
         self._refresh_unit_sources()
         for mip in resident:
             self._level(mip)
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
 
     def _unit_level_state(self, mip: int):
         """The level as installed, read straight off self._levels, never via
@@ -1846,9 +2489,9 @@ class IsoChunkCache(_ChunkCacheBase):
 
     def _unit_pack_of(self, mip: int, create: bool):
         lvl = self._levels[mip]
-        return self._native_units(lvl) if create else self._current_pack(lvl)
+        return self._native_units(lvl, mip) if create else self._current_pack(lvl)
 
-    def _native_units(self, lvl: _IsoLevel):
+    def _native_units(self, lvl: _IsoLevel, mip: int):
         """The level's unit pack for composite_rect_iso's N2 path (None on
         numpy), rebuilt whenever it no longer describes the level's sources."""
         if composite_backend.native is None:
@@ -1858,38 +2501,44 @@ class IsoChunkCache(_ChunkCacheBase):
         pack = self._current_pack(lvl)
         if pack is None:
             mm = self.scenario.map_manager
-            pack = lvl.unit_pack = native_composite.UnitPack(
-                False, mm.map_width, mm.map_height, lvl.proj, self.units_by_tile, lvl.sprites,
-                self._units_version, self.elevations,
-            )
+            with perf_trace.level("pack", mip):
+                pack = lvl.unit_pack = native_composite.UnitPack(
+                    False, mm.map_width, mm.map_height, lvl.proj, self.units_by_tile, lvl.sprites,
+                    self._units_version, self.elevations,
+                )
         return pack
 
     def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
         lvl = self._level(mip)
-        return render.composite_rect_iso(
-            self.scenario,
-            x0,
-            y0,
-            x1,
-            y1,
-            self.elevations,
-            lvl.proj,
-            lvl.tile_px,
-            self.units_by_tile,
-            lvl.building_bboxes,
-            self.with_units,
-            sprites=lvl.sprites,
-            bystander_grid=lvl.bystander_grid,
-            layers=self.layers,
-            grid=self.grid,
-            unit_pack=self._native_units(lvl),
-        )
+        # Resolved first so a pack build stays its own level event, outside the phase.
+        unit_pack = self._native_units(lvl, mip)
+        with perf_trace.repaint_phase("composite"):
+            return render.composite_rect_iso(
+                self.scenario,
+                x0,
+                y0,
+                x1,
+                y1,
+                self.elevations,
+                lvl.proj,
+                lvl.tile_px,
+                self.units_by_tile,
+                lvl.building_bboxes,
+                self.with_units,
+                sprites=lvl.sprites,
+                bystander_grid=lvl.bystander_grid,
+                layers=self.layers,
+                grid=self.grid,
+                unit_pack=unit_pack,
+                terrain_ids=self._terrain_ids,
+            )
 
     def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
         lvl = self._level(mip)
         return render.prepare_rect_native(
             False, self.scenario, x0, y0, x1, y1, self.elevations, lvl.proj, lvl.tile_px, lvl.building_bboxes,
-            self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl),
+            self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
+            terrain_ids=self._terrain_ids,
         )
 
 
@@ -1989,7 +2638,7 @@ class FlatChunkCache(_ChunkCacheBase):
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
-    def _refresh_source_caches(self, elevation_changed: set | None = None) -> None:
+    def _refresh_source_caches(self, elevation_changed: set | None = None, splice_levels=None) -> None:
         """See this class's own docstring: a documented no-op once
         unit_draws already exists (nothing a terrain/elevation edit touches
         can make it stale), except at construction, where it must actually
@@ -2016,7 +2665,7 @@ class FlatChunkCache(_ChunkCacheBase):
 
     sprite_extent_after = sprite_extent_before
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
+    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
         """Brings unit_draws, every other level's draws and every icon layer
         up to date after a unit edit. Phase 3.5b's unit-editing UI calls this
         via ViewerWindow._after_unit_mutation(); it overrides the base class
@@ -2031,7 +2680,8 @@ class FlatChunkCache(_ChunkCacheBase):
         resident levels hold rows, and a non-resident level builds fresh from
         live scenario state in the same order. None, an empty list, or an
         ineligible batch takes the wholesale path below, which drops
-        everything and rebuilds level 0's draws now and the rest lazily."""
+        everything and rebuilds level 0's draws now and the rest lazily.
+        splice_levels is the Stepped/Sloped keyword, ignored here."""
         self._mutation_epoch += 1
         if self.can_splice(changed):
             self._splice_rows(changed)
@@ -2073,7 +2723,9 @@ class FlatChunkCache(_ChunkCacheBase):
         """Whether _splice_rows() reproduces a fresh walk for `changed`. No
         tile-sharing test, unlike _splice_eligible(): Flat paints overlapping
         rects in row order and the splice keeps that order exactly. What it
-        can't do is a neighbour-dependent const, a unit edited twice in one
+        can't do is a moved or added neighbour-dependent const (a pure
+        reassign of one moves nothing, so no neighbour's icon changes), a unit
+        edited twice in one
         batch (its row would be looked up against the wrong state), or a Move
         that enters or leaves the map (its row would have to appear or vanish
         mid-block, not at the block's end). Nor an insertion that isn't at its
@@ -2083,7 +2735,7 @@ class FlatChunkCache(_ChunkCacheBase):
         seen: set[int] = set()
         inserted: dict[int, list] = {}
         for s in changed:
-            if not _const_splice_eligible(s.unit) or id(s.unit) in seen:
+            if (not s.is_reassign and not _const_splice_eligible(s.unit)) or id(s.unit) in seen:
                 return False
             seen.add(id(s.unit))
             if self._is_row_move(s):
@@ -2100,11 +2752,13 @@ class FlatChunkCache(_ChunkCacheBase):
 
     def _splice_rows(self, changed: list[UnitSplice]) -> None:
         """The row splice itself, applied to every resident level's draws and
-        icon layer plus the row_uid/row_player side table. Overrides are {}:
-        _const_splice_eligible() already excluded every unit they could key."""
+        icon layer plus the row_uid/row_player side table. Overrides are
+        _splice_overrides()': the real dict when a reassigned wall's icon
+        reads it, else {} (_flat_splice_eligible() refuses a moved one)."""
         scenario = self.scenario
         mm = scenario.map_manager
         w, h = mm.map_width, mm.map_height
+        overrides = _splice_overrides(scenario, changed)
         draws = {0: self.unit_draws, **self._level_draws}
         icon_layers = {mip: icons for mip, icons in self._level_icon_layers.items() if icons is not None}
         moves = [s for s in changed if self._is_row_move(s)]
@@ -2123,7 +2777,9 @@ class FlatChunkCache(_ChunkCacheBase):
                 colors[row] = color
             team_index = scenario.team_indices[s.player_id]
             for mip, icons in icon_layers.items():
-                icon = render._flat_unit_icon(s.unit, s.player_id, s.index, {}, team_index, bounds, self._mip_tile_px[mip])
+                icon = render._flat_unit_icon(
+                    s.unit, s.player_id, s.index, overrides, team_index, bounds, self._mip_tile_px[mip]
+                )
                 if icon is None:
                     icons.pop(row, None)
                 else:
@@ -2181,7 +2837,7 @@ class FlatChunkCache(_ChunkCacheBase):
                 rekeyed = dict(zip(new_keys.tolist(), icons.values(), strict=True))
                 for row, (_p, s, bounds) in zip(final.tolist(), added, strict=True):
                     icon = render._flat_unit_icon(
-                        s.unit, s.player_id, s.index, {}, scenario.team_indices[s.player_id],
+                        s.unit, s.player_id, s.index, overrides, scenario.team_indices[s.player_id],
                         bounds, self._mip_tile_px[mip],
                     )
                     if icon is not None:
@@ -2226,7 +2882,8 @@ class FlatChunkCache(_ChunkCacheBase):
             return self.unit_draws
         draws = self._level_draws.get(mip)
         if draws is None:
-            draws = render._flat_unit_draws(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+            with perf_trace.level("flat-draws", mip):
+                draws = render._flat_unit_draws(self.scenario, self._mip_tile_px[mip], self.unit_filter)
             self._level_draws[mip] = draws
         return draws
 
@@ -2254,7 +2911,9 @@ class FlatChunkCache(_ChunkCacheBase):
         if not (self.with_units and self.sprites_enabled):
             return None
         if mip not in self._level_icon_layers:
-            self._install_icon_layer(mip, render._flat_icon_layer(self.scenario, self._mip_tile_px[mip], self.unit_filter))
+            with perf_trace.level("flat-icons", mip):
+                icons = render._flat_icon_layer(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+            self._install_icon_layer(mip, icons)
         return self._level_icon_layers[mip]
 
     def _install_icon_layer(self, mip: int, icons_and_rows: tuple[dict[int, unit_sprites.SpriteDraw], int]) -> None:
@@ -2292,7 +2951,7 @@ class FlatChunkCache(_ChunkCacheBase):
             self._install_icon_layer(mip, icons_and_rows)
             return True
 
-        return LevelWarmJob(gen=gen, install=install)
+        return LevelWarmJob(gen=gen, install=install, kind="icons")
 
     def is_level_resident(self, mip: int) -> bool:
         """Flat's own predicate -- "absent from _level_icon_layers" IS a
@@ -2322,7 +2981,7 @@ class FlatChunkCache(_ChunkCacheBase):
         self._refresh_unit_sources()
         for mip in resident:
             self._level_icons(mip)
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
 
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
         """Unchanged by P3-g7, and worth saying so rather than leaving the
@@ -2336,19 +2995,23 @@ class FlatChunkCache(_ChunkCacheBase):
         return mm.map_width * tile_px, mm.map_height * tile_px
 
     def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        return render.composite_rect_flat(
-            self.scenario,
-            x0,
-            y0,
-            x1,
-            y1,
-            self._mip_tile_px[mip],
-            unit_draws=self._level_unit_draws(mip),
-            with_units=self.with_units,
-            icons=self._level_icons(mip),
-            layers=self.layers,
-            grid=self.grid,
-        )
+        # Resolved first so their level builds stay level events, outside the phase.
+        unit_draws = self._level_unit_draws(mip)
+        icons = self._level_icons(mip)
+        with perf_trace.repaint_phase("composite"):
+            return render.composite_rect_flat(
+                self.scenario,
+                x0,
+                y0,
+                x1,
+                y1,
+                self._mip_tile_px[mip],
+                unit_draws=unit_draws,
+                with_units=self.with_units,
+                icons=icons,
+                layers=self.layers,
+                grid=self.grid,
+            )
 
 
 MAX_PICK_PLANES = 4
@@ -2468,10 +3131,11 @@ class SlopedChunkCache(_ChunkCacheBase):
         # Set here, not left to _init_max_chunks below: _set_building_bboxes()
         # reads it and _refresh_source_caches() runs first.
         self.chunk_px = chunk_px
+        self._init_terrain_ids()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
-    def _refresh_source_caches(self, elevation_changed: set | None = None) -> None:
+    def _refresh_source_caches(self, elevation_changed: set | None = None, splice_levels=None) -> None:
         """Rebuilds units_by_tile and building_bboxes -- unlike
         IsoChunkCache, no generation-counter laziness: this cache has only
         one (mip 0) level, so there is no "rebuild only when actually
@@ -2563,12 +3227,14 @@ class SlopedChunkCache(_ChunkCacheBase):
         under SLOPE_CORNER_RULE each corner blends the up-to-4 tiles
         touching it, so a changed tile moves the corners of every tile in
         the 3x3 around it: the affected units are those whose own tile is in
-        elevation_changed dilated by one -- radius 1, unlike Stepped's 0.
+        elevation_changed dilated by one -- radius 1, unlike Stepped's 0 --
+        plus any unit sharing a tile with one (_elevation_splices()'
+        component, re-derived unchanged).
         They are re-anchored against the NEW corner_rise, so sprites and
         corner_rise cannot drift apart. The headroom feeds every building's
         bbox, not just the re-anchored ones, so a headroom change (in
         practice only a flat <-> non-flat transition) takes the wholesale
-        path, as does anything _elevation_splices() can't prove safe."""
+        path, as does a component past _ELEV_SPLICE_MAX_UNITS."""
         if elevation_changed is not None:
             if not elevation_changed:
                 return
@@ -2590,12 +3256,14 @@ class SlopedChunkCache(_ChunkCacheBase):
                 self._rebuild_unit_layers(headroom)
                 return
             if splices:
+                old_bboxes: dict = {}
                 self.sprites = _reanchor_units(
                     self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
                     self.unit_filter, self.corner_rise, headroom, splices,
                     render.wall_variant_rotation_overrides(self.scenario), *self._layer_resolve_args(),
+                    old_bboxes=old_bboxes,
                 )
-                self._set_building_bboxes(self.building_bboxes)
+                self._patch_bystander_grid(old_bboxes)
             # An empty batch still rebinds the pack to the new corner_rise.
             self._unit_pack = _refreshed_pack(
                 self._unit_pack, splices, self.units_by_tile, old_sprites, self._units_version, old_corner_rise,
@@ -2610,6 +3278,10 @@ class SlopedChunkCache(_ChunkCacheBase):
     def _rebuild_unit_layers(self, headroom: int) -> None:
         """The wholesale building_bboxes + sprites rebuild against the current
         corner_rise, recording the headroom it used."""
+        with perf_trace.level("sloped-units", 0):
+            self._rebuild_unit_layers_timed(headroom)
+
+    def _rebuild_unit_layers_timed(self, headroom: int) -> None:
         self._headroom = headroom
         self._unit_pack = None
         mm = self.scenario.map_manager
@@ -2638,19 +3310,25 @@ class SlopedChunkCache(_ChunkCacheBase):
 
     def _set_building_bboxes(self, bboxes: dict) -> None:
         """The only place this class assigns building_bboxes, so its chunk-
-        bucketed index can never be left describing an older dict. Both
-        _refresh_source_caches() branches route through here.
+        bucketed index can never be left describing an older dict. A new
+        dict gets a full grid build here; one spliced in place by
+        _reanchor_units() gets its grid patched in _patch_bystander_grid().
 
         Assigns the dict itself rather than a copy, since the patch-unit-
         sources test uses id(cache.building_bboxes) as its staleness proxy."""
         self.building_bboxes = bboxes
         self.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
 
+    def _patch_bystander_grid(self, old_bboxes: dict) -> None:
+        """The grid brought up to date after _reanchor_units() rewrote the keys
+        in old_bboxes of building_bboxes in place."""
+        self.bystander_grid = render.patch_bystander_grid(self.bystander_grid, old_bboxes, self.building_bboxes)
+
     def can_splice(self, changed: list[UnitSplice] | None) -> bool:
         """Whether invalidate_units(changed) would take its splice path."""
-        return self.with_units and changed is not None and _batch_splice_eligible(self.units_by_tile, changed)
+        return self._unit_splice_plan(changed) is not None
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None) -> None:
+    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
         """Batch D's D4 splice, SlopedChunkCache's counterpart to
         IsoChunkCache.invalidate_units() -- see that method's own docstring
         for the shared contract (None/ineligible both mean "fall back to
@@ -2660,10 +3338,10 @@ class SlopedChunkCache(_ChunkCacheBase):
         Simpler than Iso's version in one real way: a single mip-0 level
         (no per-level gen-gated laziness to preserve), so there is nothing
         to leave alone -- every splice always touches this cache's one
-        building_bboxes/sprites pair, routed through _set_building_bboxes()
-        so the id()-based staleness proxy tests still see the same
-        invariant (dict mutated in place, id() unchanged) that a `patch()`
-        would leave it in.
+        building_bboxes/sprites pair, spliced in place with its grid patched
+        (_patch_bystander_grid()), so the id()-based staleness proxy tests
+        still see the same invariant (dict mutated in place, id() unchanged)
+        that a `patch()` would leave it in.
 
         corner_rise is untouched, same as _refresh_source_caches()'s own
         elevation_changed=empty-set branch: no unit edit moves elevation,
@@ -2671,22 +3349,38 @@ class SlopedChunkCache(_ChunkCacheBase):
         entry in building_bboxes was built with. `_pick_planes` is
         terrain-only and stays untouched for the same reason patch() leaves
         it alone here. The batch goes through one _reanchor_units() call,
-        one SpriteLayer copy for the whole Convert stroke."""
+        one SpriteLayer copy for the whole Convert stroke, with
+        _splice_overrides() for the same reason as Iso's, and a batch on
+        shared tiles splices its whole component, built first, as Iso's does.
+
+        A refused batch, or splice_levels=False, tries Iso's in-place
+        units_by_tile update first; on success the unit layers rebuild eagerly
+        as the wholesale path does, minus the units_by_tile walk."""
         self._mutation_epoch += 1
-        if not self.can_splice(changed):
+        plan = self._unit_splice_plan(changed) if splice_levels else None
+        if plan is None:
+            self._trace_splice_refusal(changed, skipped=not splice_levels)
+            if changed is not None and self._update_units_by_tile_in_place(changed):
+                with perf_trace.phase("units_in_place"):
+                    pass
+                self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
+                self._rebuild_unit_layers(render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj))
+                return
             self._refresh_source_caches()
             return
-        changed = _removals_first(changed)
+        changed = _removals_first(plan)
         old_version, old_sprites = self._units_version, self.sprites
         self._units_version += 1
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
         proj, _sprites, _bb, corner_rise, extra_top = self._unit_level_state(0)
+        old_bboxes: dict = {}
         self.sprites = _reanchor_units(
             self.building_bboxes, self.sprites, self.scenario, proj, self.elevations,
-            self.unit_filter, corner_rise, extra_top, changed, {}, *self._layer_resolve_args(),
+            self.unit_filter, corner_rise, extra_top, changed, _splice_overrides(self.scenario, changed),
+            *self._layer_resolve_args(), old_bboxes=old_bboxes,
         )
-        self._set_building_bboxes(self.building_bboxes)
+        self._patch_bystander_grid(old_bboxes)
         self._unit_pack = _refreshed_pack(
             self._unit_pack, changed, self.units_by_tile, old_sprites, old_version, self.corner_rise,
             self.sprites, self._units_version, self.corner_rise,
@@ -2749,38 +3443,44 @@ class SlopedChunkCache(_ChunkCacheBase):
         pack = self._current_pack()
         if pack is None:
             mm = self.scenario.map_manager
-            pack = self._unit_pack = native_composite.UnitPack(
-                True, mm.map_width, mm.map_height, self.proj, self.units_by_tile, self.sprites,
-                self._units_version, self.corner_rise,
-            )
+            with perf_trace.level("pack", 0):
+                pack = self._unit_pack = native_composite.UnitPack(
+                    True, mm.map_width, mm.map_height, self.proj, self.units_by_tile, self.sprites,
+                    self._units_version, self.corner_rise,
+                )
         return pack
 
     def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
         assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
-        return render.composite_rect_sloped(
-            self.scenario,
-            x0,
-            y0,
-            x1,
-            y1,
-            self.corner_rise,
-            self.proj,
-            self.tile_px,
-            self.units_by_tile,
-            self.building_bboxes,
-            self.with_units,
-            sprites=self.sprites,
-            bystander_grid=self.bystander_grid,
-            layers=self.layers,
-            grid=self.grid,
-            unit_pack=self._native_units(),
-        )
+        # Resolved first so a pack build stays its own level event, outside the phase.
+        unit_pack = self._native_units()
+        with perf_trace.repaint_phase("composite"):
+            return render.composite_rect_sloped(
+                self.scenario,
+                x0,
+                y0,
+                x1,
+                y1,
+                self.corner_rise,
+                self.proj,
+                self.tile_px,
+                self.units_by_tile,
+                self.building_bboxes,
+                self.with_units,
+                sprites=self.sprites,
+                bystander_grid=self.bystander_grid,
+                layers=self.layers,
+                grid=self.grid,
+                unit_pack=unit_pack,
+                terrain_ids=self._terrain_ids,
+            )
 
     def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
         assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
         return render.prepare_rect_native(
             True, self.scenario, x0, y0, x1, y1, self.corner_rise, self.proj, self.tile_px, self.building_bboxes,
             self.with_units, self.bystander_grid, self.layers, self.grid, self._native_units(),
+            terrain_ids=self._terrain_ids,
         )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:
@@ -2942,9 +3642,9 @@ class SlopedChunkCache(_ChunkCacheBase):
             )
             plane[iy0 - plane_y0 : iy1 - plane_y0, ix0 - plane_x0 : ix1 - plane_x0] = sub
 
-    def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None) -> None:
+    def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None, terrain_changed: bool = True) -> None:
         self._pick_planes.clear()
-        super().invalidate_region(bbox, levels)
+        super().invalidate_region(bbox, levels, terrain_changed)
 
     def set_unit_filter(self, unit_filter: UnitFilter) -> None:
         # Defensive, not load-bearing: the pick plane is terrain-only (see
@@ -2975,4 +3675,4 @@ class SlopedChunkCache(_ChunkCacheBase):
             return
         self.sprites_enabled = enabled
         self._refresh_source_caches()
-        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)

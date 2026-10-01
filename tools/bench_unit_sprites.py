@@ -35,6 +35,22 @@ Five things get measured, because they fail in different ways:
 
 Peak resident bytes of every cache are reported alongside, since the capacity
 decision is a memory/latency trade rather than a pure latency one.
+
+`--cold-levels` replaces all of the above with the cold-first-paint row (see
+_bench_cold_levels): one process builds Stepped level A cold, then its two
+finer neighbours B and C, then A again, each through a fresh IsoChunkCache's
+_level() with the process-wide sprite caches kept, as a reopen or a zoom does.
+Each build reports its time, how many .sld files it walked and how many
+whole-file .sld reads it made (a walk plus any decode whose bytes were no
+longer cached). A Sloped row
+then builds level A cold and times Sloped's eager construction after it, the
+Stepped-to-Sloped switch.
+
+`--ladder` replaces all of the above with the zoom-in row (see bench_ladder):
+one IsoChunkCache builds every Stepped level coarsest to finest through
+_level(), as a load followed by zooming in does, then a fresh IsoChunkCache
+builds them again with the process-wide sprite caches kept (pass `rewarm`,
+the floor a level still costs when a paint reaches it before its warm).
 """
 
 from __future__ import annotations
@@ -49,6 +65,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from descape import asset_source, iso_geometry, render, settings, unit_sprites
+from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 
 CHUNK_PX = 512
@@ -239,7 +256,7 @@ def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
     ladder and a budget that fits one level can thrash on the next. The whole
     point of ICON_CACHE_BYTES is to exceed the biggest level's working set --
     a warm rebuild that matches its own cold one is the tell that it does not,
-    the same failure NATIVE_CACHE_SIZE/SCALED_CACHE_BYTES's comment records.
+    the same failure NATIVE_CACHE_BYTES/SCALED_CACHE_BYTES's comment records.
 
     Flat multiplies the cold build by RESIDENT level count, which Stepped
     already does too, so that is accepted by precedent rather than new -- but
@@ -267,6 +284,166 @@ def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
     return lines
 
 
+class _WalkCounter:
+    """Counts .sld walks by swapping unit_sprites.load_sld, the one name every
+    sprite path walks a file through, with or without a per-file index cache,
+    and whole-file .sld reads by wrapping Path.read_bytes, which every walk and
+    decode reads through with or without a bytes cache.
+
+    A call that finds no file still counts: it costs the open attempt, and on
+    the pre-index code it recurred on every native miss just like a walk."""
+
+    def __init__(self):
+        self.paths: list[str] = []
+        self.reads = 0
+        self._real = None
+        self._real_read = None
+
+    def __enter__(self):
+        self._real = real = unit_sprites.load_sld
+        self._real_read = real_read = Path.read_bytes
+
+        def counted(*args, **kwargs):
+            self.paths.append(str(args[0]))
+            return real(*args, **kwargs)
+
+        def counted_read(path):
+            if path.suffix == ".sld":
+                self.reads += 1
+            return real_read(path)
+
+        unit_sprites.load_sld = counted
+        Path.read_bytes = counted_read
+        return self
+
+    def __exit__(self, *_exc):
+        unit_sprites.load_sld = self._real
+        Path.read_bytes = self._real_read
+
+    def take(self) -> tuple[int, int, int]:
+        """(walks, distinct files, whole-file reads) since the last take()."""
+        walks, files, reads = len(self.paths), len(set(self.paths)), self.reads
+        self.paths.clear()
+        self.reads = 0
+        return walks, files, reads
+
+
+def _cold_level_order(levels: list[int], level_a: int | None) -> list[int]:
+    """[A, B, C, A]: A defaults to the coarsest level, where a whole-map first
+    paint lands; B and C are the next two finer, or the nearest two others."""
+    a = levels[0] if level_a is None else level_a
+    if a not in levels:
+        raise SystemExit(f"--level {a} is not one of this file's mip levels {levels}")
+    others = sorted((lvl for lvl in levels if lvl != a), key=lambda lvl: (abs(lvl - a), -lvl))
+    return [a, *others[:2], a]
+
+
+def bench_cold_levels(path: Path, level_a: int | None) -> str:
+    """The cold-first-paint oracle for the SLD index work. Every build uses a
+    fresh IsoChunkCache so its own level state is cold while unit_sprites'
+    caches stay as the previous build left them; only _level() is timed."""
+    scenario = load_map_and_units(path)
+    mm = scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, proj = render.elevations_and_proj(scenario)
+
+    def stepped_cache() -> IsoChunkCache:
+        return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
+
+    levels = stepped_cache().mip_levels()
+    order = _cold_level_order(levels, level_a)
+    lines = [f"  {path.name}", f"    stepped cold levels {order} (mip levels {levels}):"]
+    labels = ["cold"] + ["neighbour"] * (len(order) - 2) + ["revisit"]
+
+    unit_sprites.clear_caches()
+    with _WalkCounter() as counter:
+        for mip, label in zip(order, labels, strict=True):
+            cache = stepped_cache()
+            elapsed = _time(lambda cache=cache, mip=mip: cache._level(mip))
+            walks, files, reads = counter.take()
+            lines.append(
+                f"      mip {mip:>2} tile_px {cache.mip_tile_px(mip):>3} {label:<9}: {_ms(elapsed):>10} | "
+                f".sld walks {walks} over {files} files, {reads} reads | "
+                f"native cache {len(unit_sprites._native_cache)} entries"
+            )
+        lines.extend(_index_line())
+
+        sloped_elevations, corner_rise, sloped_proj = render.sloped_elevations_and_proj(scenario)
+        unit_sprites.clear_caches()
+        cache = stepped_cache()
+        stepped = _time(lambda: cache._level(order[0]))
+        s_walks, s_files, s_reads = counter.take()
+        sloped = _time(
+            lambda: SlopedChunkCache(scenario, sloped_elevations, corner_rise, sloped_proj, tile_px, sprites=True)
+        )
+        walks, files, reads = counter.take()
+        lines.append(
+            f"    sloped after stepped mip {order[0]} cold ({_ms(stepped)}, {s_walks} walks over {s_files} files, "
+            f"{s_reads} reads): construction {_ms(sloped)} | .sld walks {walks} over {files} files, {reads} reads"
+        )
+    return "\n".join(lines)
+
+
+def _mb(nbytes: int) -> str:
+    return f"{nbytes / 1e6:.1f}MB"
+
+
+def _ladder_caches() -> str:
+    native_b, scaled_b = _cache_bytes()
+    parts = [
+        f"native {len(unit_sprites._native_cache)} / {_mb(native_b)}",
+        f"scaled {len(unit_sprites._scaled_cache)} / {_mb(scaled_b)}",
+    ]
+    held = getattr(unit_sprites, "_sld_bytes_cache", None)
+    if held is not None:
+        parts.append(f"sld bytes {len(held)} / {_mb(held._bytes)}")
+    return " | ".join(parts)
+
+
+def bench_ladder(path: Path) -> str:
+    """The zoom-in oracle: every Stepped level coarsest to finest on ONE cache
+    (pass `first`: the load's level, then each zoom step's first visit), then
+    the same order on a fresh cache with unit_sprites' caches kept (pass
+    `rewarm`). One `ladder` line per build; only _level() is timed."""
+    scenario = load_map_and_units(path)
+    mm = scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, proj = render.elevations_and_proj(scenario)
+
+    def stepped_cache() -> IsoChunkCache:
+        return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
+
+    levels = stepped_cache().mip_levels()
+    lines = [f"  {path.name}", f"    stepped ladder (mip levels {levels}):"]
+    unit_sprites.clear_caches()
+    with _WalkCounter() as counter:
+        for label in ("first", "rewarm"):
+            cache = stepped_cache()
+            for mip in levels:
+                elapsed = _time(lambda cache=cache, mip=mip: cache._level(mip))
+                walks, files, reads = counter.take()
+                lines.append(
+                    f"      ladder {path.stem} {label:<6} mip {mip:>2} tile_px {cache.mip_tile_px(mip):>3}: "
+                    f"{_ms(elapsed):>10} | .sld walks {walks} over {files} files, {reads} reads | "
+                    f"{_ladder_caches()}"
+                )
+    return "\n".join(lines)
+
+
+def _index_line() -> list[str]:
+    # Feature-detected so this mode also runs on code without the SLD index.
+    index = getattr(unit_sprites, "_sld_index_cache", None)
+    if index is None:
+        return ["      sld index: not present in this build"]
+    lines = [f"      sld index: {len(index)} files resident (cap {index.capacity})"]
+    held = getattr(unit_sprites, "_sld_bytes_cache", None)
+    if held is not None:
+        lines.append(
+            f"      sld bytes: {held._bytes / 1e6:.1f}MB in {len(held)} files (budget {held.capacity_bytes / 1e6:.0f}MB)"
+        )
+    return lines
+
+
 def _time(fn) -> float:
     start = time.perf_counter()
     fn()
@@ -291,7 +468,21 @@ def main() -> None:
         help="Specific .aoe2scenario files (default: the biggest few in examples/)",
     )
     parser.add_argument("--install", type=Path, help="AoE2:DE install root override")
+    parser.add_argument(
+        "--cold-levels", action="store_true",
+        help="Only the cold-first-paint row: Stepped level A cold, two neighbours, A again, then Sloped",
+    )
+    parser.add_argument(
+        "--level", type=int, default=None,
+        help="Level A for --cold-levels (default: the coarsest mip level)",
+    )
+    parser.add_argument(
+        "--ladder", action="store_true",
+        help="Only the zoom-in row: every Stepped level coarsest to finest on one cache, then again on a fresh one",
+    )
     args = parser.parse_args()
+    if args.ladder and args.cold_levels:
+        parser.error("--ladder and --cold-levels are separate modes")
 
     if args.install:
         asset_source.set_install_path_override(args.install)
@@ -310,13 +501,18 @@ def main() -> None:
 
     print(f"Sprite bench -- install {asset_source.get_install_path()}")
     print(
-        f"caches: native capacity {unit_sprites.NATIVE_CACHE_SIZE}, "
+        f"caches: native budget {unit_sprites.NATIVE_CACHE_BYTES / 1e6:.0f}MB, "
         f"scaled budget {unit_sprites.SCALED_CACHE_BYTES / 1e6:.0f}MB, "
         f"icon budget {unit_sprites.ICON_CACHE_BYTES / 1e6:.0f}MB"
     )
     worsts = []
     for path in files:
-        print(bench_file(path))
+        if args.ladder:
+            print(bench_ladder(path))
+        elif args.cold_levels:
+            print(bench_cold_levels(path, args.level))
+        else:
+            print(bench_file(path))
         worsts.append(path)
     print(f"\nMeasured {len(worsts)} file(s). See this module's docstring for what each line means.")
 

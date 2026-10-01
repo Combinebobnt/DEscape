@@ -89,8 +89,8 @@ def wall_scene(scenario, map_width: int, map_height: int) -> tuple[set[tuple[int
     other), and the eligible existing walls with their anchor tiles.
 
     Straight off `unit_manager`, never `map_view._unit_index` -- that pick
-    index is rebuilt only in Units mode, and existing_cliffs() documents the
-    same trap.
+    index is current or None outside Units mode (it may survive there, but
+    may be None), and existing_cliffs() documents the same trap.
     """
     connector_consts = unit_sprites.wall_connector_consts()
     tiles: set[tuple[int, int]] = set()

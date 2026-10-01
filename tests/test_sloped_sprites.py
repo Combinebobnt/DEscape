@@ -393,7 +393,7 @@ def test_patch_after_a_distant_edit_still_drapes_the_farm(sprite_install):
 
 def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):
     """F2: a Sloped anchor reads its own tile's four CORNERS, each shared
-    with up to four tiles, so editing a NEIGHBOUR of the sprite's own tile
+    with up to four tiles, so raising a NEIGHBOUR of the sprite's own tile
     (never the tile itself) must still widen the dirty bbox enough to
     repaint it. sprite_band_radius=0 (Stepped's own exact shape) must NOT
     cover it -- that is the mutation this test is designed to catch.
@@ -419,8 +419,11 @@ def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):
 
     # A tile diagonally adjacent to the unit's own (61, 60) tile, not the
     # tile itself, so this is genuinely "F2, not the ordinary seed dilation".
+    # Raised for real, one tile with no propagation: F2 is corner sharing
+    # under an ELEVATION edit, and a terrain-only dirty tile moves no sprite.
     dirty_indices = [i for i, t in enumerate(mm.terrain) if (t.x, t.y) == (62, 61)]
     assert dirty_indices, "test setup: neighbour tile not found"
+    mm.terrain[dirty_indices[0]].elevation += 1
 
     canvas_dims = render._canvas_pixel_dims(proj)
     exact = _dirty_screen_bbox(

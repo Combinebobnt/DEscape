@@ -296,6 +296,69 @@ def test_build_native_kernel_failure_never_blocks_launch(monkeypatch, tmp_path, 
     assert "slower" in reporter.statuses[-1]
 
 
+def _stamped_kernel(monkeypatch, tmp_path, source: str):
+    from tools import build_native
+
+    pyx = tmp_path / "_composite_native.pyx"
+    pyx.write_text(source, encoding="utf-8")
+    built = tmp_path / "_composite_native.so"
+    built.write_bytes(b"")
+    monkeypatch.setattr(build_native, "PYX", pyx)
+    monkeypatch.setattr(build_native, "STAMP", tmp_path / "_composite_native.stamp")
+    monkeypatch.setattr(build_native, "FAILED_STAMP", tmp_path / "_composite_native.failed")
+    monkeypatch.setattr(build_native, "built_module_path", lambda: built)
+    return build_native, pyx
+
+
+def test_a_pyx_edit_makes_a_current_build_stale_so_bootstrap_rebuilds_it(monkeypatch, tmp_path) -> None:
+    """A KERNEL_ABI bump edits the .pyx. The stamp keys on its sha, so the old
+    .so reads stale (--check exit 1) and build_native_kernel() rebuilds it,
+    rather than leaving a kernel composite_backend rejects and a user with a
+    compiler silently on numpy."""
+    build_native, pyx = _stamped_kernel(monkeypatch, tmp_path, "KERNEL_ABI = 3\n")
+    build_native.STAMP.write_text(build_native.build_key() + "\n", encoding="utf-8")
+    assert build_native.check() == build_native.EXIT_CURRENT
+
+    pyx.write_text("KERNEL_ABI = 4\n", encoding="utf-8")
+    assert build_native.check() == build_native.EXIT_STALE
+
+
+def test_a_pyx_edit_retries_a_build_that_failed_on_the_old_source(monkeypatch, tmp_path) -> None:
+    build_native, pyx = _stamped_kernel(monkeypatch, tmp_path, "KERNEL_ABI = 3\n")
+    build_native.FAILED_STAMP.write_text(build_native.build_key() + "\n", encoding="utf-8")
+    assert build_native.check() == build_native.EXIT_FAILED_BEFORE
+
+    pyx.write_text("KERNEL_ABI = 4\n", encoding="utf-8")
+    assert build_native.check() == build_native.EXIT_STALE
+
+
+def test_the_pyx_and_composite_backend_agree_on_the_kernel_abi() -> None:
+    """Read off the source, so it holds with no compiler: a bump in one and
+    not the other would reject every fresh build."""
+    import re
+
+    from descape import composite_backend
+    from tools import build_native
+
+    source = Path(build_native.PYX).read_text(encoding="utf-8")
+    assert re.findall(r"^KERNEL_ABI = (\d+)$", source, re.MULTILINE) == [str(composite_backend.EXPECTED_KERNEL_ABI)]
+
+
+def test_a_kernel_built_at_another_abi_is_refused(monkeypatch) -> None:
+    import sys
+    from types import ModuleType
+
+    import descape
+    from descape import composite_backend
+
+    stale = ModuleType("descape._composite_native")
+    stale.KERNEL_ABI = composite_backend.EXPECTED_KERNEL_ABI - 1
+    monkeypatch.setitem(sys.modules, "descape._composite_native", stale)
+    monkeypatch.setattr(descape, "_composite_native", stale, raising=False)
+    module, reason = composite_backend._load()
+    assert module is None and "stale" in reason
+
+
 def test_newest_crash_dump_picks_latest_by_mtime(tmp_path) -> None:
     older = tmp_path / "crash-20260101-000000-aaaaaaaa.txt"
     older.write_text("old")

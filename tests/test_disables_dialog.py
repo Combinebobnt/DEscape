@@ -101,6 +101,33 @@ def test_the_menu_action_is_registered_as_a_rebindable_keybind() -> None:
 # -- the dialog itself -------------------------------------------------------
 
 
+def test_a_repopulate_parses_the_language_at_most_once_and_only_if_needed(monkeypatch) -> None:
+    """get_language() parses config.yaml uncached, ~3 ms a call. Out-of-catalog
+    rows (621 and cliffs both carry a .dat entry) share one parse; an
+    all-in-catalog list, the common case, pays none."""
+    from descape import asset_source, unit_sprites
+
+    real_get_language = asset_source.get_language
+    calls = []
+
+    def counting_get_language() -> str:
+        calls.append(1)
+        return real_get_language()
+
+    window = _window()
+    try:
+        tab = window._build_disables_dialog()._tabs["buildings"]
+        monkeypatch.setattr(asset_source, "get_language", counting_get_language)
+        tab.show_ids((109, 68))
+        assert calls == []
+        out_of_catalog = (621, *sorted(unit_sprites.cliff_consts())[:3])
+        tab.show_ids((109, *out_of_catalog))
+        assert len(calls) == 1
+        assert tab.disabled_ids() == (109, *out_of_catalog)
+    finally:
+        _close(window)
+
+
 def test_ok_after_several_adds_across_two_categories_pushes_exactly_one_record() -> None:
     window = _window()
     try:

@@ -131,6 +131,9 @@ def _install_textures(monkeypatch) -> None:
         for tid, color in TEXTURE_COLORS.items()
     }
     monkeypatch.setattr(asset_source, "get_terrain_texture_array", textures.get)
+    # The flat colour is the texture's average, which for a solid fake IS the texture:
+    # pinned to the palette (no average), as when these fakes had no .dds behind them.
+    monkeypatch.setattr(asset_source, "get_terrain_average_color", lambda _tid: None)
 
 
 def _iso_cache(scn, **kwargs) -> IsoChunkCache:

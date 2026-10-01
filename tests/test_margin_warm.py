@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from test_level_warm import Unit, _flat_cache, _iso_cache, _scenario, _warm
+from test_level_warm import MAP_W, Unit, _flat_cache, _iso_cache, _scenario, _warm
 
 from descape import level_warm, margin_warm
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
@@ -464,7 +464,8 @@ def test_budgeted_tick_reports_tick_and_slowest_chunk_to_perf_trace(clock, monke
     from descape import perf_trace
 
     monkeypatch.setattr(perf_trace, "_enabled", True)
-    monkeypatch.setattr(perf_trace, "_warm_ticks", [])
+    for name, value in perf_trace._fresh_state().items():
+        monkeypatch.setattr(perf_trace, name, value)
     monkeypatch.setattr(perf_trace, "_idle_scheduler", None)
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
     cache.cost_ms[(0, 0)] = 1.0
@@ -540,8 +541,8 @@ def _pump(warmer, limit: int = 200) -> None:
     pytest.fail("the warm never drained")
 
 
-def test_pooled_chunks_install_only_when_the_event_loop_delivers_them(inline_pool) -> None:
-    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+def test_pooled_chunks_install_only_when_the_event_loop_delivers_them(inline_pool, clock) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
     warmer = margin_warm.MarginWarmer()
     warmer.start(cache, 0, [(0, 0), (1, 0)])
 
@@ -655,9 +656,9 @@ def test_run_to_completion_requeues_chunks_already_in_flight(inline_pool) -> Non
     assert not warmer.is_active
 
 
-def test_no_workers_keeps_every_chunk_synchronous(inline_pool, monkeypatch) -> None:
+def test_no_workers_keeps_every_chunk_synchronous(inline_pool, monkeypatch, clock) -> None:
     monkeypatch.setattr(margin_warm, "WORKERS", 0)
-    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
     warmer = margin_warm.MarginWarmer()
     warmer.start(cache, 0, [(0, 0), (1, 0)])
 
@@ -779,6 +780,25 @@ def test_is_level_resident_agrees_with_level_warm_job_after_a_completed_warm(_sp
     scenario = _scenario([[Unit(6.5, 6.5, CONST)]])
     iso = _iso_cache(scenario)
     assert not iso.is_level_resident(1), "level 1 already resident -- vacuous"
+    _warm(iso, [1]).run_to_completion()
+    assert iso.is_level_resident(1)
+    assert iso.level_warm_job(1) is None
+
+    # A current level with deferred elevation work (2026-09-29 warm-tick plan):
+    # neither resident nor warm-free until its flush job has run.
+    from descape.render import dirty_screen_bbox_iso
+
+    iso._level(0)
+    scenario.map_manager.get_tile(6, 6).elevation += 1
+    changed: set = set()
+    bbox = dirty_screen_bbox_iso(
+        scenario, [6 * MAP_W + 6], iso.elevations, iso.proj, with_units=True, with_sprites=True,
+        elevation_changed=changed,
+    )
+    iso.patch(bbox, elevation_changed=changed, rebuild_levels=(0,))
+    assert iso._levels[1].gen == iso._source_gen and iso._levels[1].pending_elev, "nothing deferred -- vacuous"
+    assert not iso.is_level_resident(1)
+    assert iso.level_warm_job(1) is not None
     _warm(iso, [1]).run_to_completion()
     assert iso.is_level_resident(1)
     assert iso.level_warm_job(1) is None
@@ -987,8 +1007,8 @@ def test_a_real_windows_margin_warm_reaches_the_perf_view_line(monkeypatch) -> N
     only by a hand-driven one."""
     from descape import debug_log, perf_trace
 
-    monkeypatch.setattr(perf_trace, "_warm_ticks", [])
-    monkeypatch.setattr(perf_trace, "_repaint_durations", [])
+    for name, value in perf_trace._fresh_state().items():
+        monkeypatch.setattr(perf_trace, name, value)
     window = _zoomed_window()
     try:
         window._on_viewport_changed()

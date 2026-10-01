@@ -50,6 +50,10 @@ _bench_per_tick).
 A level warm in both modes includes the unit-pack pre-derive the app runs in
 idle ticks after it (render_cache.pack_warm_job); `--lazy-pack` skips it, so
 the chunk figures include first-touch derivation instead.
+
+`--grid` bakes View > Grid (default blend and thickness) into the Stepped and
+Sloped caches for `--per-chunk`/`--per-tick`, so the grid-on chunk cost comes
+from the same rows as the grid-off one. Flat is left as is.
 """
 
 from __future__ import annotations
@@ -62,7 +66,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, composite_backend, margin_warm, perf_trace, render, unit_sprites
+from descape import asset_source, composite_backend, grid_overlay, margin_warm, perf_trace, render, unit_sprites
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 
@@ -224,10 +228,24 @@ def _sloped_level_warm(cache: SlopedChunkCache, mip: int) -> None:
     _pack_warm(cache, mip)
 
 
+# --grid: bake the default View > Grid into Stepped/Sloped per-chunk caches.
+GRID = False
+
+
+def _with_grid(make_cache):
+    def make(scenario):
+        cache = make_cache(scenario)
+        if GRID:
+            cache.set_grid(grid_overlay.grid_bake(True, grid_overlay.BLEND_DEFAULT, grid_overlay.THICKNESS_DEFAULT))
+        return cache
+
+    return make
+
+
 _PER_CHUNK_STYLES = {
-    "stepped": (_stepped_cache, _iso_level_warm),
+    "stepped": (_with_grid(_stepped_cache), _iso_level_warm),
     "flat": (_flat_cache, _flat_level_warm),
-    "sloped": (_sloped_cache, _sloped_level_warm),
+    "sloped": (_with_grid(_sloped_cache), _sloped_level_warm),
 }
 
 
@@ -382,8 +400,8 @@ def _bench_per_tick(scenario, style: str, repeats: int, mip: int = 0) -> list[st
 def bench_file_per_chunk(path: Path, styles: list[str], repeats: int, mip: int = 0, per_tick: bool = False) -> str:
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
-    lines = [f"  {path.name} ({mm.map_width}x{mm.map_height})"]
-    bench = _bench_per_tick if per_tick else _bench_per_chunk
+    lines = [f"  {path.name} ({mm.map_width}x{mm.map_height}){', grid on' if GRID else ''}"]
+    bench =_bench_per_tick if per_tick else _bench_per_chunk
     for style in styles:
         lines.extend(bench(scenario, style, repeats, mip))
     return "\n".join(lines)
@@ -432,10 +450,15 @@ def main() -> None:
         "--lazy-pack", action="store_true",
         help="Skip the unit-pack pre-derive after the level warm, so chunks derive their own tiles on first touch",
     )
+    parser.add_argument(
+        "--grid", action="store_true",
+        help="Bake View > Grid (default blend and thickness) into Stepped/Sloped for --per-chunk/--per-tick",
+    )
     args = parser.parse_args()
     margin_warm.WORKERS = args.workers
-    global LAZY_PACK
+    global LAZY_PACK, GRID
     LAZY_PACK = args.lazy_pack
+    GRID = args.grid
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     unknown = [s for s in styles if s not in _PER_CHUNK_STYLES]
     if unknown:

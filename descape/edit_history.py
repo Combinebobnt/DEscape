@@ -497,7 +497,8 @@ class EditHistory:
         # the file as dirty regardless of cursor until the next save.
         self.saved_at_cursor: int | None = 0
         # Set only between begin_stroke() and commit_stroke()/abort_stroke().
-        self._stroke_before: list[TileState] | None = None
+        # A list over every tile, or a dict over a scoped stroke's captured indices.
+        self._stroke_before: list[TileState] | dict[int, TileState] | None = None
 
     def reset(self) -> None:
         """Back to a freshly-loaded, clean state -- called by load_scenario()
@@ -537,25 +538,51 @@ class EditHistory:
         build_stroke_record()/abort_stroke()."""
         return self._stroke_before is not None
 
-    def begin_stroke(self, tiles: Sequence) -> None:
+    def begin_stroke(self, tiles: Sequence, indices: Iterable[int] | None = None) -> None:
         """Snapshots current tile state. Must be paired with exactly one of
         commit_stroke() or abort_stroke() before begin_stroke() is called
-        again."""
+        again.
+
+        With `indices`, the stroke is scoped: only those tiles are
+        snapshotted, and every other tile must go through stroke_capture()
+        before it is written. That costs O(indices + captures) instead of
+        O(map), for a caller that knows most of its write set up front but
+        not all of it (Paste Region: the block rectangle, plus an elevation
+        skirt whose reach is only known while it is written)."""
         if self._stroke_before is not None:
             raise RuntimeError("begin_stroke() called while a stroke was already in progress")
-        self._stroke_before = [tile_state(t) for t in tiles]
+        if indices is None:
+            self._stroke_before = [tile_state(t) for t in tiles]
+        else:
+            self._stroke_before = {i: tile_state(tiles[i]) for i in indices}
+
+    def stroke_capture(self, tiles: Sequence, i: int) -> None:
+        """Adds tile `i` to a scoped stroke's snapshot, keeping the first
+        capture. Must be called before tile `i` is written, or the record
+        takes the written value as the before state and loses the change."""
+        before = self._stroke_before
+        if before is None:
+            raise RuntimeError("stroke_capture() called with no stroke in progress")
+        if not isinstance(before, dict):
+            raise RuntimeError("stroke_capture() called on an unscoped stroke, which already snapshots every tile")
+        if i not in before:
+            before[i] = tile_state(tiles[i])
 
     def stroke_dirty_indices(self, tiles: Sequence) -> list[int]:
         """Cumulative set of tile indices changed since begin_stroke(), by
-        an O(map) scan. The live repaint uses stroke_new_dirty() instead;
-        this stays as the oracle for tests and benches."""
+        an O(map) scan (O(captured) on a scoped stroke). The live repaint
+        uses stroke_new_dirty() instead; this stays as the oracle for tests
+        and benches."""
         if self._stroke_before is None:
             raise RuntimeError("stroke_dirty_indices() called with no stroke in progress")
         before = self._stroke_before
+        if isinstance(before, dict):
+            return [i for i in sorted(before) if tile_state(tiles[i]) != before[i]]
         return [i for i, t in enumerate(tiles) if tile_state(t) != before[i]]
 
     def stroke_start_state(self, i: int) -> TileState:
-        """Tile `i`'s state as of begin_stroke()."""
+        """Tile `i`'s state as of begin_stroke() (on a scoped stroke, as of
+        its capture)."""
         if self._stroke_before is None:
             raise RuntimeError("stroke_start_state() called with no stroke in progress")
         return self._stroke_before[i]
@@ -584,12 +611,26 @@ class EditHistory:
         bail out of an in-progress stroke if a future caller needs to."""
         self._stroke_before = None
 
-    def build_stroke_record(self, label: str, tiles: Sequence) -> TileDiffRecord | None:
+    def build_stroke_record(
+        self, label: str, tiles: Sequence, touched: Iterable[int] | None = None
+    ) -> TileDiffRecord | None:
         """Diffs current tile state against begin_stroke()'s snapshot and
         returns the TileDiffRecord covering everything that changed, ending
         the in-progress stroke -- None if nothing actually changed (no
         phantom record for a stroke that repaints a tile with the terrain it
         already has).
+
+        `touched`, when given, must be a superset of every index written
+        since begin_stroke(): only those are diffed (O(touched), not O(map)),
+        in ascending order so the record matches the full diff exactly. An
+        index missing from it is silently left out of the record, so a
+        caller that can't vouch for the whole set passes None, the full map
+        scan (fill, mirror, and the raise-close path).
+
+        On a scoped stroke (begin_stroke(indices=...)) exactly the captured
+        indices are diffed, in ascending order. Every written tile was
+        captured first, so they already cover the writes; passing `touched`
+        there raises.
 
         Split out of commit_stroke() (which is build_stroke_record() +
         _push()) so a caller building a CompositeDiffRecord from more than one
@@ -599,20 +640,34 @@ class EditHistory:
         if self._stroke_before is None:
             raise RuntimeError("build_stroke_record() called with no stroke in progress")
         before = self._stroke_before
+        scoped = isinstance(before, dict)
+        if scoped and touched is not None:
+            raise ValueError("build_stroke_record() got `touched` on a scoped stroke; its captures are the write set")
         self._stroke_before = None
 
         changes: list[tuple[int, TileState, TileState]] = []
-        for i, t in enumerate(tiles):
-            new = tile_state(t)
-            if new != before[i]:
-                changes.append((i, before[i], new))
+        if scoped:
+            for i in sorted(before):
+                new = tile_state(tiles[i])
+                if new != before[i]:
+                    changes.append((i, before[i], new))
+        elif touched is None:
+            for i, t in enumerate(tiles):
+                new = tile_state(t)
+                if new != before[i]:
+                    changes.append((i, before[i], new))
+        else:
+            for i in sorted(touched):
+                new = tile_state(tiles[i])
+                if new != before[i]:
+                    changes.append((i, before[i], new))
 
         return TileDiffRecord(label, changes) if changes else None
 
-    def commit_stroke(self, label: str, tiles: Sequence) -> list[int]:
+    def commit_stroke(self, label: str, tiles: Sequence, touched: Iterable[int] | None = None) -> list[int]:
         """Diffs current tile state against begin_stroke()'s snapshot and
         pushes one DiffRecord covering everything that changed, ending the
-        in-progress stroke.
+        in-progress stroke. `touched` is build_stroke_record()'s.
 
         Returns the list of changed tile indices -- empty if nothing actually
         changed, in which case *no* record is pushed. That matters: a stroke
@@ -624,7 +679,7 @@ class EditHistory:
         redo invalidation, easy to forget, produces a corrupt timeline if
         missed.
         """
-        record = self.build_stroke_record(label, tiles)
+        record = self.build_stroke_record(label, tiles, touched)
         if record is None:
             return []
         self._push(record)

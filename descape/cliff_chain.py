@@ -77,9 +77,9 @@ def existing_cliffs(scenario, map_width: int, map_height: int) -> list[ExistingC
     """Every cliff already placed, across all players.
 
     Scanned straight off `unit_manager` rather than through
-    `map_view._unit_index`: that pick index is only built in Units mode (see
-    `_after_unit_mutation()`'s own mode gate) and is None for the whole life
-    of a Terrain-mode Cliff stroke.
+    `map_view._unit_index`: that pick index is current or None outside Units
+    mode (see `_after_unit_mutation()`'s own mode gate). It may survive
+    there, but a Terrain-mode Cliff stroke cannot count on it being built.
     """
     consts = unit_sprites.cliff_consts()
     out: list[ExistingCliff] = []

@@ -157,7 +157,7 @@ def _patch_counter(buffer: bytearray, end_offset: int, value: int) -> None:
 
 
 def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
-    loaded = load_map_and_units_from_bytes(_patched_donor(donor_path), FIXTURE_PATH.name)
+    loaded = load_map_and_units_from_bytes(_patched_donor(donor_path), FIXTURE_PATH.name, fast_units=False)
     if loaded.scenario_version != SCENARIO_VERSION or loaded.structure_source != "repo":
         raise GenerationVerificationError(
             f"patched donor loaded as {loaded.scenario_version}/{loaded.structure_source}, expected 1.59/repo"
@@ -186,7 +186,8 @@ def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
 
 
 def read_capture_flags(loaded: LoadedScenario) -> dict[int, int]:
-    """reference_id -> capture_flag, straight off the parsed slots."""
+    """reference_id -> capture_flag, straight off the parsed slots. Needs a
+    fast_units=False load: the fast walk leaves the slots empty."""
     return {
         entry.retriever_map["reference_id"].data: entry.retriever_map["capture_flag"].data
         for player_units in loaded._scenario.sections["Units"].retriever_map["players_units"].data

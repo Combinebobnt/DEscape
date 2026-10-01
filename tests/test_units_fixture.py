@@ -40,6 +40,7 @@ def _generator():
 
 def _raw_unit_slices(loaded) -> list[tuple[int, object, bytes]]:
     """(player, entry, raw_bytes) for every unit, in players_units order.
+    Needs a fast_units=False load: only the library walk fills the entries.
 
     Each PlayerUnitsStruct's own byte_length covers its unit_count u32 *plus*
     every one of its units (scenario_io._verify_units_block reads unit_count
@@ -145,7 +146,7 @@ def test_every_unit_raw_slice_matches_its_game_style_reserialization() -> None:
     # Via the generator, not `from _fixture_bytes import`: that needs tools/ on sys.path, which only an earlier test put there.
     _game_style_bytes = _generator()._game_style_bytes
 
-    loaded = load_map_and_units(FIXTURE_PATH)
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
     for player, entry, raw in _raw_unit_slices(loaded):
         assert raw == _game_style_bytes(entry), f"player {player} reference_id {entry.retriever_map['reference_id'].data}"
 
@@ -159,7 +160,7 @@ def test_empty_captions_are_length_zero_on_disk() -> None:
     would make a blind byte match lie.
     """
     gen = _generator()
-    loaded = load_map_and_units(FIXTURE_PATH)
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
     for _player, entry, raw in _raw_unit_slices(loaded):
         if entry.retriever_map["reference_id"].data == gen._REF_ARCHER_P2:
             continue  # the one deliberately non-empty caption; see the test below
@@ -190,7 +191,7 @@ def test_non_empty_caption_raw_encoding_is_an_assumption_not_a_measurement() -> 
     corrupting captions.
     """
     gen = _generator()
-    loaded = load_map_and_units(FIXTURE_PATH)
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
     text = gen.NON_EMPTY_CAPTION
     # Library form (add_str_trail): a 4-byte length prefix of len(text) + 1,
     # covering the text plus its trailing NUL.

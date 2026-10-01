@@ -12,9 +12,10 @@ float-and-drag paste needs no second type.
 
 Units are dropped by copy_region()'s own bounds check, not gathered via
 unit_pick.units_in_rect(): that index is built lazily on entering Units mode
-(viewer.py's _rebuild_unit_index()) and is None while in Terrain mode, where
-the Select tool lives -- a pick-index lookup would silently return no units
-here. A direct walk over the 9 player lists costs one pass over the whole
+(viewer.py's _rebuild_unit_index()) and is current or None in Terrain mode,
+where the Select tool lives: it may survive outside Units mode, but it is
+often None there, so a pick-index lookup could silently return no units here.
+A direct walk over the 9 player lists costs one pass over the whole
 document (tens of thousands of units at the largest) for one human-paced
 gesture, which is free at this density.
 
@@ -187,6 +188,15 @@ def _clipped_bounds(block: RegionBlock, tx0: int, ty0: int, map_width: int, map_
     x1 = min(map_width, tx0 + block.width)
     y1 = min(map_height, ty0 + block.height)
     return x0, y0, x1, y1
+
+
+def clipped_indices(block: RegionBlock, tx0: int, ty0: int, map_width: int, map_height: int) -> list[int]:
+    """Flat `y * map_width + x` index of every on-map tile a paste anchored at
+    (tx0, ty0) writes: paste_terrain()'s and elevation_targets()' shared
+    rectangle. Elevation's skirt, which set_tiles_elevation() indexes by
+    map_size, only runs on square maps, where the two agree."""
+    x0, y0, x1, y1 = _clipped_bounds(block, tx0, ty0, map_width, map_height)
+    return [y * map_width + x for y in range(y0, y1) for x in range(x0, x1)]
 
 
 def paste_terrain(mm: MapManager, block: RegionBlock, tx0: int, ty0: int) -> None:

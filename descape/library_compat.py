@@ -72,7 +72,8 @@ from AoE2ScenarioParser.sections.retrievers.retriever_object_link_group import (
 # Every class whose class-level state a load can change. Trigger/Condition/
 # Effect/Variable/Unit are poisoned by the library itself; MapManager and
 # TerrainTile are re-linked by adapt_map_links() below for a structure that
-# lacks fields they pull. depoison() restores all seven the same way.
+# lacks fields they pull (and MapManager, briefly, for prebuilt terrain).
+# depoison() restores all seven the same way.
 POISONED_CLASSES = (Trigger, Condition, Effect, Variable, Unit, MapManager, TerrainTile)
 
 # Names never touched by a restore: they are descriptor slots owned by the type
@@ -171,57 +172,84 @@ class _AbsentFieldLink(RetrieverObjectLink):
         return None
 
 
-def _without_link(group: RetrieverObjectLinkGroup, name: str, replacement=None) -> RetrieverObjectLinkGroup:
-    """A new group equal to `group` minus the link called `name`, or with it
-    swapped for `replacement`. Never mutates `group`: it belongs to the
-    pristine snapshot. Raises KeyError if no such link, so a library bump
-    that renames it fails loudly."""
+def _without_link(group: RetrieverObjectLinkGroup, replacements: Mapping[str, Any]) -> RetrieverObjectLinkGroup:
+    """A new group equal to `group` with each link named in `replacements`
+    swapped for its value, or dropped where that is None. Never mutates
+    `group`: it may belong to the pristine snapshot. Raises KeyError if a
+    name is not a link, so a library bump that renames it fails loudly."""
     names = [link.name for link in group.group]
-    if name not in names:
-        raise KeyError(f"{name!r} is not a link of {group.section_name}/{group.link}: {names}")
+    missing = [name for name in replacements if name not in names]
+    if missing:
+        raise KeyError(f"{missing!r} not links of {group.section_name}/{group.link}: {names}")
     links = []
     for link in group.group:
-        if link.name != name:
+        if link.name not in replacements:
             links.append(link)
-        elif replacement is not None:
-            links.append(replacement)
+        elif replacements[link.name] is not None:
+            links.append(replacements[link.name])
+    parents = [(link, link.parent) for link in group.group]
     new_group = RetrieverObjectLinkGroup(group.section_name, group.link, group=links)
-    # The constructor re-parents its children; point them back at the
-    # pristine group so that group object is left exactly as it was.
-    for link in group.group:
-        link.parent = group
+    # The constructor re-parents its children; put each back where it was
+    # so `group`'s own links are left exactly as they were.
+    for link, parent in parents:
+        link.parent = parent
     return new_group
 
 
-def _relinked(cls: type, name: str, replacement=None) -> list:
-    """cls._link_list with the first group holding `name` rebuilt by
-    _without_link(). A new list, so depoison()'s value-restore step puts the
-    pristine one back."""
-    new_list = list(cls._link_list)
+def _relinked(cls: type, replacements: Mapping[str, Any], base: list | None = None) -> list:
+    """`base` (default cls._link_list) with the first group holding the
+    replaced names rebuilt by _without_link(). A new list, so depoison()'s
+    value-restore step puts the pristine one back."""
+    new_list = list(cls._link_list if base is None else base)
     for i, entry in enumerate(new_list):
-        if isinstance(entry, RetrieverObjectLinkGroup) and any(link.name == name for link in entry.group):
-            new_list[i] = _without_link(entry, name, replacement)
+        if isinstance(entry, RetrieverObjectLinkGroup) and any(link.name in replacements for link in entry.group):
+            new_list[i] = _without_link(entry, replacements)
             return new_list
-    raise KeyError(f"{cls.__name__}._link_list has no group holding {name!r}")
+    raise KeyError(f"{cls.__name__}._link_list has no group holding {sorted(replacements)!r}")
 
 
-def adapt_map_links(map_section: Any) -> None:
+def terrain_struct_fields(map_section: Any) -> tuple[str, ...]:
+    """TerrainStruct's retriever names, read off the Map section's own
+    struct model, so the answer never depends on how terrain_data parsed."""
+    return tuple(map_section.struct_models["TerrainStruct"].retriever_map)
+
+
+def adapt_map_links(map_section: Any, terrain: list | None = None) -> None:
     """Re-link MapManager/TerrainTile for a Map section lacking fields they
-    pull unconditionally (v1.21: no map_color_mood, no TerrainStruct.layer).
+    pull unconditionally (v1.21: no map_color_mood, no TerrainStruct.layer),
+    and, given prebuilt `terrain` tiles (scenario_io's fast terrain path),
+    make MapManager pull those instead of the parsed terrain_data.
 
     Presence-derived, never keyed on scenario version. Call after
     depoison() and after the Map section has parsed, before
     MapManager.construct(). A no-op for every structure that has both
-    fields; the next depoison() undoes it. `layer` is dropped rather than
-    gated, so TerrainTile.__init__'s -1 default stands and the eight
-    in-memory `.layer` sites keep working.
+    fields when `terrain` is None; the next depoison() undoes it, and
+    release_terrain_link() undoes the `terrain` relink alone. `layer` is
+    dropped rather than gated, so TerrainTile.__init__'s -1 default stands
+    and the eight in-memory `.layer` sites keep working.
     """
-    retriever_map = map_section.retriever_map
-    if "map_color_mood" not in retriever_map:
-        MapManager._link_list = _relinked(MapManager, "_map_color_mood", _AbsentFieldLink("_map_color_mood", ""))
-    tiles = retriever_map["terrain_data"].data or []
-    if tiles and "layer" not in tiles[0].retriever_map:
-        TerrainTile._link_list = _relinked(TerrainTile, "layer")
+    replacements: dict[str, Any] = {}
+    if "map_color_mood" not in map_section.retriever_map:
+        replacements["_map_color_mood"] = _AbsentFieldLink("_map_color_mood", "")
+    if terrain is not None:
+        replacements["terrain"] = _AbsentFieldLink("terrain", terrain)
+    # One pass for both, so no intermediate group ever re-parents a link.
+    if replacements:
+        MapManager._link_list = _relinked(MapManager, replacements)
+    if "layer" not in terrain_struct_fields(map_section):
+        TerrainTile._link_list = _relinked(TerrainTile, {"layer": None})
+
+
+def release_terrain_link() -> None:
+    """Undo adapt_map_links()'s `terrain` relink, keeping a map_color_mood
+    one. Call right after MapManager.construct(), so the class never holds
+    a document's tiles past its own load."""
+    pristine = PRISTINE_CLASS_STATE[MapManager]["_link_list"]
+    mood = [link for link in _iter_links(MapManager._link_list) if link.name == "_map_color_mood"]
+    if mood and isinstance(mood[0], _AbsentFieldLink):
+        MapManager._link_list = _relinked(MapManager, {"_map_color_mood": mood[0]}, base=pristine)
+    else:
+        MapManager._link_list = pristine
 
 
 def trigger_version(trigger_tail: bytes) -> float:

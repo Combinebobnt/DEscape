@@ -127,7 +127,8 @@ def test_moving_one_unit_touches_only_that_units_bytes(tmp_path: Path) -> None:
     write_scenario(loaded, base_out, units=model)
 
     villager = _unit(loaded, _REF_VILLAGER_P1)
-    start, end = _unit_byte_range(loaded, _REF_VILLAGER_P1)
+    # The library walk's entries, since the fast load under edit has none.
+    start, end = _unit_byte_range(load_map_and_units(FIXTURE_PATH, fast_units=False), _REF_VILLAGER_P1)
     model.set_position(villager, 40.5, 40.5, 0.0)
 
     edited_out = tmp_path / "edited.aoe2scenario"
@@ -149,8 +150,10 @@ def test_moving_one_unit_touches_only_that_units_bytes(tmp_path: Path) -> None:
 def test_reassign_re_serializes_nothing_end_to_end(tmp_path: Path) -> None:
     """The provenance test the plan calls for (verification item 7), run
     through the real write path rather than just UnitEditModel.serialize()
-    directly."""
-    loaded, model = _open()
+    directly. On a fast_units=False load, so there are parsed entries to
+    booby-trap."""
+    loaded = load_map_and_units(FIXTURE_PATH, fast_units=False)
+    model = UnitEditModel(loaded)
     wall = _unit(loaded, _REF_WALL)
     model.reassign(wall, 1)
 

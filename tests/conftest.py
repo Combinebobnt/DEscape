@@ -359,7 +359,29 @@ def load_verify_module(name: str):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_settings(tmp_path, monkeypatch) -> None:
+def _no_perf_trace_hooks_left():
+    """A traced ViewerWindow installs perf_trace's gc hook and the stall
+    watchdog; neither may outlive the test that turned them on."""
+    yield
+    from descape import perf_trace
+
+    perf_trace.set_gc_hook(False)
+    if "descape.viewer_canvas" in sys.modules:
+        sys.modules["descape.viewer_canvas"].set_stall_watchdog(False)
+
+
+@pytest.fixture(autouse=True)
+def _no_gc_hold_left():
+    """A warm started under the shared QApplication engages descape.gc_hold;
+    its raised threshold2 would otherwise stop full collections for the rest
+    of the worker's session."""
+    yield
+    if "descape.gc_hold" in sys.modules:
+        sys.modules["descape.gc_hold"].reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path, monkeypatch):
     """Every test gets its own throwaway config.yaml, never the developer's
     real one. settings.py does `from descape.asset_source import CONFIG_PATH`
     -- a bind-by-value import -- so this must patch descape.settings.CONFIG_PATH
@@ -387,6 +409,15 @@ def _isolated_settings(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(settings_module, "CONFIG_PATH", fake_config_path)
     for name in settings_isolation.MEMOIZED_GLOBALS:
         monkeypatch.setattr(settings_module, name, None)
+    # pytest-qt processes events after this fixture's teardown, so a live warm tick can cache the
+    # real config's install between tests; clear it here, not only on teardown.
+    asset_source_module.clear_install_caches()
+    # The average colour is derived from get_terrain_texture_array(), which many
+    # tests fake: a cached average must not outlive the fake that produced it.
+    average = asset_source_module.get_terrain_average_color  # held: a test may monkeypatch the name
+    average.cache_clear()
+    yield
+    average.cache_clear()
 
 
 def run_check(fn, *args) -> None:

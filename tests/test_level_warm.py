@@ -312,12 +312,24 @@ def test_sloped_has_nothing_to_warm(mixed_scenario) -> None:
     assert cache.level_warm_job(0) is None
 
 
-def test_a_unit_edit_mid_warm_drops_the_stepped_result(sprite_install, mixed_scenario) -> None:
+@pytest.fixture
+def one_step_ticks(monkeypatch):
+    """A tick makes exactly one step at BUDGET_MS 0. At 12ms a fast sprite
+    decode can finish this fixture's whole level in the first tick, leaving
+    nothing mid-warm to test."""
+    monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
+
+
+def _first_step(warmer) -> None:
+    assert warmer.tick(), "the warm finished in one step -- vacuous"
+
+
+def test_a_unit_edit_mid_warm_drops_the_stepped_result(sprite_install, mixed_scenario, one_step_ticks) -> None:
     """The revalidation half of the design: even with every cancel call site
     removed, a layer built across a mutation is never installed."""
     cache = _iso_cache(mixed_scenario)
     warmer = _warm(cache, [1])
-    warmer.tick()
+    _first_step(warmer)
 
     cache.invalidate_units()
     warmer.run_to_completion()
@@ -326,14 +338,14 @@ def test_a_unit_edit_mid_warm_drops_the_stepped_result(sprite_install, mixed_sce
     assert cache._levels[1].gen != cache._source_gen
 
 
-def test_a_unit_edit_mid_warm_drops_the_flat_result(sprite_install, mixed_scenario) -> None:
+def test_a_unit_edit_mid_warm_drops_the_flat_result(sprite_install, mixed_scenario, one_step_ticks) -> None:
     """Flat's own predicate, and the one that needed _unit_gen: after
     invalidate_units() the target mip is absent from _level_icon_layers
     exactly as it was before the warm started, so "still absent" cannot tell
     the two apart on its own."""
     cache = _flat_cache(mixed_scenario)
     warmer = _warm(cache, [1])
-    warmer.tick()
+    _first_step(warmer)
 
     cache.invalidate_units()
     warmer.run_to_completion()
@@ -341,10 +353,10 @@ def test_a_unit_edit_mid_warm_drops_the_flat_result(sprite_install, mixed_scenar
     assert 1 not in cache._level_icon_layers
 
 
-def test_cancel_drops_the_queue_without_installing(sprite_install, mixed_scenario) -> None:
+def test_cancel_drops_the_queue_without_installing(sprite_install, mixed_scenario, one_step_ticks) -> None:
     cache = _iso_cache(mixed_scenario)
     warmer = _warm(cache, [-1, 1])
-    warmer.tick()
+    _first_step(warmer)
 
     warmer.cancel()
     warmer.run_to_completion()
@@ -354,14 +366,14 @@ def test_cancel_drops_the_queue_without_installing(sprite_install, mixed_scenari
     assert cache._levels[-1].sprites is None
 
 
-def test_a_paint_that_wins_the_race_keeps_its_own_layer(sprite_install, mixed_scenario) -> None:
+def test_a_paint_that_wins_the_race_keeps_its_own_layer(sprite_install, mixed_scenario, one_step_ticks) -> None:
     """The non-obvious third predicate: the warm's result is EQUIVALENT to
     what the paint built, so installing it would be harmless-looking and
     still wrong -- it replaces a layer already wired into composited chunks
     with a fresh copy of the same thing."""
     cache = _iso_cache(mixed_scenario)
     warmer = _warm(cache, [1])
-    warmer.tick()
+    _first_step(warmer)
 
     painted = cache._level(1).sprites
     assert painted is not None, "the paint built no layer -- vacuous"
@@ -381,6 +393,20 @@ def test_neighbour_mips_excludes_the_opening_level(sprite_install, mixed_scenari
     assert opening not in mips
     assert set(mips) <= {opening - 1, opening + 1}
     assert all(levels[0] <= mip <= levels[-1] for mip in mips)
+
+
+def test_neighbour_mips_of_clamps_at_both_ladder_ends(sprite_install, mixed_scenario) -> None:
+    cache = _iso_cache(mixed_scenario)
+    levels = cache.mip_levels()
+    assert len(levels) >= 3, "no interior level on this ladder -- vacuous"
+
+    assert level_warm.neighbour_mips_of(cache, levels[0]) == [levels[0] + 1]
+    assert level_warm.neighbour_mips_of(cache, levels[-1]) == [levels[-1] - 1]
+    assert level_warm.neighbour_mips_of(cache, levels[1]) == [levels[0], levels[2]]
+    for scale in (0.1, 0.5, 1.0, 2.0, 8.0):
+        assert level_warm.neighbour_mips(cache, scale) == level_warm.neighbour_mips_of(
+            cache, cache.mip_for_scale(scale)
+        )
 
 
 def test_on_job_done_fires_once_per_queued_mip_in_order(sprite_install, mixed_scenario) -> None:
@@ -411,15 +437,67 @@ def test_on_job_done_does_not_fire_for_a_mip_with_nothing_to_warm(mixed_scenario
     assert done == []
 
 
-def test_on_job_done_does_not_fire_for_a_cancelled_job(sprite_install, mixed_scenario) -> None:
+def test_on_job_done_does_not_fire_for_a_cancelled_job(sprite_install, mixed_scenario, one_step_ticks) -> None:
     cache = _iso_cache(mixed_scenario)
     warmer = level_warm.LevelWarmer()
     done = []
     warmer.start(cache, [1], on_job_done=done.append)
-    warmer.tick()
+    _first_step(warmer)
     warmer.cancel()
     warmer.run_to_completion()
     assert done == []
+
+
+def _hold_mouse(monkeypatch) -> dict:
+    """QApplication.mouseButtons() reads LeftButton while held["value"]."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    held = {"value": True}
+    monkeypatch.setattr(
+        QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if held["value"] else Qt.NoButton)
+    )
+    return held
+
+
+def test_the_level_warmer_pauses_while_a_mouse_button_is_held(sprite_install, mixed_scenario, monkeypatch) -> None:
+    """MarginWarmer's item-23 backoff, shared (2026-09-29 warm-tick plan): a
+    held tick advances nothing and backs the timer off; release drains."""
+    held = _hold_mouse(monkeypatch)
+    cache = _iso_cache(mixed_scenario)
+    warmer = _warm(cache, [1])
+    intervals: list = []
+    monkeypatch.setattr(warmer, "_set_interval", intervals.append)
+
+    for _ in range(3):
+        assert warmer.tick() is True
+    assert cache._levels[1].gen != cache._source_gen, "warmed while held"
+    assert warmer.is_active and warmer._job is None, "a job started while held"
+    assert intervals and set(intervals) == {level_warm.LevelWarmer.HELD_INTERVAL_MS}
+
+    held["value"] = False
+    warmer.run_to_completion()
+    assert intervals[-1] == 0
+    assert cache._levels[1].gen == cache._source_gen
+
+
+@pytest.mark.gui
+def test_the_level_warmer_backs_off_the_timer_interval_while_held(sprite_install, mixed_scenario, monkeypatch) -> None:
+    """The real QTimer's interval, as margin_warm's gui counterpart checks it."""
+    import conftest
+
+    conftest.ensure_qapp()
+    held = _hold_mouse(monkeypatch)
+    cache = _iso_cache(mixed_scenario)
+    warmer = _warm(cache, [1])
+    try:
+        warmer.tick()
+        assert warmer._timer.interval() == level_warm.LevelWarmer.HELD_INTERVAL_MS
+        held["value"] = False
+        warmer.tick()
+        assert warmer._timer.interval() == 0
+    finally:
+        warmer.cancel()
 
 
 # --- Step 3/5: the viewer hook and the setting that gates it ---------------
@@ -675,5 +753,428 @@ def test_the_viewport_mip_is_pre_derived_and_an_idle_re_arm_queues_nothing(nativ
 
             window._apply_dirty([0])
             assert not window._level_warmer.is_active, "a re-arm with nothing pending started a timer"
+        finally:
+            conftest.close_window(window)
+
+
+# --- 2026-09-29 warm-tick plan, C: sliced assembly and the fresh-tick rule ----
+
+
+def _assembly_key(built):
+    from test_bystander_grid_patch import grid_state
+
+    bboxes, grid = built
+    return dict(bboxes), grid_state(grid)
+
+
+def _assembled(cache, mip: int, monkeypatch, slice_units: int):
+    """(bboxes, grid) and the yield count of cache._assemble_level() at
+    render.ASSEMBLY_SLICE = slice_units, over the level's own sprite layer."""
+    lvl = cache._levels[mip]
+    sprites, _memo = render._drain(cache._sprite_walk(lvl))
+    monkeypatch.setattr(render, "ASSEMBLY_SLICE", slice_units)
+    built, yields = _step_all(cache._assemble_level(lvl, sprites))
+    return built, yields, sprites
+
+
+def test_the_sliced_assembly_equals_the_whole_one(sprite_install, mixed_scenario, monkeypatch) -> None:
+    """Slice 1 puts a boundary between every unit and key; the whole side is
+    the pre-split composition of the three public functions."""
+    cache = _iso_cache(mixed_scenario)
+    sliced, yields, sprites = _assembled(cache, 1, monkeypatch, 1)
+    monkeypatch.setattr(render, "ASSEMBLY_SLICE", 10**9)
+    mm, lvl = mixed_scenario.map_manager, cache._levels[1]
+    whole_bboxes = render.merge_sprite_bboxes(
+        render._building_bboxes_iso(mixed_scenario, mm.map_width, mm.map_height, lvl.proj, cache.elevations), sprites
+    )
+    whole = (whole_bboxes, render.build_bystander_grid(whole_bboxes, cache.chunk_px))
+
+    assert sprites.bboxes and whole_bboxes, "vacuous: nothing to assemble"
+    assert _assembly_key(sliced) == _assembly_key(whole)
+    units = sum(len(u) for u in mixed_scenario.unit_manager.units)
+    assert yields >= units + len(sprites.bboxes), f"assembly barely sliced: {yields} yields"
+
+
+@pytest.mark.corpus
+def test_the_sliced_assembly_equals_the_whole_one_on_real_files(scenario_path, monkeypatch) -> None:
+    if asset_source.get_install_path() is None:
+        pytest.skip(
+            "no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH to one. The configured "
+            "config.yaml install is deliberately hidden by conftest._isolated_settings."
+        )
+    from descape.render_cache import IsoChunkCache
+
+    scenario = load_map_and_units(scenario_path)
+    mm = scenario.map_manager
+    elevations, proj = render.elevations_and_proj(scenario)
+    cache = IsoChunkCache(scenario, elevations, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+    mip = cache.mip_levels()[0]
+    sliced, yields, _sprites = _assembled(cache, mip, monkeypatch, 7)
+    whole, _, _ = _assembled(cache, mip, monkeypatch, 10**9)
+    assert _assembly_key(sliced) == _assembly_key(whole)
+    assert yields > sum(len(u) for u in scenario.unit_manager.units) // 7
+
+
+def test_a_warm_assembles_a_level_a_slice_per_step(sprite_install, mixed_scenario, monkeypatch) -> None:
+    """Granularity in the driver, not just in the generator: at one step per
+    tick no tick does more than one unit's bbox or one key's grid cells."""
+    monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
+    monkeypatch.setattr(render, "ASSEMBLY_SLICE", 1)
+    per_tick = {"_building_bbox_for": 0, "_bbox_cells": 0}
+    peaks = dict(per_tick)
+    totals = dict(per_tick)
+    for name in per_tick:
+        real = getattr(render, name)
+
+        def counted(*args, _real=real, _name=name, **kwargs):
+            per_tick[_name] += 1
+            totals[_name] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(render, name, counted)
+    cache = _iso_cache(mixed_scenario)
+    warmer = _warm(cache, [1])
+    while True:
+        more = warmer.tick()
+        for name, n in per_tick.items():
+            peaks[name] = max(peaks[name], n)
+            per_tick[name] = 0
+        if not more:
+            break
+    assert cache._levels[1].gen == cache._source_gen, "the warm installed nothing"
+    assert totals["_building_bbox_for"] == sum(len(u) for u in mixed_scenario.unit_manager.units)
+    assert totals["_bbox_cells"] >= len(cache._levels[1].building_bboxes) > 1
+    assert peaks == {"_building_bbox_for": 1, "_bbox_cells": 1}, f"a tick assembled unsliced: {peaks}"
+
+
+def _mid_assembly(cache, monkeypatch):
+    """A one-step-per-tick warm of level 1, stopped once its assembly has begun."""
+    monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
+    monkeypatch.setattr(render, "ASSEMBLY_SLICE", 1)
+    seen = []
+    real = render._building_bbox_for
+    monkeypatch.setattr(render, "_building_bbox_for", lambda *a, **k: seen.append(1) or real(*a, **k))
+    warmer = _warm(cache, [1])
+    while not seen:
+        assert warmer.tick(), "the warm finished before its assembly began -- vacuous"
+    assert cache._levels[1].gen != cache._source_gen, "the assembly finished in the step it began -- vacuous"
+    return warmer
+
+
+@pytest.mark.parametrize("action", ["unit-edit", "cancel"])
+def test_an_edit_or_cancel_mid_assembly_installs_nothing(action, sprite_install, mixed_scenario, monkeypatch) -> None:
+    cache = _iso_cache(mixed_scenario)
+    warmer = _mid_assembly(cache, monkeypatch)
+    if action == "unit-edit":
+        cache.invalidate_units()
+    else:
+        warmer.cancel()
+    warmer.run_to_completion()
+    assert cache._levels[1].sprites is None
+    assert cache._levels[1].gen != cache._source_gen
+
+
+def test_a_paint_that_wins_mid_assembly_keeps_its_own_layer(sprite_install, mixed_scenario, monkeypatch) -> None:
+    cache = _iso_cache(mixed_scenario)
+    warmer = _mid_assembly(cache, monkeypatch)
+    painted = cache._level(1)
+    layer, grid = painted.sprites, painted.bystander_grid
+    assert layer is not None, "the paint built no layer -- vacuous"
+    warmer.run_to_completion()
+    assert cache._levels[1].sprites is layer and cache._levels[1].bystander_grid is grid
+
+
+class _StepClock:
+    """level_warm._now's stand-in: time moves only when a fake job steps."""
+
+    def __init__(self) -> None:
+        self.t = 100.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _FakeJobsCache:
+    """level_warm_job(mip): a job of `steps` 1ms steps logging (mip, step, tick)."""
+
+    def __init__(self, clock, steps: int) -> None:
+        self.clock, self.steps, self.tick = clock, steps, 0
+        self.log: list[tuple[int, int, int]] = []
+
+    def level_warm_job(self, mip: int):
+        from descape.render_cache import LevelWarmJob
+
+        def gen():
+            for step in range(self.steps):
+                self.log.append((mip, step, self.tick))
+                self.clock.t += 0.001
+                yield
+
+        return LevelWarmJob(gen=gen(), install=lambda _payload: True)
+
+    def pack_warm_job(self, mip: int, after_level_warm: bool = False):
+        return None
+
+
+def test_a_job_starts_only_on_a_fresh_tick(monkeypatch) -> None:
+    """The first job ends 3ms into a 12ms budget; the second, whose first step
+    is unsliced setup in the real jobs, still waits for the next tick. The
+    finished job's on_job_done also ends that tick."""
+    clock = _StepClock()
+    monkeypatch.setattr(level_warm, "_now", clock)
+    cache = _FakeJobsCache(clock, steps=3)
+    warmer = level_warm.LevelWarmer()
+    done = []
+    warmer.start(cache, [1, 2], on_job_done=lambda mip: done.append((mip, cache.tick)))
+    ticks = 0
+    while True:
+        cache.tick = ticks
+        more = warmer.tick()
+        ticks += 1
+        if not more:
+            break
+    assert [(mip, step) for mip, step, _tick in cache.log] == [(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
+    assert {mip: tick for mip, step, tick in cache.log if step == 0} == {1: 0, 2: 1}, cache.log
+    assert done == [(1, 0), (2, 1)]
+    assert ticks == 2
+
+
+def test_a_traced_tick_reports_its_steps_by_job_and_its_gc(monkeypatch) -> None:
+    """Perf Trace's worst-tick attribution: each tick hands level_warm_tick()
+    its ms per step label (a job's first step apart, as `setup`) and the gc
+    ms that landed inside it."""
+    from descape import perf_trace
+
+    clock = _StepClock()
+    monkeypatch.setattr(level_warm, "_now", clock)
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    for name, value in perf_trace._fresh_state().items():
+        monkeypatch.setattr(perf_trace, name, value)
+    monkeypatch.setattr(perf_trace, "time", type("T", (), {"perf_counter": staticmethod(clock)}))
+    ticks = []
+    monkeypatch.setattr(
+        perf_trace, "level_warm_tick", lambda ms, installs, split, gc_ms: ticks.append((dict(split), gc_ms))
+    )
+    cache = _FakeJobsCache(clock, steps=3)
+    real_job = cache.level_warm_job
+
+    def job_with_a_collection(mip):
+        job = real_job(mip)
+        inner = job.gen
+
+        def gen():
+            yield next(inner)
+            perf_trace._on_gc("start", {"generation": 2})
+            clock.t += 0.025
+            perf_trace._on_gc("stop", {"generation": 2})
+            yield from inner
+
+        if mip == 2:
+            job.kind = "flush"
+        else:
+            job.gen = gen()
+        return job
+
+    cache.level_warm_job = job_with_a_collection
+    warmer = level_warm.LevelWarmer()
+    warmer.start(cache, [1, 2], on_job_done=lambda mip: None)
+    # Real collections meanwhile cost 0 ms on the fake clock.
+    perf_trace.set_gc_hook(True)
+    try:
+        while warmer.tick():
+            pass
+    finally:
+        perf_trace.set_gc_hook(False)
+    # The collection spends the 12 ms budget, so job 1 finishes on the next tick.
+    assert ticks[0] == (pytest.approx({"walk 1 setup": 1.0, "walk 1": 26.0}), pytest.approx(25.0))
+    assert set(ticks[1][0]) == {"walk 1", "install", "done"}
+    assert ticks[2] == (pytest.approx({"flush 2 setup": 1.0, "flush 2": 2.0, "install": 0.0, "done": 0.0}), 0.0)
+    assert len(ticks) == 3
+
+
+# --- the warm set follows the view (zoom plan 2026-09-29, Step 2) ----------
+
+
+def _spy_level_warm_starts(window, monkeypatch) -> list:
+    """Each LevelWarmer.start()'s mips, in call order; forwards to the real one."""
+    starts = []
+    real = window._level_warmer.start
+
+    def spy(cache, mips, **kwargs):
+        starts.append(list(mips))
+        return real(cache, mips, **kwargs)
+
+    monkeypatch.setattr(window._level_warmer, "start", spy)
+    return starts
+
+
+def _fake_viewport_mip(window, monkeypatch) -> dict:
+    """viewport_chunk_target() reads fake["mip"], with that level's real chunk
+    range for the current scene rect, so the margin warm still gets a valid ring."""
+    view = window.map_view
+    fake = {}
+    monkeypatch.setattr(view, "viewport_chunk_target", lambda: (fake["mip"], *view.viewport_chunk_target_at(fake["mip"])))
+    return fake
+
+
+def _stale_residents(cache, visible: int) -> set[int]:
+    return {m for m in cache.resident_levels() if m != visible and not cache.is_level_resident(m)}
+
+
+@pytest.mark.gui
+def test_a_viewport_mip_change_re_anchors_the_level_warm(monkeypatch) -> None:
+    """Zooming used to leave the warm set on the fit level's neighbours. A
+    viewport fire at a new mip re-arms it on that mip's neighbours (plus any
+    stale residents); a fire at the same mip does not."""
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = conftest.stepped_window(UNITS_FIXTURE)
+    try:
+        cache = window._cache
+        assert {-2, -1, 0, 1} <= set(cache.mip_levels()), "ladder too short -- vacuous"
+        fake = _fake_viewport_mip(window, monkeypatch)
+        starts = _spy_level_warm_starts(window, monkeypatch)
+        window._last_viewport_chunk_target = (-1, *window.map_view.viewport_chunk_target_at(-1))
+
+        fake["mip"] = 0
+        window._on_viewport_changed()
+        assert len(starts) == 1, "a mip change did not re-arm the level warm"
+        assert {-1, 1} <= set(starts[0])
+        assert set(starts[0]) - {-1, 1} <= _stale_residents(cache, 0)
+
+        window._on_viewport_changed()
+        assert len(starts) == 1, "a same-mip viewport change re-armed the level warm"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_style_switch_with_a_poll_pending_leaves_no_warm_on_the_old_cache(native_kernel, monkeypatch) -> None:  # noqa: F811
+    """_render_current cancels the warms, then runs processEvents() BEFORE it
+    swaps self._cache. A viewport poll firing there must not re-arm the level
+    warm on the outgoing cache: its job would finish against the new one and
+    ask _queue_load_warm for a mip the new ladder does not have."""
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    with composite_backend.use_backend("native"):
+        window = conftest.stepped_window(UNITS_FIXTURE)
+        try:
+            old = window._cache
+            # Zoomed in to mip 0, so a re-arm there has a cold neighbour (1) to queue.
+            fake = _fake_viewport_mip(window, monkeypatch)
+            fake["mip"] = 0
+            assert not old.is_level_resident(1), "mip 1 is already warm -- vacuous"
+            fires = []
+            real_fire = window._on_viewport_changed
+
+            def spy() -> None:
+                fires.append(window._cache is old)
+                real_fire()
+
+            view = window.map_view
+            view.on_viewport_changed = spy
+            real_cancel = window._cancel_warms
+
+            def cancel_with_a_poll_pending() -> None:
+                # The load-dependent case made certain: a 0 ms poll that the
+                # next processEvents() fires, and a target it has not seen.
+                real_cancel()
+                view._last_viewport_target = None
+                view._viewport_poll_timer.setInterval(0)
+                view._viewport_poll_timer.start()
+
+            monkeypatch.setattr(window, "_cancel_warms", cancel_with_a_poll_pending)
+            window.terrain_style_combo.setCurrentText("Sloped")
+            view._viewport_poll_timer.setInterval(view.VIEWPORT_POLL_MS)
+            assert window._cache is not old
+            assert True in fires, "no poll fired before the cache swap -- vacuous"
+
+            assert window._level_warmer._cache is None or window._level_warmer._cache is window._cache
+            window._level_warmer.run_to_completion()
+        finally:
+            conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_post_edit_re_arm_anchors_on_the_viewport_mip(monkeypatch) -> None:
+    """B1's tail re-arm while zoomed in warms around the level in view, not
+    the fit level: that is the level the next zoom leaves from."""
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = conftest.stepped_window(UNITS_FIXTURE)
+    try:
+        cache = window._cache
+        view = window.map_view
+        fit_mip = cache.mip_for_scale(view._fit_baseline_scale() * view.devicePixelRatioF())
+        fit_set = level_warm.neighbour_mips_of(cache, fit_mip)
+        anchor = next(
+            (m for m in reversed(cache.mip_levels()) if level_warm.neighbour_mips_of(cache, m) != fit_set), None,
+        )
+        assert anchor is not None, "every level has the fit level's neighbours -- vacuous"
+        fake = _fake_viewport_mip(window, monkeypatch)
+        fake["mip"] = anchor
+        starts = _spy_level_warm_starts(window, monkeypatch)
+
+        window._apply_dirty([0])
+
+        assert starts, "B1's tail re-arm never started the level warm"
+        want = level_warm.neighbour_mips_of(cache, anchor)
+        assert starts[-1][:len(want)] == want
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_mip_change_queues_no_load_warm_for_an_already_warm_level(native_kernel, monkeypatch) -> None:  # noqa: F811
+    """The plan's check on re-arming at every mip change. _queue_load_warm's
+    residency check lets a resident level through; what keeps it from
+    re-queueing is load_warm_chunks dropping chunks already cached."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    with composite_backend.use_backend("native"):
+        window = conftest.stepped_window(UNITS_FIXTURE)
+        try:
+            cache = window._cache
+            QApplication.processEvents()
+            real_target = window.map_view.viewport_chunk_target()
+            assert real_target is not None
+            fit_mip = real_target[0]
+            window._level_warmer.run_to_completion()
+            while window._load_warmer.is_active or window._load_warm_queue:
+                window._pump_load_warm()
+                window._load_warmer.run_to_completion()
+            neighbours = level_warm.neighbour_mips_of(cache, fit_mip)
+            assert neighbours and all(cache.is_level_resident(m) for m in neighbours), "vacuous"
+            assert cache.is_level_resident(fit_mip), "the first paint never built the fit level -- vacuous"
+
+            calls = []
+            real_queue = window._queue_load_warm
+
+            def spy(mip: int) -> None:
+                calls.append(mip)
+                real_queue(mip)
+
+            monkeypatch.setattr(window, "_queue_load_warm", spy)
+            fake = _fake_viewport_mip(window, monkeypatch)
+            fake["mip"] = neighbours[0]
+            window._last_viewport_chunk_target = real_target
+            window._on_viewport_changed()
+
+            assert fit_mip in calls, "the resident fit level never reached _queue_load_warm -- vacuous"
+            assert window._load_warm_queue == [] and not window._load_warmer.is_active
         finally:
             conftest.close_window(window)

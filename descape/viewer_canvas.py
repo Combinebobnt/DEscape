@@ -63,6 +63,41 @@ def _restart_perf_view_timer() -> None:
 
 perf_trace.set_idle_scheduler(_restart_perf_view_timer)
 
+# Perf Trace's stall watchdog: a heartbeat that fires more than
+# STALL_THRESHOLD_MS late means the event loop was blocked that long.
+STALL_HEARTBEAT_MS = 50
+STALL_THRESHOLD_MS = 150
+_stall_timer: QTimer | None = None
+_stall_last = 0.0
+
+
+def _stall_beat() -> None:
+    global _stall_last
+    now = time.perf_counter()
+    late_ms = (now - _stall_last) * 1000 - STALL_HEARTBEAT_MS
+    _stall_last = now
+    if late_ms > STALL_THRESHOLD_MS:
+        perf_trace.stall(late_ms)
+
+
+def set_stall_watchdog(on: bool) -> None:
+    """Runs the heartbeat only while Perf Trace is on; wired to its toggle."""
+    global _stall_timer, _stall_last
+    if QCoreApplication.instance() is None:
+        return
+    if not on:
+        if _stall_timer is not None:
+            _stall_timer.stop()
+        return
+    if _stall_timer is None:
+        _stall_timer = QTimer()
+        _stall_timer.setTimerType(Qt.PreciseTimer)
+        _stall_timer.setInterval(STALL_HEARTBEAT_MS)
+        _stall_timer.timeout.connect(_stall_beat)
+    # Seeded here, so the first beat after a start isn't read as a stall.
+    _stall_last = time.perf_counter()
+    _stall_timer.start()
+
 
 def map_overlay_font(px: int) -> QFont:
     """A font for map-overlay text (ruler readout, distance-tick numbers,
@@ -294,6 +329,7 @@ class MapCanvasItem(QGraphicsItem):
                 # this way they always do.
                 mip = self._select_mip(painter)
                 self._last_mip = mip
+                perf_trace.view_mip(mip)
                 scale = self._cache.mip_scale(mip)
                 level_rect = level_rect_for(self._cache, mip, rect)
                 if level_rect is None:
@@ -325,23 +361,24 @@ class MapCanvasItem(QGraphicsItem):
                         block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
                         if block.size == 0:
                             continue
-                        h, w = block.shape[:2]
-                        contiguous = np.ascontiguousarray(block)
-                        qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
-                        if scale == 1.0:
-                            # The point overload is a different QPainter code path
-                            # from the scaled one and is not guaranteed
-                            # bit-identical to it at unit scale. Keeping it for the
-                            # reference level is what makes this phase structurally
-                            # incapable of regressing any existing byte-identity
-                            # bar, rather than merely empirically not doing so.
-                            painter.drawImage(px0, py0, qimg)
-                        else:
-                            painter.drawImage(
-                                QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
-                                qimg,
-                                QRectF(0, 0, w, h),
-                            )
+                        with perf_trace.repaint_phase("blit"):
+                            h, w = block.shape[:2]
+                            contiguous = np.ascontiguousarray(block)
+                            qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
+                            if scale == 1.0:
+                                # The point overload is a different QPainter code path
+                                # from the scaled one and is not guaranteed
+                                # bit-identical to it at unit scale. Keeping it for the
+                                # reference level is what makes this phase structurally
+                                # incapable of regressing any existing byte-identity
+                                # bar, rather than merely empirically not doing so.
+                                painter.drawImage(px0, py0, qimg)
+                            else:
+                                painter.drawImage(
+                                    QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
+                                    qimg,
+                                    QRectF(0, 0, w, h),
+                                )
         finally:
             # Every paint, not just the first, and including the two early
             # returns above: whoever installed the callback is summing them.

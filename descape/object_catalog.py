@@ -70,14 +70,17 @@ def _dat_entry(section: str, id_: int) -> dict | None:
     return _dat_table()[section].get(str(id_))
 
 
-def resolve_name(id_: int, library_name: str, dat_entry: dict | None) -> str:
+def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None) -> str:
     """install string -> library enum name -> .dat short code -> "UNKNOWN_
     <id>", each step falling through to the next. Degrades to library_name
     alone with no install configured or no .dat entry for id_ at all --
     what keeps the default (install-free) test tier on the exact format
-    resolve_reference()/the catalog always had before slice 4."""
+    resolve_reference()/the catalog always had before slice 4.
+
+    lang defaults to asset_source.get_language(), which parses config.yaml on
+    every call; a bulk builder resolves it once and passes it in."""
     if dat_entry is not None:
-        install_name = asset_source.resource_string(dat_entry["string_id"])
+        install_name = asset_source.resource_string(dat_entry["string_id"], lang)
         if install_name:
             return install_name
     if library_name:
@@ -107,12 +110,13 @@ def _combined_object_names() -> dict[int, str]:
     trigger_fields.resolve_reference's own pinned tests depend on.
     """
     names: dict[int, str] = {}
+    lang = asset_source.get_language()
     for dataset, _category in _OBJECT_DATASETS:
         for member in dataset:
             if member.ID in names:
                 continue
             dat_entry = _dat_entry("objects", member.ID)
-            names[member.ID] = resolve_name(member.ID, member.name.replace("_", " "), dat_entry)
+            names[member.ID] = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
     return names
 
 
@@ -172,13 +176,14 @@ def objects() -> tuple[CatalogEntry, ...]:
     dataset in _OBJECT_DATASETS is not repeated under a later category."""
     seen: set[int] = set()
     entries = []
+    lang = asset_source.get_language()
     for dataset, category in _OBJECT_DATASETS:
         for member in dataset:
             if member.ID in seen:
                 continue
             seen.add(member.ID)
             dat_entry = _dat_entry("objects", member.ID)
-            name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry)
+            name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
             entries.append(_entry(member.ID, name, category, dat_entry))
     return tuple(sorted(entries, key=lambda e: e.name))
 
@@ -187,9 +192,10 @@ def objects() -> tuple[CatalogEntry, ...]:
 def techs() -> tuple[CatalogEntry, ...]:
     """Every tech in TechInfo, alphabetical by name."""
     entries = []
+    lang = asset_source.get_language()
     for member in TechInfo:
         dat_entry = _dat_entry("techs", member.ID)
-        name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry)
+        name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
         entries.append(_entry(member.ID, name, "Techs"))
     return tuple(sorted(entries, key=lambda e: e.name))
 
@@ -208,19 +214,20 @@ def name_for(catalog: Sequence[CatalogEntry], id_: int) -> str:
     return found.name if found is not None else ""
 
 
-def object_name(id_: int) -> str:
+def object_name(id_: int, lang: str | None = None) -> str:
     """Display name for any object id, including ones the library-backed
     `objects()` dataset omits -- e.g. cliffs (class 34), which
     AoE2ScenarioParser's UnitInfo/BuildingInfo/HeroInfo/OtherInfo enums don't
     cover at all but object_catalog.json still carries a .dat "code" for.
     Goes through resolve_name()'s own install-name -> code -> UNKNOWN_<id>
     fallback chain directly, skipping the library-name step objects() would
-    otherwise supply.
+    otherwise supply. A caller naming many ids passes lang, as resolve_name()
+    says.
     """
-    return resolve_name(id_, "", _dat_entry("objects", id_))
+    return resolve_name(id_, "", _dat_entry("objects", id_), lang)
 
 
-def tech_name(id_: int) -> str:
+def tech_name(id_: int, lang: str | None = None) -> str:
     """Display name for any tech id, including ones `techs()`' TechInfo enum
     omits -- the tech-side mirror of object_name(), and for the same reason:
     a scenario's disable lists can legitimately carry an id no enum covers,
@@ -229,9 +236,9 @@ def tech_name(id_: int) -> str:
     Object ids and tech ids are separate id spaces that collide freely on the
     same number, which is why this is its own function rather than a
     `section` argument to object_name(): resolving a tech through the objects
-    table would name it after an unrelated unit.
+    table would name it after an unrelated unit. lang as object_name().
     """
-    return resolve_name(id_, "", _dat_entry("techs", id_))
+    return resolve_name(id_, "", _dat_entry("techs", id_), lang)
 
 
 # -- document-scoped references: TriggerId, VariableId -----------------------

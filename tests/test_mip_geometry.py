@@ -309,13 +309,13 @@ def test_patch_rebuilds_only_resident_levels(corpus_files, monkeypatch) -> None:
             continue
 
         calls = []
-        real_fn = render._building_bboxes_iso
+        real_fn = render._building_bboxes_iso_sliced
 
         def counting(*args, **kwargs):
             calls.append(1)
             return real_fn(*args, **kwargs)
 
-        monkeypatch.setattr(render, "_building_bboxes_iso", counting)
+        monkeypatch.setattr(render, "_building_bboxes_iso_sliced", counting)
 
         tile = mm.get_tile(min(2, mm.map_width - 1), 0)
 

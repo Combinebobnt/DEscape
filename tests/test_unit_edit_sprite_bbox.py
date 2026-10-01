@@ -80,9 +80,10 @@ def art(tmp_path, monkeypatch):
     # A full-coverage team-colour mask, so Convert changes its pixels.
     add(HERO, 2 * T, colour_base=19, playercolor=True)
     # Large, so a neighbour's reshaped frame reaches past the placed wall's own extent.
-    add(STONE_WALL, 6 * T, angles=5, colour_base=23)
+    # Team-coloured, like the gates, so a Convert of one changes its pixels.
+    add(STONE_WALL, 6 * T, angles=5, colour_base=23, playercolor=True)
     for i, const in enumerate((64, 88, 659, 667)):
-        add(const, T, colour_base=5 * i + 1)
+        add(const, T, colour_base=5 * i + 1, playercolor=True)
     main = add(CASTLE, 6 * T, colour_base=13)
     tower = add(TOWER_PIECE, 2 * T, colour_base=17, name="t_bbox_tower_x1")
     table.pop(TOWER_PIECE)
@@ -169,18 +170,20 @@ class _Spy:
         self.calls: list[tuple[str, tuple, tuple | None]] = []
         self.before: list = []
         self.tight: list[tuple[tuple, tuple]] = []
+        # Every reach-padded bbox sized, tight path or not.
+        self.reach: list[tuple] = []
         # Where the last tight repaint's own calls start; terrain patches come before it.
         self.mark = 0
         real_patch, real_evict = cache.patch, cache.invalidate_region
         real_before, real_bbox = cache.sprite_extent_before, window._unit_edit_bbox
 
-        def patch(bbox, elevation_changed=None, levels=None):
+        def patch(bbox, elevation_changed=None, levels=None, **kwargs):
             self.calls.append(("patch", bbox, None if levels is None else tuple(levels)))
-            return real_patch(bbox, elevation_changed, levels)
+            return real_patch(bbox, elevation_changed, levels, **kwargs)
 
-        def evict(bbox, levels=None):
+        def evict(bbox, levels=None, **kwargs):
             self.calls.append(("evict", bbox, None if levels is None else tuple(levels)))
-            return real_evict(bbox, levels)
+            return real_evict(bbox, levels, **kwargs)
 
         def before(changed, mip):
             result = real_before(changed, mip)
@@ -192,6 +195,8 @@ class _Spy:
             if pre is not REACH_FALLBACK and post is not REACH_FALLBACK:
                 self.tight.append((out[0], real_bbox(changed)[0]))
                 self.mark = len(self.calls)
+            else:
+                self.reach.append(out[0])
             return out
 
         monkeypatch.setattr(cache, "patch", patch)
@@ -203,6 +208,7 @@ class _Spy:
         self.calls.clear()
         self.before.clear()
         self.tight.clear()
+        self.reach.clear()
         self.mark = 0
 
     def assert_tight(self, mip: int) -> None:
@@ -217,10 +223,17 @@ class _Spy:
         assert visible and all(c[1] == tight for c in visible), repaint
         assert all(c[2] is not None for c in repaint), repaint
 
-    def assert_fallback(self) -> None:
+    def assert_fallback(self, mip: int) -> None:
+        """Today's reach bbox, split like the tight one: the visible level
+        patched or evicted with it, every other level evicted with it, and
+        nothing repainted at levels None (every resident level)."""
         assert self.before and self.before[-1] is REACH_FALLBACK
         assert not self.tight
-        assert self.calls and all(c[2] is None for c in self.calls), self.calls
+        assert self.reach, "the reach bbox was never sized"
+        reach = self.reach[-1]
+        assert self.calls and all(c[1] == reach and c[2] is not None for c in self.calls), self.calls
+        assert any(c[2] == (mip,) for c in self.calls), self.calls
+        assert all(c[0] == "evict" for c in self.calls if mip not in c[2]), self.calls
 
 
 def _add(window, player: int, const: int, x: float, y: float):
@@ -283,15 +296,20 @@ def _ratio(monkeypatch, repaint: str) -> None:
 # --- the fresh-render oracles ----------------------------------------------
 
 
+@pytest.mark.parametrize("a_path", ["wholesale", "component"])
 @pytest.mark.parametrize("repaint", ["patch", "evict"])
 @pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
-def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, art, monkeypatch) -> None:
-    """Stroke A crosses a villager's tile, so the cache rebuilds its sources
+def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_path, art, monkeypatch) -> None:
+    """Stroke A crosses a villager's tile. It splices that shared tile's
+    component, or with the component cap at 0 the cache rebuilds its sources
     wholesale and the post side must resolve a level with no post-edit layer.
     Stroke B replaces half of A's oaks with palms and plants the rest on
     grass: a splice. Undo removes palms with no replacement, which only the
     pre side covers. Each is checked patched and evicted."""
     _ratio(monkeypatch, repaint)
+    real_cap = render_cache._COMPONENT_SPLICE_MAX_UNITS
+    if a_path == "wholesale":
+        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
     window = _window(style)
     try:
         _add(window, 1, VILLAGER, STROKE_TILES[3][0] + 0.5, STROKE_TILES[3][1] + 0.5)
@@ -302,19 +320,25 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, ar
         _show_level(window, monkeypatch, mip)
         spy = _Spy(window, monkeypatch)
         spliced = []
-        real_can_splice = window._cache.can_splice
-        monkeypatch.setattr(window._cache, "can_splice", lambda c: (spliced.append(real_can_splice(c)), spliced[-1])[1])
+        real_plan = window._cache._unit_splice_plan
+        # The plan invalidate_units() consumes, so each call is one splice-or-rebuild verdict.
+        monkeypatch.setattr(
+            window._cache, "_unit_splice_plan",
+            lambda c: (plan := real_plan(c), spliced.append(plan is not None))[0],
+        )
         _level(window, mip)
 
         _draw(window, FOREST_OAK, STROKE_TILES)
         spy.assert_tight(mip)
         after_a = _check(window, mip, "stroke A")
+        # Back to the real cap, so stroke B and the undo/redo run as they would.
+        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", real_cap)
         spy.reset()
         _draw(window, FOREST_PALM, SHIFTED_TILES)
         spy.assert_tight(mip)
         after_b = _check(window, mip, "stroke B")
         assert not np.array_equal(after_a, after_b)
-        assert spliced == [False, True], "stroke A must rebuild its sources wholesale, stroke B splice"
+        assert spliced == [a_path == "component", True], f"stroke A must take the {a_path} path, stroke B splice"
 
         spy.reset()
         window.undo()
@@ -390,17 +414,18 @@ def test_moving_a_mark_only_building_across_an_elevation_step(style, mip, art, m
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_a_visible_level_with_no_resident_chunks_takes_the_reach_fallback(style, art, monkeypatch) -> None:
     """Stepped: mip 0 is resident but the view shows mip -1, which holds
-    nothing. Sloped: nothing is resident at all. Either way today's bbox runs
-    on every resident level."""
+    nothing. Sloped: nothing is resident at all. Either way today's bbox runs,
+    on the visible level, and mip 0 evicts it."""
     window = _window(style)
     try:
         villager = _add(window, 1, VILLAGER, 60.5, 60.5)
-        _show_level(window, monkeypatch, -1 if style == "Stepped" else 0)
+        visible = -1 if style == "Stepped" else 0
+        _show_level(window, monkeypatch, visible)
         if style == "Stepped":
             _level(window, 0)
         spy = _Spy(window, monkeypatch)
         _set_x(window, villager, 64.5)
-        spy.assert_fallback()
+        spy.assert_fallback(visible)
         _check(window, 0, "move under the fallback")
     finally:
         conftest.close_window(window)
@@ -468,7 +493,7 @@ def test_placing_a_wall_beside_walls_takes_the_reach_fallback(style, mip, art, m
         _place(window, monkeypatch, 1, STONE_WALL, 51.5, 50.5)
         assert len(render.wall_variant_rotation_overrides(window.scenario)) == 3, "the run did not reshape"
         assert not np.array_equal(_check(window, mip, "wall place"), before)
-        spy.assert_fallback()
+        spy.assert_fallback(mip)
     finally:
         conftest.close_window(window)
 
@@ -485,7 +510,7 @@ def test_a_gate_orientation_change_takes_the_reach_fallback(style, mip, art, mon
         window.on_unit_rotate(1)
         assert gate.unit_const != GATE_NE
         _check(window, mip, "gate orientation")
-        spy.assert_fallback()
+        spy.assert_fallback(mip)
     finally:
         conftest.close_window(window)
 
@@ -507,6 +532,60 @@ def test_a_convert_stroke_repaints_the_new_team_colour(style, mip, art, monkeypa
         assert all(u in window.scenario.unit_manager.units[2] for u in heroes)
         spy.assert_tight(mip)
         assert not np.array_equal(_check(window, mip, "convert"), before)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+def test_a_convert_of_a_reshaped_wall_and_a_gate_is_sized_tight(style, mip, art, monkeypatch) -> None:
+    """A reassign moves nothing, so no wall's neighbour mask changes: the
+    middle wall of a reshaped run (its override read at its new key) and a
+    gate repaint from their real extents, not the reach bbox."""
+    window = _window(style)
+    try:
+        walls = [_add(window, 1, STONE_WALL, x, 50.5) for x in (50.5, 51.5, 52.5)]
+        for wall in walls:
+            wall.rotation = 2 * math.pi / 5
+        gate = _add(window, 1, GATE_NE, 60.0, 60.5)
+        window._after_unit_mutation()
+        shapes = render.wall_variant_rotation_overrides(window.scenario)
+        assert len(shapes) == 3, "the run did not reshape -- the overrides path is vacuous"
+        window.units_panel.select_owner(2)
+        window.brush_size_spin.setValue(1)
+        _show_level(window, monkeypatch, mip)
+        spy = _Spy(window, monkeypatch)
+        # The synthetic frames share one size, so pixels can't show which frame the
+        # post extent resolved: record the overrides it passes for the wall instead.
+        seen: list[dict] = []
+        inside = [False]
+        real_after, real_resolve = window._cache.sprite_extent_after, render._resolve_unit_sprite
+
+        def after(changed, level):
+            inside[0] = True
+            try:
+                return real_after(changed, level)
+            finally:
+                inside[0] = False
+
+        def resolve(*args, **kwargs):
+            if inside[0] and args[9] is walls[1]:
+                seen.append(args[5])
+            return real_resolve(*args, **kwargs)
+
+        monkeypatch.setattr(window._cache, "sprite_extent_after", after)
+        monkeypatch.setattr(render, "_resolve_unit_sprite", resolve)
+        before = _level(window, mip)
+        window._begin_convert_stroke()
+        for unit in (walls[1], gate):
+            window._convert_stroke_tile(int(unit.x), int(unit.y))
+        window._end_convert_stroke()
+        assert walls[1] in window.scenario.unit_manager.units[2] and gate in window.scenario.unit_manager.units[2]
+        now = render.wall_variant_rotation_overrides(window.scenario)
+        assert sorted(now.values()) == sorted(shapes.values()), "the convert reshaped the run"
+        key = (2, window.scenario.unit_manager.units[2].index(walls[1]))
+        assert seen and all(o.get(key) == now[key] for o in seen), "the post extent resolved without the real overrides"
+        spy.assert_tight(mip)
+        assert not np.array_equal(_check(window, mip, "wall and gate convert"), before)
     finally:
         conftest.close_window(window)
 
@@ -576,6 +655,75 @@ def test_a_stale_second_level_evicts_the_reach_bbox_and_is_not_recomposited(art,
         assert any(key[0] == 0 for key in cache._cache), "the eviction took more than today's bbox"
         _check(window, -1, "visible level")
         assert np.array_equal(cache.render_rect(*region, mip=0), _fresh(window, 0, region))
+    finally:
+        conftest.close_window(window)
+
+
+def _wall_run(window, xs=(50.5, 51.5, 52.5), y: float = 50.5):
+    """Stone walls in a row, radian-encoded, so every one's shape is derived from its neighbours."""
+    walls = [_add(window, 1, STONE_WALL, x, y) for x in xs]
+    for wall in walls:
+        wall.rotation = 2 * math.pi / 5
+    window._after_unit_mutation()
+    return walls
+
+
+def test_a_wholesale_wall_move_rebuilds_no_off_screen_level(art, monkeypatch) -> None:
+    """Group-move-wall plan Step 1: a wall Move whose sources rebuild wholesale
+    (the component cap at 0 keeps it wholesale now that moved walls splice),
+    mips -2/-1/0 resident and 0 on screen. The reach bbox patches mip 0 alone
+    and evicts itself from -2 and -1, which stay stale for LevelWarmer instead
+    of rebuilding inside the handler. A forced read then matches a fresh cache."""
+    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+    mips = (-2, -1, 0)
+    window = _window("Stepped")
+    try:
+        cache = window._cache
+        assert set(mips) <= set(cache.mip_levels()), cache.mip_levels()
+        walls = _wall_run(window)
+        assert len(render.wall_variant_rotation_overrides(window.scenario)) == 3, "the run did not reshape"
+        _show_level(window, monkeypatch, 0)
+        # Whole coarse levels, but only a region of mip 0: the whole of it alone fills the chunk budget.
+        cache.render_rect(2048, 1024, 5632, 3584, mip=0)
+        for mip in (-1, -2):
+            _level(window, mip)
+        assert cache.resident_levels() == list(mips)
+        assert all(cache._levels[m].gen == cache._source_gen for m in mips)
+        spy = _Spy(window, monkeypatch)
+        plans: list = []
+        real_plan = cache._unit_splice_plan
+        monkeypatch.setattr(cache, "_unit_splice_plan", lambda c: (plan := real_plan(c), plans.append(plan))[0])
+
+        entries = [e for e in window.map_view._unit_index.entries if e.unit is walls[0] or e.unit is walls[2]]
+        window._move_units(window._ensure_unit_edits(), entries, 0.0, 3.0, "Move 2 units")
+
+        assert plans == [None], "the Move did not take the wholesale path"
+        rebuilt = [m for m in (-2, -1) if cache._levels[m].gen == cache._source_gen]
+        assert not rebuilt, f"off-screen levels {rebuilt} were rebuilt inside the handler"
+        spy.assert_fallback(0)
+        reach = spy.reach[-1]
+        assert ("evict", reach, (-2, -1)) in spy.calls, spy.calls
+        for mip in (-2, -1):
+            cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, *cache._bbox_to_level(mip, reach))
+            assert not any(cache.has_chunk(mip, cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1))
+        for mip in mips:
+            cache._level(mip)
+            _check(window, mip, f"level {mip} after the wall Move")
+    finally:
+        conftest.close_window(window)
+
+
+def test_with_no_viewport_target_the_reach_bbox_patches_every_resident_level(art, monkeypatch) -> None:
+    window = _window("Stepped")
+    try:
+        villager = _add(window, 1, VILLAGER, 60.5, 60.5)
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: None)
+        _level(window, 0)
+        spy = _Spy(window, monkeypatch)
+        _set_x(window, villager, 64.5)
+        assert spy.before and spy.before[-1] is REACH_FALLBACK
+        assert spy.calls and all(c == ("patch", spy.reach[-1], None) for c in spy.calls), spy.calls
+        _check(window, 0, "move with no viewport target")
     finally:
         conftest.close_window(window)
 

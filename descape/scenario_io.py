@@ -31,9 +31,12 @@ terrain block in place and recompressing is.
 from __future__ import annotations
 
 import contextlib
+import gc
 import io
 import json
+import operator
 import struct
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,10 +44,13 @@ from typing import Any
 import AoE2ScenarioParser.datasets.conditions as condition_dataset
 import AoE2ScenarioParser.datasets.effects as effect_dataset
 from AoE2ScenarioParser import settings
+from AoE2ScenarioParser.helper import bytes_parser
 from AoE2ScenarioParser.helper.incremental_generator import IncrementalGenerator
 from AoE2ScenarioParser.objects.aoe2_object_manager import AoE2ObjectManager
 from AoE2ScenarioParser.objects.data_objects.condition import Condition
+from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
+from AoE2ScenarioParser.objects.data_objects.units.player_units import PlayerUnits
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 from AoE2ScenarioParser.objects.managers.trigger_manager import TriggerManager
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
@@ -55,6 +61,8 @@ from AoE2ScenarioParser.scenarios.aoe2_scenario import (
     _get_scenario_variant,
     _initialise_version_dependencies,
 )
+from AoE2ScenarioParser.sections.aoe2_file_section import AoE2FileSection
+from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever_dependency
 
 # Imported for its import-time side effect as much as for its API: library_compat
 # snapshots the library's poisoned classes before any scenario has been loaded, and
@@ -260,7 +268,8 @@ class LoadedScenario:
     # tools for this file without refusing to open it read-only -- see the
     # verification in load_map_and_units() for what can make this False.
     terrain_struct_size: int  # bytes per TerrainStruct in this file, read off the
-    # parsed terrain_data (7 on DE, 3 on v1.21). 0 if the division did not
+    # parse (7 on DE, 3 on v1.21): the parsed terrain_data's length, or on the
+    # fast path its TerrainStruct model's size. 0 if the division did not
     # come out exact, which also makes terrain_write_supported False.
     terrain_has_layer: bool  # whether this file's TerrainStruct carries `layer`.
     # False means tile.layer is TerrainTile's -1 default, never from the file,
@@ -392,6 +401,12 @@ class LoadedScenario:
     files_section_start: int = -1
     files_section_end: int = -1
 
+    # Per player, each unit's (offset, length) within decompressed_body, as
+    # walked at load (fast path) or from the parsed entries (library path).
+    # descape/unit_model.py slices each unit's original blob from these. None
+    # if units_write_supported is False.
+    unit_spans: list[list[tuple[int, int]]] | None = None
+
 
 def retriever_length(retriever: Any) -> int:
     """Parsed byte length of one already-loaded retriever.
@@ -442,8 +457,7 @@ def _terrain_layout(map_section: Any, map_section_end: int, w: int, h: int) -> t
     terrain = map_section.retriever_map["terrain_data"]
     length = retriever_length(terrain)
     stride, remainder = divmod(length, w * h) if w * h > 0 else (0, 1)
-    tiles = terrain.data or []
-    has_layer = bool(tiles) and "layer" in tiles[0].retriever_map
+    has_layer = "layer" in library_compat.terrain_struct_fields(map_section)
     return map_section_end - length, (stride if remainder == 0 else 0), has_layer
 
 
@@ -489,6 +503,435 @@ def _units_layout(units_section: Any, units_section_start: int) -> tuple[int, in
             trailer += length
         pos += length
     return block_offset, players_units_end, trailer
+
+
+# -- Terrain fast path: TerrainTiles straight off the raw terrain_data bytes,
+# instead of one library section per tile. The unpack format is derived from
+# the structure's own TerrainStruct model on every load, never typed by hand:
+# a hand-typed "<BBxi" misread 8,386 tiles' s16 layer at offset 5.
+
+# TerrainTile.__init__'s positional order; every other TerrainStruct field
+# is padding here.
+_TILE_FIELDS = ("terrain_id", "elevation", "layer")
+_FIXED_WIDTH_CODES = {"u8": "B", "s8": "b", "u16": "H", "s16": "h", "u32": "I", "s32": "i", "f32": "f"}
+# (byte offset, type) scenario_write patches each field at, which
+# _verify_terrain_block() proves per tile on the library path.
+_WRITE_LAYOUT = {"terrain_id": (0, "u8"), "elevation": (1, "u8"), "layer": (_LAYER_OFFSET, "s16")}
+
+
+@dataclass(frozen=True)
+class _TerrainFormat:
+    unpack: struct.Struct  # one whole TerrainStruct, padding included
+    fields: tuple[str, ...]  # the _TILE_FIELDS present, in unpack order
+    layout: Mapping[str, tuple[int, str]]  # field -> (byte offset, type)
+
+
+def _terrain_struct_format(retrievers: Mapping[str, Any] | None) -> _TerrainFormat | None:
+    """The fixed-width unpack format of a TerrainStruct, from its
+    structure.json retrievers. None (take the library walk) if any field
+    has a dependency, a repeat, or a type that is not fixed-width, or if
+    terrain_id/elevation is not a plain integer field."""
+    if not retrievers:
+        return None
+    fmt = "<"
+    fields = []
+    layout = {}
+    offset = 0
+    for name, attr in retrievers.items():
+        kind = attr.get("type")
+        if attr.get("dependencies") or attr.get("repeat", 1) != 1 or not isinstance(kind, str):
+            return None
+        code = _FIXED_WIDTH_CODES.get(kind)
+        if code is not None:
+            size = struct.calcsize("<" + code)
+        elif kind.isdigit() and int(kind) > 0 and name not in _TILE_FIELDS:
+            size = int(kind)
+        else:
+            return None
+        if name in _TILE_FIELDS:
+            fmt += code
+            fields.append(name)
+            layout[name] = (offset, kind)
+        else:
+            fmt += f"{size}x"
+        offset += size
+    if "terrain_id" not in fields or "elevation" not in fields:
+        return None
+    return _TerrainFormat(struct.Struct(fmt), tuple(fields), layout)
+
+
+def _fast_terrain_tiles(terrain_format: _TerrainFormat, raw: bytes, uuid: Any) -> list[TerrainTile]:
+    """One TerrainTile per struct in `raw`, equal field for field to what
+    MapManager.construct() builds from the library's per-tile sections.
+    A structure without `layer` leaves TerrainTile's -1 default."""
+    args = operator.itemgetter(*(terrain_format.fields.index(f) for f in _TILE_FIELDS if f in terrain_format.fields))
+    return [
+        TerrainTile(*args(values), _index=i, uuid=uuid)
+        for i, values in enumerate(terrain_format.unpack.iter_unpack(raw))
+    ]
+
+
+@dataclass(frozen=True)
+class _FastTerrain:
+    tiles: list
+    block_offset: int  # data_igen.progress before the terrain_data read
+    repeat: int  # terrain_data's repeat, after its construct dependency
+    terrain_format: _TerrainFormat
+
+
+def _load_map_fast(scenario: AoE2DEScenario, data_igen: IncrementalGenerator) -> _FastTerrain | None:
+    """The Map section's walk, as AoE2FileSection.set_data_from_generator()
+    runs it, except that terrain_data's bytes are read raw and turned into
+    tiles by _fast_terrain_tiles(); its retriever is left empty and the
+    section's byte_length still counts them. None, with data_igen rewound
+    to Map's start, if TerrainStruct is not fixed-width or the block would
+    run past the body: the caller then takes the library walk instead."""
+    structure = scenario.structure["Map"]
+    model = structure.get("structs", {}).get("TerrainStruct", {}).get("retrievers")
+    terrain_format = _terrain_struct_format(model)
+    if terrain_format is None or "terrain_data" not in structure.get("retrievers", {}):
+        return None
+    start = data_igen.progress
+    section = AoE2FileSection.from_structure("Map", structure, scenario.uuid)
+    scenario._add_to_sections(section)
+    total = 0
+    raw = b""
+    block_offset = repeat = -1
+    for retriever in section.retriever_map.values():
+        handle_retriever_dependency(retriever, "construct", section, scenario.uuid)
+        if retriever.name == "terrain_data":
+            repeat = retriever.datatype.repeat
+            block_offset = data_igen.progress
+            length = max(repeat, 0) * terrain_format.unpack.size
+            if block_offset + length > len(data_igen.file_content):
+                data_igen.progress = start
+                return None
+            raw = data_igen.get_bytes(length)
+            retriever.set_data([], affect_dirty=False)
+            total += length
+        elif retriever.datatype.type == "struct":
+            struct_model = section.struct_models[retriever.datatype.get_struct_name()]
+            structs = [section._create_struct(struct_model, data_igen) for _ in range(retriever.datatype.repeat)]
+            retriever.set_data(structs, affect_dirty=False)
+            total += sum(entry.byte_length for entry in structs)
+        else:
+            retrieved = bytes_parser.retrieve_bytes(data_igen, retriever)
+            section._fill_retriever_with_bytes(retriever, retrieved)
+            total += sum(len(chunk) for chunk in retrieved)
+    section.byte_length = total
+    return _FastTerrain(_fast_terrain_tiles(terrain_format, raw, scenario.uuid), block_offset, repeat, terrain_format)
+
+
+def _fast_terrain_layout(
+    fast: _FastTerrain, map_section_end: int, w: int, h: int, next_section: str | None, units_verified: bool
+) -> tuple[int, int, bool, bool]:
+    """(terrain_block_offset, terrain_struct_size, terrain_has_layer,
+    terrain_write_supported) for a fast-path load. Tiles read off the bytes
+    can't disagree with those bytes, so _verify_terrain_block() would prove
+    nothing here. These checks fail on a wrong skip instead: the model's
+    stride divides the block into exactly w*h structs ending at Map's end,
+    Units comes next and verifies from there, and the model puts each field
+    where scenario_write patches it."""
+    fmt = fast.terrain_format
+    length = map_section_end - fast.block_offset
+    exact = w * h > 0 and fast.repeat == w * h and fmt.unpack.size * w * h == length
+    trusted = (
+        exact
+        and next_section == "Units"
+        and units_verified
+        and all(fmt.layout[name] == _WRITE_LAYOUT[name] for name in fmt.fields)
+    )
+    return (
+        fast.block_offset if trusted else -1,
+        fmt.unpack.size if exact else 0,
+        "layer" in fmt.fields,
+        trusted,
+    )
+
+
+# -- Units fast path: Unit objects straight off the raw players_units bytes,
+# instead of one library section per unit. UnitStruct is not fixed-width from
+# v1.55 (a trailing str32 caption), so this is a per-unit unpack_from walk
+# whose format is derived from the structure's own UnitStruct model on every
+# load, like the terrain one.
+
+_S32_STRUCT = struct.Struct("<i")
+_STR32_TYPE = "str32"
+
+
+@dataclass(frozen=True)
+class _UnitFormat:
+    fixed: struct.Struct  # every field before the optional trailing str32
+    fields: tuple[str, ...]  # the fixed fields, in unpack order
+    caption: str | None  # the trailing str32 field's name, if there is one
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return self.fields + ((self.caption,) if self.caption else ())
+
+
+def _unit_struct_format(retrievers: Mapping[str, Any] | None) -> _UnitFormat | None:
+    """The per-unit unpack format of a UnitStruct, from its structure.json
+    retrievers: fixed-width fields, then at most one str32, last. None (take
+    the library walk) for anything else: a dependency, a repeat, raw bytes,
+    another variable-width type, or a field after the str32."""
+    if not retrievers:
+        return None
+    fmt = "<"
+    fields = []
+    caption = None
+    for name, attr in retrievers.items():
+        kind = attr.get("type")
+        if caption is not None or attr.get("dependencies") or attr.get("repeat", 1) != 1 or not isinstance(kind, str):
+            return None
+        code = _FIXED_WIDTH_CODES.get(kind)
+        if code is not None:
+            fmt += code
+            fields.append(name)
+        elif kind == _STR32_TYPE:
+            caption = name
+        else:
+            return None
+    if not fields:
+        return None
+    return _UnitFormat(struct.Struct(fmt), tuple(fields), caption)
+
+
+def _decode_str32(raw: bytes) -> str:
+    """bytes_conversions.bytes_to_str() on a str32 payload: one trailing NUL
+    stripped, then the main charset, else the fallback (latin-1 never fails)."""
+    if raw.endswith(b"\x00"):
+        raw = raw[:-1]
+    try:
+        return raw.decode(settings.MAIN_CHARSET)
+    except ValueError:
+        return raw.decode(settings.FALLBACK_CHARSET)
+
+
+@dataclass(frozen=True)
+class _UnitCodec:
+    """How one structure's UnitStruct fields reach a Unit: `kwargs` are
+    Unit.__init__ arguments (a link of the same name), `attrs` plain
+    attributes unlinked_fields carries, `unsupported` the links this version
+    poisons, passed None exactly as the library's pull does."""
+
+    unit_format: _UnitFormat
+    kwargs: tuple[str, ...]
+    attrs: tuple[str, ...]
+    unsupported: tuple[str, ...]
+
+
+def _unit_links() -> list:
+    """Unit's field links; `player` comes from the list index instead."""
+    return [link for link in library_compat._iter_links(Unit._link_list) if link.retrieve_history_number is None]
+
+
+def _unit_codec(structure: Mapping[str, Any], scenario_version: str) -> _UnitCodec | None:
+    """The UnitStruct format of a Units `structure`, plus how each field is
+    carried. None if the format is refused, or if any field has no carrier:
+    a fast-loaded file has no parsed slots, so a dirty save's library commit
+    builds default structs and an uncarried field would lose its value. Also
+    None if a supported link's field is missing (the library walk raises)."""
+    units_type = structure.get("retrievers", {}).get("players_units", {}).get("type", "")
+    player_units = structure.get("structs", {}).get(units_type.removeprefix("struct:"), {})
+    unit_type = player_units.get("retrievers", {}).get("units", {}).get("type", "")
+    unit_format = _unit_struct_format(player_units.get("structs", {}).get(unit_type.removeprefix("struct:"), {}).get("retrievers"))
+    if unit_format is None:
+        return None
+    names = unit_format.names
+    unlinked = set(unlinked_fields.active_fields(Unit, dict.fromkeys(names)))
+    by_target = {link.link: link for link in _unit_links()}
+    kwargs = []
+    attrs = []
+    for name in names:
+        link = by_target.get(name)
+        if link is not None:
+            if link.name != name or (link.support is not None and not link.support.supports(scenario_version)):
+                return None
+            kwargs.append(name)
+        elif name in unlinked:
+            attrs.append(name)
+        else:
+            return None
+    unsupported = []
+    for link in by_target.values():
+        if link.support is not None and not link.support.supports(scenario_version):
+            unsupported.append(link.name)
+        elif link.link not in names:
+            return None
+    return _UnitCodec(unit_format, tuple(kwargs), tuple(attrs), tuple(unsupported))
+
+
+def unit_codec(loaded: LoadedScenario) -> _UnitCodec | None:
+    """_unit_codec() for a loaded file's own structure. descape/unit_model.py's
+    reproduce gate encodes each Unit with it."""
+    return _unit_codec(loaded._scenario.structure["Units"], loaded.scenario_version)
+
+
+def _walk_units(
+    unit_format: _UnitFormat, body: bytes, offset: int, count: int
+) -> tuple[list[tuple], list[tuple[int, int]], int] | None:
+    """(values, (offset, length) spans, end) of `count` UnitStructs from
+    `offset`, each values tuple in unit_format.names order. None if any unit
+    would run past the body. A str32 length is signed: n <= 0 reads nothing."""
+    unpack = unit_format.fixed.unpack_from
+    size = unit_format.fixed.size
+    has_caption = unit_format.caption is not None
+    limit = len(body)
+    values = []
+    spans = []
+    o = offset
+    for _ in range(count):
+        start = o
+        if o + size > limit:
+            return None
+        row = unpack(body, o)
+        o += size
+        if has_caption:
+            if o + _S32_STRUCT.size > limit:
+                return None
+            (n,) = _S32_STRUCT.unpack_from(body, o)
+            o += _S32_STRUCT.size
+            if n > 0:
+                if o + n > limit:
+                    return None
+                row = (*row, _decode_str32(body[o : o + n]))
+                o += n
+            else:
+                row = (*row, "")
+        values.append(row)
+        spans.append((start, o - start))
+    return values, spans, o
+
+
+def unit_values(unit_format: _UnitFormat, raw: bytes) -> tuple | None:
+    """One UnitStruct's values off exactly its own bytes, as _walk_units()
+    reads them. None if `raw` is not exactly one unit. descape/unit_model.py's
+    reproduce gate re-encodes these."""
+    walked = _walk_units(unit_format, raw, 0, 1)
+    if walked is None or walked[2] != len(raw):
+        return None
+    return walked[0][0]
+
+
+@dataclass(frozen=True)
+class _FastUnits:
+    codec: _UnitCodec
+    values: list  # per player, one tuple per unit in codec.unit_format.names order
+    spans: list  # per player, one (offset, length) per unit within the body
+
+
+def _load_units_fast(scenario: AoE2DEScenario, data_igen: IncrementalGenerator) -> _FastUnits | None:
+    """The Units section's walk, as AoE2FileSection.set_data_from_generator()
+    runs it, except that each PlayerUnitsStruct's units are read raw by
+    _walk_units(); their retriever is left empty and every byte_length still
+    counts them. None, with data_igen rewound to Units' start, if the model
+    is refused or a block would run past the body: the caller then takes the
+    library walk instead."""
+    structure = scenario.structure["Units"]
+    codec = _unit_codec(structure, scenario.scenario_version)
+    if codec is None:
+        return None
+    start = data_igen.progress
+    body = data_igen.file_content
+    section = AoE2FileSection.from_structure("Units", structure, scenario.uuid)
+    model = section.struct_models.get(structure["retrievers"]["players_units"]["type"].removeprefix("struct:"))
+    if model is None or any(
+        r.datatype.type == "struct" and name != "units" for name, r in model.retriever_map.items()
+    ):
+        return None
+    scenario._add_to_sections(section)
+    total = 0
+    values = []
+    spans = []
+    for retriever in section.retriever_map.values():
+        handle_retriever_dependency(retriever, "construct", section, scenario.uuid)
+        if retriever.name == "players_units":
+            entries = []
+            for _ in range(retriever.datatype.repeat):
+                entry = AoE2FileSection.from_model(model, uuid=scenario.uuid)
+                length = 0
+                for inner in entry.retriever_map.values():
+                    handle_retriever_dependency(inner, "construct", entry, scenario.uuid)
+                    if inner.name == "units":
+                        walked = _walk_units(codec.unit_format, body, data_igen.progress, inner.datatype.repeat)
+                        if walked is None:
+                            data_igen.progress = start
+                            return None
+                        player_values, player_spans, end = walked
+                        length += end - data_igen.progress
+                        data_igen.progress = end
+                        inner.set_data([], affect_dirty=False)
+                        values.append(player_values)
+                        spans.append(player_spans)
+                    else:
+                        retrieved = bytes_parser.retrieve_bytes(data_igen, inner)
+                        entry._fill_retriever_with_bytes(inner, retrieved)
+                        length += sum(len(chunk) for chunk in retrieved)
+                entry.byte_length = length
+                entries.append(entry)
+                total += length
+            retriever.set_data(entries, affect_dirty=False)
+        elif retriever.datatype.type == "struct":
+            struct_model = section.struct_models[retriever.datatype.get_struct_name()]
+            structs = [section._create_struct(struct_model, data_igen) for _ in range(retriever.datatype.repeat)]
+            retriever.set_data(structs, affect_dirty=False)
+            total += sum(entry.byte_length for entry in structs)
+        else:
+            retrieved = bytes_parser.retrieve_bytes(data_igen, retriever)
+            section._fill_retriever_with_bytes(retriever, retrieved)
+            total += sum(len(chunk) for chunk in retrieved)
+    section.byte_length = total
+    return _FastUnits(codec, values, spans)
+
+
+def _fast_unit_manager(scenario: AoE2DEScenario, fast: _FastUnits) -> UnitManager:
+    """The UnitManager UnitManager.construct() would build, from the walked
+    values: Unit is poisoned first exactly as the library's first Unit pull
+    does it (only if the file has units), each Unit gets its player from the
+    list index, and unlinked fields go on as plain attributes like
+    unlinked_fields.pull(). No link is touched, so a later commit is the
+    library's own.
+
+    A link the poisoning reports overwritten gets None, as the library's
+    pull gives it. That is codec.unsupported on every normal load, but
+    follows the link's own `disabled` state if an earlier load left it set."""
+    uuid = scenario.uuid
+    absent = {}
+    if any(fast.values):
+        absent = {link.name: None for link in _unit_links() if link.overwrite_unsupported_properties(Unit, uuid)}
+    codec = fast.codec
+    names = codec.unit_format.names
+    attrs = codec.attrs
+    entries = scenario.sections["Units"].retriever_map["players_units"].data
+    player_units = []
+    for player, (rows, entry) in enumerate(zip(fast.values, entries, strict=True)):
+        units = []
+        for row in rows:
+            fields = dict(zip(names, row, strict=True))
+            carried = [(name, fields.pop(name)) for name in attrs]
+            fields.update(absent)
+            unit = Unit(player=player, **fields, uuid=uuid)
+            for name, value in carried:
+                setattr(unit, name, value)
+            units.append(unit)
+        player_units.append(PlayerUnits(unit_count=entry.retriever_map["unit_count"].data, units=units, uuid=uuid))
+    next_unit_id = next(link for link in UnitManager._link_list if link.name == "next_unit_id")
+    return UnitManager(_player_units=player_units, **next_unit_id.pull(uuid, [], UnitManager), uuid=uuid)
+
+
+def _entry_unit_spans(offset: int, players_units: list) -> list[list[tuple[int, int]]]:
+    """The library walk's per-unit (offset, length) spans, from each parsed
+    entry's own byte_length, stepping over each unit_count u32."""
+    spans = []
+    for player_units in players_units:
+        offset += 4
+        player_spans = []
+        for entry in player_units.retriever_map["units"].data:
+            player_spans.append((offset, entry.byte_length))
+            offset += entry.byte_length
+        spans.append(player_spans)
+    return spans
 
 
 # Messages' 12 retrievers, in true on-disk order (structure.json's own
@@ -618,21 +1061,45 @@ def _header_player_count_span(header_bytes: bytes, retriever_map: dict) -> tuple
     return _header_field_spans(header_bytes, retriever_map).get("player_count", (-1, -1))
 
 
-def load_map_and_units(path: str | Path) -> LoadedScenario:
-    """Parse the Map and Units sections of an .aoe2scenario file, skipping Triggers."""
+def load_map_and_units(path: str | Path, *, fast_terrain: bool = True, fast_units: bool = True) -> LoadedScenario:
+    """Parse the Map and Units sections of an .aoe2scenario file, skipping Triggers.
+
+    fast_terrain=False forces the library's per-tile TerrainStruct walk, the
+    fast path's fallback; it exists for the oracle tests and tools/bench_load.py.
+    fast_units=False likewise forces the library's per-unit UnitStruct walk,
+    which is also the only path that fills each PlayerUnitsStruct's `units`
+    retriever (fixture tools and tests that read parsed entries need it)."""
     path = Path(path)
-    return _load_map_and_units(path.read_bytes(), path)
+    return _load_map_and_units(path.read_bytes(), path, fast_terrain, fast_units)
 
 
-def load_map_and_units_from_bytes(raw: bytes, display_path: str | Path) -> LoadedScenario:
+def load_map_and_units_from_bytes(
+    raw: bytes, display_path: str | Path, *, fast_terrain: bool = True, fast_units: bool = True
+) -> LoadedScenario:
     """Same parse as load_map_and_units(), for bytes that were never written to disk --
     descape/scenario_new.py's generated blank maps. display_path is used only for
     LoadedScenario.path and the library's source_location bookkeeping, neither of which
     is ever stat'd or opened; it need not exist."""
-    return _load_map_and_units(bytes(raw), Path(display_path))
+    return _load_map_and_units(bytes(raw), Path(display_path), fast_terrain, fast_units)
 
 
-def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
+@contextlib.contextmanager
+def _gc_paused():
+    """GC off for a load, then back to whatever the caller had. The parse
+    allocates objects that live as long as the document, so the ~1000
+    collections it would otherwise run (25-35% of the parse, measured on a
+    240x240 map) free almost nothing."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+@_gc_paused()
+def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_units: bool = True) -> LoadedScenario:
     # IncrementalGenerator.from_file() is exactly `open(path,'rb').read()` followed by
     # this same constructor (name=str(path), file_content=raw) -- see its source in
     # AoE2ScenarioParser.helper.incremental_generator. Building it from already-read
@@ -686,10 +1153,18 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     player_data_two_section_end = -1
     messages_section_start = -1
     messages_section_end = -1
+    fast = None
+    fast_unit_walk = None
     for section_name in scenario.structure:
         if section_name == "FileHeader":
             continue
-        scenario._create_and_load_section(section_name, data_igen)
+        if section_name == "Map" and fast_terrain:
+            fast = _load_map_fast(scenario, data_igen)
+        if section_name == "Units" and fast_units:
+            fast_unit_walk = _load_units_fast(scenario, data_igen)
+        walked = fast if section_name == "Map" else fast_unit_walk if section_name == "Units" else None
+        if walked is None:
+            scenario._create_and_load_section(section_name, data_igen)
         if section_name == "DataHeader":
             messages_section_start = data_igen.progress
         if section_name == "Messages":
@@ -718,13 +1193,19 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     trigger_tail = data_igen.get_remaining_bytes()
 
     # After the depoison() above, so the next load's depoison() undoes it.
-    library_compat.adapt_map_links(scenario.sections["Map"])
-    map_manager = MapManager.construct(scenario.uuid)
-    unit_manager = UnitManager.construct(scenario.uuid)
-    for units, player_units in zip(
-        unit_manager.units, scenario.sections["Units"].retriever_map["players_units"].data, strict=False
-    ):
-        unlinked_fields.pull(Unit, units, player_units.retriever_map["units"].data)
+    library_compat.adapt_map_links(scenario.sections["Map"], terrain=None if fast is None else fast.tiles)
+    try:
+        map_manager = MapManager.construct(scenario.uuid)
+    finally:
+        library_compat.release_terrain_link()
+    if fast_unit_walk is None:
+        unit_manager = UnitManager.construct(scenario.uuid)
+        for units, player_units in zip(
+            unit_manager.units, scenario.sections["Units"].retriever_map["players_units"].data, strict=False
+        ):
+            unlinked_fields.pull(Unit, units, player_units.retriever_map["units"].data)
+    else:
+        unit_manager = _fast_unit_manager(scenario, fast_unit_walk)
 
     # Skipping AoE2ObjectManager.setup() (it would also build a TriggerManager and
     # hit the same Triggers-parsing crash we're avoiding), but some lazy properties
@@ -734,16 +1215,6 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     scenario._object_manager.managers["Map"] = map_manager
     scenario._object_manager.managers["Unit"] = unit_manager
 
-    w, h = map_manager.map_width, map_manager.map_height
-    terrain_block_offset, terrain_struct_size, terrain_has_layer = _terrain_layout(
-        scenario.sections["Map"], map_section_end, w, h
-    )
-    terrain_write_supported = _verify_terrain_block(
-        decompressed, terrain_block_offset, map_manager.terrain, terrain_struct_size, terrain_has_layer
-    )
-    if not terrain_write_supported:
-        terrain_block_offset = -1
-
     # Units starts where Map ends (they are adjacent in every structure).
     units_section = scenario.sections["Units"]
     players_units = units_section.retriever_map["players_units"].data
@@ -752,9 +1223,33 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
     units_write_supported = _verify_units_block(
         decompressed, units_block_offset, players_units, units_trailer, units_section_end
     )
+
+    w, h = map_manager.map_width, map_manager.map_height
+    if fast is None:
+        terrain_block_offset, terrain_struct_size, terrain_has_layer = _terrain_layout(
+            scenario.sections["Map"], map_section_end, w, h
+        )
+        terrain_write_supported = _verify_terrain_block(
+            decompressed, terrain_block_offset, map_manager.terrain, terrain_struct_size, terrain_has_layer
+        )
+    else:
+        section_names = list(scenario.structure)
+        after_map = section_names.index("Map") + 1
+        next_section = section_names[after_map] if after_map < len(section_names) else None
+        terrain_block_offset, terrain_struct_size, terrain_has_layer, terrain_write_supported = (
+            _fast_terrain_layout(fast, map_section_end, w, h, next_section, units_write_supported)
+        )
+    if not terrain_write_supported:
+        terrain_block_offset = -1
+
     if not units_write_supported:
         units_block_offset = -1
         players_units_end = -1
+        unit_spans = None
+    elif fast_unit_walk is None:
+        unit_spans = _entry_unit_spans(units_block_offset, players_units)
+    else:
+        unit_spans = fast_unit_walk.spans
 
     player_colors, team_indices = resolve_player_colors(_read_player_colors(scenario))
 
@@ -811,6 +1306,7 @@ def _load_map_and_units(raw: bytes, path: Path) -> LoadedScenario:
         player_colors=player_colors,
         team_indices=team_indices,
         _scenario=scenario,
+        unit_spans=unit_spans,
     )
 
 

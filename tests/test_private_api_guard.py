@@ -404,3 +404,67 @@ def test_map_links_library_compat_rebuilds_are_where_it_expects() -> None:
     group_source = inspect.getsource(RetrieverObjectLinkGroup)
     assert "link.pull_from_link(" in group_source
     assert "link.push_to_link(" in group_source
+
+
+def test_terrain_fast_path_library_entry_points() -> None:
+    """scenario_io._load_map_fast() walks Map itself, the way
+    AoE2FileSection.set_data_from_generator() does, and builds TerrainTiles
+    positionally. It relies on these private/undocumented names, on
+    MapManager's `terrain` link (which adapt_map_links() swaps for the
+    prebuilt tiles), and on TerrainTile.__init__'s positional order."""
+    import inspect
+
+    from AoE2ScenarioParser.helper import bytes_parser
+    from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
+    from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever_dependency
+
+    assert callable(AoE2FileSection.from_structure)
+    assert callable(getattr(AoE2FileSection, "_create_struct", None))
+    assert callable(getattr(AoE2FileSection, "_fill_retriever_with_bytes", None))
+    assert callable(getattr(AoE2Scenario, "_add_to_sections", None))
+    assert callable(handle_retriever_dependency)
+    assert callable(bytes_parser.retrieve_bytes)
+    assert callable(Retriever.set_data)
+
+    params = list(inspect.signature(TerrainTile.__init__).parameters)
+    assert params[1:5] == ["terrain_id", "elevation", "layer", "_index"]
+    groups = [e for e in MapManager._link_list if isinstance(e, RetrieverObjectLinkGroup)]
+    assert any("terrain" in [link.name for link in g.group] for g in groups)
+
+
+def test_units_fast_path_library_entry_points() -> None:
+    """scenario_io._load_units_fast() builds PlayerUnitsStruct sections with
+    from_model(), poisons Unit through each link's own
+    overwrite_unsupported_properties(), and constructs Unit/PlayerUnits/
+    UnitManager directly. A dirty save of a fast load is written by
+    unit_model._encode_unit_values(), which mirrors the library's str32
+    encoding through its own helpers; its fallback, _serialize_via_commit(),
+    relies on the library commit growing an empty `units` slot list with
+    default structs (update_retriever_length)."""
+    import inspect
+
+    from AoE2ScenarioParser import settings
+    from AoE2ScenarioParser.helper import bytes_conversions, string_manipulations
+    from AoE2ScenarioParser.objects.data_objects.units.player_units import PlayerUnits
+    from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
+
+    assert "set_defaults" in inspect.signature(AoE2FileSection.from_model).parameters
+    assert callable(RetrieverObjectLink.overwrite_unsupported_properties)
+    assert "from_model(model, uuid, set_defaults=True)" in inspect.getsource(RetrieverObjectLink.update_retriever_length)
+
+    player, group = Unit._link_list
+    assert (player.name, player.retrieve_history_number) == ("player", 0)
+    assert isinstance(group, RetrieverObjectLinkGroup)
+    assert all(link.link == link.name and link.retrieve_history_number is None for link in group.group)
+    supported = {link.name: link.support for link in group.group if link.support is not None}
+    assert set(supported) == {"caption_string_id", "caption_string"}
+    unit_params = inspect.signature(Unit.__init__).parameters
+    assert {link.name for link in group.group} | {"player"} <= set(unit_params)
+
+    assert list(inspect.signature(PlayerUnits.__init__).parameters)[1:3] == ["unit_count", "units"]
+    assert list(inspect.signature(UnitManager.__init__).parameters)[1:3] == ["_player_units", "next_unit_id"]
+    assert [link.name for link in UnitManager._link_list] == ["_player_units", "next_unit_id"]
+
+    assert callable(bytes_conversions.str_to_bytes) and callable(string_manipulations.add_str_trail)
+    assert "caption_string" not in bytes_conversions._no_string_trail
+    assert (settings.MAIN_CHARSET, settings.FALLBACK_CHARSET) == ("utf-8", "latin-1")

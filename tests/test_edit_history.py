@@ -150,6 +150,131 @@ def test_abort_stroke_allows_a_fresh_begin_stroke() -> None:
     assert hist.stroke_dirty_indices(tiles) == []
 
 
+def _stroke_both_ways(tiles, mutate, touched):
+    """The same stroke recorded with and without `touched`, from the same
+    start state; returns (full, fast)."""
+    start = [(t.terrain_id, t.elevation, t.layer) for t in tiles]
+    records = []
+    for arg in (None, touched):
+        for t, (terrain_id, elevation, layer) in zip(tiles, start, strict=True):
+            t.terrain_id, t.elevation, t.layer = terrain_id, elevation, layer
+        hist = EditHistory()
+        hist.begin_stroke(tiles)
+        mutate()
+        records.append(hist.build_stroke_record("paint", tiles, arg))
+    return records
+
+
+def test_a_touched_set_records_exactly_the_full_diff() -> None:
+    """Includes a tile changed then restored within the stroke (index 3),
+    which must not appear, and one written with its own value (index 5)."""
+    tiles = [FakeTile(terrain_id=i % 3, elevation=i % 2) for i in range(12)]
+
+    def mutate():
+        tiles[9].terrain_id = 7
+        tiles[3].elevation = 4
+        tiles[1].layer = 2
+        tiles[3].elevation = 1
+        tiles[5].terrain_id = tiles[5].terrain_id
+
+    full, fast = _stroke_both_ways(tiles, mutate, {9, 3, 1, 5})
+    assert [i for i, _o, _n in full.changes] == [1, 9]
+    assert fast.changes == full.changes
+
+
+def test_a_touched_set_with_only_restored_tiles_records_nothing() -> None:
+    tiles = [FakeTile() for _ in range(4)]
+
+    def mutate():
+        tiles[2].terrain_id = 6
+        tiles[2].terrain_id = 0
+
+    assert _stroke_both_ways(tiles, mutate, {2}) == [None, None]
+
+
+def test_no_touched_set_falls_back_to_the_full_diff() -> None:
+    """Region paste, fill and mirror pass no set: every changed tile must
+    still land in the record, or undoing them silently loses tiles."""
+    tiles = [FakeTile() for _ in range(6)]
+    hist = EditHistory()
+    hist.begin_stroke(tiles)
+    tiles[0].terrain_id = 1
+    tiles[5].elevation = 2
+    assert hist.commit_stroke("paste", tiles) == [0, 5]
+    hist.undo(tiles)
+    assert (tiles[0].terrain_id, tiles[5].elevation) == (0, 0)
+
+
+def test_an_empty_touched_set_is_not_the_fallback() -> None:
+    """[] means "wrote nothing", not "unknown": only None scans the map."""
+    tiles = [FakeTile()]
+    hist = EditHistory()
+    hist.begin_stroke(tiles)
+    tiles[0].terrain_id = 1
+    assert hist.build_stroke_record("paint", tiles, []) is None
+
+
+def test_a_scoped_stroke_with_captures_records_exactly_the_full_diff() -> None:
+    """Scope {2, 3, 4} up front, capture 9 and 10 just before writing them
+    (10 twice: the first capture must win). Index 3 is written then restored,
+    4 is scoped but never written."""
+    tiles = [FakeTile(terrain_id=i % 3, elevation=i % 2) for i in range(12)]
+    start = [(t.terrain_id, t.elevation, t.layer) for t in tiles]
+    hist = EditHistory()
+    hist.begin_stroke(tiles, indices=[2, 3, 4])
+    tiles[2].terrain_id = 7
+    tiles[3].elevation = 5
+    tiles[3].elevation = start[3][1]
+    hist.stroke_capture(tiles, 10)
+    tiles[10].elevation = 3
+    hist.stroke_capture(tiles, 9)
+    tiles[9].layer = 1
+    hist.stroke_capture(tiles, 10)
+    tiles[10].elevation = 4
+    assert hist.stroke_dirty_indices(tiles) == [2, 9, 10]
+    assert hist.stroke_start_state(10) == start[10]
+    record = hist.build_stroke_record("paste", tiles)
+    end = [(t.terrain_id, t.elevation, t.layer) for t in tiles]
+    oracle = [(i, start[i], end[i]) for i in range(len(tiles)) if end[i] != start[i]]
+    assert [i for i, _o, _n in oracle] == [2, 9, 10]
+    assert record.changes == oracle
+    assert not hist.in_stroke
+
+
+def test_stroke_capture_raises_on_an_unscoped_stroke_and_with_no_stroke() -> None:
+    tiles = [FakeTile() for _ in range(3)]
+    hist = EditHistory()
+    with pytest.raises(RuntimeError, match="no stroke"):
+        hist.stroke_capture(tiles, 0)
+    hist.begin_stroke(tiles)
+    with pytest.raises(RuntimeError, match="unscoped"):
+        hist.stroke_capture(tiles, 0)
+
+
+def test_a_touched_set_on_a_scoped_stroke_raises() -> None:
+    """The captures are the write set; a `touched` alongside them could only
+    disagree with it."""
+    tiles = [FakeTile() for _ in range(3)]
+    hist = EditHistory()
+    hist.begin_stroke(tiles, indices=[0])
+    tiles[0].terrain_id = 1
+    with pytest.raises(ValueError, match="scoped"):
+        hist.build_stroke_record("paste", tiles, [0])
+
+
+def test_a_scoped_tile_captured_then_restored_records_nothing() -> None:
+    tiles = [FakeTile() for _ in range(4)]
+    hist = EditHistory()
+    hist.begin_stroke(tiles, indices=[1])
+    tiles[1].terrain_id = 6
+    hist.stroke_capture(tiles, 3)
+    tiles[3].elevation = 2
+    tiles[1].terrain_id = 0
+    tiles[3].elevation = 0
+    assert hist.build_stroke_record("paste", tiles) is None
+    assert not hist.in_stroke
+
+
 def test_reset_clears_everything() -> None:
     hist = EditHistory()
     tiles = [FakeTile()]

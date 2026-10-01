@@ -16,6 +16,7 @@ import copy
 import dataclasses
 import faulthandler
 import functools
+import gc
 import html
 import math
 import os
@@ -26,7 +27,7 @@ import time
 import weakref
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
@@ -95,6 +96,7 @@ from descape import (
     edge_ticks,
     garrison,
     gate_orientation,
+    gc_hold,
     grid_overlay,
     iso_geometry,
     level_warm,
@@ -125,6 +127,7 @@ from descape import (
     unit_sprites,
     unit_variant,
     view_layers,
+    viewer_canvas,
     wall_run,
 )
 from descape.analysis_dialog import AnalysisDialog
@@ -182,6 +185,7 @@ from descape.render import (
     unit_at,
     unit_mark_color,
     unit_occupied_tiles,
+    unit_own_tile_index,
     unit_sprite_draws_at,
     unit_tile_bounds,
     wall_variant_rotation_overrides,
@@ -232,7 +236,7 @@ from descape.trigger_model import (
 )
 from descape.trigger_panel import TriggerPanel
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID, UnitFilter
-from descape.unit_model import UnitEditModel, UnitEditsUnavailableError, span_low_corner
+from descape.unit_model import UnitEditModel, UnitEditsUnavailableError, new_unit, span_low_corner
 from descape.units_panel import UnitsPanel
 from descape.viewer_common import (
     _STROKE_LABELS,
@@ -254,6 +258,9 @@ _UNIT_NUDGE_STEP_SHIFT = 1.0
 
 # GH #75: a group drag ghosts every member up to this many, then the grabbed one only.
 GROUP_GHOST_CAP = 200
+
+# Stroke tools that write only tile.elevation, which Flat never draws: their live repaint is skipped there.
+_FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
 
 # Free-mode headroom below a span-1 unit's far map edge; a float32 coordinate
 # at W - 1e-6 rounds back up to W, which is off-map.
@@ -470,10 +477,11 @@ _SPLICE_COST_RATIO = 16
 
 # Stepped/Sloped batch unit edits patch their bbox eagerly while that recomposites at most this
 # multiple of the visible chunks' area, else evict the bbox's chunks for the next paint. Measured
-# with tools/bench_stroke_end.py --area-ratio: see _patch_area_exceeds_viewport().
+# with tools/bench_stroke_end.py --area-ratio: see _patch_area_exceeds_viewport(). Since
+# 2026-09-30 only the no-target reach patch asks, and with no target that check answers False.
 _SCOPED_PATCH_AREA_RATIO = {"stepped": 0.05, "sloped": 1.0}
-# The same rule for the tight visible-level split (_repaint_unit_edit_split()), which patches
-# one level only; the shared ratio above stays for the reach-padded fallback.
+# The same rule for the visible-level split (_repaint_unit_edit_split()), which patches one
+# level only: the tight bbox and, since 2026-09-30, the reach-padded one too.
 _TIGHT_PATCH_AREA_RATIO = {"stepped": 0.3, "sloped": 1.0}
 
 # Display-only sentinel assigned to LoadedScenario.path for a File > New map.
@@ -1807,6 +1815,8 @@ class ViewerWindow(QMainWindow):
         # them regardless of enabled state. This flag is what actually
         # makes such a call a no-op rather than a reentrant interleave.
         self._busy = False
+        # Seconds the last load's pre-freeze gc.collect() took (_freeze_loaded_document).
+        self._load_gc_collect_s: float | None = None
         # Tools > Map Analysis results, modeless and reused; see _show_analysis().
         self._analysis_dialog: AnalysisDialog | None = None
         # The in-flight first-paint report a load is accumulating canvas
@@ -2051,6 +2061,7 @@ class ViewerWindow(QMainWindow):
         self.units_panel = UnitsPanel(
             on_unit_field=self._on_unit_field_changed,
             on_place_requested=self._on_units_panel_place_requested,
+            on_pending_changed=self._refresh_place_ghost,
             on_garrison_add=self._on_garrison_add,
             on_garrison_delete=self._on_garrison_delete,
             on_garrison_navigate=self._on_garrison_navigate,
@@ -2100,6 +2111,8 @@ class ViewerWindow(QMainWindow):
         )
         # GH #98: a wall const picked in the catalog makes Place Unit a drag.
         self.map_view.set_place_shape_query(self._place_shape)
+        # GH #128: Place Unit's hover ghost.
+        self.map_view.set_place_preview(self.on_place_preview)
         # GH #75: a click on a group member collapses on release, and a drag moves the group.
         self.map_view.set_unit_drag_hooks(self.on_unit_click_release, self._is_group_key)
 
@@ -2457,6 +2470,8 @@ class ViewerWindow(QMainWindow):
         # preview -- see _ghost_rotation_override() for why it is keyed on the
         # dict object itself rather than on a generation number.
         self._ghost_rotation: tuple[dict, dict[tuple[int, int], float | None]] | None = None
+        # (key, ghost item) of Place Unit's last hover ghost; see on_place_preview().
+        self._place_ghost_memo: tuple[tuple, object] | None = None
         self.show_sprites_action = QAction("Show sprites", self, checkable=True, checked=True)
         self.show_sprites_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.show_sprites_action.toggled.connect(self._on_sprites_toggled)
@@ -2672,10 +2687,17 @@ class ViewerWindow(QMainWindow):
             "Perf &Trace", self, checkable=True, checked=perf_trace.is_enabled()
         )
         self.perf_trace_action.setToolTip(
-            "Traces per-stroke drag-paint latency by phase, and pan/zoom repaints, to Help > Debug Log. "
+            "Traces per-stroke drag-paint latency by phase, one-shot edits, pan/zoom repaints, level builds "
+            "and event-loop stalls to Help > Debug Log. "
             "Also settable via the DESCAPE_PERF_TRACE=1 environment variable."
         )
         self.perf_trace_action.toggled.connect(perf_trace.enable)
+        self.perf_trace_action.toggled.connect(viewer_canvas.set_stall_watchdog)
+        self.perf_trace_action.toggled.connect(perf_trace.set_gc_hook)
+        # toggled doesn't fire for the initial checked state (DESCAPE_PERF_TRACE=1).
+        if perf_trace.is_enabled():
+            viewer_canvas.set_stall_watchdog(True)
+            perf_trace.set_gc_hook(True)
         help_menu.addAction(self.perf_trace_action)
 
     def _on_unit_field_changed(self, spec: unit_fields.UnitFieldSpec, value) -> None:
@@ -3194,9 +3216,14 @@ class ViewerWindow(QMainWindow):
         """Rebuilds the pick index for the current scenario + filter and hands
         it to MapView.
 
-        Built on demand (entering Units mode, or a filter change while
-        already in it) rather than at load: an ~11k-unit file costs a real
-        walk, and opening a map for terrain work must not pay for it.
+        Built on demand (the first entry to Units mode, or a filter change
+        while already in it) rather than at load: an ~11k-unit file costs a
+        real walk, and opening a map for terrain work must not pay for it.
+
+        The index is current or None: it may survive outside Units mode, and
+        every unit edit or filter change there rebuilds it for whatever still
+        needs it (the footprint overlay, an armed picker) or drops it. So
+        _switch_mode() reuses a non-None index on entry instead of calling this.
         """
         # A new index can reorder or resize any stack the cycle points into.
         self._stack_cycle = None
@@ -3468,23 +3495,26 @@ class ViewerWindow(QMainWindow):
             self._log_status("Place Unit: choose an object first")
             return
         player = self.units_panel.owner_id()
-        model = self._ensure_unit_edits()
-        if model is None:
-            return
-        x, y = point
-        splices: list[UnitSplice] = []
-        with self._unit_edit(model, "Place unit", [player], splices):
-            unit = model.add(player, object_id, x, y)
-            # Placed units become the selection (same reasoning as
-            # reassign's own key update): the id just chosen is the one worth
-            # showing in the inspector next, not whatever was selected before.
-            self._selection = [unit_pick.unit_key(player, unit)]
-            new_own, new_tiles = self._unit_footprint(unit)
-            idx = self._unit_list_index(player, unit)
-            splices.append(UnitSplice(player, idx, unit, None, new_own, (), new_tiles))
-            index = self.map_view._unit_index
-            if index is not None:
-                unit_pick.patch_index_for_add(self.scenario, index, player, unit, self._unit_filter)
+        # The same label as _unit_edit's own op, so the lazy model build lands inside it.
+        with perf_trace.op("Place unit"):
+            model = self._ensure_unit_edits()
+            if model is None:
+                return
+            x, y = point
+            splices: list[UnitSplice] = []
+            with self._unit_edit(model, "Place unit", [player], splices):
+                unit = model.add(player, object_id, x, y)
+                # Placed units become the selection (same reasoning as
+                # reassign's own key update): the id just chosen is the one worth
+                # showing in the inspector next, not whatever was selected before.
+                self._selection = [unit_pick.unit_key(player, unit)]
+                new_own, new_tiles = self._unit_footprint(unit)
+                idx = self._unit_list_index(player, unit)
+                splices.append(UnitSplice(player, idx, unit, None, new_own, (), new_tiles))
+                index = self.map_view._unit_index
+                if index is not None:
+                    with perf_trace.phase("unit_index_patch"):
+                        unit_pick.patch_index_for_add(self.scenario, index, player, unit, self._unit_filter)
         owner_text = "GAIA" if player == GAIA_PLAYER_ID else f"Player {player}"
         status = f"Placed {_unit_name(object_id)} for {owner_text} at ({x:g}, {y:g})"
         # The same gap the cliff tool surfaces for Show GAIA, generalized:
@@ -3495,6 +3525,55 @@ class ViewerWindow(QMainWindow):
         if not self._unit_filter.matches(player, unit):
             status += " (a Filters toggle is hiding it, so it won't be visible)"
         self._log_status(status)
+
+    def on_place_preview(self, pos, modifiers) -> None:
+        """MapView's place-preview hook (GH #128): Place Unit's hover ghost, a
+        translucent copy of the picked object where a click would put it.
+
+        Resolved through on_unit_place's own resolver and new_unit(), the
+        constructor add() uses, so point and look cannot drift from the click.
+        Never builds the lazy unit model: hovering must not pay for it. A
+        filtered-out object still ghosts; the click's status line says why it
+        then vanishes. Walls never get here (Place Unit drags them)."""
+        view = self.map_view
+        const = None if self.scenario is None else self.units_panel.selected_object_const()
+        point = None
+        if const is not None:
+            point, _fell_back = self._resolve_placement_point(pos, modifiers)
+        if point is None:
+            self._place_ghost_memo = None
+            view.set_unit_ghost()
+            return
+        owner = self.units_panel.owner_id()
+        key = (
+            point,
+            const,
+            owner,
+            self.scenario.player_colors[owner],
+            self._sprites_enabled,
+            view._terrain_style,
+            self._layers.tree_scale,
+            self._layers.hero_glow,
+            id(view._iso_elevations),
+        )
+        # Snapped, the point only changes on a tile crossing. The item check
+        # drops the memo whenever MapView cleared or replaced the ghost.
+        memo = self._place_ghost_memo
+        if memo is not None and memo[0] == key and memo[1] is view._unit_ghost_item:
+            return
+        ghost = new_unit(self.scenario._scenario.uuid, owner, const, *point, reference_id=-1)
+        draws = self._ghost_sprite_draws(owner, ghost)
+        if draws:
+            view.set_unit_ghost(draws=draws)
+        else:
+            polygons, color = self._ghost_mark(owner, ghost)
+            view.set_unit_ghost(polygons=polygons, color=color)
+        item = view._unit_ghost_item
+        self._place_ghost_memo = None if item is None else (key, item)
+
+    def _refresh_place_ghost(self, *_args) -> None:
+        """A catalog pick, owner or free-placement change with no mouse move."""
+        self.map_view.refresh_place_ghost()
 
     def scatter_units_in_region(self) -> None:
         """Edit > Scatter Units in Region…: N randomized copies of the Units
@@ -3957,20 +4036,25 @@ class ViewerWindow(QMainWindow):
         A host's garrison rides along (GH #42): its occupants sit at its own
         point and cannot be selected while hidden, so the same delta applies
         to them in the same undo record."""
-        entries = list(entries) + self._garrison_occupant_entries(model, entries)
-        players = sorted({e.player_id for e in entries})
-        mm = self.scenario.map_manager
-        splices: list[UnitSplice] = []
-        with self._unit_edit(model, label, players, splices, fields_only=True):
-            for entry in entries:
-                unit = entry.unit
-                old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
-                old_own, old_tiles = self._unit_footprint(unit)
-                idx = self._unit_list_index(entry.player_id, unit)
-                model.set_position(unit, unit.x + dx, unit.y + dy, unit.z)
-                new_own, new_tiles = self._unit_footprint(unit)
-                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
-                self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+        # Opened here so the garrison walk lands in the op; _unit_edit's same-label op is transparent.
+        with perf_trace.op(label):
+            with perf_trace.phase("move_garrison"):
+                entries = list(entries) + self._garrison_occupant_entries(model, entries)
+            players = sorted({e.player_id for e in entries})
+            mm = self.scenario.map_manager
+            splices: list[UnitSplice] = []
+            with self._unit_edit(model, label, players, splices, fields_only=True):
+                for entry in entries:
+                    unit = entry.unit
+                    old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
+                    old_own, old_tiles = self._unit_footprint(unit)
+                    with perf_trace.phase("move_list_index"):
+                        idx = self._unit_list_index(entry.player_id, unit)
+                    model.set_position(unit, unit.x + dx, unit.y + dy, unit.z)
+                    new_own, new_tiles = self._unit_footprint(unit)
+                    splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+                    with perf_trace.phase("move_pick_patch"):
+                        self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
 
     def on_unit_drag_preview(self, key: tuple[int, int], pos, modifiers) -> None:
         """MapView's fourteenth injected callable -- one mouse-move of an
@@ -4008,21 +4092,19 @@ class ViewerWindow(QMainWindow):
             self.map_view.set_unit_ghost()
             return
         ghost = unit_at(entry.unit, *point)
-        draws = self._ghost_sprite_draws(entry, ghost)
+        draws = self._drag_ghost_sprite_draws(entry, ghost)
         if draws:
             self.map_view.set_unit_ghost(draws=draws)
             return
-        polygons, color = self._ghost_mark(entry, ghost)
+        polygons, color = self._ghost_mark(entry.player_id, ghost)
         self.map_view.set_unit_ghost(polygons=polygons, color=color)
 
-    def _ghost_mark(self, entry, ghost):
-        """(polygons, color) of the coloured-mark ghost for `entry` at `ghost`."""
-        ghost_entry = unit_pick.UnitEntry(
-            entry.player_id, ghost, int(ghost.x), int(ghost.y), entry.order
-        )
+    def _ghost_mark(self, player_id: int, ghost):
+        """(polygons, color) of the coloured-mark ghost for `player_id`'s `ghost`."""
+        ghost_entry = unit_pick.UnitEntry(player_id, ghost, int(ghost.x), int(ghost.y), 0)
         return (
             self.map_view._unit_polygons_for(ghost_entry),
-            unit_mark_color(ghost, self.scenario.player_colors[entry.player_id]),
+            unit_mark_color(ghost, self.scenario.player_colors[player_id]),
         )
 
     def _preview_group(self, key, anchor, pos, modifiers) -> None:
@@ -4048,39 +4130,52 @@ class ViewerWindow(QMainWindow):
             # A member nudged off-map stays off-map, and has nothing to draw.
             if unit_tile_bounds(ghost, mm.map_width, mm.map_height) is None:
                 continue
-            sprite = self._ghost_sprite_draws(entry, ghost)
+            sprite = self._drag_ghost_sprite_draws(entry, ghost)
             if sprite:
                 draws.extend(sprite)
             else:
-                marks.append(self._ghost_mark(entry, ghost))
+                marks.append(self._ghost_mark(entry.player_id, ghost))
         self.map_view.set_unit_ghosts(draws=draws, marks=marks)
 
-    def _ghost_sprite_draws(self, entry, ghost) -> list:
-        """The dragged unit's real sprite pieces at the ghost's destination,
-        or [] to fall back to the coloured mark.
+    def _ghost_sprite_draws(self, player_id: int, ghost, rotation_override: float | None = None) -> list:
+        """`ghost`'s real sprite pieces for owner `player_id`, or [] to fall
+        back to the coloured mark. The drag passes its wall-connectivity
+        `rotation_override`; Place Unit's hover ghost passes None.
 
         **Flat is always the mark**, never a sprite. Flat does draw sprites
         now, as footprint-fitted icons, but a Flat ghost with an icon is out
         of scope here (GH #53 Part B left it as the mark)."""
+        if not self._ghost_sprites_on():
+            return []
         view = self.map_view
-        if not self._sprites_enabled or view._terrain_style == "flat":
-            return []
-        if view._iso_proj is None or view._iso_elevations is None:
-            return []
         cache = view._sloped_cache()
         return unit_sprite_draws_at(
             self.scenario,
             view._iso_proj,
             view._iso_elevations,
             None if cache is None else cache.corner_rise,
-            entry.player_id,
+            player_id,
             ghost,
-            rotation_override=self._ghost_rotation_override(entry),
+            rotation_override=rotation_override,
             # The window's live value, not the default: a ghost left on 1.0
             # would drag a tree at full size and snap it small on drop.
             tree_scale=self._layers.tree_scale,
             hero_glow=self._layers.hero_glow,
         )
+
+    def _ghost_sprites_on(self) -> bool:
+        """Whether a ghost can draw sprites at all, or is always the mark."""
+        view = self.map_view
+        if not self._sprites_enabled or view._terrain_style == "flat":
+            return False
+        return view._iso_proj is not None and view._iso_elevations is not None
+
+    def _drag_ghost_sprite_draws(self, entry, ghost) -> list:
+        """_ghost_sprite_draws for a dragged entry. The override is resolved only
+        when a sprite can draw, so a Flat drag never pays its walk."""
+        if not self._ghost_sprites_on():
+            return []
+        return self._ghost_sprite_draws(entry.player_id, ghost, self._ghost_rotation_override(entry))
 
     def _ghost_rotation_override(self, entry) -> float | None:
         """This unit's wall-connectivity-derived rotation, resolved once per
@@ -4531,8 +4626,11 @@ class ViewerWindow(QMainWindow):
 
         The index rebuild also covers the footprint overlay, which is index-
         driven and live outside Units mode; the selection half is Units-mode
-        only, as before."""
+        only, as before. With nothing needing the index, it is dropped rather
+        than left built under the old filter (it is current or None)."""
         if not self._needs_unit_index():
+            self._stack_cycle = None
+            self.map_view.set_unit_index(None)
             return
         self._rebuild_unit_index()
         if self.mode != "units":
@@ -4659,6 +4757,8 @@ class ViewerWindow(QMainWindow):
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
+        # Again: a poll fired in that turn re-arms on the pre-toggle cache and uses up the first fire.
+        self._cancel_warms()
         was_busy = self._busy
         self._busy = True
         try:
@@ -4707,6 +4807,8 @@ class ViewerWindow(QMainWindow):
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
+        # Again: a poll fired in that turn re-arms on the pre-toggle cache and uses up the first fire.
+        self._cancel_warms()
         was_busy = self._busy
         self._busy = True
         try:
@@ -5357,6 +5459,8 @@ class ViewerWindow(QMainWindow):
             "Hold Alt for a one-off free placement without changing this."
         )
         self.free_place_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        # The click reads the box directly; only the hover ghost needs telling.
+        self.free_place_check.toggled.connect(self._refresh_place_ghost)
         self.free_place_param_action = param_toolbar.addWidget(self.free_place_check)
 
         # GH #108/#109: removes every pinned ruler. Shown with the Ruler only,
@@ -5880,6 +5984,10 @@ class ViewerWindow(QMainWindow):
         )
 
     def on_mode_changed(self, mode_text: str) -> None:
+        with perf_trace.op("mode-switch"):
+            self._switch_mode(mode_text)
+
+    def _switch_mode(self, mode_text: str) -> None:
         self.disarm_unit_picker()
         self.mode = _mode_id(mode_text)
         # Entering a trigger-parsing mode is what makes Files, and so the
@@ -5890,7 +5998,8 @@ class ViewerWindow(QMainWindow):
             # does, so they need the same fall back to Pan rather than leaving
             # a now-disabled tool checked.
             self.pan_action.setChecked(True)
-        self.map_view.set_mode(self.mode)
+        with perf_trace.phase("view_mode"):
+            self.map_view.set_mode(self.mode)
         # set_mode() already dropped MapView's visual selection when leaving
         # Units. Drop ViewerWindow's key too, or the two diverge: re-entering
         # Units would show an empty inspector while _selection still held a
@@ -5898,38 +6007,55 @@ class ViewerWindow(QMainWindow):
         # entry for a unit with no highlight and no inspector row. Phase 3.5
         # inherits _selection as the selection API, so it must not lie.
         self._selection = []
-        self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
+        with perf_trace.phase("left_page"):
+            self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
         # The markers themselves are mode-free; their emphasis is not, so
         # entering or leaving Players mode has to re-push them.
-        self._refresh_camera_markers()
+        with perf_trace.phase("camera_markers"):
+            self._refresh_camera_markers()
         if self.mode == "units":
-            self._widen_left_column(UnitsPanel.MIN_USEFUL_WIDTH)
-            self._rebuild_unit_index()
-            self.units_panel.clear()
-        if self.mode == "triggers":
-            self._widen_left_column(TriggerPanel.MIN_USEFUL_WIDTH)
-            # Parsed on demand, not at load: the largest corpus file's Triggers
-            # section is 1.17 MB and opening a map for terrain work must not
-            # pay for it.
-            self._show_triggers()
-        if self.mode == "map_options":
-            self._widen_left_column(MapOptionsPanel.MIN_USEFUL_WIDTH)
-            self._show_map_options()
-        if self.mode == "players":
-            self._widen_left_column(PlayersPanel.MIN_USEFUL_WIDTH)
-            self._show_players()
-        if self.mode == "diplomacy":
-            self._widen_left_column(DiplomacyPanel.MIN_USEFUL_WIDTH)
-            self._show_diplomacy()
-        if self.mode == "messages":
-            self._widen_left_column(MessagesPanel.MIN_USEFUL_WIDTH)
-            self._repopulate_messages()
+            with perf_trace.phase("widen_left"):
+                self._widen_left_column(UnitsPanel.MIN_USEFUL_WIDTH)
+            with perf_trace.phase("unit_index"):
+                # Current or None in every mode (_after_unit_mutation's invariant), so reuse it.
+                if self.map_view._unit_index is None:
+                    self._rebuild_unit_index()
+                else:
+                    self._stack_cycle = None
+                    # Players mode can recolour; set_mode("units") already re-showed the badges.
+                    self.map_view.set_selection_player_colors(self.scenario.player_colors)
+            with perf_trace.phase("units_panel"):
+                self.units_panel.clear()
+        panel_mode = self.mode in ("triggers", "map_options", "players", "diplomacy", "messages")
+        with perf_trace.phase("panel") if panel_mode else nullcontext():
+            if self.mode == "triggers":
+                self._widen_left_column(TriggerPanel.MIN_USEFUL_WIDTH)
+                # Parsed on demand, not at load: the largest corpus file's Triggers
+                # section is 1.17 MB and opening a map for terrain work must not
+                # pay for it.
+                self._show_triggers()
+            if self.mode == "map_options":
+                self._widen_left_column(MapOptionsPanel.MIN_USEFUL_WIDTH)
+                self._show_map_options()
+            if self.mode == "players":
+                self._widen_left_column(PlayersPanel.MIN_USEFUL_WIDTH)
+                self._show_players()
+            if self.mode == "diplomacy":
+                self._widen_left_column(DiplomacyPanel.MIN_USEFUL_WIDTH)
+                self._show_diplomacy()
+            if self.mode == "messages":
+                self._widen_left_column(MessagesPanel.MIN_USEFUL_WIDTH)
+                self._repopulate_messages()
         if self.mode == "terrain":
-            self._widen_left_column(TerrainPanel.MIN_USEFUL_WIDTH)
+            with perf_trace.phase("widen_left"):
+                self._widen_left_column(TerrainPanel.MIN_USEFUL_WIDTH)
         if self.scenario is not None and self.scenario.trigger_read_supported != triggers_known:
-            self._update_info()
+            with perf_trace.phase("info"):
+                self._update_info()
+        # Unphased: its forced Pan is a nested tool-switch op, already its own phase.
         self._update_tool_enabled()
-        self._update_mode_status()
+        with perf_trace.phase("mode_status"):
+            self._update_mode_status()
         # The combo's own text, not mode_text: _update_tool_enabled() above
         # can have forced the mode back (selecting Units while already in
         # Sloped), and reporting the mode the user asked for rather than the
@@ -6204,7 +6330,9 @@ class ViewerWindow(QMainWindow):
             # Restored before the warning box below, not after it: a modal
             # dialog under a wait cursor reads as a still-frozen window.
             try:
-                self.unit_edits = UnitEditModel(self.scenario)
+                # An op, not a phase: a phase of the open op, else its own line (Nudge builds it first).
+                with perf_trace.op("unit_model_build"):
+                    self.unit_edits = UnitEditModel(self.scenario)
             finally:
                 QApplication.restoreOverrideCursor()
         except UnitEditsUnavailableError as e:
@@ -6863,7 +6991,7 @@ class ViewerWindow(QMainWindow):
         if self._cache is not None:
             self._cache.invalidate_units()
             canvas_w, canvas_h = self._cache.canvas_dims(0)
-            self._cache.invalidate_region((0, 0, canvas_w, canvas_h))
+            self._cache.invalidate_region((0, 0, canvas_w, canvas_h), terrain_changed=False)
             self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
         self._start_level_warm()
 
@@ -7592,6 +7720,10 @@ class ViewerWindow(QMainWindow):
         settings.set_paint_eye_candy(checked)
 
     def _on_tool_selected(self, tool: str) -> None:
+        with perf_trace.op("tool-switch"):
+            self._select_tool(tool)
+
+    def _select_tool(self, tool: str) -> None:
         if tool != "pan":
             # Pick from map lives on Pan; any other tool takes the clicks back.
             self.disarm_unit_picker()
@@ -7652,7 +7784,7 @@ class ViewerWindow(QMainWindow):
                 # restored zoom/pan is an approximation of the same map area
                 # rather than pixel-exact -- still far closer to what the
                 # user was looking at than snapping back to full-map fit.
-                elapsed, tile_px = self._render_current(reset_view=False)
+                elapsed, tile_px = self._render_current(reset_view=False, op_label="style-switch")
                 self._log_status(f"Elevation view: {text} (tile_px={tile_px}) prepared in {elapsed:.2f}s")
             finally:
                 self._busy = False
@@ -7689,7 +7821,7 @@ class ViewerWindow(QMainWindow):
             return
         self._busy = True
         try:
-            elapsed, tile_px = self._render_current(reset_view=False)
+            elapsed, tile_px = self._render_current(reset_view=False, op_label="style-switch")
             state = "on" if checked else "off"
             self._log_status(f"Isometric View {state} (tile_px={tile_px}) prepared in {elapsed:.2f}s")
         finally:
@@ -7714,7 +7846,13 @@ class ViewerWindow(QMainWindow):
         if self._current_tool == "cliff":
             self._begin_cliff_stroke()
             return
-        self.edit_history.begin_stroke(self.scenario.map_manager.terrain)
+        with perf_trace.phase("stroke_snapshot"):
+            self.edit_history.begin_stroke(self.scenario.map_manager.terrain)
+        with perf_trace.phase("stroke_start"):
+            self._init_stroke_state()
+
+    def _init_stroke_state(self) -> None:
+        """on_edit_stroke_start's per-stroke bookkeeping, after the snapshot."""
         # index -> the tile state as of the last time we handed that index to
         # _apply_dirty. A dict, not a set of indices: elevation propagation
         # can change one tile SEVERAL times over a single drag, and a
@@ -7727,6 +7865,9 @@ class ViewerWindow(QMainWindow):
         # keyed on the CURSOR tile, and is only a cheap early-out, not a
         # correctness guarantee once a brush is bigger than one tile).
         self._stroke_painted: set[tuple[int, int]] = set()
+        # Every flat index the stroke's mutations reported writing, so the
+        # release diffs only these (build_stroke_record's `touched`).
+        self._stroke_written: set[int] = set()
         # Auto beach, snapshotted HERE rather than read per touch. The
         # checkbox, beach combo and width spin are all live widgets, so
         # reading them inside on_edit_stroke_tile would half-apply a
@@ -7770,6 +7911,7 @@ class ViewerWindow(QMainWindow):
             for x, y in tiles:
                 touched |= self._mutate_stroke_tile(x, y, modifiers)
             if touched:
+                self._stroke_written |= touched
                 self._apply_stroke_dirty(touched)
 
     @contextmanager
@@ -7784,9 +7926,11 @@ class ViewerWindow(QMainWindow):
             yield
         except BaseException:
             if self.edit_history.in_stroke:
+                # Full scan: the raise may have cut a mutation off before it reported its writes.
                 touched = self.edit_history.commit_stroke(label, self.scenario.map_manager.terrain)
                 self._stroke_seen_state = {}
                 self._stroke_painted = set()
+                self._stroke_written = set()
                 self._stroke_auto_beach = (False, None, 0)
                 self._update_edit_actions()
                 self._update_title()
@@ -7821,7 +7965,16 @@ class ViewerWindow(QMainWindow):
         footprint = [t for t in footprint if t not in self._stroke_painted]
         if not footprint:
             return set()
+        with perf_trace.phase("stroke_mutate"):
+            touched = self._mutate_footprint(mm, footprint, modifiers)
+        if touched is None:
+            return set()
+        self._stroke_painted.update(footprint)
+        return touched
 
+    def _mutate_footprint(self, mm, footprint, modifiers) -> set[int] | None:
+        """_mutate_stroke_tile's write for the current tool: every flat index
+        written, or None for a tool with no stroke mutation."""
         if self._current_tool == "draw":
             terrain_id = self.terrain_panel.terrain_id()
             width = mm.map_width
@@ -7873,9 +8026,7 @@ class ViewerWindow(QMainWindow):
             level = self.elevation_level_spin.value()
             touched = set_tiles_elevation(mm, [(tx, ty, level) for tx, ty in footprint])
         else:
-            return set()
-
-        self._stroke_painted.update(footprint)
+            return None
         return touched
 
     def _apply_stroke_dirty(self, touched: set[int]) -> None:
@@ -7886,6 +8037,14 @@ class ViewerWindow(QMainWindow):
             new_dirty = self.edit_history.stroke_new_dirty(
                 touched, self.scenario.map_manager.terrain, self._stroke_seen_state
             )
+        if self._terrain_style == "flat" and self._current_tool in _FLAT_SKIP_REPAINT_TOOLS:
+            # Neither Flat render path reads tile.elevation, so the repaint is byte-identical
+            # (tests/test_flat_elevate_skip.py). Keeps _apply_dirty's warm cancel/re-arm.
+            if new_dirty:
+                with perf_trace.phase("warm_restart"):
+                    self._cancel_warms()
+                    self._start_level_warm()
+            return
         self._apply_dirty(new_dirty)
 
     def on_edit_stroke_end(self) -> None:
@@ -7907,18 +8066,22 @@ class ViewerWindow(QMainWindow):
             # record first, to decide whether it rides alone or inside a
             # CompositeDiffRecord with the trees/eye-candy it triggers.
             with perf_trace.phase("stroke_record"):
-                tile_record = self.edit_history.build_stroke_record(label, mm.terrain)
+                tile_record = self.edit_history.build_stroke_record(label, mm.terrain, self._stroke_written)
             with perf_trace.phase("unit_plan"):
                 record, splices = self._apply_terrain_unit_plan(tile_record, mm, with_splices=True)
             # Every tile in the record was already repainted live, step by step.
             self._push_terrain_unit_record(record, splices, live_painted=True)
         else:
-            self.edit_history.commit_stroke(label, mm.terrain)
+            # The History dialog's _notify rides inside commit_stroke, so it is part of this phase.
+            with perf_trace.phase("stroke_commit"):
+                self.edit_history.commit_stroke(label, mm.terrain, self._stroke_written)
         self._stroke_seen_state = {}
         self._stroke_painted = set()
+        self._stroke_written = set()
         self._stroke_auto_beach = (False, None, 0)
-        self._update_edit_actions()
-        self._update_title()
+        with perf_trace.phase("edit_actions"):
+            self._update_edit_actions()
+            self._update_title()
         perf_trace.flush(label.lower().replace(" ", "-"))
 
     def on_shape_commit(self, tiles) -> None:
@@ -8253,18 +8416,23 @@ class ViewerWindow(QMainWindow):
         return self._clipboard_history.active_block
 
     def copy_region(self) -> None:
+        with perf_trace.op("copy"):
+            self._copy_region()
+
+    def _copy_region(self) -> None:
         """Copy Region: snapshots the committed selection's terrain,
         elevation and units, and pushes it onto the clipboard history as the
         new active entry. No undo record -- nothing is mutated."""
         if self.scenario is None or self._region is None:
             return
         tx0, ty0, tx1, ty1 = self._region
-        block = region_clipboard.copy_region(
-            self.scenario.map_manager, self.scenario.unit_manager, tx0, ty0, tx1, ty1
-        )
-        self._clipboard_history.push(
-            block, clipboard_history.thumbnail_rgb(block), clipboard_history.default_label(block)
-        )
+        with perf_trace.phase("region_copy"):
+            block = region_clipboard.copy_region(
+                self.scenario.map_manager, self.scenario.unit_manager, tx0, ty0, tx1, ty1
+            )
+        with perf_trace.phase("thumbnail"):
+            thumbnail = clipboard_history.thumbnail_rgb(block)
+        self._clipboard_history.push(block, thumbnail, clipboard_history.default_label(block))
         # Every history mutation clears the move state, with no exceptions to
         # remember: a move replays its OWN snapshot, so leaving it armed would
         # still be correct, but dragging after the user has shifted clipboard
@@ -8336,6 +8504,10 @@ class ViewerWindow(QMainWindow):
         )
 
     def _on_history_jump(self, target: int) -> None:
+        with perf_trace.op("history"):
+            self._history_jump(target)
+
+    def _history_jump(self, target: int) -> None:
         """Undo or redo the whole span between the cursor and `target` as one
         gesture, then run undo/redo's own refresh tail.
 
@@ -8546,6 +8718,12 @@ class ViewerWindow(QMainWindow):
     def _paste_block_at(
         self, block, tx0: int, ty0: int, do_terrain: bool, do_elevation: bool, do_units: bool
     ):
+        with perf_trace.op("paste"):
+            return self._paste_block_at_traced(block, tx0, ty0, do_terrain, do_elevation, do_units)
+
+    def _paste_block_at_traced(
+        self, block, tx0: int, ty0: int, do_terrain: bool, do_elevation: bool, do_units: bool
+    ):
         """The write half of Paste Region, with the anchor and the three
         category flags passed in rather than read from _hover_tile and the
         checkboxes -- so Paste Region and a region MOVE share exactly one
@@ -8564,18 +8742,24 @@ class ViewerWindow(QMainWindow):
         children: list = []
         parts: list[str] = []
         units_skipped = False
+        tile_record = None
+        unit_splices: list[UnitSplice] | None = None
 
         if do_terrain or do_elevation:
-            self.edit_history.begin_stroke(mm.terrain)
-            with self._close_stroke_on_error("Paste Region"):
-                if do_terrain:
-                    region_clipboard.paste_terrain(mm, block, tx0, ty0)
-                    parts.append("terrain")
-                if do_elevation:
-                    targets = region_clipboard.elevation_targets(block, tx0, ty0, mm.map_width, mm.map_height)
-                    set_tiles_elevation(mm, targets)
-                    parts.append("elevation")
-            tile_record = self.edit_history.build_stroke_record("Paste Region", mm.terrain)
+            with perf_trace.phase("paste_tiles"):
+                # Scoped snapshot: the block rectangle up front, each skirt tile just before its write.
+                history = self.edit_history
+                rect = region_clipboard.clipped_indices(block, tx0, ty0, mm.map_width, mm.map_height)
+                history.begin_stroke(mm.terrain, indices=rect)
+                with self._close_stroke_on_error("Paste Region"):
+                    if do_terrain:
+                        region_clipboard.paste_terrain(mm, block, tx0, ty0)
+                        parts.append("terrain")
+                    if do_elevation:
+                        targets = region_clipboard.elevation_targets(block, tx0, ty0, mm.map_width, mm.map_height)
+                        set_tiles_elevation(mm, targets, before_write=lambda i: history.stroke_capture(mm.terrain, i))
+                        parts.append("elevation")
+                tile_record = self.edit_history.build_stroke_record("Paste Region", mm.terrain)
             if tile_record is not None:
                 children.append(tile_record)
 
@@ -8589,24 +8773,34 @@ class ViewerWindow(QMainWindow):
                     owners = {t.unit.player for t in targets}
                     unit_edits.begin_unit_edit(owners)
                     new_ids: dict[int, int] = {}
-                    for t in targets:
-                        u = t.unit
-                        added = unit_edits.add(
-                            player=u.player,
-                            unit_const=u.unit_const,
-                            x=t.x,
-                            y=t.y,
-                            z=u.z,
-                            rotation=u.rotation,  # verbatim -- never transformed
-                            status=u.status,
-                            initial_animation_frame=u.initial_animation_frame,
-                            garrisoned_in_id=new_ids.get(t.holder_slot, -1),
-                            caption_string_id=u.caption_string_id,
-                            caption_string=u.caption_string,
-                            capture_flag=u.capture_flag,
-                        )
-                        new_ids[t.slot] = added.reference_id
-                    unit_record = unit_edits.commit_unit_edit("Paste Region", self.edit_history, push=False)
+                    units = self.scenario.unit_manager.units
+                    unit_splices = []
+                    with perf_trace.phase("paste_units"), unit_edits.batch_adds():
+                        for t in targets:
+                            u = t.unit
+                            added = unit_edits.add(
+                                player=u.player,
+                                unit_const=u.unit_const,
+                                x=t.x,
+                                y=t.y,
+                                z=u.z,
+                                rotation=u.rotation,  # verbatim -- never transformed
+                                status=u.status,
+                                initial_animation_frame=u.initial_animation_frame,
+                                garrisoned_in_id=new_ids.get(t.holder_slot, -1),
+                                caption_string_id=u.caption_string_id,
+                                caption_string=u.caption_string,
+                                capture_flag=u.capture_flag,
+                            )
+                            new_ids[t.slot] = added.reference_id
+                            # add() appends, so the index is the tail (never _unit_list_index's scan).
+                            player_id = int(u.player)
+                            own, tiles = self._unit_footprint(added)
+                            unit_splices.append(
+                                UnitSplice(player_id, len(units[player_id]) - 1, added, None, own, (), tiles)
+                            )
+                    with perf_trace.phase("unit_commit"):
+                        unit_record = unit_edits.commit_unit_edit("Paste Region", self.edit_history, push=False)
                     children.append(unit_record)
                 parts.append("units")
 
@@ -8625,14 +8819,40 @@ class ViewerWindow(QMainWindow):
             dirty = pushed.touched_indices()
 
         if children:
-            self._apply_dirty(dirty)
-            if any(isinstance(c, UnitDiffRecord) for c in children):
-                self._after_unit_mutation()
+            if unit_splices is None:
+                self._apply_dirty(dirty)
+            elif self._render_style == "flat":
+                # Flat keeps its wholesale refresh: no row splice, no cost-gate bypass.
+                self._cancel_warms()
+                if self._cache is not None:
+                    with perf_trace.phase("unit_sources"):
+                        self._cache.invalidate_units()
+                self._apply_dirty(dirty)
+                self._after_unit_mutation(sources_refreshed=True)
+            elif tile_record is not None:
+                # Sources before the tile patch, which then reads units_by_tile that agrees with the
+                # units (_flush_pending), so any gen bump lands before its one level build, not after.
+                self._cancel_warms()
+                if self._cache is not None:
+                    bumps = self._elevation_bumps_anyway(self._elevation_changed_tiles(tile_record))
+                    with perf_trace.phase("unit_sources"):
+                        self._cache.invalidate_units(unit_splices, splice_levels=not bumps)
+                self._apply_dirty(dirty)
+                self._after_unit_mutation(sources_refreshed=True)
+            else:
+                # Units only: Draw release's shape. The index is rebuilt, or the pasted units can't be picked.
+                self._after_unit_mutation(
+                    self._if_spliceable(unit_splices), batch=True, rebuild_index=self.mode == "units"
+                )
         self._update_edit_actions()
         self._update_title()
         return pushed, parts, units_skipped
 
     def on_fill(self, x: int, y: int, modifiers) -> None:
+        with perf_trace.op("fill"):
+            self._on_fill(x, y, modifiers)
+
+    def _on_fill(self, x: int, y: int, modifiers) -> None:
         """Paint Can: one flood fill per left click -- MapView routes
         CLICK_TOOLS here directly (see mousePressEvent), never through the
         stroke handlers above. Shaped like paste_region() just above, not like
@@ -8671,14 +8891,16 @@ class ViewerWindow(QMainWindow):
         if self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked():
             region_size = len(contiguous_region(mm, x, y))
             if region_size > TERRAIN_UNIT_CONFIRM_THRESHOLD:
-                reply = QMessageBox.question(
-                    self,
-                    "Large fill",
-                    f"This fill covers {region_size} tiles and can place a large number of "
-                    f"trees/eye candy units, which may take a while. Continue?",
-                    QMessageBox.Yes | QMessageBox.Cancel,
-                    QMessageBox.Cancel,
-                )
+                # Its own phase, so the user's think time isn't read as untimed fill work.
+                with perf_trace.phase("confirm_dialog"):
+                    reply = QMessageBox.question(
+                        self,
+                        "Large fill",
+                        f"This fill covers {region_size} tiles and can place a large number of "
+                        f"trees/eye candy units, which may take a while. Continue?",
+                        QMessageBox.Yes | QMessageBox.Cancel,
+                        QMessageBox.Cancel,
+                    )
                 if reply != QMessageBox.Yes:
                     return
 
@@ -8990,10 +9212,13 @@ class ViewerWindow(QMainWindow):
         half-patched cache."""
         if not dirty_indices or self.scenario is None:
             return
+        # The place-ghost memo keys on id(_iso_elevations), which an in-place edit keeps.
+        self._place_ghost_memo = None
         self._apply_dirty_render(dirty_indices)
         # Re-arms what the body's _cancel_warms() dropped. Kept below the
         # guard above, whose early return cancelled nothing to re-arm.
-        self._start_level_warm()
+        with perf_trace.phase("warm_restart"):
+            self._start_level_warm()
 
     def _apply_dirty_render(self, dirty_indices) -> None:
         """_apply_dirty's body, split out so that every early return below
@@ -9002,7 +9227,8 @@ class ViewerWindow(QMainWindow):
         # patch(), which rebuilds source caches off it) -- see
         # _cancel_warms's docstring. One call here covers every stroke,
         # Paint Can, Paste and Undo/Redo route into the three style branches.
-        self._cancel_warms()
+        with perf_trace.phase("warm_restart"):
+            self._cancel_warms()
         mm = self.scenario.map_manager
         tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
         if self._render_style == "stepped":
@@ -9046,14 +9272,19 @@ class ViewerWindow(QMainWindow):
                     f"re-rendered full map (prepared in {elapsed:.2f}s)"
                 )
             else:
+                # A gen bump (an elevation splice that can't prove itself safe) rebuilds the
+                # visible level only; other resident levels evict the bbox, and _start_level_warm rebuilds them.
+                target = self.map_view.viewport_chunk_target()
+                rebuild_levels = None if target is None else (target[0],)
                 with perf_trace.phase("patch"):
-                    self._cache.patch(bbox, elevation_changed=elevation_changed)
+                    self._cache.patch(bbox, elevation_changed=elevation_changed, rebuild_levels=rebuild_levels)
                 # The draped grid reads the elevations the bbox call above
                 # mutated. Only on an edit that moved one: a terrain-only
                 # stroke cannot move a grid line. Qt coalesces the resulting
                 # update() calls, so a stroke needs no debounce of its own.
                 if elevation_changed:
-                    self.map_view.refresh_elevation_overlays()
+                    with perf_trace.phase("overlays"):
+                        self.map_view.refresh_elevation_overlays()
                 with perf_trace.phase("invalidate"):
                     self.map_view.invalidate_region(bbox)
         elif self._render_style == "sloped":
@@ -9101,7 +9332,8 @@ class ViewerWindow(QMainWindow):
                 with perf_trace.phase("patch"):
                     self._cache.patch(bbox, elevation_changed=elevation_changed)
                 if elevation_changed:
-                    self.map_view.refresh_elevation_overlays()
+                    with perf_trace.phase("overlays"):
+                        self.map_view.refresh_elevation_overlays()
                 with perf_trace.phase("invalidate"):
                     self.map_view.invalidate_region(bbox)
         else:
@@ -10100,19 +10332,20 @@ class ViewerWindow(QMainWindow):
         fields_only edit, so only the pure set_position/set_rotation/
         set_unit_const callers (Move/Nudge/Rotate/Set field/gate
         orientation) may pass it."""
-        model.begin_unit_edit(players, fields_only=fields_only)
-        try:
-            yield model
-        except Exception:
-            model.abort_unit_edit()
-            raise
-        model.commit_unit_edit(label, self.edit_history)
-        if splices is not None:
-            assert splices, "a splice-tracking _unit_edit exited with no UnitSplice recorded"
-        self._after_unit_mutation(splices)
-        self._update_title()
-        self._update_edit_actions()
-        self._log_status(label)
+        with perf_trace.op(label):
+            model.begin_unit_edit(players, fields_only=fields_only)
+            try:
+                yield model
+            except Exception:
+                model.abort_unit_edit()
+                raise
+            model.commit_unit_edit(label, self.edit_history)
+            if splices is not None:
+                assert splices, "a splice-tracking _unit_edit exited with no UnitSplice recorded"
+            self._after_unit_mutation(splices)
+            self._update_title()
+            self._update_edit_actions()
+            self._log_status(label)
 
     def _unit_footprint(self, unit) -> tuple[tuple[int, int], tuple[tuple[int, int], ...]]:
         """(own_tile, occupied_tiles) for `unit` at its CURRENT x/y/unit_const
@@ -10147,12 +10380,54 @@ class ViewerWindow(QMainWindow):
         if index is not None:
             unit_pick.patch_index_for_move(self.scenario, index, player_id, unit, old_bounds)
 
+    def _elevation_changed_tiles(self, record) -> set[tuple[int, int]]:
+        """E: the (x, y) tiles whose elevation `record`'s tile child (or `record`
+        itself) changes. Empty in Flat+Iso, whose patch flattens elevation away."""
+        if self._terrain_style == "flat":
+            return set()
+        children = record.children if isinstance(record, CompositeDiffRecord) else [record]
+        terrain = self.scenario.map_manager.terrain
+        return {
+            (terrain[i].x, terrain[i].y)
+            for child in children
+            if isinstance(child, TileDiffRecord)
+            for i, old, new in child.changes
+            if old[1] != new[1]
+        }
+
+    def _elevation_bumps_anyway(self, elevation_changed: set[tuple[int, int]]) -> bool:
+        """Whether the elevation patch after a unit edit is certain to bump the
+        Stepped gen (or rebuild Sloped's layers) anyway, so a level splice of
+        the unit edit before it would be wasted. Counts the seed set
+        render_cache._elevation_splices() starts from: the filter-matching,
+        on-map units whose own tile is in E (E dilated by one on Sloped, which
+        reads four corners), a lower bound on its component, against
+        _ELEV_SPLICE_MAX_UNITS. Call it after the unit edit: the own-tile index
+        is then the post-edit one the patch reads, memoized on unit_gen."""
+        cache = self._cache
+        if not elevation_changed or cache is None or not cache.with_units:
+            return False
+        mm = self.scenario.map_manager
+        w, h = mm.map_width, mm.map_height
+        tiles = render_cache._dilate(elevation_changed, w, h) if self._render_style == "sloped" else elevation_changed
+        own_index = unit_own_tile_index(self.scenario)
+        cap = render_cache._ELEV_SPLICE_MAX_UNITS
+        seeds = 0
+        for own in tiles:
+            for player_id, _index, unit in own_index.get(own, ()):
+                if cache.unit_filter.matches(player_id, unit) and unit_occupied_tiles(unit, w, h) is not None:
+                    seeds += 1
+                    if seeds > cap:
+                        return True
+        return False
+
     def _after_unit_mutation(
         self,
         changed: list[UnitSplice] | None = None,
         defer_index: bool = False,
         rebuild_index: bool = False,
         batch: bool = False,
+        sources_refreshed: bool = False,
     ) -> None:
         """Shared invalidation tail for every unit mutation, whether driven
         by a tool (_unit_edit's own commit, above) or by undo/redo
@@ -10208,6 +10483,11 @@ class ViewerWindow(QMainWindow):
         batch: a _if_spliceable() caller (Draw's stroke end, membership
         undo/redo), whose bbox may be evicted rather than patched; see
         _patch_unit_edit_cache().
+
+        sources_refreshed: the wholesale branch's caller already ran its own
+        invalidate_units() before its tile patch (Paste Region, and undo/redo's
+        sources-first branch), so it is skipped here; the whole-canvas
+        eviction pair is kept.
         """
         # A third invalidation, on the same terms as the two below: an
         # in-flight warm is walking the unit list this edit just changed.
@@ -10220,14 +10500,16 @@ class ViewerWindow(QMainWindow):
             if changed is not None:
                 self._patch_unit_edit_cache(changed, batch)
             else:
-                with perf_trace.phase("unit_sources"):
-                    self._cache.invalidate_units()
+                if not sources_refreshed:
+                    with perf_trace.phase("unit_sources"):
+                        self._cache.invalidate_units()
                 canvas_w, canvas_h = self._cache.canvas_dims(0)
-                self._cache.invalidate_region((0, 0, canvas_w, canvas_h))
+                self._cache.invalidate_region((0, 0, canvas_w, canvas_h), terrain_changed=False)
                 self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
         # Above the mode gate, not at the literal tail: undo is global, so a
         # unit edit reverted from Terrain mode must re-arm the warm too.
-        self._start_level_warm()
+        with perf_trace.phase("level_warm_start"):
+            self._start_level_warm()
         # Before the defer_index return: each Convert flush patches its own batch.
         with perf_trace.phase("unit_refs"):
             self._patch_unit_ref_index(changed)
@@ -10239,14 +10521,14 @@ class ViewerWindow(QMainWindow):
         with perf_trace.phase("unit_stats"):
             self._repopulate_stats_players()
         if self.mode != "units":
-            # The footprint overlay is index-driven and live in every mode, so
-            # a unit edit made outside Units mode (paste, mirror, undo) still
-            # has to reach it. A full rebuild rather than a patch: the in-place
-            # patching below is a Units-mode path, so outside it the index may
-            # never have been touched at all.
-            if settings.get_footprint_outlines():
+            # Nothing patched the index outside Units, and Units entry reuses it, so it stays
+            # current or None: rebuilt for the footprint overlay or an armed picker, else dropped.
+            if self._needs_unit_index():
                 with perf_trace.phase("unit_index"):
                     self._rebuild_unit_index()
+            else:
+                self._stack_cycle = None
+                self.map_view.set_unit_index(None)
             return
         if changed is None or rebuild_index:
             with perf_trace.phase("unit_index"):
@@ -10254,8 +10536,10 @@ class ViewerWindow(QMainWindow):
         else:
             # The index was patched in place, so nothing derived from it --
             # the stacks, the footprint outlines -- was recomputed.
-            self.map_view.refresh_after_index_patch()
-        self._refresh_selection_view()
+            with perf_trace.phase("unit_stacks"):
+                self.map_view.refresh_after_index_patch()
+        with perf_trace.phase("selection_view"):
+            self._refresh_selection_view()
 
     def _patch_unit_edit_cache(self, changed: list[UnitSplice], batch: bool = False) -> None:
         """The scoped branch of _after_unit_mutation() (Batch D's D5):
@@ -10265,9 +10549,9 @@ class ViewerWindow(QMainWindow):
         canvas the way the wholesale branch does.
 
         invalidate_units(changed) may still fall back to a full source
-        rebuild internally for one or more entries (a wall/connector const,
-        or a tile shared with another unit -- see render_cache.
-        _splice_eligible()) -- that only changes how the SOURCE data got
+        rebuild internally for one or more entries (an added or removed
+        wall/connector const, or a shared-tile component past its cap -- see render_cache.
+        _splice_plan()) -- that only changes how the SOURCE data got
         refreshed, never how much of the canvas needs recompositing, since
         nothing but this edit's own unit(s) actually changed.
 
@@ -10284,11 +10568,16 @@ class ViewerWindow(QMainWindow):
         be read after it and before invalidate_units(), which replaces the
         layer it reads. So it must not be hoisted out of this method.
 
-        Today's reach-padded bbox, on every resident level, is kept whenever
-        the tight one can't be trusted (render_cache.REACH_FALLBACK): a wall,
+        Today's reach-padded bbox is kept whenever the tight one can't be
+        trusted (render_cache.REACH_FALLBACK): a moved or placed wall,
         connector or rotation-variant const, whose neighbours' art changes too
-        and which today's 650 px pad covers, or a visible level holding no
-        resident chunks. With sprites off that same call is already exact.
+        and which today's 650 px pad covers (a Convert of one moves nothing
+        and is sized tight), or a visible level holding no resident chunks.
+        With sprites off it is already exact. It goes through the same split
+        (_repaint_unit_edit_split()): the visible level patches or evicts it,
+        every other resident level evicts it, so a level a wholesale source
+        fallback left stale rebuilds through LevelWarmer, not in the handler.
+        Only with no viewport target at all does it patch every resident level.
 
         Flat has no elevation term and no dirty_screen_bbox_* counterpart --
         mirrors _apply_dirty_render's own Flat branch, patching one rect per
@@ -10298,16 +10587,19 @@ class ViewerWindow(QMainWindow):
         (_patch_area_exceeds_viewport()) evicts that bbox's chunks instead of
         patching them: same correctness argument, since nothing outside the
         bbox changed, and chunks off the bbox stay resident for the next pan.
+        The split prices the visible level alone (_TIGHT_PATCH_AREA_RATIO).
         Single-unit tools always patch."""
         # Convert's stroke end can drain an empty list; Flat would treat [] as wholesale.
         if not changed:
             return
         pre = post = REACH_FALLBACK
         visible_mip = None
-        if self._render_style != "flat" and self._cache.sprites_enabled:
+        if self._render_style != "flat":
             target = self.map_view.viewport_chunk_target()
             visible_mip = None if target is None else target[0]
-            pre = self._cache.sprite_extent_before(changed, visible_mip)
+            if self._cache.sprites_enabled:
+                with perf_trace.phase("sprite_extent"):
+                    pre = self._cache.sprite_extent_before(changed, visible_mip)
         with perf_trace.phase("unit_sources"):
             self._cache.invalidate_units(changed)
         old_tiles = {t for s in changed for t in s.old_tiles}
@@ -10325,13 +10617,16 @@ class ViewerWindow(QMainWindow):
                 self.map_view.invalidate_region(rect)
             return
         if pre is not REACH_FALLBACK:
-            post = self._cache.sprite_extent_after(changed, visible_mip)
+            with perf_trace.phase("sprite_extent"):
+                post = self._cache.sprite_extent_after(changed, visible_mip)
         if post is not REACH_FALLBACK:
-            bbox, elevation_changed = self._unit_edit_bbox(changed, pre, post)
+            with perf_trace.phase("unit_bbox"):
+                bbox, elevation_changed = self._unit_edit_bbox(changed, pre, post)
             if bbox is not None:
                 self._repaint_unit_edit_split(changed, bbox, elevation_changed, visible_mip, batch)
                 return
-        bbox, elevation_changed = self._unit_edit_bbox(changed)
+        with perf_trace.phase("unit_bbox"):
+            bbox, elevation_changed = self._unit_edit_bbox(changed)
         if bbox is None:
             # Defensive, not expected (see dirty_screen_bbox_iso's own
             # docstring): a unit edit never moves a tile's elevation, so this
@@ -10339,6 +10634,9 @@ class ViewerWindow(QMainWindow):
             canvas_w, canvas_h = self._cache.canvas_dims(0)
             self._cache.invalidate_region((0, 0, canvas_w, canvas_h))
             self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
+            return
+        if visible_mip is not None:
+            self._repaint_unit_edit_split(changed, bbox, elevation_changed, visible_mip, batch, reach=bbox)
             return
         if batch and self._patch_area_exceeds_viewport(bbox):
             with perf_trace.phase("unit_patch"):
@@ -10350,23 +10648,25 @@ class ViewerWindow(QMainWindow):
 
     def _repaint_unit_edit_split(
         self, changed: list[UnitSplice], bbox: tuple[int, int, int, int], elevation_changed: set,
-        visible_mip: int, batch: bool,
+        visible_mip: int, batch: bool, reach: tuple[int, int, int, int] | None = None,
     ) -> None:
-        """_patch_unit_edit_cache()'s tight branch: the visible level patches
-        or evicts `bbox` by the usual area rule, priced on that level alone
-        since no other level is patched; every other resident level evicts
-        today's reach-padded bbox, which costs nothing until it is shown."""
+        """_patch_unit_edit_cache()'s visible-level repaint, tight or reach: the
+        visible level patches or evicts `bbox` by the usual area rule, priced
+        on that level alone since no other level is patched; every other
+        resident level evicts today's reach-padded bbox, which costs nothing
+        until it is shown. `reach` is that bbox when the caller already holds
+        it (the reach branch, where it is `bbox`), else derived here."""
         others = [mip for mip in self._cache.resident_levels() if mip != visible_mip]
-        reach = None
-        if others:
-            reach, _ = self._unit_edit_bbox(changed)
+        if others and reach is None:
+            with perf_trace.phase("unit_bbox"):
+                reach, _ = self._unit_edit_bbox(changed)
             if reach is None:
                 reach = (0, 0, *self._cache.canvas_dims(0))
         visible = (visible_mip,)
         evict = batch and self._patch_area_exceeds_viewport(bbox, levels=visible, tight=True)
         # Sizing stays outside the phase, as in the reach branch, so unit_patch times cache work only.
         with perf_trace.phase("unit_patch"):
-            if reach is not None:
+            if others:
                 self._cache.invalidate_region(reach, levels=others)
             if evict:
                 self._cache.invalidate_region(bbox, levels=visible)
@@ -10382,8 +10682,12 @@ class ViewerWindow(QMainWindow):
         recompositing the visible ones whole at the next paint.
 
         Re-measured 2026-09-27 on old-allies and Joan 1, sprites on
-        (tools/bench_stroke_end.py --area-ratio). The ratios are set by the
-        reach-padded path (levels None). There, a Stepped patch also
+        (tools/bench_stroke_end.py --area-ratio). The shared ratios were set
+        by the reach-padded path when it still patched every resident level
+        (levels None); since 2026-09-30 that path patches the visible level
+        only and prices on the tight ratio. levels None is left only with no
+        viewport target, which answers False before any ratio is read. There, a
+        Stepped patch also
         composites every other resident level, whose layer a batch edit left
         stale, so it pays that level's rebuild too (in-patch rebuild ~100 ms
         vs ~47 ms with one level, old-allies), where evicting defers it to
@@ -10436,12 +10740,13 @@ class ViewerWindow(QMainWindow):
                 self.scenario, dirty_indices, self._iso_elevations, self._iso_proj, with_units=True,
                 with_sprites=with_sprites, elevation_changed=elevation_changed,
                 flatten_elevations=(self._terrain_style == "flat"), extra_anchor_tiles=old_tiles,
+                units_changed=True,
             )
         else:
             bbox = dirty_screen_bbox_sloped(
                 self.scenario, dirty_indices, self._iso_elevations, self._iso_proj, with_units=True,
                 with_sprites=with_sprites, elevation_changed=elevation_changed,
-                extra_anchor_tiles=old_tiles,
+                extra_anchor_tiles=old_tiles, units_changed=True,
             )
         if tight and bbox is not None:
             x0, y0, x1, y1 = bbox
@@ -10519,6 +10824,10 @@ class ViewerWindow(QMainWindow):
         self._move_history(self.edit_history.peek_redo(), self.edit_history.redo, "Redo")
 
     def _move_history(self, record, move, action: str, quiet: bool = False) -> None:
+        with perf_trace.op(action):
+            self._move_history_traced(record, move, action, quiet)
+
+    def _move_history_traced(self, record, move, action: str, quiet: bool = False) -> None:
         """One undo or redo step: read what the record needs *before* the
         cursor moves, move it, then hand the rest to
         _refresh_after_history_move() (shared with the History window's jump,
@@ -10536,8 +10845,13 @@ class ViewerWindow(QMainWindow):
         been put back to the record's other side.
 
         A GAIA-only add/remove record (Draw's Trees/Eye candy, alone or in its
-        CompositeDiffRecord) gets the same scoped path through
-        _gaia_membership_diff().
+        CompositeDiffRecord), or a paste-shaped one (every snapshotted player
+        a pure tail append or truncation: Paste Region, non-GAIA Place), gets
+        the same scoped path through _membership_diff().
+
+        E, the tiles a unit record's tile child changes the elevation of, goes
+        to _refresh_after_history_move() as elev_changed, which then runs the
+        unit sources before the tile patch (Stepped/Sloped).
         """
         if record is None:
             # Still logs, exactly as paste_region() and fill do on a genuine
@@ -10547,19 +10861,22 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Nothing to {action.lower()}")
             return
         field_entries = getattr(record, "unit_field_entries", None)
-        old_footprints = (
-            [(player_id, index, unit, *self._unit_footprint(unit)) for player_id, index, unit in field_entries]
-            if field_entries
-            else None
-        )
-        membership = None if field_entries else self._gaia_membership_diff(record, move == self.edit_history.undo)
-        dirty = move(
-            self.scenario.map_manager.terrain,
-            self.trigger_edits,
-            self.option_edits,
-            self.unit_edits,
-            self.message_edits,
-        )
+        with perf_trace.phase("history_diff"):
+            old_footprints = (
+                [(player_id, index, unit, *self._unit_footprint(unit)) for player_id, index, unit in field_entries]
+                if field_entries
+                else None
+            )
+            membership = None if field_entries else self._membership_diff(record, move == self.edit_history.undo)
+            elev_changed = self._elevation_changed_tiles(record) if "unit" in record.kinds() else set()
+        with perf_trace.phase("history_restore"):
+            dirty = move(
+                self.scenario.map_manager.terrain,
+                self.trigger_edits,
+                self.option_edits,
+                self.unit_edits,
+                self.message_edits,
+            )
         splices = None
         if old_footprints is not None:
             splices = []
@@ -10568,26 +10885,34 @@ class ViewerWindow(QMainWindow):
                 splices.append(UnitSplice(player_id, index, unit, old_own, new_own, old_tiles, new_tiles))
         elif membership is not None:
             splices, arriving = membership
-            for index, unit in arriving:
+            for player_id, index, unit in arriving:
                 own, tiles = self._unit_footprint(unit)
-                splices.append(UnitSplice(GAIA_PLAYER_ID, index, unit, None, own, (), tiles))
-            splices = self._if_spliceable(splices)
+                splices.append(UnitSplice(player_id, index, unit, None, own, (), tiles))
+            # Uncapped only where the sources run first (elev_changed); elsewhere the scoped
+            # repaint keeps UNIT_SPLICE_MAX_UNITS, as the GAIA-only diff always did.
+            splices = self._if_spliceable(
+                splices, cap=None if elev_changed and self._render_style != "flat" else render_cache.UNIT_SPLICE_MAX_UNITS
+            )
         # `record.kinds()`, not `record.kind`: a CompositeDiffRecord
         # (phase 2.8's region paste) can carry more than one domain in a
         # single record, and each still needs the same refresh a plain
         # record of that domain would get.
-        self._refresh_after_history_move(record.kinds(), dirty, splices, batch=membership is not None)
+        self._refresh_after_history_move(
+            record.kinds(), dirty, splices, batch=membership is not None, elev_changed=elev_changed
+        )
         # quiet: a region move undoes its own previous paste as an internal
         # step, and logging "Undo: Paste Region" there would read as the
         # user's own undo. Suppresses only this line, nothing else.
         if not quiet:
             self._log_status(f"{action}: {record.label}")
 
-    def _if_spliceable(self, splices: list[UnitSplice] | None) -> list[UnitSplice] | None:
+    def _if_spliceable(self, splices: list[UnitSplice] | None, cap: int | None = None) -> list[UnitSplice] | None:
         """`splices` for the scoped repaint (_patch_unit_edit_cache()), or
         None for the lazy whole-canvas one. Used by the batch callers (Draw's
         stroke end, membership undo/redo), not the single-unit tools, whose
-        small eager patch is always the cheaper of the two.
+        small eager patch is always the cheaper of the two. None past `cap`
+        splices when one is given (a paste-shaped undo/redo on the tiles-first
+        branch, whose diff has no cap of its own).
 
         Stepped/Sloped: always `splices`. invalidate_units(splices) either
         splices or falls back to a source rebuild that the sprite memo keeps
@@ -10598,7 +10923,7 @@ class ViewerWindow(QMainWindow):
         Flat has no memo, so a batch its cache refuses would pay the icon
         layer rebuild inside the eager patch: None then, and past
         1/_SPLICE_COST_RATIO of the map's units."""
-        if splices is None or self._cache is None:
+        if splices is None or self._cache is None or (cap is not None and len(splices) > cap):
             return None
         if self._render_style == "flat":
             total = sum(len(units) for units in self.scenario.unit_manager.units)
@@ -10607,17 +10932,19 @@ class ViewerWindow(QMainWindow):
             return splices
         return splices
 
-    def _gaia_membership_diff(self, record, undo: bool):
-        """The undo/redo counterpart of Draw's stroke-end splices: for a unit
-        record that only adds or removes GAIA units (Trees/Eye candy, GAIA
-        Place/Delete/Scatter), alone or as a CompositeDiffRecord child,
-        returns (removal splices, [(index, unit), ...] still to add) with the
-        removals' footprints read now, before `move()` restores anything.
-        The arriving units' footprints must be read after it.
+    def _membership_diff(self, record, undo: bool):
+        """The undo/redo counterpart of Draw's stroke-end and Paste Region's
+        splices: for a unit record that only adds or removes units, alone or as
+        a CompositeDiffRecord child, returns (removal splices, [(player_id,
+        index, unit), ...] still to add) with the removals' footprints read now,
+        before `move()` restores anything. The arriving units' footprints must
+        be read after it. None (the wholesale path) for any other shape.
 
-        None (the wholesale path) unless the whole-list UnitSnapshot touches
-        GAIA alone, every unit on both sides keeps an identical state and its
-        relative order, and the change is within UNIT_SPLICE_MAX_UNITS."""
+        Two shapes. GAIA-only (Trees/Eye candy, GAIA Place/Delete/Scatter):
+        _gaia_membership_diff(), with its caps and state/order checks. Every
+        other whole-list snapshot (Paste Region, its undo and redo, non-GAIA
+        Place and its undo): _tail_membership_diff(). Flat takes the second
+        shape wholesale, as before."""
         children = record.children if isinstance(record, CompositeDiffRecord) else [record]
         unit_records = [c for c in children if isinstance(c, UnitDiffRecord)]
         if len(unit_records) != 1:
@@ -10626,9 +10953,43 @@ class ViewerWindow(QMainWindow):
         if undo:
             current, target = target, current
         players = getattr(current, "players", None)
-        if players is None or set(players) != {GAIA_PLAYER_ID} or set(target.players) != {GAIA_PLAYER_ID}:
+        if players is None or set(players) != set(target.players):
             return None
-        now, then = players[GAIA_PLAYER_ID], target.players[GAIA_PLAYER_ID]
+        if set(players) == {GAIA_PLAYER_ID}:
+            return self._gaia_membership_diff(players[GAIA_PLAYER_ID], target.players[GAIA_PLAYER_ID])
+        if self._render_style == "flat":
+            return None
+        return self._tail_membership_diff(players, target.players)
+
+    def _tail_membership_diff(self, now_players: dict, then_players: dict):
+        """_membership_diff()'s paste shape: every snapshotted player's list is
+        a pure tail append (`then == now + tail`) or a pure tail truncation, the
+        units that stay keep their state, and no unit is on both sides (so a
+        Convert of a list's last unit is refused). No cap: the cache picks
+        splice, in-place or wholesale."""
+        removals: list[UnitSplice] = []
+        arriving: list[tuple[int, int, object]] = []
+        for player_id, now in now_players.items():
+            then = then_players[player_id]
+            keep = min(len(now.units), len(then.units))
+            if any(a is not b for a, b in zip(now.units[:keep], then.units[:keep], strict=True)):
+                return None
+            if now.states[:keep] != then.states[:keep]:
+                return None
+            for index in range(keep, len(now.units)):
+                unit = now.units[index]
+                own, tiles = self._unit_footprint(unit)
+                removals.append(UnitSplice(player_id, index, unit, own, None, tiles, ()))
+            arriving.extend((player_id, index, then.units[index]) for index in range(keep, len(then.units)))
+        if {id(s.unit) for s in removals} & {id(unit) for _p, _i, unit in arriving}:
+            return None
+        return removals, arriving
+
+    def _gaia_membership_diff(self, now, then):
+        """_membership_diff()'s GAIA-only shape, over the GAIA list's two
+        snapshots. None unless every unit on both sides keeps an identical
+        state and its relative order, and the change is within
+        UNIT_SPLICE_MAX_UNITS."""
         if abs(len(now.units) - len(then.units)) > render_cache.UNIT_SPLICE_MAX_UNITS:
             return None
         now_states = {id(u): state for u, state in zip(now.units, now.states, strict=True)}
@@ -10638,7 +10999,7 @@ class ViewerWindow(QMainWindow):
             then_ids.add(id(unit))
             known = now_states.get(id(unit))
             if known is None:
-                arriving.append((index, unit))
+                arriving.append((GAIA_PLAYER_ID, index, unit))
             elif known != state:
                 return None
         leaving = [(i, u) for i, u in enumerate(now.units) if id(u) not in then_ids]
@@ -10654,7 +11015,9 @@ class ViewerWindow(QMainWindow):
             removals.append(UnitSplice(GAIA_PLAYER_ID, index, unit, own, None, tiles, ()))
         return removals, arriving
 
-    def _refresh_after_history_move(self, kinds, dirty, splices=None, batch: bool = False) -> None:
+    def _refresh_after_history_move(
+        self, kinds, dirty, splices=None, batch: bool = False, elev_changed: set | None = None
+    ) -> None:
         """Everything the window has to put back in step once the history
         cursor has moved and the models have been restored -- shared by
         undo/redo (_move_history above) and by the History window's multi-step
@@ -10674,17 +11037,40 @@ class ViewerWindow(QMainWindow):
         itself.
 
         `splices` is Batch D's D6 scoped unit path: a list of UnitSplice for a
-        fields_only record or a GAIA-only membership change, or None for the
-        wholesale invalidation. A jump
+        fields_only record or a membership change (_membership_diff()), or None
+        for the wholesale invalidation. A jump
         always passes None -- its span reads each record's old footprints
         immediately before that record moves, which a one-shot multi-record
         move cannot do. `batch` marks the membership case for
         _after_unit_mutation().
+
+        `elev_changed` is E, the tiles the record's tile child changed the
+        elevation of (a jump passes None). A unit record with a non-empty E on
+        Stepped/Sloped (the paste composite, Mirror Map) runs its unit sources
+        BEFORE the tile patch, as Paste Region does: the patch then reads
+        units_by_tile that agrees with the units (_flush_pending), and a gen
+        bump lands before its one level build rather than throwing it away.
+        The level splice is skipped when the patch will bump the gen anyway
+        (_elevation_bumps_anyway()). This skips _patch_unit_edit_cache() and
+        its ordering constraint; _after_unit_mutation(changed=None) rebuilds
+        the pick index in Units mode (and rebuilds or drops it elsewhere).
+        Everything else keeps the tiles-first order below.
         """
         # Undo/redo rewrites what the armed field and its form show.
         self.disarm_unit_picker()
-        self._apply_dirty(dirty)
-        if "unit" in kinds:
+        sources_first = (
+            "unit" in kinds and bool(elev_changed) and self._cache is not None and self._render_style != "flat"
+        )
+        if sources_first:
+            self._cancel_warms()
+            bumps = self._elevation_bumps_anyway(elev_changed)
+            with perf_trace.phase("unit_sources"):
+                self._cache.invalidate_units(splices or None, splice_levels=not bumps)
+            self._apply_dirty(dirty)
+            self._after_unit_mutation(sources_refreshed=True)
+        else:
+            self._apply_dirty(dirty)
+        if "unit" in kinds and not sources_first:
             if splices is not None:
                 # _after_unit_mutation() deliberately leaves the pick index
                 # alone whenever `changed` is given (its own docstring),
@@ -10696,7 +11082,8 @@ class ViewerWindow(QMainWindow):
                 # the exact rebuild the pre-D6 wholesale branch always paid
                 # for anyway.
                 if self.mode == "units":
-                    self._rebuild_unit_index()
+                    with perf_trace.phase("unit_index"):
+                        self._rebuild_unit_index()
                 self._after_unit_mutation(splices, batch=batch)
             else:
                 self._after_unit_mutation()
@@ -10866,7 +11253,11 @@ class ViewerWindow(QMainWindow):
             self._stroke_seen_since_retry = False
             self._autosave_retry_timer.start(AUTOSAVE_RETRY_MS)
             return
+        with perf_trace.phase("autosave"):
+            self._autosave_write()
 
+    def _autosave_write(self) -> None:
+        """_autosave_tick's write, once every gate has passed."""
         key = self._autosave_doc_key()
         source = None if self._untitled else self.scenario.path
         slot = autosave.slot_path(
@@ -11003,7 +11394,15 @@ class ViewerWindow(QMainWindow):
         # ticking on any event loop that outlives the window -- one shared
         # QApplication across a test session being the case that makes it
         # visible rather than merely wasteful.
+        # The poll first: a fire after the cancel re-arms the warms (_on_viewport_changed).
+        self.map_view.stop_viewport_poll()
         self._cancel_warms()
+        # Same lifetime reasoning: the document frozen at load must be collectable again.
+        gc.unfreeze()
+        # And the warm gc hold's threshold and idle timer must not outlive the window.
+        gc_hold.reset()
+        # A window closed mid-stroke never sees the release that would re-enable gc.
+        self.map_view.resume_stroke_gc()
         # Same lifetime reasoning as the warm above, and the teardown
         # trigger_panel.py already does for its own variables dialog:
         # close() doesn't destroy the window, so a stray top-level dialog
@@ -11037,6 +11436,8 @@ class ViewerWindow(QMainWindow):
         dialog.exec_()
 
     def _show_debug_log(self) -> None:
+        # Before the dialog snapshots the log: a just-finished op isn't written until idle.
+        perf_trace.flush_pending_op()
         dialog = DebugLogDialog(self)
         dialog.exec_()
 
@@ -11248,7 +11649,13 @@ class ViewerWindow(QMainWindow):
         for the rest of the session once the first edit lands. A stroke
         therefore pays a start/cancel pair per step, which the plan accepts
         pending a Perf Trace pass. The style/quality re-render paths reached
-        through _render_current still only cancel.
+        through _render_current only cancel; their re-arm is the first
+        viewport fire on the new cache (_on_viewport_changed).
+
+        And from _on_viewport_changed whenever the viewport's mip changes
+        (zoom plan 2026-09-29): the set is anchored on the level in view,
+        viewport_chunk_target()[0], because the next zoom leaves from it. The
+        fit level is the anchor only when there is no viewport target.
 
         Silent no-op with no map, no viewport (every headless test, and a
         window not yet shown) or a single-level ladder -- _fit_baseline_scale
@@ -11260,15 +11667,29 @@ class ViewerWindow(QMainWindow):
         fit = self.map_view._fit_baseline_scale()
         if fit is None:
             return
+        target = self.map_view.viewport_chunk_target()
         # devicePixelRatio for the same reason CanvasItem._mip_for_painter
         # reads deviceTransform() rather than worldTransform(): the level a
         # paint actually selects is the DEVICE-space one, so a HiDPI window
         # would otherwise warm the neighbours of a level it never paints.
-        mips = level_warm.neighbour_mips(self._cache, fit * self.map_view.devicePixelRatioF())
+        # viewport_chunk_target() already folds it in.
+        if target is not None:
+            anchor = target[0]
+        else:
+            anchor = self._cache.mip_for_scale(fit * self.map_view.devicePixelRatioF())
+        mips = level_warm.neighbour_mips_of(self._cache, anchor)
         # The current mip's pack derive too: a wholesale rebuild drops its
         # pack, and Sloped has no neighbours at all.
-        target = self.map_view.viewport_chunk_target()
         pack_only = (target[0],) if target is not None else ()
+        # A gen-bump edit rebuilds only the visible level (patch's rebuild_levels); warm the
+        # other stale resident levels too, or the next zoom to one rebuilds it inside paint.
+        visible = target[0] if target is not None else None
+        mips += [
+            mip for mip in self._cache.resident_levels()
+            if mip != visible and mip not in mips and not self._cache.is_level_resident(mip)
+        ]
+        # A re-anchor's old (mip, chunks) are stale. Safe before start(): its cancel never fires on_job_done.
+        self._load_warm_queue = []
         notifying = self._level_warmer.start(
             self._cache, mips, pack_only=pack_only, on_job_done=self._queue_load_warm,
         )
@@ -11352,7 +11773,22 @@ class ViewerWindow(QMainWindow):
         margin_warm.ring_chunks' own docstring for why that's a correct
         answer, not a missing one) on the first fire, right after a cancel,
         or whenever the mip itself changed -- a pan direction from a
-        DIFFERENT level's chunk grid means nothing here."""
+        DIFFERENT level's chunk grid means nothing here.
+
+        A changed mip, or no previous fire, also re-anchors the level warm on
+        the new level first (zoom plan 2026-09-29). LevelWarmer.start cancels
+        the in-flight job, whose scaled sprites stay in the process-global
+        _scaled_cache, so a cancelled partial warm is not wasted. No previous
+        fire means _cancel_warms() just ran: a zoom right after an edit would
+        otherwise keep the pre-zoom anchor, and a re-render's first fire warms
+        the new cache's neighbours. A fire inside _render_current's
+        processEvents() re-arms on the outgoing cache, which its second
+        _cancel_warms() drops before the swap."""
+        with perf_trace.phase("viewport_changed"):
+            self._on_viewport_changed_traced()
+
+    def _on_viewport_changed_traced(self) -> None:
+        """_on_viewport_changed's body, under its perf phase."""
         if self._cache is None or not settings.get_preload_zoom_levels():
             return
         target = self.map_view.viewport_chunk_target()
@@ -11361,6 +11797,8 @@ class ViewerWindow(QMainWindow):
         mip, cx0, cy0, cx1, cy1 = target
         prev = self._last_viewport_chunk_target
         self._last_viewport_chunk_target = target
+        if prev is None or prev[0] != mip:
+            self._start_level_warm()
         lead = (0, 0)
         if prev is not None and prev[0] == mip:
             prev_cx0, prev_cy0 = prev[1], prev[2]
@@ -11406,16 +11844,16 @@ class ViewerWindow(QMainWindow):
         stopwatch so steady-state painting is back to one `is not None`
         check.
 
-        `total` is parse + prepare + summed paint time, i.e. work actually
-        done, not wall clock from load start to here, which would fold in
-        however long Qt sat idle and make the number a reading of how busy
-        the machine was rather than of the file."""
+        `total` is (New Map's generate +) parse + prepare + summed paint
+        time, i.e. work actually done, not wall clock from load start to
+        here, which would fold in however long Qt sat idle and make the
+        number a reading of how busy the machine was rather than of the file."""
         report = self._pending_paint_report
         self._pending_paint_report = None
         self.map_view.set_paint_timed_callback(None)
         if report is None or not report["paints"]:
             return
-        total = report["parse"] + report["prepare"] + report["paint"]
+        total = report["generate"] + report["parse"] + report["prepare"] + report["paint"]
         count = report["paints"]
         counted = "" if count == 1 else f", {count} paints"
         self._log_status(
@@ -11423,7 +11861,25 @@ class ViewerWindow(QMainWindow):
             f"(total {total:.2f}s, mip {report['mip']}{counted})"
         )
 
-    def _render_current(self, *, reset_view: bool = True) -> tuple[float, int]:
+    def _texture_prefetch_ids(self) -> list[int]:
+        """The terrain ids a render of self.scenario textures: every tile's,
+        plus the farm overlay's where it draws (sprites on, not Flat)."""
+        from descape import native_composite, render
+
+        mm = self.scenario.map_manager
+        tiles = np.arange(mm.map_width * mm.map_height)
+        ids = np.unique(native_composite._terrain_ids(self.scenario, tiles)).tolist()
+        if self._sprites_enabled and self._layers.farm_overlay and self._render_style != "flat":
+            consts = {unit.unit_const for units in self.scenario.unit_manager.units for unit in units}
+            ids.extend(tid for tid in map(render._terrain_overlay_for, consts) if tid is not None)
+        return ids
+
+    def _render_current(self, *, reset_view: bool = True, op_label: str | None = None) -> tuple[float, int]:
+        # op_label: the style switches name themselves; otherwise load or re-render.
+        with perf_trace.op(op_label or ("load" if reset_view else "re-render")):
+            return self._render_current_traced(reset_view=reset_view)
+
+    def _render_current_traced(self, *, reset_view: bool = True) -> tuple[float, int]:
         """Renders/prepares self.scenario at the currently selected Terrain
         Style and pushes it to self.map_view -- the render+display step
         shared by load_scenario/refresh_map/on_terrain_style_changed/
@@ -11471,6 +11927,8 @@ class ViewerWindow(QMainWindow):
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
+        # Again: a viewport poll fired in that turn can re-arm any warm on the outgoing cache.
+        self._cancel_warms()
         try:
             t0 = time.perf_counter()
             # Armed before building the cache, not after: the deferred
@@ -11484,6 +11942,10 @@ class ViewerWindow(QMainWindow):
             # installs is unconditional for the same reason: it no-ops
             # unless load_scenario() left a report pending.
             perf_trace.arm("load" if reset_view else "re-render")
+            # Loads the map's textures on a pool while the first paint's level
+            # builds; files already cached are skipped, so a re-render pays a scan.
+            if self._layers.terrain_textures:
+                asset_source.prefetch_terrain_textures(self._texture_prefetch_ids())
             mm = self.scenario.map_manager
             tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
             if self._render_style == "stepped":
@@ -11705,14 +12167,43 @@ class ViewerWindow(QMainWindow):
         _confirm_discard_changes() themselves before calling this, so it
         does no confirming of its own."""
         try:
+            t_generate0 = time.perf_counter()
             data = blank_scenario_bytes(tiles)
+            generate_elapsed = time.perf_counter() - t_generate0
         except (MapSizeError, BlankGenerationError) as e:
             self._log_status(f"New Map failed: {type(e).__name__}: {e}")
             QMessageBox.critical(self, "New Map failed", str(e))
             return
-        self.load_scenario(UNTITLED_PATH, untitled=True, data=data)
+        self.load_scenario(UNTITLED_PATH, untitled=True, data=data, generate_elapsed=generate_elapsed)
 
-    def load_scenario(self, path: Path, *, untitled: bool = False, data: bytes | None = None) -> None:
+    def _freeze_loaded_document(self) -> None:
+        """One full collection, then gc.freeze(): the loaded document's ~500k
+        tracked objects move to the permanent generation, so no later full
+        collection walks them (21-23 ms each on old-allies, 2026-09-28, at any moment of
+        a session). Undone by gc.unfreeze() at the next load, close_scenario()
+        and closeEvent(), so a closed document is still freed.
+
+        Runs after the load's _start_level_warm(), so it replaces that warm's
+        gc hold (gc_hold) with this collection, then holds again for the warm."""
+        gc_hold.reset()
+        t0 = time.perf_counter()
+        gc.collect()
+        gc.freeze()
+        self._load_gc_collect_s = time.perf_counter() - t0
+        debug_log.log(f"Load gc.collect before freeze: {self._load_gc_collect_s * 1000:.1f} ms")
+        if any(w.is_active for w in (self._level_warmer, self._margin_warmer, self._load_warmer)):
+            gc_hold.engage()
+
+    def load_scenario(
+        self,
+        path: Path,
+        *,
+        untitled: bool = False,
+        data: bytes | None = None,
+        generate_elapsed: float | None = None,
+    ) -> None:
+        # generate_elapsed: File > New Map's blank_scenario_bytes() time, spent
+        # before this call; reported as `generate` and counted in the totals.
         # Loading + rendering a large map is a multi-second blocking call
         # (see _render_current()'s own docstring) -- the log line and status
         # bar message below are queued but not actually painted until
@@ -11742,6 +12233,9 @@ class ViewerWindow(QMainWindow):
             self.setEnabled(False)
             QApplication.setOverrideCursor(Qt.WaitCursor)
             QApplication.processEvents()
+            # The previous document's frozen objects become collectable again once this load drops them.
+            gc.unfreeze()
+            gc_hold.reset()
             try:
                 t_parse0 = time.perf_counter()
                 self.scenario = (
@@ -11808,7 +12302,7 @@ class ViewerWindow(QMainWindow):
             # Opened before the render: the first paint can fire inside
             # _render_current()'s processEvents(), and counts as this load's.
             self._pending_paint_report = {
-                "parse": parse_elapsed, "prepare": 0.0, "paint": 0.0,
+                "generate": generate_elapsed or 0.0, "parse": parse_elapsed, "prepare": 0.0, "paint": 0.0,
                 "paints": 0, "max_paint": -1.0, "mip": 0, "ready": False,
             }
             # Renders at whichever Terrain Style was already selected --
@@ -11823,8 +12317,10 @@ class ViewerWindow(QMainWindow):
             # Here rather than inside _render_current(): this is the one
             # render path that opens a document the user is about to zoom
             # around in. _render_current()'s other callers are re-renders
-            # that cancel a warm instead (see its own first line).
+            # that cancel a warm instead (see its own first line), re-armed
+            # by the next viewport fire, as this load's warm is restarted by it.
             self._start_level_warm()
+            self._freeze_loaded_document()
             mm = self.scenario.map_manager
             # Before _update_info(), whose stats combo rebuild reads these labels.
             self._refresh_player_labels()
@@ -11864,13 +12360,14 @@ class ViewerWindow(QMainWindow):
             self._update_edit_actions()
             self._update_title()
             self.statusBar().clearMessage()
-            total_elapsed = parse_elapsed + elapsed
+            total_elapsed = (generate_elapsed or 0.0) + parse_elapsed + elapsed
+            generate_part = "" if generate_elapsed is None else f"generate {generate_elapsed:.2f}s, "
             self._log_status(
                 f"{'Created' if untitled else 'Loaded'} {display_name} "
                 f"({mm.map_width}x{mm.map_height} tiles, "
                 f"{sum(len(u) for u in self.scenario.unit_manager.units):,} units, "
                 f"tile_px={tile_px}, style={self._style_log_label}) "
-                f"in {total_elapsed:.2f}s (parse {parse_elapsed:.2f}s, prepare {elapsed:.2f}s)"
+                f"in {total_elapsed:.2f}s ({generate_part}parse {parse_elapsed:.2f}s, prepare {elapsed:.2f}s)"
             )
             # Only now, with that line printed, may the follow-up drain. No
             # paint at all (a window never shown) means no second line.
@@ -11913,6 +12410,9 @@ class ViewerWindow(QMainWindow):
         self._cancel_warms()
         self._cache = None
         self._iso_elevations, self._iso_proj = None, None
+        # Frozen at load; without this the closed document is never collected.
+        gc.unfreeze()
+        gc_hold.reset()
         self.edit_history.reset()
         self._doc_id = uuid4().hex
         self._autosaved_at_cursor = None

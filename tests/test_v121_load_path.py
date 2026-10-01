@@ -42,7 +42,11 @@ def _fake_map_section(n_tiles: int, entry_length: int, fields: tuple[str, ...]):
     entries = [
         SimpleNamespace(byte_length=entry_length, retriever_map=dict.fromkeys(fields)) for _ in range(n_tiles)
     ]
-    return SimpleNamespace(retriever_map={"terrain_data": _FakeStructRetriever(entries)})
+    # Layer presence is read off the TerrainStruct model, not a parsed tile.
+    model = SimpleNamespace(retriever_map=dict.fromkeys(fields))
+    return SimpleNamespace(
+        retriever_map={"terrain_data": _FakeStructRetriever(entries)}, struct_models={"TerrainStruct": model}
+    )
 
 
 # -- 6b: terrain stride and layer presence -----------------------------------

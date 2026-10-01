@@ -218,6 +218,17 @@ def test_v121_opens_natively_and_agrees_with_the_oracle(path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", _v121_files(), ids=lambda p: p.name)
+def test_v121_fast_terrain_matches_the_library_walk(path: Path) -> None:
+    """The terrain fast path on the stride-3, no-layer structure: the same
+    oracle test_scenario_io.py runs on DE files."""
+    from test_scenario_io import _assert_paths_agree
+
+    _assert_paths_agree(
+        scenario_io.load_map_and_units(path, fast_terrain=False), scenario_io.load_map_and_units(path)
+    )
+
+
+@pytest.mark.parametrize("path", _v121_files(), ids=lambda p: p.name)
 def test_v121_untouched_save_is_byte_identical(path: Path, tmp_path: Path) -> None:
     from descape.scenario_write import write_scenario
 

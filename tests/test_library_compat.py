@@ -318,13 +318,17 @@ class _FakeRetriever:
 
 
 class _FakeSection:
-    def __init__(self, retriever_map: dict) -> None:
+    def __init__(self, retriever_map: dict, struct_models: dict | None = None) -> None:
         self.retriever_map = retriever_map
+        self.struct_models = struct_models or {}
 
 
 def _v121_shaped_map_section() -> _FakeSection:
-    tile = _FakeSection({"terrain_id": None, "elevation": None, "unused": None})
-    return _FakeSection({"map_width": None, "map_height": None, "terrain_data": _FakeRetriever([tile])})
+    # adapt_map_links() reads layer presence off the TerrainStruct model, not a parsed tile.
+    model = _FakeSection({"terrain_id": None, "elevation": None, "unused": None})
+    return _FakeSection(
+        {"map_width": None, "map_height": None, "terrain_data": _FakeRetriever([])}, {"TerrainStruct": model}
+    )
 
 
 def test_adapt_map_links_is_a_no_op_on_a_de_load() -> None:
@@ -386,3 +390,59 @@ def test_absent_field_link_pulls_its_value_and_pushes_nothing() -> None:
     assert link.pull_from_link() == ""
     assert link.push_to_link() is None
     assert link.get_names() == ["_map_color_mood"]
+
+
+def _de_shaped_map_section() -> _FakeSection:
+    model = _FakeSection({"terrain_id": None, "elevation": None, "unused": None, "layer": None})
+    return _FakeSection(
+        {"map_color_mood": None, "map_width": None, "map_height": None, "terrain_data": _FakeRetriever([])},
+        {"TerrainStruct": model},
+    )
+
+
+def test_prebuilt_terrain_relink_is_released_back_to_pristine() -> None:
+    """The fast terrain path's relink feeds MapManager.construct() prebuilt
+    tiles; release_terrain_link() must leave the class exactly pristine on a
+    DE-shaped Map, so no class attribute outlives the load holding tiles."""
+    from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+
+    library_compat.depoison()
+    pristine_mm = MapManager._link_list
+    tiles = [object()]
+    library_compat.adapt_map_links(_de_shaped_map_section(), terrain=tiles)
+    terrain = [link for link in MapManager._link_list[0].group if link.name == "terrain"]
+    assert isinstance(terrain[0], library_compat._AbsentFieldLink)
+    assert terrain[0].pull_from_link() is tiles
+
+    library_compat.release_terrain_link()
+
+    assert MapManager._link_list is pristine_mm
+    assert library_compat.class_state_delta(MapManager) == ([], [])
+    assert all(link.parent is pristine_mm[0] for link in pristine_mm[0].group)
+
+
+def test_prebuilt_terrain_on_a_v121_map_keeps_the_mood_relink() -> None:
+    """v1.21 needs both MapManager relinks at once. They are made in one
+    pass (no intermediate group re-parents a pristine link), and releasing
+    the terrain one keeps the map_color_mood one until depoison()."""
+    from AoE2ScenarioParser.objects.managers.map_manager import MapManager
+
+    library_compat.depoison()
+    pristine_mm = MapManager._link_list
+    try:
+        library_compat.adapt_map_links(_v121_shaped_map_section(), terrain=[])
+        group = MapManager._link_list[0].group
+        assert [link.name for link in group] == ["_map_color_mood", "map_width", "map_height", "terrain"]
+        assert isinstance(group[0], library_compat._AbsentFieldLink)
+        assert isinstance(group[3], library_compat._AbsentFieldLink)
+        assert all(link.parent is pristine_mm[0] for link in pristine_mm[0].group)
+
+        library_compat.release_terrain_link()
+
+        group = MapManager._link_list[0].group
+        assert isinstance(group[0], library_compat._AbsentFieldLink)
+        assert group[1:] == pristine_mm[0].group[1:]
+        assert all(link.parent is pristine_mm[0] for link in pristine_mm[0].group)
+    finally:
+        library_compat.depoison()
+    assert MapManager._link_list is pristine_mm

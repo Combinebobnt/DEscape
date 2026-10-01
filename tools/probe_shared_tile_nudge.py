@@ -44,11 +44,13 @@ COUNTS: dict[str, int] = {}
 def _install_probes() -> None:
     from descape import render_cache
 
-    orig_batch = render_cache._batch_splice_eligible
+    # The clause-level form _splice_plan() reaches through the module global.
+    orig_refusal = render_cache._batch_splice_refusal
 
     def batch_probe(units_by_tile, changed):
-        result = orig_batch(units_by_tile, changed)
-        entry = {"result": result, "n": len(changed), "const_ok": [], "blockers": []}
+        reason = orig_refusal(units_by_tile, changed)
+        result = reason is None
+        entry = {"result": result, "reason": reason, "n": len(changed), "const_ok": [], "blockers": []}
         for s in changed:
             entry["const_ok"].append((s.unit.unit_const, render_cache._const_splice_eligible(s.unit)))
             for tile in sorted(s.changed_tiles):
@@ -58,9 +60,9 @@ def _install_probes() -> None:
                     entry["blockers"].append((tile, side, [(u.unit_const, u.x, u.y) for u in others]))
             entry["tiles"] = (s.old_tiles, s.new_tiles)
         LOG.append(entry)
-        return result
+        return reason
 
-    render_cache._batch_splice_eligible = batch_probe
+    render_cache._batch_splice_refusal = batch_probe
 
     def count(cls, name):
         original = getattr(cls, name)
@@ -298,7 +300,10 @@ def _session(label: str, pick: str, nudges: int, mode: str, analyse: bool = Fals
             )
         )
         for i, e in enumerate(LOG[:2]):
-            print(f"   [{i}] result={e['result']} const_ok={e['const_ok']} tiles={e['tiles']} blockers={e['blockers']}")
+            print(
+                f"   [{i}] result={e['result']} reason={e['reason']} const_ok={e['const_ok']} "
+                f"tiles={e['tiles']} blockers={e['blockers']}"
+            )
         s = io.StringIO()
         st = pstats.Stats(prof, stream=s)
         st.sort_stats("cumulative").print_stats(30)

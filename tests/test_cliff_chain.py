@@ -56,6 +56,34 @@ def test_piece_for_suffix_stays_in_the_selected_sub_group():
     assert cliff_catalog.piece_for_suffix(DEFAULT_01, 8) == DEFAULT_08
 
 
+def test_piece_for_suffix_agrees_with_piece_suffix_and_parses_no_config(monkeypatch):
+    """It reads families()' own labels rather than calling piece_suffix() per
+    piece, which parsed config.yaml each time (~25 ms per Cliff stroke start)."""
+    from descape import asset_source
+
+    families = cliff_catalog.families()
+    calls = []
+    real_get_language = asset_source.get_language
+
+    def counting_get_language() -> str:
+        calls.append(1)
+        return real_get_language()
+
+    suffix_of = {p.unit_const: cliff_catalog.piece_suffix(p.unit_const) for ps in families.values() for p in ps}
+    expected = {}
+    for pieces in families.values():
+        for piece in pieces:
+            for suffix in range(1, 10):
+                same = [p.unit_const for p in pieces if suffix_of[p.unit_const] == suffix]
+                expected[piece.unit_const, suffix] = (
+                    min(same, key=lambda c: (abs(c - piece.unit_const), c)) if same else None
+                )
+    monkeypatch.setattr(asset_source, "get_language", counting_get_language)
+    for (const, suffix), want in expected.items():
+        assert cliff_catalog.piece_for_suffix(const, suffix) == want, (const, suffix)
+    assert calls == []
+
+
 def test_a_lone_click_places_the_picked_piece_verbatim():
     """Stage 1's own gesture, unchanged by the widening to a drag stroke: a
     node with no neighbours has no dirset to resolve, so it takes the

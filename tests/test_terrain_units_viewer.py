@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from test_sprite_toggle_viewer import sprite_install  # noqa: F401 -- fixture, requested by name
 
-from descape import settings
+from descape import render_cache, settings
 from descape.edit_history import CompositeDiffRecord, TileDiffRecord
 
 import conftest
@@ -346,34 +346,42 @@ def _fresh(window, style: str):
 
 
 def _spy(window, monkeypatch):
-    """Records every _after_unit_mutation `changed` argument and every
-    wholesale source rebuild: a _refresh_source_caches() call from inside
-    invalidate_units(), which every style's splice path never makes (patch()
-    and Flat's patch_rects() call it too, so only calls inside count)."""
-    calls = {"changed": [], "wholesale": 0}
+    """Records every _after_unit_mutation `changed` argument, every wholesale
+    source rebuild (a _refresh_source_caches() call from inside
+    invalidate_units(), which every style's splice path never makes; patch()
+    and Flat's patch_rects() call it too, so only calls inside count) and
+    every in-place units_by_tile update that succeeded."""
+    calls = {"changed": [], "wholesale": 0, "in_place": 0}
     inside = [False]
     real_after = window._after_unit_mutation
     cache = window._cache
     real_invalidate, real_refresh = cache.invalidate_units, cache._refresh_source_caches
+    real_in_place = getattr(cache, "_update_units_by_tile_in_place", None)
 
     def after(changed=None, **kwargs):
         calls["changed"].append(changed)
         return real_after(changed, **kwargs)
 
-    def invalidate(changed=None):
+    def invalidate(changed=None, splice_levels=True):
         inside[0] = True
         try:
-            return real_invalidate(changed)
+            return real_invalidate(changed, splice_levels=splice_levels)
         finally:
             inside[0] = False
 
-    def refresh(elevation_changed=None):
+    def refresh(elevation_changed=None, **kwargs):
         calls["wholesale"] += inside[0]
-        return real_refresh(elevation_changed)
+        return real_refresh(elevation_changed, **kwargs)
+
+    def in_place(changed):
+        done = real_in_place(changed)
+        calls["in_place"] += done
+        return done
 
     monkeypatch.setattr(window, "_after_unit_mutation", after)
     monkeypatch.setattr(cache, "invalidate_units", invalidate)
     monkeypatch.setattr(cache, "_refresh_source_caches", refresh)
+    monkeypatch.setattr(cache, "_update_units_by_tile_in_place", in_place)
     return calls
 
 
@@ -431,30 +439,42 @@ def test_draw_through_existing_trees_splices_and_repaints_like_a_fresh_render(st
 
 
 def _spy_evictions(window, monkeypatch) -> list:
-    """Every bbox window._cache.invalidate_region() evicts from here on."""
+    """Every bbox window._cache.invalidate_region() evicts from here on at the
+    visible level (levels None included). A unit edit's eviction of today's
+    bbox from the other resident levels (_repaint_unit_edit_split()) is not
+    the patch-or-evict choice these tests pin, so it is left out."""
     evictions = []
     real_evict = window._cache.invalidate_region
 
-    def evict(bbox, levels=None):
-        evictions.append(bbox)
-        return real_evict(bbox, levels=levels)
+    def evict(bbox, levels=None, **kwargs):
+        target = window.map_view.viewport_chunk_target()
+        if levels is None or target is None or target[0] in levels:
+            evictions.append(bbox)
+        return real_evict(bbox, levels=levels, **kwargs)
 
     monkeypatch.setattr(window._cache, "invalidate_region", evict)
     return evictions
 
 
+@pytest.mark.parametrize("path", ["component", "wholesale"])
 @pytest.mark.parametrize("repaint", ["patch", "evict"])
 @pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
-def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(style, sprites, repaint, monkeypatch, request) -> None:
-    """A contested tile makes the cache refuse the splice, so invalidate_units()
-    rebuilds its sources (from the sprite memo), and the stroke end still
+def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(
+    style, sprites, repaint, path, monkeypatch, request
+) -> None:
+    """A contested tile makes the batch guard refuse the splice. The cache
+    splices the shared tile's component, or with the component cap at 0
+    (`wholesale`) updates units_by_tile in place, the batch being pure adds or
+    removals, and rebuilds the levels (from the sprite memo); either way the stroke end
     repaints only the batch's bbox, eagerly or by evicting its chunks: never
-    the whole canvas. Undo and redo take the same path. With sprites, the
-    contested unit is a real sprite, so the memo-backed rebuild is what the
-    pixel oracle checks."""
+    the whole canvas. Undo and redo take the same path, the component one
+    through _gaia_membership_diff(). With sprites, the contested unit is a
+    real sprite, so the re-derived draw is what the pixel oracle checks."""
     if sprites:
         request.getfixturevalue("sprite_install")
+    if path == "wholesale":
+        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
     _splice_any_batch(monkeypatch)
     if repaint == "evict":
         _pin_area_ratio(monkeypatch, 0)
@@ -463,6 +483,9 @@ def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(style, sprit
         # A configured real install turns sprites on by default, so set both states explicitly.
         window.show_sprites_action.setChecked(sprites)
         assert window._cache.sprites_enabled is sprites
+        # Show mip 0, the level _canvas() keeps resident: the repaint choice pinned below is the visible level's.
+        _cx0, _cy0, cx1, cy1 = window._cache.chunk_index_range(0, 0, 0, *window._cache.canvas_dims(0))
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (0, 0, 0, cx1, cy1))
         model = window._ensure_unit_edits()
         with window._unit_edit(model, "Add", [1]):
             model.add(1, CONST, STROKE_TILES[3][0] + 0.5, STROKE_TILES[3][1] + 0.5)
@@ -475,7 +498,11 @@ def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(style, sprit
 
         (changed,) = calls["changed"]
         assert changed, "the stroke end took the whole-canvas path"
-        assert calls["wholesale"] == 1, "expected the contested batch to rebuild its sources"
+        # With the component cap at 0 the refused batch is pure GAIA adds (its
+        # undo pure removals), so it updates units_by_tile in place, not wholesale.
+        in_place = 1 if path == "wholesale" else 0
+        assert calls["wholesale"] == 0, "a membership-only batch took the wholesale source rebuild"
+        assert calls["in_place"] == in_place, f"expected the contested batch to take the {path} path"
         assert bool(evictions) is (repaint == "evict")
         assert canvas not in evictions
         after = _canvas(window)
@@ -483,10 +510,14 @@ def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(style, sprit
         assert np.array_equal(after, _fresh(window, style))
         window.undo()
         assert calls["changed"][-1]
+        assert calls["wholesale"] == 0
+        assert calls["in_place"] == 2 * in_place, f"the undo did not take the {path} path"
         assert np.array_equal(_canvas(window), before)
         assert np.array_equal(_canvas(window), _fresh(window, style))
         window.redo()
         assert calls["changed"][-1]
+        assert calls["wholesale"] == 0
+        assert calls["in_place"] == 3 * in_place, f"the redo did not take the {path} path"
         assert canvas not in evictions
         assert np.array_equal(_canvas(window), after)
     finally:
@@ -574,16 +605,147 @@ def test_a_batch_too_large_for_the_map_takes_the_wholesale_path_in_flat(monkeypa
         window.close()
 
 
-def test_undo_of_a_non_gaia_edit_stays_wholesale(monkeypatch) -> None:
-    """The membership diff only covers GAIA-only records."""
-    window = _styled_window("Stepped")
+def _prime_ref_index(window):
+    """The trigger reference index built and held, so an edit must patch or drop it."""
+    index = window._unit_reference_index()
+    assert index is window._unit_ref_index is not None
+    return index
+
+
+def _assert_ref_index_current(window, step: str) -> None:
+    """Whatever the edit did to the held index (patched it, or dropped it for a
+    lazy rebuild), the next read equals a fresh build."""
+    from descape import unit_references
+
+    index = window._unit_reference_index()
+    fresh = unit_references.build_reference_index(window.scenario)
+    assert dict(index.by_id) == dict(fresh.by_id), f"{step}: the reference index is stale"
+    assert index.duplicates == fresh.duplicates, step
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
+def test_undo_and_redo_of_a_non_gaia_place_take_the_paste_shaped_path_except_on_flat(style, monkeypatch) -> None:
+    """A player-1 Place is a pure tail append, so its undo and redo take the
+    scoped membership path (_membership_diff()'s paste shape) on Stepped and
+    Sloped, and stay wholesale on Flat. Pixels and the reference index match
+    a fresh build after each."""
+    window = _styled_window(style)
     try:
         model = window._ensure_unit_edits()
         with window._unit_edit(model, "Add", [1]):
             model.add(1, 83, 40.5, 40.5)
+        _prime_ref_index(window)
         calls = _spy(window, monkeypatch)
-        window.undo()
-        assert calls["changed"] == [None]
+        for step, act in (("undo", window.undo), ("redo", window.redo)):
+            _canvas(window)
+            act()
+            changed = calls["changed"][-1]
+            if style == "Flat":
+                assert changed is None, f"{step}: Flat took the scoped path"
+            else:
+                assert changed and len(changed) == 1 and changed[0].player_id == 1, f"{step}: took {changed}"
+            assert np.array_equal(_canvas(window), _fresh(window, style)), step
+            _assert_ref_index_current(window, step)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("last", [True, False], ids=["last-unit", "mid-list"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_undo_and_redo_of_a_convert_stay_wholesale(style, last, monkeypatch) -> None:
+    """A Convert moves a unit between lists: a mid-list one is no tail change,
+    and the list's last one is on both sides of the diff, so neither is
+    paste-shaped. Pixels and the reference index match a fresh build."""
+    window = _styled_window(style)
+    try:
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [1]):
+            for i in range(3):
+                model.add(1, 83, 40.5 + 2 * i, 40.5)
+        target = window.scenario.unit_manager.units[1][-1 if last else 1]
+        with window._unit_edit(model, "Convert", [1, 2]):
+            model.reassign(target, 2)
+        _prime_ref_index(window)
+        calls = _spy(window, monkeypatch)
+        for step, act in (("undo", window.undo), ("redo", window.redo)):
+            _canvas(window)
+            act()
+            assert calls["changed"][-1] is None, f"{step}: a Convert left the wholesale path"
+            assert np.array_equal(_canvas(window), _fresh(window, style)), step
+            _assert_ref_index_current(window, step)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_draw_undo_with_no_elevation_keeps_the_tiles_first_scoped_patch(monkeypatch) -> None:
+    """Draw's terrain + GAIA composite carries no elevation change, so its undo
+    and redo keep the tiles-first order and _patch_unit_edit_cache(), not the
+    sources-first branch Paste and Mirror Map take."""
+    _splice_any_batch(monkeypatch)
+    window = _styled_window("Stepped")
+    try:
+        _draw(window, FOREST_OAK)
+        scoped = []
+        real = window._patch_unit_edit_cache
+        monkeypatch.setattr(window, "_patch_unit_edit_cache", lambda *a, **k: (scoped.append(1), real(*a, **k)))
+        for step, act in (("undo", window.undo), ("redo", window.redo)):
+            del scoped[:]
+            act()
+            assert scoped == [1], f"{step}: skipped the scoped patch"
+            assert np.array_equal(_canvas(window), _fresh(window, "Stepped")), step
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_undo_and_redo_of_a_mirror_map_with_units_and_elevation_run_the_unit_sources_first(style, monkeypatch) -> None:
+    """Mirror Map's tile + unit composite changes elevation under its unit
+    images, so its undo and redo run the unit sources before the tile patch
+    (the order _flush_pending requires), skipping _patch_unit_edit_cache().
+    Pixels and the reference index match a fresh build after each."""
+    from descape.mirror_tools import plan_mirror, plan_mirror_units
+
+    window = _styled_window(style)
+    try:
+        window._on_tool_selected("set_level")
+        window.elevation_level_spin.setValue(1)
+        for y in range(10, 13):
+            for x in range(10, 13):
+                window.on_edit_stroke_start()
+                window.on_edit_stroke_tile(x, y, 0)
+                window.on_edit_stroke_end()
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [1]):
+            model.add(1, 83, 11.5, 11.5)
+        mm = window.scenario.map_manager
+        plan = plan_mirror(mm, 1, 0, do_terrain=True, do_elevation=True)
+        assert not plan.elevation_violations
+        unit_plan = plan_mirror_units(
+            mm, 1, 0, window.scenario.unit_manager.units, plan.source_indices,
+            referencing=window.unit_edits.referencing,
+        )
+        assert window.on_mirror(plan, unit_plan)
+        _prime_ref_index(window)
+        events = []
+        real_dirty, real_units = window._apply_dirty, window._cache.invalidate_units
+        real_scoped = window._patch_unit_edit_cache
+        monkeypatch.setattr(window, "_apply_dirty", lambda d: (events.append("tiles"), real_dirty(d))[1])
+        monkeypatch.setattr(
+            window._cache, "invalidate_units", lambda *a, **k: (events.append("units"), real_units(*a, **k))[1]
+        )
+        monkeypatch.setattr(
+            window, "_patch_unit_edit_cache", lambda *a, **k: (events.append("scoped"), real_scoped(*a, **k))[1]
+        )
+        for step, act in (("undo", window.undo), ("redo", window.redo)):
+            _canvas(window)
+            del events[:]
+            act()
+            assert events[:2] == ["units", "tiles"] and "scoped" not in events, f"{step}: {events}"
+            assert np.array_equal(_canvas(window), _fresh(window, style)), step
+            _assert_ref_index_current(window, step)
     finally:
         window.edit_history.mark_saved()
         window.close()

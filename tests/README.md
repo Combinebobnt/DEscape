@@ -28,21 +28,22 @@ around the default tier only -- they exist so there's one obvious command
 for "did I break anything," not a shortcut for the corpus tier, which
 still needs the `-m` flag spelled out above.
 
-**Parallel runs.** The wrappers, `tools/ci_parity.sh` and CI run the tier
-under pytest-xdist (`requirements-dev.txt`) with `-n auto --maxprocesses 16
---dist loadgroup`: one worker per CPU, capped at 16. Arguments you pass come
-last and win, so `-n 0` runs serially and `--maxprocesses 32` lifts the cap.
+**Parallel runs.** The wrappers run the tier under pytest-xdist
+(`requirements-dev.txt`) with `-n auto --maxprocesses 8 --dist loadgroup`:
+one worker per CPU, capped at 8 so the machine stays usable during a run.
+`tools/ci_parity.sh` and CI cap at 16 instead. Arguments you pass come last
+and win, so `-n 0` runs serially and `--maxprocesses 16` raises the cap.
 Measured on a 32-thread, 61 GB machine (2026-09-25), all with the same 7093
 passed, 50 skipped, 609 deselected:
 
 | workers | wall time | extra memory in use |
 |---|---|---|
 | serial | 28:55 | 4.9 GB peak RSS |
-| 8 | 3:56 | 5.9 GB |
-| 16 (the cap) | 2:22 to 2:34 | 6.9 to 7.5 GB |
+| 8 (the wrappers' cap) | 3:56 | 5.9 GB |
+| 16 (CI's cap) | 2:22 to 2:34 | 6.9 to 7.5 GB |
 | 32 | 2:07 | 9.8 GB |
 
-Past 16 workers the gain flattens (11% for 43% more memory), hence the cap.
+Past 16 workers the gain flattens (11% for 43% more memory), hence CI's cap.
 `pytest.ini`'s addopts deliberately stays serial: `test_font_dpi_sweep.py`
 and `test_collection_env.py` spawn child pytests that inherit addopts (and
 `PYTEST_ADDOPTS`), so a `-n` there would fan out again in every child.
@@ -73,7 +74,9 @@ replaces, byte for byte, and skips when the kernel isn't built:
 `requirements-dev.txt`). `DESCAPE_REQUIRE_NATIVE=1` turns that skip into a
 failure (CI and `ci_parity.sh` set it, and build first).
 `DESCAPE_COMPOSITE=numpy` or `native` forces the backend the rest of the
-suite renders with. Run the tier once each way after a kernel change.
+suite renders with, and decodes .sld sprites with. `test_sld_native.py` does
+the same for the kernel's SLD walk and delta-chain decode against
+`sld_decoder`'s numpy path. Run the tier once each way after a kernel change.
 
 **Anything that rebuilds `.venv` drops the dev dependencies, pytest
 included** -- `bootstrap.py` (what the `LAUNCH_DEscape_*` launchers run)

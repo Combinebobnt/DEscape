@@ -6,6 +6,7 @@ reaches back up into the window."""
 
 from __future__ import annotations
 
+import gc
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -84,9 +85,9 @@ from descape.viewer_common import (
     TOOL_SELECT,
 )
 
-# Stroke tools _touch_tile gap-fills. Cliff (per-tile chain semantics) and Convert
-# (own stroke path) are left out on purpose: still one tile per touch.
-_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level"})
+# Stroke tools _touch_tile gap-fills. Cliff too: each path tile feeds the chain walk
+# in order, so a fast drag lays the same run as a slow one.
+_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "cliff"})
 
 
 def _add_closed_polygons(path, polygons) -> None:
@@ -147,7 +148,8 @@ class MapView(QGraphicsView):
     # as a full zoom step. See wheelEvent's own docstring.
     WHEEL_NOTCH_UNITS = 120
     # Idle gap that ends a wheel GESTURE, so the next event starts a fresh
-    # one with a fresh +/-1 mip budget. PROVISIONAL, in the same sense as
+    # one with a fresh +/-1 mip budget; also the minimum time between two
+    # mip crossings in one continuous roll. PROVISIONAL, in the same sense as
     # VIEWPORT_POLL_MS: long enough that one flick of a real wheel stays one
     # gesture, short enough that a deliberate second roll isn't refused.
     WHEEL_GESTURE_GAP_S = 0.25
@@ -542,6 +544,10 @@ class MapView(QGraphicsView):
         # setter rather than a constructor callable, which would grow the
         # already long injected list (a known merge-collision point).
         self._place_shape_query: Callable[[], str] = lambda: ""
+        # GH #128: Place Unit's hover ghost, set by set_place_preview(). _place_hover is
+        # the last (scene pos, modifiers) the tool hovered on the map, for refreshes.
+        self._on_place_preview: Callable[[QPointF, object], None] = lambda pos, modifiers: None
+        self._place_hover: tuple[QPointF, object] | None = None
         # GH #75's unit-drag hooks, set by set_unit_drag_hooks() for the same reason.
         self._on_unit_click_release: Callable[[tuple[int, int]], None] = lambda key: None
         self._is_group_drag: Callable[[tuple[int, int]], bool] = lambda key: False
@@ -680,6 +686,8 @@ class MapView(QGraphicsView):
         self._marquee_start_pos: QPointF | None = None
         self._marquee_item: QGraphicsRectItem | None = None
         self._stroke_active = False
+        # True while this view's stroke holds gc disabled (_pause_gc_for_stroke).
+        self._stroke_gc_paused = False
         # Keyed on the CURSOR tile, not the painted tile -- a cheap early
         # out only (skip re-entering _touch_tile/on_stroke_tiles for a mouse
         # move that hasn't left the current cursor tile), not a correctness
@@ -793,12 +801,13 @@ class MapView(QGraphicsView):
         self._max_linear_scale: float | None = None
         # Wheel-gesture state, all reset together by _end_wheel_gesture():
         # leftover sub-notch angleDelta, the direction the gesture is
-        # running in, the mip it started on (None while idle), and when the
-        # last wheel event arrived.
+        # running in, the mip its budget is anchored on (None while idle),
+        # when the last wheel event arrived, and when that budget was anchored.
         self._wheel_accum = 0
         self._wheel_dir = 0
         self._wheel_gesture_mip: int | None = None
         self._wheel_last_t = 0.0
+        self._wheel_budget_t = 0.0
         self.set_zoom_anchor_mode(settings.get_zoom_centered_on_cursor())
         self.setMouseTracking(True)
 
@@ -998,6 +1007,33 @@ class MapView(QGraphicsView):
         wall, which turns Place Unit into a wall-run drag tool."""
         self._place_shape_query = fn
 
+    def set_place_preview(self, fn: Callable[[QPointF, object], None]) -> None:
+        """GH #128: `fn(scene_pos, modifiers)` resolves Place Unit's hover
+        ghost and pushes it back through set_unit_ghost()."""
+        self._on_place_preview = fn
+
+    def refresh_place_ghost(self) -> None:
+        """Re-runs the Place Unit hover preview at the last hovered point with
+        no mouse move: refresh_highlight()'s analogue, for a catalog pick,
+        owner, free-placement or Alt change. A no-op unless Place Unit is the
+        active tool and the cursor is over the view."""
+        if self._place_hover is None or self._mode != "units" or self._tool != "place_unit":
+            return
+        if self._is_shape_tool():
+            # A wall pick makes Place Unit a shape drag: no ghost, and its moves
+            # never update _place_hover, so the stored point goes stale.
+            self._place_hover = None
+            self._clear_unit_ghost()
+            return
+        pos, modifiers = self._place_hover
+        self._show_place_ghost(pos, modifiers, self._pos_on_map(pos))
+
+    def _show_place_ghost(self, pos: QPointF, modifiers, on_map: bool) -> None:
+        if on_map:
+            self._on_place_preview(pos, modifiers)
+        else:
+            self._clear_unit_ghost()
+
     def _is_shape_tool(self) -> bool:
         """Whether a press now would start a shape drag: a drag_shape tool,
         or Place Unit with a wall const picked."""
@@ -1057,6 +1093,7 @@ class MapView(QGraphicsView):
             self._unit_drag_key = None
             self._unit_drag_press_pos = None
             self._clear_unit_ghost()
+            self._place_hover = None
             self._marquee_start_pos = None
             self._clear_marquee()
         # Defensive, mirroring the _unit_drag_key reset above: a mode
@@ -1134,8 +1171,17 @@ class MapView(QGraphicsView):
 
     def refresh_stack_groups(self) -> None:
         """Recomputes the stacks from the current index -- for a caller that
-        patched that index in place rather than swapping it."""
+        patched that index in place rather than swapping it.
+
+        Skips the badge rebuild (~8 ms in Sloped on old-allies) when every
+        stack tile and member count is unchanged and the badges are live: an
+        anchor depends only on its tile and elevation, and a unit edit changes
+        neither. refresh_elevation_overlays() rebuilds them unconditionally."""
+        old_counts = {tile: len(members) for tile, members in self._stack_groups.items()}
         self._stack_groups = {} if self._unit_index is None else unit_pick.stack_groups(self._unit_index)
+        new_counts = {tile: len(members) for tile, members in self._stack_groups.items()}
+        if new_counts == old_counts and not self._stack_badges_stale:
+            return
         self._rebuild_stack_badges()
 
     def stack_group_at(self, tile: tuple[int, int]) -> list | None:
@@ -1652,6 +1698,11 @@ class MapView(QGraphicsView):
         # close it out first, same as a normal release would.
         if self._stroke_active and tool != self._tool:
             self._end_stroke()
+        # Place Unit's hover ghost belongs to the tool. Gated on the outgoing
+        # tool so a keyboard switch mid-drag keeps the drag's own ghost.
+        if self._tool == "place_unit" and tool != "place_unit":
+            self._place_hover = None
+            self._clear_unit_ghost()
         self._tool = tool
         # Whichever highlight belonged to the tool being left is no longer
         # valid -- mouseMoveEvent's next move re-creates the right one for
@@ -1825,21 +1876,42 @@ class MapView(QGraphicsView):
         # argument the "draw"/"set_level" tools would just ignore.
         if self._stroke_button == Qt.RightButton:
             modifiers = modifiers | Qt.ShiftModifier
-        self._on_stroke_tiles(tiles, modifiers)
+        with perf_trace.span("step"):
+            self._on_stroke_tiles(tiles, modifiers)
         perf_trace.step()
 
+    def _pause_gc_for_stroke(self) -> None:
+        """A full collection walks everything built since the load-time
+        gc.freeze() (preloaded levels' sprite layers, grids): 20-45 ms that
+        otherwise lands mid-stroke. Refcounting still frees acyclic garbage;
+        cycles wait until release. Leaves gc alone if someone else disabled it."""
+        if gc.isenabled():
+            gc.disable()
+            self._stroke_gc_paused = True
+
+    def resume_stroke_gc(self) -> None:
+        """Undoes _pause_gc_for_stroke(); idempotent, so every stroke-closing
+        path (release, leave, File > Close, window close) can call it."""
+        if self._stroke_gc_paused:
+            self._stroke_gc_paused = False
+            gc.enable()
+
     def _end_stroke(self) -> None:
-        self._stroke_active = False
-        self._stroke_touched = set()
-        self._stroke_last_tile = None
-        self._stroke_button = None
-        # Resumes the highlight pulse the press paused. See
-        # _sync_pulse_timer() for why a stroke stops it.
-        self._sync_pulse_timer()
-        try:
-            self._on_stroke_end()
-        finally:
-            perf_trace.end_drag(self._tool)
+        # The release span: the drag line's wall covers it up to the stroke-end flush.
+        with perf_trace.span("release"):
+            with perf_trace.phase("gc_resume"):
+                self.resume_stroke_gc()
+            self._stroke_active = False
+            self._stroke_touched = set()
+            self._stroke_last_tile = None
+            self._stroke_button = None
+            # Resumes the highlight pulse the press paused. See
+            # _sync_pulse_timer() for why a stroke stops it.
+            self._sync_pulse_timer()
+            try:
+                self._on_stroke_end()
+            finally:
+                perf_trace.end_drag(self._tool)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MiddleButton:
@@ -2013,18 +2085,21 @@ class MapView(QGraphicsView):
                 # early. See mouseReleaseEvent for the matching half of
                 # this fix.
                 return
-            pos = self.mapToScene(event.pos())
-            if self._pos_on_map(pos):
-                self._stroke_active = True
-                self._stroke_touched = set()
-                self._stroke_last_tile = None
-                self._stroke_button = event.button()
-                # Pauses the pulse for the duration of the stroke, which is
-                # the one time its 40ms tick competes with real edit work.
-                self._sync_pulse_timer()
-                perf_trace.begin_drag()
-                self._on_stroke_start()
-                self._touch_tile(*self._pick_tile(pos), event.modifiers())
+            # The press span: begin_drag() runs inside it, and its wall counts from here.
+            with perf_trace.span("press"):
+                pos = self.mapToScene(event.pos())
+                if self._pos_on_map(pos):
+                    self._stroke_active = True
+                    self._stroke_touched = set()
+                    self._stroke_last_tile = None
+                    self._stroke_button = event.button()
+                    # Pauses the pulse for the duration of the stroke, which is
+                    # the one time its 40ms tick competes with real edit work.
+                    self._sync_pulse_timer()
+                    self._pause_gc_for_stroke()
+                    perf_trace.begin_drag()
+                    self._on_stroke_start()
+                    self._touch_tile(*self._pick_tile(pos), event.modifiers())
             return
         super().mousePressEvent(event)
 
@@ -2237,6 +2312,12 @@ class MapView(QGraphicsView):
             self._shape_modifiers = self._shape_modifiers | Qt.ShiftModifier
             self._update_shape_preview()
             return
+        # Held Alt is free placement's one-off, so the hover ghost answers it
+        # without a move. Falls through: Alt alone is no other binding here.
+        if event.key() == Qt.Key_Alt and self._place_hover is not None:
+            pos, modifiers = self._place_hover
+            self._place_hover = (pos, modifiers | Qt.AltModifier)
+            self.refresh_place_ghost()
         if self._mode == "units":
             if event.key() in self._UNIT_NUDGE_KEYS:
                 dx, dy = self._UNIT_NUDGE_KEYS[event.key()]
@@ -2378,7 +2459,8 @@ class MapView(QGraphicsView):
 
     def keyReleaseEvent(self, event) -> None:
         """Shift during a shape drag (the matching half of keyPressEvent's
-        live-constrain branch), and the end of a held pan.
+        live-constrain branch), Alt over Place Unit's hover ghost, and the end
+        of a held pan.
 
         X11 emits release+press pairs while a key is held, both flagged
         isAutoRepeat(), so an auto-repeat release must not end the hold. A
@@ -2390,6 +2472,10 @@ class MapView(QGraphicsView):
             self._shape_modifiers = self._shape_modifiers & ~Qt.ShiftModifier
             self._update_shape_preview()
             return
+        if event.key() == Qt.Key_Alt and self._place_hover is not None:
+            pos, modifiers = self._place_hover
+            self._place_hover = (pos, modifiers & ~Qt.AltModifier)
+            self.refresh_place_ghost()
         super().keyReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
@@ -2430,7 +2516,9 @@ class MapView(QGraphicsView):
         # the eventual release back here, so a drag that merely crosses the
         # viewport edge must still be able to commit its move. What must not
         # survive is a preview drawn at a destination the cursor has left.
+        # Place Unit's hover ghost (GH #128) goes with it, and its hover point.
         self._clear_unit_ghost()
+        self._place_hover = None
         # Defensive, same reasoning as the marquee above: cancelled outright,
         # not committed -- there is no natural release position to resolve
         # against. The committed region (if any) is untouched, exactly like
@@ -3479,6 +3567,7 @@ class MapView(QGraphicsView):
         # Same hazard: scene().clear() destroyed the ghost's C++ object, so
         # _clear_unit_ghost()'s removeItem() on the next drag exit would raise.
         self._unit_ghost_item = None
+        self._place_hover = None
         # Same hazard as the tick item above, and the same fix: forget the
         # destroyed items, and drop the measurement itself, since File > Close
         # leaves no map for it to refer to. Pinned rulers go too.
@@ -3529,6 +3618,7 @@ class MapView(QGraphicsView):
         self._region_ants_item = None
         self._region_scene_rect = None
         self._region_ant_timer.stop()
+        self.resume_stroke_gc()
         self._stroke_active = False
         self._stroke_touched = set()
         self._stroke_last_tile = None
@@ -3734,6 +3824,11 @@ class MapView(QGraphicsView):
         self._last_viewport_target = target
         self.on_viewport_changed()
 
+    def stop_viewport_poll(self) -> None:
+        """Drops a pending poll fire: the owning window is closing, and a fire
+        after that would re-arm its warms on a shared event loop."""
+        self._viewport_poll_timer.stop()
+
     def set_source(
         self,
         tile_pixels: int,
@@ -3854,6 +3949,8 @@ class MapView(QGraphicsView):
         # commits nothing (see keyPressEvent's Escape branch for the other
         # place that pairing matters).
         self._unit_ghost_item = None
+        # A hover point in the old scene's coordinates; the next move sets it again.
+        self._place_hover = None
         self._unit_drag_key = None
         self._unit_drag_press_pos = None
         self._unit_index = unit_index
@@ -4412,12 +4509,20 @@ class MapView(QGraphicsView):
     def refresh_footprint_overlay(self) -> None:
         """Rebuilds the outline path from the live index and height field.
 
-        Runs even while the overlay is hidden, unlike refresh_unit_highlight,
+        While enabled it runs in every mode, unlike refresh_unit_highlight,
         which may skip elevation edits because terrain edits are only
         reachable in Terrain mode and leaving Units mode drops the selection.
-        An always-on overlay voids that argument: it is live in Terrain mode
-        while the elevations under it change."""
+        An enabled overlay voids that argument: it is live in Terrain mode
+        while the elevations under it change.
+
+        While disabled it is skipped: the path of every multi-tile footprint
+        cost 26 ms (Stepped) / 109 ms (Sloped) per unit edit on old-allies,
+        for an item nobody could see."""
         if self._footprint_item is None:
+            return
+        # Safe to skip: _footprint_enabled's only writers are __init__ and
+        # set_footprint_outlines(), which rebuilds right after enabling.
+        if not self._footprint_enabled:
             return
         path = QPainterPath()
         if self._unit_index is not None:
@@ -4599,7 +4704,8 @@ class MapView(QGraphicsView):
         self._rebuild_stack_badges()
 
     def schedule_footprint_refresh(self) -> None:
-        if self._footprint_refresh_pending or self._footprint_item is None:
+        # Hidden: nothing to queue per drag step (refresh_footprint_overlay's invariant).
+        if self._footprint_refresh_pending or self._footprint_item is None or not self._footprint_enabled:
             return
         self._footprint_refresh_pending = True
         QTimer.singleShot(0, self._flush_footprint_refresh)
@@ -4609,7 +4715,8 @@ class MapView(QGraphicsView):
         # scene().clear() can have destroyed the item between the schedule
         # and this call (File > Close, a style switch), so re-check.
         if self._footprint_item is not None:
-            self.refresh_footprint_overlay()
+            with perf_trace.phase("footprint_refresh"):
+                self.refresh_footprint_overlay()
 
     def set_grid_appearance(self, blend: int, thickness: int) -> bool:
         """Stores the appearance for both halves. Evicts only when the bake
@@ -4667,14 +4774,14 @@ class MapView(QGraphicsView):
         self._wheel_dir = 0
         self._wheel_gesture_mip = None
         self._wheel_last_t = 0.0
+        self._wheel_budget_t = 0.0
 
-    def _trim_wheel_notches(self, notches: int) -> int:
-        """Reduces a pending notch count until the zoom it asks for is inside
-        the floor/ceiling AND at most one mip level from where the gesture
-        started. 0 means the whole event is refused, which for a single
-        over-the-ceiling notch is exactly the refusal this has always been.
-        The arithmetic at |notches| == 1 is the pre-accumulation guard
-        unchanged."""
+    def _wheel_zoom_factor(self, notches: int) -> float | None:
+        """The zoom factor for a pending notch count, reduced until it is
+        inside the floor/ceiling AND at most one mip level from the budget's
+        anchor. A step that would overshoot a bound lands exactly on it
+        instead, so the readout can reach 50% and 6400%. None refuses the
+        whole event: already at the bound, or every step crosses the budget."""
         step = 1.25 if notches > 0 else 0.8
         current = abs(self.transform().determinant()) ** 0.5
         while notches != 0:
@@ -4682,14 +4789,20 @@ class MapView(QGraphicsView):
             target = current * factor
             too_small = notches < 0 and self._min_linear_scale is not None and target < self._min_linear_scale
             too_big = notches > 0 and self._max_linear_scale is not None and target > self._max_linear_scale
-            if not (too_small or too_big or self._crosses_wheel_mip_budget(factor)):
-                return notches
+            if too_small or too_big:
+                factor = (self._min_linear_scale if too_small else self._max_linear_scale) / current
+                # 1e-9: float drift after a clamp must not read as room for one more sliver.
+                moves = factor > 1.0 + 1e-9 if notches > 0 else factor < 1.0 - 1e-9
+                if not moves:
+                    return None
+            if not self._crosses_wheel_mip_budget(factor):
+                return factor
             notches += -1 if notches > 0 else 1
-        return 0
+        return None
 
     def _crosses_wheel_mip_budget(self, factor: float) -> bool:
         """Whether zooming by `factor` would land more than one mip level
-        from where this gesture started. False with no canvas item (nothing
+        from the gesture's budget anchor. False with no canvas item (nothing
         selects a level) and on a single-level ladder, where mip_for_scale()
         clamps every scale to the same answer."""
         start = self._wheel_gesture_mip
@@ -4711,11 +4824,15 @@ class MapView(QGraphicsView):
 
         A GESTURE is a run of same-direction events with no
         WHEEL_GESTURE_GAP_S pause between them: one flick of the wheel.
-        Notches past the first mip boundary in a gesture are dropped rather
-        than banked, so a hard flick lands one level away instead of two.
-        Two would land outside level_warm.neighbour_mips()'s +/-1 warm set
-        and pay a synchronous level build inside paint(). Pausing (or
-        reversing) starts a fresh gesture with a fresh budget."""
+        Its budget is one mip level from an anchor: notches past the next
+        boundary are dropped rather than banked, so a hard flick lands one
+        level away instead of two. Two would land outside
+        level_warm.neighbour_mips()'s +/-1 warm set and pay a synchronous
+        level build inside paint(). Pausing (or reversing) starts a fresh
+        gesture. A roll that keeps going re-anchors the budget once
+        WHEEL_GESTURE_GAP_S has passed since the last crossing: a rate limit
+        of one level per gap, never a stop (it used to refuse until the wheel
+        went idle, 2026-09-30 stress log)."""
         delta = event.angleDelta().y()
         if delta == 0:
             return
@@ -4741,17 +4858,27 @@ class MapView(QGraphicsView):
             return
         if self._wheel_gesture_mip is None:
             self._wheel_gesture_mip = self._mip_for_zoom_factor(1.0)
-        notches = self._trim_wheel_notches(notches)
-        if notches == 0:
+            self._wheel_budget_t = now
+        factor = self._wheel_zoom_factor(notches)
+        if factor is None and now - self._wheel_budget_t >= self.WHEEL_GESTURE_GAP_S:
+            self._wheel_gesture_mip = self._mip_for_zoom_factor(1.0)
+            self._wheel_budget_t = now
+            factor = self._wheel_zoom_factor(notches)
+        if factor is None:
             return
-        factor = 1.25**notches if notches > 0 else 0.8 ** -notches
+        mip_before = self._mip_for_zoom_factor(1.0)
         anchor = event.position().toPoint() if self._zoom_on_cursor else self.viewport().rect().center()
-        before = self.mapToScene(anchor)
-        self.scale(factor, factor)
-        drift = self.mapFromScene(before) - anchor
-        self._scroll_by(drift.x(), drift.y())
-        self._note_viewport_changed()
-        self._on_zoom_changed()
+        # The repaint this schedules lands on the next `perf view` line, with its mip change.
+        with perf_trace.op("zoom"):
+            before = self.mapToScene(anchor)
+            self.scale(factor, factor)
+            drift = self.mapFromScene(before) - anchor
+            self._scroll_by(drift.x(), drift.y())
+            self._note_viewport_changed()
+            self._on_zoom_changed()
+        # A crossing restarts the gap before the budget may re-anchor past it.
+        if self._mip_for_zoom_factor(1.0) != mip_before:
+            self._wheel_budget_t = now
 
     def mouseMoveEvent(self, event):
         if self._middle_drag_active:
@@ -4874,6 +5001,14 @@ class MapView(QGraphicsView):
                         self._touch_tile(*tile, event.modifiers())
                 else:
                     self._clear_highlight()
+                return
+            # GH #128: Place Unit's hover ghost. The cyan hover outline is
+            # cleared, as in the drag branch: a place click never selects.
+            # A drag or marquee begun before a keybound switch to Place Unit keeps its own branch.
+            if self._tool == "place_unit" and self._unit_drag_key is None and self._marquee_start_pos is None:
+                self._clear_unit_hover()
+                self._place_hover = (pos, event.modifiers())
+                self._show_place_ghost(pos, event.modifiers(), on_map)
                 return
             if self._unit_drag_key is not None:
                 # A unit drag is in progress (b1.5): the hover cue would

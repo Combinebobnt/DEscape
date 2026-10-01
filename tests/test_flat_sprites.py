@@ -76,8 +76,8 @@ BIG_SPAN = (3, 3)
 # Stepped resolve the SAME frame. A wiring check on either would be green
 # with icon_for() still passing the iso default. 16 is where they diverge, and
 # is also the angle_count that dominates the real install (1,163 graphics).
-# Non-composite on purpose: _assembled_native() then returns the single piece
-# as-is, so the icon's pixels are that one frame's, uncomposited.
+# Non-composite on purpose: _build_icon() then takes its single-piece path,
+# so the icon's pixels are that one frame's, uncomposited.
 ANGLE_CONST = CONST + 2
 ANGLE_FILE = "t_facing_x1"
 ANGLE_COUNT = 16

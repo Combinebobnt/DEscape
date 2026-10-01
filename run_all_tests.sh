@@ -4,9 +4,9 @@
 # (~15 min, the default scope) and run_corpus_stress.sh (~27 min, the
 # complete corpus).
 #
-# Parallel via pytest-xdist: one worker per CPU, capped at 16 (past that the
-# gain flattens). Arguments come last, so `-n 0` runs serially and
-# `--maxprocesses 32` lifts the cap.
+# Parallel via pytest-xdist: one worker per CPU, capped at 8 so the machine
+# stays usable. Arguments come last, so `-n 0` runs serially and
+# `--maxprocesses 16` raises the cap.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -15,4 +15,4 @@ if [ ! -x ".venv/bin/python3" ]; then
     exit 1
 fi
 
-.venv/bin/python3 -m pytest -n auto --maxprocesses 16 --dist loadgroup "$@"
+.venv/bin/python3 -m pytest -n auto --maxprocesses 8 --dist loadgroup "$@"

@@ -45,7 +45,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import constant_picker, disables_fields, object_catalog, player_labels
+from descape import asset_source, constant_picker, disables_fields, object_catalog, player_labels
 from descape.value_picker import PickerItem, ValuePickerView
 from descape.viewer_common import _add_player_item
 
@@ -84,7 +84,7 @@ def _full_list_items(category: str) -> tuple[PickerItem, ...]:
     )
 
 
-def _label_for(category: str, id_: int, catalog) -> str:
+def _label_for(category: str, id_: int, catalog, lang: str | None = None) -> str:
     """How a Disabled-pane row renders.
 
     The catalog's own label first, so the two panes never disagree: with no
@@ -97,9 +97,9 @@ def _label_for(category: str, id_: int, catalog) -> str:
     name = object_catalog.name_for(catalog, id_)
     if not name:
         name = (
-            object_catalog.tech_name(id_)
+            object_catalog.tech_name(id_, lang)
             if category == "techs"
-            else object_catalog.object_name(id_)
+            else object_catalog.object_name(id_, lang)
         )
     return f"{name} ({id_})"
 
@@ -175,8 +175,12 @@ class _CategoryTab(QWidget):
         -- the game does not appear to care, and keeping it is what lets an
         untouched list re-encode byte-identically."""
         self.disabled_list.clear()
+        # Parsed lazily: only an out-of-catalog row needs it, and most lists have none.
+        lang = None
         for id_ in ids:
-            item = QListWidgetItem(_label_for(self.category, id_, self._catalog))
+            if lang is None and not object_catalog.name_for(self._catalog, id_):
+                lang = asset_source.get_language()
+            item = QListWidgetItem(_label_for(self.category, id_, self._catalog, lang))
             item.setData(Qt.UserRole, id_)
             self.disabled_list.addItem(item)
 

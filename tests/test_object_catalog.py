@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from descape import asset_source, object_catalog
@@ -144,6 +145,27 @@ def test_resolve_name_respects_the_configured_language(tmp_path) -> None:
         assert object_catalog.combined_object_name(109) == "Stadtzentrum"
     finally:
         asset_source.set_install_path_override(None)
+
+
+@pytest.mark.parametrize("builder_name", ["_combined_object_names", "objects", "techs"])
+def test_bulk_builders_resolve_the_language_once_per_build(monkeypatch, builder_name) -> None:
+    """get_language() parses config.yaml uncached, so a per-row call cost ~4 s
+    on a real config; each bulk build must resolve it exactly once."""
+    real_get_language = asset_source.get_language
+    calls = []
+
+    def counting_get_language() -> str:
+        calls.append(1)
+        return real_get_language()
+
+    monkeypatch.setattr(asset_source, "get_language", counting_get_language)
+    builder = getattr(object_catalog, builder_name)
+    builder.cache_clear()
+    try:
+        builder()
+    finally:
+        builder.cache_clear()
+    assert len(calls) == 1
 
 
 def test_techs_returns_every_techinfo_member_alphabetically() -> None:

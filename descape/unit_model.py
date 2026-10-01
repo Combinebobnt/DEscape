@@ -27,8 +27,16 @@ tell them apart. The blob splice is kept anyway for three reasons the plan
 records: doctrine consistency with the terrain/options/trigger write paths,
 insurance against a future drift source affecting only re-serialized units
 (this module breaks one unit's bytes where whole-section reserialization
-would break every unit in the file), and cost (no commit-readback for units
-nobody touched).
+would break every unit in the file), and cost (units nobody touched are
+never re-encoded at all).
+
+A dirty unit is written by _encode_unit_values(), the struct encoder the
+construction gate already runs, not by a library commit: on a fast load the
+commit would first build a default UnitStruct for every unit in the file.
+The commit plus _serialize_unit() stays as _serialize_via_commit(), the
+fallback for a structure the encoder refuses or a value it cannot pack the
+way the library would. A corpus-marked test pins the two writers equal on
+edited values, so a drift source in either one fails there.
 
 **Rotate is narrowly scoped, not out of scope.** For walls, gates and most
 GAIA doodads, `rotation` is a shape-variant index rather than an angle
@@ -56,16 +64,18 @@ field, plain AttributeError if a unit was parsed while poisoned -- see
 region_clipboard.copy_region()'s defensive read). Writing is not exposed:
 add(), add_many() and serialize() each call library_compat.depoison() first,
 which is what keeps Unit.__init__'s own unconditional assignment of those two
-fields, and commit()'s readback in serialize(), from raising regardless of
-which document loaded last.
+fields, and serialize()'s reads of each dirty unit's fields (or the fallback
+commit's readback), from raising regardless of which document loaded last.
 """
 
 from __future__ import annotations
 
 import struct
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+from AoE2ScenarioParser.helper import bytes_conversions, string_manipulations
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
@@ -73,6 +83,7 @@ from descape import (
     gate_orientation,
     library_compat,
     render,
+    scenario_io,
     terrain_palette,
     unit_rotation,
     unit_sprites,
@@ -105,6 +116,11 @@ _NEXT_UNIT_ID_STRUCT = struct.Struct("<I")
 # no-op but whose *read* (getattr(manager, "next_unit_id")) is the
 # side-effecting generator call this module exists to avoid.
 _PLAYER_UNITS_LINK_NAME = "_player_units"
+
+# remove_many() deletes by index up to this many units, else rewrites each list.
+# Both costs scale with the list length, so the crossover is a count. Estimated
+# (each del memmoves three lists' tails); probe_unit_plan_split's remove-only rows check it.
+_REMOVE_BY_INDEX_MAX = 256
 
 
 class UnitEditsUnavailableError(Exception):
@@ -169,22 +185,54 @@ def _serialize_unit(entry) -> bytes:
     return b"".join(parts)
 
 
-def _raw_unit_blobs(loaded: LoadedScenario, players_units) -> list[list[bytes]]:
-    """Per-player lists of each unit's original on-disk byte slice, walked
-    from units_block_offset. Mirrors scenario_io._verify_units_block()'s and
-    tests/test_units_fixture.py's _raw_unit_slices()'s own walk: each
-    PlayerUnitsStruct's own byte_length covers its leading unit_count u32
-    *and* every one of its units, so the walk steps over 4 bytes for
-    unit_count before iterating that player's own units.
-    """
+def _encode_str32(value, name: str) -> bytes:
+    """parse_val_to_bytes() for one str32 retriever named `name`: the
+    library's charset fallback and NUL trail, behind a signed s32 length."""
+    data = bytes_conversions.str_to_bytes(value)
+    if name not in bytes_conversions._no_string_trail:
+        data = string_manipulations.add_str_trail(data)
+    return len(data).to_bytes(_CAPTION_PREFIX_SIZE, "little", signed=True) + data
+
+
+def _encode_unit_values(unit_format, values: tuple) -> bytes:
+    """_serialize_unit()'s bytes for an entry holding `values` (in
+    unit_format.names order), with the struct format derived from the file's
+    own UnitStruct model (scenario_io.unit_codec()): fixed fields packed as
+    the library packs them, then the same str32 form and empty-caption NUL
+    strip. Both the construction gate and serialize()'s writer for a dirty
+    unit."""
+    count = len(unit_format.fields)
+    data = unit_format.fixed.pack(*values[:count])
+    if unit_format.caption is None:
+        return data
+    value = values[count]
+    caption = _encode_str32(value, unit_format.caption)
+    if unit_format.caption == _CAPTION_FIELD and value == "":
+        caption = _strip_one_trailing_nul(caption)
+    return data + caption
+
+
+def _raw_unit_blobs(loaded: LoadedScenario) -> list[list[bytes]]:
+    """Per-player lists of each unit's original on-disk byte slice, from the
+    spans the load recorded. Re-checks their layout the way the old entry
+    walk did: each player's units follow its 4-byte unit_count, contiguous,
+    and the last player's end is players_units_end."""
+    spans = loaded.unit_spans
+    if spans is None:
+        raise UnitEditsUnavailableError("This load recorded no unit spans -- refusing to construct an edit model")
+    body = loaded.decompressed_body
     offset = loaded.units_block_offset
     blobs: list[list[bytes]] = []
-    for player_units in players_units:
+    for player_spans in spans:
         offset += 4  # unit_count
         player_blobs = []
-        for entry in player_units.retriever_map["units"].data:
-            player_blobs.append(loaded.decompressed_body[offset : offset + entry.byte_length])
-            offset += entry.byte_length
+        for start, length in player_spans:
+            if start != offset:
+                raise UnitEditsUnavailableError(
+                    f"Unit span starts at {start}, expected {offset} -- refusing to construct an edit model"
+                )
+            player_blobs.append(body[start : start + length])
+            offset += length
         blobs.append(player_blobs)
     if offset != loaded.players_units_end:
         raise UnitEditsUnavailableError(
@@ -200,7 +248,11 @@ def _check_all_units_reproduce(blobs_by_player, entries_by_player) -> None:
     corpus probe. Finding 4 (field edits don't reach the bytes without a
     commit) is what makes comparing against still-unedited retrievers safe
     here. Fails closed per unit -- see _serialize_unit's docstring for why
-    there is no file-wide caption "style" to decide in advance."""
+    there is no file-wide caption "style" to decide in advance.
+
+    Only for a structure scenario_io.unit_codec() refuses (so the load took
+    the library walk and entries exist); _check_all_units_encode() is the
+    gate otherwise."""
     for player_blobs, player_entries in zip(blobs_by_player, entries_by_player, strict=True):
         for raw, entry in zip(player_blobs, player_entries, strict=True):
             produced = _serialize_unit(entry)
@@ -211,6 +263,66 @@ def _check_all_units_reproduce(blobs_by_player, entries_by_player) -> None:
                     f"({len(produced)} vs {len(raw)} bytes) -- refusing to construct an "
                     f"edit model for this file"
                 )
+
+
+def _check_all_units_encode(unit_format, blobs_by_player) -> None:
+    """The per-file construction gate, with no library walk: each raw span
+    decoded as the load reads it, re-encoded by _encode_unit_values(), and
+    compared with itself. Like _check_all_units_reproduce(), it reads the
+    file's values, not the live Units (which a caller may already have
+    changed). The encoder mirrors _serialize_unit(), and a corpus-marked
+    test pins the two equal per unit. Anything the encoder can't pack fails
+    closed like a mismatch. Since the encoder is also what serialize()
+    writes a dirty unit with, passing here means an unedited value
+    round-trips through a save exactly (a NaN payload `pack` rewrites, say,
+    is refused now rather than drifting later)."""
+    for player_blobs in blobs_by_player:
+        for raw in player_blobs:
+            values = scenario_io.unit_values(unit_format, raw)
+            try:
+                produced = b"" if values is None else _encode_unit_values(unit_format, values)
+            except (struct.error, OverflowError, ValueError, TypeError):
+                produced = b""
+            if produced != raw:
+                fields = dict(zip(unit_format.names, values or (), strict=False))
+                raise UnitEditsUnavailableError(
+                    f"Unit reference_id {fields.get('reference_id')} does not reproduce its original bytes "
+                    f"({len(produced)} vs {len(raw)} bytes) -- refusing to construct an "
+                    f"edit model for this file"
+                )
+
+
+# struct codes the library packs with int.to_bytes(), which only takes an int.
+_INT_CODES = frozenset("BbHhIi")
+
+
+class _EncodeParityError(TypeError):
+    """A value struct.pack() would take but the library's commit would not."""
+
+
+def _int_positions(unit_format) -> tuple[int, ...]:
+    """Indices into a values tuple whose field the library packs as an int.
+    One code per field: _unit_struct_format() refuses any repeat."""
+    return tuple(i for i, code in enumerate(unit_format.fixed.format.lstrip("<")) if code in _INT_CODES)
+
+
+def _unit_values(codec, unit: Unit) -> tuple:
+    """`unit`'s values in codec.unit_format.names order: linked fields as
+    attributes, unlinked ones with unlinked_fields.push()'s default."""
+    carried = unlinked_fields.UNLINKED_FIELDS[Unit]
+    attrs = codec.attrs
+    return tuple(getattr(unit, name, carried[name]) if name in attrs else getattr(unit, name) for name in codec.unit_format.names)
+
+
+def _encode_unit(codec, int_positions: tuple[int, ...], unit: Unit) -> bytes:
+    """One dirty unit's bytes through the encoder. Raises _EncodeParityError
+    for a non-int (a numpy int, say) in an integer field: struct.pack()
+    accepts any __index__ type, and the commit this replaces would raise."""
+    values = _unit_values(codec, unit)
+    for i in int_positions:
+        if not isinstance(values[i], int):
+            raise _EncodeParityError(f"{codec.unit_format.names[i]} is {type(values[i]).__name__}, not int")
+    return _encode_unit_values(codec.unit_format, values)
 
 
 def _highest_reference_id(manager: UnitManager) -> int:
@@ -233,6 +345,60 @@ def span_low_corner(unit: Unit) -> tuple[int, int]:
     """
     span_x, span_y = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
     return render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
+
+
+def new_unit(
+    uuid,
+    player: int,
+    unit_const: int,
+    x: float,
+    y: float,
+    reference_id: int,
+    *,
+    z: float = 0.0,
+    rotation: float = 0.0,
+    status: int = 2,
+    initial_animation_frame: int = 0,
+    garrisoned_in_id: int = -1,
+    caption_string_id: int = -1,
+    caption_string: str = "",
+    capture_flag: int = -1,
+    depoison: bool = True,
+) -> Unit:
+    """A free-standing Unit carrying UnitEditModel.add()'s defaults, owned by
+    no list. add() places what this returns; Place Unit's hover ghost (GH
+    #128) only draws it, with a sentinel `reference_id=-1`.
+
+    **Never hand a ghost to a write path**, the same warning render.unit_at()
+    carries: it belongs to no list, so a model call on it would misfile it.
+    Unit/AoE2Object.__init__ only assign attributes, so a hover may call this
+    once per tile crossing; the only shared state it touches is depoison's.
+
+    `depoison` is add()'s load-bearing library_compat.depoison() call (see
+    its docstring), which resets library class state globally: Unit.__init__
+    assigns the caption fields unconditionally and raises on a pre-1.55 file
+    without it. batch_adds() passes False because it already ran it once."""
+    if depoison:
+        library_compat.depoison()
+    unit = Unit(
+        player=player,
+        x=x,
+        y=y,
+        z=z,
+        reference_id=reference_id,
+        unit_const=unit_const,
+        status=status,
+        rotation=rotation,
+        initial_animation_frame=initial_animation_frame,
+        garrisoned_in_id=garrisoned_in_id,
+        caption_string_id=caption_string_id,
+        caption_string=caption_string,
+        uuid=uuid,
+    )
+    # Unlinked on 0.8.3, so carried as a plain attribute; serialize()
+    # writes it into whatever slot the unit ends up in.
+    unit.capture_flag = capture_flag
+    return unit
 
 
 # The only fields any in-place operation mutates -- add/remove/reassign move
@@ -338,18 +504,24 @@ class UnitEditModel:
 
         self.loaded = loaded
         manager = loaded.unit_manager
-        players_units = loaded._scenario.sections["Units"].retriever_map["players_units"].data
-        entries_by_player = [pu.retriever_map["units"].data for pu in players_units]
-        blobs_by_player = _raw_unit_blobs(loaded, players_units)
+        blobs_by_player = _raw_unit_blobs(loaded)
 
-        for player, (units, entries) in enumerate(zip(manager.units, entries_by_player, strict=True)):
-            if len(units) != len(entries):
+        for player, (units, blobs) in enumerate(zip(manager.units, blobs_by_player, strict=True)):
+            if len(units) != len(blobs):
                 raise UnitEditsUnavailableError(
-                    f"Player {player} has {len(units)} parsed units but {len(entries)} raw "
-                    f"struct entries -- refusing to construct an edit model"
+                    f"Player {player} has {len(units)} parsed units but {len(blobs)} raw "
+                    f"unit spans -- refusing to construct an edit model"
                 )
 
-        _check_all_units_reproduce(blobs_by_player, entries_by_player)
+        codec = scenario_io.unit_codec(loaded)
+        # serialize()'s writer for dirty units; None sends every save to the commit.
+        self._codec = codec
+        self._int_positions = _int_positions(codec.unit_format) if codec is not None else ()
+        if codec is not None:
+            _check_all_units_encode(codec.unit_format, blobs_by_player)
+        else:
+            players_units = loaded._scenario.sections["Units"].retriever_map["players_units"].data
+            _check_all_units_reproduce(blobs_by_player, [pu.retriever_map["units"].data for pu in players_units])
 
         self._blobs: list[list] = blobs_by_player
         # Strong references to the Unit objects each blob belongs to, one
@@ -378,6 +550,8 @@ class UnitEditModel:
         # begin_unit_edit() and its commit (Batch D's D6), a whole-list
         # UnitSnapshot otherwise.
         self._pending: UnitSnapshot | UnitFieldSnapshot | None = None
+        # True inside batch_adds(), which has already depoisoned the classes.
+        self._batch_depoisoned = False
 
     # -- state -----------------------------------------------------------
 
@@ -769,13 +943,14 @@ class UnitEditModel:
         id generator this method replaces (see _reserve_reference_id), and
         clone_unit() delegates to add_unit() either way. Support-gating
         caption_string_id/caption_string for scenario versions that don't
-        have them is unnecessary here: commit()'s own push_to_link() already
-        skips writing a field whose Support range excludes this scenario's
-        version, and a version whose UnitStruct doesn't define the retriever
+        have them is unnecessary here: serialize()'s encoder packs only the
+        fields the file's own UnitStruct has, the fallback commit's
+        push_to_link() skips writing a field whose Support range excludes
+        this scenario's version, and a version whose UnitStruct doesn't define the retriever
         at all simply has no such key in entry.retriever_map -- see
         _serialize_unit.
 
-        The depoison() call below is load-bearing, not defensive: it's
+        The depoison() call (made by new_unit()) is load-bearing, not defensive: it's
         `Unit.__init__` itself, not the write path, that raises. Loading a
         version below caption_string_id's/caption_string's own
         Support(since=...) permanently replaces those two attributes on the
@@ -787,31 +962,30 @@ class UnitEditModel:
         document of any version if an earlier one in the same process left
         the class poisoned. depoison() restores the class first every time,
         cheaply -- it's a walk of five classes -- rather than gating on
-        whether it looks needed.
+        whether it looks needed. Inside batch_adds() it is skipped: the block
+        already ran it once and loads nothing that could re-poison.
         """
         self._refuse_inside_field_delta("add")
         if not 0 <= player <= 8:
             raise ValueError(f"player must be 0 (GAIA)..8, got {player}")
-        library_compat.depoison()
         reference_id = self._reserve_reference_id()
-        unit = Unit(
-            player=player,
-            x=x,
-            y=y,
+        unit = new_unit(
+            self.loaded._scenario.uuid,
+            player,
+            unit_const,
+            x,
+            y,
+            reference_id,
             z=z,
-            reference_id=reference_id,
-            unit_const=unit_const,
-            status=status,
             rotation=rotation,
+            status=status,
             initial_animation_frame=initial_animation_frame,
             garrisoned_in_id=garrisoned_in_id,
             caption_string_id=caption_string_id,
             caption_string=caption_string,
-            uuid=self.loaded._scenario.uuid,
+            capture_flag=capture_flag,
+            depoison=not self._batch_depoisoned,
         )
-        # Unlinked on 0.8.3, so carried as a plain attribute; serialize()
-        # writes it into whatever slot the unit ends up in.
-        unit.capture_flag = capture_flag
         self.loaded.unit_manager.units[player].append(unit)
         self._blobs[player].append(None)
         self._tracked[player].append(unit)
@@ -825,6 +999,26 @@ class UnitEditModel:
         self._has_added_units = True
         self._bump_unit_gen()
         return unit
+
+    @contextmanager
+    def batch_adds(self):
+        """A run of add() calls paying one library_compat.depoison() instead of
+        one each: Paste Region's ~700 adds spent ~18 ms on that walk alone.
+        add_many() doesn't fit that caller (one player, no z/status/garrison/
+        captions/capture_flag per unit). Ids are still minted per add(), so a
+        garrison remap by returned reference_id works as before.
+
+        Safe because nothing inside the block loads a document, the only thing
+        that re-poisons the classes (see add()'s docstring). Refused inside a
+        fields_only edit, as add() is. Nesting keeps the outer block's state."""
+        self._refuse_inside_field_delta("batch_adds")
+        library_compat.depoison()
+        outer = self._batch_depoisoned
+        self._batch_depoisoned = True
+        try:
+            yield self
+        finally:
+            self._batch_depoisoned = outer
 
     def add_many(self, player: int, specs: Sequence, capture_flag: int = -1) -> list[Unit]:
         """Batch counterpart to add(): resolves _reserve_reference_id()'s
@@ -888,9 +1082,16 @@ class UnitEditModel:
 
     def remove_many(self, units: Sequence[Unit]) -> None:
         """Batch counterpart to remove(): builds the whole batch's garrison-
-        reference set once and rebuilds each touched player's three parallel
-        lists in a single filtering pass, instead of remove()'s n x
-        (_locate() scan + referencing() scan + del-with-tail-shift).
+        reference set once, then deletes the batch from each touched player's
+        three parallel lists, instead of remove()'s n x (_locate() scan +
+        referencing() scan + del-with-tail-shift).
+
+        Up to _REMOVE_BY_INDEX_MAX units, that is a del per unit in descending
+        index order (the Draw stroke end's few trees), with _pos reindexed from
+        the lowest removed index. Past it, or if a unit isn't tracked, it is
+        one filtering pass per list: `[:] =` through UuidList re-wraps every
+        unit in the list, ~5.6 ms on old-allies' 8,687 GAIA units whatever the
+        batch size, while each del is a memmove of the list's tail.
 
         Raises the same UnitEditsUnavailableError as remove() if ANY unit in
         the batch is referenced by another unit's garrisoned_in_id, checked
@@ -914,25 +1115,49 @@ class UnitEditModel:
                 f"{len(referencing)} other unit(s) -- refusing to remove any of them"
             )
 
+        by_index = self._removal_indices(units) if len(to_remove) <= _REMOVE_BY_INDEX_MAX else None
         for unit in units:
             self._pos.pop(id(unit), None)
-        for player, tracked in enumerate(self._tracked):
-            keep = [i for i, u in enumerate(tracked) if id(u) not in to_remove]
-            if len(keep) == len(tracked):
-                continue
-            manager_units = self.loaded.unit_manager.units[player]
-            blobs = self._blobs[player]
-            manager_units[:] = [manager_units[i] for i in keep]
-            blobs[:] = [blobs[i] for i in keep]
-            tracked[:] = [tracked[i] for i in keep]
-            # Reindexed per player this loop actually rewrote, which is not
-            # the set begin_unit_edit() declared: the pass runs over all nine
-            # lists regardless of what the caller named.
-            self._reindex_pos_tail(player, 0)
+        if by_index is not None:
+            for player, indices in by_index.items():
+                manager_units = self.loaded.unit_manager.units[player]
+                blobs, tracked = self._blobs[player], self._tracked[player]
+                # Descending, so each del leaves the lower indices still to come in place.
+                for i in sorted(indices, reverse=True):
+                    del manager_units[i]
+                    del blobs[i]
+                    del tracked[i]
+                self._reindex_pos_tail(player, min(indices))
+        else:
+            for player, tracked in enumerate(self._tracked):
+                keep = [i for i, u in enumerate(tracked) if id(u) not in to_remove]
+                if len(keep) == len(tracked):
+                    continue
+                manager_units = self.loaded.unit_manager.units[player]
+                blobs = self._blobs[player]
+                manager_units[:] = [manager_units[i] for i in keep]
+                blobs[:] = [blobs[i] for i in keep]
+                tracked[:] = [tracked[i] for i in keep]
+                # Reindexed per player this loop actually rewrote, which is not
+                # the set begin_unit_edit() declared: the pass runs over all nine
+                # lists regardless of what the caller named.
+                self._reindex_pos_tail(player, 0)
         self._drop_garrison_entries(units)
         self._highest_ref_id_stale = True
         self._dirty = True
         self._bump_unit_gen()
+
+    def _removal_indices(self, units: Sequence[Unit]) -> dict[int, set[int]] | None:
+        """remove_many()'s del-by-index plan: player -> the batch's indices
+        in that list, from _pos. None if a unit isn't tracked, which the
+        whole-list rewrite quietly skips."""
+        by_index: dict[int, set[int]] = {}
+        for unit in units:
+            entry = self._pos_hit(unit)
+            if entry is None:
+                return None
+            by_index.setdefault(entry[0], set()).add(entry[1])
+        return by_index
 
     def referencing(self, unit: Unit) -> list[Unit]:
         """Every OTHER unit whose garrisoned_in_id points at `unit`'s
@@ -1175,10 +1400,46 @@ class UnitEditModel:
         """The whole players_units array, ready to splice into the
         decompressed body at units_block_offset.
 
-        Commits only if at least one blob is dirty -- a reassign-only or
-        remove-only edit needs no commit at all, since neither changes any
-        unit's own bytes. Counts are always regenerated from len(blobs),
-        never spliced or read back from a stale pre-commit retriever.
+        Clean units splice their original blob; a reassign-only or
+        remove-only edit re-encodes nothing, since neither changes any unit's
+        own bytes. Each dirty or added unit is packed by _encode_unit_values()
+        straight off the live Unit, with no library commit. Counts are always
+        regenerated from len(blobs).
+
+        The whole save falls back to _serialize_via_commit() when the file's
+        structure has no codec, or when any dirty unit holds a value the
+        encoder raises on or would pack where the library's commit would not
+        (_EncodeParityError). The commit then writes the same bytes or raises
+        the library's own error, so a bad value gets no new failure mode and
+        no silent write. Dirty slots stay None afterwards: undo snapshots hold
+        blob slots, and re-encoding a handful of units per save costs
+        microseconds.
+        """
+        self._check_alignment()
+        codec = self._codec
+        if any(blob is None for blobs in self._blobs for blob in blobs):
+            if codec is None:
+                return self._serialize_via_commit()
+            # Same depoison() reasoning as add(): a poisoned class's property
+            # getter shadows the instance's caption_string, so reading it raises.
+            library_compat.depoison()
+        parts: list[bytes] = []
+        try:
+            for blobs, tracked in zip(self._blobs, self._tracked, strict=True):
+                parts.append(_UNIT_COUNT_STRUCT.pack(len(blobs)))
+                for blob, unit in zip(blobs, tracked, strict=True):
+                    parts.append(blob if blob is not None else _encode_unit(codec, self._int_positions, unit))
+        except (struct.error, OverflowError, ValueError, TypeError, AttributeError):
+            return self._serialize_via_commit()
+        return b"".join(parts)
+
+    def _serialize_via_commit(self) -> bytes:
+        """serialize() through the library: a link-narrowed manager.commit()
+        and _serialize_unit() of each dirty slot. serialize()'s fallback, and
+        the oracle its encoder is tested against. Commits only if at least
+        one blob is dirty. On a fast load the commit first builds a default
+        UnitStruct for every unit in the file, which is why it is not the
+        default writer.
         """
         self._check_alignment()
         manager = self.loaded.unit_manager

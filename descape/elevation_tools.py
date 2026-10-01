@@ -21,7 +21,7 @@ tests/test_elevation_tools.py checks the two agree on randomized maps.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from AoE2ScenarioParser.helper.maffs import sign
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
@@ -31,8 +31,16 @@ from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 # v0.8.3 (commit b763e2e3), AoE2ScenarioParser/objects/managers/map_manager.py,
 # MapManager._elevation_tile_recursion. GPL-3.0, the same license as DEscape;
 # copyright for the original remains with the AoE2ScenarioParser authors.
-# Changed only to take `mm` explicitly and add every written index to `touched`.
-def _elevation_tile_recursion(mm: MapManager, source_tile, xys, touched: set[int], visited=None) -> None:
+# Changed only to take `mm` explicitly, add every written index to `touched`,
+# and call the optional `before_write(index)` just before each write.
+def _elevation_tile_recursion(
+    mm: MapManager,
+    source_tile,
+    xys,
+    touched: set[int],
+    visited=None,
+    before_write: Callable[[int], None] | None = None,
+) -> None:
     visited = set() if visited is None else visited.copy()
     x, y = source_tile.xy
     visited.add((x, y))
@@ -43,14 +51,19 @@ def _elevation_tile_recursion(mm: MapManager, source_tile, xys, touched: set[int
             other = mm.get_tile_safe(new_x, new_y)
             if other is None:
                 continue
+            i = new_y * size + new_x
             behind = mm.get_tile_safe(x + nx * 2, y + ny * 2)
             if behind is not None and other.elevation < source_tile.elevation == behind.elevation:
+                if before_write is not None:
+                    before_write(i)
                 other.elevation = source_tile.elevation
-                touched.add(new_y * size + new_x)
+                touched.add(i)
             elif abs(other.elevation - source_tile.elevation) > 1:
+                if before_write is not None:
+                    before_write(i)
                 other.elevation = source_tile.elevation + int(sign(other.elevation, source_tile.elevation))
-                touched.add(new_y * size + new_x)
-                _elevation_tile_recursion(mm, other, xys, touched, visited)
+                touched.add(i)
+                _elevation_tile_recursion(mm, other, xys, touched, visited, before_write)
 
 
 def set_tile_elevation(mm: MapManager, x: int, y: int, elevation: int) -> set[int]:
@@ -67,7 +80,11 @@ def set_tile_elevation(mm: MapManager, x: int, y: int, elevation: int) -> set[in
     return touched
 
 
-def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]]) -> set[int]:
+def set_tiles_elevation(
+    mm: MapManager,
+    targets: Sequence[tuple[int, int, int]],
+    before_write: Callable[[int], None] | None = None,
+) -> set[int]:
     """Multi-tile counterpart to set_tile_elevation() above, for a brush
     footprint -- every (x, y, elevation) in `targets` is assigned first, then
     _elevation_tile_recursion() is run once per target tile with `xys` set to
@@ -87,7 +104,12 @@ def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]])
 
     Returns every flat index written: all targets (even ones already at
     their value) plus every propagated tile. Requires mm.map_width ==
-    mm.map_height, same as set_tile_elevation()."""
+    mm.map_height, same as set_tile_elevation().
+
+    `before_write`, when given, is called with a propagated tile's flat index
+    just before each write to it (possibly more than once per tile), so a
+    scoped EditHistory stroke can capture it. It is not called for the
+    targets: those are the caller's own write set, known up front."""
     footprint = {(x, y) for x, y, _ in targets}
     size = mm.map_size
     touched = {y * size + x for x, y in footprint}
@@ -97,5 +119,5 @@ def set_tiles_elevation(mm: MapManager, targets: Sequence[tuple[int, int, int]])
         tile.elevation = elevation
         tiles.append(tile)
     for tile in tiles:
-        _elevation_tile_recursion(mm, tile, footprint, touched)
+        _elevation_tile_recursion(mm, tile, footprint, touched, before_write=before_write)
     return touched

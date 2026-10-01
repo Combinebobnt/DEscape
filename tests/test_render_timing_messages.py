@@ -132,8 +132,7 @@ def test_first_paint_line_reports_composite_and_a_real_total():
     # test_perf_trace.py resets that module in setup_function, so its last
     # test leaves tracing enabled for whatever runs next.
     perf_trace.enable(False)
-    perf_trace._repaint_durations = []
-    perf_trace._armed_label = None
+    perf_trace.reset()
     debug_log.clear()
     window = _window()
     try:
@@ -264,6 +263,37 @@ def test_new_map_gets_the_same_first_paint_follow_up():
         window.close()
 
 
+def test_new_map_created_line_reports_generate_in_its_total():
+    """File > New Map's blank_scenario_bytes() (donor load, splice,
+    recompress) runs before load_scenario()'s parse timer starts, so the
+    Created line reports it as `generate` and counts it in both totals."""
+    import re
+
+    window = _window()
+    try:
+        window.new_map()
+        assert window.scenario is not None, "New Map failed to produce a scenario"
+        window.resize(400, 400)
+        window.show()
+        _spin()
+        text = window.status_log.toPlainText()
+        created = re.search(
+            r"Created .* in (\d+\.\d+)s \(generate (\d+\.\d+)s, parse (\d+\.\d+)s, prepare (\d+\.\d+)s\)", text
+        )
+        assert created, text
+        total, generate, parse, prepare = (float(g) for g in created.groups())
+        assert generate > 0.0
+        # Independently 2dp-rounded terms, a cent each way per term.
+        assert total == pytest.approx(generate + parse + prepare, abs=0.03)
+        painted = re.search(r"First paint composited in (\d+\.\d+)s \(total (\d+\.\d+)s", text)
+        assert painted, text
+        paint, paint_total = float(painted.group(1)), float(painted.group(2))
+        assert paint_total == pytest.approx(generate + parse + prepare + paint, abs=0.04)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_two_loads_each_get_exactly_one_first_paint_line():
     """1.4: "open a file, then immediately open a second one: exactly one
     first-paint line per load, attributed to the right file." Only one real
@@ -335,8 +365,7 @@ def test_perf_trace_on_emits_load_repaint_line_off_emits_nothing():
         assert "perf load: repaint:" in debug_log.get_log_text()
     finally:
         perf_trace.enable(False)
-        perf_trace._repaint_durations = []
-        perf_trace._armed_label = None
+        perf_trace.reset()
         debug_log.clear()
         window.edit_history.mark_saved()
         window.close()
