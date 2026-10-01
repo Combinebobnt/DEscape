@@ -223,7 +223,7 @@ def test_the_large_fill_dialog_is_its_own_phase_not_untimed(monkeypatch):
     monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
 
     def slow_yes(*args, **kwargs):
-        time.sleep(0.2)  # the user reading the dialog
+        time.sleep(1.0)  # the user reading the dialog; 0.2 s lost to CI's ~280 ms untimed rest
         return QMessageBox.Yes
 
     monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(slow_yes))
@@ -240,7 +240,7 @@ def test_the_large_fill_dialog_is_its_own_phase_not_untimed(monkeypatch):
         [line] = _op_lines("fill")
         dialog_ms = float(re.search(r"confirm_dialog ([\d.]+)", line).group(1))
         untimed_ms = float(re.search(r"untimed ([\d.]+)", line).group(1))
-        assert dialog_ms >= 190, line
+        assert dialog_ms >= 950, line
         assert untimed_ms < dialog_ms, line
     finally:
         perf_trace.enable(False)
