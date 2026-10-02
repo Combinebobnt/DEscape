@@ -109,6 +109,7 @@ from descape import (
     player_fields,
     player_labels,
     player_stats,
+    qt_platform,
     region_clipboard,
     render_cache,
     ruler,
@@ -12752,6 +12753,9 @@ def main() -> None:
     if migrated is not None:
         debug_log.log(f"Migrated config from {asset_source.LEGACY_CONFIG_PATH} to {migrated}")
     debug_log.log(f"Config file: {asset_source.CONFIG_PATH}")
+    platform_line = qt_platform.apply_default()
+    if platform_line is not None:
+        debug_log.log(platform_line)
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "app_icon.png")))
     apply_theme(app, settings.get_dark_mode())

@@ -22,6 +22,15 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [Unreleased]
+
+### Changed
+
+- **Linux Wayland sessions run under XWayland by default** (GH #78). Wayland
+  made drags repaint on every mouse move, so painting lagged. Launch with
+  `QT_QPA_PLATFORM=wayland` to opt out; XWayland may look blurry under
+  fractional scaling.
+
 ## [0.9] - 2026-10-01
 
 ### Added
