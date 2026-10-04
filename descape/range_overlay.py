@@ -53,13 +53,17 @@ def ring_radius_for_const(unit_const: int) -> float | None:
 
     BUILDING_TILE_SPANS is the codebase's own is-a-building membership test
     (render._unit_color reads it that way), and is read live here rather than
-    snapshotted, since tests inject synthetic consts into it. `range` is
-    unit_stats' `displayed_range`, the same number the Inspector's Range row
-    shows, so the ring and that row can never disagree."""
+    snapshotted, since tests inject synthetic consts into it.
+
+    The ring is the building's REACH, unit_stats' `max_range` (the .dat's
+    `type_50.max_range`), not `range`, the panel figure the Inspector's Range
+    row shows. The two differ on 2 of 491 buildings in the Sept 2026 .dat:
+    Poenari Castle (445) displays 0 but shoots Castle arrows to 8 (GH #111),
+    and hidden const 2276 displays 6 against a reach of 7."""
     span = terrain_palette.BUILDING_TILE_SPANS.get(unit_const)
     if span is None:
         return None
-    range_tiles = float(unit_stats(unit_const).get("range", 0.0))
+    range_tiles = float(unit_stats(unit_const).get("max_range", 0.0))
     if range_tiles <= 0.0:
         return None
     return ring_radius_tiles(range_tiles, span)

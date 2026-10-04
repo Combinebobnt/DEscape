@@ -389,7 +389,7 @@ def _splice_any_batch(monkeypatch) -> None:
     """The blank template has too few units for a batch to beat Flat's
     wholesale rebuild (viewer._SPLICE_COST_RATIO), and a whole resident canvas
     against a small offscreen viewport would make Stepped/Sloped evict rather
-    than patch (viewer._SCOPED_/_TIGHT_PATCH_AREA_RATIO), so pin both off."""
+    than patch (viewer._TIGHT_PATCH_AREA_RATIO), so pin both off."""
     import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "_SPLICE_COST_RATIO", 0)
@@ -397,11 +397,10 @@ def _splice_any_batch(monkeypatch) -> None:
 
 
 def _pin_area_ratio(monkeypatch, value: float) -> None:
-    """Sets both the reach-path and the tight-split area ratio, for every style."""
+    """Sets the batch patch-or-evict area ratio, for every style."""
     import descape.viewer as viewer_module
 
-    for name in ("_SCOPED_PATCH_AREA_RATIO", "_TIGHT_PATCH_AREA_RATIO"):
-        monkeypatch.setattr(viewer_module, name, {"stepped": value, "sloped": value})
+    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
 
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])

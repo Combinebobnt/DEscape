@@ -476,14 +476,20 @@ TERRAIN_UNIT_CONFIRM_THRESHOLD = 2000
 # unit: splice only below 1/16 of the map's units. Measured by tools/bench_stroke_end.py.
 _SPLICE_COST_RATIO = 16
 
-# Stepped/Sloped batch unit edits patch their bbox eagerly while that recomposites at most this
-# multiple of the visible chunks' area, else evict the bbox's chunks for the next paint. Measured
-# with tools/bench_stroke_end.py --area-ratio: see _patch_area_exceeds_viewport(). Since
-# 2026-09-30 only the no-target reach patch asks, and with no target that check answers False.
-_SCOPED_PATCH_AREA_RATIO = {"stepped": 0.05, "sloped": 1.0}
-# The same rule for the visible-level split (_repaint_unit_edit_split()), which patches one
-# level only: the tight bbox and, since 2026-09-30, the reach-padded one too.
+# Stepped/Sloped batch unit edits patch the visible level's bbox eagerly while that recomposites
+# at most this multiple of the visible chunks' area, else evict the bbox's chunks for the next
+# paint. Applies to the visible-level split (_repaint_unit_edit_split()): the tight bbox and,
+# since 2026-09-30, the reach-padded one too. Measured with tools/bench_stroke_end.py
+# --area-ratio: see _patch_area_exceeds_viewport().
 _TIGHT_PATCH_AREA_RATIO = {"stepped": 0.3, "sloped": 1.0}
+
+# Help > About's library credit (GH #113). Static: the frozen build ships no dist-info, and
+# tests/test_about_credit.py checks it against the installed one.
+PARSER_CREDIT = (
+    "Scenario parsing by AoE2ScenarioParser, by Kerwin Sneijders\n"
+    "https://github.com/KSneijders/AoE2ScenarioParser\n"
+    "Licensed under the GNU General Public License v3.0."
+)
 
 # Display-only sentinel assigned to LoadedScenario.path for a File > New map.
 # Deliberately relative and non-existent: LoadedScenario.path is only ever read
@@ -1241,11 +1247,14 @@ class SettingsDialog(QDialog):
         grid.setColumnStretch(1, 1)
 
         self._keybind_edits: dict[str, QKeySequenceEdit] = {}
+        # GH #116's filter: per section, its divider (None for the first), header and rows.
+        self._keybind_sections: list[tuple[QFrame | None, QLabel, list[tuple[str, list[QWidget]]]]] = []
         row = 0
         current_section = None
         for action_id, label, _default in settings.REBINDABLE_ACTIONS:
             section = action_id.split("_", 1)[0]
             if section != current_section:
+                divider = None
                 if current_section is not None:
                     divider = QFrame()
                     divider.setFrameShape(QFrame.HLine)
@@ -1256,8 +1265,10 @@ class SettingsDialog(QDialog):
                 grid.addWidget(section_label, row, 0, 1, 4)
                 row += 1
                 current_section = section
+                self._keybind_sections.append((divider, section_label, []))
 
-            grid.addWidget(QLabel(label), row, 0)
+            action_label = QLabel(label)
+            grid.addWidget(action_label, row, 0)
 
             edit = QKeySequenceEdit(QKeySequence(settings.get_keybind(action_id)))
             edit.keySequenceChanged.connect(
@@ -1279,9 +1290,20 @@ class SettingsDialog(QDialog):
             clear_btn.clicked.connect(lambda _checked, aid=action_id: self._keybind_edits[aid].clear())
             grid.addWidget(clear_btn, row, 3)
 
+            self._keybind_sections[-1][2].append((action_id, [action_label, edit, default_btn, clear_btn]))
             row += 1
 
         grid.setRowStretch(row, 1)
+
+        self._keybind_filter_edit = QLineEdit()
+        self._keybind_filter_edit.setPlaceholderText("Search actions or keys")
+        self._keybind_filter_edit.setClearButtonEnabled(True)
+        self._keybind_filter_edit.textChanged.connect(self._filter_keybinds)
+        outer_layout.addWidget(self._keybind_filter_edit)
+        # Unbolded: the section-header test collects <b> labels.
+        self._keybind_no_match_label = QLabel("No keybinds match.")
+        self._keybind_no_match_label.setHidden(True)
+        outer_layout.addWidget(self._keybind_no_match_label)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1298,6 +1320,26 @@ class SettingsDialog(QDialog):
 
         return tab
 
+    def _filter_keybinds(self, text: str) -> None:
+        """Hides the Keybinds rows whose action label and bound key both miss
+        `text` (case-insensitive), and a section's header and divider once all
+        of its rows are hidden. The first shown section never shows a divider."""
+        needle = text.strip().casefold()
+        any_shown = False
+        for divider, header, rows in self._keybind_sections:
+            section_shown = False
+            for action_id, widgets in rows:
+                key = self._keybind_edits[action_id].keySequence().toString()
+                shown = not needle or needle in widgets[0].text().casefold() or needle in key.casefold()
+                for widget in widgets:
+                    widget.setHidden(not shown)
+                section_shown = section_shown or shown
+            header.setHidden(not section_shown)
+            if divider is not None:
+                divider.setHidden(not (section_shown and any_shown))
+            any_shown = any_shown or section_shown
+        self._keybind_no_match_label.setHidden(any_shown)
+
     def _on_keybind_changed(self, action_id: str, key_sequence: QKeySequence) -> None:
         text = key_sequence.toString()
         cleared_action_id = settings.set_keybind(action_id, text)
@@ -1305,17 +1347,19 @@ class SettingsDialog(QDialog):
         self._window._log_status(f"Keybind changed: {action_id} -> {text or '(cleared)'}")
         if cleared_action_id is None:
             self._keybind_warning_label.clear()
-            return
-        self._window.apply_keybind(cleared_action_id)
-        cleared_edit = self._keybind_edits.get(cleared_action_id)
-        if cleared_edit is not None:
-            cleared_edit.blockSignals(True)
-            cleared_edit.clear()
-            cleared_edit.blockSignals(False)
-        cleared_label = settings.get_action_label(cleared_action_id)
-        self._keybind_warning_label.setText(
-            f"'{text}' was already assigned to {cleared_label} -- that binding has been cleared."
-        )
+        else:
+            self._window.apply_keybind(cleared_action_id)
+            cleared_edit = self._keybind_edits.get(cleared_action_id)
+            if cleared_edit is not None:
+                cleared_edit.blockSignals(True)
+                cleared_edit.clear()
+                cleared_edit.blockSignals(False)
+            cleared_label = settings.get_action_label(cleared_action_id)
+            self._keybind_warning_label.setText(
+                f"'{text}' was already assigned to {cleared_label} -- that binding has been cleared."
+            )
+        # A search by key would otherwise keep showing rows by their old binding.
+        self._filter_keybinds(self._keybind_filter_edit.text())
 
     def _reset_keybind(self, action_id: str) -> None:
         default = settings.get_default_keybind(action_id)
@@ -2411,15 +2455,6 @@ class ViewerWindow(QMainWindow):
         edit_menu.addAction(self.select_stack_action)
 
         edit_menu.addSeparator()
-        # GH #57's Disabled Objects dialog, duplicated from the Players
-        # panel's own button so it can be keybound. No setShortcut() here,
-        # same reason as every other menu action in this method -- the
-        # shortcut comes from settings.REBINDABLE_ACTIONS' "edit_disables".
-        self.disables_action = QAction("&Disabled Objects…", self)
-        self.disables_action.setEnabled(False)  # re-gated by _update_tool_enabled()
-        self.disables_action.triggered.connect(self._show_disables_dialog)
-        edit_menu.addAction(self.disables_action)
-
         self.settings_action = QAction("&Settings…", self)
         self.settings_action.triggered.connect(self._show_settings)
         edit_menu.addAction(self.settings_action)
@@ -2434,6 +2469,12 @@ class ViewerWindow(QMainWindow):
         self.mirror_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.mirror_action.triggered.connect(self._show_mirror_dialog)
         map_menu.addAction(self.mirror_action)
+        # GH #57's Disabled Objects dialog, duplicated from the Players panel's button so it can be
+        # keybound ("map_disables"). Moved here from the Edit menu, a user request.
+        self.disables_action = QAction("&Disabled Objects…", self)
+        self.disables_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.disables_action.triggered.connect(self._show_disables_dialog)
+        map_menu.addAction(self.disables_action)
 
         view_menu = menu_bar.addMenu("&View")
         self.iso_action = QAction("&Isometric View (game-style)", self)
@@ -5650,9 +5691,9 @@ class ViewerWindow(QMainWindow):
             "edit_clipboard_history": self.clipboard_history_action,
             "edit_history": self.history_action,
             "edit_scatter_units": self.scatter_action,
-            "edit_disables": self.disables_action,
             "edit_settings": self.settings_action,
             "map_mirror": self.mirror_action,
+            "map_disables": self.disables_action,
             "analysis_run": self.analysis_action,
             "view_isometric": self.iso_action,
             "view_distance_ticks": self.distance_ticks_action,
@@ -5981,7 +6022,8 @@ class ViewerWindow(QMainWindow):
             f"DEscape {__version__} by Combinebobnt\n\n"
             "External map editor for Age of Empires 2: Definitive Edition scenarios.\n\n"
             "Copyright (C) 2026 Combinebobnt\n"
-            "Licensed under the GNU General Public License v3.0 or later. ",
+            "Licensed under the GNU General Public License v3.0 or later.\n\n"
+            f"{PARSER_CREDIT}",
         )
 
     def on_mode_changed(self, mode_text: str) -> None:
@@ -8835,7 +8877,8 @@ class ViewerWindow(QMainWindow):
                 # units (_flush_pending), so any gen bump lands before its one level build, not after.
                 self._cancel_warms()
                 if self._cache is not None:
-                    bumps = self._elevation_bumps_anyway(self._elevation_changed_tiles(tile_record))
+                    with perf_trace.phase("elev_predict"):
+                        bumps = self._elevation_bumps_anyway(self._elevation_changed_tiles(tile_record))
                     with perf_trace.phase("unit_sources"):
                         self._cache.invalidate_units(unit_splices, splice_levels=not bumps)
                 self._apply_dirty(dirty)
@@ -10339,6 +10382,10 @@ class ViewerWindow(QMainWindow):
                 yield model
             except Exception:
                 model.abort_unit_edit()
+                # A raise can leave the pick index half-patched (a Move's in-place patch), and
+                # Units entry reuses a non-None index: drop it so the next need rebuilds it.
+                self._stack_cycle = None
+                self.map_view.set_unit_index(None)
                 raise
             model.commit_unit_edit(label, self.edit_history)
             if splices is not None:
@@ -10578,13 +10625,14 @@ class ViewerWindow(QMainWindow):
         (_repaint_unit_edit_split()): the visible level patches or evicts it,
         every other resident level evicts it, so a level a wholesale source
         fallback left stale rebuilds through LevelWarmer, not in the handler.
-        Only with no viewport target at all does it patch every resident level.
+        Only with no viewport target at all does it patch every resident level,
+        always eagerly: with no visible area there is nothing to price against.
 
         Flat has no elevation term and no dirty_screen_bbox_* counterpart --
         mirrors _apply_dirty_render's own Flat branch, patching one rect per
         touched tile rather than a union bbox.
 
-        A `batch` whose bbox is large against the viewport
+        In the split, a `batch` whose bbox is large against the viewport
         (_patch_area_exceeds_viewport()) evicts that bbox's chunks instead of
         patching them: same correctness argument, since nothing outside the
         bbox changed, and chunks off the bbox stay resident for the next pan.
@@ -10639,12 +10687,9 @@ class ViewerWindow(QMainWindow):
         if visible_mip is not None:
             self._repaint_unit_edit_split(changed, bbox, elevation_changed, visible_mip, batch, reach=bbox)
             return
-        if batch and self._patch_area_exceeds_viewport(bbox):
-            with perf_trace.phase("unit_patch"):
-                self._cache.invalidate_region(bbox)
-        else:
-            with perf_trace.phase("unit_patch"):
-                self._cache.patch(bbox, elevation_changed=elevation_changed)
+        # No viewport target, so no visible area to price an eviction against: patch.
+        with perf_trace.phase("unit_patch"):
+            self._cache.patch(bbox, elevation_changed=elevation_changed)
         self.map_view.invalidate_region(bbox)
 
     def _repaint_unit_edit_split(
@@ -10664,7 +10709,7 @@ class ViewerWindow(QMainWindow):
             if reach is None:
                 reach = (0, 0, *self._cache.canvas_dims(0))
         visible = (visible_mip,)
-        evict = batch and self._patch_area_exceeds_viewport(bbox, levels=visible, tight=True)
+        evict = batch and self._patch_area_exceeds_viewport(bbox, levels=visible)
         # Sizing stays outside the phase, as in the reach branch, so unit_patch times cache work only.
         with perf_trace.phase("unit_patch"):
             if others:
@@ -10675,45 +10720,33 @@ class ViewerWindow(QMainWindow):
                 self._cache.patch(bbox, elevation_changed=elevation_changed, levels=visible)
         self.map_view.invalidate_region(bbox)
 
-    def _patch_area_exceeds_viewport(self, bbox: tuple[int, int, int, int], levels=None, tight: bool = False) -> bool:
+    def _patch_area_exceeds_viewport(self, bbox: tuple[int, int, int, int], levels) -> bool:
         """Whether patch(bbox, levels=levels) would recomposite more than
-        _SCOPED_PATCH_AREA_RATIO (or _TIGHT_PATCH_AREA_RATIO when `tight`)
-        of the visible chunks' area. Past that,
+        _TIGHT_PATCH_AREA_RATIO of the visible chunks' area. Past that,
         patching eagerly costs more than evicting the bbox's chunks and
-        recompositing the visible ones whole at the next paint.
+        recompositing the visible ones whole at the next paint. Only the
+        visible-level split (_repaint_unit_edit_split(), levels=(visible,))
+        asks; with no viewport target this answers False.
 
-        Re-measured 2026-09-27 on old-allies and Joan 1, sprites on
-        (tools/bench_stroke_end.py --area-ratio). The shared ratios were set
-        by the reach-padded path when it still patched every resident level
-        (levels None); since 2026-09-30 that path patches the visible level
-        only and prices on the tight ratio. levels None is left only with no
-        viewport target, which answers False before any ratio is read. There, a
-        Stepped patch also
-        composites every other resident level, whose layer a batch edit left
-        stale, so it pays that level's rebuild too (in-patch rebuild ~100 ms
-        vs ~47 ms with one level, old-allies), where evicting defers it to
-        the next zoom-out. The sub-rect recomposite itself is only 3-7 ms
-        dearer than the whole-chunk one. So Stepped evicts cheaper at every
-        measured reach area (0.25-0.64, by 40-73 ms), as the 2026-09-26 fit
-        found from ~0.05 up; Flat (iso), one level, by 2-67 ms at 0.24-0.62,
-        cause not isolated. Sloped, whose chunk recomposite is the warp,
-        recomposites cheaper by patching at every measured area (to 0.55;
-        totals within noise on old-allies), so its 1.0 is an extrapolated bound.
+        Measured 2026-09-27 on old-allies and Joan 1, sprites on
+        (tools/bench_stroke_end.py --area-ratio): the split patches cheaper
+        than it evicts at every area it reaches, 0.05-0.3 (by ~3 ms,
+        crossover extrapolated past the splice cap, ~0.4-0.55), so Stepped
+        takes 0.3, the top of the measured range. Sloped, whose chunk
+        recomposite is the warp, recomposites cheaper by patching at every
+        measured area, so its 1.0 is an extrapolated bound (its evict edge at
+        0.22-0.3 is within noise).
 
-        The tight split (_repaint_unit_edit_split(), levels=(visible,))
-        patches cheaper than it evicts at every area it reaches, 0.05-0.3
-        (by ~3 ms, crossover extrapolated past the splice cap, ~0.4-0.55).
-        The shared Stepped value would evict there early and put old-allies
-        short b1 on the boundary, so the split takes its own ratio,
-        _TIGHT_PATCH_AREA_RATIO (Stepped 0.3, the top of the measured range;
-        Sloped unchanged, its evict edge at 0.22-0.3 is within noise)."""
+        A retired second ratio (Stepped 0.05) priced a patch of every
+        resident level, which also paid each stale level's rebuild in the
+        patch (~100 ms vs ~47 ms with one level, old-allies). Since
+        2026-09-30 no caller patches more than the visible level here."""
         target = self.map_view.viewport_chunk_target()
         if target is None:
             return False
         _mip, cx0, cy0, cx1, cy1 = target
         visible = (cx1 - cx0 + 1) * (cy1 - cy0 + 1) * self._cache.chunk_px**2
-        ratios = _TIGHT_PATCH_AREA_RATIO if tight else _SCOPED_PATCH_AREA_RATIO
-        return self._cache.patch_area(bbox, levels=levels) > ratios[self._render_style] * visible
+        return self._cache.patch_area(bbox, levels=levels) > _TIGHT_PATCH_AREA_RATIO[self._render_style] * visible
 
     def _unit_edit_bbox(
         self, changed: list[UnitSplice], pre=REACH_FALLBACK, post=REACH_FALLBACK
@@ -10869,7 +10902,11 @@ class ViewerWindow(QMainWindow):
                 else None
             )
             membership = None if field_entries else self._membership_diff(record, move == self.edit_history.undo)
-            elev_changed = self._elevation_changed_tiles(record) if "unit" in record.kinds() else set()
+        elev_changed = set()
+        if "unit" in record.kinds():
+            # Its own leaf phase, not inside history_diff: phase times sum flat, so nesting double-counts.
+            with perf_trace.phase("elev_predict"):
+                elev_changed = self._elevation_changed_tiles(record)
         with perf_trace.phase("history_restore"):
             dirty = move(
                 self.scenario.map_manager.terrain,
@@ -11064,7 +11101,8 @@ class ViewerWindow(QMainWindow):
         )
         if sources_first:
             self._cancel_warms()
-            bumps = self._elevation_bumps_anyway(elev_changed)
+            with perf_trace.phase("elev_predict"):
+                bumps = self._elevation_bumps_anyway(elev_changed)
             with perf_trace.phase("unit_sources"):
                 self._cache.invalidate_units(splices or None, splice_levels=not bumps)
             self._apply_dirty(dirty)
@@ -12730,7 +12768,8 @@ def _sweep_pending_crash_reports() -> None:
     if host is not None:
         host._log_status(f"Crash report(s) found from a previous session: {names}")
     for path in pending:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # Scrubbed here too: a failed rotation scrub, or a dump from before scrubbing existed.
+        text = crash_report.scrub_user_paths(path.read_text(encoding="utf-8", errors="replace"))
         dialog = CrashReportDialog(
             host,
             summary=crash_report.extract_summary(text),
@@ -12774,7 +12813,9 @@ def main() -> None:
     # would hold it up until READY_TIMEOUT fires -- on exactly the launch
     # mode (double-click via bootstrap) that hard-abort dumps come from.
     QTimer.singleShot(0, _sweep_pending_crash_reports)
-    sys.exit(app.exec_())
+    code = app.exec_()
+    asset_source.shutdown_prefetch_pool()
+    sys.exit(code)
 
 
 if __name__ == "__main__":

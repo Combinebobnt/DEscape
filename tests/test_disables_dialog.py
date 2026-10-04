@@ -92,8 +92,29 @@ def test_the_menu_action_is_registered_as_a_rebindable_keybind() -> None:
 
     window = conftest.shown_window(1200, 800)
     try:
-        assert window._keybind_actions["edit_disables"] is window.disables_action
-        assert ("edit_disables", "Disabled Objects…", "") in settings.REBINDABLE_ACTIONS
+        assert window._keybind_actions["map_disables"] is window.disables_action
+        assert ("map_disables", "Disabled Objects…", "") in settings.REBINDABLE_ACTIONS
+        assert "edit_disables" not in window._keybind_actions
+    finally:
+        _close(window)
+
+
+def test_the_menu_action_is_in_the_map_menu_and_the_keybinds_tab_lists_it_under_map() -> None:
+    from PyQt5.QtWidgets import QLabel
+
+    from descape.viewer import SettingsDialog
+
+    window = conftest.shown_window(1200, 800)
+    try:
+        menus = {a.text(): a.menu() for a in window.menuBar().actions() if a.menu() is not None}
+        assert window.disables_action in menus["&Map"].actions()
+        assert window.disables_action not in menus["&Edit"].actions()
+        dialog = SettingsDialog(window)
+        try:
+            [(_divider, header, _rows)] =[s for s in dialog._keybind_sections if "map_disables" in dict(s[2])]
+            assert isinstance(header, QLabel) and header.text() == "<b>Map</b>"
+        finally:
+            dialog.close()
     finally:
         _close(window)
 
@@ -185,10 +206,9 @@ def test_return_on_a_row_adds_it_and_return_on_a_disabled_row_removes_it() -> No
         _close(window)
 
 
-@pytest.mark.xfail(strict=True, reason="Return on a list row also presses the default OK button and closes the dialog")
 def test_return_on_a_row_of_the_shown_dialog_adds_without_closing_it() -> None:
     """Shown, OK is the default button, and the tree ignores the Return it
-    just used, so QDialog accepts: Enter-to-add ends the whole session."""
+    just used, so QDialog would accept: Enter-to-add ended the whole session."""
     from PyQt5.QtCore import Qt
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication
@@ -206,6 +226,47 @@ def test_return_on_a_row_of_the_shown_dialog_adds_without_closing_it() -> None:
         assert dialog.isVisible(), "Return on a row closed the dialog"
         assert len(window.edit_history.records) == before_depth
         dialog.reject()
+    finally:
+        _close(window)
+
+
+def test_return_on_a_disabled_row_of_the_shown_dialog_removes_without_closing_it() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        before_depth = len(window.edit_history.records)
+        dialog = window._build_disables_dialog()
+        dialog.show()
+        QApplication.processEvents()
+        dialog.add_id("buildings", 109)
+        disabled_list = dialog._tabs["buildings"].disabled_list
+        disabled_list.setCurrentRow(0)
+        QTest.keyClick(disabled_list, Qt.Key_Return)
+        assert dialog.disabled_ids_for("buildings") == ()
+        assert dialog.isVisible(), "Return on a Disabled row closed the dialog"
+        assert len(window.edit_history.records) == before_depth
+        dialog.reject()
+    finally:
+        _close(window)
+
+
+def test_return_in_the_filter_box_still_presses_ok() -> None:
+    """Only the two lists keep Return; elsewhere OK stays the default button."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        dialog = window._build_disables_dialog()
+        dialog.show()
+        QApplication.processEvents()
+        QTest.keyClick(dialog.full_list_for("buildings").filter_edit, Qt.Key_Return)
+        assert not dialog.isVisible()
+        assert dialog.result() == dialog.Accepted
     finally:
         _close(window)
 

@@ -18,6 +18,16 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _no_install_env(monkeypatch):
+    """No test here wants the real install, and AOE2DE_INSTALL_PATH outranks
+    the config conftest hides, so a shell exporting it would leak one in."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 def _catalog():
     from descape import object_catalog
 

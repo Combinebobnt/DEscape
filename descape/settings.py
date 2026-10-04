@@ -1228,17 +1228,14 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # edit_* run so _build_keybinds_tab emits no second "Edit" header.
     ("edit_scatter_units", "Scatter Units in Region…", ""),
     ("edit_settings", "Settings…", ""),
-    # GH #57's Disabled Objects dialog. Unbound by default, like
-    # edit_clipboard_history and edit_settings above: another dialog opener,
-    # reached by menu rather than by reflex. Kept inside the contiguous
-    # edit_* run -- _build_keybinds_tab only compares against the previous
-    # row, so a stray prefix here would emit a second "Edit" header.
-    ("edit_disables", "Disabled Objects…", ""),
     # Map mirroring (Stage 1: terrain + elevation). Unbound like
     # view_distance_ticks below -- no default suggested, just user-bindable.
     # Kept here (between Edit and View) to match the menu bar's own
     # File -> Edit -> Map -> View order.
     ("map_mirror", "Mirror Map…", ""),
+    # GH #57's Disabled Objects dialog, a dialog opener so unbound. Was edit_disables until it
+    # moved to the Map menu; _load_keybinds() migrates a saved binding.
+    ("map_disables", "Disabled Objects…", ""),
     # Moved off Ctrl+I when mode_view claimed it below -- see that entry.
     ("view_isometric", "Isometric View", "Ctrl+Shift+I"),
     # Ships unbound, which needs no collision audit (a duplicate binding
@@ -1458,16 +1455,23 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
             keybinds[action_id] = ""
 
 
-# Action ids of removed tools. A config written before the removal still
+# Action ids of removed tools and renamed actions. A config written before the removal still
 # names them, and set_keybind()'s collision loop walks keybinds.items(), so a
 # phantom entry could be auto-cleared and reported in Settings.
-_RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run",)
+_RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run", "edit_disables")
+
+# Renamed action ids, old -> new. A saved old binding carries over unless the new id is saved too.
+_RENAMED_KEYBINDS: dict[str, str] = {"edit_disables": "map_disables"}
 
 
 def _load_keybinds() -> dict[str, str]:
     global _keybinds
     if _keybinds is None:
-        persisted = _load_config().get("keybinds", {})
+        # A copy: the rename must not write into the config dict, and the reconcilers read it.
+        persisted = dict(_load_config().get("keybinds", {}))
+        for old, new in _RENAMED_KEYBINDS.items():
+            if old in persisted and new not in persisted:
+                persisted[new] = persisted[old]
         _keybinds = dict(_DEFAULT_KEYBINDS)
         _keybinds.update(persisted)
         for action_id in _RETIRED_KEYBINDS:

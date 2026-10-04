@@ -251,6 +251,28 @@ def test_stroke_capture_raises_on_an_unscoped_stroke_and_with_no_stroke() -> Non
         hist.stroke_capture(tiles, 0)
 
 
+def test_stroke_new_dirty_on_a_scoped_stroke_reads_the_capture_only_when_seen_has_none() -> None:
+    """Tile 2 was never captured but is in `seen`, so it compares against that
+    and must not reach for the absent capture."""
+    tiles = [FakeTile() for _ in range(4)]
+    hist = EditHistory()
+    hist.begin_stroke(tiles, indices=[1])
+    seen = {2: (0, 0, -1)}
+    tiles[1].terrain_id = 5
+    tiles[2].terrain_id = 6
+    assert hist.stroke_new_dirty([1, 2], tiles, seen) == {1, 2}
+    assert seen == {1: (5, 0, -1), 2: (6, 0, -1)}
+
+
+def test_stroke_new_dirty_raises_on_a_scoped_index_neither_seen_nor_captured() -> None:
+    tiles = [FakeTile() for _ in range(4)]
+    hist = EditHistory()
+    hist.begin_stroke(tiles, indices=[1])
+    tiles[3].terrain_id = 2
+    with pytest.raises(RuntimeError, match="never captured"):
+        hist.stroke_new_dirty([3], tiles, {})
+
+
 def test_a_touched_set_on_a_scoped_stroke_raises() -> None:
     """The captures are the write set; a `touched` alongside them could only
     disagree with it."""

@@ -528,6 +528,31 @@ def test_the_retired_wall_run_keybind_is_dropped_on_load(tmp_path: Path) -> None
     assert settings.set_keybind("tool_pan", "W") is None
 
 
+def test_a_saved_edit_disables_binding_loads_as_map_disables_and_is_then_dropped(tmp_path: Path) -> None:
+    """Disabled Objects… moved to the Map menu, renaming its keybind id."""
+    import yaml
+
+    _write_config(tmp_path, "keybinds:\n  edit_disables: F7\n")
+    assert settings.get_keybind("map_disables") == "F7"
+    assert "edit_disables" not in settings._load_keybinds()
+    assert settings.set_keybind("tool_pan", "F8") is None
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text())["keybinds"]
+    assert saved["map_disables"] == "F7" and "edit_disables" not in saved
+
+
+def test_a_migrated_disables_binding_counts_as_customized_in_a_load_time_collision(tmp_path: Path) -> None:
+    """edit_undo is declared first, so it would win a tie; the migrated binding
+    must instead read as the user's own choice and beat the default."""
+    _write_config(tmp_path, "keybinds:\n  edit_disables: Ctrl+Z\n")
+    assert settings.get_keybind("map_disables") == "Ctrl+Z"
+    assert settings.get_keybind("edit_undo") == ""
+
+
+def test_a_saved_map_disables_binding_beats_a_stale_edit_disables_one(tmp_path: Path) -> None:
+    _write_config(tmp_path, "keybinds:\n  edit_disables: F7\n  map_disables: F9\n")
+    assert settings.get_keybind("map_disables") == "F9"
+
+
 # -- Settings > Saving ------------------------------------------------------
 
 

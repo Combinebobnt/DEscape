@@ -844,6 +844,23 @@ def test_a_stall_that_blocked_past_the_release_still_says_during_a_drag(clock):
     assert _lines()[-1] == "perf stall 250ms (untimed, during a drag; covered 10 of 250: patch 10)"
 
 
+def test_a_stall_window_longer_than_the_recent_buffer_prints_covered_as_a_lower_bound(clock):
+    """600 1 ms phases in a 700 ms window: the buffer keeps the last 512, so
+    the figure is a floor. Fewer entries, or a full buffer whose evictions all
+    precede the window, print the plain figure."""
+    for _ in range(12):
+        _timed_phase(clock, "patch", 1)
+    perf_trace.stall(700.0)
+    assert _lines()[-1] == "perf stall 700ms (untimed, no op yet; covered 12 of 700: patch 12)"
+    for _ in range(600):
+        _timed_phase(clock, "patch", 1)
+    perf_trace.stall(700.0)
+    assert _lines()[-1] == "perf stall 700ms (untimed, no op yet; covered >= 512 of 700: patch 512)"
+    clock.advance(50)
+    perf_trace.stall(40.0)
+    assert _lines()[-1] == "perf stall 40ms (untimed, no op yet; covered 0 of 40)"
+
+
 def test_spans_stay_out_of_step_totals_and_print_wall_and_untimed(clock):
     """Wall: press 20 (5 of it before begin_drag) + step 10 + release up to the
     flush 106. Untimed: minus the 29 ms of phases inside spans; footprint_refresh

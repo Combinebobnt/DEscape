@@ -6,8 +6,14 @@ default tier like descape/backup.py's own tests.
 
 from __future__ import annotations
 
+import getpass
+import os
+import stat
 import time
 
+import pytest
+
+from descape import crash_report, debug_log
 from descape.crash_report import (
     RateLimiter,
     build_report,
@@ -17,8 +23,29 @@ from descape.crash_report import (
     pending_reports,
     prune,
     rotate_faulthandler_log,
+    scrub_user_paths,
     write_report,
 )
+
+
+@pytest.fixture
+def fake_user(monkeypatch):
+    """Home /home/al and user `al`, never the real ones; returns a setter."""
+
+    def set_user(home: str, user: str | None = "al") -> None:
+        monkeypatch.setenv("HOME", home)
+        # Windows Python reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", home)
+
+        def getuser() -> str:
+            if user is None:
+                raise OSError("no user")
+            return user
+
+        monkeypatch.setattr(getpass, "getuser", getuser)
+
+    set_user("/home/al")
+    return set_user
 
 
 def _make_exc():
@@ -38,6 +65,53 @@ def test_build_report_contains_traceback_version_and_log():
     assert "RuntimeError: boom" in text
     assert "Version: 0.3" in text
     assert "did a thing" in text
+
+
+def test_a_report_scrubs_the_home_prefix_from_every_section(fake_user):
+    exc_type, exc_value, exc_tb = _make_exc()
+    text = build_report(
+        exc_type,
+        exc_value,
+        exc_tb,
+        version="0.3",
+        log_text="Loaded /home/al/maps/a.aoe2scenario\nCrash report written to /home/al/.config/x.txt",
+    )
+    assert "/home/al" not in text
+    assert "Loaded ~/maps/a.aoe2scenario" in text
+    assert "written to ~/.config/x.txt" in text
+
+
+def test_the_home_prefix_never_matches_a_longer_sibling_dir(fake_user):
+    fake_user("/home/al", user=None)
+    text = "/home/alpha/x.py /home/al.bak/y ('/home/al') /home/al: /home/al/z"
+    assert scrub_user_paths(text) == "/home/alpha/x.py /home/al.bak/y ('~') ~: ~/z"
+
+
+def test_a_root_or_empty_home_is_left_alone(fake_user):
+    for home in ("/", ""):
+        fake_user(home, user=None)
+        assert scrub_user_paths("/usr/lib/x.py and /home/al/y") == "/usr/lib/x.py and /home/al/y"
+
+
+def test_a_username_segment_outside_home_is_scrubbed(fake_user):
+    text = "File /media/al/stick/mod.py\n/mnt/al\n'/srv/al' end"
+    assert scrub_user_paths(text) == "File /media/<user>/stick/mod.py\n/mnt/<user>\n'/srv/<user>' end"
+
+
+def test_the_home_dirs_last_component_counts_as_the_username(fake_user):
+    fake_user("/home/al", user=None)
+    assert scrub_user_paths("/media/al/stick") == "/media/<user>/stick"
+
+
+def test_a_username_never_matches_inside_a_longer_segment(fake_user):
+    text = "/alpha/x.py /data/al.txt /data/al-2/ /opt/pal/ al wrote /x/al"
+    assert scrub_user_paths(text) == "/alpha/x.py /data/al.txt /data/al-2/ /opt/pal/ al wrote /x/<user>"
+
+
+def test_windows_separators_are_scrubbed(fake_user):
+    fake_user("C:\\Users\\al")
+    text = 'File "C:\\Users\\al\\AppData\\x.py"\nD:\\al\\games\\y E:/al/z'
+    assert scrub_user_paths(text) == 'File "~\\AppData\\x.py"\nD:\\<user>\\games\\y E:/<user>/z'
 
 
 def test_extract_summary_gets_the_exception_line():
@@ -115,6 +189,56 @@ def test_rotate_faulthandler_log_moves_nonempty_log_into_pending(tmp_path):
     assert not log_path.exists()
     assert dest in pending_reports(tmp_path)
     assert "Segmentation fault" in dest.read_text()
+
+
+def test_rotate_faulthandler_log_scrubs_the_rotated_copy_and_keeps_its_mode(tmp_path, fake_user):
+    log_path = tmp_path / "faulthandler.log"
+    log_path.write_text('Fatal Python error: Aborted\n  File "/home/al/src/a.py"\n  File "/media/al/b.py"\n')
+    os.chmod(log_path, 0o644)
+
+    dest = rotate_faulthandler_log(tmp_path)
+
+    assert dest is not None
+    assert dest.read_text() == 'Fatal Python error: Aborted\n  File "~/src/a.py"\n  File "/media/<user>/b.py"\n'
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o644
+    assert sorted(p.name for p in tmp_path.iterdir()) == [dest.name], "a temp file was left behind"
+
+
+def test_a_failed_scrub_still_rotates_and_returns_normally(tmp_path, fake_user, monkeypatch):
+    log_path = tmp_path / "faulthandler.log"
+    log_path.write_text('  File "/home/al/a.py"\n')
+
+    def refuse(_path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(crash_report, "_scrub_file", refuse)
+    debug_log.clear()
+    dest = rotate_faulthandler_log(tmp_path)
+
+    assert dest is not None and dest in pending_reports(tmp_path)
+    assert not log_path.exists()
+    assert "could not scrub" in debug_log.get_log_text()
+
+
+def test_a_second_failed_scrub_reuses_the_same_temp_name(tmp_path, fake_user, monkeypatch):
+    real_replace = os.replace
+
+    def replace(src, dst):
+        # Only the scrub's replace fails; the rotation's own rename goes through.
+        if os.path.basename(src) != crash_report.FAULTHANDLER_LOG_NAME:
+            raise OSError("replace refused")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    log_path = tmp_path / "faulthandler.log"
+    for stamp in (1_000_000_000, 1_000_000_100):
+        log_path.write_text('  File "/home/al/a.py"\n')
+        os.utime(log_path, (stamp, stamp))
+        assert rotate_faulthandler_log(tmp_path) is not None
+
+    temps = sorted(p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp"))
+    assert temps == [crash_report.SCRUB_TMP_NAME], temps
+    assert len(pending_reports(tmp_path)) == 2
 
 
 def test_rotate_faulthandler_log_leaves_empty_log_alone(tmp_path):

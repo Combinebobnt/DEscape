@@ -235,7 +235,7 @@ def _flat_key(entry: UnitEntry) -> int:
     return entry.order
 
 
-def _stepped_key(order: int, x: int, y: int) -> tuple[int, int, int]:
+def _stepped_key(order: int, x: int, y: int, draped: bool = False) -> tuple[int, int, int, int]:
     """Stepped's paint order, reproduced exactly.
 
     depth_order() lexsorts (d = y - x, x), and render._units_by_tile()
@@ -250,8 +250,14 @@ def _stepped_key(order: int, x: int, y: int) -> tuple[int, int, int]:
     the paint position, and `order` is what breaks a tie WITHIN one tile's
     bucket -- matching Flat's last-drawn-wins, which the renderer's
     per-tile bucketing made Stepped agree with.
+
+    `draped` ranks a draped farm under every non-draped unit on the same
+    tile, whatever their index order (GH #84): a draped farm paints AS that
+    tile's terrain, and the tile's own units paint over it afterwards. Only
+    Sloped passes it today; Stepped also drapes farms with sprites on, but
+    its caller does not know whether sprites are on, so it keeps the default.
     """
-    return (y - x, x, order)
+    return (y - x, x, 0 if draped else 1, order)
 
 
 def _pick_unit_flat(
@@ -317,7 +323,7 @@ def _pick_unit_stepped(
     """
     h, w = elevations.shape
     best: tuple[UnitEntry, tuple[int, int]] | None = None
-    best_key: tuple[int, int, int] | None = None
+    best_key: tuple[int, int, int, int] | None = None
 
     for e in range(proj.min_elev, proj.max_elev + 1):
         u = sx - proj.origin_x - proj.half_w
@@ -469,7 +475,7 @@ def _pick_unit_sloped(
     d_hi = (v + rise_hi) // half_h + 2
 
     best: tuple[UnitEntry, tuple[int, int]] | None = None
-    best_key: tuple[int, int, int] | None = None
+    best_key: tuple[int, int, int, int] | None = None
 
     for d in range(d_lo, d_hi + 1):
         for s in range(q - 2, q + 2):
@@ -487,6 +493,7 @@ def _pick_unit_sloped(
                 entry = index.entries[order]
                 span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
                 paint_off = render.unit_paint_offset(entry.unit)
+                is_draped_farm = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
                 if span_x <= 1 and span_y <= 1 and paint_off == (0.0, 0.0):
                     # Only at zero offset, matching the render path's own
                     # gate: the collapse is occlusion-correct BY CONSTRUCTION
@@ -495,7 +502,7 @@ def _pick_unit_sloped(
                     # quad at all. Those fall to the diamond branch below.
                     if (x, y) != terrain_tile:
                         continue
-                elif farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None:
+                elif is_draped_farm:
                     # A farm actually drawn draped (Track C6): draped over
                     # its own footprint tiles' terrain, so "on this farm" is
                     # "on one of its own tiles" -- the multi-tile extension
@@ -529,7 +536,7 @@ def _pick_unit_sloped(
                 # occupied set for the 36 sparse diagonal-gate consts.
                 if not render.unit_occupies_tile(entry.unit, x, y):
                     continue
-                key = _stepped_key(order, x, y)
+                key = _stepped_key(order, x, y, is_draped_farm)
                 if best_key is None or key > best_key:
                     best, best_key = (entry, (x, y)), key
     return best

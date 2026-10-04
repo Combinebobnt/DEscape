@@ -18,6 +18,16 @@ from descape import library_compat, trigger_fields
 from descape.trigger_fields import FieldSpec
 
 
+@pytest.fixture(autouse=True)
+def _no_install_env(monkeypatch):
+    """No test here wants the real install, and AOE2DE_INSTALL_PATH outranks
+    the config conftest hides, so a shell exporting it would leak one in."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 def _every_shipped_vocabulary():
     """(version, kind, raw json) for every condition/effect file the installed
     library or this repo ships, as the UI sees it (vocabulary_json() drops

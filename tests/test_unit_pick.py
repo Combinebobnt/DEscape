@@ -754,13 +754,7 @@ def test_sloped_pick_covers_every_pixel_of_a_farms_own_footprint_and_no_other() 
     "farm_first",
     [
         pytest.param(True, id="unit-after-farm"),
-        pytest.param(
-            False,
-            id="farm-after-unit",
-            marks=pytest.mark.xfail(
-                strict=True, reason="_stepped_key's order tie-break picks a later draped farm over the unit on top"
-            ),
-        ),
+        pytest.param(False, id="farm-after-unit"),
     ],
 )
 def test_sloped_pick_returns_a_1x1_unit_standing_on_a_draped_farm_in_either_index_order(farm_first: bool) -> None:

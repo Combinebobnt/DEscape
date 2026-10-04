@@ -39,6 +39,16 @@ BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120
 TRIGGER_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
 
+@pytest.fixture(autouse=True)
+def _no_install_env(monkeypatch):
+    """No test here wants the real install, and AOE2DE_INSTALL_PATH outranks
+    the config conftest hides, so a shell exporting it would leak one in."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 def _window():
     """A shown, fixed-size offscreen ViewerWindow.
 
@@ -1088,6 +1098,46 @@ def test_the_picker_offers_both_kinds_and_filters_across_them() -> None:
         panel.picker_filter.setText("zzz-no-such-type-zzz")
         assert conditions.isHidden() and effects.isHidden()
         assert panel.picker_add_button.isEnabled() is False
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_picker_collapses_the_other_kind_when_one_group_is_highlighted() -> None:
+    """GH #136: New with the Effects (or Conditions) heading, or one of its
+    rows, highlighted opens that kind's group and collapses the other."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        effects = _group(panel, "effect")
+        assert effects.childCount() > 0, "fixture assumption: trigger 0 has an effect"
+
+        def picker_expanded() -> list[bool]:
+            groups = [panel.picker_tree.topLevelItem(i) for i in range(panel.picker_tree.topLevelItemCount())]
+            assert [g.text(0).split(" ")[0] for g in groups] == ["Conditions", "Effects"]
+            return [g.isExpanded() for g in groups]
+
+        def open_from(item) -> list[bool]:
+            panel._set_current_entry_item(item)
+            panel._request_entry_op("new")
+            expanded = picker_expanded()
+            panel._close_picker()
+            return expanded
+
+        assert open_from(_group(panel, "effect")) == [False, True]
+        assert open_from(_group(panel, "condition")) == [True, False]
+        assert open_from(_group(panel, "effect").child(0)) == [False, True]
+        assert open_from(panel.entry_tree.topLevelItem(0)) == [True, True], "the Trigger row opens both"
+
+        # A filter opens both so a collapsed group cannot hide a match; clearing restores.
+        panel._set_current_entry_item(_group(panel, "effect"))
+        panel._request_entry_op("new")
+        panel.picker_filter.setText("timer")
+        assert picker_expanded() == [True, True]
+        panel.picker_filter.clear()
+        assert picker_expanded() == [False, True]
+        panel._close_picker()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -3911,6 +3961,28 @@ def test_new_section_lands_after_the_current_section_in_the_files_own_format() -
         assert _order(window) == [0, 1, 4, 2, 3]
         window.trigger_structural_edit("new_section", [], "Last")
         assert _order(window)[-1] == 5
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_new_section_leaves_collapsed_sections_collapsed() -> None:
+    """GH #135: the rebuild restored the old current trigger with autoScroll
+    on, expanding its collapsed section just before the new divider took over."""
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_triggers([5, 3])
+        panel.collapse_all_action.trigger()
+        keys = {("", 0), ("--RISK!!!--", 0), ("--RISK!!!--", 1), ("------", 0)}
+        assert panel._collapsed_keys == keys
+        assert _expanded(panel) == [False] * 4
+
+        window.trigger_structural_edit("new_section", [5], "Z")
+        assert [s.header_index for s in panel._sections] == [None, 2, 4, 8, 6]
+        assert panel.current_trigger_index() == 8
+        assert panel._collapsed_keys == keys
+        assert _expanded(panel) == [False, False, False, True, False], "only the new section is open"
     finally:
         window.edit_history.mark_saved()
         window.close()

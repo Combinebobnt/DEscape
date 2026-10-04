@@ -1938,17 +1938,8 @@ def _count_units_by_tile(monkeypatch) -> list:
     return calls
 
 
-@pytest.mark.parametrize("via", ["skipped", "cap"])
-@pytest.mark.parametrize("case", ["filter", "off_map", "players", "removals", "same_player"])
-@pytest.mark.parametrize("style", STYLES)
-def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, monkeypatch):
-    """A refused (cap) or skipped (splice_levels=False) membership batch patches
-    units_by_tile in place, never walking every unit, to exactly a fresh
-    build's buckets, bumps _units_version, and (Stepped) the gen; the render
-    then equals a fresh cache's."""
-    scenario = _scenario()
-    batch, flt = _in_place_batch(case, scenario)
-    # The cache is built pre-edit: undo the batch's list changes, build, redo them.
+def _pre_edit_cache(style: str, scenario, batch: list[UnitSplice], flt: UnitFilter):
+    """A cache built before `batch`: undo the batch's list changes, build, redo them."""
     units = scenario.unit_manager.units
     snapshot = [list(us) for us in units]
     for s in batch:
@@ -1961,6 +1952,20 @@ def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, mo
     for p, us in enumerate(snapshot):
         units[p][:] = us
     scenario.unit_gen += 1
+    return cache
+
+
+@pytest.mark.parametrize("via", ["skipped", "cap"])
+@pytest.mark.parametrize("case", ["filter", "off_map", "players", "removals", "same_player"])
+@pytest.mark.parametrize("style", STYLES)
+def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, monkeypatch):
+    """A refused (cap) or skipped (splice_levels=False) membership batch patches
+    units_by_tile in place, never walking every unit, to exactly a fresh
+    build's buckets, bumps _units_version, and (Stepped) the gen; the render
+    then equals a fresh cache's."""
+    scenario = _scenario()
+    batch, flt = _in_place_batch(case, scenario)
+    cache = _pre_edit_cache(style, scenario, batch, flt)
     if via == "cap":
         monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 0)
     version, gen = cache._units_version, getattr(cache, "_source_gen", None)
@@ -1981,14 +1986,19 @@ def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, mo
     )
 
 
-def test_the_in_place_insert_is_ordered_not_appended():
-    """Pins the parity case's non-vacuity: a player-1 add onto a tile a
-    player-3 unit holds must land before it, so a plain append would differ."""
+@pytest.mark.parametrize("style", STYLES)
+def test_the_in_place_insert_is_ordered_not_appended(style):
+    """The primitive itself: a player-0/1/2 add onto a tile players 0, 1 and 3
+    hold lands player-major, so a plain append ([0, 1, 3, 0, 1, 2]) differs."""
     scenario = _scenario()
-    batch, _flt = _in_place_batch("players", scenario)
+    batch, flt = _in_place_batch("players", scenario)
+    cache = _pre_edit_cache(style, scenario, batch, flt)
     tile = _own_tile(batch[0].unit)
-    players = [int(u.player) for u, _c in render._units_by_tile(scenario)[tile]]
-    assert players == [0, 0, 1, 1, 2, 3]
+    assert [int(u.player) for u, _c in cache.units_by_tile[tile]] == [0, 1, 3]
+
+    assert cache._update_units_by_tile_in_place(batch)
+
+    assert [int(u.player) for u, _c in cache.units_by_tile[tile]] == [0, 0, 1, 1, 2, 3]
 
 
 @pytest.mark.parametrize("shape", ["non_tail", "move", "both_sides"])

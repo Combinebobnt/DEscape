@@ -24,12 +24,41 @@ content, link the doc instead of summarizing it.
 
 ## [Unreleased]
 
+### Added
+
+- **Help > About credits AoE2ScenarioParser** (GH #113): its author, link
+  and GPL-3.0 licence.
+- **Search box on the Keybinds tab** (GH #116): filters by action name or
+  bound key; sections with no match hide.
+
 ### Changed
+
+- **Disabled Objects… moved from the Edit menu to the Map menu.** A saved
+  keybind for it carries over.
+- **Triggers: New with Conditions or Effects highlighted collapses the other
+  group in the add list** (GH #136).
+- **Perf Trace times the elevation predictor** as its own `elev_predict`
+  phase on paste, undo and redo, rather than leaving it in `untimed`.
 
 - **Linux Wayland sessions run under XWayland by default** (GH #78). Wayland
   made drags repaint on every mouse move, so painting lagged. Launch with
   `QT_QPA_PLATFORM=wayland` to opt out; XWayland may look blurry under
   fractional scaling.
+- **Crash reports hide your home folder and username in file paths**,
+  written as `~` and `<user>`, including a hard crash's faulthandler log.
+- **Perf Trace stall lines print `covered >= X`** when a stall outlasts the
+  trace's recent-event buffer, instead of under-reporting.
+
+### Fixed
+
+- **Range rings use a building's real reach**, so Poenari Castle (range 0 in
+  the game's panel, reach 8) now draws its ring (GH #111).
+- **Sloped: clicking a unit standing on a farm picks the unit**, not the farm,
+  whatever order they were placed in.
+- **Disabled Objects: Return on an Available or Disabled row moves it
+  without closing the dialog.** Return in the filter box still presses OK.
+- **Triggers: New Section and other list rebuilds no longer re-open
+  collapsed sections** (GH #135).
 
 ## [0.9] - 2026-10-01
 

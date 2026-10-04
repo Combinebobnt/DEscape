@@ -533,6 +533,85 @@ def test_keybinds_tab_renders_menu_section_headers() -> None:
         window.close()
 
 
+def test_the_keybinds_search_box_filters_rows_by_label_or_key_and_hides_empty_sections() -> None:
+    """GH #116. isHidden(), not isVisible(): nothing in an unshown dialog is visible."""
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            sections = {header.text(): (divider, header, rows) for divider, header, rows in dialog._keybind_sections}
+            file_divider, file_header, _ = sections["<b>File</b>"]
+            edit_divider, edit_header, _ = sections["<b>Edit</b>"]
+            map_divider, map_header, _ = sections["<b>Map</b>"]
+            assert file_divider is None
+
+            def shown(action_id: str) -> bool:
+                return not dialog._keybind_edits[action_id].isHidden()
+
+            dialog._keybind_filter_edit.setText("UNDO")
+            assert shown("edit_undo") and not shown("edit_redo") and not shown("file_open")
+            assert file_header.isHidden() and not edit_header.isHidden()
+            assert edit_divider.isHidden(), "the first shown section drew a divider above itself"
+            assert map_header.isHidden() and map_divider.isHidden(), "a fully filtered section kept its header"
+            assert dialog._keybind_no_match_label.isHidden()
+
+            dialog._keybind_filter_edit.setText("ctrl+shift+s")  # the key column, not the label
+            assert shown("file_save_as") and not shown("file_save")
+            assert not file_header.isHidden() and edit_header.isHidden() and edit_divider.isHidden()
+
+            dialog._keybind_filter_edit.setText("no such keybind anywhere")
+            assert not any(shown(a) for a in dialog._keybind_edits)
+            assert not dialog._keybind_no_match_label.isHidden()
+
+            dialog._keybind_filter_edit.setText("")
+            assert all(shown(a) for a in dialog._keybind_edits)
+            assert not edit_divider.isHidden() and not map_divider.isHidden() and not map_header.isHidden()
+            assert dialog._keybind_no_match_label.isHidden()
+            assert not dialog._keybind_no_match_label.text().startswith("<b>")
+        finally:
+            dialog.close()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_rebinding_a_row_refilters_the_keybinds_search() -> None:
+    """A key search must follow a rebind, not keep matching the old binding."""
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            for key in ("Ctrl+Alt+Shift+F9", "Ctrl+Alt+Shift+F8"):
+                assert settings.keybind_holder(key) is None, f"test assumes nothing holds {key}"
+
+            def shown(action_id: str) -> bool:
+                return not dialog._keybind_edits[action_id].isHidden()
+
+            dialog._keybind_filter_edit.setText("ctrl+shift+s")
+            assert shown("file_save_as")
+            dialog._keybind_edits["file_save_as"].setKeySequence(QKeySequence("Ctrl+Alt+Shift+F9"))
+            assert not shown("file_save_as"), "a row stayed shown by a key it no longer has"
+
+            dialog._keybind_filter_edit.setText("ctrl+alt+shift+f8")
+            assert not dialog._keybind_no_match_label.isHidden()
+            dialog._keybind_edits["file_save"].setKeySequence(QKeySequence("Ctrl+Alt+Shift+F8"))
+            assert shown("file_save") and dialog._keybind_no_match_label.isHidden()
+        finally:
+            dialog.close()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_the_pan_actions_are_registered_and_default_to_the_arrow_keys() -> None:
     from descape import settings
 

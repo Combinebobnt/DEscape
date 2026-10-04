@@ -46,6 +46,14 @@ def installed(tmp_path):
     asset_source.set_install_path_override(None)
 
 
+@pytest.fixture
+def _no_install_env(monkeypatch):
+    """AOE2DE_INSTALL_PATH outranks the config conftest hides, so a no-install
+    test clears it. Not autouse: the corpus test below needs it."""
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 def test_resource_string_resolves_a_known_key(installed) -> None:
     assert asset_source.resource_string(5164) == "Town Center"
     assert asset_source.resource_string(7427) == "Anarchy"
@@ -59,6 +67,7 @@ def test_resource_string_is_none_for_an_unknown_key(installed) -> None:
     assert asset_source.resource_string(999999) is None
 
 
+@pytest.mark.usefixtures("_no_install_env")
 def test_resource_string_is_none_with_no_install_configured() -> None:
     assert asset_source.resource_string(5164) is None
 
@@ -81,6 +90,7 @@ def test_resource_string_uses_get_language_by_default(tmp_path) -> None:
         asset_source.set_install_path_override(None)
 
 
+@pytest.mark.usefixtures("_no_install_env")
 def test_set_install_path_override_invalidates_the_string_table_cache(tmp_path) -> None:
     """A key resolved under one install must not survive switching to a
     second install (or to none) that does not carry it."""
@@ -93,6 +103,7 @@ def test_set_install_path_override_invalidates_the_string_table_cache(tmp_path) 
     assert asset_source.resource_string(5164) is None
 
 
+@pytest.mark.usefixtures("_no_install_env")
 def test_clear_install_caches_forgets_an_install_read_from_another_config(tmp_path, monkeypatch) -> None:
     """The between-tests leak: a lookup cached against the developer's real
     config (install visible) must not survive into the next test's fake one."""
@@ -348,8 +359,9 @@ def threads(monkeypatch):
     executor.shutdown(wait=True)
 
 
-def _blocking_loader(monkeypatch, release):
-    """_load_texture that holds pool threads until `release` is set; returns its call log."""
+def _blocking_loader(monkeypatch, release, started=None):
+    """_load_texture that holds pool threads until `release` is set; returns its call log.
+    `started`, if given, is set once a pool thread is inside the load."""
     import threading
 
     calls: list[str] = []
@@ -359,6 +371,8 @@ def _blocking_loader(monkeypatch, release):
         name = threading.current_thread().name
         calls.append(name)
         if name != "MainThread":
+            if started is not None:
+                started.set()
             assert release.wait(10), "the test never released the pool load"
         return real(path)
 
@@ -427,14 +441,61 @@ def test_a_failing_prefetch_raises_at_the_get(texture_install, pool, monkeypatch
     assert asset_source.get_terrain_texture_array(other) is not None, "a failed prefetch is not cached"
 
 
+@pytest.fixture
+def one_thread(monkeypatch):
+    """A one-worker pool, so a second prefetch queues behind a held first one."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(asset_source, "_prefetch_executor", executor)
+    yield executor
+    executor.shutdown(wait=True)
+
+
+def _running_and_queued(texture_install, monkeypatch):
+    """Prefetches both texture files on one_thread: (release, running future, queued future)."""
+    import threading
+
+    a, _b, other = texture_install
+    release, started = threading.Event(), threading.Event()
+    _blocking_loader(monkeypatch, release, started)
+    assert asset_source.prefetch_terrain_textures([a, other]) == 2
+    # submit() returns before the worker picks the item up; a clear before that cancels it too.
+    assert started.wait(10), "the pool never started the first load"
+    running, queued = (future for _gen, future in asset_source._pending.values())
+    assert not queued.running()
+    return release, running, queued
+
+
+def test_clear_cancels_a_queued_prefetch(texture_install, one_thread, monkeypatch) -> None:
+    release, running, queued = _running_and_queued(texture_install, monkeypatch)
+    asset_source.clear_install_caches()
+    release.set()
+    assert queued.cancelled(), "an install change still decodes a queued file"
+    running.result(timeout=10)
+
+
+def test_shutting_the_pool_down_cancels_queued_prefetches_without_waiting(texture_install, one_thread, monkeypatch) -> None:
+    release, running, queued = _running_and_queued(texture_install, monkeypatch)
+    asset_source.shutdown_prefetch_pool()
+    try:
+        assert queued.cancelled() and not running.done(), "shutdown waited on, or decoded, a queued load"
+        assert asset_source._prefetch_executor is None and not asset_source._pending
+        assert one_thread._shutdown
+    finally:
+        release.set()
+    running.result(timeout=10)
+
+
 def test_clear_during_a_pending_load_discards_it(texture_install, threads, monkeypatch) -> None:
     import threading
 
     _a, _b, other = texture_install
-    release = threading.Event()
-    calls = _blocking_loader(monkeypatch, release)
+    release, started = threading.Event(), threading.Event()
+    calls = _blocking_loader(monkeypatch, release, started)
     asset_source.prefetch_terrain_textures([other])
     [(_gen, future)] = asset_source._pending.values()
+    assert started.wait(10), "the pool never started the load"
     asset_source.clear_install_caches()
     release.set()
     stale = future.result(timeout=10)

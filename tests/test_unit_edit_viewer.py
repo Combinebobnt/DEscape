@@ -40,6 +40,16 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe
 _PLACE_CONST = 83
 
 
+@pytest.fixture(autouse=True)
+def _no_install_env(monkeypatch):
+    """No test here wants the real install, and AOE2DE_INSTALL_PATH outranks
+    the config conftest hides, so a shell exporting it would leak one in."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 def _window():
     conftest.ensure_qapp()
     from descape.viewer import ViewerWindow
@@ -358,6 +368,31 @@ def test_moving_a_unit_back_onto_its_own_tile_is_a_no_op() -> None:
         window.on_unit_move(key, _pos_for_tile(window, *own_tile), Qt.NoModifier)
 
         assert len(window.edit_history.records) == before_records
+    finally:
+        _close(window)
+
+
+def test_a_move_that_raises_after_patching_the_pick_index_drops_the_index(monkeypatch) -> None:
+    """The index was patched for a move the abort undid, and Units entry reuses
+    a non-None index, so the raise must leave it None (and the stack cycle)."""
+    window = _window()
+    try:
+        entry = window.map_view._unit_index.entries[0]
+        key = (entry.player_id, entry.unit.reference_id)
+        window._selection = [key]
+        window.map_view.set_unit_selection([entry])
+        window._stack_cycle = ("sentinel",)
+        real = window._patch_unit_index_for_move
+
+        def patch_then_raise(*args):
+            real(*args)
+            raise RuntimeError("mid-edit failure")
+
+        monkeypatch.setattr(window, "_patch_unit_index_for_move", patch_then_raise)
+        with pytest.raises(RuntimeError, match="mid-edit failure"):
+            window.on_unit_move(key, _pos_for_tile(window, 25, 30), Qt.NoModifier)
+        assert window.map_view._unit_index is None
+        assert window._stack_cycle is None
     finally:
         _close(window)
 

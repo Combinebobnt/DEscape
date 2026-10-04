@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -167,6 +167,22 @@ class _CategoryTab(QWidget):
         row.addWidget(left_host, stretch=3)
         row.addLayout(buttons)
         row.addWidget(right_host, stretch=2)
+
+        self.full_list.tree.installEventFilter(self)
+        self.disabled_list.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        """Return on a list row moves it and stops there. The view emits
+        itemActivated, then ignores the key, so QDialog would also press OK."""
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() in (Qt.Key_Return, Qt.Key_Enter)
+            and watched in (self.full_list.tree, self.disabled_list)
+        ):
+            watched.keyPressEvent(event)
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
 
     # -- population ------------------------------------------------------
 

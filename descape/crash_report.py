@@ -11,22 +11,67 @@ Dump lifecycle: a fresh dump is `crash-<ts>-<hex>.txt`. Once the app has
 shown it to the user (in-app dialog or the next-launch sweep),
 mark_reported() renames it to the same name plus `.reported` -- so it never
 nags twice, but the file is still there to attach to a bug report.
+
+A tester attaches dumps to public issues, so every dump (a built report and
+a rotated faulthandler log alike) goes through scrub_user_paths() first: the
+home directory becomes `~`, and any other path segment equal to the username
+(a `/media/<user>/` mount) becomes `<user>`.
 """
 
 from __future__ import annotations
 
+import contextlib
+import getpass
 import os
 import platform
+import re
 import sys
 import traceback
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from descape import debug_log
+
 DUMP_PREFIX = "crash-"
 DUMP_SUFFIX = ".txt"
 REPORTED_SUFFIX = ".reported"
 FAULTHANDLER_LOG_NAME = "faulthandler.log"
+SCRUB_TMP_NAME = ".faulthandler-scrub.tmp"
+USER_PLACEHOLDER = "<user>"
+_SEPARATORS = "/\\"
+
+
+def _usernames(home: str) -> set[str]:
+    names = set()
+    # getuser() raises OSError, KeyError or ImportError depending on the Python version.
+    with contextlib.suppress(Exception):
+        names.add(getpass.getuser())
+    if home:
+        names.add(re.split(r"[/\\]", home)[-1])
+    return {name for name in names if name}
+
+
+def scrub_user_paths(text: str) -> str:
+    """The home directory replaced with `~`, then every whole path segment
+    equal to the username with `<user>`.
+
+    Home and username are read per call, so this answers for the environment
+    the program runs in. A home of `/` or an empty one is left alone, since
+    replacing it would rewrite unrelated text. The home must end at a
+    separator or a non-name character, so home `/home/al` leaves
+    `/home/alpha` alone. A segment needs a separator before it, and after it
+    a separator, any character but a word character, `.` or `-`, or the end
+    of the text, so user `al` never touches `/alpha/` or `/al.bak`; that rule
+    is the only guard, for any username.
+    """
+    home = os.path.expanduser("~").rstrip(_SEPARATORS)
+    if home:
+        text = re.sub(rf"{re.escape(home)}(?=[/\\]|[^\w.\-]|$)", "~", text)
+    for name in sorted(_usernames(home), key=len, reverse=True):
+        pattern = rf"(?<=[/\\]){re.escape(name)}(?=[/\\]|[^\w.\-]|$)"
+        text = re.sub(pattern, USER_PLACEHOLDER, text)
+    return text
 
 
 def build_report(
@@ -51,7 +96,8 @@ def build_report(
         f"\nTraceback:\n"
     )
     tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    return f"{header}{tb_text}\nDebug log:\n{log_text}\n"
+    # Once, on the whole text, so no section can carry a path past it.
+    return scrub_user_paths(f"{header}{tb_text}\nDebug log:\n{log_text}\n")
 
 
 def _dump_filename() -> str:
@@ -142,7 +188,10 @@ def rotate_faulthandler_log(dump_dir: Path) -> Path | None:
     """If a previous session's faulthandler.log has content, rename it into
     the normal pending/.reported pipeline before this session's
     faulthandler.enable() truncates it. Returns the new path, or None if
-    there was nothing (or nothing non-empty) to rotate."""
+    there was nothing (or nothing non-empty) to rotate. The rotated copy is
+    scrubbed (scrub_user_paths) in place on a best-effort basis: a failed
+    scrub is logged and the unscrubbed copy kept, since the sweep scrubs the
+    text again before showing it."""
     log_path = dump_dir / FAULTHANDLER_LOG_NAME
     if not log_path.is_file() or log_path.stat().st_size == 0:
         return None
@@ -150,4 +199,25 @@ def rotate_faulthandler_log(dump_dir: Path) -> Path | None:
     mtime = datetime.fromtimestamp(log_path.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
     dest = dump_dir / f"{DUMP_PREFIX}{mtime}-faulthandler{DUMP_SUFFIX}"
     os.replace(log_path, dest)
+    try:
+        _scrub_file(dest)
+    except OSError as exc:
+        # Must not block launch; the sweep scrubs the text again before showing it.
+        debug_log.log(f"crash report: could not scrub {dest.name} ({exc!r})")
     return dest
+
+
+def _scrub_file(path: Path) -> None:
+    """Rewrites `path` scrubbed, via a temp in the same dir and os.replace, so
+    a failure leaves the unscrubbed original rather than a truncated one."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    scrubbed = scrub_user_paths(text)
+    if scrubbed == text:
+        return
+    # One fixed name, overwritten each time, so failures never pile up temps.
+    # Not crash-*.txt, so a leftover never reaches the sweep.
+    tmp = path.parent / SCRUB_TMP_NAME
+    tmp.write_text(scrubbed, encoding="utf-8")
+    # A leftover temp may carry a stale mode; keep the original's.
+    os.chmod(tmp, path.stat().st_mode & 0o7777)
+    os.replace(tmp, path)

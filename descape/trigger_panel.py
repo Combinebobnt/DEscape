@@ -310,6 +310,8 @@ class TriggerPanel(QWidget):
     # inheriting that false-positive class into a facet would be far more
     # visible than it already is in the free-text filter.
     _TAG_ROLE = Qt.UserRole + 1
+    # A vocabulary picker group heading's kind ("condition"/"effect").
+    _PICKER_KIND_ROLE = Qt.UserRole + 2
 
     # The trigger tree's columns. Detail, picker and variables trees keep
     # their own indices.
@@ -400,6 +402,9 @@ class TriggerPanel(QWidget):
         # check needs no lookup at accept time. None means "Add", not "Change".
         self._picker_entry_ref: tuple[str, int] | None = None
         self._picker_entry_type: int = -1
+        # Add mode's kind, from the detail tree's highlighted Conditions or
+        # Effects row: the other group opens collapsed (GH #136). None: both open.
+        self._picker_focus_kind: str | None = None
 
         # True while widgets are being populated programmatically. Qt fires
         # valueChanged/currentIndexChanged on a programmatic set exactly as it
@@ -1499,7 +1504,14 @@ class TriggerPanel(QWidget):
 
     def _restore_selection(self, state: tuple) -> None:
         trigger_path, selected_paths, (entry_path, other_entry_paths), scroll = state
-        self._restore_trigger_path(trigger_path)
+        # No autoScroll: scrollTo() would expand a collapsed section holding
+        # the current trigger, which the rebuild only restored (GH #135).
+        auto_scroll = self.tree.hasAutoScroll()
+        self.tree.setAutoScroll(False)
+        try:
+            self._restore_trigger_path(trigger_path)
+        finally:
+            self.tree.setAutoScroll(auto_scroll)
         # After the current item, never before: setCurrentItem() clears the
         # selection (ClearAndSelect).
         for path in selected_paths:
@@ -2884,6 +2896,7 @@ class TriggerPanel(QWidget):
         self._picker_trigger_index = trigger_index
         self._picker_entry_ref = entry_ref
         self._picker_entry_type = entry_type if isinstance(entry_type, int) else -1
+        self._picker_focus_kind = self._highlighted_entry_kind() if entry_ref is None else None
         self._populate_picker()
         retyping = self._picker_entry_ref is not None
         self.picker_add_button.setText("Change" if retyping else "Add")
@@ -2917,6 +2930,7 @@ class TriggerPanel(QWidget):
         self._picker_trigger_index = None
         self._picker_entry_ref = None
         self._picker_entry_type = -1
+        self._picker_focus_kind = None
         self.picker_tree.clear()
         self.picker_filter.clear()
         self.detail_stack.setCurrentIndex(self._DETAIL_FORM)
@@ -2952,6 +2966,8 @@ class TriggerPanel(QWidget):
             # from the top, so offering it is all downside.
             offered = [entry for entry in entries.values() if entry.id != 0]
             group = QTreeWidgetItem([f"{label} ({len(offered)})"])
+            # Not Qt.UserRole: _picked() reads None there as "a heading".
+            group.setData(0, self._PICKER_KIND_ROLE, kind)
             self.picker_tree.addTopLevelItem(group)
             # Alphabetical rather than by type id: the in-game editor's own New
             # Condition and New Effect lists are alphabetical, and an id order
@@ -2965,15 +2981,29 @@ class TriggerPanel(QWidget):
                     and entry.id == self._picker_entry_type
                 ):
                     current_item = child
-            group.setExpanded(True)
+            group.setExpanded(self._picker_group_open(kind))
         # After the tree is built: setCurrentItem on a child whose group has not
         # been added yet does nothing.
         if current_item is not None:
             self.picker_tree.setCurrentItem(current_item)
             self.picker_tree.scrollToItem(current_item)
 
+    def _highlighted_entry_kind(self) -> str | None:
+        """The kind ("condition"/"effect") whose heading or row is the detail
+        tree's current item; None for the Trigger row or nothing."""
+        item = self.entry_tree.currentItem()
+        data = item.data(0, Qt.UserRole) if item is not None else None
+        if not data:
+            return None
+        kind = data[1] if data[0] == "group" else data[0]
+        return kind if kind in ("condition", "effect") else None
+
+    def _picker_group_open(self, kind: str) -> bool:
+        return self._picker_focus_kind is None or kind == self._picker_focus_kind
+
     def _apply_picker_filter(self, text: str) -> None:
-        """Hide non-matching rows, and any group left with nothing under it."""
+        """Hide non-matching rows, and any group left with nothing under it.
+        A filter opens every group, so a collapsed one cannot swallow a match."""
         needle = text.strip().lower()
         for i in range(self.picker_tree.topLevelItemCount()):
             group = self.picker_tree.topLevelItem(i)
@@ -2984,6 +3014,8 @@ class TriggerPanel(QWidget):
                 child.setHidden(hidden)
                 shown += not hidden
             group.setHidden(bool(needle) and shown == 0)
+            kind = group.data(0, self._PICKER_KIND_ROLE)
+            group.setExpanded(bool(needle) or kind is None or self._picker_group_open(kind))
 
     def _picked(self) -> tuple[str, int] | None:
         item = self.picker_tree.currentItem()

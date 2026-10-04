@@ -228,7 +228,7 @@ def test_a_paste_its_undo_and_redo_take_the_blocks_units_path_and_match_a_fresh_
     garrisoned occupant (two pasted units on one tile) splices its component;
     an elevation-free block splices (its undo and redo take the tiles-first
     scoped path). Every step matches a fresh render and builds the visible
-    level at most once."""
+    level exactly once on the in-place path, and not at all on a splice."""
     window = _block_window(block, monkeypatch)
     try:
         cache = window._cache
@@ -245,7 +245,9 @@ def test_a_paste_its_undo_and_redo_take_the_blocks_units_path_and_match_a_fresh_
         def after_step(step):
             assert (True in answers) is BLOCKS[block], f"{step}: in-place answers {answers}"
             assert (cache._source_gen != state["gen"]) is BLOCKS[block], f"{step}: the gen moved against the path"
-            assert builds.count(mip) <= 1, f"{step}: mip {mip} built {builds.count(mip)} times"
+            # Measured: once after the in-place path's gen bump, never after a splice.
+            expected = 1 if BLOCKS[block] else 0
+            assert builds.count(mip) == expected, f"{step}: mip {mip} built {builds.count(mip)} times, not {expected}"
             if step == "paste":
                 assert not np.array_equal(_canvas(window), before), "the paste changed nothing on screen"
 
@@ -379,6 +381,35 @@ def test_the_paste_perf_line_says_whether_it_skipped_the_level_splice(elevation_
             assert "splice_refused=skipped" in line and "units_in_place" in line, line
         else:
             assert "splice_refused" not in line and "units_in_place" not in line, line
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("elevation_splice", ["spliced", "wholesale"])
+def test_the_elevation_predictor_is_its_own_phase_on_the_paste_undo_and_redo_lines(
+    elevation_splice, traced, monkeypatch
+) -> None:
+    """The predictor used to run outside every phase, so its cost showed only
+    as `untimed`. Undo and redo time both of its calls under the one name."""
+    import re
+
+    if elevation_splice == "wholesale":
+        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+    window = _seeded_window(MARK_CONST)
+    try:
+        from descape import debug_log, perf_trace
+
+        perf_trace.enable(True)  # the window applied its own (off) setting on construction
+        debug_log.clear()
+        _paste(window)
+        window.undo()
+        window.redo()
+        perf_trace.flush_pending_op()
+        lines = debug_log.get_log_text().splitlines()
+        for label in ("paste", "undo", "redo"):
+            [line] = [entry for entry in lines if f"perf op {label}:" in entry]
+            assert re.search(r" elev_predict \d+\.\d", line), line
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -165,3 +165,24 @@ def test_pending_reports_are_swept_on_next_launch_and_marked_reported(_fake_dial
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+@pytest.mark.gui
+def test_the_sweep_scrubs_an_unscrubbed_dumps_text_before_showing_it(_fake_dialog, monkeypatch):
+    """A failed rotation scrub, or a dump from before scrubbing, still reaches the dialog clean."""
+    import getpass
+
+    from descape import viewer as viewer_module
+
+    monkeypatch.setenv("HOME", "/home/al")
+    monkeypatch.setenv("USERPROFILE", "/home/al")
+    monkeypatch.setattr(getpass, "getuser", lambda: "al")
+    dump_dir = viewer_module._crash_dump_dir()
+    raw = 'Fatal Python error: Aborted\n  File "/home/al/src/a.py"\n  File "/media/al/b.py"\n'
+    crash_report.write_report(raw, dump_dir)
+
+    viewer_module._sweep_pending_crash_reports()
+
+    [(_parent, _summary, _path, dump_text, from_last_session)] = _fake_dialog.opened
+    assert from_last_session is True
+    assert dump_text == 'Fatal Python error: Aborted\n  File "~/src/a.py"\n  File "/media/<user>/b.py"\n'

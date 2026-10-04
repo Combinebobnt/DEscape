@@ -592,14 +592,22 @@ class EditHistory:
         writing, those whose state differs from the last state handed to the
         repaint (`seen`, updated in place), or from the stroke-start state if
         never handed over. A tile edited and then returned to its start state
-        is therefore repainted. Cost is O(touched), not O(map)."""
+        is therefore repainted. Cost is O(touched), not O(map). On a scoped
+        stroke an index neither in `seen` nor captured raises."""
         if self._stroke_before is None:
             raise RuntimeError("stroke_new_dirty() called with no stroke in progress")
         before = self._stroke_before
+        scoped = isinstance(before, dict)
         new_dirty = set()
         for i in touched:
             state = tile_state(tiles[i])
-            if state != seen.get(i, before[i]):
+            if i in seen:
+                last = seen[i]
+            elif scoped and i not in before:
+                raise RuntimeError(f"stroke_new_dirty() given tile {i}, never captured on this scoped stroke")
+            else:
+                last = before[i]
+            if state != last:
                 seen[i] = state
                 new_dirty.add(i)
         return new_dirty

@@ -33,8 +33,8 @@ region with Trees/Eye candy on, then its undo: a non-Draw wholesale caller.
 --force-wholesale sends _after_unit_mutation's `changed` to None, i.e. the
 pre-splice path, for a same-build comparison row. --cap overrides
 render_cache.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover.
---area-ratio overrides viewer._SCOPED_PATCH_AREA_RATIO and, where present,
-_TIGHT_PATCH_AREA_RATIO for every style (inf:
+--area-ratio overrides viewer._TIGHT_PATCH_AREA_RATIO and, on an older build
+that still has it, the retired _SCOPED_PATCH_AREA_RATIO, for every style (inf:
 always patch the bbox eagerly, 0: always evict it), for finding the crossover.
 
 --styles takes stepped, sloped, flat (the default Flat + Isometric View, an
@@ -679,7 +679,7 @@ def main() -> None:
     parser.add_argument("--tool", choices=("draw", "fill"), default="draw")
     parser.add_argument("--force-wholesale", action="store_true")
     parser.add_argument("--cap", type=int, help="Override render_cache.UNIT_SPLICE_MAX_UNITS")
-    parser.add_argument("--area-ratio", type=float, help="Override viewer._SCOPED_PATCH_AREA_RATIO")
+    parser.add_argument("--area-ratio", type=float, help="Override viewer._TIGHT_PATCH_AREA_RATIO")
     parser.add_argument(
         "--bbox", choices=("auto", "reach"), default="auto",
         help="auto: whatever the viewer picks; reach: force the reach-padded fallback",
@@ -689,9 +689,9 @@ def main() -> None:
     if args.area_ratio is not None:
         from descape import viewer
 
-        viewer._SCOPED_PATCH_AREA_RATIO = dict.fromkeys(viewer._SCOPED_PATCH_AREA_RATIO, args.area_ratio)
-        if hasattr(viewer, "_TIGHT_PATCH_AREA_RATIO"):
-            viewer._TIGHT_PATCH_AREA_RATIO = dict.fromkeys(viewer._TIGHT_PATCH_AREA_RATIO, args.area_ratio)
+        for name in ("_TIGHT_PATCH_AREA_RATIO", "_SCOPED_PATCH_AREA_RATIO"):
+            if hasattr(viewer, name):
+                setattr(viewer, name, dict.fromkeys(getattr(viewer, name), args.area_ratio))
     if args.cap is not None:
         from descape import render_cache
 

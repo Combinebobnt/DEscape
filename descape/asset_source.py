@@ -423,9 +423,26 @@ def prefetch_terrain_textures(terrain_ids) -> int:
 
 def _forget_prefetches() -> None:
     """clear_install_caches()'s half for the prefetch: pending loads are
-    dropped (a running one finishes, unserved) and the generation moves on."""
+    dropped (a queued one cancelled, a running one finishes unserved) and the
+    generation moves on."""
     global _generation
     with _prefetch_lock:
         _generation += 1
+        for _gen, future in _pending.values():
+            future.cancel()
         _pending.clear()
         _loaded.clear()
+
+
+def shutdown_prefetch_pool() -> None:
+    """For app exit: cancels the queued loads and stops the pool without
+    waiting on a running one. Not an atexit hook: concurrent.futures' own exit
+    hook runs first and would decode every queued file before it."""
+    global _prefetch_executor
+    with _prefetch_lock:
+        for _gen, future in _pending.values():
+            future.cancel()
+        _pending.clear()
+        executor, _prefetch_executor = _prefetch_executor, None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)

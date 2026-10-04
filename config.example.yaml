@@ -173,8 +173,8 @@ keybinds:
   edit_history: ''
   edit_scatter_units: ''
   edit_settings: ''
-  edit_disables: ''
   map_mirror: ''
+  map_disables: ''
   view_isometric: Ctrl+Shift+I
   view_distance_ticks: ''
   view_show_sprites: ''

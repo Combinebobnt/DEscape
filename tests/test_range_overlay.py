@@ -14,12 +14,13 @@ import math
 import numpy as np
 import pytest
 
-from descape import iso_geometry, range_overlay
+from descape import iso_geometry, range_overlay, terrain_palette
 
 _CASTLE_CONST = 82  # 4x4, range 8.0
 _HOUSE_CONST = 70  # 2x2, range 0.0
 _ARCHER_CONST = 4  # range 4.0, but not a building
 _WATCH_TOWER_CONST = 79  # 1x1, range 8.0
+_POENARI_CONST = 445  # 4x4, displayed range 0.0, max_range 8.0 (GH #111)
 
 _TILE_PX = 64
 _MAP = 64
@@ -42,6 +43,12 @@ def test_only_a_building_with_a_range_gets_a_ring() -> None:
     assert range_overlay.ring_radius_for_const(_WATCH_TOWER_CONST) == 8.5
     assert range_overlay.ring_radius_for_const(_HOUSE_CONST) is None
     assert range_overlay.ring_radius_for_const(_ARCHER_CONST) is None
+
+
+def test_the_ring_reads_reach_not_the_displayed_range() -> None:
+    """GH #111: Poenari Castle's panel range is 0, but it shoots to 8."""
+    span = terrain_palette.BUILDING_TILE_SPANS[_POENARI_CONST]
+    assert range_overlay.ring_radius_for_const(_POENARI_CONST) == range_overlay.ring_radius_tiles(8.0, span)
 
 
 # --- sampling ----------------------------------------------------------------

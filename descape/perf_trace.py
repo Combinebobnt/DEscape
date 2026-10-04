@@ -68,14 +68,19 @@ stall, or says it was untimed (during a drag if one was active anywhere in the
 stall's window, else since the last op). Then, whatever the cause, it prints
 `covered X of Y` and the top 3 entries by ms: X is the union of every timed
 entry's interval inside the window (ops and spans left out), so a gc inside a
-phase, or a level build inside a repaint, is not counted twice.
+phase, or a level build inside a repaint, is not counted twice. The entries
+are a count-bounded buffer (512), so when a long window outlasts it the
+figure prints as `covered >= X`: entries inside the window were dropped.
 
 span() is a wall-time meter for a whole handler (a stroke's press, step and
 release). It is not a phase, so it never enters step totals: it reaches the
 stall window, and inside a drag its wall time sums into the drag line's `wall
 X, untimed Y`, where untimed is the wall minus the phases recorded inside
 spans. A phase run between events (a deferred callback) is on the drag line
-but in no span, so it is left out of both.
+but in no span, so it is left out of both. It lands in the drag's open step,
+so the next step() folds it into that event's step (a re-touch of already
+painted tiles never calls step(): map_view._touch_tile returns first), or,
+with no later step, it prints on the drag's `end:` line.
 
 Garbage collection is timed through a gc.callbacks hook (set_gc_hook(), driven
 by the viewer's Perf Trace toggle). A gen-2 collection prints as `gc gen2`
@@ -145,7 +150,9 @@ _sprite_base: tuple[int, int] | None = None
 _sprite_pending = [0, 0]
 # (end_time, ms, op_label, detail) for recent ops, phases, spans and level
 # events. A 2-step stroke click adds ~15 plus its repaints, hence the size.
-_recent: deque = deque(maxlen=512)
+# Count-bounded for memory: a long stall window can outlast it (`covered >=`).
+_RECENT_MAXLEN = 512
+_recent: deque = deque(maxlen=_RECENT_MAXLEN)
 # (label, end_time) of the last top-level op; a nested one is only a phase.
 _last_op: tuple[str, float] | None = None
 # When the last drag ended, so a stall can tell a drag was active in its window.
@@ -786,9 +793,12 @@ def level_warm_tick(
     _schedule_idle()
 
 
-def _covered_text(intervals: list[tuple[float, float]], by_name: dict[str, float], late_ms: float) -> str:
+def _covered_text(
+    intervals: list[tuple[float, float]], by_name: dict[str, float], late_ms: float, truncated: bool = False
+) -> str:
     """`covered X of Y` plus the top 3 names by ms. X is the union of the
-    intervals, so nested entries (gc in a phase, a level in a repaint) count once."""
+    intervals, so nested entries (gc in a phase, a level in a repaint) count once.
+    `truncated` (_recent evicted entries inside the window) prints `covered >= X`."""
     covered = 0.0
     run_start = run_end = None
     for start, end in sorted(intervals):
@@ -800,7 +810,7 @@ def _covered_text(intervals: list[tuple[float, float]], by_name: dict[str, float
             run_end = max(run_end, end)
     if run_end is not None:
         covered += run_end - run_start
-    text = f"covered {covered * 1000:.0f} of {late_ms:.0f}"
+    text = f"covered {'>= ' if truncated else ''}{covered * 1000:.0f} of {late_ms:.0f}"
     # Rounded so float noise from the window clip can't reorder a tie.
     top = sorted(by_name.items(), key=lambda item: -round(item[1], 3))[:3]
     if top:
@@ -855,7 +865,9 @@ def stall(late_ms: float) -> None:
     gc_text = gc_in_window.text()
     if gc_text and not cause.endswith("gc gen2"):
         cause += f"; {gc_text}"
-    cause += f"; {_covered_text(intervals, by_name, late_ms)}"
+    # Full and its oldest entry inside the window: older ones in it were evicted.
+    truncated = len(_recent) == _recent.maxlen and _recent[0][0] > window_start
+    cause += f"; {_covered_text(intervals, by_name, late_ms, truncated)}"
     debug_log.log(f"perf stall {late_ms:.0f}ms ({cause})")
 
 
@@ -904,9 +916,10 @@ def first_paint_done() -> None:
 
 def step() -> None:
     """Closes out the current drag step and starts the next. A no-op while
-    disabled, and also while the current step recorded no phases -- e.g. the
-    first call of a drag, or a mouse-move that only re-touched an
-    already-painted tile (map_view._touch_tile's own dedupe)."""
+    disabled, and also while the current step recorded no phases. A
+    mouse-move that only re-touched painted tiles never calls this
+    (map_view._touch_tile returns first), so a deferred callback's phase
+    recorded before it stays open and joins the next event's step."""
     global _current_step
     if not _enabled or not _current_step:
         return
@@ -1143,7 +1156,7 @@ def _fresh_state() -> dict[str, object]:
         "_view_mip": None,
         "_sprite_base": None,
         "_sprite_pending": [0, 0],
-        "_recent": deque(maxlen=512),
+        "_recent": deque(maxlen=_RECENT_MAXLEN),
         "_last_op": None,
         "_drag_end": None,
         "_span_stack": [],

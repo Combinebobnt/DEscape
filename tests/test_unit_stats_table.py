@@ -13,20 +13,20 @@ from __future__ import annotations
 
 from descape.unit_stats_table import unit_stats
 
-# unit_const -> (name, hp, attack, melee_armour, pierce_armour, range), read
-# from empires2_x2_p1.dat directly. Hardcoded on purpose -- see module
-# docstring.
+# unit_const -> (name, hp, attack, melee_armour, pierce_armour, range,
+# max_range), read from empires2_x2_p1.dat directly. Hardcoded on purpose --
+# see module docstring.
 GROUND_TRUTH = {
-    4: ("Archer", 30, 4, 0, 0, 4.0),
-    83: ("Villager", 25, 3, 0, 0, 0.0),
-    109: ("Town Center", 2400, 5, 3, 5, 6.0),
-    70: ("House", 550, 0, -2, 7, 0.0),
-    48: ("Wolf", 75, 7, 0, 0, 0.0),
+    4: ("Archer", 30, 4, 0, 0, 4.0, 4.0),
+    83: ("Villager", 25, 3, 0, 0, 0.0, 0.0),
+    109: ("Town Center", 2400, 5, 3, 5, 6.0, 6.0),
+    70: ("House", 550, 0, -2, 7, 0.0, 0.0),
+    48: ("Wolf", 75, 7, 0, 0, 0.0, 0.0),
 }
 
 
 def test_ground_truth_units_match_real_stats():
-    for unit_const, (name, hp, attack, melee, pierce, range_) in GROUND_TRUTH.items():
+    for unit_const, (name, hp, attack, melee, pierce, range_, max_range) in GROUND_TRUTH.items():
         stats = unit_stats(unit_const)
         assert stats == {
             "hp": hp,
@@ -34,7 +34,15 @@ def test_ground_truth_units_match_real_stats():
             "melee_armour": melee,
             "pierce_armour": pierce,
             "range": range_,
+            "max_range": max_range,
         }, name
+
+
+def test_poenari_castle_displays_no_range_but_reaches_eight():
+    """GH #111: the .dat's displayed_range is 0.0 for const 445, while its
+    max_range is 8.0 with Castle arrows (projectile 746), read off the .dat."""
+    stats = unit_stats(445)
+    assert (stats["range"], stats["max_range"]) == (0.0, 8.0)
 
 
 def test_house_melee_armour_is_really_negative_two():

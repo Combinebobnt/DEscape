@@ -289,8 +289,7 @@ def _ratio(monkeypatch, repaint: str) -> None:
     import descape.viewer as viewer_module
 
     value = float("inf") if repaint == "patch" else 0.0
-    for name in ("_SCOPED_PATCH_AREA_RATIO", "_TIGHT_PATCH_AREA_RATIO"):
-        monkeypatch.setattr(viewer_module, name, {"stepped": value, "sloped": value})
+    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
 
 
 # --- the fresh-render oracles ----------------------------------------------
@@ -431,14 +430,12 @@ def test_a_visible_level_with_no_resident_chunks_takes_the_reach_fallback(style,
         conftest.close_window(window)
 
 
-@pytest.mark.parametrize(("tight", "shared", "expected"), [(0.0, float("inf"), "evict"), (float("inf"), 0.0, "patch")])
-def test_the_tight_split_prices_its_batch_on_the_tight_ratio(tight, shared, expected, art, monkeypatch) -> None:
-    """The tight split's patch-or-evict choice reads _TIGHT_PATCH_AREA_RATIO,
-    not the reach path's shared ratio, which is set to the opposite answer."""
+@pytest.mark.parametrize(("tight", "expected"), [(0.0, "evict"), (float("inf"), "patch")])
+def test_the_tight_split_prices_its_batch_on_the_tight_ratio(tight, expected, art, monkeypatch) -> None:
+    """The tight split's patch-or-evict choice reads _TIGHT_PATCH_AREA_RATIO."""
     import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": tight, "sloped": tight})
-    monkeypatch.setattr(viewer_module, "_SCOPED_PATCH_AREA_RATIO", {"stepped": shared, "sloped": shared})
     window = _window("Stepped")
     try:
         window.mode_combo.setCurrentText("Terrain")
@@ -457,19 +454,19 @@ def test_the_tight_split_prices_its_batch_on_the_tight_ratio(tight, shared, expe
         conftest.close_window(window)
 
 
-def test_the_reach_path_prices_on_the_shared_ratio(art, monkeypatch) -> None:
-    """Without `tight`, the area check reads _SCOPED_PATCH_AREA_RATIO only."""
+def test_the_area_check_answers_false_with_no_viewport_target(art, monkeypatch) -> None:
+    """Even at a zero ratio: with no target there is no visible area to price
+    an eviction against, which is why the no-target reach patch never asks."""
     import descape.viewer as viewer_module
 
+    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": 0.0, "sloped": 0.0})
     window = _window("Stepped")
     try:
         _level(window, 0)
         bbox = (0, 0, window._cache.chunk_px, window._cache.chunk_px)
-        for tight, shared, expected in [(0.0, float("inf"), False), (float("inf"), 0.0, True)]:
-            monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": tight, "sloped": tight})
-            monkeypatch.setattr(viewer_module, "_SCOPED_PATCH_AREA_RATIO", {"stepped": shared, "sloped": shared})
-            assert window._patch_area_exceeds_viewport(bbox) is expected
-            assert window._patch_area_exceeds_viewport(bbox, tight=True) is not expected
+        assert window._patch_area_exceeds_viewport(bbox, levels=(0,)), "a zero ratio did not evict with a target"
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: None)
+        assert not window._patch_area_exceeds_viewport(bbox, levels=(0,))
     finally:
         conftest.close_window(window)
 

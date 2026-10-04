@@ -10,7 +10,7 @@ unit_render_data.json.
 strict superset: 2,642 non-None units vs 2,137 for British, and there are zero
 consts a playable civ has that Gaia lacks. A playable civ would drop every
 GAIA-only object (trees, huntables, mines) -- exactly what this repo renders
-most. Gaia's values are also safe for the five fields emitted here: only 13
+most. Gaia's values are also safe for the six fields emitted here: only 13
 consts differ between Gaia and British at all (e.g. herdables/sheep such as
 305/594/833, at line_of_sight 3.0 vs 2.0), and all 13 differ in
 `line_of_sight` only -- not one of the fields this table emits. HP, attack,
@@ -21,6 +21,9 @@ script is most likely to ship:**
 - `Unit.hit_points`
 - `Unit.type_50.displayed_attack` / `.displayed_melee_armour` /
   `.displayed_range`
+- `Unit.type_50.max_range` -- the real reach, emitted as `max_range` beside
+  `range`. The two differ on 7 consts, e.g. Poenari Castle (445): displayed
+  0.0, max 8.0 with Castle arrows (GH #111). Range rings read this one.
 - `Unit.creatable.displayed_pierce_armour` -- NOT on `type_50`
 
 Emission rules, keys omitted (not zero-filled) when the source value is
@@ -33,7 +36,8 @@ sentinel a reader could mistake for real data:
   combat block, and those still get their attack/armour/range rows since the
   `hp <= 0` rule only ever drops the `hp` key itself. A const that ends up
   with an empty dict simply has no stats to show.
-- `attack` / `melee_armour` / `range` only when `unit.type_50 is not None`.
+- `attack` / `melee_armour` / `range` / `max_range` only when
+  `unit.type_50 is not None`.
 - `pierce_armour` only when `unit.creatable is not None`.
 - Everything else verbatim -- no clamping, no zero-filling, no
   sentinel-guessing beyond the `hp <= 0` rule above (a negative armour value,
@@ -84,6 +88,7 @@ def main() -> None:
             entry["attack"] = unit.type_50.displayed_attack
             entry["melee_armour"] = unit.type_50.displayed_melee_armour
             entry["range"] = unit.type_50.displayed_range
+            entry["max_range"] = unit.type_50.max_range
         if unit.creatable is not None:
             entry["pierce_armour"] = unit.creatable.displayed_pierce_armour
         if entry:
