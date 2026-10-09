@@ -56,6 +56,9 @@ _TOOL_SHAPE = {t.tool_id: t.drag_shape for t in settings.TOOLS}
 # Tools that offer the free (non-snapped) placement checkbox -- see
 # ToolDef.supports_free_place's own comment.
 FREE_PLACE_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_free_place)
+# Tools that offer "Walls skip occupied tiles" (GH #124); see
+# ToolDef.supports_skip_occupied.
+SKIP_OCCUPIED_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_skip_occupied)
 # The Ruler and Eyedropper are the only tools that are neither an edit tool
 # nor Pan, so they can't be recognised by set membership the way the four
 # sets above are.

@@ -189,3 +189,12 @@ def test_the_divergence_from_batch_api_is_pinned():
     # so the keyword classifier happens to agree with the table here.
     assert batch_api.is_water(_FOREST_REEDS_SHALLOWS)
     assert is_water_family(_FOREST_REEDS_SHALLOWS)
+
+
+def test_batch_api_is_water_covers_the_dat_only_terrains():
+    """131-133 (the Sept 2026 patch's forests) are outside TerrainId, which
+    used to make is_water(131) raise; an id outside every table still does."""
+    for terrain_id in (131, 132, 133):
+        assert batch_api.is_water(terrain_id) is False
+    with pytest.raises(ValueError):
+        batch_api.is_water(999)

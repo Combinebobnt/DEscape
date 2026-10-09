@@ -503,6 +503,61 @@ def test_show_eye_candy_false_keeps_blockers_now_that_they_are_invisible() -> No
     assert any(u.unit_const == _BLOCKER_CONST for _pid, u in visible)
 
 
+# GH #149: Show Obstacles, the solid half of eye candy.
+_ROCK_CONST = 623  # ROCKX, obstruction 2
+_MOUNTAIN_CONST = 744  # MNTN3, obstruction 10
+
+
+def _obstacle_scenario() -> FakeScenario:
+    """A rock and grass under GAIA and under Player 1: the gate is owner-blind."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[GAIA_PLAYER_ID] = [
+        SyntheticUnit(x=1.5, y=1.5, unit_const=_ROCK_CONST),
+        SyntheticUnit(x=3.5, y=1.5, unit_const=_EYE_CANDY_CONST),
+        SyntheticUnit(x=5.5, y=1.5, unit_const=_MOUNTAIN_CONST),
+    ]
+    units_by_player[1] = [
+        SyntheticUnit(x=6.5, y=6.5, unit_const=_ROCK_CONST),
+        SyntheticUnit(x=8.5, y=6.5, unit_const=_EYE_CANDY_CONST),
+        SyntheticUnit(x=10.5, y=9.5, unit_const=_PLAIN_CONST),
+    ]
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+def test_show_obstacles_false_hides_obstacles_under_every_owner_and_leaves_grass() -> None:
+    scn = _obstacle_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_obstacles=False))
+    kept = [(pid, u.unit_const) for pid, u in visible]
+    assert all(const not in (_ROCK_CONST, _MOUNTAIN_CONST) for _pid, const in kept)
+    assert (GAIA_PLAYER_ID, _EYE_CANDY_CONST) in kept and (1, _EYE_CANDY_CONST) in kept
+    assert (1, _PLAIN_CONST) in kept
+
+
+def test_show_eye_candy_false_now_leaves_a_rock_visible() -> None:
+    scn = _obstacle_scenario()
+    visible = _expected_visible(scn, UnitFilter(show_eye_candy=False))
+    kept = [(pid, u.unit_const) for pid, u in visible]
+    assert all(const != _EYE_CANDY_CONST for _pid, const in kept)
+    assert (GAIA_PLAYER_ID, _ROCK_CONST) in kept and (1, _ROCK_CONST) in kept
+    assert (GAIA_PLAYER_ID, _MOUNTAIN_CONST) in kept
+
+
+def test_is_default_false_for_show_obstacles() -> None:
+    assert not UnitFilter(show_obstacles=False).is_default
+
+
+def test_every_compositor_round_trips_the_obstacle_gate_byte_identically() -> None:
+    scn = _obstacle_scenario()
+    for make in (_flat_cache, _iso_cache, _sloped_cache):
+        cache = make(scn, UnitFilter())
+        before = _whole_canvas(cache).copy()
+        cache.set_unit_filter(UnitFilter(show_obstacles=False))
+        assert not np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: changed no pixels"
+        cache.set_unit_filter(UnitFilter())
+        assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: did not restore"
+
+
 def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
     """render_cache._splice_units_by_tile() used to return before clearing
     splice.old_tiles when matches() was False, which was correct only because

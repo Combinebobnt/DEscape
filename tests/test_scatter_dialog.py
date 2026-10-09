@@ -352,3 +352,198 @@ def test_state_round_trips_into_the_next_dialog() -> None:
         assert not second.avoid_check.isChecked()
     finally:
         second.deleteLater()
+
+
+# -- GH #105: move the selected units -----------------------------------------
+
+
+def _move_dialog(scenario, selected, region=(0, 0, 8, 8), unit_const=_FISH, last=None):
+    conftest.ensure_qapp()
+    return scatter_dialog.ScatterDialog(scenario, region, unit_const, 0, last=last, selected_units=selected)
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_the_dialog_starts_in_place_mode_and_move_mode_reports_itself_in_params() -> None:
+    picked = fakes.SyntheticUnit(x=1.5, y=1.5, unit_const=_FISH, reference_id=5)
+    dialog = _move_dialog(_scenario(), [picked])
+    try:
+        assert dialog.place_radio.isChecked()
+        assert not dialog.params().move_selected
+        dialog.move_radio.setChecked(True)
+        assert dialog.params().move_selected
+        assert "(1)" in dialog.move_radio.text()
+        # Move mode keeps each unit's own const, owner and count.
+        assert not dialog.owner_combo.isEnabled()
+        assert not dialog.amount_group.isEnabled()
+        assert not dialog.spacing_spin.isEnabled()
+        assert dialog.seed_spin.isEnabled() and dialog.jitter_spin.isEnabled()
+        assert "1 selected units" in dialog.count_label.text()
+        assert "Only the position changes" in dialog.note_label.text()
+        dialog.place_radio.setChecked(True)
+        assert dialog.owner_combo.isEnabled() and dialog.amount_group.isEnabled()
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_with_no_object_only_move_mode_is_offered() -> None:
+    picked = fakes.SyntheticUnit(x=1.5, y=1.5, unit_const=_FISH, reference_id=5)
+    dialog = _move_dialog(_scenario(), [picked], unit_const=None)
+    try:
+        assert dialog.move_radio.isChecked()
+        assert not dialog.place_radio.isEnabled()
+        assert "none chosen" in dialog.object_label.text()
+        assert dialog.params().unit_const is None
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_avoid_in_move_mode_frees_only_the_movers_own_tiles() -> None:
+    units = [[] for _ in range(9)]
+    mover = fakes.SyntheticUnit(x=2.5, y=2.5, unit_const=_FISH, reference_id=1)
+    sharer = fakes.SyntheticUnit(x=5.5, y=5.5, unit_const=_FISH, reference_id=2)
+    mover_on_shared = fakes.SyntheticUnit(x=5.5, y=5.5, unit_const=_FISH, reference_id=3)
+    house = fakes.SyntheticUnit(x=1.0, y=6.0, unit_const=_HOUSE, reference_id=4)
+    units[1] = [mover, sharer, mover_on_shared, house]
+    dialog = _move_dialog(_scenario(units=units), [mover, mover_on_shared])
+    try:
+        place_eligible = set(dialog.eligible())
+        assert (2, 2) not in place_eligible
+        dialog.move_radio.setChecked(True)
+        move_eligible = set(dialog.eligible())
+        assert (2, 2) in move_eligible  # its own old tile is free to it
+        assert (5, 5) not in move_eligible  # still under the unselected sharer
+        assert not move_eligible & {(0, 5), (1, 5), (0, 6), (1, 6)}  # the house still blocks
+    finally:
+        dialog.deleteLater()
+
+
+_VILLAGER = 83
+
+
+def _footprint(x, y, const):
+    from descape.render import unit_tile_bounds
+
+    x0, x1, y0, y1 = unit_tile_bounds(fakes.SyntheticUnit(x=x, y=y, unit_const=const), 20, 20)
+    return _blob(x0, y0, x1, y1)
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_with_avoid_off_a_moved_building_never_lands_on_another_building() -> None:
+    units = [[] for _ in range(9)]
+    mover = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_HOUSE, reference_id=1)
+    other = fakes.SyntheticUnit(x=1.0, y=6.0, unit_const=_HOUSE, reference_id=4)
+    fish = fakes.SyntheticUnit(x=6.5, y=6.5, unit_const=_FISH, reference_id=5)
+    units[1] = [mover, other, fish]
+    scenario = _scenario(units=units)
+    blocked = _footprint(1.0, 6.0, _HOUSE)
+    dialog = _move_dialog(scenario, [mover])
+    try:
+        dialog.avoid_check.setChecked(False)
+        assert set(dialog.eligible()) == _blob(0, 0, 8, 8)  # place mode unchanged
+        dialog.move_radio.setChecked(True)
+        # Avoid still governs the 1x1 fish; the building is always out.
+        assert set(dialog.eligible()) == _blob(0, 0, 8, 8) - blocked
+        tiles = dialog.params().tiles
+    finally:
+        dialog.deleteLater()
+    for seed in range(40):
+        (pos,) = scatter.scatter_existing_units(scenario, [mover], tiles, seed=seed).positions
+        assert not _footprint(*pos, _HOUSE) & blocked
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_with_avoid_off_a_building_with_only_another_buildings_tiles_refuses() -> None:
+    units = [[] for _ in range(9)]
+    mover = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_HOUSE, reference_id=1)
+    other = fakes.SyntheticUnit(x=1.0, y=6.0, unit_const=_HOUSE, reference_id=4)
+    units[1] = [mover, other]
+    dialog = _move_dialog(_scenario(units=units), [mover], region=(0, 5, 2, 7))
+    try:
+        dialog.avoid_check.setChecked(False)
+        dialog.move_radio.setChecked(True)
+        assert dialog.eligible() == []
+        assert not _ok_enabled(dialog)
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+@pytest.mark.parametrize("avoid", [True, False])
+def test_a_selected_garrisoned_building_can_land_on_its_own_old_footprint(avoid) -> None:
+    units = [[] for _ in range(9)]
+    host = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_HOUSE, reference_id=7)
+    rider = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_VILLAGER, reference_id=8, garrisoned_in_id=7)
+    nested = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_VILLAGER, reference_id=9, garrisoned_in_id=8)
+    units[1] = [host, rider, nested]
+    scenario = _scenario(units=units)
+    own = _footprint(3.0, 3.0, _HOUSE)
+    dialog = _move_dialog(scenario, [host], region=(2, 2, 4, 4))
+    try:
+        dialog.avoid_check.setChecked(avoid)
+        dialog.move_radio.setChecked(True)
+        assert set(dialog.eligible()) == own
+        tiles = dialog.params().tiles
+    finally:
+        dialog.deleteLater()
+    assert scatter.scatter_existing_units(scenario, [host], tiles, seed=3).positions == [(3.0, 3.0)]
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_move_mode_tiles_and_plan_are_the_same_for_the_same_seed() -> None:
+    units = [[] for _ in range(9)]
+    mover = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_HOUSE, reference_id=1)
+    other = fakes.SyntheticUnit(x=1.0, y=6.0, unit_const=_HOUSE, reference_id=4)
+    rider = fakes.SyntheticUnit(x=3.0, y=3.0, unit_const=_VILLAGER, reference_id=8, garrisoned_in_id=1)
+    units[1] = [mover, other, rider]
+    scenario = _scenario(units=units)
+    plans = []
+    for _ in range(2):
+        dialog = _move_dialog(scenario, [mover], last={"move_selected": True, "seed": 11, "avoid": False})
+        try:
+            params = dialog.params()
+        finally:
+            dialog.deleteLater()
+        plans.append((params.tiles, scatter.scatter_existing_units(scenario, [mover], params.tiles, seed=params.seed)))
+    assert plans[0] == plans[1]
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_more_movers_than_tiles_warns_in_the_count_label() -> None:
+    movers = [fakes.SyntheticUnit(x=0.5, y=0.5, unit_const=_FISH, reference_id=i) for i in range(5)]
+    dialog = _move_dialog(_scenario(), movers, region=(0, 0, 2, 2))
+    try:
+        dialog.avoid_check.setChecked(False)
+        dialog.move_radio.setChecked(True)
+        assert "share a tile" in dialog.count_label.text()
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_move_mode_is_sticky_only_while_something_is_selected() -> None:
+    picked = fakes.SyntheticUnit(x=1.5, y=1.5, unit_const=_FISH, reference_id=5)
+    first = _move_dialog(_scenario(), [picked])
+    try:
+        first.move_radio.setChecked(True)
+        state = first.state()
+    finally:
+        first.deleteLater()
+    again = _move_dialog(_scenario(), [picked], last=state)
+    empty = _move_dialog(_scenario(), [], last=state)
+    try:
+        assert again.move_radio.isChecked()
+        assert empty.place_radio.isChecked()
+    finally:
+        again.deleteLater()
+        empty.deleteLater()

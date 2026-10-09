@@ -1,6 +1,7 @@
-"""Which unit_consts are walls (and gates), which are eye candy, which are
-invisible, and which are buildings -- the four const sets behind the Filters
-popup's Show Walls / Show Eye Candy / Show Invisible Objects / Show Buildings.
+"""Which unit_consts are walls (and gates), which are passable eye candy, which
+are obstacles, which are invisible, and which are buildings -- the five const
+sets behind the Filters popup's Show Walls / Show Eye Candy / Show Obstacles /
+Show Invisible Objects / Show Buildings.
 
 Filtering these exists for the same reason show_trees does: scale. Measured
 2026-09-20 across the 20-file examples/ corpus, the 18 files that carry units
@@ -76,6 +77,47 @@ invisible_consts() below, so the two sets stay disjoint (GH #53, by decision
 2026-09-21). The consts that moved: BLOCKER 1776, Blocker 1x3 2423, Blocker
 3x1 2424, plus the hidden-in-editor Terrain blocker 1613, Thin blocker 2435,
 Buildable Blocker 1x3/3x1 2429/2430 and OLD-FISH3 260.
+
+eye_candy_consts() is the umbrella: player_stats still counts all of it as
+"Eye candy". The Filters popup splits it into the two disjoint sets below.
+
+## obstacle_consts() / passable_eye_candy_consts(): 131 / 258 (GH #149)
+
+Source: the .dat's `unit.obstruction_type`, committed as object_catalog.json's
+`obstruction` key (omitted when 0). The 389 eye-candy consts by
+obstruction_type, measured 2026-10-07:
+
+| type | consts | what | corpus placements |
+|---|---|---|---|
+| 0 | 258 | grass, plants, stumps, rubble, skeletons, barrels, rugs, signs | 15,722 |
+| 2 | 70 | ROCKX/ROCKF*/ROCKJ1, ruins, pagodas, burned buildings, Theatre | 1,933 |
+| 3 | 44 | statues, LUMBER/GOODS/QUARRY piles, LOOT, Stonehenge, stalls | 180 |
+| 10 | 11 | MNTN1-11 mountains | 133 |
+| 4 | 6 | "Rock ... Hover" variants | 3 (old-allies only) |
+
+Cross-checks: trees are all 2 or 3, buildings mostly 2, type-70 units 5,
+cliffs 2. So 0 is the passable value. **Rule: obstacle_consts() is the
+eye_candy_consts() members with a non-zero obstruction_type**; the rest are
+passable_eye_candy_consts().
+
+Two calls go beyond the measurement and are pending an in-game check (the
+GH #149 collision probe, not yet run):
+
+- The six Hover rocks (type 4) are obstacles. Type 4 is also on Thin blocker
+  spawners and Mole annexes, which block.
+- BARRELS/RUGS/SIGN/CRATR have obstruction 0 but a 0.2-0.5 `collision_size`.
+  They stay passable: obstruction_type, not collision_size, is the gate.
+
+A mismatch there moves that const across the rule with an explicit exception
+list here, not a change of basis.
+
+**Known limitation:** wall_run.blocked_tiles() treats an obstacle as
+occupying only its 1x1 anchor tile, the footprint every non-building gets
+(tile_span(..., NON_BUILDING_SPAN)). About 25 of the 131 are bigger: 3x3
+mountains, the 2.5-tile Theatre and Stonehenge, the 2x2 CastleRuins and MRKT,
+the 1.5-tile ruins and burned buildings. A wall run can pass through their
+outer tiles until obstacles get real spans (gen_unit_render_data.py's span
+tables, which would also change drawing and picking).
 
 ## invisible_consts(): no .dat standing graphic, 115 consts
 
@@ -264,3 +306,17 @@ def eye_candy_consts() -> frozenset[int]:
         and entry.get("class") != _CLIFF_CLASS
         and const not in invisible
     )
+
+
+@lru_cache(maxsize=1)
+def obstacle_consts() -> frozenset[int]:
+    """Every const Show Obstacles hides: eye candy whose .dat obstruction_type
+    is non-zero (rocks, ruins, statues, mountains). See the module docstring."""
+    objects = _objects()
+    return frozenset(const for const in eye_candy_consts() if objects[const].get("obstruction", 0) != 0)
+
+
+@lru_cache(maxsize=1)
+def passable_eye_candy_consts() -> frozenset[int]:
+    """Every const Show Eye Candy hides: eye candy units can walk through."""
+    return eye_candy_consts() - obstacle_consts()

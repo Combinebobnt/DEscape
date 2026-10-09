@@ -258,3 +258,37 @@ def test_history_invariants() -> None:
 def test_history_invariants_corpus(scenario_path) -> None:
     ok, detail = _check_history_invariants(scenario_path)
     assert ok, detail
+
+
+def test_a_terrain_list_longer_than_the_block_is_refused(tmp_path: Path) -> None:
+    """_patch_terrain_block() bounds the tile list by the load-time size pair:
+    one extra tile used to write a terrain struct over the start of the Units
+    section, with no exception (TASK-107's plan, 2.1)."""
+    import copy
+
+    from descape.scenario_write import WriteBlockedError, build_patched_body
+
+    scenario = load_map_and_units(Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario")
+    scenario.map_manager.terrain.append(copy.copy(scenario.map_manager.terrain[0]))
+    out = tmp_path / "out.aoe2scenario"
+    with pytest.raises(WriteBlockedError, match="room for 120x120"):
+        write_scenario(scenario, out, backup=False)
+    with pytest.raises(WriteBlockedError):
+        build_patched_body(scenario)
+    assert not out.exists()
+
+
+def test_build_patched_body_is_what_write_scenario_compresses(tmp_path: Path) -> None:
+    """The extraction is a pure refactor: an edited body built here is the
+    one write_scenario() puts on disk, and a zero-edit one is the original."""
+    from descape.scenario_write import build_patched_body
+
+    scenario = load_map_and_units(FIXTURE_PATH)
+    assert build_patched_body(scenario) == (scenario.header_bytes, scenario.decompressed_body)
+    scenario.map_manager.terrain[5].terrain_id = 2
+    header, body = build_patched_body(scenario)
+    out = tmp_path / "edited.aoe2scenario"
+    write_scenario(scenario, out, backup=False)
+    data = out.read_bytes()
+    assert data[: len(header)] == header
+    assert _decompress_bytes(data[len(header) :]) == body

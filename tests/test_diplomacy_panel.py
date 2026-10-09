@@ -475,6 +475,7 @@ def test_self_note_is_not_counted_as_a_row_or_a_widget() -> None:
 # --- geometry --------------------------------------------------------------
 
 
+@pytest.mark.font_sensitive
 def test_every_widget_fits_min_useful_width() -> None:
     from descape.diplomacy_panel import DiplomacyPanel
 

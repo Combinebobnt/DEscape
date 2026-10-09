@@ -381,6 +381,34 @@ def _no_gc_hold_left():
 
 
 @pytest.fixture(autouse=True)
+def _no_mouse_button_left_held():
+    """QApplication.mouseButtons() is process-global, and every warm tick backs
+    off while it reads a held button (_IdleTimerDriver._held_backoff). On Qt
+    5.15 QTest.mouseDClick() sets the button and sends no closing release, so
+    one double-click test stalled every later warm on its xdist worker
+    (TASK-005). Fails the test that left a button held, after releasing it.
+
+    Reads QGuiApplication's, which no test monkeypatches (several patch
+    QApplication.mouseButtons and may not have undone it yet here)."""
+    yield
+    widgets = sys.modules.get("PyQt5.QtWidgets")
+    if widgets is None or widgets.QApplication.instance() is None:
+        return
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QGuiApplication
+    from PyQt5.QtTest import QTest
+
+    held = int(QGuiApplication.mouseButtons())
+    if not held:
+        return
+    sink = widgets.QWidget()
+    for bit in range(held.bit_length()):
+        if held & (1 << bit):
+            QTest.mouseRelease(sink, Qt.MouseButton(1 << bit))
+    pytest.fail(f"left mouse button(s) {held:#x} held: send the release QTest.mouseDClick() omits")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_settings(tmp_path, monkeypatch):
     """Every test gets its own throwaway config.yaml, never the developer's
     real one. settings.py does `from descape.asset_source import CONFIG_PATH`

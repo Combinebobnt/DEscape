@@ -524,6 +524,74 @@ def test_the_trigger_s_own_prose_fields_are_prose_and_its_name_is_not() -> None:
     assert modes["name"] == ""
 
 
+_PRE_141_ORDER = [
+    "name",
+    "short_description",
+    "description",
+    "enabled",
+    "looping",
+    "header",
+    "display_as_objective",
+    "display_on_screen",
+    "mute_objectives",
+]
+
+
+def test_the_trigger_header_fields_are_specs_with_their_library_attributes() -> None:
+    """GH #141. The stids keep UNSET (-1 is legal and shows "(unset)");
+    description_order is a u32 with no sentinel."""
+    specs = {spec.name: spec for spec in trigger_fields.TRIGGER_FIELDS}
+    expected = {
+        "short_description_string_table_id": (trigger_fields.INT, "short_description_stid", trigger_fields.UNSET),
+        "description_string_table_id": (trigger_fields.INT, "description_stid", trigger_fields.UNSET),
+        "description_order": (trigger_fields.INT, "description_order", None),
+        "execute_on_load": (trigger_fields.BOOL, "execute_on_load", None),
+    }
+    for name, (kind, attribute, sentinel) in expected.items():
+        assert (specs[name].kind, specs[name].attribute, specs[name].sentinel) == (kind, attribute, sentinel), name
+    names = [spec.name for spec in trigger_fields.TRIGGER_FIELDS]
+    assert [name for name in names if name in _PRE_141_ORDER] == _PRE_141_ORDER
+    assert names[names.index("short_description") + 1] == "short_description_string_table_id"
+    assert names[names.index("description") + 1] == "description_string_table_id"
+    assert names[names.index("header") + 1] == "description_order"
+    assert names[-1] == "execute_on_load"
+
+
+def test_every_trigger_attribute_is_one_the_library_links() -> None:
+    from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
+
+    linked = {link.name for link in library_compat._iter_links(Trigger._link_list)}
+    assert {spec.attribute for spec in trigger_fields.TRIGGER_FIELDS} <= linked
+
+
+def test_the_header_fields_carry_tooltips() -> None:
+    specs = {spec.name: spec for spec in trigger_fields.TRIGGER_FIELDS}
+    for name in ("header", "description_order", "description_string_table_id", "short_description_string_table_id"):
+        assert specs[name].tooltip, name
+    assert "higher numbers are listed first" in specs["description_order"].tooltip
+
+
+def test_execute_on_load_is_gated_by_the_library_s_own_support() -> None:
+    """The gate is the library link's Support, so a library bump that moves it
+    moves the form too. Pinned here so that move is noticed."""
+    from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
+
+    link = next(link for link in library_compat._iter_links(Trigger._link_list) if link.name == "execute_on_load")
+    assert link.support.since == pytest.approx(1.55)
+    names_154 = [spec.name for spec in trigger_fields.trigger_specs("1.54")]
+    names_155 = [spec.name for spec in trigger_fields.trigger_specs("1.55")]
+    assert "execute_on_load" not in names_154
+    assert names_155 == [spec.name for spec in trigger_fields.TRIGGER_FIELDS]
+    assert names_154 == names_155[:-1]
+
+
+def test_an_unparseable_version_shows_every_trigger_field() -> None:
+    """Support.supports() calls float(); a version that isn't dotted numbers
+    takes the tolerant default rather than raising."""
+    assert trigger_fields.trigger_specs("new") == trigger_fields.TRIGGER_FIELDS
+    assert trigger_fields.trigger_specs("") == trigger_fields.TRIGGER_FIELDS
+
+
 def test_the_cluster_rule_keeps_the_multiline_mode() -> None:
     specs = (
         FieldSpec("quantity", trigger_fields.INT),

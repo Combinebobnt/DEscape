@@ -72,6 +72,64 @@ def test_a_real_stroke_is_bracketed_and_drops_hover_phases(traced_window):
     assert "perf drag paint-terrain:" in debug_log.get_log_text()
 
 
+def test_a_viewport_drag_line_names_the_platform_and_counts_coalesced_moves(traced_window):
+    """GH #179: moves sent to the viewport go through MapView's coalescer, so
+    the drag line carries the input counts, and the header the platform and
+    steps per repaint call."""
+    import re
+
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtWidgets import QApplication
+
+    map_view = traced_window.map_view
+    viewport = map_view.viewport()
+
+    def send(kind, tile, button, buttons):
+        pos = conftest.polygon_viewport_pos(map_view, *tile)
+        QApplication.sendEvent(viewport, conftest.mouse_event(kind, pos, button, buttons))
+
+    send(QEvent.MouseButtonPress, (20, 20), Qt.LeftButton, Qt.LeftButton)
+    for x in range(21, 29):
+        send(QEvent.MouseMove, (x, 20), Qt.NoButton, Qt.LeftButton)
+    assert _spin_until(lambda: map_view._move_stash is None and perf_trace._repaint_durations, timeout_s=5.0)
+    send(QEvent.MouseButtonRelease, (28, 20), Qt.LeftButton, Qt.NoButton)
+
+    text = debug_log.get_log_text()
+    drag = text[text.index("perf drag paint-terrain:") :]
+    header = drag.splitlines()[0]
+    platform = re.escape(QApplication.platformName())
+    assert re.search(rf", composite \w+, platform {platform}, \d+\.\d\d steps/repaint$", header), header
+    match = re.search(r"\| input: moves (\d+), handled (\d+)", drag)
+    assert match, drag
+    assert int(match.group(1)) == 8 and 1 <= int(match.group(2)) < 8, drag
+
+
+def test_a_trees_on_draw_stroke_end_splits_unit_plan_into_its_sub_phases(traced_window):
+    """TASK-031.55: unit_plan's scan / plan / splices / begin / model / commit
+    split prints on the stroke's end line beside unit_plan itself."""
+    import re
+
+    from PyQt5.QtCore import QEvent, Qt
+
+    window = traced_window
+    window.terrain_panel.set_terrain(10)  # FOREST_OAK, density 1000: every tile plants a tree
+    window.paint_trees_check.setChecked(True)
+    map_view = window.map_view
+    start = conftest.polygon_viewport_pos(map_view, 30, 30)
+    end = conftest.polygon_viewport_pos(map_view, 32, 30)
+    map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+    map_view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+    map_view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+
+    assert any(int(u.x) == 30 and int(u.y) == 30 for u in window.scenario.unit_manager.units[0]), "no tree planted"
+    text = debug_log.get_log_text()
+    drag = text[text.index("perf drag paint-terrain:") :]
+    end_line = next(line for line in drag.splitlines() if "| end:" in line)
+    names = re.findall(r"(unit_plan(?:\.\w+)?) [\d.]+", end_line)
+    assert names[-1] == "unit_plan", end_line
+    assert set(names[:-1]) == {f"unit_plan.{n}" for n in ("scan", "plan", "splices", "begin", "model", "commit")}, end_line
+
+
 def test_a_real_set_elevation_stroke_traces_its_press_steps_and_release(traced_window):
     """set-elevation-untimed-stalls plan Step 2: the snapshot, the mutation and
     the commit are phases on the drag line, and the spans give it a wall."""
@@ -95,7 +153,8 @@ def test_a_real_set_elevation_stroke_traces_its_press_steps_and_release(traced_w
     text = debug_log.get_log_text()
     assert "perf drag set-elevation: 2 steps" in text, text
     drag = text[text.index("perf drag set-elevation:") :]
-    assert re.search(r", wall \d+ms, untimed \d+ms, composite", drag), drag
+    # Set elevation takes a brush, so MapView names it (TASK-031.38).
+    assert re.search(r", wall \d+ms, untimed \d+ms, brush 1 square, composite", drag), drag
     for name in ("stroke_snapshot", "stroke_mutate", "stroke_commit", "edit_actions", "gc_resume"):
         assert f"{name} " in drag, f"{name} missing from the drag line:\n{drag}"
     assert "span" not in drag and perf_trace._span_stack == []

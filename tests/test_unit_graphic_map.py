@@ -115,11 +115,10 @@ COMPOSITE_SCOPE_CONSTS = SLOTTED_CONSTS - ANNEX_TREE_CONSTS
 
 # unit_const -> depth-sorted piece file_names, read off the real .dat
 # (2026-08-29) via tools/gen_unit_graphic_map.py's annex walk. 109 is the
-# reported bug (RTWC drew only its back quarter); 71 is the regression guard
-# against reintroducing per-civ/age retargeting -- Incas' own back piece is
-# Andean-style, but the game composites it with the SAME Dark Age
-# main/center/front graphics as every other town centre const, not with
-# Andean-suffixed siblings.
+# reported bug (RTWC drew only its back quarter). 71 is the Feudal Age town
+# centre: the .dat lists the Dark Age annexes 618-620 on it, but the age techs
+# upgrade those to 614-616 at the same age, so since GH #48 Slice 2 its pieces
+# are one age (they used to pair a Feudal back with Dark Age main/center/front).
 KNOWN_PIECES = {
     109: [
         "b_dark_town_center_age1_main_x1",
@@ -128,10 +127,10 @@ KNOWN_PIECES = {
         "b_dark_town_center_age1_front_x1",
     ],
     71: [
-        "b_dark_town_center_age1_main_x1",
+        "b_west_town_center_age2_main_x1",
         "b_west_town_center_age2_back_x1",
-        "b_dark_town_center_age1_center_x1",
-        "b_dark_town_center_age1_front_x1",
+        "b_west_town_center_age2_center_x1",
+        "b_west_town_center_age2_front_x1",
     ],
 }
 
@@ -428,7 +427,9 @@ def test_the_committed_slots_still_match_the_real_art(request):
     generator = measure._generator_module()
 
     measured = {}
-    for unit_const in sorted(generator._COMPOSITE_SCOPE | generator._ANNEX_TREE_SCOPE):
+    for unit_const in sorted(
+        (generator._COMPOSITE_SCOPE | generator._ANNEX_TREE_SCOPE) - generator._TOWN_CENTRE_SCOPE
+    ):
         result = measure.measure(unit_const)
         if result is not None:
             measured[unit_const] = [list(row["slot"]) for row in result["rows"]]
@@ -437,6 +438,47 @@ def test_the_committed_slots_still_match_the_real_art(request):
         assert generator._PIECE_SLOTS[unit_const] == slots, (
             f"unit_const {unit_const}: the real art now wants {slots}. Re-run "
             f"tools/measure_piece_slots.py and commit its table"
+        )
+    # GH #48: town centres per art set, over both committed tables.
+    art_sets = measure.town_centre_art_sets(generator)
+    assert len(art_sets) > 40, "the per-civ town-centre sets are missing"
+    for key, (unit_const, entry) in art_sets.items():
+        result = measure.measure(unit_const, entry)
+        assert result is not None, f"{key}: art unreadable on this install"
+        slots = [list(row["slot"]) for row in result["rows"]]
+        assert generator._PIECE_SLOTS_BY_ART.get(key) == slots, (
+            f"{key}: the real art now wants {slots}. Re-run tools/measure_piece_slots.py "
+            f"and commit its _PIECE_SLOTS_BY_ART"
+        )
+        assert [p["slot"] for p in entry["pieces"]] == slots, f"{key}: the committed entry carries stale slots"
+
+
+@pytest.mark.corpus
+@pytest.mark.slow
+def test_the_generator_reproduces_both_committed_tables(tmp_path):
+    """GH #48: the per-civ refactor, its invariant asserts and the
+    relationship-derived wall bodies must hold against the installed .dat,
+    and must leave unit_graphic_map.json byte-identical. Same env-var-only
+    install route as the slot test above."""
+    import subprocess
+    import sys
+
+    from descape import asset_source
+
+    install = asset_source.get_install_path()
+    if install is None:
+        pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH to one")
+    pytest.importorskip("genieutils")
+    tool = Path(__file__).resolve().parent.parent / "tools" / "gen_unit_graphic_map.py"
+    run = subprocess.run(
+        [sys.executable, str(tool), str(install), "--out-dir", str(tmp_path)],
+        capture_output=True, text=True, timeout=300, check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    descape_dir = GRAPHIC_MAP_PATH.parent
+    for name in ("unit_graphic_map.json", "building_art_map.json"):
+        assert (tmp_path / name).read_bytes() == (descape_dir / name).read_bytes(), (
+            f"{name} no longer regenerates byte-identical -- re-run tools/gen_unit_graphic_map.py"
         )
 
 

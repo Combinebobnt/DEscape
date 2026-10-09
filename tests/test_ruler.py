@@ -189,6 +189,22 @@ def test_remove_at_a_miss_returns_none_and_keeps_everything() -> None:
     assert len(pinned) == 1
 
 
+def test_apply_delta_matches_by_identity_skips_and_clamps() -> None:
+    """RulerDiffRecord's rules: identity, not equality; a missing removal and
+    an already-pinned insert are skipped; an insert index is clamped."""
+    pinned = PinnedRulers()
+    a, a_twin, b = measure((0, 0), (3, 4)), measure((0, 0), (3, 4)), measure((5, 5), (6, 6))
+    pinned.add(a)
+    pinned.apply_delta((a_twin,), ())
+    assert list(pinned) == [a] and pinned.newest is a
+    pinned.apply_delta((), ((0, a),))
+    assert len(pinned) == 1
+    pinned.apply_delta((), ((9, b), (0, a_twin)))
+    assert [id(m) for m in pinned] == [id(a_twin), id(a), id(b)]
+    pinned.apply_delta((a, b, b), ())
+    assert [id(m) for m in pinned] == [id(a_twin)]
+
+
 def test_clear_drops_every_pinned_ruler() -> None:
     pinned = PinnedRulers()
     pinned.add(measure((0, 0), (3, 4)))

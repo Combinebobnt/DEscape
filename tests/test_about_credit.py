@@ -3,8 +3,9 @@
 The credit is a static string because the frozen build ships no dist-info
 (packaging/descape.spec has no copy_metadata), so these tests pin it to the
 installed distribution's own METADATA and LICENSE instead. The licence comes
-from the LICENSE text, not the METADATA classifier: 0.8.3's classifier says
-MIT while its LICENSE file and the upstream repo are GPL-3.0.
+from the LICENSE text, not the METADATA classifier: the classifier (0.8.3
+through 0.9.4) says MIT while its LICENSE file and the upstream repo are
+GPL-3.0.
 """
 
 from __future__ import annotations

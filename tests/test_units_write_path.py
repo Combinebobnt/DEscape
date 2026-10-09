@@ -363,6 +363,31 @@ def test_a_moved_host_and_its_occupant_read_back_on_the_same_point(tmp_path: Pat
     assert got_occupant.garrisoned_in_id == got_host.reference_id
 
 
+def test_a_garrisoned_and_an_unloaded_existing_unit_read_back(tmp_path: Path) -> None:
+    """GH #115: set_garrisoned_in() on units the file already had. The archer
+    goes into the House (at its point, as the viewer does) and the villager
+    comes out; both links must survive the round trip on their own units."""
+    loaded, model = _open()
+    host = _unit(loaded, _REF_HOUSE)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    model.set_garrisoned_in(villager, -1)
+    model.set_position(villager, 20.5, 21.5, villager.z)
+    model.set_garrisoned_in(archer, host.reference_id)
+    model.set_position(archer, host.x, host.y, host.z)
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    reloaded = load_map_and_units(out)
+
+    got_archer = _unit(reloaded, _REF_ARCHER_P1)
+    got_villager = _unit(reloaded, _REF_VILLAGER_P1)
+    assert got_archer.garrisoned_in_id == _REF_HOUSE
+    assert (got_archer.x, got_archer.y) == (host.x, host.y)
+    assert got_villager.garrisoned_in_id == -1
+    assert (got_villager.x, got_villager.y) == (20.5, 21.5)
+
+
 def test_next_unit_id_is_untouched_when_nothing_was_added(tmp_path: Path) -> None:
     loaded, model = _open()
     original_next_id = int.from_bytes(loaded.decompressed_body[0:4], "little")

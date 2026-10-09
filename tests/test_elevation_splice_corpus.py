@@ -52,11 +52,9 @@ def _shared_tile_units(scenario, cache) -> list:
 
 
 def _over_cap(scenario, cache, tiles) -> bool:
-    """Whether a refused raise was refused for the component cap alone."""
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 10**9)
-        out = render_cache._elevation_splices(scenario, cache.units_by_tile, cache.unit_filter, tiles)
-    return out is not None and len(out) > render_cache._ELEV_SPLICE_MAX_UNITS
+    """Whether a refused raise was refused for the cache's component cap alone."""
+    out = render_cache._elevation_splices(scenario, cache.units_by_tile, cache.unit_filter, tiles, 10**9)
+    return out is not None and len(out) > cache.elevation_splice_cap()
 
 
 @pytest.mark.corpus
@@ -119,27 +117,27 @@ def test_random_shared_tile_raises_splice_exactly_like_a_fresh_cache(name, style
         cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
         tag = f"round {r}: brush {BRUSH} at ({cx}, {cy})"
 
+        # A Sloped headroom change still splices; only the bbox layer rebuilds whole.
         if style == "sloped" and cache._headroom != headroom:
             stats["headroom"] += 1
+        assert len(calls) == 1, f"{tag}: the elevation splice ran {len(calls)} times"
+        tiles, out = calls[0]
+        if out is None:
+            assert _over_cap(scenario, cache, tiles), f"{tag}: fell back below the component cap"
+            stats["over_cap"] += 1
+            if isinstance(cache, IsoChunkCache):
+                for mip in _mips(cache):
+                    cache.render_rect(0, 0, VIEW_PX, VIEW_PX, mip=mip)
         else:
-            assert len(calls) == 1, f"{tag}: the elevation splice ran {len(calls)} times"
-            tiles, out = calls[0]
-            if out is None:
-                assert _over_cap(scenario, cache, tiles), f"{tag}: fell back below the component cap"
-                stats["over_cap"] += 1
-                if isinstance(cache, IsoChunkCache):
-                    for mip in _mips(cache):
-                        cache.render_rect(0, 0, VIEW_PX, VIEW_PX, mip=mip)
+            # The window's centre unit shares a tile, so the pre-component guard would have refused this.
+            assert id(seed) in {id(s.unit) for s in out}, f"{tag}: the shared-tile seed was not spliced"
+            stats["spliced"] += 1
+            stats["units"] += len(out)
+            stats["seeds"] += sum(1 for s in out if s.new_own_tile in tiles)
+            if isinstance(cache, IsoChunkCache):
+                assert cache._source_gen == gen, f"{tag}: the source gen bumped"
             else:
-                # The window's centre unit shares a tile, so the pre-component guard would have refused this.
-                assert id(seed) in {id(s.unit) for s in out}, f"{tag}: the shared-tile seed was not spliced"
-                stats["spliced"] += 1
-                stats["units"] += len(out)
-                stats["seeds"] += sum(1 for s in out if s.new_own_tile in tiles)
-                if isinstance(cache, IsoChunkCache):
-                    assert cache._source_gen == gen, f"{tag}: the source gen bumped"
-                else:
-                    assert not rebuilds, f"{tag}: the unit layers were rebuilt wholesale"
+                assert not rebuilds, f"{tag}: the unit layers were rebuilt wholesale"
         _assert_matches_fresh(cache, style, scenario, unit_filter, tag)
 
     print(f"{name} {style}: {stats}")

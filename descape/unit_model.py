@@ -71,17 +71,21 @@ commit's readback), from raising regardless of which document loaded last.
 from __future__ import annotations
 
 import struct
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
+from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from AoE2ScenarioParser.helper import bytes_conversions, string_manipulations
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
 from descape import (
+    garrison,
     gate_orientation,
     library_compat,
+    object_catalog,
     render,
     scenario_io,
     terrain_palette,
@@ -325,6 +329,17 @@ def _encode_unit(codec, int_positions: tuple[int, ...], unit: Unit) -> bytes:
     return _encode_unit_values(codec.unit_format, values)
 
 
+def capture_flag_of(unit: Any) -> int:
+    """`unit.capture_flag`, or -1 (Default) where it has none: a pre-1.59 unit
+    (no attribute, or a poisoned link raising UnsupportedAttributeError,
+    which `getattr(..., default)` does not catch) or a None one."""
+    try:
+        value = unit.capture_flag
+    except (UnsupportedAttributeError, AttributeError):
+        return -1
+    return -1 if value is None else value
+
+
 def _highest_reference_id(manager: UnitManager) -> int:
     return max((u.reference_id for units in manager.units for u in units), default=0)
 
@@ -345,6 +360,48 @@ def span_low_corner(unit: Unit) -> tuple[int, int]:
     """
     span_x, span_y = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
     return render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
+
+
+BATCH_CONFLICT = "garrison conflict with another object in this Replace"
+
+
+def replaced_position(unit: Unit, new_const: int) -> tuple[float, float]:
+    """Where replace_type() puts `unit` as `new_const`: x/y verbatim on an axis
+    whose span is unchanged, re-anchored on the footprint's low corner only on
+    an axis whose span changes. Always re-anchoring would snap free-float units
+    and trees to tile centres and shift off-parity buildings by half a tile."""
+    old_span = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    new_span = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
+    low_x, low_y = span_low_corner(unit)
+    anchor_x, anchor_y = render.span_anchor(low_x, low_y, *new_span)
+    x = unit.x if old_span[0] == new_span[0] else anchor_x
+    y = unit.y if old_span[1] == new_span[1] else anchor_y
+    return x, y
+
+
+def replaced_rotation(old_const: int, new_const: int, rotation: float, frame: int) -> tuple[float, int]:
+    """(rotation, initial_animation_frame) after replace_type(), AGENTS.md's
+    *Replace* exception. The two move together (always equal in the corpus for
+    cliffs, trees and doodads). Verbatim when both consts are ANGLE, both walls
+    or both INERT, and for two cyclable consts when the old variant exists in
+    the new one; (0.0, 0) for any other pairing and for every target gate."""
+    if gate_orientation.is_gate(new_const):
+        return 0.0, 0
+    if unit_rotation.rotation_is_angle(old_const) and unit_rotation.rotation_is_angle(new_const):
+        return rotation, frame
+    if unit_sprites.rotation_variant_eligible(old_const) and unit_sprites.rotation_variant_eligible(new_const):
+        return rotation, frame
+    if unit_variant.is_cyclable(old_const) and unit_variant.is_cyclable(new_const):
+        old_index = unit_variant.variant_of(
+            rotation, unit_rotation.angle_count_for(old_const), unit_variant.variant_count_for(old_const)
+        )
+        if old_index < unit_variant.variant_count_for(new_const):
+            return rotation, frame
+        return 0.0, 0
+    inert = unit_rotation.INERT
+    if unit_rotation.semantics_for(old_const) == inert and unit_rotation.semantics_for(new_const) == inert:
+        return rotation, frame
+    return 0.0, 0
 
 
 def new_unit(
@@ -380,7 +437,7 @@ def new_unit(
     without it. batch_adds() passes False because it already ran it once."""
     if depoison:
         library_compat.depoison()
-    unit = Unit(
+    return Unit(
         player=player,
         x=x,
         y=y,
@@ -391,14 +448,11 @@ def new_unit(
         rotation=rotation,
         initial_animation_frame=initial_animation_frame,
         garrisoned_in_id=garrisoned_in_id,
+        capture_flag=capture_flag,
         caption_string_id=caption_string_id,
         caption_string=caption_string,
         uuid=uuid,
     )
-    # Unlinked on 0.8.3, so carried as a plain attribute; serialize()
-    # writes it into whatever slot the unit ends up in.
-    unit.capture_flag = capture_flag
-    return unit
 
 
 # The only fields any in-place operation mutates -- add/remove/reassign move
@@ -413,11 +467,35 @@ def new_unit(
 # undo restore the BYTES (the blob comes back) while the live Unit object
 # stayed rotated or stayed cycled, so the inspector and the render would
 # disagree with what saving would actually write.
-UnitState = tuple[float, float, float, float, int]
+#
+# `garrisoned_in_id` is in here for the same reason since GH #115:
+# set_garrisoned_in() writes it in place, and `initial_animation_frame` since
+# GH #144: replace_type() writes it together with rotation.
+UnitState = tuple[float, float, float, float, int, int, int]
 
 
 def unit_state(unit: Unit) -> UnitState:
-    return (unit.x, unit.y, unit.z, unit.rotation, unit.unit_const)
+    return (
+        unit.x,
+        unit.y,
+        unit.z,
+        unit.rotation,
+        unit.unit_const,
+        unit.garrisoned_in_id,
+        unit.initial_animation_frame,
+    )
+
+
+def _set_unit_state(unit: Unit, state: UnitState) -> None:
+    (
+        unit.x,
+        unit.y,
+        unit.z,
+        unit.rotation,
+        unit.unit_const,
+        unit.garrisoned_in_id,
+        unit.initial_animation_frame,
+    ) = state
 
 
 @dataclass
@@ -429,7 +507,7 @@ class PlayerListSnapshot:
     than merely its original owner (the insertion-position rule -- see
     UnitEditModel.reassign's docstring), and unlike triggers there is no
     O(bytes) cost to worry about capturing more than strictly needed, since
-    a UnitState is four floats and a const.
+    a UnitState is four floats, a const and a garrison link.
     """
 
     units: list = field(default_factory=list)
@@ -470,8 +548,8 @@ class UnitFieldRecord:
 class UnitFieldSnapshot:
     """One side of a fields_only delta undo record -- O(units actually
     touched) rather than UnitSnapshot's O(whole player list), for
-    set_position/set_rotation/set_unit_const edits (Move/Nudge/Rotate/Set
-    field/gate orientation). `entries` is keyed by id(unit), filled lazily
+    set_position/set_rotation/set_unit_const/replace_type edits (Move/Nudge/
+    Rotate/Set field/gate orientation). `entries` is keyed by id(unit), filled lazily
     on each unit's first field write so N field writes to the same unit
     still cost one entry."""
 
@@ -723,7 +801,7 @@ class UnitEditModel:
         if isinstance(self._pending, UnitFieldSnapshot):
             raise RuntimeError(
                 f"{op}() changes unit membership/order and cannot run inside a fields_only "
-                f"unit edit -- only set_position/set_rotation/set_unit_const may"
+                f"unit edit -- only set_position/set_rotation/set_unit_const/replace_type may"
             )
 
     # -- operations --------------------------------------------------------
@@ -794,7 +872,8 @@ class UnitEditModel:
     def set_wall_variant(self, unit: Unit, index: int) -> None:
         """Writes a wall's neighbour-derived shape index to `rotation`, for
         Place Unit's wall-run junction rewrites (2026-09-19 wall-runs plan,
-        folded into Place Unit by GH #98).
+        folded into Place Unit by GH #98) and the walls beside a gate Place
+        Unit puts over a run (GH #159, wall_run.apply_gate_plan).
 
         The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
         and the reason it is allowed at all: the game re-derives a wall's
@@ -839,9 +918,10 @@ class UnitEditModel:
         """Swaps a gate's `unit_const` for one of its orientation siblings and
         re-anchors x/y so the footprint keeps the low corner it had.
 
-        The only code anywhere that may change a placed unit's const, and the
-        guard below is what keeps AGENTS.md's gate rule enforced rather than
-        merely documented: a const that is not one of
+        One of the two writers of a placed unit's const (replace_type() is the
+        other, for Find and Replace only), and the guard below is what keeps
+        AGENTS.md's gate rule enforced rather than merely documented: a const
+        that is not one of
         gate_orientation.orientation_siblings()' four is refused loudly, the
         same contract set_rotation() has for a non-ANGLE const.
 
@@ -871,6 +951,117 @@ class UnitEditModel:
         new_span = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
         unit.unit_const = new_const
         unit.x, unit.y = render.span_anchor(low_x, low_y, *new_span)
+        self._blobs[player][index] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def replace_refusal(
+        self,
+        unit: Unit,
+        new_const: int,
+        map_w: int,
+        map_h: int,
+        *,
+        planned: Mapping[int, int] | None = None,
+    ) -> str | None:
+        """Why replace_type(unit, new_const) would raise, or None. Never mutates.
+
+        `planned` maps reference_id -> target const for the rest of a batch,
+        so the garrison checks read a host's or occupant's planned const: a
+        batch pre-flighted here cannot raise midway (abort does not roll back)."""
+        planned = planned or {}
+        old_const = unit.unit_const
+        if new_const == old_const:
+            return "already that type"
+        if not object_catalog.is_known_object(new_const):
+            return f"unknown object type {new_const}"
+        cliffs = unit_sprites.cliff_consts()
+        if old_const in cliffs or new_const in cliffs:
+            return "cliffs are not replaced"
+        siblings = gate_orientation.orientation_siblings(old_const)
+        if siblings is not None and new_const in siblings:
+            return "same gate in another orientation (use Rotate)"
+        if render.unit_tile_bounds(unit, map_w, map_h) is None:
+            return "off the map"
+        x, y = replaced_position(unit, new_const)
+        span_x, span_y = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
+        x0, y0 = render._span_start(x, span_x), render._span_start(y, span_y)
+        if x0 < 0 or y0 < 0 or x0 + span_x > map_w or y0 + span_y > map_h:
+            return "new footprint leaves the map"
+        name = object_catalog.display_name
+        if unit.reference_id != -1:
+            occupants = [
+                planned.get(u.reference_id, u.unit_const)
+                for u in self._garrison_map().get(unit.reference_id, ())
+                if u is not unit
+            ]
+            reason = garrison.refusal(new_const, name(new_const), 0, occupants, name_of=name)
+            if reason is not None:
+                return reason
+        host_ref = unit.garrisoned_in_id
+        if host_ref != -1 and host_ref != unit.reference_id:
+            host = next((u for tracked in self._tracked for u in tracked if u.reference_id == host_ref), None)
+            if host is not None:
+                host_const = planned.get(host_ref, host.unit_const)
+                if not garrison.accepts(host_const, new_const):
+                    return f"Garrison: {name(new_const)} cannot go inside {name(host_const)}"
+        return None
+
+    def replace_batch_refusals(self, units: Sequence[Unit], new_const: int, map_w: int, map_h: int) -> list[str | None]:
+        """replace_refusal() for a whole Replace batch, aligned with `units`
+        (None: will be replaced). Never mutates.
+
+        Every round re-checks every unit against `planned` = the units that
+        passed the round before, until the passing set repeats, so a host
+        refused for its occupant's planned type is let back in once that
+        occupant drops, and every reason is computed against the final set.
+        A set seen before (two units that each pass only while the other is
+        dropped) switches to shrink-only rounds, which always terminate; a
+        unit dropped there that would pass alone gets BATCH_CONFLICT. The
+        passing set is self-consistent: each member passes with the others
+        planned, so the batch cannot raise midway."""
+        pool = range(len(units))
+        passing = list(pool)
+        seen = {tuple(passing)}
+        grow = True
+        while True:
+            planned = {units[i].reference_id: new_const for i in passing}
+            reasons = [self.replace_refusal(units[i], new_const, map_w, map_h, planned=planned) for i in pool]
+            nxt = [i for i in (pool if grow else passing) if reasons[i] is None]
+            if nxt == passing:
+                break
+            if tuple(nxt) in seen:
+                grow = False
+                nxt = [i for i in passing if reasons[i] is None]
+            seen.add(tuple(nxt))
+            passing = nxt
+        kept = set(passing)
+        return [None if i in kept else (reasons[i] or BATCH_CONFLICT) for i in pool]
+
+    def replace_type(
+        self, unit: Unit, new_const: int, *, map_w: int, map_h: int, planned: Mapping[int, int] | None = None
+    ) -> None:
+        """Changes a placed unit's const in place, for Find and Replace (GH #144).
+
+        The second exception to AGENTS.md's "a placed unit's unit_const never
+        changes", with its scope enforced: replace_refusal()'s cases raise
+        ValueError. Keeps reference_id, the list slot, player, z, status,
+        caption, capture_flag and garrisoned_in_id. x/y stay verbatim on an
+        axis whose span is unchanged (replaced_position()); rotation and
+        initial_animation_frame follow replaced_rotation(), AGENTS.md's
+        *Replace* verbatim exception. A batch passes its pre-flight's
+        `planned`, so the guard checks the same final state in any order."""
+        reason = self.replace_refusal(unit, new_const, map_w, map_h, planned=planned)
+        if reason is not None:
+            raise ValueError(f"cannot replace unit {unit.reference_id} with {new_const}: {reason}")
+        player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
+        x, y = replaced_position(unit, new_const)
+        rotation, frame = replaced_rotation(unit.unit_const, new_const, unit.rotation, unit.initial_animation_frame)
+        unit.unit_const = new_const
+        unit.x, unit.y = x, y
+        unit.rotation = rotation
+        unit.initial_animation_frame = frame
         self._blobs[player][index] = None
         self._dirty = True
         self._bump_unit_gen()
@@ -908,14 +1099,74 @@ class UnitEditModel:
         self._reindex_pos_tail(player, index)
         self._pos[id(unit)] = (new_player, len(self._tracked[new_player]) - 1)
         # _garrison is deliberately untouched. Reassign changes which list a
-        # unit lives in, not the set of units, and neither reference_id nor
-        # garrisoned_in_id is ever written after construction.
+        # unit lives in, not the set of units; reference_id is never written
+        # after construction, and garrisoned_in_id only by set_garrisoned_in().
         # Resyncs the cached _player that render.py/unit_filter.py read for
         # colour -- reassign never touches it otherwise, since ownership here
         # is purely which list the unit lives in.
         self.loaded.unit_manager.update_unit_player_values()
         self._dirty = True
         self._bump_unit_gen()
+
+    def set_garrisoned_in(self, unit: Unit, host_reference_id: int) -> None:
+        """Puts `unit` inside the live unit whose reference_id is
+        `host_reference_id`, or unloads it with -1 (GH #115). The one writer of
+        an existing unit's garrisoned_in_id; add() sets it at construction only.
+
+        Structural scope only, raised loudly like every other scoped mutator
+        here: never inside a fields_only edit (_restore_field_delta() assumes
+        no link moved), and when linking, never into itself, an unknown host,
+        a host that is transitively inside `unit`, or for a `unit` that holds
+        a garrison of its own. Type and capacity are garrison.refusal()'s, in
+        the UI, so a batch script stays unvalidated as with add().
+
+        Position is not touched: the viewer co-locates in the same edit.
+        """
+        self._refuse_inside_field_delta("set_garrisoned_in")
+        player, index = self._locate(unit)
+        old = unit.garrisoned_in_id
+        if host_reference_id == old:
+            return
+        if host_reference_id != -1:
+            self._check_garrison_link(unit, host_reference_id)
+        if self._garrison is not None:
+            bucket = self._garrison.get(old)
+            if bucket is not None:
+                bucket[:] = [u for u in bucket if u is not unit]
+            self._garrison.setdefault(host_reference_id, []).append(unit)
+        unit.garrisoned_in_id = host_reference_id
+        self._blobs[player][index] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def _check_garrison_link(self, unit: Unit, host_reference_id: int) -> None:
+        """set_garrisoned_in()'s linking scope. One walk builds the
+        reference_id lookup; the first unit carrying a duplicated id wins."""
+        if host_reference_id == unit.reference_id:
+            raise ValueError(f"unit {unit.reference_id} cannot be garrisoned inside itself")
+        by_ref: dict[int, Unit] = {}
+        for tracked in self._tracked:
+            for candidate in tracked:
+                by_ref.setdefault(candidate.reference_id, candidate)
+        if host_reference_id not in by_ref:
+            raise ValueError(f"no unit has reference_id {host_reference_id} to garrison inside")
+        seen: set[int] = set()
+        link = host_reference_id
+        while link != -1 and link not in seen:
+            if link == unit.reference_id:
+                raise ValueError(
+                    f"unit {unit.reference_id} cannot go inside {host_reference_id}: that host is "
+                    f"already inside it, which would make a garrison cycle"
+                )
+            seen.add(link)
+            holder = by_ref.get(link)
+            link = -1 if holder is None else holder.garrisoned_in_id
+        # -1 is "inside nothing", so a unit whose own reference_id is -1 holds nothing.
+        if unit.reference_id != -1 and self.referencing(unit):
+            raise ValueError(
+                f"unit {unit.reference_id} holds a garrison of its own, and nested garrisons are "
+                f"not written. Unload it first"
+            )
 
     def add(
         self,
@@ -1056,12 +1307,12 @@ class UnitEditModel:
                     rotation=spec.rotation,
                     initial_animation_frame=spec.initial_animation_frame,
                     garrisoned_in_id=-1,
+                    capture_flag=capture_flag,
                     caption_string_id=-1,
                     caption_string="",
                     uuid=self.loaded._scenario.uuid,
                 )
             )
-            units[-1].capture_flag = capture_flag
             next_id += 1
         base = len(self._tracked[player])
         self.loaded.unit_manager.units[player].extend(units)
@@ -1225,7 +1476,7 @@ class UnitEditModel:
             manager.units[player][:] = list(pls.units)
             self._blobs[player][:] = list(pls.blobs)
             for unit, state in zip(pls.units, pls.states, strict=True):
-                unit.x, unit.y, unit.z, unit.rotation, unit.unit_const = state
+                _set_unit_state(unit, state)
             self._tracked[player][:] = list(pls.units)
         # Trap 1 (plan): restore _player by direct assignment or
         # update_unit_player_values(), never the banned `player` property.
@@ -1250,8 +1501,7 @@ class UnitEditModel:
         membership mutator, is that no unit's membership, order or
         garrisoned_in_id ever moved while this snapshot was live."""
         for entry in snapshot.entries.values():
-            unit = entry.unit
-            unit.x, unit.y, unit.z, unit.rotation, unit.unit_const = entry.state
+            _set_unit_state(entry.unit, entry.state)
             self._blobs[entry.player][entry.index] = entry.blob
         self._dirty = snapshot.dirty
         self._bump_unit_gen()
@@ -1291,12 +1541,14 @@ class UnitEditModel:
         contract (any mutation that sets model dirtiness must push a record)
         cannot be forgotten at a call site.
 
-        `push=False` is for exactly one caller: phase 2.8's region paste,
-        which folds this record into a CompositeDiffRecord alongside a tile
-        record so one Ctrl+V is one Ctrl+Z. That caller must push the
-        composite itself (via push_composite_record()) -- passing push=False
-        and then never pushing anything is the single-history contract's
-        hole reopened.
+        `push=False` is for a caller that folds this record into a
+        CompositeDiffRecord: region paste, Draw's terrain units and Mirror Map
+        (with a tile record, so one gesture is one Ctrl+Z) and Find and
+        Replace's Replace that also retargets trigger type filters (GH #144,
+        with a trigger record). That
+        caller must push the composite itself (via push_composite_record()) --
+        passing push=False and then never pushing anything is the
+        single-history contract's hole reopened.
         """
         if self._pending is None:
             raise RuntimeError("commit_unit_edit() called with no edit in progress")
@@ -1469,8 +1721,8 @@ class UnitEditModel:
                         f"model tracks {len(blobs)} blobs -- an operation bypassed the "
                         f"model's own API"
                     )
-                # The commit re-slotted every unit; 1.59's capture_flag has no
-                # link, so it would otherwise stay with the slot.
+                # The commit re-slotted every unit. A no-op since 0.9.3 links
+                # capture_flag; see unlinked_fields for why the call stays.
                 unlinked_fields.push(Unit, self._tracked[player], entries)
 
         parts: list[bytes] = []

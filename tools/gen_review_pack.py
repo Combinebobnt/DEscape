@@ -14,11 +14,15 @@ image exists, handed to a reviewer that is told nothing about what changed.
 
 Run:
     tools/gen_review_pack.py --pack shadow_band
-    tools/gen_review_pack.py --pack shadow_band --inject notch-inject
+    tools/gen_review_pack.py --pack shadow_band --inject no-apex-wedge
+    tools/gen_review_pack.py --pack ground_texture --inject old-basis
+    tools/gen_review_pack.py --check --pack ground_texture
 
 then hand build/review_pack/<pack>/REVIEW.md to a fresh agent, in its own
 call, with nothing else. See tools/REVIEW_PACK.md for the protocol and for
-what a verdict may not close.
+what a verdict may not close. The ground_texture pack (TASK-201's iso
+texture continuity) renders a real examples/ map with the real install's
+textures, so it needs both; shadow_band needs neither.
 
 Off-engine throughout (descape.render.composite_rect_iso, no PyQt5), unlike
 gen_seam_eyeball.py's main sweep: composite_rect_iso() is byte-identically
@@ -48,8 +52,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
+from descape import asset_source, native_composite, render
 from descape import iso_geometry as ig
-from descape import render
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
 
@@ -95,8 +99,8 @@ def _straight_run_scenario():
     """A single half-plane one level up, so every caster along y == _RUN_EDGE_Y
     has a lower back neighbour on ONE side only (up_left) and a level one on
     the other. That one-sidedness is the whole point: it is the configuration
-    where the apex wedge's wrong-side flank used to draw a perpendicular tick,
-    and there is no corner anywhere in the frame to confound the question."""
+    where the apex wedge's wrong-side flank draws a perpendicular tick, and
+    there is no corner anywhere in the frame to confound the question."""
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     for tile in scenario.map_manager.terrain:
         tile.elevation = 1 if tile.y >= _RUN_EDGE_Y else 0
@@ -105,8 +109,8 @@ def _straight_run_scenario():
 
 def _corner_scenario():
     """A = (x, y) and B = (x+1, y+1) one level up, so both cast onto
-    N = (x+1, y): the smallest inner corner, and the only place the tip pass
-    draws. Same fixture as tools/gen_contact_shadow_eyeball.py's."""
+    N = (x+1, y): the smallest inner corner, where the two bands meet at the
+    casters' unshaded diamond tip columns."""
     ax, ay = _CORNER_A
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     for tile in scenario.map_manager.terrain:
@@ -199,33 +203,12 @@ class _GeometryPatch:
 
 _EMPTY = np.zeros(0, dtype=np.int64)
 
-# Captured at import, before any patch can replace the module attribute.
-_APEX_INDICES = ig.shadow_apex_indices
 
-
-def _inject_no_apex_wedge(_tile_px, _rise_px, _sides="both"):
+def _inject_no_apex_wedge(_tile_px, _rise_px):
     """COARSE. Gates the apex-wedge pass off entirely, reopening the hole at
     every junction along a terrace so a run of adjacent casters reads as
     separate blocks instead of one band. Validates only that the reviewer is
     looking at the right frame and can see the band at all."""
-    return (_EMPTY, _EMPTY, _EMPTY, _EMPTY)
-
-
-def _inject_notch(tile_px, rise_px, _sides="both"):
-    """LOCALIZED. Widens the wedge back to both flanks regardless of which
-    side actually casts, which is the historical defect exactly: a 1px spur
-    at the opposite slope to the contour, at every apex on a one-sided run.
-    The real thing at the real size, rather than a synthetic perturbation
-    whose size would be this tool's own choice."""
-    return _APEX_INDICES(tile_px, rise_px, "both")
-
-
-def _inject_no_tip(_tile_px, _rise_px, _side="up_right"):
-    """LOCALIZED. Gates the inner-corner tip pass off, which is literally the
-    pre-4bd5f07 render: the two casters' bands converge into a 2-column bare
-    stripe at the vertex and leave it un-shaded. corner_shape's matching
-    control (SPLIT), and the only inject in the pack that removes shading from
-    inside a mass rather than adding or detaching something."""
     return (_EMPTY, _EMPTY, _EMPTY, _EMPTY)
 
 
@@ -240,41 +223,30 @@ class _Inject:
     bound: object
 
 
-# Ceilings measured over every frame each inject actually touches, not just
-# the frames its own check names -- an inject that leaks into a neighbouring
-# frame is how an off-diagonal pre-registration goes wrong. Worst case today:
-# notch-inject 0.540% / 16 px (band_pct100), no-tip 0.455% / 28 px
-# (corner_pct100). The fraction ceilings differ because the crops do: the
-# corner frame is 6150 px against the run frames' 66176, so one constant
-# across both would mean two different things.
-NOTCH_BOUND = rp.LocalizedBound(max_changed_fraction=0.0062, max_component_px=24)
-TIP_BOUND = rp.LocalizedBound(max_changed_fraction=0.0053, max_component_px=32)
-
+# The localized injects (notch-inject, no-tip) toggled the side-split apex
+# wedge and the inner-corner tip pass, which were backed out (GH #15); their
+# defects are the clean render now. A localized inject for the line-style
+# render is still owed, so the size-differs check below has nothing to compare.
 INJECTS = {
     "no-apex-wedge": _Inject("shadow_apex_indices", _inject_no_apex_wedge, None),
-    "notch-inject": _Inject("shadow_apex_indices", _inject_notch, NOTCH_BOUND),
-    "no-tip": _Inject("shadow_tip_indices", _inject_no_tip, TIP_BOUND),
 }
 
-# The coarse inject is the yardstick the localized ones are localized AGAINST,
+# The coarse inject is the yardstick any localized one is localized AGAINST,
 # so "they differ in size" is asserted on the frames they share rather than
-# only against a constant. Measured margins are thin on the run frames (16 vs
-# 18 px at pct 100), which is the point: the constant above would not catch a
-# localized inject drifting up to meet the coarse one there.
+# only against a constant.
 COARSE_INJECT = "no-apex-wedge"
 
 # no-apex-wedge must genuinely break the contour, not merely change pixels.
-# Clean reads 3 connected components on the pyramid band (one per terrace
-# ring); with the wedge gone it reads 18.
+# Clean reads 1 connected component on the pyramid band at pct 100 (the wedge
+# bridges into the next terrace ring there; 3 at pct 50); with the wedge gone
+# it reads 18.
 COARSE_MIN_COMPONENT_RATIO = 3.0
 
 # Topology is countable, so it is asserted here rather than asked of a
-# reviewer. Band: one component per terrace ring. Corner diff mask: the vertex
-# mass and its two lines are one piece, and no-tip must split it in two, or
-# corner_shape's matching inject has silently stopped producing its symptom.
-CLEAN_BAND_COMPONENTS = 3
-CLEAN_CORNER_COMPONENTS = 1
-NO_TIP_CORNER_COMPONENTS = 2
+# reviewer. Band at pct 100: one piece. Corner diff mask: the two casters'
+# lines stop either side of a 2-column bare slot at the vertex, so two pieces.
+CLEAN_BAND_COMPONENTS = 1
+CLEAN_CORNER_COMPONENTS = 2
 
 
 # ----------------------------------------------------------------- rendering
@@ -592,7 +564,461 @@ def _shadow_band_spec() -> rp.PackSpec:
     )
 
 
-PACKS = {"shadow_band": _shadow_band_spec}
+# ------------------------------------------------------ ground_texture pack
+
+
+GROUND_MAP = ROOT / "examples" / "8tp3w9j.aoe2scenario"
+GRASS, FOREST = 0, 10  # GRASS_1, FOREST_OAK
+
+# frame id -> (style, tile_px, centre tile, crop (w, h), terrain ids it may show).
+# Regions measured off GROUND_MAP: 18x18 level grass at (122, 92) and an
+# unrelated one at (158, 113), a 14x14 grass hillside (one level per tile at
+# most) at (212, 145), a level forest edge at (15, 189), a sloping one at
+# (39, 136). --check asserts every crop shows only its own terrain, and the
+# level ones no elevation feature, so a map edit cannot quietly change a frame.
+_GROUND_FRAMES = {
+    "grass_angled": ("stepped", 64, (131, 101), (512, 256), (GRASS,)),
+    "grass_angled_near": ("stepped", 128, (131, 101), (720, 360), (GRASS,)),
+    "grass_hillside": ("sloped", 64, (219, 152), (384, 192), (GRASS,)),
+    "forest_edge_angled": ("stepped", 64, (21, 195), (384, 192), (GRASS, FOREST)),
+    "forest_edge_hillside": ("sloped", 64, (45, 142), (384, 192), (GRASS, FOREST)),
+    "grass_overhead": ("flat", 64, (167, 122), (512, 256), (GRASS,)),
+}
+# Flat blits whole contiguous crops, so no per-cell join can break there.
+_GROUND_SPECIFICITY = "grass_overhead"
+
+# one-tile-offset's tiles, one inside every angled frame and off-centre;
+# --check asserts each angled frame shows exactly one of them.
+_OFFSET_TILES = frozenset({(129, 102), (217, 153), (23, 197), (47, 141)})
+
+_GROUND_SCENE: dict[str, object] = {}
+
+
+def _ground_scene():
+    """(scenario, elevations), loaded once."""
+    if not _GROUND_SCENE:
+        scenario = load_map_and_units(str(GROUND_MAP))
+        mm = scenario.map_manager
+        elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
+        for tile in mm.terrain:
+            elevations[tile.y, tile.x] = tile.elevation
+        _GROUND_SCENE.update(scenario=scenario, elevations=elevations)
+    return _GROUND_SCENE["scenario"], _GROUND_SCENE["elevations"]
+
+
+def _ground_render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
+    """One frame at 1:1, off-engine and settings-free: tile_px and the
+    default elev_step are explicit, so neither a user's graphics quality nor
+    their vertical scale moves a crop."""
+    style, tile_px, (cx, cy), (cw, ch), _terrains = _GROUND_FRAMES[frame_id]
+    if scenario is None:
+        scenario, elevations = _ground_scene()
+    if style == "flat":
+        x0, y0 = (2 * cx + 1) * tile_px // 2 - cw // 2, (2 * cy + 1) * tile_px // 2 - ch // 2
+        return render.composite_rect_flat(scenario, x0, y0, x0 + cw, y0 + ch, tile_px, with_units=False)
+    mm = scenario.map_manager
+    proj = ig.canvas_size_and_origin(
+        mm.map_width, mm.map_height, tile_px, ig.MIN_ELEVATION, ig.MAX_ELEVATION,
+        elev_step_pct=ig.ELEV_STEP_DEFAULT_PCT, corner_headroom_steps=1 if style == "sloped" else 0,
+    )
+    sx, sy = ig.tile_screen_origin(cx, cy, int(elevations[cy, cx]), proj)
+    x0, y0 = sx + proj.half_w - cw // 2, sy + proj.half_h - ch // 2
+    if style == "sloped":
+        rise = ig.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE)
+        return render.composite_rect_sloped(
+            scenario, x0, y0, x0 + cw, y0 + ch, rise, proj, tile_px, {}, {}, with_units=False
+        )
+    return render.composite_rect_iso(
+        scenario, x0, y0, x0 + cw, y0 + ch, elevations, proj, tile_px, {}, {}, with_units=False
+    )
+
+
+def _legacy_inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
+    """The pre-TASK-201 basis, verbatim: the centre quarter of each crop,
+    its axes turned 45 degrees to _crop_offset's progression."""
+    u = (dst_x + 0.5 - half_w) / half_w
+    v = (dst_y + 0.5 - half_h) / half_h
+    a = (u + v) / 2.0
+    b = (v - u) / 2.0
+    src_x = np.clip(np.floor((a + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
+    src_y = np.clip(np.floor((b + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
+    return src_y, src_x
+
+
+_REAL_CROP_OFFSET = render._crop_offset
+_REAL_TEXTURE = asset_source.get_terrain_texture_array
+
+
+def _offset_crop(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
+    if (x, y) in _OFFSET_TILES:
+        return _REAL_CROP_OFFSET(x + 1, y, texture_size, tile_px)
+    return _REAL_CROP_OFFSET(x, y, texture_size, tile_px)
+
+
+_TEXTURE_VARIANTS: dict[tuple, np.ndarray] = {}
+
+
+def _texture_variant(kind: str, tile_px: int):
+    """A get_terrain_texture_array stand-in serving one derived texture."""
+
+    def get(terrain_id: int):
+        path = asset_source.get_terrain_texture_path(terrain_id)
+        if path is None:
+            return None
+        key = (kind, path, tile_px)
+        if key not in _TEXTURE_VARIANTS:
+            _TEXTURE_VARIANTS[key] = _derive_texture(kind, path, terrain_id, tile_px)
+        return _TEXTURE_VARIANTS[key]
+
+    return get
+
+
+def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int) -> np.ndarray:
+    from PIL import Image
+
+    if kind == "unfiltered":
+        # The same size the loader makes, point-sampled with no prefilter.
+        size = asset_source.LOADED_TEXTURE_SIZE
+        with Image.open(path) as img:
+            arr = np.array(img.convert("RGB").resize((size, size), Image.Resampling.NEAREST))
+    else:
+        # Every crop block whose (bx + by) is odd, turned 90 degrees in place:
+        # a checkerboard of turned cells at this tile_px.
+        arr = np.array(_REAL_TEXTURE(terrain_id))
+        n = arr.shape[0] // tile_px
+        for by in range(n):
+            for bx in range(n):
+                if (bx + by) % 2:
+                    ys, xs = slice(by * tile_px, (by + 1) * tile_px), slice(bx * tile_px, (bx + 1) * tile_px)
+                    arr[ys, xs] = np.rot90(arr[ys, xs])
+    arr.flags.writeable = False
+    return arr
+
+
+@dataclass(frozen=True)
+class _GroundInject:
+    """`patches(style, tile_px)` lists (object, attribute, replacement) for
+    one frame's render; `bound` is set only on the localized inject."""
+
+    patches: object
+    bound: object = None
+
+
+def _patch_old_basis(_style, _tile_px):
+    """COARSE. The pre-TASK-201 render: every cell's crop read in the old
+    basis, so no cell's pattern continues into its neighbour's."""
+    return [(ig, "_inverse_sample", _legacy_inverse_sample)]
+
+
+def _patch_one_tile_offset(_style, _tile_px):
+    """LOCALIZED. One cell per angled frame takes its right-hand
+    neighbour's crop: the smallest possible break, one cell's worth."""
+    return [(render, "_crop_offset", _offset_crop)]
+
+
+def _patch_unfiltered(style, tile_px):
+    """COARSE, angled frames only. Point-sampled source with no prefilter,
+    on top of the angled views' ~2.8:1 vertical minification."""
+    return [] if style == "flat" else [(asset_source, "get_terrain_texture_array", _texture_variant("unfiltered", tile_px))]
+
+
+def _patch_turned(style, tile_px):
+    """COARSE, angled frames only. Every other cell's crop turned 90
+    degrees, in a checkerboard."""
+    return [] if style == "flat" else [(asset_source, "get_terrain_texture_array", _texture_variant("turned", tile_px))]
+
+
+GROUND_INJECTS = {
+    "old-basis": _GroundInject(_patch_old_basis),
+    "one-tile-offset": _GroundInject(_patch_one_tile_offset, bound="one-cell"),
+    "unfiltered": _GroundInject(_patch_unfiltered),
+    "turned-cells": _GroundInject(_patch_turned),
+}
+GROUND_COARSE_INJECT = "old-basis"
+
+
+def _clear_texture_caches() -> None:
+    """Every memo holding index tables derived from _inverse_sample."""
+    for fn in (
+        ig.diamond_indices,
+        ig.skirt_quad_indices,
+        ig.sloped_quad_indices,
+        native_composite.stepped_tables,
+        native_composite.sloped_shapes,
+    ):
+        fn.cache_clear()
+    _clear_caches()
+
+
+def _ground_frame_images(inject: str | None) -> dict[str, np.ndarray]:
+    images = {}
+    for frame_id, (style, tile_px, *_rest) in _GROUND_FRAMES.items():
+        patches = GROUND_INJECTS[inject].patches(style, tile_px) if inject else []
+        saved = [(obj, name, getattr(obj, name)) for obj, name, _new in patches]
+        for obj, name, new in patches:
+            setattr(obj, name, new)
+        _clear_texture_caches()
+        try:
+            images[frame_id] = _ground_render(frame_id)
+        finally:
+            for obj, name, old in saved:
+                setattr(obj, name, old)
+            _clear_texture_caches()
+    return images
+
+
+def _ground_texture_spec() -> rp.PackSpec:
+    """TASK-201's iso texture continuity, on a real map with real textures.
+    Each check's options are written against the injects' measured masks:
+    a break is one cell's border (one-tile-offset is exactly one component
+    per angled frame), a turned cell is a 90-degree turn of the crop, and
+    speckle is the isolated-pixel rate --check measures, ~0.5% on clean
+    angled grass against ~10% unfiltered."""
+    angled = ("grass_angled", "grass_angled_near", "grass_hillside", "forest_edge_angled", "forest_edge_hillside")
+    captions = {
+        "grass_angled": "Grassland on level ground, angled view, normal zoom.",
+        "grass_angled_near": "The same grassland, angled view, zoomed in.",
+        "grass_hillside": "Grassland on a hillside, angled view; the ground slopes across the frame.",
+        "forest_edge_angled": "Where grassland meets forest floor, level ground, angled view.",
+        "forest_edge_hillside": "Where grassland meets forest floor on a hillside, angled view.",
+        "grass_overhead": (
+            "Grassland seen straight from above, same ground texture and same zoom as the first angled "
+            "grassland frame. Here each map cell is a square."
+        ),
+    }
+    frames = tuple(rp.Frame(fid, f"{fid}.png", "raw", caption=captions[fid]) for fid in _GROUND_FRAMES)
+    breaks_rule = (
+        "- A BREAK is a straight edge, at least one cell long, where the pattern on one side does not "
+        "continue on the other: the blades, specks and blotches stop at the line and an unrelated stretch "
+        "of the same kind of ground starts. One such edge anywhere counts, even if every other cell joins "
+        "up, and a single cell whose pattern does not match any of its neighbours counts.\n"
+    )
+    checks = (
+        rp.Check(
+            id="pattern_joins",
+            question=(
+                "In the angled frames the ground is a grid of diamond-shaped map cells seen from an angle, each "
+                "painted with a patch of a ground texture. No grid lines are drawn. First, in your own words, "
+                "describe how the ground's pattern behaves across each frame: does it read as one continuous "
+                "surface, or can you make out individual cells, and if so, by what (lines, mismatched pattern, "
+                "brightness)?\n\n"
+                "Then the closed question, which is about whether the PATTERN breaks at cell borders within one "
+                "kind of ground (grass, or forest floor), not about brightness.\n"
+                + breaks_rule
+                + "- NOT a break: (1) the border between two different kinds of ground, where grassland meets "
+                "forest floor; that line is expected however sharp it is. (2) On the hillside frames, a change "
+                "in brightness, or a stretch or squash of the pattern, where the slope changes, while the "
+                "pattern itself carries on across the line. (3) The texture's own blotches and streaks.\n\n"
+                "Answer BREAKS-PRESENT if at least one break is visible, NO-BREAKS if the pattern carries on "
+                "across every cell border within each kind of ground."
+            ),
+            frames=angled,
+            answers=("BREAKS-PRESENT", "NO-BREAKS", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="pattern_direction",
+            question=(
+                "Same angled frames. First, in your own words, describe any direction the ground pattern has: "
+                "elongated blades, streaks or blotches, which way they lean, and whether that lean differs "
+                "from one cell to the next.\n\n"
+                "Then the closed question, which is about DIRECTION only. Do neighbouring diamond-shaped cells "
+                "show the same kind of ground with its features turned to visibly different angles from each "
+                "other, so the ground reads as a patchwork of separately turned pieces? Three things are NOT "
+                "that: (1) a cell whose pattern merely fails to continue into its neighbour while its features "
+                "lean the same way; (2) on the hillside frames, a stretch or squash of the pattern where the "
+                "slope changes; (3) the border between grassland and forest floor.\n\n"
+                "Answer TURNED if neighbouring cells show the pattern turned to different angles, ALIGNED if "
+                "within each kind of ground the pattern leans the same way all across the frame."
+            ),
+            frames=angled,
+            answers=("TURNED", "ALIGNED", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="fine_grain",
+            question=(
+                "Compare the three angled grassland frames with the overhead grassland frame, which shows the "
+                "same grass texture at the same zoom seen straight from above. First, in your own words, "
+                "describe the fine-scale look of the angled grass against the overhead: grain size, sharpness, "
+                "and any isolated bright or dark single pixels, glitter, jagged one-pixel streaks or rippling "
+                "bands.\n\n"
+                "Then the closed question. Does the angled grass carry pixel-level noise the overhead does not: "
+                "isolated single bright and dark pixels or one-pixel jagged streaks sprinkled densely all over "
+                "the grass, so it reads as glittery or salt-and-pepper rather than as a grass texture? An "
+                "occasional stray pixel here and there does NOT count, and neither does a finer or more "
+                "compressed grain, which is expected because the angled view squeezes the ground vertically.\n\n"
+                "Answer SPECKLED if such dense pixel noise is present, SMOOTH if the angled grass reads as "
+                "cleanly as the overhead apart from that expected squeeze."
+            ),
+            frames=("grass_angled", "grass_angled_near", "grass_hillside", "grass_overhead"),
+            answers=("SPECKLED", "SMOOTH", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="overhead_joins",
+            question=(
+                "Look only at the overhead grassland frame, where each map cell is a square. No grid lines are "
+                "drawn. First, in your own words, describe how the ground's pattern behaves across the frame.\n\n"
+                "Then the closed question.\n"
+                + breaks_rule
+                + "- NOT a break: the texture's own blotches and streaks.\n\n"
+                "Answer BREAKS-PRESENT if at least one break is visible, NO-BREAKS if the pattern carries on "
+                "across the whole frame."
+            ),
+            frames=(_GROUND_SPECIFICITY,),
+            answers=("BREAKS-PRESENT", "NO-BREAKS", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="ground_texture",
+        title="Ground texture review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders of bare ground (no units or objects) from a map editor for a strategy "
+            "game. Each frame is a crop, enlarged by a whole-number factor with no smoothing, so a one-pixel "
+            "feature in the original appears that many pixels wide here. Judge only what you can actually see."
+        ),
+        injects=tuple(GROUND_INJECTS),
+    )
+
+
+# Isolated-pixel speckle, as fine_grain's options are written: a pixel more
+# than SPECKLE_DELTA luma from its 3x3 median. Clean angled grass ~0.5%,
+# overhead ~0.06%, the unfiltered inject ~8-11% (measured 2026-10-07).
+SPECKLE_DELTA = 30
+CLEAN_SPECKLE_MAX = 0.015
+UNFILTERED_SPECKLE_MIN = 0.05
+
+
+def _speckle_rate(img: np.ndarray) -> float:
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    luma = img.astype(np.float64) @ np.array([0.299, 0.587, 0.114])
+    med = np.median(sliding_window_view(luma, (3, 3)), axis=(-2, -1))
+    return float((np.abs(luma[1:-1, 1:-1] - med) > SPECKLE_DELTA).mean())
+
+
+def _ground_prerequisites() -> str | None:
+    """Why the ground_texture pack cannot render here, or None."""
+    if not GROUND_MAP.is_file():
+        return f"needs {GROUND_MAP.relative_to(ROOT)} (the gitignored examples/ corpus)"
+    if asset_source.get_install_path() is None:
+        return "needs a configured AoE2:DE install for the terrain textures"
+    return None
+
+
+def _ground_purity_failures() -> list[str]:
+    """Each crop shows only its own terrain, and the level ones no elevation
+    feature: re-render with every other terrain swapped (and, for Stepped,
+    the whole map flattened to the frame's level) and require no change."""
+    failures = []
+    for frame_id, (style, _tile_px, (cx, cy), _size, terrains) in _GROUND_FRAMES.items():
+        base_scn, base_elev = _ground_scene()
+        clean = _ground_render(frame_id)
+        scn = load_map_and_units(str(GROUND_MAP))
+        for tile in scn.map_manager.terrain:
+            if tile.terrain_id not in terrains:
+                tile.terrain_id = 6 if tile.terrain_id != 6 else 14
+        if not np.array_equal(_ground_render(frame_id, scn, base_elev), clean):
+            failures.append(f"frame {frame_id}: a terrain other than {terrains} reaches the crop")
+        if style == "stepped":
+            level = np.full_like(base_elev, base_elev[cy, cx])
+            if not np.array_equal(_ground_render(frame_id, base_scn, level), clean):
+                failures.append(f"frame {frame_id}: an elevation feature reaches the crop")
+    return failures
+
+
+def _check_ground_texture() -> None:
+    """--check for ground_texture: spec coupling, frame band, crop purity,
+    each inject's reach (printed), the specificity frame untouched by every
+    inject, one-tile-offset exactly one bounded cell per angled frame and
+    under old-basis' largest delta, and the speckle rates fine_grain's
+    options rest on."""
+    reason = _ground_prerequisites()
+    if reason:
+        raise SystemExit(f"ground_texture: {reason}")
+    failures: list[str] = []
+    spec = _ground_texture_spec()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+    failures += _ground_purity_failures()
+
+    clean = _ground_frame_images(None)
+    for frame in spec.frames:
+        try:
+            scaled, _factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+
+    angled = [fid for fid in _GROUND_FRAMES if fid != _GROUND_SPECIFICITY]
+    largest_cell = max(ig.diamond_indices(tp)[0].size for _s, tp, *_r in _GROUND_FRAMES.values())
+    # A sloped cell stretches past its diamond (measured 1.25x); 1.5x of the largest is still one cell.
+    one_cell = rp.LocalizedBound(max_changed_fraction=0.02, max_component_px=largest_cell * 3 // 2)
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    injected_by_name = {}
+    for name, inject in GROUND_INJECTS.items():
+        injected = injected_by_name[name] = _ground_frame_images(name)
+        touched = {}
+        for frame_id in _GROUND_FRAMES:
+            mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
+            changed = int(np.count_nonzero(mask))
+            if changed:
+                touched[frame_id] = (changed, rp.largest_component_px(mask))
+            if inject.bound and frame_id in angled:
+                failures += one_cell.failures(mask, f"inject {name} on {frame_id}")
+                if changed and rp.components(mask) != 1:
+                    failures.append(f"inject {name} on {frame_id}: {rp.components(mask)} pieces, not one cell")
+        if _GROUND_SPECIFICITY in touched:
+            failures.append(f"inject {name}: reached the specificity frame {_GROUND_SPECIFICITY}")
+        missed = [fid for fid in angled if fid not in touched]
+        if missed:
+            failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+
+    coarse = reach[GROUND_COARSE_INJECT]
+    for name, inject in GROUND_INJECTS.items():
+        if inject.bound is None:
+            continue
+        for frame_id, (_px, comp) in sorted(reach[name].items()):
+            if frame_id in coarse and comp >= coarse[frame_id][1]:
+                failures.append(
+                    f"inject {name} on {frame_id}: largest delta {comp} px is not under the coarse "
+                    f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
+                )
+
+    rates = []
+    for frame_id in _check_frames(spec, "fine_grain"):
+        clean_rate = _speckle_rate(clean[frame_id])
+        noisy_rate = _speckle_rate(injected_by_name["unfiltered"][frame_id])
+        rates.append(f"{frame_id} {clean_rate:.2%}/{noisy_rate:.2%}")
+        if frame_id == _GROUND_SPECIFICITY:
+            continue
+        if clean_rate > CLEAN_SPECKLE_MAX:
+            failures.append(f"{frame_id}: clean speckle {clean_rate:.2%} over {CLEAN_SPECKLE_MAX:.1%}")
+        if noisy_rate < UNFILTERED_SPECKLE_MIN:
+            failures.append(f"{frame_id}: unfiltered speckle {noisy_rate:.2%} under {UNFILTERED_SPECKLE_MIN:.0%}")
+    print(f"speckle (clean/unfiltered): {', '.join(rates)}")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: ground_texture frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and "
+        f"show only their own terrain; all {len(GROUND_INJECTS)} injects bite every angled frame and none "
+        f"reaches {_GROUND_SPECIFICITY}; one-tile-offset is one bounded cell per angled frame"
+    )
+
+
+def _check_frames(spec: rp.PackSpec, check_id: str) -> tuple[str, ...]:
+    return next(c.frames for c in spec.checks if c.id == check_id)
+
+
+PACKS = {"shadow_band": _shadow_band_spec, "ground_texture": _ground_texture_spec}
 
 
 # ---------------------------------------------------------------- rendering
@@ -690,16 +1116,23 @@ def _run_token(pack_id: str, inject: str | None, replica: int = 0) -> str:
     return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:10]
 
 
+def _pack_injects(pack_id: str) -> dict:
+    return GROUND_INJECTS if pack_id == "ground_texture" else INJECTS
+
+
 def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) -> list[Path]:
     spec = PACKS[pack_id]()
     rp.validate_spec(spec)
-    if inject is not None and inject not in INJECTS:
-        raise SystemExit(f"unknown inject {inject!r}; choose from {', '.join(INJECTS)}")
+    injects = _pack_injects(pack_id)
+    if inject is not None and inject not in injects:
+        raise SystemExit(f"unknown inject {inject!r} for {pack_id}; choose from {', '.join(injects)}")
+    if pack_id == "ground_texture" and (reason := _ground_prerequisites()):
+        raise SystemExit(f"ground_texture: {reason}")
 
     pack_dir = out_dir / pack_id / _run_token(pack_id, inject, replica)
     pack_dir.mkdir(parents=True, exist_ok=True)
 
-    images = _frame_images(inject)
+    images = _ground_frame_images(inject) if pack_id == "ground_texture" else _frame_images(inject)
     written: list[Path] = []
     rendered: dict[str, tuple[int, int, int]] = {}
     for frame in spec.frames:
@@ -719,12 +1152,12 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
     # on stdout instead.
     manifest = {
         "pack": spec.id,
-        "tile_px": TILE_PX,
         "frames": [
             {
                 "id": f.id,
                 "file": f.filename,
                 "kind": f.kind,
+                "tile_px": _GROUND_FRAMES[f.id][1] if pack_id == "ground_texture" else TILE_PX,
                 "width": rendered[f.id][0],
                 "height": rendered[f.id][1],
                 "upscale": rendered[f.id][2],
@@ -749,7 +1182,15 @@ def _component_count(scene: str, inject: str | None, pct: int = 100) -> int:
     return rp.components(rp.changed_pixels(raw, control))
 
 
-def check() -> None:
+def check(pack_id: str = "shadow_band") -> None:
+    """--check for one pack; see each pack's own check for what it asserts."""
+    if pack_id == "ground_texture":
+        _check_ground_texture()
+    else:
+        _check_shadow_band()
+
+
+def _check_shadow_band() -> None:
     """--check: deterministic, Qt-free, writes nothing.
 
     Asserts the four things a review pack can be wrong about without anyone
@@ -815,17 +1256,15 @@ def check() -> None:
     coarse_components = _component_count("band", "no-apex-wedge")
     if clean_components != CLEAN_BAND_COMPONENTS:
         failures.append(
-            f"clean band is {clean_components} connected components, not {CLEAN_BAND_COMPONENTS} "
-            f"(one per terrace ring)"
+            f"clean band is {clean_components} connected components at pct 100, not {CLEAN_BAND_COMPONENTS}"
         )
     for pct in (50, 100):
-        for inject, want in ((None, CLEAN_CORNER_COMPONENTS), ("no-tip", NO_TIP_CORNER_COMPONENTS)):
-            got = _component_count("corner", inject, pct)
-            if got != want:
-                failures.append(
-                    f"corner diff mask at pct {pct} under {inject or 'clean'} is {got} components, "
-                    f"not {want}, so corner_shape's SPLIT/WHOLE no longer maps onto the render"
-                )
+        got = _component_count("corner", None, pct)
+        if got != CLEAN_CORNER_COMPONENTS:
+            failures.append(
+                f"corner diff mask at pct {pct} is {got} components, not {CLEAN_CORNER_COMPONENTS}, "
+                f"so corner_shape's SPLIT/WHOLE no longer maps onto the render"
+            )
     if coarse_components < clean_components * COARSE_MIN_COMPONENT_RATIO:
         failures.append(
             f"inject no-apex-wedge: band goes from {clean_components} to {coarse_components} "
@@ -840,7 +1279,7 @@ def check() -> None:
         f"OK: shadow_band frames couple to its checks, every frame lands in "
         f"{rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px, all {len(INJECTS)} injects bite and stay inside their bounds, and the band goes "
         f"{clean_components} -> {coarse_components} components under the coarse one, and the corner "
-        f"diff mask goes {CLEAN_CORNER_COMPONENTS} -> {NO_TIP_CORNER_COMPONENTS} under no-tip"
+        f"diff mask is {CLEAN_CORNER_COMPONENTS} pieces"
     )
 
 
@@ -848,7 +1287,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="Output directory")
     parser.add_argument("--pack", default="shadow_band", choices=sorted(PACKS), help="Which pack to render")
-    parser.add_argument("--inject", choices=sorted(INJECTS), help="Render the pack with one known defect applied")
+    parser.add_argument(
+        "--inject", choices=sorted({*INJECTS, *GROUND_INJECTS}), help="Render the pack with one known defect applied"
+    )
     parser.add_argument(
         "--replica", type=int, default=0, help="Replica number, for a second or third opaque directory of the same run"
     )
@@ -856,7 +1297,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.check:
-        check()
+        check(args.pack)
         return
 
     written = generate(args.out_dir, args.pack, args.inject, args.replica)

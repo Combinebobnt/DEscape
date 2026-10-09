@@ -50,13 +50,13 @@ def test_entering_triggers_mode_refreshes_the_info_panel() -> None:
     try:
         window.load_scenario(TRIGGER_FIXTURE)
         QApplication.processEvents()
-        text = window.info.toPlainText()
+        text = window._info_text()
         assert "XS script file: (none)" in text
         assert "Embedded XS: (unknown until triggers are parsed)" in text
 
         window.mode_combo.setCurrentText("Triggers")
         QApplication.processEvents()
-        assert "Embedded XS: (none)" in window.info.toPlainText()
+        assert "Embedded XS: (none)" in window._info_text()
     finally:
         window.edit_history.mark_saved()
         window.close()

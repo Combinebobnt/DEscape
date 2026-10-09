@@ -105,15 +105,18 @@ def _unit(const: int, x: float, y: float):
     )
 
 
-def _scenario(placed, terrain_id: int):
+def _scenario(placed, terrain_id: int, art: tuple | None = None):
+    """`art` is PLAYER's (art_civ, age) building art (GH #48); None draws the Gaia table."""
     base = _base(terrain_id)
     units = [[] for _ in base.unit_manager.units]
     units[PLAYER] = [_unit(*p) for p in placed]
+    player_art = None if art is None else tuple(art if i == PLAYER else (None, 2) for i in range(len(units)))
     return SimpleNamespace(
         map_manager=base.map_manager,
         unit_manager=SimpleNamespace(units=units),
         team_indices=base.team_indices,
         player_colors=base.player_colors,
+        player_art=player_art,
         # The library's tiles look their scenario up by uuid, so it must stay alive.
         _base=base,
     )
@@ -144,18 +147,25 @@ def _box(style: str):
 
 
 @contextmanager
-def _patched(const: int, transform):
-    """gen_pasture_review_pack._patched for any const: `transform` rewrites its pieces."""
+def _patched(const: int, transform, art: tuple | None = None):
+    """gen_pasture_review_pack._patched for any const: `transform` rewrites its
+    pieces. With `art`, it rewrites the entry that owner draws instead."""
     real_map = unit_sprites.graphic_map
+    real_resolve = unit_sprites.resolve_entry
     unit_sprites._scaled_cache.clear()
-    if transform is not None:
+    if transform is not None and art is None:
         table = copy.deepcopy(real_map())
         table[const]["pieces"] = transform(table[const]["pieces"])
         unit_sprites.graphic_map = lambda: table
+    elif transform is not None:
+        drawn = copy.deepcopy(real_resolve(const, *art))
+        drawn["pieces"] = transform(drawn["pieces"])
+        unit_sprites.resolve_entry = lambda c, civ, age: drawn if c == const else real_resolve(c, civ, age)
     try:
         yield
     finally:
         unit_sprites.graphic_map = real_map
+        unit_sprites.resolve_entry = real_resolve
         unit_sprites._scaled_cache.clear()
 
 
@@ -184,14 +194,18 @@ def _transform(patch):
 
 # Bounded: each render is ~2 MB and the module makes ~140 distinct ones.
 @functools.lru_cache(maxsize=48)
-def _render(style: str, placed: tuple, patch: tuple | None = None, terrain_id: int = GROUND_TERRAIN) -> np.ndarray:
+def _render(
+    style: str, placed: tuple, patch: tuple | None = None, terrain_id: int = GROUND_TERRAIN,
+    art: tuple | None = None,
+) -> np.ndarray:
     """One style's composite over _box(style). `placed` is ((const, x, y), ...)
-    in list order; `patch` is ("keep", const, indices) or ("no-slots", const)."""
+    in list order; `patch` is ("keep", const, indices) or ("no-slots", const);
+    `art` is PLAYER's building art (see _scenario)."""
     const, transform = _transform(patch)
-    scn = _scenario(placed, terrain_id)
+    scn = _scenario(placed, terrain_id, art)
     mm = scn.map_manager
     box = _box(style)
-    with _patched(const, transform):
+    with _patched(const, transform, art):
         if style == "flat":
             draws = render._flat_unit_draws(scn, TILE_PX)
             icons, _rows = render._flat_icon_layer(scn, TILE_PX)
@@ -250,15 +264,17 @@ def _unit_tile(const: int, x: float, y: float) -> tuple[int, int]:
     return unit_sprites.sprite_anchor_tile(render.unit_occupied_tiles(_unit(const, x, y), mm.map_width, mm.map_height))
 
 
-def _slot_tiles(const: int) -> list[tuple[int, int]]:
-    """Each piece's depth-slot tile for a building centred on CENTRE, from the committed slots."""
+def _slot_tiles(const: int, art: tuple | None = None) -> list[tuple[int, int]]:
+    """Each piece's depth-slot tile for a building centred on CENTRE, from the committed slots
+    of the entry PLAYER draws with `art`."""
     mm = _base().map_manager
     occupied = render.unit_occupied_tiles(_unit(const, CENTRE, CENTRE), mm.map_width, mm.map_height)
     x0, y0 = min(t[0] for t in occupied), min(t[1] for t in occupied)
-    return [(x0 + p["slot"][0], y0 + p["slot"][1]) for p in unit_sprites.graphic_map()[const]["pieces"]]
+    entry = unit_sprites.graphic_map()[const] if art is None else unit_sprites.resolve_entry(const, *art)
+    return [(x0 + p["slot"][0], y0 + p["slot"][1]) for p in entry["pieces"]]
 
 
-def _piece_ink(style: str, const: int, keep: frozenset[int]) -> np.ndarray:
+def _piece_ink(style: str, const: int, keep: frozenset[int], art: tuple | None = None) -> np.ndarray:
     """Every pixel the `keep` pieces touch, rim included (not eroded)."""
     building = ((const, CENTRE, CENTRE),)
     if not keep:
@@ -269,29 +285,31 @@ def _piece_ink(style: str, const: int, keep: frozenset[int]) -> np.ndarray:
         if const in render.DRAPED_SPRITE_CONSTS
         else _render(style, ())
     )
-    return _changed(_render(style, building, ("keep", const, keep)), ground)
+    return _changed(_render(style, building, ("keep", const, keep), art=art), ground)
 
 
 @functools.lru_cache(maxsize=16)
-def _oracle(style: str, const: int, unit: tuple, unit_first: bool, inject: str | None = None):
+def _oracle(
+    style: str, const: int, unit: tuple, unit_first: bool, inject: str | None = None, art: tuple | None = None,
+):
     """(front, back, bad_front, bad_back, front_ink) for one unit beside one building.
     Pieces sharing the unit's slot tile are in neither set: list order decides those."""
     building = (const, CENTRE, CENTRE)
     placed = (unit, building) if unit_first else (building, unit)
     patch = None if inject is None else (inject, const)
     unit_key = _depth_key(_unit_tile(*unit))
-    keys = [_depth_key(t) for t in _slot_tiles(const)]
+    keys = [_depth_key(t) for t in _slot_tiles(const, art)]
     front_ids = frozenset(i for i, k in enumerate(keys) if k > unit_key)
     back_ids = frozenset(i for i, k in enumerate(keys) if k < unit_key)
     tie_ids = frozenset(i for i, k in enumerate(keys) if k == unit_key)
 
-    b_img, u_img = _render(style, (building,)), _render(style, (unit,))
-    bu_img = _render(style, placed, patch)
+    b_img, u_img = _render(style, (building,), art=art), _render(style, (unit,))
+    bu_img = _render(style, placed, patch, art=art)
     unit_mask = _unit_mask(style, unit)
-    front_ink = _piece_ink(style, const, front_ids)
-    tie_ink = _piece_ink(style, const, tie_ids)
+    front_ink = _piece_ink(style, const, front_ids, art)
+    tie_ink = _piece_ink(style, const, tie_ids, art)
     front = unit_mask & _eroded(front_ink) & ~tie_ink
-    back = unit_mask & _eroded(_piece_ink(style, const, back_ids)) & ~front_ink & ~tie_ink
+    back = unit_mask & _eroded(_piece_ink(style, const, back_ids, art)) & ~front_ink & ~tie_ink
     return (
         front, back,
         front & _changed(bu_img, b_img),
@@ -303,9 +321,9 @@ def _oracle(style: str, const: int, unit: tuple, unit_first: bool, inject: str |
 # ------------------------------------------------------ town centre + unit
 
 
-def _tc_unit_tiles() -> list[tuple[int, int]]:
+def _tc_unit_tiles(art: tuple | None = None) -> list[tuple[int, int]]:
     """Footprint tiles strictly between the town centre's back and front slots."""
-    slots = _slot_tiles(TOWN_CENTRE)
+    slots = _slot_tiles(TOWN_CENTRE, art)
     keys = sorted({_depth_key(t) for t in slots})
     assert len(keys) >= 2, f"town centre slots collapsed onto one tile: {slots}"
     mm = _base().map_manager
@@ -332,6 +350,30 @@ def test_a_unit_inside_a_town_centre_paints_between_its_back_and_front_pieces():
             )
             assert not bad_front.any(), f"{where}: {int(bad_front.sum())} px of it paint over a front piece"
             assert not bad_back.any(), f"{where}: {int(bad_back.sum())} px of it hidden by a back piece"
+
+
+# GH #48: (art_civ, age) -> a town-centre art set whose measured slots still
+# leave a footprint tile between back and front: Gaia's west Feudal set (its
+# age-remapped annexes), Vikings' nors (main at [2, 2]), Incas' Imperial ande
+# ([2, 2]) and Cumans' Castle ceas ([0, 2]). Sets whose main slot is [0, 3] or
+# [1, 3] (east, medi, ...) have no tile between, so no unit can be sandwiched.
+TC_ART_SETS = [(None, 3), (11, 3), (21, 5), (33, 4)]
+
+
+@pytest.mark.parametrize("art", TC_ART_SETS, ids=lambda a: f"civ{a[0]}-age{a[1]}")
+def test_each_town_centre_art_set_sandwiches_a_unit_between_its_own_back_and_front(art):
+    _require_install()
+    entry = unit_sprites.resolve_entry(TOWN_CENTRE, *art)
+    assert entry is not unit_sprites.graphic_map()[TOWN_CENTRE], f"{art} draws the Gaia Dark Age set"
+    tiles = _tc_unit_tiles(art)
+    assert tiles, f"{entry['file_name']}: no footprint tile sorts between its back and front slots"
+    for tile in tiles:
+        unit = _tc_unit(tile)
+        front, back, bad_front, bad_back, _ = _oracle("stepped", TOWN_CENTRE, unit, True, art=art)
+        where = f"{entry['file_name']}, unit on {tile}"
+        assert front.any() or back.any(), f"{where}: the unit overlaps no piece, so this proves nothing"
+        assert not bad_front.any(), f"{where}: {int(bad_front.sum())} px of it paint over a front piece"
+        assert not bad_back.any(), f"{where}: {int(bad_back.sum())} px of it hidden by a back piece"
 
 
 def test_the_no_slots_inject_breaks_the_town_centre_oracle():

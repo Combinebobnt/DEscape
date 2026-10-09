@@ -17,7 +17,7 @@ from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 4
+KERNEL_ABI = 5
 
 
 cdef inline bint _gather_scatter(
@@ -102,7 +102,7 @@ def render_tile_iso(uint8_t[:, :, :] img, Py_ssize_t base_y, Py_ssize_t base_x,
     """One Stepped tile, every paint in render._render_tile_iso's order:
     skirts (dst_y, dst_x, src_y, src_x, lut), then the diamond (dst_y,
     dst_x, src_y, src_x), then each darken (dst_y, dst_x, factors, ...) in
-    list order (seams, seam apex, shadow bands, apex wedge, tips). The caller
+    list order (seams, seam apex, shadow bands, apex wedge). The caller
     owns every gate; this only paints what it is handed."""
     cdef const int64_t[::1] dy
     cdef const int64_t[::1] dx
@@ -297,7 +297,7 @@ DEF OP_SEAM_UR = 2
 DEF OP_SEAM_APEX = 3
 DEF OP_EDGE0 = 4
 DEF N_FIXED = 8
-DEF PER_RISE = 9
+DEF PER_RISE = 5
 
 
 cdef inline int _clip_state(const int32_t* e, Py_ssize_t by, Py_ssize_t bx, const Canvas* c) noexcept nogil:
@@ -595,7 +595,7 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     cdef Py_ssize_t origin_x = geom[0], origin_y = geom[1], half_w = geom[2], half_h = geom[3]
     cdef Py_ssize_t step = geom[4], tile_px = geom[5], max_rise = geom[6]
     cdef Py_ssize_t n = cand_x.shape[0], mh = elev.shape[0], mw = elev.shape[1]
-    cdef Py_ssize_t k, tx, ty, own, dl, dr, rul, rur, rdg, bx, by, base, slot, tsize
+    cdef Py_ssize_t k, tx, ty, own, dl, dr, rul, rur, rdg, bx, by, slot, tsize
     cdef bint seam, bad = False
     cdef Canvas c
     cdef Ops t = _ops(tables[:9])
@@ -667,17 +667,7 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                     if rur > 0:
                         _op_darken(&c, &t, N_FIXED + (rur - 1) * PER_RISE + 3, by, bx)
                     if seam and rdg > 0:
-                        base = N_FIXED + (rdg - 1) * PER_RISE
-                        if rul > 0 and rur > 0:
-                            _op_darken(&c, &t, base + 4, by, bx)
-                        elif rul > 0:
-                            _op_darken(&c, &t, base + 5, by, bx)
-                        else:
-                            _op_darken(&c, &t, base + 6, by, bx)
-                    if tx > 0 and rul > 0 and elev[ty - 1, tx - 1] > elev[ty - 1, tx]:
-                        _op_darken(&c, &t, N_FIXED + (rul - 1) * PER_RISE + 7, by, bx)
-                    if ty + 1 < mh and rur > 0 and elev[ty + 1, tx + 1] > elev[ty, tx + 1]:
-                        _op_darken(&c, &t, N_FIXED + (rur - 1) * PER_RISE + 8, by, bx)
+                        _op_darken(&c, &t, N_FIXED + (rdg - 1) * PER_RISE + 4, by, bx)
 
                     _farm_and_units(&c, up, ty * mw + tx, &t, OP_EDGE0, &g, cand_grid[k],
                                     &t, OP_DIAMOND, NULL, 0, by, bx, off_x, off_y)

@@ -418,8 +418,10 @@ def test_the_elevation_predictor_is_its_own_phase_on_the_paste_undo_and_redo_lin
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_the_elevation_predictor_counts_the_seed_set_each_cache_starts_from(style, monkeypatch) -> None:
     """_elevation_bumps_anyway() counts the units whose own tile is in E on
-    Stepped, and in E dilated by one on Sloped (which reads four corners): a
-    unit beside E counts on Sloped only. Hidden units never count."""
+    Stepped, and on Sloped (which reads four corners) also those on a tile
+    whose corner the edit moves: a unit beside a raised tile counts on Sloped
+    only. The map is edited and the cache is not, as when the viewer asks.
+    Hidden units never count."""
     window = conftest.terrain_edit_window()
     try:
         window.terrain_style_combo.setCurrentText(style)
@@ -429,14 +431,16 @@ def test_the_elevation_predictor_counts_the_seed_set_each_cache_starts_from(styl
         model.add(player=1, unit_const=MARK_CONST, x=30.5, y=30.5, z=0.0, rotation=0.0)
         model.commit_unit_edit("seed", window.edit_history)
         window._after_unit_mutation()
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+        window.scenario.map_manager.get_tile(31, 30).elevation += 1
+        cap_name = "_SLOPED_ELEV_SPLICE_MAX_UNITS" if style == "Sloped" else "_ELEV_SPLICE_MAX_UNITS"
+        monkeypatch.setattr(render_cache, cap_name, 0)
         assert window._elevation_bumps_anyway({(30, 30)})
         assert window._elevation_bumps_anyway({(31, 30)}) is (style == "Sloped")
         assert not window._elevation_bumps_anyway({(60, 60)})
         assert not window._elevation_bumps_anyway(set())
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 1)
+        monkeypatch.setattr(render_cache, cap_name, 1)
         assert not window._elevation_bumps_anyway({(30, 30), (31, 30)}), "one seed is not past a cap of 1"
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+        monkeypatch.setattr(render_cache, cap_name, 0)
         window.player_actions[1].setChecked(False)
         assert not window._elevation_bumps_anyway({(30, 30)}), "a hidden unit seeds nothing"
     finally:

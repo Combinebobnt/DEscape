@@ -20,6 +20,10 @@ Three edits, all deliberately asymmetric so "did anything change" becomes
      and a radian file. One of its short sides crosses the anchor wall's run,
      so the ring shares the anchor's tile (and any run tile under its far
      side) and shows a junction rewrite.
+  6. Two Stone Gates placed over existing walls (GH #159), in both an
+     integer and a radian file: one clicked onto the middle of a straight
+     run along x, one across a run's bend where exactly one neighbouring
+     wall reshapes. The walls under each gate are removed.
 
 Writes into build/wall_run_pairs/, which is gitignored.
 """
@@ -34,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 
 from descape import shape_tools, unit_sprites, wall_run
 from descape.edit_history import EditHistory
-from descape.render import unit_tile_bounds
+from descape.render import occupied_tiles_for, unit_occupied_tiles, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
 from descape.unit_model import UnitEditModel
@@ -59,6 +63,13 @@ CASES = [
     # The 2026-09-21 wall enclosure plan: the Wall Rectangle tool's ring.
     ("ring_integer", "2_Joan_coop_1_v0_13.aoe2scenario", "ring", PLAYER),
     ("ring_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario", "ring", PLAYER),
+]
+
+STONE_GATE = 64  # spans 4 tiles along x; a click on tile t covers t-1..t+2
+# (label, source file): GH #159's gates over walls.
+GATE_CASES = [
+    ("gate_integer", "2_Joan_coop_1_v0_13.aoe2scenario"),
+    ("gate_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
 ]
 
 
@@ -97,6 +108,109 @@ def _path(kind: str, wx: int, wy: int, w: int, h: int, along_x: bool):
     leg_a = shape_tools.wall_path_tiles(wx - 8, wy - 8, wx - 8, wy, w, h)
     leg_b = shape_tools.wall_path_tiles(wx - 7, wy, wx - 1, wy, w, h)
     return leg_a + leg_b
+
+
+def _gate_plan_at(scenario, tx: int, ty: int, w: int, h: int):
+    """viewer._gate_plan() for a Place Unit click on (tx, ty)."""
+    tiles, walls = wall_run.wall_scene(scenario, w, h)
+    footprint = occupied_tiles_for(STONE_GATE, tx + 0.5, ty + 0.5, w, h)
+    if footprint is None:
+        return None, wall_run.GatePlan(removals=[], rewrites=[])
+    return footprint, wall_run.plan_gate_over_walls(footprint, existing_tiles=tiles, existing_walls=walls)
+
+
+def _gate_sites(scenario, w: int, h: int) -> list[tuple[int, int]]:
+    """Two click tiles: the middle of a straight x run (walls from t-2 to t+3,
+    so all four footprint tiles hold a wall and the run continues past both
+    gate ends), fewest rewrites first; then a footprint over a bend whose plan
+    removes walls and reshapes exactly one neighbour, most removals first and
+    well clear of the first gate.
+
+    The reshape must be the gate's doing: that wall's stored shape agreed with
+    its neighbours before the gate. A corpus wall that already disagreed
+    (about 1% do) would be rewritten by any edit beside it and prove nothing."""
+    tiles, walls = wall_run.wall_scene(scenario, w, h)
+    wall_tiles = {(wall.tx, wall.ty) for wall in walls}
+    straight = [
+        (len(_gate_plan_at(scenario, wall.tx, wall.ty, w, h)[1].rewrites), wall.tx, wall.ty)
+        for wall in walls
+        if all((wall.tx + dx, wall.ty) in wall_tiles for dx in range(-2, 4))
+    ]
+    if not straight:
+        raise SystemExit("no straight x run of 6 walls to put a gate on")
+    _n, sx, sy = min(straight)
+
+    def derived(tx: int, ty: int):
+        return unit_sprites.wall_variant_from_neighbours8(
+            unit_sprites.neighbour_mask(tx, ty, tiles, diagonals=True)
+        )
+
+    bends = []
+    for wall in walls:
+        mask = unit_sprites.neighbour_mask(wall.tx, wall.ty, tiles, diagonals=True)
+        if bin(mask).count("1") != 2 or derived(wall.tx, wall.ty) != 2:
+            continue
+        # Footprint tx-1..tx+2 holds the bend for tx in bend-2..bend+1.
+        for tx in range(wall.tx - 2, wall.tx + 2):
+            if max(abs(tx - sx), abs(wall.ty - sy)) <= 8:
+                continue
+            _footprint, plan = _gate_plan_at(scenario, tx, wall.ty, w, h)
+            if not plan.removals or len(plan.rewrites) != 1:
+                continue
+            _p, unit, _v = plan.rewrites[0]
+            if derived(int(unit.x), int(unit.y)) == unit_sprites.variant_index(unit.rotation, 5):
+                bends.append((-len(plan.removals), tx, wall.ty))
+    if not bends:
+        raise SystemExit("no bend where a gate reshapes exactly one neighbour")
+    _n, bx, by = min(bends)
+    return [(sx, sy), (bx, by)]
+
+
+def _gate_case(label: str, name: str) -> None:
+    src = ROOT / "examples" / name
+    loaded = load_map_and_units(src)
+    mm = loaded.map_manager
+    w, h = mm.map_width, mm.map_height
+    sites = _gate_sites(loaded, w, h)
+
+    before = OUT / f"{label}_before.aoe2scenario"
+    after = OUT / f"{label}_after.aoe2scenario"
+    write_scenario(loaded, before)
+
+    model = UnitEditModel(loaded)
+    history = EditHistory()
+    lines = []
+    footprints = []
+    # One record per gate, as two Place Unit clicks would make.
+    for tx, ty in sites:
+        footprint, plan = _gate_plan_at(loaded, tx, ty, w, h)
+        footprints.append(set(footprint))
+        reshaped = ", ".join(
+            f"({int(u.x)}, {int(u.y)}) {unit_sprites.variant_index(u.rotation, 5)} -> {v}"
+            for _p, u, v in plan.rewrites
+        ) or "none"
+        model.begin_unit_edit(wall_run.touched_players(PLAYER, plan))
+        wall_run.apply_gate_plan(model, PLAYER, STONE_GATE, tx + 0.5, ty + 0.5, plan)
+        model.commit_unit_edit("Place unit", history)
+        lines.append(
+            f"         gate clicked on tile ({tx}, {ty}), footprint x {min(footprint)[0]}..{max(footprint)[0]} "
+            f"y {ty}: {len(plan.removals)} walls removed, reshaped: {reshaped}"
+        )
+    write_scenario(loaded, after, units=model)
+
+    # The M check: read the written file back, no wall anchored on a new gate's tile.
+    reread = load_map_and_units(after)
+    gates = [
+        set(unit_occupied_tiles(u, w, h) or ())
+        for units in reread.unit_manager.units
+        for u in units
+        if u.unit_const == STONE_GATE and set(unit_occupied_tiles(u, w, h) or ()) in footprints
+    ]
+    assert len(gates) == len(sites), (len(gates), len(sites))
+    _t, walls_back = wall_run.wall_scene(reread, w, h)
+    under = [(wall.tx, wall.ty) for wall in walls_back if any((wall.tx, wall.ty) in g for g in gates)]
+    assert not under, under
+    print(f"{label:8s} {name} (owner {PLAYER})\n" + "\n".join(lines) + f"\n         {before.name} / {after.name}")
 
 
 def main() -> None:
@@ -146,6 +260,8 @@ def main() -> None:
             f"         indices written: {shapes}, read back: {sorted(set(placed_back))}\n"
             f"         {before.name} / {after.name}"
         )
+    for label, name in GATE_CASES:
+        _gate_case(label, name)
 
 
 if __name__ == "__main__":

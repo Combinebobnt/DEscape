@@ -71,6 +71,10 @@ _STRING_LINE = re.compile(r'^(\d+)\s+"((?:[^"\\]|\\.)*)"')
 STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-strings-utf8.txt"
 DEFAULT_LANGUAGE = "en"
 
+# GH #140: a unit's in-game portrait, by object_catalog.icon_for() index. Uncompressed RGBA or DXT5, 256 px.
+UNIT_ICON_DIR = "widgetui/textures/ingame/units"
+UNIT_ICON_NAME = "{icon:03d}_50730.dds"
+
 _override_path: Path | None = None
 
 
@@ -148,6 +152,7 @@ def clear_install_caches() -> None:
     _terrain_texture_for_path.cache_clear()
     _forget_prefetches()
     _string_table.cache_clear()
+    get_unit_icon.cache_clear()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
     # as sprites -- deliberately, since re-deriving one costs a whole file walk
@@ -162,6 +167,10 @@ def clear_install_caches() -> None:
     from descape import object_catalog
 
     object_catalog.clear_caches()
+    # GH #140's instruction text colours, read from the install's UIColors.json.
+    from descape import message_markup
+
+    message_markup.clear_caches()
 
 
 def get_language() -> str:
@@ -210,6 +219,36 @@ def resource_string(key: int, lang: str | None = None) -> str | None:
     configured, no strings file for this language, or no entry for this key.
     lang defaults to get_language()."""
     return _string_table(lang or get_language()).get(key)
+
+
+@lru_cache(maxsize=64)
+def get_unit_icon(icon: int | None):
+    """The install's portrait for this catalog icon index as a read-only
+    (h, w, 4) uint8 RGBA array, or None (no install, no file, a decode
+    failure). The file's extension case varies, so it is matched loosely."""
+    install = get_install_path()
+    if install is None or icon is None or icon < 0:
+        return None
+    folder = install / UNIT_ICON_DIR
+    wanted = UNIT_ICON_NAME.format(icon=icon)
+    path = folder / wanted
+    if not path.is_file():
+        try:
+            path = next((p for p in folder.iterdir() if p.name.lower() == wanted), None)
+        except OSError:
+            return None
+        if path is None:
+            return None
+    import numpy as np
+    from PIL import Image
+
+    try:
+        with Image.open(path) as img:
+            arr = np.array(img.convert("RGBA"))
+    except (OSError, ValueError):
+        return None
+    arr.flags.writeable = False
+    return arr
 
 
 def write_config_file(path: Path, config: dict) -> None:

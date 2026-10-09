@@ -8,6 +8,7 @@ through sprite_pieces_for() / icon_for(), the seam real art uses.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -106,6 +107,49 @@ def test_each_category_draws_a_different_symbol():
             assert not np.array_equal(arrays[i], arrays[j])
 
 
+def _pillow_outlined(mask, lw):
+    """_outlined() as it was before the separable dilation: the reference."""
+    from PIL import Image, ImageFilter
+
+    grow = lw | 1
+    halo = mask.filter(ImageFilter.MaxFilter(grow if grow >= 3 else 3))
+    out = Image.new("RGBA", mask.size, (0, 0, 0, 0))
+    out.paste(Image.new("RGBA", mask.size, editor_markers._OUTLINE), (0, 0), halo)
+    out.paste(Image.new("RGBA", mask.size, editor_markers._SYMBOL), (0, 0), mask)
+    return out
+
+
+# 8/16/32/64 is the Stepped ladder on a 240x240 map, 4 a large map's coarsest, the rest other zooms
+# and Graphics Quality stages; 8 and 4 draw no symbol (MIN_SYMBOL_PX) and pin the plain badge.
+_OUTLINE_HALF_WS = [4, 8, 12, 16, 24, 32, 48, 64, 128]
+
+
+@pytest.mark.parametrize("category", editor_markers.CATEGORIES)
+@pytest.mark.parametrize("half_w", _OUTLINE_HALF_WS)
+def test_the_separable_outline_matches_pillows_max_filter_byte_for_byte(category, half_w, monkeypatch):
+    """2026-09-30 level-warm replan, A: _outlined()'s numpy dilation replaced a
+    MaxFilter that cost ~33 ms per marker at half_w 64. Every layer it feeds
+    must come out identical: 1x1 and the 1x3/3x1 blocker spans, and Flat's rect badge."""
+    sym_h = round(half_w * editor_markers._SYMBOL_H) * editor_markers._SUPERSAMPLE
+    sym_w = round(half_w * editor_markers._SYMBOL_W) * editor_markers._SUPERSAMPLE
+    if sym_h >= editor_markers.MIN_SYMBOL_PX * editor_markers._SUPERSAMPLE:
+        mask = editor_markers._symbol_mask(category, sym_w, sym_h)
+        lw = editor_markers._stroke(sym_h)
+        assert np.array_equal(np.asarray(editor_markers._outlined(mask, lw)), np.asarray(_pillow_outlined(mask, lw)))
+
+    def layers():
+        editor_markers.clear_caches()
+        spans = [editor_markers.marker_layers(category, half_w, span) for span in ((1, 1), (1, 3), (3, 1))]
+        return [*spans, editor_markers.rect_marker_layers(category, 3 * half_w, half_w, half_w)]
+
+    new = layers()
+    monkeypatch.setattr(editor_markers, "_outlined", _pillow_outlined)
+    reference = layers()
+    for got, want in zip(new, reference, strict=True):
+        for a, b in zip(got, want, strict=True):
+            assert np.array_equal(a, b)
+
+
 def test_tiny_zoom_falls_back_to_the_plain_badge():
     """Below MIN_SYMBOL_PX a symbol is noise: every category is the same badge."""
     tiny = [unit_sprites.marker_for(c, 1, 8).rgba for c in editor_markers.CATEGORIES]
@@ -121,6 +165,42 @@ def test_the_revealer_falls_back_to_its_glyph_without_the_game_art(tmp_path, mon
     unit_sprites.clear_caches()
     assert np.array_equal(unit_sprites.marker_for("revealer", 1, 32).rgba, fallback)
     assert not np.array_equal(fallback, unit_sprites.marker_for("invisible", 1, 32).rgba)
+
+
+def test_an_install_change_clears_the_flat_multi_tile_badge_cache(tmp_path, monkeypatch):
+    """rect_marker_for() remembers the revealer's art like marker_for(), so
+    unit_sprites.clear_caches() (an install change) must drop it too."""
+    asset_source.set_install_path_override(tmp_path)
+    art = tmp_path / editor_markers.VISIBILITY_ICON_SUBPATH
+    art.parent.mkdir(parents=True)
+    from PIL import Image
+
+    Image.new("RGBA", (112, 112), (255, 0, 0, 255)).save(art)
+    unit_sprites.clear_caches()
+    with_art = unit_sprites.rect_marker_for("revealer", 1, 64, 192, 32).rgba.copy()
+    monkeypatch.setattr(editor_markers, "VISIBILITY_ICON_SUBPATH", "no/such/icon.png")
+    assert np.array_equal(unit_sprites.rect_marker_for("revealer", 1, 64, 192, 32).rgba, with_art), "cached"
+    unit_sprites.clear_caches()
+    assert unit_sprites.rect_marker_for.cache_info().currsize == 0
+    assert editor_markers.rect_marker_layers.cache_info().currsize == 0
+    assert not np.array_equal(unit_sprites.rect_marker_for("revealer", 1, 64, 192, 32).rgba, with_art)
+
+
+@pytest.mark.parametrize(("const", "span"), [(2423, (1, 3)), (BLOCKER_3X1, (3, 1)), (1693, (4, 4))])
+def test_a_flat_multi_tile_marker_icon_is_its_footprint_rect(const, span):
+    """The rectangle badge is the footprint's size, not the old one-tile icon box,
+    and carries exactly one symbol's worth of white ink at one tile's size."""
+    tile = 32
+    w, h = span[0] * tile, span[1] * tile
+    assert render.tile_span(const, render.NON_BUILDING_SPAN) == span
+    icon = unit_sprites.icon_for(const, 0.0, 1, w, h)
+    assert icon.rgba.shape == (h, w, 4)
+    assert (icon.hotspot_x, icon.hotspot_y) == (0, 0)
+    assert (icon.rgba[..., 3] > 0).mean() > 0.95
+    white = np.all(icon.rgba[..., :3] > 230, axis=2) & (icon.rgba[..., 3] > 0)
+    assert white.any(), "no symbol"
+    ys, xs = np.nonzero(white)
+    assert xs.max() - xs.min() < tile and ys.max() - ys.min() < tile, "the symbol outgrew one tile"
 
 
 def test_the_revealer_uses_the_games_visibility_icon_when_installed(tmp_path):
@@ -255,6 +335,90 @@ def test_a_stepped_marker_lands_on_its_own_tile():
     ys, xs = changed[:, 0], changed[:, 1]
     assert xs.min() >= sx and xs.max() < sx + 2 * proj.half_w
     assert ys.min() >= sy and ys.max() < sy + 2 * proj.half_h
+
+
+BLOCKER_1X3 = 2423
+
+
+@pytest.mark.parametrize("style", ["iso", "sloped"])
+def test_a_1x3_blocker_marker_covers_all_three_footprint_tiles(style):
+    """GH #121: the marker sat on the centre tile of a three-tile barrier. Each
+    footprint tile's diamond must be mostly inked, and nothing past their edge
+    pixels (a 1x1 marker inks those too: diamond_membership is pixel-centre)."""
+    tiles = [Tile(x, y, 0) for y in range(MAP_H) for x in range(MAP_W)]
+    scn = _Scenario(tiles, [[], [Unit(3.5, 9.5, BLOCKER_1X3)]])
+    bare = _render(style, _Scenario(tiles, [[], []]), True)
+    full = _render(style, scn, True)
+    changed = np.any(bare != full, axis=2)
+    proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)[2]
+    ly, lx = np.mgrid[0:2 * proj.half_h, 0:2 * proj.half_w]
+    inside = iso_geometry.diamond_membership(lx, ly, proj.half_w, proj.half_h)
+    union = np.zeros_like(changed)
+    for ty in (8, 9, 10):
+        sx, sy = iso_geometry.tile_screen_origin(3, ty, 0, proj)
+        window = changed[sy:sy + 2 * proj.half_h, sx:sx + 2 * proj.half_w]
+        assert window[inside].mean() > 0.9, f"tile (3, {ty}) is not covered"
+        union[sy:sy + 2 * proj.half_h, sx:sx + 2 * proj.half_w] |= inside
+    padded = np.pad(union, 1)
+    edge = np.zeros_like(union)
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            edge |= padded[dy:dy + union.shape[0], dx:dx + union.shape[1]]
+    assert not (changed & ~edge).any(), "the marker spills off its footprint"
+
+
+@pytest.mark.parametrize(("const", "tiles"), [
+    (BLOCKER_1X3, [(3, 8), (3, 9), (3, 10)]),
+    (BLOCKER_3X1, [(2, 9), (3, 9), (4, 9)]),
+])
+def test_a_flat_1x3_blocker_marker_covers_all_three_footprint_tiles(const, tiles):
+    """The Flat twin of the iso check above: one badge filling the footprint rect
+    (it inked 28% of the centre tile and none of the ends), and nothing past it."""
+    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    grid = [Tile(x, y, 0) for y in range(MAP_H) for x in range(MAP_W)]
+    scn = _Scenario(grid, [[], [Unit(3.5, 9.5, const)]])
+    assert render.tile_span(const, render.NON_BUILDING_SPAN) in ((1, 3), (3, 1))
+    changed = np.any(_render("flat", _Scenario(grid, [[], []]), True) != _render("flat", scn, True), axis=2)
+    inside = np.zeros_like(changed)
+    for tx, ty in tiles:
+        window = changed[ty * tile_px:(ty + 1) * tile_px, tx * tile_px:(tx + 1) * tile_px]
+        assert window.mean() > 0.9, f"tile ({tx}, {ty}) is not covered ({window.mean():.0%})"
+        inside[ty * tile_px:(ty + 1) * tile_px, tx * tile_px:(tx + 1) * tile_px] = True
+    assert not (changed & ~inside).any(), "the marker spills off its footprint"
+
+
+@pytest.mark.parametrize("category", editor_markers.CATEGORIES)
+@pytest.mark.parametrize(("w", "h"), [(16, 16), (32, 32), (64, 64), (48, 24), (7, 7)])
+def test_a_1x1_flat_marker_icon_is_todays_contain_fitted_diamond(category, w, h):
+    """Multi-tile only (decided 2026-10-05): a 1x1 marker keeps its pre-GH #121 Flat icon."""
+    const = {"invisible": INVISIBLE_OBJECT_A, "revealer": MAP_REVEALER, "blocker": BLOCKER, "other": EMPTY_TC_ANNEX}[category]
+    assert render.tile_span(const, render.NON_BUILDING_SPAN) == (1, 1)
+    icon = unit_sprites.icon_for(const, 0.0, 2, w, h)
+    old = unit_sprites.marker_for(category, 2, max(1, min(w // 2, h)))
+    assert np.array_equal(icon.rgba, old.rgba)
+    assert (icon.hotspot_x, icon.hotspot_y) == (0, 0)
+
+
+# sha256(rgba bytes + repr(shape))[:16] of icon_for(const, 0.0, 2, w, h), captured on
+# 5b37b8c (before the Flat rect badge): catches a drift in marker_layers itself.
+# No revealer rows: its icon follows the install, which the test run hides.
+_FLAT_1X1_ICON_HASHES = {
+    ("invisible", 16, 16): "72005b905bfc540a",
+    ("invisible", 64, 64): "ad58f1d0153703ae",
+    ("invisible", 48, 24): "5da4846dea791c0f",
+    ("blocker", 64, 64): "4f0a2d3cbba41023",
+    ("blocker", 48, 24): "9737194eb7f0708a",
+    ("other", 64, 64): "2889829fc3bb541b",
+    ("other", 48, 24): "a430a1fe940cc87f",
+}
+
+
+@pytest.mark.parametrize(("category", "w", "h"), list(_FLAT_1X1_ICON_HASHES))
+def test_a_1x1_flat_marker_icon_matches_its_pre_badge_hash(category, w, h):
+    const = {"invisible": INVISIBLE_OBJECT_A, "revealer": MAP_REVEALER, "blocker": BLOCKER, "other": EMPTY_TC_ANNEX}[category]
+    icon = unit_sprites.icon_for(const, 0.0, 2, w, h)
+    digest = hashlib.sha256(icon.rgba.tobytes() + repr(icon.rgba.shape).encode()).hexdigest()[:16]
+    assert digest == _FLAT_1X1_ICON_HASHES[(category, w, h)]
 
 
 def test_sloped_matches_stepped_on_a_flat_map_with_markers():

@@ -30,7 +30,7 @@ _PLATFORM_PLUGIN_NAMES = {
     "darwin": "libqcocoa.dylib",
 }
 
-# Every version AoE2ScenarioParser==0.8.3 ships under versions/DE/ -- fixed,
+# Every version AoE2ScenarioParser==0.9.3 ships under versions/DE/ -- fixed,
 # not derived from examples/, since examples/ is gitignored and would exist
 # on this machine but not on a CI runner, making the check pass vacuously
 # with the whole versions/DE tree missing. Bump this list if the pin moves.
@@ -39,12 +39,12 @@ _EXPECTED_VERSIONS = [
     "1.36", "1.37",
     "1.40", "1.41", "1.42", "1.43", "1.44", "1.45", "1.46", "1.47", "1.48", "1.49",
     "1.51",
-    "1.53", "1.54", "1.55", "1.56", "1.57", "1.58",
+    "1.53", "1.54", "1.55", "1.56", "1.57", "1.58", "1.59",
 ]
 
 # Every version descape/versions/DE/ supplies a structure for. Fixed for the
 # same reason as the list above.
-_REPO_VERSIONS = ["1.21", "1.59"]
+_REPO_VERSIONS = ["1.21"]
 
 
 def _self_check() -> int:
@@ -102,8 +102,7 @@ def _self_check() -> int:
     except Exception as exc:  # noqa: BLE001 -- report, don't stop the rest of the checks
         failures.append(f"asset_source._terrain_texture_map(): {exc!r}")
 
-    # The structures this repo ships itself (library_compat.REPO_VERSIONS_DIR),
-    # and 1.59's vendored vocabulary.
+    # The structures this repo ships itself (library_compat.REPO_VERSIONS_DIR).
     from descape import scenario_io
 
     for version in _REPO_VERSIONS:
@@ -111,10 +110,6 @@ def _self_check() -> int:
             failures.append(f"repo structure for scenario {version} is missing")
         else:
             print(f"OK  repo structure for scenario {version}")
-    if not library_compat.vocabulary_is_available("1.59"):
-        failures.append("vocabulary_is_available('1.59') is False")
-    else:
-        print("OK  vocabulary_is_available('1.59')")
 
     for version in _EXPECTED_VERSIONS:
         if not library_compat.vocabulary_is_available(version):
@@ -169,7 +164,7 @@ def _smoke() -> int:
     from descape.viewer_dialogs import apply_theme
 
     app = QApplication(sys.argv)
-    apply_theme(app, settings.get_dark_mode())
+    apply_theme(app, settings.get_theme(), settings.get_theme_colors())
     window = ViewerWindow()
     window.show()
     app.processEvents()

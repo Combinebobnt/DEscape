@@ -53,10 +53,13 @@ def _existing(units) -> tuple[set[tuple[int, int]], list[wall_run.ExistingWall]]
     return tiles, walls
 
 
-def _plan(tiles, existing=()):
+def _plan(tiles, existing=(), blocked=None):
     existing_tiles, existing_walls = _existing(existing)
+    # Only pass the keyword when a test asks for it, so the toggle-off path
+    # stays the call every pre-GH #124 test made.
+    extra = {} if blocked is None else {"blocked_tiles": frozenset(blocked)}
     return wall_run.plan_wall_run(
-        tiles, unit_const=WALL, existing_tiles=existing_tiles, existing_walls=existing_walls
+        tiles, unit_const=WALL, existing_tiles=existing_tiles, existing_walls=existing_walls, **extra
     )
 
 
@@ -183,6 +186,129 @@ def test_touched_players_is_the_owner_plus_every_rewritten_walls_owner():
     assert wall_run.touched_players(1, plan) == [1]
 
 
+# --- a gate placed over walls (GH #159) ---------------------------------
+
+
+def _gate_plan(gate_tiles, existing=()):
+    existing_tiles, existing_walls = _existing(existing)
+    return wall_run.plan_gate_over_walls(gate_tiles, existing_tiles=existing_tiles, existing_walls=existing_walls)
+
+
+def _x_run(x0: int, x1: int, y: int) -> list[FakeUnit]:
+    """A run along x storing the indices plan_wall_run() itself would write."""
+    return [_wall_at(x, y, rotation=0.0 if x0 < x < x1 else 2.0) for x in range(x0, x1 + 1)]
+
+
+def _stone_gate_tiles(tx: int, ty: int) -> list[tuple[int, int]]:
+    """Stone Gate 64's footprint for a click on (tx, ty): 4 along x, tx-1..tx+2."""
+    from descape import render
+
+    tiles = render.occupied_tiles_for(GATE, tx + 0.5, ty + 0.5, 60, 60)
+    assert tiles == [(tx + dx, ty) for dx in range(-1, 3)]
+    return tiles
+
+
+def test_a_gate_on_a_straight_run_removes_exactly_the_covered_walls():
+    run = _x_run(5, 14, 10)
+    plan = _gate_plan(_stone_gate_tiles(9, 10), run)
+    assert [id(u) for _p, u in plan.removals] == [id(u) for u in run[3:7]]
+    # (7, 10) and (12, 10) still have a connector either side: the gate.
+    assert plan.rewrites == []
+    assert plan
+
+
+def test_a_gate_across_a_runs_end_reshapes_the_wall_it_newly_touches():
+    """The x run's last two pieces go under the gate; its far end lands on
+    (12, 10), right above a y run's tower end, which becomes a run along y."""
+    x_run = _x_run(5, 10, 10)
+    y_run = [_wall_at(12, y, rotation=1.0 if 11 < y < 14 else 2.0) for y in range(11, 15)]
+    plan = _gate_plan(_stone_gate_tiles(10, 10), x_run + y_run)
+    assert sorted(int(u.x) for _p, u in plan.removals) == [9, 10]
+    assert [(int(u.x), int(u.y), v) for _p, u, v in plan.rewrites] == [(12, 11, 1)]
+
+
+def test_a_gate_over_no_walls_plans_nothing():
+    plan = _gate_plan(_stone_gate_tiles(30, 30), _x_run(5, 14, 10))
+    assert plan.removals == [] and plan.rewrites == []
+    assert not plan
+
+
+def test_stacked_walls_on_one_tile_are_all_removed():
+    stacked = [_wall_at(9, 10), _wall_at(9, 10), _wall_at(10, 10)]
+    plan = _gate_plan(_stone_gate_tiles(9, 10), stacked)
+    assert [id(u) for _p, u in plan.removals] == [id(u) for u in stacked]
+
+
+def test_a_gate_already_under_the_footprint_is_left_alone():
+    # Through wall_scene(), which is what keeps a gate out of the removal candidates.
+    old_gate = FakeUnit(x=10.0, y=10.5, unit_const=GATE)
+    scenario = _Scenario(60, [[], [old_gate, _wall_at(8, 10)], [], [], [], [], [], [], []])
+    existing_tiles, existing_walls = wall_run.wall_scene(scenario, 60, 60)
+    plan = wall_run.plan_gate_over_walls(
+        _stone_gate_tiles(9, 10), existing_tiles=existing_tiles, existing_walls=existing_walls
+    )
+    assert [int(u.x) for _p, u in plan.removals] == [8]
+    assert all(u is not old_gate for _p, u in plan.removals)
+
+
+def test_walls_of_two_owners_are_both_removed_and_both_owners_touched():
+    scenario = _Scenario(60, [[_wall_at(8, 10)], [], [_wall_at(9, 10)], [], [], [], [], [], []])
+    existing_tiles, existing_walls = wall_run.wall_scene(scenario, 60, 60)
+    plan = wall_run.plan_gate_over_walls(
+        _stone_gate_tiles(9, 10), existing_tiles=existing_tiles, existing_walls=existing_walls
+    )
+    assert sorted(p for p, _u in plan.removals) == [0, 2]
+    assert wall_run.touched_players(3, plan) == [0, 2, 3]
+
+
+def test_touched_players_carries_a_gate_plans_rewritten_owner():
+    x_run = _x_run(5, 10, 10)
+    y_run = [_wall_at(12, y, rotation=2.0) for y in (11, 12)]
+    plan = _gate_plan(_stone_gate_tiles(10, 10), x_run + y_run)
+    assert plan.rewrites
+    # _existing() owns everything as player 1.
+    assert wall_run.touched_players(4, plan) == [1, 4]
+
+
+def test_a_diagonal_gate_keeps_the_walls_on_its_bounding_box_corners():
+    from descape import render
+
+    x0, x1, y0, y1 = render.unit_tile_bounds(FakeUnit(x=40.0, y=40.0, unit_const=_DIAGONAL_GATE), 60, 60)
+    footprint = render.occupied_tiles_for(_DIAGONAL_GATE, 40.0, 40.0, 60, 60)
+    box = [_wall_at(x, y) for y in range(y0, y1) for x in range(x0, x1)]
+    plan = _gate_plan(footprint, box)
+    removed = {(int(u.x), int(u.y)) for _p, u in plan.removals}
+    assert removed == set(footprint)
+    assert len(removed) == 6
+    assert (x0 + 3, y0) not in removed and (x0, y0 + 3) not in removed
+
+
+def test_apply_gate_plan_removes_adds_and_leaves_the_gate_last():
+    from descape.edit_history import EditHistory
+    from descape.render import unit_tile_bounds
+
+    loaded, model = _open()
+    mm = loaded.map_manager
+    wall = _unit(loaded, _REF_WALL)
+    bounds = unit_tile_bounds(wall, mm.map_width, mm.map_height)
+    wx, wy = bounds[0], bounds[2]
+    existing_tiles, existing_walls = wall_run.wall_scene(loaded, mm.map_width, mm.map_height)
+    plan = wall_run.plan_gate_over_walls(
+        _stone_gate_tiles(wx, wy), existing_tiles=existing_tiles, existing_walls=existing_walls
+    )
+    assert [u for _p, u in plan.removals] == [wall]
+
+    before = sum(len(u) for u in loaded.unit_manager.units)
+    model.begin_unit_edit(wall_run.touched_players(1, plan))
+    gate = wall_run.apply_gate_plan(model, 1, GATE, wx + 0.5, wy + 0.5, plan)
+    model.commit_unit_edit("Place unit", EditHistory())
+
+    assert sum(len(u) for u in loaded.unit_manager.units) == before
+    assert loaded.unit_manager.units[1][-1] is gate
+    assert gate.unit_const == GATE
+    assert all(u.reference_id != _REF_WALL for u in loaded.unit_manager.get_all_units())
+
+
 # --- Wall Rectangle's ring (2026-09-21 wall enclosure plan) -------------
 
 
@@ -250,6 +376,63 @@ def test_a_path_wholly_on_existing_walls_plans_nothing_new():
     plan = _plan([(x, 10) for x in range(5, 11)], existing)
     assert plan.nodes == []
     assert plan.skipped == 6
+
+
+# --- occupied tiles (GH #124: Walls skip occupied tiles) ----------------
+
+
+def _variants(plan) -> dict[tuple[int, int], int]:
+    return {(int(n.x), int(n.y)): n.variant for n in plan.nodes}
+
+
+def test_a_blocked_tile_mid_run_is_a_gap_with_ends_either_side():
+    """A blocked tile is not a neighbour: (6, 10) and (8, 10) each see one
+    path neighbour, so both are run ends (2), not a straight run (0)."""
+    plan = _plan([(x, 10) for x in range(5, 11)], blocked={(7, 10)})
+    assert _variants(plan) == {(5, 10): 2, (6, 10): 2, (8, 10): 2, (9, 10): 0, (10, 10): 2}
+    assert plan.blocked == 1
+    assert plan.skipped == 0
+
+
+def test_a_connector_still_counts_as_a_neighbour_with_blocked_tiles_passed():
+    plan = _plan([(x, 10) for x in range(5, 11)], [_wall_at(7, 10)], blocked={(9, 10)})
+    assert _variants(plan)[(6, 10)] == 0
+    assert _variants(plan)[(8, 10)] == 2
+    assert (9, 10) not in _variants(plan)
+
+
+def test_blocked_and_skipped_count_independently_and_a_wall_tile_counts_as_skipped():
+    """A tile holding both a wall and another object follows the wall rule."""
+    plan = _plan([(x, 10) for x in range(5, 11)], [_wall_at(7, 10)], blocked={(7, 10), (9, 10)})
+    assert plan.skipped == 1
+    assert plan.blocked == 1
+    assert len(plan.nodes) == 4
+
+
+def test_a_path_wholly_blocked_plans_nothing():
+    tiles = [(x, 10) for x in range(5, 11)]
+    plan = _plan(tiles, [_wall_at(5, 11)], blocked=set(tiles))
+    assert plan.nodes == []
+    assert plan.rewrites == []
+    assert plan.blocked == 6
+    assert plan.skipped == 0
+
+
+def test_an_existing_wall_beside_a_blocked_gap_is_not_rewritten_as_if_connected():
+    """The existing wall at (8, 10) stores 2 and sees only (9, 10) across the
+    tree at (7, 10). Feeding the tree into the neighbour mask would read W+E and
+    rewrite it to 0."""
+    wall = _wall_at(8, 10, rotation=2.0)
+    plan = _plan([(x, 10) for x in range(5, 11)], [wall], blocked={(7, 10)})
+    assert plan.rewrites == []
+    assert _variants(plan)[(6, 10)] == 2
+    assert _variants(plan)[(9, 10)] == 0
+
+
+def test_without_blocked_tiles_the_plan_counts_none():
+    plan = _plan([(x, 10) for x in range(5, 11)])
+    assert plan.blocked == 0
+    assert len(plan.nodes) == 6
 
 
 # --- set_wall_variant()'s guard ---------------------------------------
@@ -438,3 +621,126 @@ def test_a_committed_run_agrees_with_the_render_sides_own_derivation():
         if unit is radian_probe:
             continue
         assert derived == unit.rotation, (unit.x, unit.y, derived, unit.rotation)
+
+
+def test_a_gapped_run_agrees_with_the_render_sides_own_derivation():
+    """GH #124's cross-path check: render only reads connectors, so a gap at
+    a blocked tile must read as a gap on both sides."""
+    from descape import render
+
+    run = [(x, 10) for x in range(5, 15)] + [(14, y) for y in range(11, 18)]
+    blocked = {(8, 10), (11, 10), (14, 13)}
+    plan = _plan(run, blocked=blocked)
+    assert plan.blocked == 3
+    placed = [
+        FakeUnit(x=n.x, y=n.y, unit_const=n.unit_const, rotation=n.rotation)
+        for n in plan.nodes
+    ]
+    radian_probe = _wall_at(40, 40, rotation=2 * 3.141592653589793 / 5)
+    scenario = _Scenario(60, [[], [*placed, radian_probe], [], [], [], [], [], [], []])
+
+    overrides = render.wall_variant_rotation_overrides(scenario)
+    assert overrides
+    for (player_id, index), derived in overrides.items():
+        unit = scenario.unit_manager.units[player_id][index]
+        if unit is radian_probe:
+            continue
+        assert derived == unit.rotation, (unit.x, unit.y, derived, unit.rotation)
+
+
+# Real consts, so blocked_tiles() reads the committed catalog and footprints.
+_TREE = 349
+_GOLD_MINE = 66
+_INVISIBLE_BLOCKER = 1776
+_HOUSE = 70
+_PASSABLE_EYE_CANDY = 143  # RUBL1, obstruction 0
+_OBSTACLE = 623  # ROCKX, obstruction 2 (GH #149)
+_GRASS = 1358
+_DIAGONAL_GATE = 659
+
+
+def test_blocked_tiles_covers_every_footprint_except_passable_eye_candy_and_connectors():
+    from descape import render, unit_kind
+
+    assert _PASSABLE_EYE_CANDY in unit_kind.passable_eye_candy_consts()
+    assert _OBSTACLE in unit_kind.obstacle_consts()
+    assert _INVISIBLE_BLOCKER not in unit_kind.eye_candy_consts()
+    house = FakeUnit(x=21.0, y=21.0, unit_const=_HOUSE)
+    diagonal_gate = FakeUnit(x=40.0, y=40.0, unit_const=_DIAGONAL_GATE)
+    gaia = [
+        _wall_at(10, 10, const=_TREE),
+        _wall_at(12, 10, const=_GOLD_MINE),
+        _wall_at(14, 10, const=_INVISIBLE_BLOCKER),
+        _wall_at(16, 10, const=_PASSABLE_EYE_CANDY),
+        _wall_at(18, 10, const=_OBSTACLE),
+    ]
+    player = [house, _wall_at(30, 30), _wall_at(34, 30, const=GATE), diagonal_gate]
+    scenario = _Scenario(60, [gaia, player, [], [], [], [], [], [], []])
+
+    house_tiles = set(render.unit_occupied_tiles(house, 60, 60))
+    assert len(house_tiles) == 4
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    assert blocked == {(10, 10), (12, 10), (14, 10), (18, 10)} | house_tiles
+    # The diagonal gate's bounding rect has empty corners; none of it blocks.
+    x0, x1, y0, y1 = render.unit_tile_bounds(diagonal_gate, 60, 60)
+    assert not blocked & {(x, y) for x in range(x0, x1) for y in range(y0, y1)}
+
+
+def test_a_diagonal_footprint_blocks_its_tiles_but_not_its_empty_corners(monkeypatch):
+    """The test above only proves connectors are skipped, and every real
+    sparse-footprint const is one. With 659 treated as a plain object, its
+    six offsets block, (0,0) and (3,3) included, and the empty corners don't."""
+    from descape import render
+
+    connectors = unit_sprites.wall_connector_consts()
+    assert _DIAGONAL_GATE in connectors
+    monkeypatch.setattr(unit_sprites, "wall_connector_consts", lambda: connectors - {_DIAGONAL_GATE})
+    gate = FakeUnit(x=40.0, y=40.0, unit_const=_DIAGONAL_GATE)
+    scenario = _Scenario(60, [[], [gate], [], [], [], [], [], [], []])
+
+    x0, _x1, y0, _y1 = render.unit_tile_bounds(gate, 60, 60)
+    offsets = {(1, 1), (1, 2), (2, 1), (2, 2), (0, 0), (3, 3)}
+    assert set(render.unit_occupied_tiles(gate, 60, 60)) == {(x0 + dx, y0 + dy) for dx, dy in offsets}
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    assert blocked == {(x0 + dx, y0 + dy) for dx, dy in offsets}
+    assert not blocked & {(x0 + 3, y0), (x0, y0 + 3)}
+
+
+_BLOCKER_3X1 = 2424
+
+
+def test_a_wall_run_across_a_3x1_blocker_leaves_a_3_tile_gap():
+    """GH #121 x GH #124: the blocker's real span blocks, not only its centre tile."""
+    gaia = [_wall_at(10, 10, const=_BLOCKER_3X1)]
+    scenario = _Scenario(60, [gaia, [], [], [], [], [], [], [], []])
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    assert blocked == {(9, 10), (10, 10), (11, 10)}
+    plan = _plan([(x, 10) for x in range(5, 16)], blocked=blocked)
+    assert plan.blocked == 3
+    assert {int(node.x) for node in plan.nodes} == {5, 6, 7, 8, 12, 13, 14, 15}
+
+
+def test_an_obstacle_blocks_its_tile_and_grass_does_not():
+    """GH #149: solid decor is occupied, passable decor is not."""
+    gaia = [_wall_at(10, 10, const=_OBSTACLE), _wall_at(12, 10, const=_GRASS)]
+    scenario = _Scenario(60, [gaia, [], [], [], [], [], [], [], []])
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    assert (10, 10) in blocked
+    assert (12, 10) not in blocked
+
+
+def test_a_wall_run_through_a_rock_leaves_that_tile_empty():
+    gaia = [_wall_at(10, 10, const=_OBSTACLE)]
+    scenario = _Scenario(60, [gaia, [], [], [], [], [], [], [], []])
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    plan = _plan([(x, 10) for x in range(5, 16)], blocked=blocked)
+    assert plan.blocked == 1
+    assert {int(node.x) for node in plan.nodes} == set(range(5, 16)) - {10}
+
+
+def test_a_mountain_blocks_only_its_anchor_tile():
+    """The accepted 1x1-footprint limitation (unit_kind docstring): pinned so
+    a later real-span fix shows up here as a deliberate change."""
+    mountain = 744  # MNTN3, a 3x3 mountain in game
+    scenario = _Scenario(60, [[_wall_at(20, 20, const=mountain)], [], [], [], [], [], [], [], []])
+    assert wall_run.blocked_tiles(scenario, 60, 60) == {(20, 20)}

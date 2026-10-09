@@ -23,9 +23,17 @@ from descape.scenario_write import write_scenario
 DOC_ID = "0123456789abcdef"
 
 
+def _symlink_loop(tmp_path: Path) -> Path:
+    """loop-a -> loop-b -> loop-a: Python 3.11's resolve() raises RuntimeError on it."""
+    a, b = tmp_path / "loop-a", tmp_path / "loop-b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    return a
+
+
 def _slot(key: str, name: str = "map.aoe2scenario", source: Path | None = None,
-          location: str = "central", when: float | None = None) -> Path:
-    path = autosave.slot_path(key, name, source, location, when)
+          location: str = "central", when: float | None = None, central: Path | None = None) -> Path:
+    path = autosave.slot_path(key, name, source, location, when, central=central)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"slot")
     autosave.record(key, path, str(source or name), untitled=source is None, timestamp=when)
@@ -73,17 +81,24 @@ def test_two_documents_rotate_independently():
     assert all(p.exists() for p in b_slots)
 
 
-@pytest.mark.parametrize("name", ["compatdata", "template", "untitled"])
+@pytest.mark.parametrize("name", ["compatdata", "compatdata_link", "template", "untitled"])
 def test_sidecar_falls_back_to_central_where_it_cannot_be_served(tmp_path, name):
     """The AGENTS.md hard rule as a test for the first case: because the
     slot never lands under compatdata/, write_scenario()'s own guard stays
-    the thing enforcing it and nothing here weakens it."""
+    the thing enforcing it and nothing here weakens it. compatdata_link opens
+    the file through a directory symlink, so only the resolved path has it."""
+    proton = tmp_path / "compatdata" / "1234"
+    proton.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(proton, target_is_directory=True)
     sources = {
-        "compatdata": tmp_path / "compatdata" / "1234" / "map.aoe2scenario",
+        "compatdata": proton / "map.aoe2scenario",
+        "compatdata_link": tmp_path / "link" / "map.aoe2scenario",
         "template": TEMPLATE_DIR / "blank_120x120.aoe2scenario",
         "untitled": None,
     }
     source = sources[name]
+    if name == "compatdata_link":
+        assert "compatdata" not in str(source)  # else this passes without the resolve
     key = autosave.doc_key(source, DOC_ID)
 
     slot = autosave.slot_path(key, "map.aoe2scenario", source, "sidecar")
@@ -91,6 +106,95 @@ def test_sidecar_falls_back_to_central_where_it_cannot_be_served(tmp_path, name)
     assert slot.parent == autosave.autosave_dir()
     assert "compatdata" not in str(slot)
     assert slot.resolve().parent != TEMPLATE_DIR.resolve()
+
+    # GH #127: a custom folder replaces "central" for sidecar's fallback too.
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    assert autosave.slot_path(key, "map.aoe2scenario", source, "sidecar", central=custom).parent == custom
+
+
+def test_sidecar_falls_back_to_central_for_a_looped_source(tmp_path):
+    """An unresolvable source can't be shown to be outside a Proton prefix."""
+    source = _symlink_loop(tmp_path) / "map.aoe2scenario"
+    key = autosave.doc_key(None, DOC_ID)  # not the source's own key, which is doc_key()'s test
+
+    slot = autosave.slot_path(key, "map.aoe2scenario", source, "sidecar")
+
+    assert slot.parent == autosave.autosave_dir()
+
+
+def test_a_looped_path_still_gets_a_stable_key(tmp_path):
+    source = _symlink_loop(tmp_path) / "map.aoe2scenario"
+
+    assert autosave.doc_key(source, "session-one") == autosave.doc_key(source, "session-two")
+
+
+# -- GH #127: a custom central folder ---------------------------------------
+
+
+def test_central_mode_writes_to_a_custom_folder_and_the_index_stays_home(tmp_path):
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    key = autosave.doc_key(None, DOC_ID)
+
+    slot = _slot(key, central=custom)
+
+    assert slot.parent == custom
+    assert autosave.index_path() == autosave.autosave_dir() / autosave.INDEX_NAME
+    assert autosave.index_path().is_file()
+    assert not (custom / autosave.INDEX_NAME).exists()
+
+
+def test_switching_folders_keeps_every_slot_listed_rotated_and_discarded(tmp_path):
+    """The index holds absolute paths, so nothing migrates on a switch: old
+    slots stay listed, rotate across both folders and go on discard."""
+    folder_a, folder_b = tmp_path / "a", tmp_path / "b"
+    folder_a.mkdir()
+    folder_b.mkdir()
+    key = autosave.doc_key(None, DOC_ID)
+    now = time.time()
+    in_a = [_slot(key, when=now + i, central=folder_a) for i in range(2)]
+    in_b = [_slot(key, when=now + 2 + i, central=folder_b) for i in range(2)]
+
+    assert {p.parent for p in in_a} == {folder_a} and {p.parent for p in in_b} == {folder_b}
+    assert sorted(e.path for e in autosave.entries()) == sorted(in_a + in_b)
+
+    assert autosave.rotate(key, 3) == [in_a[0]]
+    assert not in_a[0].exists() and in_a[1].exists()
+
+    autosave.discard(key)
+    assert autosave.entries() == []
+    assert not any(p.exists() for p in in_a + in_b)
+
+
+def test_central_dir_falls_back_to_the_default_folder(tmp_path):
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    refused = tmp_path / "compatdata" / "813780"
+    refused.mkdir(parents=True)
+
+    assert autosave.central_dir("") == autosave.autosave_dir()
+    assert autosave.central_dir(str(custom)) == custom
+    assert autosave.central_dir(str(tmp_path / "gone")) == autosave.autosave_dir()
+    assert autosave.central_dir(str(refused)) == autosave.autosave_dir()
+    assert autosave.central_dir("relative") == autosave.autosave_dir()
+
+
+def test_autosave_dir_refusal(tmp_path):
+    proton = tmp_path / "steamapps" / "compatdata" / "813780" / "pfx"
+    proton.mkdir(parents=True)
+    link = tmp_path / "innocent-looking"
+    link.symlink_to(proton)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert autosave.autosave_dir_refusal(Path("relative/dir")) is not None
+    assert autosave.autosave_dir_refusal(proton) is not None
+    assert autosave.autosave_dir_refusal(link) is not None
+    assert autosave.autosave_dir_refusal(TEMPLATE_DIR) is not None
+    assert autosave.autosave_dir_refusal(plain) is None
+    assert autosave.autosave_dir_refusal(tmp_path / "not yet made") is None
+    assert "cannot be resolved" in (autosave.autosave_dir_refusal(_symlink_loop(tmp_path)) or "")
 
 
 def test_reopening_the_same_named_path_reuses_its_key(tmp_path):

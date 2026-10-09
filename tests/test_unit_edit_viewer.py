@@ -786,6 +786,677 @@ def test_deleting_a_host_takes_its_garrison_with_it_in_one_undo_step(monkeypatch
         _close(window)
 
 
+# --- GH #115: garrison and unload existing units ------------------------------
+
+
+def _entry(window, player_id: int, reference_id: int):
+    return window.map_view._unit_index.entry_for_key((player_id, reference_id))
+
+
+def _live(window, reference_id: int):
+    return next(u for units in window.scenario.unit_manager.units for u in units if u.reference_id == reference_id)
+
+
+def test_garrisoning_an_existing_unit_links_co_locates_and_hides_it_in_one_record() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        _hide_garrisoned(window)
+        archer = _live(window, _REF_ARCHER_P1)
+        old = (archer.x, archer.y, archer.z)
+        records_before = len(window.edit_history.records)
+
+        assert window._garrison_units(_entry(window, 1, tower.reference_id), [_entry(window, 1, _REF_ARCHER_P1)])
+
+        assert archer.garrisoned_in_id == tower.reference_id
+        assert (archer.x, archer.y, archer.z) == (tower.x, tower.y, tower.z)
+        assert _entry(window, 1, _REF_ARCHER_P1) is None
+        assert window.units_panel.garrison_tree.topLevelItemCount() == 1
+        assert len(window.edit_history.records) == records_before + 1
+        assert window.edit_history.peek_undo().label == "Garrison units"
+
+        window.undo()
+        assert archer.garrisoned_in_id == -1
+        assert (archer.x, archer.y, archer.z) == old
+        assert _entry(window, 1, _REF_ARCHER_P1) is not None
+    finally:
+        _close(window)
+
+
+def test_garrisoning_into_a_full_host_is_refused_with_no_change() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        host = _entry(window, 1, tower.reference_id)
+        for _ in range(5):
+            window._garrison_add_const(host, 4)
+        archer = _live(window, _REF_ARCHER_P1)
+        records_before = len(window.edit_history.records)
+
+        assert not window._garrison_units(_entry(window, 1, tower.reference_id), [_entry(window, 1, _REF_ARCHER_P1)])
+
+        assert archer.garrisoned_in_id == -1
+        assert len(window.edit_history.records) == records_before
+        assert "is full (5 places)" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_garrisoning_a_unit_that_holds_a_garrison_is_a_status_line_not_a_raise() -> None:
+    """Step 2's no-nesting scope, pre-checked so the model never raises."""
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        house = _live(window, _REF_HOUSE)
+        records_before = len(window.edit_history.records)
+
+        assert not window._garrison_units(_entry(window, 1, tower.reference_id), [_entry(window, 1, _REF_HOUSE)])
+
+        assert house.garrisoned_in_id == -1
+        assert len(window.edit_history.records) == records_before
+        assert "holds" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def _tower_with_two_inside(window):
+    tower = _place_tower(window)
+    host = _entry(window, 1, tower.reference_id)
+    window._garrison_add_const(host, 4)
+    window._garrison_add_const(host, 83)
+    occupants = [u for u in window.scenario.unit_manager.units[1] if u.garrisoned_in_id == tower.reference_id]
+    assert len(occupants) == 2
+    return tower, occupants
+
+
+def test_unload_makes_units_visible_and_pickable_beside_the_host() -> None:
+    """Both land on the first in-bounds tile centre off the host's +y edge;
+    a Watch Tower is 1x1, so that is the tile below its own."""
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        _hide_garrisoned(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        assert all(_entry(window, 1, u.reference_id) is None for u in occupants)
+        records_before = len(window.edit_history.records)
+
+        window._unload_units(_entry(window, 1, tower.reference_id), [(1, u) for u in occupants])
+
+        expected = (int(tower.x) + 0.5, int(tower.y) + 1.5)
+        for unit in occupants:
+            assert unit.garrisoned_in_id == -1
+            assert (unit.x, unit.y) == expected
+            assert _entry(window, 1, unit.reference_id) is not None
+        assert window.units_panel.garrison_tree.topLevelItemCount() == 0
+        assert len(window.edit_history.records) == records_before + 1
+        assert window.edit_history.peek_undo().label == "Unload units"
+
+        window.undo()
+        assert all(u.garrisoned_in_id == tower.reference_id for u in occupants)
+        assert all((u.x, u.y) == (tower.x, tower.y) for u in occupants)
+        assert all(_entry(window, 1, u.reference_id) is None for u in occupants)
+    finally:
+        _close(window)
+
+
+def test_unload_with_show_garrisoned_on_moves_the_existing_index_entry() -> None:
+    """With the filter on, an occupant is already in the index: unloading it
+    is a move there, never a second entry."""
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        before = len(window.map_view._unit_index.entries)
+
+        window._unload_units(_entry(window, 1, tower.reference_id), [(1, occupants[0])])
+
+        assert len(window.map_view._unit_index.entries) == before
+        moved = _entry(window, 1, occupants[0].reference_id)
+        assert (moved.own_x, moved.own_y) == (int(tower.x), int(tower.y) + 1)
+    finally:
+        _close(window)
+
+
+def _index_keys(index) -> list[tuple[int, int]]:
+    return [(e.player_id, e.unit.reference_id) for e in index.entries]
+
+
+def test_unload_with_show_garrisoned_off_keeps_the_index_in_paint_order() -> None:
+    """An appended entry would outrank every later player's units on a
+    shared tile, though paint order puts the unloaded unit before them."""
+    from descape import unit_pick
+
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        _hide_garrisoned(window)
+        later = [e for e in window.map_view._unit_index.entries if e.player_id > 1]
+        assert later  # else an append and a rebuild agree by accident
+
+        window._unload_units(_entry(window, 1, tower.reference_id), [(1, u) for u in occupants])
+
+        rebuilt = unit_pick.build_index(window.scenario, window._unit_filter)
+        assert _index_keys(window.map_view._unit_index) == _index_keys(rebuilt)
+    finally:
+        _close(window)
+
+
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="pick index append drifts across owners (TODO [NEEDS PLAN])"
+)
+@pytest.mark.parametrize("op", ["place", "paste_inside", "garrison_add"])
+def test_an_appending_edit_keeps_the_index_in_paint_order(op) -> None:
+    """The same equality for the three edits that still append, with Show
+    Garrisoned on and a later player's units already in the index. Reported,
+    not fixed: a rebuild per Place is a perf regression on a hot path."""
+    from descape import unit_pick
+
+    window = _window()
+    try:
+        if op == "place":
+            window.units_panel.select_object(_PLACE_CONST)
+            window.units_panel.select_owner(1)
+            window.place_unit_action.setChecked(True)
+            window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
+        elif op == "paste_inside":
+            tower, occupants = _tower_with_two_inside(window)
+            window._rebuild_unit_index()  # so only the paste can drift
+            window._selection = [(1, tower.reference_id)]
+            window._refresh_selection_view()
+            window._on_garrison_copy({u.reference_id for u in occupants})
+            window._on_garrison_paste()
+            inside = [u for u in window.scenario.unit_manager.units[1] if u.garrisoned_in_id == tower.reference_id]
+            if len(inside) != 4:
+                pytest.fail(f"premise: paste-inside left {len(inside)} occupants, not 4")
+        else:
+            tower = _place_tower(window)
+            window._garrison_add_const(_entry(window, 1, tower.reference_id), 4)
+        # pytest.fail, not assert: only the index comparison below may xfail.
+        if not any(e.player_id > 1 for e in window.map_view._unit_index.entries):
+            pytest.fail("premise: no later player's unit in the index")
+
+        rebuilt = unit_pick.build_index(window.scenario, window._unit_filter)
+        assert _index_keys(window.map_view._unit_index) == _index_keys(rebuilt)
+    finally:
+        _close(window)
+
+
+def _whole_canvas(window):
+    canvas_w, canvas_h = window._cache.canvas_dims(0)
+    return window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
+
+
+def _rebuilt_canvas(window):
+    """The same cache after a wholesale source rebuild, so the filter applies."""
+    canvas_w, canvas_h = window._cache.canvas_dims(0)
+    window._cache.invalidate_units()
+    window._cache.invalidate_region((0, 0, canvas_w, canvas_h), terrain_changed=False)
+    return window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_garrison_and_unload_repaint_matches_a_fresh_render(style: str) -> None:
+    """Both edits change a unit's visibility under the default filter. The
+    scoped repaint must land where a from-scratch render does."""
+    window = _window() if style == "Flat" else _window_with_style(style)
+    try:
+        tower = _place_tower(window)
+        _hide_garrisoned(window)
+        host = _entry(window, 1, tower.reference_id)
+        before = _whole_canvas(window)
+
+        assert window._garrison_units(host, [_entry(window, 2, _REF_ARCHER_P2)])
+        garrisoned = _whole_canvas(window)
+        assert not np.array_equal(before, garrisoned), "the garrisoned archer should leave its tile"
+        assert np.array_equal(garrisoned, _rebuilt_canvas(window))
+
+        archer = _live(window, _REF_ARCHER_P2)
+        window._unload_units(_entry(window, 1, tower.reference_id), [(2, archer)])
+        unloaded = _whole_canvas(window)
+        assert not np.array_equal(garrisoned, unloaded), "the unloaded archer should appear"
+        assert np.array_equal(unloaded, _rebuilt_canvas(window))
+    finally:
+        _close(window)
+
+
+# --- GH #115 step 3: drop onto a host ----------------------------------------
+
+
+def _drag_to_tower(window, keys, tower, modifiers=Qt.NoModifier) -> None:
+    """Selects `keys` and releases a drag of the first one over the tower's tile."""
+    window._selection = list(keys)
+    window._refresh_selection_view()
+    window.on_unit_move(keys[0], _pos_for_tile(window, int(tower.x), int(tower.y)), modifiers)
+
+
+def test_dragging_onto_an_accepting_host_garrisons_and_one_undo_restores() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        archer = _live(window, _REF_ARCHER_P2)
+        old = (archer.x, archer.y)
+        records_before = len(window.edit_history.records)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2)], tower)
+
+        assert archer.garrisoned_in_id == tower.reference_id
+        assert (archer.x, archer.y) == (tower.x, tower.y)
+        assert len(window.edit_history.records) == records_before + 1
+
+        window.undo()
+        assert archer.garrisoned_in_id == -1
+        assert (archer.x, archer.y) == old
+    finally:
+        _close(window)
+
+
+def test_a_shift_drop_on_a_host_moves_instead() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        archer = _live(window, _REF_ARCHER_P2)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2)], tower, Qt.ShiftModifier)
+
+        assert archer.garrisoned_in_id == -1
+        assert (archer.x, archer.y) == (tower.x, tower.y)
+    finally:
+        _close(window)
+
+
+def test_an_over_capacity_group_drop_is_refused_with_no_change() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        host = _entry(window, 1, tower.reference_id)
+        for _ in range(4):
+            window._garrison_add_const(host, 4)
+        pair = [_live(window, _REF_ARCHER_P2), _live(window, _REF_VILLAGER_P2)]
+        old = [(u.x, u.y, u.garrisoned_in_id) for u in pair]
+        records_before = len(window.edit_history.records)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2), (2, _REF_VILLAGER_P2)], tower)
+
+        assert [(u.x, u.y, u.garrisoned_in_id) for u in pair] == old
+        assert len(window.edit_history.records) == records_before
+        assert "has room for 1 more" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_group_drop_with_a_wrong_type_member_is_refused_with_no_change() -> None:
+    """The archer makes it a garrison drop; the tree then refuses the whole
+    batch rather than garrisoning the archer and moving the tree."""
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        archer, tree = _live(window, _REF_ARCHER_P2), _live(window, _REF_TREE_PINE)
+        old = [(u.x, u.y) for u in (archer, tree)]
+        records_before = len(window.edit_history.records)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2), (0, _REF_TREE_PINE)], tower)
+
+        assert [(u.x, u.y) for u in (archer, tree)] == old
+        assert archer.garrisoned_in_id == -1
+        assert len(window.edit_history.records) == records_before
+        assert "cannot go inside Watch Tower" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_dropping_on_a_unit_that_holds_nothing_moves() -> None:
+    window = _window()
+    try:
+        oak = _live(window, _REF_TREE_OAK)
+        archer = _live(window, _REF_ARCHER_P2)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2)], oak)
+
+        assert archer.garrisoned_in_id == -1
+        assert (int(archer.x), int(archer.y)) == (int(oak.x), int(oak.y))
+    finally:
+        _close(window)
+
+
+def test_a_drop_on_a_visible_occupant_garrisons_into_its_host() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        window._garrison_add_const(_entry(window, 1, tower.reference_id), 83)
+        hit = window.map_view.pick_unit_cover_at(_pos_for_tile(window, int(tower.x), int(tower.y)))
+        assert hit is not None and hit[0].unit.garrisoned_in_id == tower.reference_id, "the occupant must be on top"
+        archer = _live(window, _REF_ARCHER_P2)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2)], tower)
+
+        assert archer.garrisoned_in_id == tower.reference_id
+    finally:
+        _close(window)
+
+
+def test_dragging_a_unit_that_holds_a_garrison_onto_a_host_is_a_status_line() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        archer = _live(window, _REF_ARCHER_P2)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Garrison units", [2]):
+            model.set_garrisoned_in(_live(window, _REF_VILLAGER_P2), _REF_ARCHER_P2)
+        old = (archer.x, archer.y)
+        records_before = len(window.edit_history.records)
+
+        _drag_to_tower(window, [(2, _REF_ARCHER_P2)], tower)
+
+        assert (archer.x, archer.y) == old
+        assert archer.garrisoned_in_id == -1
+        assert len(window.edit_history.records) == records_before
+        assert "holds a garrison of its own" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_the_drag_preview_outlines_a_host_only_when_the_drop_would_garrison() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        key = (2, _REF_ARCHER_P2)
+        window._selection = [key]
+        window._refresh_selection_view()
+        over_tower = _pos_for_tile(window, int(tower.x), int(tower.y))
+
+        window.on_unit_drag_preview(key, over_tower, Qt.NoModifier)
+        assert window.map_view._unit_hover_key == (1, tower.reference_id)
+
+        window.on_unit_drag_preview(key, over_tower, Qt.ShiftModifier)
+        assert window.map_view._unit_hover_key is None
+
+        host = _entry(window, 1, tower.reference_id)
+        for _ in range(5):
+            window._garrison_add_const(host, 4)
+        window.on_unit_drag_preview(key, over_tower, Qt.NoModifier)
+        assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)
+
+
+def test_an_off_map_group_drag_outlines_the_edge_host_its_clamped_release_garrisons_into() -> None:
+    """A group release clamps to the map rect, so the preview must test the clamped point too."""
+    window = _window()
+    try:
+        occupied = {(int(u.x), int(u.y)) for units in window.scenario.unit_manager.units for u in units}
+        ty = next(y for y in range(10, 80) if (0, y) not in occupied)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Place tower", [1]):
+            tower = model.add(1, 79, 0.5, ty + 0.5)
+        window._rebuild_unit_index()
+        keys = [(2, _REF_ARCHER_P2), (2, _REF_VILLAGER_P2)]
+        window._selection = list(keys)
+        window._refresh_selection_view()
+        off_map = QPointF(-3 * window.map_view._tile_pixels, _pos_for_tile(window, 0, ty).y())
+
+        window.on_unit_drag_preview(keys[0], off_map, Qt.NoModifier)
+        assert window.map_view._unit_hover_key == (1, tower.reference_id)
+        window.on_unit_move(keys[0], window.map_view._clamped_to_map_rect(off_map), Qt.NoModifier)
+        assert _live(window, _REF_ARCHER_P2).garrisoned_in_id == tower.reference_id
+    finally:
+        _close(window)
+
+
+# --- GH #115 step 4: an owner change carries the garrison --------------------
+
+
+def _tower_with_mixed_garrison(window):
+    """A Player 1 tower holding two Player 1 occupants and Player 2's archer,
+    all hidden by the default filter, with the tower selected."""
+    tower, occupants = _tower_with_two_inside(window)
+    assert window._garrison_units(_entry(window, 1, tower.reference_id), [_entry(window, 2, _REF_ARCHER_P2)])
+    _hide_garrisoned(window)
+    window._selection = [(1, tower.reference_id)]
+    window._refresh_selection_view()
+    return tower, [*occupants, _live(window, _REF_ARCHER_P2)]
+
+
+def test_a_host_owner_change_carries_every_occupant_in_one_record() -> None:
+    window = _window()
+    try:
+        tower, inside = _tower_with_mixed_garrison(window)
+        layout = _unit_layout(window)
+        records_before = len(window.edit_history.records)
+
+        combo = window.units_panel.unit_field_editors["player"]
+        combo.setCurrentIndex(combo.findData(3))
+
+        assert _owner_of(window, tower.reference_id) == 3
+        assert [_owner_of(window, u.reference_id) for u in inside] == [3, 3, 3]
+        assert all(u.garrisoned_in_id == tower.reference_id for u in inside)
+        assert len(window.edit_history.records) == records_before + 1
+        assert window._selection == [(3, tower.reference_id)]
+
+        window.undo()
+        assert _unit_layout(window) == layout
+    finally:
+        _close(window)
+
+
+def test_a_convert_stroke_over_a_host_carries_its_hidden_occupants() -> None:
+    window = _window()
+    try:
+        tower, inside = _tower_with_mixed_garrison(window)
+        window.units_panel.select_owner(4)
+        window.brush_size_spin.setValue(1)
+        layout = _unit_layout(window)
+        records_before = len(window.edit_history.records)
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(int(tower.x), int(tower.y))
+        window._end_convert_stroke()
+
+        assert _owner_of(window, tower.reference_id) == 4
+        assert [_owner_of(window, u.reference_id) for u in inside] == [4, 4, 4]
+        assert len(window.edit_history.records) == records_before + 1
+        assert "Converted 4 unit(s)" in window.status_log.toPlainText()
+
+        window.undo()
+        assert _unit_layout(window) == layout
+    finally:
+        _close(window)
+
+
+# --- GH #115 step 5: the Garrison block's manager buttons ---------------------
+
+
+def _select_rows(window, reference_ids) -> None:
+    tree = window.units_panel.garrison_tree
+    tree.clearSelection()
+    for i in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(i)
+        if item.data(0, Qt.UserRole) in reference_ids:
+            item.setSelected(True)
+
+
+def test_map_pick_garrisons_each_click_and_stays_armed_until_esc() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        _hide_garrisoned(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        panel = window.units_panel
+
+        panel.garrison_pick_button.click()
+        assert window.map_view.unit_picker_active()
+        assert window._selection == [(1, tower.reference_id)], "arming must keep the host selected"
+        assert panel.garrison_tree.isVisibleTo(panel)
+
+        window.map_view.on_unit_pick((2, _REF_ARCHER_P2))
+        window.map_view.on_unit_pick((2, _REF_VILLAGER_P2))
+
+        assert _live(window, _REF_ARCHER_P2).garrisoned_in_id == tower.reference_id
+        assert _live(window, _REF_VILLAGER_P2).garrisoned_in_id == tower.reference_id
+        assert window.map_view.unit_picker_active()
+        assert panel.garrison_pick_button.isChecked()
+        assert panel.garrison_tree.topLevelItemCount() == 2
+
+        window.map_view.on_unit_pick((1, tower.reference_id))
+        assert "host itself" in window.status_log.toPlainText()
+
+        window.map_view.on_unit_picker_cancel()
+        assert not window.map_view.unit_picker_active()
+        assert not panel.garrison_pick_button.isChecked()
+    finally:
+        _close(window)
+
+
+def test_a_map_pick_refused_by_the_rule_changes_nothing_and_stays_armed() -> None:
+    window = _window()
+    try:
+        _place_tower(window)
+        window.units_panel.garrison_pick_button.click()
+        oak = _live(window, _REF_TREE_OAK)
+        records_before = len(window.edit_history.records)
+
+        window.map_view.on_unit_pick((0, _REF_TREE_OAK))
+
+        assert oak.garrisoned_in_id == -1
+        assert len(window.edit_history.records) == records_before
+        assert "cannot go inside Watch Tower" in window.status_log.toPlainText()
+        assert window.map_view.unit_picker_active()
+    finally:
+        _close(window)
+
+
+def test_selecting_another_unit_disarms_the_garrison_pick() -> None:
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        window.units_panel.garrison_pick_button.click()
+        window._selection = [(2, _REF_ARCHER_P2)]
+        window._refresh_selection_view()
+        assert not window.map_view.unit_picker_active()
+        assert window._garrison_picker is None
+        assert tower.garrisoned_in_id == -1
+    finally:
+        _close(window)
+
+
+def test_the_unload_button_makes_the_selected_rows_visible_and_pickable() -> None:
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        _hide_garrisoned(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        _select_rows(window, {occupants[0].reference_id})
+
+        window.units_panel.garrison_unload_button.click()
+
+        assert occupants[0].garrisoned_in_id == -1
+        assert _entry(window, 1, occupants[0].reference_id) is not None
+        assert occupants[1].garrisoned_in_id == tower.reference_id
+        assert window.units_panel.garrison_tree.topLevelItemCount() == 1
+    finally:
+        _close(window)
+
+
+def _second_tower(window):
+    model = window._ensure_unit_edits()
+    tile = _empty_tile(window)
+    with window._unit_edit(model, "Place tower", [2]):
+        other = model.add(2, 79, tile[0] + 0.5, tile[1] + 0.5)
+    window._rebuild_unit_index()
+    return other
+
+
+def test_copy_then_paste_into_a_second_host_keeps_each_occupants_owner() -> None:
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        archer = _live(window, _REF_ARCHER_P2)
+        assert window._garrison_units(_entry(window, 1, tower.reference_id), [_entry(window, 2, _REF_ARCHER_P2)])
+        other = _second_tower(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        _select_rows(window, {occupants[0].reference_id, archer.reference_id})
+        panel = window.units_panel
+        assert not panel.garrison_paste_button.isEnabled()
+
+        panel.garrison_copy_button.click()
+        assert panel.garrison_paste_button.isEnabled()
+        assert sorted(panel.garrison_selection()) == sorted([occupants[0].reference_id, archer.reference_id]), (
+            "Copy must leave the copied rows selected"
+        )
+        window._selection = [(2, other.reference_id)]
+        window._refresh_selection_view()
+        records_before = len(window.edit_history.records)
+        panel.garrison_paste_button.click()
+
+        pasted = sorted(
+            (p, u.unit_const)
+            for p, units in enumerate(window.scenario.unit_manager.units)
+            for u in units
+            if u.garrisoned_in_id == other.reference_id
+        )
+        assert pasted == [(1, 4), (2, 4)]
+        assert len(window.edit_history.records) == records_before + 1
+        assert panel.garrison_tree.topLevelItemCount() == 2
+
+        window.undo()
+        assert not any(u.garrisoned_in_id == other.reference_id for us in window.scenario.unit_manager.units for u in us)
+    finally:
+        _close(window)
+
+
+def test_paste_is_refused_whole_when_it_would_overfill_the_host() -> None:
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        other = _second_tower(window)
+        for _ in range(4):
+            window._garrison_add_const(_entry(window, 2, other.reference_id), 4)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        _select_rows(window, {u.reference_id for u in occupants})
+        window.units_panel.garrison_copy_button.click()
+        window._selection = [(2, other.reference_id)]
+        window._refresh_selection_view()
+        before = _unit_count(window)
+        records_before = len(window.edit_history.records)
+
+        window.units_panel.garrison_paste_button.click()
+
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == records_before
+        assert "has room for 1 more" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_the_per_row_owner_reassigns_only_the_selected_occupant() -> None:
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        _hide_garrisoned(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        _select_rows(window, {occupants[1].reference_id})
+        records_before = len(window.edit_history.records)
+
+        combo = window.units_panel.garrison_owner_combo
+        combo.setCurrentIndex(combo.findData(3))
+        combo.activated.emit(combo.currentIndex())
+
+        assert _owner_of(window, occupants[1].reference_id) == 3
+        assert _owner_of(window, occupants[0].reference_id) == 1
+        assert _owner_of(window, tower.reference_id) == 1
+        assert occupants[1].garrisoned_in_id == tower.reference_id
+        assert len(window.edit_history.records) == records_before + 1
+        assert window._selection == [(1, tower.reference_id)]
+        owners = [window.units_panel.garrison_tree.topLevelItem(i).text(1) for i in range(2)]
+        assert sorted(owners) == ["Player 1", "Player 3"]
+    finally:
+        _close(window)
+
+
 # --- b1.3: inspector round-trip ----------------------------------------------
 
 
@@ -1789,6 +2460,107 @@ def test_a_gate_with_no_room_at_the_map_edge_refuses_and_says_so() -> None:
         _close(window)
 
 
+# --- GH #61: a gate's orientation typed into the Rotation field ---------------
+
+
+def test_typing_2_on_a_gate_matches_two_rotate_presses_in_one_undo_step() -> None:
+    """Index order is Rotate's step order, so typing n is n presses from 0."""
+    window = _window()
+    try:
+        entry = _make_gate(window)
+        start = (entry.unit.unit_const, entry.unit.x, entry.unit.y)
+        spin = window.units_panel.unit_field_editors["rotation"]
+        assert spin.isVisibleTo(window.units_panel.unit_inspector_grid)
+        assert (spin.minimum(), spin.maximum(), spin.value()) == (0, 3, 0)
+        records_before = len(window.edit_history.records)
+
+        spin.setValue(2)
+
+        typed = (entry.unit.unit_const, entry.unit.x, entry.unit.y)
+        assert typed == (_GATE_SE, 8.5, 7.0)
+        assert len(window.edit_history.records) == records_before + 1
+        assert window.edit_history.records[-1].label == "Set unit Rotation"
+        assert "Orientation 2 of 4: NW to SE" in window.units_panel.unit_field_editors["rotation"].toolTip()
+        window.undo()
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == start
+
+        window.on_unit_rotate(1)
+        window.on_unit_rotate(1)
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == typed
+    finally:
+        _close(window)
+
+
+def test_typing_a_gates_current_orientation_records_nothing() -> None:
+    window = _window()
+    try:
+        _make_gate(window)
+        window._on_unit_field_changed(_field("rotation"), 0)
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_a_group_of_gates_at_different_orientations_types_one_orientation() -> None:
+    window = _window()
+    try:
+        _make_gate(window)
+        (archer,) = _select(window, _REF_ARCHER_P1)
+        # A 4x4 diagonal sibling, anchored at tile + span/2 like every corpus gate.
+        archer.unit.unit_const, archer.unit.x, archer.unit.y = _GATE_E, 20.0, 20.0
+        window._after_unit_mutation()
+        entries = _select(window, _REF_WALL, _REF_ARCHER_P1)
+        before = [(e.unit.unit_const, e.unit.x, e.unit.y) for e in entries]
+        spin = window.units_panel.unit_field_editors["rotation"]
+        assert spin.text() == "(mixed)"
+        records_before = len(window.edit_history.records)
+
+        window._on_unit_field_changed(_field("rotation"), 2)
+
+        by_ref = {e.unit.reference_id: (e.unit.unit_const, e.unit.x, e.unit.y) for e in entries}
+        assert by_ref[_REF_WALL] == (_GATE_SE, 8.5, 7.0)
+        assert by_ref[_REF_ARCHER_P1] == (_GATE_SE, 18.5, 20.0)
+        assert len(window.edit_history.records) == records_before + 1
+        window.undo()
+        assert [(e.unit.unit_const, e.unit.x, e.unit.y) for e in entries] == before
+    finally:
+        _close(window)
+
+
+def test_a_typed_facing_on_a_gate_and_archer_still_skips_the_gate() -> None:
+    window = _window()
+    try:
+        _make_gate(window)
+        entries = _select(window, _REF_WALL, _REF_ARCHER_P1)
+        gate = next(e for e in entries if e.unit.reference_id == _REF_WALL)
+        archer = next(e for e in entries if e.unit.reference_id == _REF_ARCHER_P1)
+        archer_before = archer.unit.rotation
+
+        window._on_unit_field_changed(_field("rotation"), 2)
+
+        assert archer.unit.rotation != archer_before
+        assert (gate.unit.unit_const, gate.unit.x, gate.unit.y) == (_GATE_NE, 10.0, 5.5)
+    finally:
+        _close(window)
+
+
+def test_a_typed_gate_orientation_off_the_map_edge_refuses_and_resets_the_field() -> None:
+    window = _window()
+    try:
+        entry = _make_gate(window, x=10.0, y=117.5)
+        before = (entry.unit.unit_const, entry.unit.x, entry.unit.y)
+        spin = window.units_panel.unit_field_editors["rotation"]
+
+        spin.setValue(1)
+
+        assert (entry.unit.unit_const, entry.unit.x, entry.unit.y) == before
+        assert not window.edit_history.is_dirty
+        assert "map edge" in window.status_log.toPlainText()
+        assert window.units_panel.unit_field_editors["rotation"].value() == 0
+    finally:
+        _close(window)
+
+
 @pytest.fixture
 def gate_art(tmp_path, monkeypatch):
     """A synthetic install drawing each stone gate orientation (64/88/659/667)
@@ -2634,6 +3406,11 @@ def test_convert_flushes_splices_and_the_stroke_end_rebuilds_the_pick_index(monk
     window = _window()
     try:
         entries = _convert_setup(window, count=2)
+        # The second pick is the House's villager, which the first tile's House
+        # would carry along (GH #115). Unloaded so each flush owns one unit.
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Unload", [entries[1].player_id]):
+            model.set_garrisoned_in(entries[1].unit, -1)
         calls = []
         original = window._after_unit_mutation
 
@@ -3316,5 +4093,231 @@ def test_scatter_pixels_appear_and_one_undo_restores_them(monkeypatch) -> None:
         window.undo()
         restored = window._cache.get_chunk(0, cx, cy)
         assert np.array_equal(before, restored)
+    finally:
+        _close(window)
+
+
+# --- GH #105: Scatter's "Move the selected units" mode -----------------------
+
+_UNIT_FIELDS = (
+    "x",
+    "y",
+    "z",
+    "rotation",
+    "unit_const",
+    "initial_animation_frame",
+    "status",
+    "garrisoned_in_id",
+    "reference_id",
+    "caption_string_id",
+)
+
+
+def _all_fields(window) -> dict:
+    """Every unit's every field, keyed by (player, reference_id)."""
+    return {
+        (p, u.reference_id): {f: getattr(u, f) for f in _UNIT_FIELDS}
+        for p, units in enumerate(window.scenario.unit_manager.units)
+        for u in units
+    }
+
+
+def _unit_by_ref(window, player: int, ref: int):
+    return next(u for u in window.scenario.unit_manager.units[player] if u.reference_id == ref)
+
+
+def _move_mode(seed: int = 20261004):
+    def configure(dialog) -> None:
+        dialog.move_radio.setChecked(True)
+        dialog.seed_spin.setValue(seed)
+
+    return configure
+
+
+def _arm_move(window, monkeypatch, keys, seed: int = 20261004, region=_POND) -> None:
+    _arm_scatter(window, monkeypatch, _move_mode(seed))
+    window.on_region_selected(region)
+    _select_keys(window, keys)
+
+
+def _in_region(unit, region) -> bool:
+    """Every tile of the unit's footprint lies inside the half-open region."""
+    tx0, ty0, tx1, ty1 = region
+    x0, x1, y0, y1 = render.unit_tile_bounds(unit, 120, 120)
+    return tx0 <= x0 and x1 <= tx1 and ty0 <= y0 and y1 <= ty1
+
+
+# Everything the fixture has outside player 1's archer, which stays unselected.
+_SCATTER_KEYS = [(0, 100), (0, 101), (0, 102), (1, 200), (2, 300), (2, 301)]
+
+
+def test_scatter_move_changes_only_the_selections_x_y_in_one_undo_step(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, _SCATTER_KEYS)
+        _unit_by_ref(window, 2, 300).z = 2.5  # every fixture z is 0.0, which would hide a zeroed z
+        before = _all_fields(window)
+        assert before[(0, 100)]["rotation"] == 7.0  # the oak's variant index, not an angle
+        records = len(window.edit_history.records)
+
+        window.scatter_units_in_region()
+
+        after = _all_fields(window)
+        assert len(window.edit_history.records) == records + 1
+        assert "Scattered 6 selected units across the region" in window.status_log.toPlainText()
+        # The house's garrisoned villager (203) rides to the house's new point (GH #42).
+        house = _unit_by_ref(window, 1, 200)
+        assert (after[(1, 203)]["x"], after[(1, 203)]["y"]) == (house.x, house.y)
+        for key in before:
+            moved = key in _SCATTER_KEYS or key == (1, 203)
+            same = {f: v for f, v in before[key].items() if not (moved and f in ("x", "y"))}
+            assert {f: after[key][f] for f in same} == same, key
+            if key in _SCATTER_KEYS:
+                assert _in_region(_unit_by_ref(window, *key), _POND), key
+                assert (after[key]["x"], after[key]["y"]) != (before[key]["x"], before[key]["y"]), key
+        # The house snaps to its 2x2 span on whole tiles.
+        assert house.x % 1 == 0 and house.y % 1 == 0
+        assert set(window._selection) == set(_SCATTER_KEYS)
+
+        window.undo()
+        assert _all_fields(window) == before
+    finally:
+        _close(window)
+
+
+def test_scatter_move_gives_the_same_positions_for_the_same_seed_in_any_click_order(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, _SCATTER_KEYS)
+        window.scatter_units_in_region()
+        first = _all_fields(window)
+        window.undo()
+        _select_keys(window, list(reversed(_SCATTER_KEYS)))
+        window.scatter_units_in_region()
+        assert _all_fields(window) == first
+        window.undo()
+        _arm_move(window, monkeypatch, _SCATTER_KEYS, seed=12345)
+        window.scatter_units_in_region()
+        assert _all_fields(window) != first
+    finally:
+        _close(window)
+
+
+def test_scatter_move_with_nothing_selected_refuses(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, [])
+        before = _all_fields(window)
+        records = len(window.edit_history.records)
+        window.scatter_units_in_region()
+        assert "select the units to move in Units mode first" in window.status_log.toPlainText()
+        assert len(window.edit_history.records) == records
+        assert _all_fields(window) == before
+        assert window.unit_edits is None
+    finally:
+        _close(window)
+
+
+def test_scatter_move_outside_units_mode_refuses(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, _SCATTER_KEYS)
+        window.mode_combo.setCurrentText("Terrain")
+        window._selection = list(_SCATTER_KEYS)
+        before = _all_fields(window)
+        window.scatter_units_in_region()
+        assert "select the units to move in Units mode first" in window.status_log.toPlainText()
+        assert _all_fields(window) == before
+    finally:
+        _close(window)
+
+
+def test_scatter_with_no_region_says_so(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, _SCATTER_KEYS)
+        window.on_region_selected(None)
+        before = _all_fields(window)
+        window.scatter_units_in_region()
+        assert "Scatter: select a region first" in window.status_log.toPlainText()
+        assert _all_fields(window) == before
+    finally:
+        _close(window)
+
+
+def test_scatter_move_with_no_object_chosen_still_opens_in_move_mode(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, [(2, 301)])
+        monkeypatch.setattr(window.units_panel, "selected_object_const", lambda: None)
+        window.scatter_units_in_region()
+        assert _in_region(_unit_by_ref(window, 2, 301), _POND)
+    finally:
+        _close(window)
+
+
+def test_a_building_that_cannot_fit_stays_put_and_the_rest_move(monkeypatch) -> None:
+    window = _window()
+    try:
+        region = (60, 60, 61, 61)  # one tile: no room for the 2x2 house
+        _arm_move(window, monkeypatch, [(1, 200), (2, 301)], region=region)
+        before = _all_fields(window)
+        window.scatter_units_in_region()
+        after = _all_fields(window)
+        assert after[(1, 200)] == before[(1, 200)]
+        assert after[(1, 203)] == before[(1, 203)]  # its garrison stays with it
+        assert (after[(2, 301)]["x"], after[(2, 301)]["y"]) == (60.5, 60.5)
+        assert "1 did not fit and stayed put" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_only_buildings_that_cannot_fit_record_nothing(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, [(1, 200)], region=(60, 60, 61, 61))
+        records = len(window.edit_history.records)
+        window.scatter_units_in_region()
+        assert len(window.edit_history.records) == records
+        assert "nothing moved" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_more_movers_than_tiles_share_tiles_and_say_so(monkeypatch) -> None:
+    window = _window()
+    try:
+        keys = [(0, 100), (0, 101), (0, 102)]
+        _arm_move(window, monkeypatch, keys, region=(60, 60, 62, 61))  # two tiles
+        window.scatter_units_in_region()
+        tiles = [(int(_unit_by_ref(window, *k).x), int(_unit_by_ref(window, *k).y)) for k in keys]
+        assert set(tiles) == {(60, 60), (61, 60)}
+        assert "1 share a tile" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_selected_occupant_rides_with_its_host(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, [(1, 200), (1, 203)])
+        window.scatter_units_in_region()
+        house, villager = _unit_by_ref(window, 1, 200), _unit_by_ref(window, 1, 203)
+        assert _in_region(house, _POND)
+        assert (villager.x, villager.y) == (house.x, house.y)
+    finally:
+        _close(window)
+
+
+def test_scatter_move_pixels_follow_the_unit_and_undo_restores_them(monkeypatch) -> None:
+    window = _window()
+    try:
+        _arm_move(window, monkeypatch, [(2, 301)], region=(64, 64, 65, 65))
+        cx, cy = _chunk_for_tile(window, 64, 64)
+        before = window._cache.get_chunk(0, cx, cy).copy()
+        window.scatter_units_in_region()
+        assert not np.array_equal(before, window._cache.get_chunk(0, cx, cy))
+        window.undo()
+        assert np.array_equal(before, window._cache.get_chunk(0, cx, cy))
     finally:
         _close(window)

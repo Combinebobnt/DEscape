@@ -147,7 +147,8 @@ class RulerSession:
 
 class PinnedRulers:
     """Finished measurements that stay on the map (GH #108/#109), oldest first.
-    Session-only view state: never scenario data, history or config."""
+    Session-only view state: never scenario data or config. Edits ride EditHistory
+    as view-only records (GH #108), which never mark the file modified."""
 
     def __init__(self) -> None:
         self._items: list[Measurement] = []
@@ -167,6 +168,42 @@ class PinnedRulers:
             if tile in (m.a, m.b):
                 return self._items.pop(i)
         return None
+
+    def index_of(self, m: Measurement) -> int | None:
+        """Position of this exact object (identity, not equality: two equal
+        rulers are two entries), or None."""
+        for i, item in enumerate(self._items):
+            if item is m:
+                return i
+        return None
+
+    def discard(self, m: Measurement) -> bool:
+        """Removes this exact object; False if it is not pinned."""
+        i = self.index_of(m)
+        if i is None:
+            return False
+        del self._items[i]
+        return True
+
+    def insert(self, index: int, m: Measurement) -> bool:
+        """Pins this exact object at `index`, clamped to the current length.
+        False if it is already pinned or zero-length."""
+        if m.a == m.b or self.index_of(m) is not None:
+            return False
+        self._items.insert(max(0, min(index, len(self._items))), m)
+        return True
+
+    def apply_delta(self, remove, insert) -> None:
+        """RulerDiffRecord's undo/redo: discards `remove`, then inserts the
+        (index, measurement) pairs of `insert` in index order. Each skip rule
+        above holds, so a delta tolerates a live set that changed meanwhile.
+        Known asymmetry: a ruler removed unrecorded (a file edit's redo pending)
+        comes back if a later redo re-applies its Add record, since an insert
+        is skipped only when the ruler is still pinned."""
+        for m in remove:
+            self.discard(m)
+        for index, m in sorted(insert, key=lambda pair: pair[0]):
+            self.insert(index, m)
 
     def clear(self) -> None:
         self._items = []

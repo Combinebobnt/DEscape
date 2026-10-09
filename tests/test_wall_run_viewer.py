@@ -289,6 +289,84 @@ def test_a_non_wall_const_still_click_places_one_unit(const):
         _close(window)
 
 
+def _click(window, tile) -> None:
+    _press(window.map_view, tile)
+    _release(window.map_view, tile)
+
+
+def _walls_on(window, tiles) -> list:
+    wall_consts = {WALL, PALISADE, AQUEDUCT}
+    return [
+        u for units in window.scenario.unit_manager.units for u in units
+        if u.unit_const in wall_consts and (int(u.x), int(u.y)) in tiles
+    ]
+
+
+def test_a_gate_clicked_onto_a_run_replaces_the_walls_under_it():
+    """GH #159. The run from (3, 5) to (11, 5) passes through the fixture's
+    GAIA wall at (7, 5), so the gate's footprint (6..9, 5) holds walls of
+    two owners. One record; undo brings all four back, redo removes them."""
+    from descape import unit_pick
+
+    window = _window()
+    try:
+        window.on_shape_commit([(x, 5) for x in range(3, 12)])
+        footprint = {(x, 5) for x in range(6, 10)}
+        under = _walls_on(window, footprint)
+        assert len(under) == 4
+        rotations = {id(u): u.rotation for u in under}
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        _pick(window, GATE)
+        _click(window, (7, 5))
+
+        assert _walls_on(window, footprint) == []
+        assert _unit_count(window) == before - 3
+        gate = window.scenario.unit_manager.units[PLAYER][-1]
+        assert gate.unit_const == GATE and (gate.x, gate.y) == (7.5, 5.5)
+        assert len(window.edit_history.records) == records + 1
+        assert window._selection == [unit_pick.unit_key(PLAYER, gate)]
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert "replacing 4 walls" in last
+        assert "reshaping" not in last
+
+        window.undo()
+        restored = _walls_on(window, footprint)
+        assert {id(u) for u in restored} == set(rotations)
+        assert all(u.rotation == rotations[id(u)] for u in restored)
+        assert _unit_count(window) == before
+
+        window.redo()
+        assert _walls_on(window, footprint) == []
+        assert _unit_count(window) == before - 3
+    finally:
+        _close(window)
+
+
+def test_a_gate_across_a_runs_end_reshapes_the_wall_it_now_touches():
+    """The x run ends at the GAIA wall (7, 5); the gate takes (6, 5) and
+    (7, 5) and its far end (9, 5) lands on a y run's tower end, which
+    becomes a run along y inside the same record."""
+    window = _window()
+    try:
+        window.on_shape_commit([(x, 5) for x in range(2, 7)])
+        window.on_shape_commit([(9, y) for y in range(6, 10)])
+        top = next(u for u in window.scenario.unit_manager.units[PLAYER] if (u.x, u.y) == (9.5, 6.5))
+        assert top.rotation == 2.0
+
+        _pick(window, GATE)
+        _click(window, (7, 5))
+
+        assert top.rotation == 1.0
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert "replacing 2 walls, reshaping 1 adjacent" in last
+        window.undo()
+        assert top.rotation == 2.0
+    finally:
+        _close(window)
+
+
 def test_free_placement_does_not_apply_to_walls():
     from PyQt5.QtCore import Qt
 
@@ -542,5 +620,357 @@ def test_a_committed_ring_agrees_with_the_render_sides_derivation(owner):
             unit = units[player_id][index]
             stored = unit_sprites.variant_index(unit.rotation, 5)
             assert derived == stored, (player_id, unit.x, unit.y, derived, unit.rotation)
+    finally:
+        _close(window)
+
+
+# --- Walls skip occupied tiles (GH #124) --------------------------------
+
+TREE = 349  # Tree (Oak): occupied, so it blocks with the toggle on
+
+
+def _plant(window, tile, const: int = TREE):
+    """A GAIA object at `tile`, in its own undo record."""
+    model = window._ensure_unit_edits()
+    assert model is not None
+    with window._unit_edit(model, "Plant", [GAIA_PLAYER_ID]):
+        return model.add(GAIA_PLAYER_ID, const, tile[0] + 0.5, tile[1] + 0.5)
+
+
+def _walls_by_tile(window, owner: int = PLAYER) -> dict[tuple[int, int], float]:
+    return {
+        (int(u.x), int(u.y)): u.rotation
+        for u in window.scenario.unit_manager.units[owner]
+        if u.unit_const == WALL
+    }
+
+
+def test_the_skip_occupied_checkbox_shows_for_place_unit_and_wall_rectangle_only():
+    window = _window()
+    try:
+        assert not window.skip_occupied_check.isChecked()
+        for tool in ("place_unit", "wall_rect"):
+            window._on_tool_selected(tool)
+            assert window.skip_occupied_param_action.isVisible(), tool
+            assert window.skip_occupied_check.isEnabled(), tool
+            assert window.tool_param_separator_action.isVisible(), tool
+        window._on_tool_selected("convert")
+        assert not window.skip_occupied_param_action.isVisible()
+        assert not window.skip_occupied_check.isEnabled()
+    finally:
+        _close(window)
+
+
+def test_wall_rectangle_alone_still_shows_the_tool_param_separator():
+    """Wall Rectangle has no other param group, so only the skip-occupied
+    term in the separator roll-up can show the separator for it."""
+    window = _rect_window()
+    try:
+        assert window.tool_param_separator_action.isVisible()
+        assert not window.free_place_param_action.isVisible()
+    finally:
+        _close(window)
+
+
+def test_toggle_off_a_run_through_a_tree_places_on_every_tile():
+    window = _window()
+    try:
+        _plant(window, (25, 40))
+        before = _unit_count(window)
+        _drag(window.map_view, (20, 40), (31, 40))
+        assert _unit_count(window) == before + 12
+        assert (25, 40) in _walls_by_tile(window)
+    finally:
+        _close(window)
+
+
+def test_toggle_on_a_run_through_a_tree_leaves_a_gap_with_ends_either_side():
+    window = _window()
+    try:
+        _plant(window, (25, 40))
+        window.skip_occupied_check.setChecked(True)
+        before = _unit_count(window)
+        before_records = len(window.edit_history.records)
+
+        _drag(window.map_view, (20, 40), (31, 40))
+
+        assert _unit_count(window) == before + 11
+        assert len(window.edit_history.records) == before_records + 1
+        walls = _walls_by_tile(window)
+        assert (25, 40) not in walls
+        assert walls[(24, 40)] == walls[(26, 40)] == 2.0
+        assert walls[(22, 40)] == 0.0
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert "Placed 11" in last
+        assert "(1 occupied tiles skipped)" in last
+        assert "already held a wall" not in last
+
+        window.undo()
+        assert _unit_count(window) == before
+    finally:
+        _close(window)
+
+
+def test_toggle_on_eye_candy_does_not_block():
+    from descape import unit_kind
+
+    window = _window()
+    try:
+        assert 143 in unit_kind.eye_candy_consts()
+        _plant(window, (25, 40), const=143)
+        window.skip_occupied_check.setChecked(True)
+        _drag(window.map_view, (20, 40), (31, 40))
+        assert (25, 40) in _walls_by_tile(window)
+    finally:
+        _close(window)
+
+
+def test_toggle_on_a_single_click_on_a_tree_places_nothing_and_says_occupied():
+    window = _window()
+    try:
+        _plant(window, (50, 50))
+        window.skip_occupied_check.setChecked(True)
+        before = _unit_count(window)
+        before_records = len(window.edit_history.records)
+        _press(window.map_view, (50, 50))
+        _release(window.map_view, (50, 50))
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == before_records
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert "occupied" in last
+        assert "already hold a wall" not in last
+    finally:
+        _close(window)
+
+
+def test_toggle_on_wall_rectangle_leaves_the_gap():
+    window = _rect_window()
+    try:
+        _plant(window, (24, 40))
+        window.skip_occupied_check.setChecked(True)
+        before = _unit_count(window)
+        _drag(window.map_view, (20, 40), (28, 44))
+        assert _unit_count(window) == before + 23
+        walls = _walls_by_tile(window)
+        assert (24, 40) not in walls
+        assert walls[(23, 40)] == walls[(25, 40)] == 2.0
+    finally:
+        _close(window)
+
+
+def test_the_preview_drops_blocked_tiles_and_the_commit_set_keeps_them():
+    window = _window()
+    try:
+        _plant(window, (25, 40))
+        window.skip_occupied_check.setChecked(True)
+        map_view = window.map_view
+        _press(map_view, (20, 40))
+        _move(map_view, (31, 40))
+        preview = map_view._shape_tiles(preview=True)
+        assert (25, 40) not in preview
+        assert preview == [(x, 40) for x in range(20, 32) if x != 25]
+        assert (25, 40) in map_view._shape_tiles(preview=False)
+        _release(map_view, (31, 40))
+        assert map_view._drag_blocked == frozenset()
+    finally:
+        _close(window)
+
+
+def test_toggle_off_the_preview_keeps_every_tile():
+    window = _window()
+    try:
+        _plant(window, (25, 40))
+        map_view = window.map_view
+        _press(map_view, (20, 40))
+        _move(map_view, (31, 40))
+        assert (25, 40) in map_view._shape_tiles(preview=True)
+        _release(map_view, (31, 40))
+    finally:
+        _close(window)
+
+
+def test_a_gapped_run_agrees_with_the_render_sides_derivation():
+    from descape import render, unit_sprites
+
+    window = _window()
+    try:
+        for tile in ((10, 5), (13, 8)):
+            _plant(window, tile)
+        window.skip_occupied_check.setChecked(True)
+        window.on_shape_commit([(x, 5) for x in range(8, 14)] + [(13, y) for y in range(6, 11)])
+        walls = _walls_by_tile(window)
+        assert (10, 5) not in walls and (13, 8) not in walls
+        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        assert overrides, "the radian wall should force the override path"
+        units = window.scenario.unit_manager.units
+        for (player_id, index), derived in overrides.items():
+            unit = units[player_id][index]
+            stored = unit_sprites.variant_index(unit.rotation, 5)
+            assert derived == stored, (player_id, unit.x, unit.y, derived, unit.rotation)
+    finally:
+        _close(window)
+
+
+# --- The wall button (GH #125 Part A) ------------------------------------
+
+
+def _pan_window(const: int = VILLAGER):
+    """Units mode with Pan active and a non-wall picked, so the button's
+    pick and tool switch are both observable."""
+    window = _window(const)
+    window.pan_action.setChecked(True)
+    assert window._current_tool == "pan"
+    return window
+
+
+def _menu_action(window, const: int):
+    return next(a for a in window.wall_pick_button.menu().actions() if a.data() == const)
+
+
+def test_the_wall_button_only_shows_in_units_mode():
+    """QAction.isVisible(), never the widget's, for the reason the Wall
+    Rectangle test gives. The separator must follow it even under Pan."""
+    window = _pan_window()
+    try:
+        assert window.wall_pick_param_action.isVisible()
+        assert window.wall_pick_button.isEnabled()
+        assert window.tool_param_separator_action.isVisible()
+        for mode in ("Terrain", "View", "Triggers"):
+            window.mode_combo.setCurrentText(mode)
+            assert not window.wall_pick_param_action.isVisible(), mode
+    finally:
+        _close(window)
+
+
+def test_the_wall_menu_lists_every_wall_family_const():
+    from descape import object_catalog, unit_sprites
+
+    window = _pan_window()
+    try:
+        actions = window.wall_pick_button.menu().actions()
+        assert [a.data() for a in actions] == list(unit_sprites.wall_family_consts())
+        assert [a.text() for a in actions] == [
+            object_catalog.display_name(c) for c in unit_sprites.wall_family_consts()
+        ]
+    finally:
+        _close(window)
+
+
+def test_a_click_with_nothing_placed_yet_arms_place_unit_with_stone_wall():
+    window = _pan_window()
+    try:
+        assert window.wall_pick_button.text() == "Wall: Stone Wall"
+        window.wall_pick_button.click()
+        assert window._current_tool == "place_unit"
+        assert window.place_unit_action.isChecked()
+        assert window.units_panel.selected_object_const() == WALL
+    finally:
+        _close(window)
+
+
+def test_after_a_palisade_run_a_click_arms_palisade():
+    window = _window(PALISADE)
+    try:
+        _drag(window.map_view, (20, 40), (26, 40))
+        assert window.wall_pick_button.text() == "Wall: Palisade Wall"
+        _pick(window, VILLAGER)
+        window.pan_action.setChecked(True)
+        window.wall_pick_button.click()
+        assert window._current_tool == "place_unit"
+        assert window.units_panel.selected_object_const() == PALISADE
+    finally:
+        _close(window)
+
+
+def test_a_refused_run_does_not_change_the_last_used_wall():
+    window = _window(PALISADE)
+    try:
+        _drag(window.map_view, (20, 40), (26, 40))
+        _pick(window, WALL)
+        # Every tile already holds a wall, so the plan is empty and nothing commits.
+        _drag(window.map_view, (20, 40), (26, 40))
+        assert window.wall_pick_button.text() == "Wall: Palisade Wall"
+    finally:
+        _close(window)
+
+
+def test_a_menu_pick_while_wall_rectangle_is_active_keeps_wall_rectangle():
+    window = _rect_window()
+    try:
+        _menu_action(window, PALISADE).trigger()
+        assert window._current_tool == "wall_rect"
+        assert window.wall_rect_action.isChecked()
+        assert window.units_panel.selected_object_const() == PALISADE
+        assert window.wall_pick_button.text() == "Wall: Palisade Wall"
+        # And the click now re-arms the menu's pick, not Stone Wall.
+        _pick(window, VILLAGER)
+        window.wall_pick_button.click()
+        assert window.units_panel.selected_object_const() == PALISADE
+        assert window._current_tool == "wall_rect"
+    finally:
+        _close(window)
+
+
+def test_a_menu_pick_from_pan_arms_place_unit():
+    window = _pan_window()
+    try:
+        _menu_action(window, AQUEDUCT).trigger()
+        assert window._current_tool == "place_unit"
+        assert window.units_panel.selected_object_const() == AQUEDUCT
+    finally:
+        _close(window)
+
+
+def test_a_catalog_filter_that_hides_the_wall_row_still_lands_the_pick():
+    """select_object() alone is a silent no-op on a filtered-out row."""
+    window = _pan_window()
+    try:
+        filter_edit = window.units_panel.catalog_view.filter_edit
+        filter_edit.setText("villager")
+        window.wall_pick_button.click()
+        assert window.units_panel.selected_object_const() == WALL
+        assert window._current_tool == "place_unit"
+    finally:
+        _close(window)
+
+
+def test_a_pick_that_cannot_land_says_so_and_changes_nothing():
+    window = _pan_window()
+    try:
+        window._arm_wall(-12345)
+        assert window._current_tool == "pan"
+        assert window.units_panel.selected_object_const() == VILLAGER
+        assert window.wall_pick_button.text() == "Wall: Stone Wall"
+        assert "Wall: could not pick" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_the_keybind_action_arms_the_last_used_wall():
+    window = _pan_window()
+    try:
+        assert window._keybind_actions["unit_wall_pick"] is window.wall_pick_action
+        window.wall_pick_action.trigger()
+        assert window._current_tool == "place_unit"
+        assert window.units_panel.selected_object_const() == WALL
+    finally:
+        _close(window)
+
+
+def test_the_wall_button_is_disabled_without_a_unit_editable_map():
+    from PyQt5.QtWidgets import QApplication
+
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    window = ViewerWindow()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        QApplication.processEvents()
+        assert window.mode == "units"
+        assert not window.wall_pick_button.isEnabled()
+        assert not window.wall_pick_action.isEnabled()
+        window.wall_pick_action.trigger()
+        assert window._current_tool == "pan"
     finally:
         _close(window)

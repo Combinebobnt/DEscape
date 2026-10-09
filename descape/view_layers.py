@@ -18,12 +18,12 @@ categories of rendering happen, and (small_trees) how big one category's art
 is drawn. That is why a row about tree ART size still belongs here and not in
 Filters, which decides membership rather than appearance.
 
-Session-only, deliberately: every row changes what the map itself shows, so
-they follow the unit filter and Show sprites rather than the persisted
-passive chrome (settings.py's own content-hiding/passive-chrome split). A
-future passive-chrome layer would add a `persist` field here plus the
-config.example.yaml obligations that come with it; that is not added
-speculatively.
+Every row persists across launches, by user decision (GH #182), stored by
+settings.get_view_layers()/set_view_layer() under the config key
+`view_layers`. That departs from settings.py's content-hiding/passive-chrome
+split, which still keeps the unit filter and Show sprites session-only; the
+accepted cost is that a layer left hidden comes back hidden. Since all rows
+persist, the old idea of a per-row `persist` field is moot.
 """
 
 from __future__ import annotations
@@ -34,9 +34,8 @@ from descape import terrain_style
 
 SMALL_TREE_SCALE = 0.6
 """The factor the Small Trees row draws tree art at. Fixed rather than
-user-adjustable: the value is a readability tradeoff settled once, and a
-settings entry would carry persistence and a config.example.yaml obligation
-this session-only menu deliberately has none of. Lives here because this
+user-adjustable: the value is a readability tradeoff settled once, so only
+the on/off bool is a setting, not the factor. Lives here because this
 module is where the bool is defined; unit_sprites wants only the float."""
 
 

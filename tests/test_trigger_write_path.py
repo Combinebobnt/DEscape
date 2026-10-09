@@ -36,11 +36,14 @@ from descape.trigger_model import (
     TriggerEditsUnavailableError,
     display_order_moved_to_slot,
     display_order_with_block_inserted,
+    display_order_with_copies_inserted,
     display_order_with_copy_inserted,
     moved_display_order,
     moved_display_order_block,
+    moved_section_display_order,
+    paste_anchor,
 )
-from descape.trigger_organize import parse_tag
+from descape.trigger_organize import parse_tag, sections, tag_chain
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
@@ -201,6 +204,47 @@ def test_editing_a_trigger_does_not_normalize_its_neighbours(tmp_path: Path) -> 
         offset += len(original)
 
 
+def test_the_trigger_header_fields_round_trip_inside_their_own_trigger(tmp_path: Path) -> None:
+    """GH #141's four header fields. Re-serializing a trigger can change its
+    length on its own, so the diff is against the same trigger marked dirty
+    with no edit: every differing byte must fall inside its blob. Its
+    untouched short_description_stid of -1 is re-serialized and must come
+    back as -1."""
+
+    def write(name: str, edit: bool) -> tuple[Path, TriggerEditModel]:
+        loaded = load_map_and_units(FIXTURE_PATH)
+        model = TriggerEditModel(loaded)
+        trigger = model.manager().triggers[0]
+        assert (trigger.short_description_stid, trigger.execute_on_load) == (-1, 1)
+        if edit:
+            trigger.description_stid = 43998
+            trigger.description_order = 100
+            trigger.execute_on_load = 0
+        model.mark_dirty(0)
+        out = tmp_path / name
+        write_scenario(loaded, out, triggers=model)
+        return out, model
+
+    control, _ = write("control.aoe2scenario", edit=False)
+    edited, model = write("edited.aoe2scenario", edit=True)
+
+    reloaded = parse_triggers(load_map_and_units(edited)).triggers[0]
+    assert (
+        reloaded.description_stid,
+        reloaded.short_description_stid,
+        reloaded.description_order,
+        reloaded.execute_on_load,
+    ) == (43998, -1, 100, 0)
+    control_body = _written_body(control)
+    blob_start = model.loaded.units_section_end + model.regions.triggers_start
+    # Trigger 0's blob as the control file itself carries it.
+    control_loaded = load_map_and_units(control)
+    blob_end = blob_start + len(model_blob_lengths(_section_bytes(control_loaded), TriggerEditModel(control_loaded))[0])
+    ranges = _differing_ranges(control_body, _written_body(edited))
+    assert ranges
+    assert all(blob_start <= start and end <= blob_end for start, end in ranges), (ranges, blob_start, blob_end)
+
+
 # -- 3. structural correctness ----------------------------------------------
 
 
@@ -265,6 +309,75 @@ def test_moved_display_order_refuses_a_move_past_either_end() -> None:
         moved_display_order([0, 1, 2, 3], trigger_index=0, delta=-1)
     with pytest.raises(IndexError):
         moved_display_order([0, 1, 2, 3], trigger_index=3, delta=1)
+
+
+# GH #133: a section move. Two sections A[a1] and B[b1] with no leading run,
+# then the same names behind a leading trigger.
+_AB = ["--- A ---", "a1", "--- B ---", "b1"]
+_LEAD_AB = ["lead", "--- A ---", "a1", "--- B ---", "b1"]
+
+
+def _partition(names: list[str], order: list[int]) -> list[tuple[int | None, tuple[int, ...]]]:
+    return [(s.header_index, s.member_indices) for s in sections(names, order)]
+
+
+def test_a_section_move_swaps_two_equal_sections_whole() -> None:
+    assert moved_section_display_order([0, 1, 2, 3], _AB, 0, 1) == [2, 3, 0, 1]
+    assert moved_section_display_order([0, 1, 2, 3], _AB, 2, -1) == [2, 3, 0, 1]
+
+
+def test_a_section_move_rotates_sections_of_unequal_length() -> None:
+    names = ["--- A ---", "a1", "a2", "a3", "--- B ---", "b1"]
+    assert moved_section_display_order(list(range(6)), names, 4, -1) == [4, 5, 0, 1, 2, 3]
+    assert moved_section_display_order(list(range(6)), names, 0, 1) == [4, 5, 0, 1, 2, 3]
+
+
+def test_an_empty_section_moves_as_its_header_alone() -> None:
+    names = ["--- A ---", "--- B ---", "b1", "--- C ---"]
+    assert moved_section_display_order([0, 1, 2, 3], names, 0, 1) == [1, 2, 0, 3]
+    assert moved_section_display_order([0, 1, 2, 3], names, 3, -1) == [0, 3, 1, 2]
+
+
+def test_a_member_moves_its_section_exactly_as_its_header_does() -> None:
+    names = ["--- A ---", "a1", "a2", "--- B ---", "b1", "--- C ---", "c1"]
+    order = [0, 2, 1, 5, 6, 3, 4]  # non-identity: C sits between A and B
+    for delta in (-1, 1):
+        by_header = moved_section_display_order(order, names, 5, delta)
+        assert moved_section_display_order(order, names, 6, delta) == by_header
+    assert moved_section_display_order(order, names, 6, 1) == [0, 2, 1, 3, 4, 5, 6]
+
+
+def test_a_section_move_keeps_every_section_and_only_reorders_them() -> None:
+    names = ["lead", "--- A ---", "a1", "a2", "--- B ---", "--- C ---", "c1", "c2", "c3"]
+    order = [0, 5, 6, 1, 2, 3, 4, 7, 8]
+    before = _partition(names, order)
+    for index in (5, 6, 1, 2, 3, 4):
+        for delta in (-1, 1):
+            try:
+                moved = moved_section_display_order(order, names, index, delta)
+            except IndexError:
+                continue
+            assert sorted(moved) == sorted(order), "not a permutation of the input"
+            after = _partition(names, moved)
+            assert sorted(after, key=str) == sorted(before, key=str), "a section changed membership"
+            assert after[0] == before[0], "the leading run never moves"
+
+
+def test_a_section_move_refuses_the_leading_run_and_both_ends() -> None:
+    order = [0, 1, 2, 3, 4]
+    with pytest.raises(IndexError):
+        moved_section_display_order(order, _LEAD_AB, 0, 1)  # the leading run
+    with pytest.raises(IndexError):
+        moved_section_display_order(order, _LEAD_AB, 2, -1)  # up into the leading run
+    with pytest.raises(IndexError):
+        moved_section_display_order(order, _LEAD_AB, 4, 1)  # past the end
+    with pytest.raises(IndexError):
+        moved_section_display_order([0, 1, 2, 3], _AB, 1, -1)  # past the start
+    with pytest.raises(IndexError):
+        moved_section_display_order([0, 1, 2, 3], _AB, 9, 1)  # not in the order
+    with pytest.raises(ValueError):
+        moved_section_display_order([0, 1, 2, 3], _AB, 0, 2)
+    assert moved_section_display_order(order, _LEAD_AB, 1, 1) == [0, 3, 4, 1, 2]
 
 
 def test_a_display_order_only_edit_dirties_the_model() -> None:
@@ -332,6 +445,48 @@ def test_flipping_only_display_order_changes_exactly_one_range(tmp_path: Path) -
     )
 
 
+def test_a_section_move_changes_only_the_display_order_region(tmp_path: Path) -> None:
+    """GH #133's gap closer: the test above pins an adjacent swap only. A
+    section move is a non-adjacent rotation, so this pins that one through
+    structural_edit() + write_scenario() too. The base is the fixture saved
+    as --- A --- 0: 1, 2 | --- B --- 3, and Section Up on B gives
+    [3, 0, 1, 2]: all four slots change, each u32 only in its low byte, so
+    four 1-byte ranges (measured)."""
+    seed = load_map_and_units(FIXTURE_PATH)
+    seed_model = TriggerEditModel(seed)
+    for index, name in ((0, "--- A ---"), (3, "--- B ---")):
+        seed_model.manager().triggers[index].name = name
+        seed_model.mark_dirty(index)
+    base = tmp_path / "base.aoe2scenario"
+    write_scenario(seed, base, triggers=seed_model)
+
+    loaded = load_map_and_units(base)
+    model = TriggerEditModel(loaded)
+    names = [t.name or "" for t in model.manager().triggers]
+    assert list(model.manager().trigger_display_order) == [0, 1, 2, 3], "fixture assumption"
+    model.structural_edit(lambda manager: setattr(
+        manager,
+        "trigger_display_order",
+        moved_section_display_order(list(manager.trigger_display_order), names, 3, -1),
+    ))
+    assert model.has_edits
+    edited = tmp_path / "edited.aoe2scenario"
+    write_scenario(loaded, edited, triggers=model)
+
+    ranges = _differing_ranges(_written_body(base), _written_body(edited))
+    region_start = loaded.units_section_end + model.regions.triggers_end
+    region_end = loaded.units_section_end + model.regions.display_order_end
+    assert ranges, "expected the section move to change some bytes"
+    for start, end in ranges:
+        assert region_start <= start and end <= region_end, (
+            f"range {(start, end)} falls outside the display-order region [{region_start}, {region_end})"
+        )
+    assert [end - start for start, end in ranges] == [1, 1, 1, 1]
+    reloaded = parse_triggers(load_map_and_units(edited))
+    assert list(reloaded.trigger_display_order) == [3, 0, 1, 2]
+    assert [t.name for t in reloaded.triggers] == [t.name for t in parse_triggers(load_map_and_units(base)).triggers]
+
+
 class _StubTrigger:
     """A bare identity carrier -- display_order_with_copy_inserted() only ever
     compares triggers by id(), never reads a field off them."""
@@ -356,6 +511,71 @@ def test_display_order_with_copy_inserted_translates_stale_ids_by_identity() -> 
     # inserted directly after the source's (before[1]'s) new position.
     assert result == [4, 3, 0, 1, 2]
     assert sorted(result) == list(range(len(after))), "not a permutation of the new list"
+
+
+class _NamedStub:
+    """An identity carrier with the one field the GH #134 helper reads."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _copies_inserted(names: list[str], order: list[int], sources: list[int]) -> list[str]:
+    """Run display_order_with_copies_inserted() over a renumbered `after`
+    list (reversed, copies appended) and return the names in display order."""
+    before = [_NamedStub(n) for n in names]
+    copy_of = {id(before[i]): _NamedStub(names[i] + "'") for i in sources}
+    after = list(reversed(before)) + list(copy_of.values())
+    result = display_order_with_copies_inserted(before, order, after, copy_of)
+    assert sorted(result) == list(range(len(after))), "not a permutation of the new list"
+    return [after[i].name for i in result]
+
+
+def test_copies_inserted_with_one_source_equals_the_single_copy_helper() -> None:
+    before = [_NamedStub(n) for n in "abcd"]
+    before_order = [2, 0, 3, 1]
+    copy = _NamedStub("b'")
+    after = [before[3], before[1], copy, before[0], before[2]]
+    single = display_order_with_copy_inserted(before, before_order, after, source_index=1)
+    assert display_order_with_copies_inserted(before, before_order, after, {id(before[1]): copy}) == single
+
+
+def test_copies_of_a_contiguous_run_land_as_one_block_after_it() -> None:
+    """GH #134: `a, b` duplicates to `a, b, a', b'`, not `a, a', b, b'`.
+    Contiguous means adjacent in display order, not in list index."""
+    assert _copies_inserted(["a", "b", "c", "d"], [0, 1, 2, 3], [1, 2]) == ["a", "b", "c", "b'", "c'", "d"]
+    assert _copies_inserted(["a", "b", "c", "d"], [3, 1, 0, 2], [0, 1]) == ["d", "b", "a", "b'", "a'", "c"]
+
+
+def test_scattered_copies_each_land_after_their_own_source() -> None:
+    assert _copies_inserted(["a", "b", "c", "d"], [0, 1, 2, 3], [0, 2]) == ["a", "a'", "b", "c", "c'", "d"]
+
+
+def test_a_divider_run_lands_after_its_section_end() -> None:
+    """A lone header's copy goes past its members, so it heads an empty
+    section of its own rather than taking the original's members."""
+    names = ["--- A ---", "a1", "a2", "--- B ---", "b1"]
+    assert _copies_inserted(names, [0, 1, 2, 3, 4], [0]) == ["--- A ---", "a1", "a2", "--- A ---'", "--- B ---", "b1"]
+    assert _copies_inserted(names, [0, 1, 2, 3, 4], [0, 1, 2]) == [
+        "--- A ---", "a1", "a2", "--- A ---'", "a1'", "a2'", "--- B ---", "b1",
+    ]
+
+
+def test_a_plain_run_at_the_same_section_end_keeps_its_copies_first() -> None:
+    names = ["--- A ---", "a1", "a2", "--- B ---"]
+    assert _copies_inserted(names, [0, 1, 2, 3], [0, 2]) == ["--- A ---", "a1", "a2", "a2'", "--- A ---'", "--- B ---"]
+
+
+def test_paste_anchor_moves_only_a_divider_block_to_the_section_end() -> None:
+    names = ["lead", "--- A ---", "a1", "a2", "--- B ---"]
+    order = [0, 1, 2, 3, 4]
+    assert paste_anchor(names, order, 2, False) == 2
+    assert paste_anchor(names, order, None, True) is None
+    assert paste_anchor(names, order, 2, True) == 3
+    assert paste_anchor(names, order, 1, True) == 3, "a header anchors past its own members"
+    assert paste_anchor(names, order, 0, True) == 0, "the leading section ends at its last trigger"
+    assert paste_anchor(names, order, 4, True) == 4, "an empty section's end is its header"
+    assert paste_anchor(names, [4, 0, 3, 1, 2], 0, True) == 3, "sections come from the display order"
 
 
 def test_a_structural_edit_that_dirties_no_blob_still_reaches_the_splice(
@@ -828,6 +1048,20 @@ def test_a_file_whose_triggers_do_not_parse_refuses_a_model(tmp_path: Path) -> N
         TriggerEditModel(loaded)
 
 
+def test_a_triggers_section_that_runs_past_its_end_reads_none() -> None:
+    """The 1.54/trigger-3.9 set's failure shape: the parse asks for more
+    bytes than remain (ValueError on the 0.9.3 pin, EndOfFileError on 0.9.4).
+    A trigger count of 0x10000000 reproduces it; parse_triggers() must degrade, not raise."""
+    import struct
+
+    loaded = load_map_and_units(FIXTURE_PATH)
+    tail = bytearray(loaded.trigger_tail)
+    struct.pack_into("<i", tail, 9, 0x10000000)  # after f64 version + s8 instruction start
+    loaded.trigger_tail = bytes(tail)
+    assert parse_triggers(loaded) is None
+    assert loaded.trigger_read_supported is False
+
+
 def test_a_file_that_fails_the_alignment_gate_refuses_a_model() -> None:
     """Stand-in for v1.36/1.37, where the library models no Files section and
     the walk leaves a large remainder unconsumed."""
@@ -986,6 +1220,45 @@ def test_a_new_condition_and_effect_match_each_files_own_vocabulary(
     assert len(reloaded.triggers) == len(manager.triggers)
     assert reloaded.triggers[0].conditions[-1].condition_type == condition_id
     assert reloaded.triggers[0].effects[-1].effect_type == effect_id
+
+
+# A real 1.54 file with trigger version 4.1 and no triggers. No examples/ file
+# is 1.54 with trigger 4.x, so pass --scenario-dir at a folder holding it.
+_V154_TRIGGER_41 = "Arabia_chickens.aoe2scenario"
+
+
+@pytest.mark.corpus
+def test_new_entries_on_a_1_54_trigger_4_1_file_reread(request, tmp_path: Path) -> None:
+    """AoE2ScenarioParser 0.8.4's "writing new effects/conditions to 1.54"
+    fix, measured on DEscape's write path: 0.8.3 built a new 1.54 condition
+    or effect with its conditional filler s32 present, so the saved Triggers
+    section no longer parsed. 0.9.3 sizes the filler off static_value_30/62."""
+    import conftest
+
+    path = conftest._scenario_dir(request.config) / _V154_TRIGGER_41
+    if not path.is_file():
+        pytest.skip(f"{_V154_TRIGGER_41} is not in {path.parent}")
+    loaded = load_map_and_units(path)
+    manager = parse_triggers(loaded)
+    assert (loaded.scenario_version, loaded.trigger_version) == ("1.54", 4.1)
+    assert manager is not None and loaded.trigger_write_supported and not manager.triggers
+
+    model = TriggerEditModel(loaded)
+    model.structural_edit(lambda m: m.add_trigger("New entries"))
+    trigger = model.manager().triggers[0]
+    trigger._add_condition(10)  # timer
+    trigger._add_effect(3)  # send_chat
+    trigger.conditions[0].timer = 37
+    trigger.effects[0].message = "1.54 filler"
+    model.mark_dirty(0)
+
+    out = tmp_path / "added.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+    reloaded_loaded = load_map_and_units(out)
+    reloaded = parse_triggers(reloaded_loaded)
+    assert reloaded is not None and reloaded_loaded.trigger_write_supported
+    assert [(c.condition_type, c.timer) for c in reloaded.triggers[0].conditions] == [(10, 37)]
+    assert [(e.effect_type, e.message) for e in reloaded.triggers[0].effects] == [(3, "1.54 filler")]
 
 
 @pytest.mark.corpus
@@ -1149,6 +1422,70 @@ def test_single_trigger_edit_stays_local_across_the_corpus(
     offset = model.regions.triggers_start + len(slices[0]) + delta
     original_offset = model.regions.triggers_start + len(slices[0])
     assert new_section[offset:] == original_section[original_offset:]
+
+
+def _check_section_moves_round_trip(path: Path, tmp_path: Path) -> int:
+    """GH #133 on a real file: move the first real section down and the last
+    one up, each through structural_edit() + write_scenario(), and re-derive
+    the partition independently from the reloaded file. Every section keeps
+    its title and exact membership; only the two blocks trade places. Returns
+    how many moves ran (0 = skipped). A leading run must refuse Section Up on
+    the first real section."""
+    loaded = load_map_and_units(path)
+    manager = parse_triggers(loaded)
+    if manager is None or not loaded.trigger_write_supported:
+        pytest.skip(f"{path.name}: triggers are not editable")
+    names = [t.name or "" for t in manager.triggers]
+    order = list(manager.trigger_display_order)
+    before = sections(names, order)
+    real = [p for p, s in enumerate(before) if s.header_index is not None]
+    if len(real) < 2:
+        pytest.skip(f"{path.name}: fewer than two sections")
+    if before[0].header_index is None:
+        with pytest.raises(IndexError):
+            moved_section_display_order(order, names, before[real[0]].header_index, -1)
+
+    moves = [(real[0], 1), (real[-1], -1)]
+    for n, (position, delta) in enumerate(moves):
+        fresh = load_map_and_units(path)
+        model = TriggerEditModel(fresh)
+        header = before[position].header_index
+        model.structural_edit(lambda m, h=header, d=delta: setattr(
+            m, "trigger_display_order", moved_section_display_order(list(m.trigger_display_order), names, h, d)
+        ))
+        out = tmp_path / f"section_move_{n}.aoe2scenario"
+        write_scenario(fresh, out, triggers=model)
+        reloaded = parse_triggers(load_map_and_units(out))
+        assert [t.name or "" for t in reloaded.triggers] == names, f"{path.name}: a name changed"
+        after = sections(names, list(reloaded.trigger_display_order))
+        expected = list(before)
+        expected[position], expected[position + delta] = expected[position + delta], expected[position]
+        assert after == expected, f"{path.name}: moving section {before[position].title!r} by {delta} broke the partition"
+    return len(moves)
+
+
+@pytest.mark.corpus
+def test_a_section_move_keeps_every_section_whole_across_the_corpus(scenario_path: Path, tmp_path: Path) -> None:
+    _check_section_moves_round_trip(scenario_path, tmp_path)
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize(
+    "name, has_leading_run",
+    [("F7_3_York (865)", False), ("old-allies-final-v2", True)],
+)
+def test_a_section_move_on_both_leading_run_branches(name: str, has_leading_run: bool, tmp_path: Path) -> None:
+    """The plan's named pair: York has 18 sections and no leading run,
+    old-allies 29 and a leading run, so both refusal branches run."""
+    path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
+    if not path.exists():
+        pytest.skip(f"{path.name} is not in this corpus")
+    manager = parse_triggers(load_map_and_units(path))
+    assert manager is not None
+    names = [t.name or "" for t in manager.triggers]
+    parts = sections(names, list(manager.trigger_display_order))
+    assert (parts[0].header_index is None) == has_leading_run, "corpus assumption"
+    assert _check_section_moves_round_trip(path, tmp_path) == 2
 
 
 # -- the quantity cluster: an object_attributes switch must still save --------
@@ -1414,10 +1751,11 @@ def test_renaming_a_tag_rewrites_every_carrier_and_nothing_else(tmp_path: Path) 
     window = _tag_window(base)
     try:
         window.rename_trigger_tag("D1", "Intro")
-        expected = ["[Intro] setup", "[d1]armour split", "[P1][D1] references", "[Intro]: variable"]
+        expected = ["[Intro] setup", "[d1]armour split", "[P1][Intro] references", "[Intro]: variable"]
         assert _live_names(window) == expected
         assert len(window.edit_history.records) == 1
-        assert window.edit_history.records[0].label == 'Rename tag "D1" to "Intro" (2 triggers)'
+        assert window.edit_history.records[0].label == 'Rename tag "D1" to "Intro" (3 triggers)'
+        assert window.edit_history.records[0].touched == [0, 2, 3]
         out, names = _save_and_reload_names(window, tmp_path)
     finally:
         window.edit_history.mark_saved()
@@ -1426,7 +1764,7 @@ def test_renaming_a_tag_rewrites_every_carrier_and_nothing_else(tmp_path: Path) 
     # Names change length, so no byte-range confinement: every non-carrier's
     # own blob is byte-identical instead.
     before, after = _saved_blobs(base), _saved_blobs(out)
-    assert [after[i] == before[i] for i in range(4)] == [False, True, True, False]
+    assert [after[i] == before[i] for i in range(4)] == [False, True, False, False]
 
 
 def test_a_rename_without_its_content_declaration_is_spliced_away(tmp_path: Path, monkeypatch) -> None:
@@ -1513,10 +1851,11 @@ def test_removing_a_tag_strips_every_carrier_and_saves(tmp_path: Path) -> None:
     window = _tag_window(base)
     try:
         window.remove_trigger_tag("D1")
-        expected = ["setup", "[d1]armour split", "[P1][D1] references", ": variable"]
+        expected = ["setup", "[d1]armour split", "[P1] references", ": variable"]
         assert _live_names(window) == expected
         assert len(window.edit_history.records) == 1
-        assert window.edit_history.records[0].label == 'Remove tag "D1" (2 triggers)'
+        assert window.edit_history.records[0].label == 'Remove tag "D1" (3 triggers)'
+        assert window.edit_history.records[0].touched == [0, 2, 3]
         out, names = _save_and_reload_names(window, tmp_path)
         window.undo()
         assert _live_names(window) == _TAGGED_NAMES
@@ -1525,7 +1864,7 @@ def test_removing_a_tag_strips_every_carrier_and_saves(tmp_path: Path) -> None:
         window.close()
     assert names == expected
     before, after = _saved_blobs(base), _saved_blobs(out)
-    assert [after[i] == before[i] for i in range(4)] == [False, True, True, False]
+    assert [after[i] == before[i] for i in range(4)] == [False, True, False, False]
 
 
 def test_removing_a_tag_nobody_carries_records_nothing(tmp_path: Path) -> None:
@@ -1550,7 +1889,7 @@ def test_renaming_each_files_commonest_tag_survives_a_reload(scenario_path: Path
     if not loaded.trigger_write_supported:
         pytest.skip(f"{scenario_path.name}: fails the alignment gate")
     before = [t.name or "" for t in manager.triggers]
-    tags = Counter(tag for n in before if (tag := parse_tag(n)) is not None)
+    tags = Counter(tag for n in before for tag in set(tag_chain(n)))
     if not tags:
         pytest.skip(f"{scenario_path.name}: no tagged trigger")
     old = tags.most_common(1)[0][0]
@@ -1569,9 +1908,9 @@ def test_renaming_each_files_commonest_tag_survives_a_reload(scenario_path: Path
         window.close()
     reloaded = parse_triggers(load_map_and_units(out))
     after = [t.name or "" for t in reloaded.triggers]
-    assert {parse_tag(n) for n in after} == ({parse_tag(n) for n in before} - {old}) | {new}
+    assert {t for n in after for t in tag_chain(n)} == ({t for n in before for t in tag_chain(n)} - {old}) | {new}
     for name_before, name_after in zip(before, after, strict=True):
-        if parse_tag(name_before) != old:
+        if old not in tag_chain(name_before):
             assert name_after == name_before
         else:
-            assert parse_tag(name_after) == new
+            assert tag_chain(name_after) == [new if t == old else t for t in tag_chain(name_before)]

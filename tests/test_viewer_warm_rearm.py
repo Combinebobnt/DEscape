@@ -42,6 +42,8 @@ def test_a_poll_inside_a_style_switch_leaves_no_warm_on_the_outgoing_cache(nativ
     """A poll firing in _render_current's processEvents() starts the margin,
     level and load warms on the cache about to be replaced. None of them may
     still hold it once the swap is done."""
+    from PyQt5.QtWidgets import QApplication
+
     from descape import settings
 
     import conftest
@@ -52,6 +54,10 @@ def test_a_poll_inside_a_style_switch_leaves_no_warm_on_the_outgoing_cache(nativ
         try:
             old = window._cache
             view = window.map_view
+            # The load's warm of fit level -2's neighbour (-1) ticks on idle, which settle's two pumps don't promise.
+            # A held button backs every tick off, and the drain would spin: fail instead.
+            assert not QApplication.mouseButtons(), "a mouse button is held (an earlier test leaked it)"
+            window._level_warmer.run_to_completion()
             # Zoomed in to mip -1: resident, with an unwarmed ring and a cold neighbour (0).
             view.scale(4.0, 4.0)
             target = view.viewport_chunk_target()

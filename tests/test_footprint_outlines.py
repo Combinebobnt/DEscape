@@ -22,6 +22,10 @@ _STONE_WALL = 117
 _TREE = 349
 _VILLAGER = 83
 _HOUSE = 70
+_STONE_GATE = 659  # the diagonal "e" orientation: six tiles that touch only at corners
+_TREBUCHET = 42
+# BUILDING_TILE_SPANS members that Units only still outlines: mobile siege, plus 1192 (no placements).
+_SIEGE_IN_BOTH_SCOPES = (42, 331, 444, 479, 682, 683, 729, 730, 1192, 1690, 1691)
 
 
 @dataclass
@@ -73,6 +77,46 @@ def test_each_scope_selects_its_own_subset() -> None:
     ]
 
 
+def test_units_only_drops_buildings_walls_and_gates_and_keeps_siege() -> None:
+    """GH #143: a building, a wall, a gate, a trebuchet and two ordinary units."""
+    index = _index(
+        _Unit(10.0, 10.0, _TOWN_CENTRE),
+        _Unit(20.5, 20.5, _STONE_WALL),
+        _Unit(30.0, 30.0, _STONE_GATE),
+        _Unit(40.5, 40.5, _TREBUCHET),
+        _Unit(50.5, 50.5, _VILLAGER),
+        _Unit(60.5, 60.5, _TREE),
+    )
+    assert _consts(unit_pick.footprint_entries(index, unit_pick.FOOTPRINT_SCOPE_UNITS)) == [
+        _TREBUCHET,
+        _VILLAGER,
+        _TREE,
+    ]
+
+
+def test_units_only_reuses_the_show_buildings_and_show_walls_sets(monkeypatch) -> None:
+    """The discriminating form: shrinking building_consts() changes the answer."""
+    from descape import unit_kind
+
+    index = _index(_Unit(10.0, 10.0, _TOWN_CENTRE))
+    assert unit_pick.footprint_entries(index, unit_pick.FOOTPRINT_SCOPE_UNITS) == []
+    monkeypatch.setattr(unit_kind, "building_consts", frozenset)
+    assert _consts(unit_pick.footprint_entries(index, unit_pick.FOOTPRINT_SCOPE_UNITS)) == [_TOWN_CENTRE]
+
+
+def test_all_buildings_and_units_only_overlap_on_exactly_the_mobile_siege() -> None:
+    from descape import unit_kind
+
+    excluded = unit_kind.building_consts() | unit_kind.wall_consts()
+    assert tuple(sorted(c for c in render.BUILDING_TILE_SPANS if c not in excluded)) == _SIEGE_IN_BOTH_SCOPES
+
+
+def test_units_only_sits_between_all_buildings_and_all_units() -> None:
+    scopes = unit_pick.FOOTPRINT_SCOPES
+    assert scopes.index(unit_pick.FOOTPRINT_SCOPE_BUILDINGS) + 1 == scopes.index(unit_pick.FOOTPRINT_SCOPE_UNITS)
+    assert scopes.index(unit_pick.FOOTPRINT_SCOPE_UNITS) + 1 == scopes.index(unit_pick.FOOTPRINT_SCOPE_ALL)
+
+
 def test_multitile_reads_the_shared_span_table_not_a_rule_of_its_own(monkeypatch) -> None:
     """The discriminating form: a const injected into the span table has to
     change the answer, which a hard-coded building list would not."""
@@ -120,6 +164,31 @@ def test_settings_round_trip_through_the_file(monkeypatch) -> None:
     assert settings.get_footprint_scope() == unit_pick.FOOTPRINT_SCOPE_BUILDINGS
 
 
+def test_merge_and_owner_colour_default_off(tmp_path) -> None:
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_footprint_merged() is False
+    assert settings.get_footprint_by_owner() is False
+
+
+def test_merge_and_owner_colour_round_trip_through_the_file(monkeypatch) -> None:
+    settings.set_footprint_merged(True)
+    settings.set_footprint_by_owner(True)
+    monkeypatch.setattr(settings, "_footprint_merged", None)
+    monkeypatch.setattr(settings, "_footprint_by_owner", None)
+    assert settings.get_footprint_merged() is True
+    assert settings.get_footprint_by_owner() is True
+    settings.set_footprint_merged(False)
+    monkeypatch.setattr(settings, "_footprint_merged", None)
+    assert settings.get_footprint_merged() is False
+    assert settings.get_footprint_by_owner() is True
+
+
+def test_the_outline_colour_defaults_to_light_gray(tmp_path) -> None:
+    """Not white: the hover cue (unit_hover) is #ffffff and draws over the outlines."""
+    assert settings.get_overlay_color("footprint_outline") == "#c8c8c8"
+    assert settings.get_overlay_color("unit_hover") != "#c8c8c8"
+
+
 def test_setting_an_off_list_scope_raises_and_writes_nothing(tmp_path) -> None:
     with pytest.raises(ValueError):
         settings.set_footprint_scope("everything")
@@ -155,6 +224,11 @@ def _window_with_units(style: str = "Stepped"):
     return window
 
 
+def _overlay_item(view):
+    """The configured-colour group: always present while a map is loaded."""
+    return view._footprint_items[None]
+
+
 @pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
@@ -166,7 +240,7 @@ def test_the_overlay_traces_exactly_the_same_geometry_as_the_hover_cue(style: st
     try:
         view = window.map_view
         view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
-        overlay = view._footprint_item.path()
+        overlay = _overlay_item(view).path()
         expected_points = set()
         for entry in view._unit_index.entries:
             for polygon in view._unit_polygons_for(entry) or []:
@@ -181,6 +255,60 @@ def test_the_overlay_traces_exactly_the_same_geometry_as_the_hover_cue(style: st
         conftest.close_window(window)
 
 
+def _subpath_count(path) -> int:
+    from PyQt5.QtGui import QPainterPath
+
+    return sum(1 for i in range(path.elementCount()) if path.elementAt(i).type == QPainterPath.MoveToElement)
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_merged_outlines_trace_a_subset_of_the_hover_cue_one_ring_per_building(style: str) -> None:
+    """GH #143 Merge: no new vertex, the same extent, and each multi-tile
+    building (Town Centre, two houses) one closed subpath instead of one per tile."""
+    window = _window_with_units(style)
+    try:
+        view = window.map_view
+        if style == "Flat":
+            # Offscreen, a restyle never reaches MapView (GOTCHAS); safe for geometry-only checks.
+            view._terrain_style = "flat"
+        assert view._terrain_style == style.lower()
+        view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_MULTITILE)
+        per_tile = _overlay_item(view).path()
+        window.footprint_merged_action.setChecked(True)
+        merged = _overlay_item(view).path()
+        assert _drawn_points(view) <= _expected_points(view)
+        assert merged.boundingRect() == per_tile.boundingRect()
+        assert _subpath_count(merged) == 3
+        # Flat already draws one rect per unit, so Merge has nothing to join there.
+        assert _subpath_count(per_tile) == (3 if style == "Flat" else 16 + 4 + 4)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_merge_keeps_a_diagonal_gate_per_tile_beside_a_merged_building() -> None:
+    """The gate's six tiles touch only at corners (pinch vertices), so it falls
+    back to its per-tile outlines while the Town Centre still merges."""
+    window = _window_with_units("Stepped")
+    try:
+        view = window.map_view
+        window.scenario.unit_manager.units[1].append(_Unit(60.0, 60.0, _STONE_GATE, reference_id=206))
+        window._after_unit_mutation()
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_BUILDINGS].setChecked(True)
+        window.footprint_merged_action.setChecked(True)
+        (gate,) = [e for e in view._unit_index.entries if e.unit.unit_const == _STONE_GATE]
+        gate_points = {(round(x, 3), round(y, 3)) for p in view._unit_polygons_for(gate) for x, y in p}
+        assert len(view._unit_polygons_for(gate)) == 6
+        assert gate_points <= _drawn_points(view)
+        # Town Centre 1 + two houses 2 + wall 1 + the gate's 6 tiles.
+        assert _subpath_count(_overlay_item(view).path()) == 1 + 2 + 1 + 6
+    finally:
+        conftest.close_window(window)
+
+
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_every_subpath_is_closed() -> None:
@@ -190,7 +318,7 @@ def test_every_subpath_is_closed() -> None:
 
     window = _window_with_units("Stepped")
     try:
-        path = window.map_view._footprint_item.path()
+        path = _overlay_item(window.map_view).path()
         moves = sum(
             1 for i in range(path.elementCount()) if path.elementAt(i).type == QPainterPath.MoveToElement
         )
@@ -212,7 +340,7 @@ def test_the_scope_changes_what_is_drawn_and_persists() -> None:
         for scope in unit_pick.FOOTPRINT_SCOPES:
             window.footprint_scope_actions[scope].setChecked(True)
             assert settings.get_footprint_scope() == scope
-            counts[scope] = view._footprint_item.path().elementCount()
+            counts[scope] = _overlay_item(view).path().elementCount()
         assert (
             counts[unit_pick.FOOTPRINT_SCOPE_MULTITILE]
             < counts[unit_pick.FOOTPRINT_SCOPE_BUILDINGS]
@@ -233,7 +361,7 @@ def test_an_elevation_edit_resyncs_the_outlines() -> None:
     window = _window_with_units("Stepped")
     try:
         view = window.map_view
-        before = view._footprint_item.path()
+        before = _overlay_item(view).path()
         assert before.elementCount() > 0
         window.mode_combo.setCurrentText("Terrain")
         window._on_tool_selected("elevation")
@@ -244,7 +372,7 @@ def test_an_elevation_edit_resyncs_the_outlines() -> None:
         # MapView.refresh_elevation_overlays.
         QApplication.processEvents()
 
-        after = view._footprint_item.path()
+        after = _overlay_item(view).path()
         expected = set()
         for entry in unit_pick.footprint_entries(view._unit_index, view._footprint_scope):
             for polygon in view._unit_polygons_for(entry) or []:
@@ -271,9 +399,9 @@ def test_a_filter_change_reaches_the_overlay() -> None:
     try:
         view = window.map_view
         view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
-        before = view._footprint_item.path().elementCount()
+        before = _overlay_item(view).path().elementCount()
         window.filter_no_players_action.trigger()
-        assert view._footprint_item.path().elementCount() < before
+        assert _overlay_item(view).path().elementCount() < before
     finally:
         conftest.close_window(window)
 
@@ -287,13 +415,50 @@ def test_the_menu_wiring_persists_greys_never_and_writes_no_config_at_startup(tm
     try:
         assert window.footprint_action.isChecked() is True  # the fixture turned it on
         assert settings.get_footprint_outlines() is True
-        assert window.map_view._footprint_item.isVisible()
+        assert _overlay_item(window.map_view).isVisible()
+        view = window.map_view
+        assert window.footprint_merged_action.isChecked() is False
+        assert window.footprint_by_owner_action.isChecked() is False
+        window.footprint_merged_action.setChecked(True)
+        assert settings.get_footprint_merged() is True and view._footprint_merged is True
+        window.footprint_by_owner_action.setChecked(True)
+        assert settings.get_footprint_by_owner() is True and view._footprint_by_owner is True
+        assert len(view._footprint_items) > 1
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_UNITS].setChecked(True)
+        assert settings.get_footprint_scope() == unit_pick.FOOTPRINT_SCOPE_UNITS
+        assert view._footprint_scope == unit_pick.FOOTPRINT_SCOPE_UNITS
         window.footprint_action.setChecked(False)
-        assert not window.map_view._footprint_item.isVisible()
+        assert not any(item.isVisible() for item in view._footprint_items.values())
+        window.footprint_action.setChecked(True)
+        assert all(item.isVisible() for item in view._footprint_items.values())
+        window.footprint_action.setChecked(False)
         for style in ("Flat", "Stepped", "Sloped"):
             window.terrain_style_combo.setCurrentText(style)
             QApplication.processEvents()
-            assert window.footprint_action.isEnabled(), style
+            for action in (window.footprint_action, window.footprint_merged_action, window.footprint_by_owner_action):
+                assert action.isEnabled(), (style, action.text())
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_window_reads_the_new_toggles_from_config_without_writing_it(tmp_path) -> None:
+    """A fresh window ticks Units only, Merge and Colour by Owner from the file and writes nothing."""
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    config = tmp_path / "config.yaml"
+    config.write_text("footprint_scope: units\nfootprint_merged: true\nfootprint_by_owner: true\n")
+    before = config.read_bytes()
+    window = ViewerWindow()
+    try:
+        assert window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_UNITS].isChecked()
+        assert window.footprint_merged_action.isChecked()
+        assert window.footprint_by_owner_action.isChecked()
+        assert window.map_view._footprint_merged is True
+        assert window.map_view._footprint_by_owner is True
+        assert config.read_bytes() == before
     finally:
         conftest.close_window(window)
 
@@ -319,7 +484,10 @@ def test_the_overlay_sits_below_the_hover_and_selection_cues() -> None:
     window = _window_with_units("Stepped")
     try:
         assert MapView.FOOTPRINT_Z < MapView.UNIT_HOVER_Z < MapView.UNIT_SELECT_Z
-        assert window.map_view._footprint_item.zValue() == MapView.FOOTPRINT_Z
+        view = window.map_view
+        view.set_footprint_by_owner(True)
+        assert len(view._footprint_items) > 1, "no owner group, so this proves nothing"
+        assert {item.zValue() for item in view._footprint_items.values()} == {MapView.FOOTPRINT_Z}
     finally:
         conftest.close_window(window)
 
@@ -329,10 +497,17 @@ def test_the_overlay_sits_below_the_hover_and_selection_cues() -> None:
 def test_closing_a_map_then_toggling_does_not_touch_a_deleted_item() -> None:
     window = _window_with_units("Stepped")
     try:
-        window.map_view.clear_image()
-        assert window.map_view._footprint_item is None
-        window.map_view.set_footprint_outlines(True)
-        window.map_view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
+        view = window.map_view
+        view.set_footprint_by_owner(True)
+        assert len(view._footprint_items) > 1, "no owner group to tear down, so this proves nothing"
+        view.clear_image()
+        assert view._footprint_items == {}
+        assert _outline_items(view) == []
+        view.set_footprint_outlines(True)
+        view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
+        view.set_footprint_merged(True)
+        view.set_footprint_by_owner(False)
+        view.schedule_footprint_refresh()
     finally:
         conftest.close_window(window)
 
@@ -383,13 +558,13 @@ def test_placing_a_unit_updates_the_outlines_without_an_index_rebuild() -> None:
         window.mode_combo.setCurrentText("Units")
         window.show()
         QApplication.processEvents()
-        before = view._footprint_item.path().elementCount()
+        before = _overlay_item(view).path().elementCount()
         placed_before = len(window.scenario.unit_manager.units[1])
         window.units_panel.select_object(_TOWN_CENTRE)
         # on_unit_place takes a SCENE point (it calls _pick_tile directly).
         window.on_unit_place(view._tile_polygon(50, 50).boundingRect().center(), None)
         assert len(window.scenario.unit_manager.units[1]) == placed_before + 1, "the place did not happen"
-        assert view._footprint_item.path().elementCount() > before
+        assert _overlay_item(view).path().elementCount() > before
     finally:
         conftest.close_window(window)
 
@@ -470,12 +645,12 @@ def test_a_unit_edit_made_outside_units_mode_still_reaches_the_outlines() -> Non
     try:
         view = window.map_view
         view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
-        before = view._footprint_item.path().elementCount()
+        before = _overlay_item(view).path().elementCount()
         assert window.mode != "units"
         units = window.scenario.unit_manager.units
         units[1].append(_Unit(50.0, 50.0, _TOWN_CENTRE, reference_id=301))
         window._after_unit_mutation()
-        assert view._footprint_item.path().elementCount() > before
+        assert _overlay_item(view).path().elementCount() > before
     finally:
         conftest.close_window(window)
 
@@ -493,7 +668,7 @@ def _expected_points(view) -> set[tuple[float, float]]:
 
 
 def _drawn_points(view) -> set[tuple[float, float]]:
-    path = view._footprint_item.path()
+    path = _overlay_item(view).path()
     return {(round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3)) for i in range(path.elementCount())}
 
 
@@ -525,7 +700,7 @@ def test_a_unit_placed_with_outlines_off_is_outlined_once_they_are_enabled() -> 
     try:
         view = window.map_view
         _place(window, _TOWN_CENTRE, (50, 50))
-        assert view._footprint_item.path().elementCount() == 0, "the hidden path was built"
+        assert _overlay_item(view).path().elementCount() == 0, "the hidden path was built"
         window.footprint_action.setChecked(True)
         (entry,) = [e for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
         placed = {(round(x, 3), round(y, 3)) for polygon in view._unit_polygons_for(entry) for x, y in polygon}
@@ -702,7 +877,7 @@ def test_a_show_sprites_toggle_resyncs_draped_farm_outlines_in_sloped() -> None:
         assert render._terrain_overlay_for(_FARM) is not None, "not a farm to the render path"
 
         def drawn():
-            path = view._footprint_item.path()
+            path = _overlay_item(view).path()
             return {
                 (round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3))
                 for i in range(path.elementCount())
@@ -726,5 +901,140 @@ def test_a_show_sprites_toggle_resyncs_draped_farm_outlines_in_sloped() -> None:
             if not on:
                 assert drawn() != before, "the toggle did not change any outline"
         assert drawn() == before
+    finally:
+        conftest.close_window(window)
+
+
+# --- GH #143: Colour by Owner ------------------------------------------------
+
+
+def _owner_window():
+    """_window_with_units' P1 buildings plus a P2 house and a GAIA tree, at All units."""
+    window = _window_with_units("Stepped")
+    units = window.scenario.unit_manager.units
+    units[2].append(_Unit(50.0, 50.0, _HOUSE, reference_id=501))
+    units[0].append(_Unit(60.5, 60.5, _TREE, reference_id=502))
+    window._after_unit_mutation()
+    window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_ALL].setChecked(True)
+    return window
+
+
+def _group_points(item) -> set[tuple[float, float]]:
+    path = item.path()
+    return {(round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3)) for i in range(path.elementCount())}
+
+
+def _entry_points(view, player_id: int) -> set[tuple[float, float]]:
+    return {
+        (round(x, 3), round(y, 3))
+        for entry in unit_pick.footprint_entries(view._unit_index, view._footprint_scope)
+        if entry.player_id == player_id
+        for polygon in view._unit_polygons_for(entry) or []
+        for x, y in polygon
+    }
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_colour_by_owner_puts_each_player_in_their_colour_and_gaia_in_the_configured_one() -> None:
+    window = _owner_window()
+    try:
+        view = window.map_view
+        colors = window.scenario.player_colors
+        p1, p2 = tuple(colors[1]), tuple(colors[2])
+        assert p1 != p2
+        assert list(view._footprint_items) == [None], "Colour by Owner ships off"
+        window.footprint_by_owner_action.setChecked(True)
+        assert set(view._footprint_items) == {None, p1, p2}
+        for key in (p1, p2):
+            pen = view._footprint_items[key].pen()
+            assert pen.color().getRgb()[:3] == key
+            assert pen.widthF() == 0
+        assert view._footprint_items[None].pen().color() == view._footprint_pen.color()
+        assert _group_points(view._footprint_items[None]) == _entry_points(view, 0)
+        assert _group_points(view._footprint_items[p1]) == _entry_points(view, 1)
+        assert _group_points(view._footprint_items[p2]) == _entry_points(view, 2)
+
+        window.footprint_by_owner_action.setChecked(False)
+        assert list(view._footprint_items) == [None]
+        assert _outline_items(view) == [view._footprint_items[None]]
+        assert _drawn_points(view) == _expected_points(view)
+    finally:
+        conftest.close_window(window)
+
+
+def _change_player_colour(window, pid: int) -> tuple[int, int, int]:
+    from descape import player_fields
+
+    spec = {s.field_id: s for s in player_fields.specs_for(window.scenario)}["color"]
+    # Off both owners' current colours, so the two groups never share a key.
+    taken = {player_fields.current_value(window.scenario, spec, p) for p in (1, 2)}
+    new_value = next(value for value, _label in spec.choices if value not in taken)
+    old_rgb = tuple(window.scenario.player_colors[pid])
+    window.set_player_field(spec, pid, new_value)
+    new_rgb = tuple(window.scenario.player_colors[pid])
+    assert new_rgb != old_rgb, "the colour edit changed nothing"
+    return new_rgb
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_player_colour_edit_recolours_the_owner_outlines() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _owner_window()
+    try:
+        view = window.map_view
+        window.footprint_by_owner_action.setChecked(True)
+        old_p2 = tuple(window.scenario.player_colors[2])
+        p2_points = _group_points(view._footprint_items[old_p2])
+        new_p2 = _change_player_colour(window, 2)
+        QApplication.processEvents()
+        assert old_p2 not in view._footprint_items or old_p2 == tuple(window.scenario.player_colors[1])
+        assert view._footprint_items[new_p2].pen().color().getRgb()[:3] == new_p2
+        assert _group_points(view._footprint_items[new_p2]) == p2_points
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_one_index_rebuild_builds_the_owner_coloured_overlay_once(monkeypatch) -> None:
+    """_rebuild_unit_index pushes colours, then set_unit_index refreshes synchronously:
+    a colour-push hook would queue a second build, which processEvents() would run."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _owner_window()
+    try:
+        view = window.map_view
+        window.footprint_by_owner_action.setChecked(True)
+        QApplication.processEvents()
+        in_scope = len(unit_pick.footprint_entries(view._unit_index, view._footprint_scope))
+        assert in_scope >= 6
+        calls = _count_footprint_builds(monkeypatch, view)
+        window._rebuild_unit_index()
+        QApplication.processEvents()
+        assert len(calls) == in_scope
+        calls.clear()
+        _change_player_colour(window, 2)
+        QApplication.processEvents()
+        assert len(calls) == in_scope
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_player_colour_edit_builds_nothing_while_outlines_use_one_colour(monkeypatch) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _owner_window()
+    try:
+        view = window.map_view
+        QApplication.processEvents()
+        calls = _count_footprint_builds(monkeypatch, view)
+        _change_player_colour(window, 2)
+        QApplication.processEvents()
+        assert calls == []
     finally:
         conftest.close_window(window)

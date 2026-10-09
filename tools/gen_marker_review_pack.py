@@ -160,8 +160,8 @@ def _inject_off_centre():
     real = unit_sprites.marker_for.__wrapped__
 
     @cache  # clear_caches() calls marker_for.cache_clear()
-    def shifted(category, team_index, half_w):
-        draw = real(category, team_index, half_w)
+    def shifted(category, team_index, half_w, span=(1, 1)):
+        draw = real(category, team_index, half_w, span)
         # Half a tile down-right: the badge's centre lands on its tile's lower-right edge.
         return unit_sprites.SpriteDraw(draw.rgba, draw.hotspot_x - half_w // 2, draw.hotspot_y - half_w // 4)
 
@@ -170,7 +170,9 @@ def _inject_off_centre():
 
 def _inject_no_tint():
     real = unit_sprites.marker_for.__wrapped__
-    return unit_sprites, "marker_for", cache(lambda category, _team, half_w: real(category, 1, half_w))
+    return unit_sprites, "marker_for", cache(
+        lambda category, _team, half_w, span=(1, 1): real(category, 1, half_w, span)
+    )
 
 
 def _inject_no_skip():

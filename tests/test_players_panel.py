@@ -330,6 +330,7 @@ def test_panel_source_never_references_ai_files() -> None:
     assert "ai_files" not in source
 
 
+@pytest.mark.font_sensitive
 def test_every_widget_fits_min_useful_width() -> None:
     from descape.players_panel import PlayersPanel
 

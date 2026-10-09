@@ -42,6 +42,7 @@ from descape.scenario_new import (
     blank_body,
     blank_scenario_bytes,
     load_blank_scenario,
+    validate_map_size,
     validate_tiles,
 )
 from descape.scenario_write import _compress_bytes
@@ -144,6 +145,34 @@ def test_everything_outside_map_size_and_terrain_is_carried_verbatim(donor) -> N
 
     assert generated[: off - 8] == donor.decompressed_body[: off - 8]
     assert generated[new_end:] == donor.decompressed_body[old_end:]
+
+
+@pytest.mark.parametrize(("w", "h"), ((120, 168), (168, 120)))
+def test_non_square_body_has_both_axes_in_its_size_pair_and_block(donor, w: int, h: int) -> None:
+    """The splice itself for a W x H map (TASK-032 Phase 0): the size pair is
+    (w, h) in that order, the block is w*h blank structs, and both sides of
+    it are the donor's verbatim. A width-only bug fails one orientation."""
+    off = donor.terrain_block_offset
+    old_end = off + TERRAIN_STRUCT_SIZE * 120 * 120
+    body = blank_body(donor, w, h)
+    assert struct.unpack_from("<ii", body, off - 8) == (w, h)
+    end = off + TERRAIN_STRUCT_SIZE * w * h
+    assert body[off:end] == BLANK_TERRAIN_STRUCT * (w * h)
+    assert body[: off - 8] == donor.decompressed_body[: off - 8]
+    assert body[end:] == donor.decompressed_body[old_end:]
+
+
+def test_square_default_height_matches_explicit_height(donor) -> None:
+    assert blank_body(donor, 168) == blank_body(donor, 168, 168)
+
+
+def test_validate_map_size_bounds_each_axis() -> None:
+    assert validate_map_size(120, 168) == (120, 168)
+    assert validate_map_size(144) == (144, 144)
+    assert validate_tiles(144) == 144
+    for bad in ((120, MAX_MAP_TILES + 1), (MIN_MAP_TILES - 1, 120), (120, 168.0), (True, 120)):
+        with pytest.raises(MapSizeError):
+            validate_map_size(*bad)
 
 
 @pytest.mark.parametrize("tiles", (MAX_MAP_TILES + 1, MIN_MAP_TILES - 1, 0, -1))

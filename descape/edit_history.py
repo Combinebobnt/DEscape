@@ -18,7 +18,8 @@ closable without a save prompt. The contract that keeps this true: **any
 mutation that sets trigger, map-option, unit, or Messages model dirtiness
 must push a record here** (see tests/test_trigger_undo.py,
 tests/test_options_undo.py, tests/test_units_undo.py, and
-tests/test_messages_undo.py).
+tests/test_messages_undo.py). The converse holds too: a view-only record
+(RulerDiffRecord, GH #108) is undoable but never makes is_dirty true.
 
 The core rule this module exists to enforce: nothing may mutate a TerrainTile's
 terrain_id/elevation/layer except through this module's begin_stroke/
@@ -77,6 +78,8 @@ class DiffRecord:
 
     label: str
     kind: ClassVar[str] = "base"
+    # True for a record that changes only the view, never the file; is_dirty skips it.
+    view_only: ClassVar[bool] = False
 
     def kinds(self) -> frozenset[str]:
         """Every domain this record touches -- a single-domain record just
@@ -413,6 +416,48 @@ class MessagesDiffRecord(DiffRecord):
 
 
 @dataclass
+class RulerDiffRecord(DiffRecord):
+    """GH #108: one pinned-ruler add, remove or Clear rulers. View-only, so
+    undoing or redoing it never marks the scenario modified.
+
+    A delta against the live set, not a snapshot of it, so rulers drawn
+    unrecorded meanwhile (redo pending) survive it. `added`/`removed` hold
+    (index, measurement) pairs; Clear rulers carries every removed one.
+    `apply(remove, insert)` is the view's setter (MapView.apply_ruler_delta),
+    which keeps this module Qt-free. Its rules (ruler.PinnedRulers.apply_delta):
+    match by identity, skip a removal already gone and an insert already
+    there, clamp an insert index to the live set's length."""
+
+    added: tuple
+    removed: tuple
+    apply: Callable[[tuple, tuple], None]
+    kind: ClassVar[str] = "ruler"
+    view_only: ClassVar[bool] = True
+
+    def undo(
+        self,
+        tiles: Sequence,
+        triggers: TriggerEditModel | None,
+        options: OptionsEditModel | None = None,
+        units: UnitEditModel | None = None,
+        messages: MessagesEditModel | None = None,
+    ) -> list[int]:
+        self.apply(tuple(m for _i, m in self.added), self.removed)
+        return []
+
+    def redo(
+        self,
+        tiles: Sequence,
+        triggers: TriggerEditModel | None,
+        options: OptionsEditModel | None = None,
+        units: UnitEditModel | None = None,
+        messages: MessagesEditModel | None = None,
+    ) -> list[int]:
+        self.apply(tuple(m for _i, m in self.removed), self.added)
+        return []
+
+
+@dataclass
 class CompositeDiffRecord(DiffRecord):
     """Several records committed by one user gesture, undone/redone as one --
     phase 2.8's region paste, which can touch terrain+elevation (one
@@ -496,6 +541,13 @@ class EditHistory:
         # -- i.e. no cursor position can currently reconstruct it, so treat
         # the file as dirty regardless of cursor until the next save.
         self.saved_at_cursor: int | None = 0
+        # One never-reused serial per record, in lockstep with `records`, so
+        # content_key can name a record without holding a reference to it.
+        self._serials: list[int] = []
+        self._last_serial = 0
+        # content_key's answer when no file-changing record lies below the
+        # cursor. Replaced on reset and when the cap evicts a file-changing record.
+        self._origin = self._new_serial()
         # Set only between begin_stroke() and commit_stroke()/abort_stroke().
         # A list over every tile, or a dict over a scoped stroke's captured indices.
         self._stroke_before: list[TileState] | dict[int, TileState] | None = None
@@ -504,10 +556,16 @@ class EditHistory:
         """Back to a freshly-loaded, clean state -- called by load_scenario()
         and close_scenario() so history never leaks across files."""
         self.records.clear()
+        self._serials.clear()
         self.cursor = 0
         self.saved_at_cursor = 0
+        self._origin = self._new_serial()
         self._stroke_before = None
         self._notify()
+
+    def _new_serial(self) -> int:
+        self._last_serial += 1
+        return self._last_serial
 
     def _notify(self) -> None:
         if self.on_change is not None:
@@ -523,7 +581,31 @@ class EditHistory:
 
     @property
     def is_dirty(self) -> bool:
-        return self.saved_at_cursor != self.cursor
+        """True when a file-changing record lies between the save point and
+        the cursor. View-only records (rulers) never count."""
+        saved = self.saved_at_cursor
+        if saved is None:
+            return True
+        low, high = sorted((saved, self.cursor))
+        return any(not record.view_only for record in self.records[low:high])
+
+    @property
+    def redo_has_file_edits(self) -> bool:
+        """True when a file-changing record lies ahead of the cursor, i.e. a
+        push would discard the redo of a real edit. View-only redo doesn't count."""
+        return any(not record.view_only for record in self.records[self.cursor :])
+
+    @property
+    def content_key(self) -> int:
+        """Identifies the document content at the cursor, ignoring view-only
+        records: the serial of the nearest file-changing record below it.
+        Compare with `==`; autosave uses it to skip a ruler-only cursor move.
+        A serial is never reused, so a key held across a truncation or an
+        eviction never matches again, and holding it pins no record."""
+        for i in range(self.cursor - 1, -1, -1):
+            if not self.records[i].view_only:
+                return self._serials[i]
+        return self._origin
 
     def mark_saved(self) -> None:
         """Call after a successful Save As. Never call this after a failed
@@ -707,23 +789,35 @@ class EditHistory:
         # A move is undo-then-push by construction, so it reaches this in one
         # gesture: save right after a paste, then drag it.
         if self.saved_at_cursor is not None and self.saved_at_cursor > self.cursor:
-            self.saved_at_cursor = None
+            # Only view-only records between them: the cursor still reconstructs the saved file.
+            ahead = self.records[self.cursor : self.saved_at_cursor]
+            self.saved_at_cursor = self.cursor if all(r.view_only for r in ahead) else None
         del self.records[self.cursor :]
+        del self._serials[self.cursor :]
         self.records.append(record)
+        self._serials.append(self._new_serial())
         self.cursor += 1
 
         overflow = len(self.records) - self.max_records
         if overflow > 0:
+            dropped = self.records[:overflow]
             del self.records[:overflow]
+            del self._serials[:overflow]
             self.cursor -= overflow
+            if not all(r.view_only for r in dropped):
+                # The oldest position now holds content the old origin never did.
+                self._origin = self._new_serial()
             if self.saved_at_cursor is not None:
+                saved = self.saved_at_cursor
                 self.saved_at_cursor -= overflow
                 if self.saved_at_cursor < 0:
                     # The saved state was among the dropped records -- no
                     # cursor position can reconstruct it anymore, so the file
                     # must read as dirty until the next save regardless of
-                    # where the cursor lands.
-                    self.saved_at_cursor = None
+                    # where the cursor lands. Unless only view-only records
+                    # followed it: then the new oldest position still matches the file.
+                    past_save = dropped[saved:]
+                    self.saved_at_cursor = 0 if all(r.view_only for r in past_save) else None
         self._notify()
 
     def push_trigger_record(self, record: TriggerDiffRecord) -> None:
@@ -757,6 +851,14 @@ class EditHistory:
         """The Messages side's way in. A plain push, same reason as the
         map-options side's: the caller already knows both values, so there
         is nothing to snapshot or diff."""
+        self._push(record)
+
+    def push_ruler_record(self, record: RulerDiffRecord) -> None:
+        """GH #108. Refuses while a file-changing record is ahead of the
+        cursor, since the push would discard its redo; the caller then draws
+        the ruler unrecorded. View-only redo is discarded as any push does."""
+        if self.redo_has_file_edits:
+            raise RuntimeError("push_ruler_record() would discard the redo of a file-changing record")
         self._push(record)
 
     def push_composite_record(self, record: CompositeDiffRecord) -> None:
@@ -879,7 +981,8 @@ class EditHistory:
 
         saved_at_cursor is deliberately untouched: the saved state is a cursor
         position, so jumping onto it makes the document clean and jumping off
-        it makes it dirty, with no bookkeeping of its own.
+        it across a real (not view-only) record makes it dirty, with no
+        bookkeeping of its own.
 
         Loops over the records directly rather than calling undo()/redo() in a
         loop, so on_change fires once for the whole jump instead of once per

@@ -456,6 +456,43 @@ def test_a_hidden_building_is_unpickable() -> None:
         conftest.close_window(window)
 
 
+# --- GH #149: Show Obstacles ----------------------------------------------
+
+
+def test_show_obstacles_ships_checked_and_reaches_the_cache_and_summary() -> None:
+    window = conftest.blank_window()
+    try:
+        assert window.show_obstacles_action.isChecked()
+        window.show_obstacles_action.setChecked(False)
+        assert window._unit_filter == app_default(show_obstacles=False)
+        assert window._cache.unit_filter == app_default(show_obstacles=False)
+        assert "obstacles hidden" in window._filter_summary()
+        assert "eye candy hidden" not in window._filter_summary()
+    finally:
+        conftest.close_window(window)
+
+
+def test_show_all_and_hide_all_cover_show_obstacles() -> None:
+    window = conftest.blank_window()
+    try:
+        window.filter_hide_all_action.trigger()
+        assert not window.show_obstacles_action.isChecked()
+        window.filter_show_all_action.trigger()
+        assert window.show_obstacles_action.isChecked()
+        for action in (window.filter_show_all_action, window.filter_hide_all_action):
+            assert "Obstacles" in action.toolTip()
+    finally:
+        conftest.close_window(window)
+
+
+def test_show_obstacles_is_bound_as_a_rebindable_action() -> None:
+    window = conftest.blank_window()
+    try:
+        assert window._keybind_actions["filter_show_obstacles"] is window.show_obstacles_action
+    finally:
+        conftest.close_window(window)
+
+
 # --- GH #42: Show Garrisoned Units --------------------------------------
 
 

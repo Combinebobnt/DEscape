@@ -9,7 +9,10 @@ is invoked:
 Checks: every path in the layout table exists; AppRun's exec target
 resolves to a real file inside the AppDir; DEscape.desktop parses and
 carries the required keys; both icon copies are byte-identical 256x256
-RGBA PNGs; usr/share/doc/DEscape/ is non-empty and contains LICENSE; and no
+RGBA PNGs; usr/share/doc/DEscape/ is non-empty and contains LICENSE; the
+bundle carries Qt's Wayland platform plugin, its xdg-shell integration and
+libQt5WaylandClient (native
+Wayland is the default since GH #179, so this is checked, not assumed); and no
 config.yaml leaked in anywhere (the repo-root config.yaml is gitignored but
 present on real dev machines and holds a personal path -- Stage 1's
 explicit `datas` list should never pick it up, but this is one cheap
@@ -94,6 +97,19 @@ def _check_icons(appdir: Path) -> list[str]:
     return errors
 
 
+def _check_wayland_plugin(appdir: Path) -> list[str]:
+    bundle = appdir / "usr" / "bin" / "DEscape"
+    errors = []
+    if not any(p.parent.name == "platforms" for p in bundle.rglob("libqwayland-*.so")):
+        errors.append(f"no platforms/libqwayland-*.so plugin under {bundle}")
+    if not any(bundle.rglob("libQt5WaylandClient.so.5")):
+        errors.append(f"no libQt5WaylandClient.so.5 under {bundle}")
+    # Without a shell integration Qt can't create a native Wayland window at all.
+    if not any(p.parent.name == "wayland-shell-integration" for p in bundle.rglob("libxdg-shell.so")):
+        errors.append(f"no wayland-shell-integration/libxdg-shell.so under {bundle}")
+    return errors
+
+
 def _check_no_config_leak(appdir: Path) -> list[str]:
     return [str(p) for p in appdir.rglob("config.yaml")]
 
@@ -113,6 +129,7 @@ def verify(appdir: Path) -> list[str]:
 
     errors += _check_desktop_file(appdir)
     errors += _check_icons(appdir)
+    errors += _check_wayland_plugin(appdir)
 
     doc_dir = appdir / "usr" / "share" / "doc" / "DEscape"
     if not any(doc_dir.iterdir()):

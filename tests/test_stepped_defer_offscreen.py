@@ -229,7 +229,8 @@ def test_sprite_extent_before_falls_back_while_pending(sprite_install):  # noqa:
 
 @pytest.mark.parametrize("rebuild_levels", [None, (-2, -1, 0)])
 def test_levels_allowed_to_splice_never_defer(rebuild_levels, sprite_install):  # noqa: F811
-    """None (undo/redo, every non-stroke caller) keeps the every-level splice."""
+    """None (a caller with no viewport target; undo/redo pass (visible,) like a
+    stroke step) keeps the every-level splice."""
     scenario, _units = _scenario()
     cache = _resident_cache(scenario)
     for tiles in STROKE:

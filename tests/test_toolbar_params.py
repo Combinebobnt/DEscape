@@ -255,17 +255,17 @@ def _select_terrain(window, terrain_id: int) -> None:
     window.terrain_panel.set_terrain(terrain_id)
 
 
-def test_auto_beach_shows_only_for_draw() -> None:
-    """Paint Can shares param_widget == "terrain", so without the
-    `== "draw"` term in the gate the checkbox would appear for Fill and do
-    nothing. The shape tools are excluded for the same reason: their commit
-    path is on_shape_commit, not the Draw stroke branch the ring hangs off."""
+def test_auto_beach_shows_only_for_draw_and_the_shape_tools() -> None:
+    """Paint Can shares param_widget == "terrain", so without the tool term in
+    the gate the checkbox would appear for Fill and do nothing. Draw Line and
+    Draw Rectangle lay the ring in on_shape_commit (GH #88)."""
     window = conftest.terrain_edit_window()
     try:
         _select_terrain(window, _WATER_DEEP)
         for tool in _EXPECTED_PARAM:
             window._on_tool_selected(tool)
-            assert window.auto_beach_param_action.isVisible() == (tool == "draw"), tool
+            expected = tool in ("draw", "draw_line", "draw_rect")
+            assert window.auto_beach_param_action.isVisible() == expected, tool
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -1,12 +1,18 @@
 """Edit > Scatter Units in Region…: which tiles of the committed Select
 region are eligible, and the dialog that turns them into arguments for
-scatter.scatter_units().
+scatter.scatter_units(), or for scatter.scatter_existing_units() when it is
+set to move the Units-mode selection instead (GH #105).
 
 Eligibility lives here, not in scatter.py, which takes an explicit tile set
 and never builds one (its own module docstring). The dialog's live "N
 eligible tiles" count has to be exactly what gets placed, so the map clamp,
 the terrain filter and the avoid-existing-units subtraction all happen here
-and scatter receives a final list with avoid_occupied=False.
+and scatter receives a final list with avoid_occupied=False. So does move
+mode's always-on subtraction of other buildings' footprints, which keeps a
+moved building off another one even with Avoid unticked.
+
+In move mode "other" means neither selected nor garrisoned in a selected
+unit: a garrison rides with its host, so its tiles are as free as the host's.
 
 Terrain is read as mm.terrain[y * map_width + x], never through
 MapManager.get_tile()/get_tile_safe(): get_tile() raises on every coordinate
@@ -21,7 +27,6 @@ import random
 from collections import Counter
 from dataclasses import dataclass
 
-from AoE2ScenarioParser.datasets.terrains import TerrainId
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,7 +44,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import batch_api, object_catalog, player_labels, scatter
-from descape.terrain_palette import name_for_terrain_id
+from descape.terrain_palette import name_for_terrain_id, terrain_ids
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.viewer_common import _add_player_item
 
@@ -54,6 +59,16 @@ MAX_SEED = 2**31 - 1
 # Density is a percentage in the UI. 1% of a single eligible tile still
 # rounds up to one unit, so the Ok-implies-at-least-one rule holds.
 MIN_DENSITY_PERCENT = 1
+
+_PLACE_NOTE = (
+    "Every unit is placed with rotation 0 and animation frame 0: for many "
+    "GAIA objects rotation is a graphic-variant index, not an angle."
+)
+_MOVE_NOTE = (
+    "Only the position changes: a moved unit keeps its rotation, elevation and "
+    "every other field. Buildings snap to whole tiles; one that cannot fit stays put. "
+    "Nothing lands inside another multi-tile building, even with Avoid unticked."
+)
 
 
 def region_tiles(region: tuple[int, int, int, int], width: int, height: int) -> list[tuple[int, int]]:
@@ -98,16 +113,18 @@ def region_terrain_counts(scenario, region: tuple[int, int, int, int]) -> Counte
 
 @dataclass(frozen=True)
 class ScatterParams:
-    """Exactly what ViewerWindow hands scatter.scatter_units()."""
+    """Exactly what ViewerWindow hands scatter.scatter_units(), or with
+    `move_selected` the tiles/seed/jitter scatter_existing_units() reads."""
 
     tiles: list[tuple[int, int]]
-    unit_const: int
+    unit_const: int | None
     player: int
     count: int | tuple[int, int] | None
     density: float | None
     seed: int | None
     jitter: float
     min_spacing: int
+    move_selected: bool = False
 
     def requested(self, eligible: int) -> int | None:
         """How many units were asked for, or None for a (lo, hi) range whose
@@ -123,24 +140,46 @@ class ScatterDialog(QDialog):
     """Modal setup for one scatter into an already-committed region.
 
     It never touches the map. `params()` reads the live widget state, so a
-    test can drive the widgets and call it directly.
+    test can drive the widgets and call it directly. `unit_const` may be
+    None (nothing picked in the Units panel), which leaves only the move
+    mode; `selected_units` are the units that mode would move.
     """
 
     def __init__(
-        self, scenario, region, unit_const, owner_id, parent=None, last=None, *, labels=None, colors=None
+        self,
+        scenario,
+        region,
+        unit_const,
+        owner_id,
+        parent=None,
+        last=None,
+        *,
+        labels=None,
+        colors=None,
+        selected_units=(),
     ):
         super().__init__(parent)
         self.setWindowTitle("Scatter Units in Region")
         self._scenario = scenario
         self._region = region
         self._unit_const = unit_const
-        # Computed once, the first time Avoid is on, then kept for this
-        # dialog's lifetime: occupied_tiles() walks all nine player lists.
+        self._selected = list(selected_units)
+        # Computed once per mode, the first time Avoid is on, then kept for
+        # this dialog's lifetime: occupied_tiles() walks all nine player lists.
         self._occupied: set[tuple[int, int]] | None = None
+        self._occupied_by_others: set[tuple[int, int]] | None = None
+        self._buildings_by_others: set[tuple[int, int]] | None = None
+        self._moving: list | None = None
         self._eligible: list[tuple[int, int]] = []
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Object: {object_catalog.display_name(unit_const)} ({unit_const})"))
+        layout.addWidget(self._build_mode_group())
+        if unit_const is None:
+            object_text = "Object: none chosen in the Units panel"
+        else:
+            object_text = f"Object: {object_catalog.display_name(unit_const)} ({unit_const})"
+        self.object_label = QLabel(object_text)
+        layout.addWidget(self.object_label)
 
         self.owner_combo = QComboBox()
         labels = labels or player_labels.DEFAULT_LABELS
@@ -159,12 +198,9 @@ class ScatterDialog(QDialog):
 
         self.count_label = QLabel("")
         layout.addWidget(self.count_label)
-        note = QLabel(
-            "Every unit is placed with rotation 0 and animation frame 0: for many "
-            "GAIA objects rotation is a graphic-variant index, not an angle."
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        self.note_label = QLabel(_PLACE_NOTE)
+        self.note_label.setWordWrap(True)
+        layout.addWidget(self.note_label)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
@@ -175,6 +211,21 @@ class ScatterDialog(QDialog):
         self._refresh_eligible()
 
     # -- construction ------------------------------------------------------
+
+    def _build_mode_group(self) -> QGroupBox:
+        group = QGroupBox("Mode")
+        box = QVBoxLayout(group)
+        self.place_radio = QRadioButton("Place new units")
+        self.move_radio = QRadioButton(f"Move the selected units ({len(self._selected)})")
+        self.place_radio.setChecked(True)
+        if self._unit_const is None:
+            self.place_radio.setEnabled(False)
+            self.place_radio.setToolTip("Choose an object in the Units panel to place new units")
+        self.move_radio.setToolTip("Moves the units selected in Units mode to random tiles in the region")
+        box.addWidget(self.place_radio)
+        box.addWidget(self.move_radio)
+        self.move_radio.toggled.connect(self._on_mode_changed)
+        return group
 
     def _build_restrict_group(self) -> QGroupBox:
         group = QGroupBox("Restrict to")
@@ -187,8 +238,8 @@ class ScatterDialog(QDialog):
         box.addWidget(self.water_radio)
 
         self.terrain_combo = QComboBox()
-        for terrain in sorted(TerrainId, key=lambda t: t.name):
-            self.terrain_combo.addItem(name_for_terrain_id(terrain.value), terrain.value)
+        for terrain_id in sorted(terrain_ids(), key=name_for_terrain_id):
+            self.terrain_combo.addItem(name_for_terrain_id(terrain_id), terrain_id)
         self._select_default_terrain()
         self.terrain_combo.setEnabled(False)
         terrain_row = QHBoxLayout()
@@ -203,7 +254,8 @@ class ScatterDialog(QDialog):
 
     def _select_default_terrain(self) -> None:
         """Defaults to whichever terrain the region holds most of. A raw id
-        no TerrainId member covers leaves the combo on its first entry."""
+        no terrain_palette.terrain_ids() member covers leaves the combo on its
+        first entry."""
         counts = region_terrain_counts(self._scenario, self._region)
         if not counts:
             return
@@ -213,6 +265,7 @@ class ScatterDialog(QDialog):
 
     def _build_amount_group(self) -> QGroupBox:
         group = QGroupBox("Amount")
+        self.amount_group = group
         form = QFormLayout(group)
         self.count_radio = QRadioButton("Count:")
         self.count_radio.setChecked(True)
@@ -290,6 +343,19 @@ class ScatterDialog(QDialog):
     def eligible(self) -> list[tuple[int, int]]:
         return self._eligible
 
+    def move_mode(self) -> bool:
+        return self.move_radio.isChecked()
+
+    def _on_mode_changed(self) -> None:
+        move = self.move_mode()
+        # Move mode keeps each unit's own const, owner and count.
+        self.object_label.setEnabled(not move)
+        self.owner_combo.setEnabled(not move)
+        self.amount_group.setEnabled(not move)
+        self.spacing_spin.setEnabled(not move)
+        self.note_label.setText(_MOVE_NOTE if move else _PLACE_NOTE)
+        self._refresh_eligible()
+
     def _on_restrict_changed(self) -> None:
         self.terrain_combo.setEnabled(self.terrain_radio.isChecked())
         self._refresh_eligible()
@@ -310,16 +376,47 @@ class ScatterDialog(QDialog):
     def _refresh_eligible(self) -> None:
         tiles = eligible_tiles(self._scenario, self._region, self.restrict_mode(), self.terrain_combo.currentData())
         if self.avoid_check.isChecked():
-            if self._occupied is None:
-                self._occupied = scatter.occupied_tiles(self._scenario)
-            tiles = [t for t in tiles if t not in self._occupied]
+            tiles = [t for t in tiles if t not in self._occupied_for_mode()]
+        elif self.move_mode():
+            tiles = [t for t in tiles if t not in self._other_buildings()]
         self._eligible = tiles
         mm = self._scenario.map_manager
         span = region_tiles(self._region, mm.map_width, mm.map_height)
         cols = len({x for x, _ in span})
         rows = len({y for _, y in span})
-        self.count_label.setText(f"{len(tiles)} eligible tiles in a {cols}x{rows} region ({len(span)} tiles)")
+        text = f"{len(tiles)} eligible tiles in a {cols}x{rows} region ({len(span)} tiles)"
+        if self.move_mode():
+            moving = len(self._selected)
+            text = f"{moving} selected units, {text}"
+            if moving > len(tiles):
+                text += "; some will share a tile"
+        self.count_label.setText(text)
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(bool(tiles))
+
+    def _moving_units(self) -> list:
+        """The selection plus its garrison, which rides along (GH #42)."""
+        if self._moving is None:
+            self._moving = self._selected + scatter.garrison_riders(self._scenario, self._selected)
+        return self._moving
+
+    def _other_buildings(self) -> set[tuple[int, int]]:
+        """Move mode's always-on subtraction: footprints of multi-tile units that stay put."""
+        if self._buildings_by_others is None:
+            self._buildings_by_others = scatter.occupied_tiles(
+                self._scenario, exclude=self._moving_units(), multi_tile_only=True
+            )
+        return self._buildings_by_others
+
+    def _occupied_for_mode(self) -> set[tuple[int, int]]:
+        """Tiles Avoid subtracts, a superset of _other_buildings() in move mode.
+        Moving units and their garrisons never block their own old spots."""
+        if self.move_mode():
+            if self._occupied_by_others is None:
+                self._occupied_by_others = scatter.occupied_tiles(self._scenario, exclude=self._moving_units())
+            return self._occupied_by_others
+        if self._occupied is None:
+            self._occupied = scatter.occupied_tiles(self._scenario)
+        return self._occupied
 
     # -- results -----------------------------------------------------------
 
@@ -343,12 +440,14 @@ class ScatterDialog(QDialog):
             seed=None if self.random_check.isChecked() else self.seed_spin.value(),
             jitter=self.jitter_spin.value(),
             min_spacing=self.spacing_spin.value(),
+            move_selected=self.move_mode(),
         )
 
     def state(self) -> dict:
         """Session-sticky values, restored by the next dialog. Nothing here
         is persisted to settings, so there is no MEMOIZED_GLOBALS key."""
         return {
+            "move_selected": self.move_mode(),
             "restrict": self.restrict_mode(),
             "use_density": self.density_radio.isChecked(),
             "count": self.count_spin.value(),
@@ -381,8 +480,14 @@ class ScatterDialog(QDialog):
         self.jitter_spin.setValue(last.get("jitter", 0.0))
         self.spacing_spin.setValue(last.get("min_spacing", 0))
         self.avoid_check.setChecked(bool(last.get("avoid", True)))
+        # A sticky Move with nothing selected would only refuse, so it falls
+        # back to Place unless there is no object to place either.
+        move = self._unit_const is None or (bool(last.get("move_selected", False)) and bool(self._selected))
+        self.move_radio.setChecked(move)
+        self.place_radio.setChecked(not move)
         # The toggled signals above only fire on a real change, so the
         # enabled states are settled explicitly here.
+        self._on_mode_changed()
         self._on_restrict_changed()
         self._on_amount_changed()
         self._on_random_toggled(self.random_check.isChecked())

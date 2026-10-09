@@ -16,7 +16,7 @@ from types import ModuleType
 
 # Must equal _composite_native.KERNEL_ABI; a stale build from an older
 # checkout is ignored until rebuilt, never run against newer callers.
-EXPECTED_KERNEL_ABI = 4
+EXPECTED_KERNEL_ABI = 5
 
 BACKENDS = ("numpy", "native")
 

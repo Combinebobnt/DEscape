@@ -175,7 +175,8 @@ def test_fast_load_leaves_unit_links_pristine() -> None:
         assert cls._link_list is links, cls.__name__
     for cls, state in _MANAGER_STATE.items():
         assert dict(vars(cls)) == state, cls.__name__
-    assert library_compat.class_state_delta(Unit) == ([], [])
+    # Only the library's own poisoning: this 1.58 fixture predates capture_flag.
+    assert library_compat.class_state_delta(Unit) == (["capture_flag"], [])
 
 
 def test_a_link_an_earlier_load_left_disabled_gets_none_like_the_library(monkeypatch) -> None:
@@ -280,11 +281,11 @@ def _units_structure(unit_struct: dict) -> dict:
 
 def test_unit_codec_carries_every_field() -> None:
     codec = scenario_io._unit_codec(_units_structure(_DE_UNIT_STRUCT), "1.59")
-    assert codec.attrs == ("capture_flag",)
-    assert "capture_flag" not in codec.kwargs and codec.unsupported == ()
+    assert codec.attrs == ()
+    assert "capture_flag" in codec.kwargs and codec.unsupported == ()
     old = {k: v for k, v in _DE_UNIT_STRUCT.items() if k not in {"capture_flag", "caption_string_id", "caption_string"}}
     codec = scenario_io._unit_codec(_units_structure(old), "1.37")
-    assert set(codec.unsupported) == {"caption_string_id", "caption_string"}
+    assert set(codec.unsupported) == {"capture_flag", "caption_string_id", "caption_string"}
 
 
 def _with_field_before_caption(name: str) -> dict:
@@ -671,12 +672,6 @@ def _reassigned_with_flag(model, loaded) -> None:
     _touch(model, _unit_by_ref(loaded, 100))  # a commit re-slots every unit
 
 
-def _flag_deleted(model, loaded) -> None:
-    unit = _unit_by_ref(loaded, 200)
-    del unit.capture_flag
-    _touch(model, unit)
-
-
 _U16_MAX, _S32_MIN, _S32_MAX = 0xFFFF, -(2**31), 2**31 - 1
 
 
@@ -699,12 +694,11 @@ _U16_MAX, _S32_MIN, _S32_MAX = 0xFFFF, -(2**31), 2**31 - 1
         (V159_FIXTURE, _set_fields(capture_flag=127)),
         (V159_FIXTURE, _added_with_flag),
         (V159_FIXTURE, _reassigned_with_flag),
-        (V159_FIXTURE, _flag_deleted),
     ],
     ids=[
         "x-not-f32-exact", "negative-zero", "set-variant-int", "int-upper-bounds", "int-lower-bounds",
         "caption-empty", "caption-ascii", "caption-non-ascii", "caption-latin1-decoded", "caption-latin1-bytes",
-        "capture-flag-min", "capture-flag-max", "added-capture-flag", "reassigned-capture-flag", "capture-flag-deleted",
+        "capture-flag-min", "capture-flag-max", "added-capture-flag", "reassigned-capture-flag",
     ],
 )
 def test_edited_values_encode_as_the_commit_writes_them(path: Path, edit, commits: _Commits) -> None:

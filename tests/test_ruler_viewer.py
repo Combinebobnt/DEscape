@@ -223,16 +223,14 @@ def test_ruler_press_in_units_mode_does_not_select() -> None:
         window.close()
 
 
-def test_completed_measurement_leaves_edit_history_untouched() -> None:
-    """"Does not alter the map", pinned rather than assumed. EditHistory has
-    no read-only mode to opt into: a tool that mutates nothing simply never
-    calls begin_stroke."""
+def test_completed_measurement_leaves_the_document_unmodified() -> None:
+    """"Does not alter the map", pinned rather than assumed. GH #108 puts the
+    ruler on the undo stack, but only as a view-only record."""
     window = _ruler_window()
     try:
         assert not window.edit_history.records
         _drag(window.map_view, (5, 5), (25, 15))
-        assert not window.edit_history.records
-        assert not window.edit_history.can_undo
+        assert [r.kind for r in window.edit_history.records] == ["ruler"]
         assert not window.edit_history.is_dirty
     finally:
         window.edit_history.mark_saved()
@@ -867,8 +865,9 @@ def test_pinning_and_removing_leave_history_clean_and_the_document_not_dirty() -
         _drag(map_view, (40, 40), (50, 44))
         _right_click(map_view, (50, 44))
         window.clear_rulers_button.click()
-        assert not window.edit_history.records
-        assert not window.edit_history.can_undo
+        # GH #108: four view-only undo steps, none of which dirties the file.
+        assert [r.label for r in window.edit_history.records] == ["Add ruler", "Add ruler", "Remove ruler", "Clear rulers"]
+        assert all(r.view_only for r in window.edit_history.records)
         assert not window.edit_history.is_dirty
     finally:
         window.edit_history.mark_saved()
@@ -1028,6 +1027,236 @@ def test_an_edit_tool_still_starts_the_timer_and_pan_without_a_measurement_stops
         assert map_view._pulse_timer.isActive()
         window._on_tool_selected("pan")
         assert not map_view._pulse_timer.isActive()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- ruler edits in Undo, without dirtying the file (GH #108) --------------
+
+
+def _modified(window) -> bool:
+    return window.windowTitle().startswith("*")
+
+
+def _paint_tile(window, tile: tuple[int, int]) -> None:
+    """One real terrain edit through Draw Line's commit, then back to the Ruler."""
+    window._on_tool_selected("draw_line")
+    window.terrain_panel.set_terrain(15)
+    window.paint_trees_check.setChecked(False)
+    window.paint_eye_candy_check.setChecked(False)
+    window.on_shape_commit([tile])
+    window._on_tool_selected("ruler")
+
+
+def _terrain_at(window, tile: tuple[int, int]) -> int:
+    return window.scenario.map_manager.get_tile(*tile).terrain_id
+
+
+def test_undo_and_redo_step_through_rulers_without_marking_the_file_modified() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        assert not _modified(window)
+        window.undo()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        assert not _modified(window)
+        window.redo()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((40, 40), (50, 44))]
+        assert not _modified(window)
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_right_click_remove_and_clear_rulers_are_one_undo_step_each() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        _right_click(map_view, (50, 44))
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        window.undo()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((40, 40), (50, 44))]
+        window.redo()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        window.clear_rulers_button.click()
+        assert _pinned_ends(map_view) == []
+        window.undo()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        window.redo()
+        assert _pinned_ends(map_view) == []
+        assert not _modified(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_undoing_a_middle_ruler_removal_restores_its_old_position() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        a, b, c = ((10, 10), (30, 24)), ((40, 40), (50, 44)), ((60, 20), (70, 30))
+        for start, end in (a, b, c):
+            _drag(map_view, start, end)
+        _right_click(map_view, (50, 44))
+        assert _pinned_ends(map_view) == [a, c]
+        window.undo()
+        assert _pinned_ends(map_view) == [a, b, c]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_ruler_between_two_tile_edits_undoes_in_order() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        base = _terrain_at(window, (1, 1))
+        _paint_tile(window, (1, 1))
+        _drag(map_view, (10, 10), (30, 24))
+        _paint_tile(window, (2, 2))
+        assert _modified(window)
+        window.undo()
+        assert _terrain_at(window, (2, 2)) == base
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        assert _modified(window)
+        window.undo()
+        assert _pinned_ends(map_view) == []
+        assert _terrain_at(window, (1, 1)) == 15
+        assert _modified(window)
+        window.undo()
+        assert _terrain_at(window, (1, 1)) == base
+        assert not _modified(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_ruler_after_a_save_keeps_the_file_clean_through_undo() -> None:
+    window = _ruler_window()
+    try:
+        _paint_tile(window, (1, 1))
+        window.edit_history.mark_saved()
+        window._update_title()
+        _drag(window.map_view, (10, 10), (30, 24))
+        assert not _modified(window)
+        window.undo()
+        assert not _modified(window)
+        window.undo()
+        assert _modified(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_ruler_drawn_while_redo_is_pending_is_not_recorded_and_says_so_once() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _paint_tile(window, (1, 1))
+        window.undo()
+        records = list(window.edit_history.records)
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((40, 40), (50, 44))]
+        assert window.edit_history.records == records
+        assert window.edit_history.can_redo
+        notes = [line for line in _status_lines(window) if "not added to Undo" in line]
+        assert len(notes) == 1, notes
+        window.redo()
+        assert _terrain_at(window, (1, 1)) == 15
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_unrecorded_ruler_survives_a_later_ruler_undo_and_redo() -> None:
+    """A ruler record is a delta, not a whole-set snapshot: undoing or
+    redoing an older ruler must not erase one drawn unrecorded meanwhile."""
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        _paint_tile(window, (1, 1))
+        window.undo()
+        _drag(map_view, (40, 40), (50, 44))
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((40, 40), (50, 44))]
+        window.undo()
+        assert _pinned_ends(map_view) == [((40, 40), (50, 44))]
+        window.redo()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24)), ((40, 40), (50, 44))]
+        window.redo()
+        assert _terrain_at(window, (1, 1)) == 15
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_ruler_drawn_over_only_ruler_redo_is_recorded() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (30, 24))
+        window.undo()
+        _drag(map_view, (40, 40), (50, 44))
+        assert not window.edit_history.can_redo
+        assert not [line for line in _status_lines(window) if "not added to Undo" in line]
+        window.undo()
+        assert _pinned_ends(map_view) == []
+        assert not _modified(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_zero_length_measurement_records_nothing() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (10, 10))
+        _drag(map_view, (10, 10), (10, 10))
+        assert _pinned_ends(map_view) == []
+        assert not window.edit_history.records
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- the right-click-to-remove hint (GH #108) -------------------------------
+
+
+def test_the_remove_hint_shows_only_with_the_ruler() -> None:
+    window = _ruler_window()
+    try:
+        assert window.ruler_hint_param_action.isVisible()
+        assert "Right-click" in window.ruler_hint_label.text()
+        for tool in ("pan", "select", "draw"):
+            window.mode_combo.setCurrentText("Terrain")
+            window._on_tool_selected(tool)
+            assert not window.ruler_hint_param_action.isVisible(), tool
+        window._on_tool_selected("ruler")
+        assert window.ruler_hint_param_action.isVisible()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_first_finished_ruler_logs_the_remove_hint_once() -> None:
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        _drag(map_view, (10, 10), (10, 10))
+        _drag(map_view, (10, 10), (10, 10))
+        assert not [line for line in _status_lines(window) if "Right-click" in line], "a zero-length ruler logged the hint"
+        _drag(map_view, (10, 10), (30, 24))
+        _drag(map_view, (40, 40), (50, 44))
+        hints = [line for line in _status_lines(window) if "Right-click" in line]
+        assert len(hints) == 1, hints
     finally:
         window.edit_history.mark_saved()
         window.close()

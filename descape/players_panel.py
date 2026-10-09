@@ -85,7 +85,13 @@ from descape.player_fields import (
     specs_for,
 )
 from descape.scenario_io import LoadedScenario
-from descape.viewer_common import _add_player_item, _fit_combo_width, _make_spinbox, _set_player_item
+from descape.viewer_common import (
+    FontScaledWidth,
+    _add_player_item,
+    _fit_combo_width,
+    _make_spinbox,
+    _set_player_item,
+)
 
 # Number of Players' own editable range. 1 is refused rather than shown as a
 # floor: every corpus file measured stores 2..8, and a one-player scenario
@@ -186,8 +192,8 @@ class PlayersPanel(QWidget):
 
     # Measured against the widest row this panel actually builds (Tribe
     # name / Personality can run long) -- see tests/test_players_panel.py's
-    # width check.
-    MIN_USEFUL_WIDTH = 320
+    # width check. Scales with the app font (FontScaledWidth, GH #142).
+    MIN_USEFUL_WIDTH = FontScaledWidth(320)
 
     _NO_DOCUMENT = "No map open."
     _PLAYER_TYPE_REASON = (

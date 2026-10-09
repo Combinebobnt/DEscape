@@ -142,6 +142,44 @@ def test_the_two_sets_are_non_empty_and_disjoint() -> None:
     assert walls.isdisjoint(candy)
 
 
+# GH #149: named members on each side of the obstacle split.
+ROCKX = 623  # obstruction 2
+MNTN3 = 744  # obstruction 10
+STATUE_A = 817  # obstruction 3
+ROCK_1_HOVER = 2407  # obstruction 4, an H1-checked call
+STUMP2 = 809
+BARRELS = 1330  # obstruction 0 despite a non-zero collision_size, an H1-checked call
+
+
+def test_obstacles_and_passable_eye_candy_partition_eye_candy() -> None:
+    obstacles = unit_kind.obstacle_consts()
+    passable = unit_kind.passable_eye_candy_consts()
+    assert obstacles | passable == unit_kind.eye_candy_consts()
+    assert obstacles.isdisjoint(passable)
+
+
+def test_obstacle_split_sizes_as_measured() -> None:
+    """Measured 2026-10-07: 70 type-2 + 44 type-3 + 11 type-10 + 6 type-4."""
+    assert len(unit_kind.obstacle_consts()) == 131
+    assert len(unit_kind.passable_eye_candy_consts()) == 258
+
+
+def test_obstacle_split_named_members() -> None:
+    obstacles = unit_kind.obstacle_consts()
+    passable = unit_kind.passable_eye_candy_consts()
+    assert {ROCKX, MNTN3, STATUE_A, ROCK_1_HOVER} <= obstacles
+    assert {GRASS_GREEN, STUMP2, BARRELS} <= passable
+
+
+def test_obstacles_are_the_non_zero_obstruction_types() -> None:
+    """The rule, not just its output: a non-zero catalog `obstruction` is
+    the whole basis, and the catalog omits the key for 0."""
+    objects = unit_kind._objects()
+    for const in unit_kind.eye_candy_consts():
+        assert (const in unit_kind.obstacle_consts()) == bool(objects[const].get("obstruction", 0)), const
+    assert all(entry.get("obstruction", 1) != 0 for entry in objects.values())
+
+
 # GH #53: every non-hidden member of invisible_consts(), by category.
 INVISIBLE_OBJECTS = {1291, 2551, 2553, 2555, 2563}  # Invisible Object A-E, class 38
 MAP_REVEALERS = {837, 1774, 1775}  # Map Revealer / Medium / Giant, class 30
@@ -309,6 +347,26 @@ def test_the_eye_candy_set_hides_decoratives_and_keeps_resources(corpus_files) -
     # Resources are type 10 too and must survive the subtraction.
     for resource in (GOLD_MINE, STONE_MINE, BERRY_BUSH):
         assert resource not in candy
+
+
+@pytest.mark.corpus
+def test_the_obstacle_split_matches_its_measured_corpus_placements(corpus_files, request) -> None:
+    """Re-measures GH #149's placement split (2026-10-07): 2,249 obstacle and
+    15,722 passable placements over the full corpus, 398 obstacles in the
+    quick subset (Dos Pilas holding 269)."""
+    from descape.scenario_io import load_map_and_units
+
+    obstacles = unit_kind.obstacle_consts()
+    passable = unit_kind.passable_eye_candy_consts()
+    n_obstacles = n_passable = 0
+    for path in corpus_files:
+        for unit in load_map_and_units(path).unit_manager.get_all_units():
+            n_obstacles += unit.unit_const in obstacles
+            n_passable += unit.unit_const in passable
+
+    assert n_passable > n_obstacles, (n_passable, n_obstacles)
+    floor = 2000 if request.config.getoption("--corpus-full") else 300
+    assert n_obstacles >= floor, n_obstacles
 
 
 @pytest.mark.corpus

@@ -222,8 +222,7 @@ def crop(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
 
 
 def components(mask: np.ndarray) -> int:
-    """8-connected component count, iterative flood fill (no scipy here).
-    Same routine as tools/gen_contact_shadow_eyeball.py's."""
+    """8-connected component count, iterative flood fill (no scipy here)."""
     return _flood(mask)[0]
 
 

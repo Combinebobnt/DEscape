@@ -51,6 +51,8 @@ from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeErr
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
+from descape.unit_model import capture_flag_of
+
 
 @dataclass(frozen=True)
 class RegionUnit:
@@ -163,9 +165,8 @@ def copy_region(
                 caption_string_id=caption_string_id,
                 caption_string=caption_string,
                 garrison_slot=garrison_slot,
-                # A plain carrier attribute (descape/unlinked_fields.py), so
-                # absent on a pre-1.59 unit rather than raising.
-                capture_flag=getattr(u, "capture_flag", -1),
+                # -1 on a pre-1.59 unit, whose poisoned link raises on read.
+                capture_flag=capture_flag_of(u),
             )
         )
 

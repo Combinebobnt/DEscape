@@ -41,6 +41,8 @@ the base number when it refuses.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -157,3 +159,62 @@ def eligible_consts(host_const: int) -> frozenset[int]:
         return frozenset()
     _, classes = _table()
     return frozenset(const for const, class_ in classes.items() if mask & _CLASS_BIT.get(class_, 0))
+
+
+def refusal(
+    host_const: int,
+    host_label: str,
+    occupant_count: int,
+    incoming_consts: Iterable[int],
+    name_of: Callable[[int], str] = str,
+) -> str | None:
+    """Why `incoming_consts` can't all go inside a host already holding
+    `occupant_count` units, as a status line, or None if they can.
+
+    The one rule every garrison path reads (GH #115): Add..., a drop on a
+    host, Pick from map and Paste. All-or-nothing over the batch, type before
+    capacity. `name_of` names an occupant const; this module has no catalog.
+    The model itself never checks either, so a batch script stays unvalidated.
+    """
+    incoming = list(incoming_consts)
+    if not incoming:
+        return None
+    for const in incoming:
+        if not accepts(host_const, const):
+            return f"Garrison: {name_of(const)} cannot go inside {host_label}"
+    cap = capacity(host_const)
+    if occupant_count + len(incoming) <= cap:
+        return None
+    room = cap - occupant_count
+    if room <= 0:
+        return f"Garrison: {host_label} is full ({cap} places)"
+    return f"Garrison: {host_label} has room for {room} more ({cap} places)"
+
+
+def unload_tile(bounds: tuple[int, int, int, int], map_w: int, map_h: int) -> tuple[int, int] | None:
+    """The tile an unloaded unit lands on: the first in-bounds tile adjacent
+    to the host's footprint `bounds` (render.unit_tile_bounds()' half-open
+    (x0, x1, y0, y1)), scanning the +y edge, then +x, -y, -x, then corners."""
+    x0, x1, y0, y1 = bounds
+    ring = [(x, y1) for x in range(x0, x1)]
+    ring += [(x1, y) for y in range(y0, y1)]
+    ring += [(x, y0 - 1) for x in range(x0, x1)]
+    ring += [(x0 - 1, y) for y in range(y0, y1)]
+    ring += [(x1, y1), (x1, y0 - 1), (x0 - 1, y0 - 1), (x0 - 1, y1)]
+    return next(((x, y) for x, y in ring if 0 <= x < map_w and 0 <= y < map_h), None)
+
+
+@dataclass(frozen=True)
+class GarrisonClip:
+    """One copied occupant for the Garrison block's Copy/Paste (GH #115):
+    region_clipboard.RegionUnit's fields minus position and slot. A paste
+    puts it at the host's point, so `rotation` is carried verbatim."""
+
+    player: int
+    unit_const: int
+    rotation: float
+    status: int
+    initial_animation_frame: int
+    caption_string_id: int
+    caption_string: str
+    capture_flag: int = -1

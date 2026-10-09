@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from descape import edge_ticks, grid_overlay, iso_geometry, settings
+from descape import edge_ticks, grid_overlay, iso_geometry, settings, terrain_style, view_layers
 
 
 def _write_config(tmp_path: Path, text: str) -> None:
@@ -64,8 +64,75 @@ def test_malformed_yaml_is_tolerated_not_raised(tmp_path: Path) -> None:
     # _load_config() catches yaml.YAMLError/OSError and returns {} -- every
     # getter must fall back to its own default rather than propagate.
     assert settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_DEFAULT
-    assert settings.get_dark_mode() is False
+    assert settings.get_theme() == "light"
     assert settings.get_window_size() == (settings.DEFAULT_WINDOW_WIDTH, settings.DEFAULT_WINDOW_HEIGHT)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("dark_mode: true\n", "dark"), ("dark_mode: false\n", "light"), ("", "light")],
+)
+def test_legacy_dark_mode_migrates_to_a_theme(tmp_path: Path, text: str, expected: str) -> None:
+    _write_config(tmp_path, text)
+    assert settings.get_theme() == expected
+
+
+def test_a_theme_key_wins_over_legacy_dark_mode(tmp_path: Path) -> None:
+    _write_config(tmp_path, "theme: solarized_light\ndark_mode: true\n")
+    assert settings.get_theme() == "solarized_light"
+
+
+def test_set_theme_pops_legacy_dark_mode_and_clears_overrides(tmp_path: Path) -> None:
+    import yaml
+
+    _write_config(tmp_path, "dark_mode: true\ntheme_colors:\n  window: '#123456'\n")
+    assert settings.get_theme_colors() == {"window": "#123456"}
+    settings.set_theme("dim")
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert "dark_mode" not in on_disk
+    assert on_disk["theme"] == "dim"
+    assert on_disk["theme_colors"] == {}
+    assert settings.get_theme_colors() == {}
+
+
+def test_unknown_theme_falls_back_to_light(tmp_path: Path) -> None:
+    _write_config(tmp_path, "theme: no_such_preset\n")
+    assert settings.get_theme() == "light"
+
+
+def test_set_theme_rejects_an_unknown_id_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_theme("no_such_preset")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+def test_a_bad_theme_override_is_skipped_per_entry(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        "theme_colors:\n  window: '#ABCDEF'\n  text: 'red'\n  no_such_role: '#000000'\n  base: 12\n",
+    )
+    assert settings.get_theme_colors() == {"window": "#abcdef"}
+
+
+def test_theme_colors_that_are_not_a_mapping_are_ignored(tmp_path: Path) -> None:
+    _write_config(tmp_path, "theme_colors: [1, 2]\n")
+    assert settings.get_theme_colors() == {}
+
+
+def test_set_and_clear_theme_color_round_trip(tmp_path: Path) -> None:
+    settings.set_theme_color("highlight", "#FF8800")
+    settings.set_theme_color("text", "#010203")
+    settings.clear_theme_color("text")
+    settings._theme_colors = None  # re-read from disk
+    assert settings.get_theme_colors() == {"highlight": "#ff8800"}
+
+
+def test_set_theme_color_rejects_bad_input_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_theme_color("no_such_role", "#000000")
+    with pytest.raises(ValueError):
+        settings.set_theme_color("window", "#12345")
+    assert not (tmp_path / "config.yaml").exists()
 
 
 def test_legacy_elev_step_divisor_migrates_to_pct(tmp_path: Path) -> None:
@@ -202,6 +269,23 @@ def test_preload_zoom_levels_round_trips_through_the_file(tmp_path: Path, monkey
     settings.set_preload_zoom_levels(False)
     monkeypatch.setattr(settings, "_preload_zoom_levels", None)
     assert settings.get_preload_zoom_levels() is False
+
+
+# --- Settings > General > X11 compatibility on Wayland ---------------------
+
+
+def test_xwayland_on_wayland_is_off_until_a_config_says_otherwise(tmp_path: Path) -> None:
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_xwayland_on_wayland() is False
+
+
+def test_xwayland_on_wayland_round_trips_through_the_file(tmp_path: Path, monkeypatch) -> None:
+    settings.set_xwayland_on_wayland(True)
+    monkeypatch.setattr(settings, "_xwayland_on_wayland", None)
+    assert settings.get_xwayland_on_wayland() is True
+    settings.set_xwayland_on_wayland(False)
+    monkeypatch.setattr(settings, "_xwayland_on_wayland", None)
+    assert settings.get_xwayland_on_wayland() is False
 
 
 # --- View > Distance Ticks -------------------------------------------------
@@ -440,7 +524,7 @@ def test_migration_does_not_write_to_disk(tmp_path: Path) -> None:
 
 
 def test_a_config_with_no_keybinds_block_gets_the_new_defaults(tmp_path: Path) -> None:
-    _write_config(tmp_path, "dark_mode: true\n")
+    _write_config(tmp_path, "theme: dark\n")
     assert settings.get_keybind("tool_elevation") == "E"
     assert settings.get_keybind("tool_ruler") == "R"
 
@@ -501,7 +585,7 @@ def test_keybind_holder_returns_none_for_an_untaken_sequence(tmp_path: Path) -> 
 
 
 def test_keybind_holder_returns_none_for_an_empty_sequence(tmp_path: Path) -> None:
-    _write_config(tmp_path, "dark_mode: true\n")
+    _write_config(tmp_path, "theme: dark\n")
     assert settings.keybind_holder("") is None
 
 
@@ -605,6 +689,62 @@ def test_the_membership_gated_setters_refuse_an_off_list_value() -> None:
         settings.set_autosave_location("elsewhere")
 
 
+# GH #127: a custom folder for the central autosave slots.
+
+
+def test_the_autosave_folder_defaults_to_empty_and_round_trips(tmp_path: Path, monkeypatch) -> None:
+    assert settings.get_autosave_dir() == ""
+    custom = tmp_path / "my autosaves"
+    custom.mkdir()
+    settings.set_autosave_dir(str(custom))
+    assert settings.get_autosave_dir() == str(custom)
+    monkeypatch.setattr(settings, "_autosave_dir", None)
+    assert settings.get_autosave_dir() == str(custom)
+    settings.set_autosave_dir("")
+    monkeypatch.setattr(settings, "_autosave_dir", None)
+    assert settings.get_autosave_dir() == ""
+
+
+def test_picking_the_default_folder_itself_stores_empty(tmp_path: Path) -> None:
+    from descape import autosave
+
+    settings.set_autosave_dir(str(autosave.autosave_dir()))
+    assert settings.get_autosave_dir() == ""
+
+
+def test_a_hand_written_default_folder_reads_back_as_empty(tmp_path: Path) -> None:
+    """Otherwise every tick logs a false "not found; wrote to the default folder"."""
+    from descape import autosave
+
+    _write_config(tmp_path, f"autosave_dir: '{autosave.autosave_dir()}'\n")
+    assert settings.get_autosave_dir() == ""
+
+
+@pytest.mark.parametrize("kind", ["compatdata", "template", "relative"])
+def test_the_autosave_folder_setter_refuses_and_keeps_the_stored_value(tmp_path: Path, kind: str) -> None:
+    from descape.scenario_io import TEMPLATE_DIR
+
+    kept = tmp_path / "kept"
+    kept.mkdir()
+    settings.set_autosave_dir(str(kept))
+    bad = {
+        "compatdata": str(tmp_path / "steamapps" / "compatdata" / "813780" / "pfx"),
+        "template": str(TEMPLATE_DIR),
+        "relative": "autosaves/here",
+    }[kind]
+    before = (tmp_path / "config.yaml").read_text()
+    with pytest.raises(ValueError):
+        settings.set_autosave_dir(bad)
+    assert settings.get_autosave_dir() == str(kept)
+    assert (tmp_path / "config.yaml").read_text() == before
+
+
+@pytest.mark.parametrize("raw", ["/x/compatdata/y", "relative/dir", "42", "''", "null", "[/tmp]"])
+def test_a_refused_or_malformed_autosave_folder_reads_back_as_default(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"autosave_dir: {raw}\n")
+    assert settings.get_autosave_dir() == ""
+
+
 def test_pan_speed_defaults_and_round_trips(tmp_path: Path) -> None:
     assert settings.get_pan_speed() == settings.PAN_SPEED_DEFAULT
     settings.set_pan_speed(1234)
@@ -631,3 +771,245 @@ def test_an_out_of_range_or_malformed_pan_speed_falls_back_on_read(
 def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> None:
     settings.set_pan_speed(settings.PAN_SPEED_MAX + 500)
     assert settings.get_pan_speed() == settings.PAN_SPEED_MAX
+
+
+# The refused saved value behind get_autosave_dir()'s "", so a restart can still say why.
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/x/compatdata/y", ("/x/compatdata/y", "compatdata/ folder")),
+    ("relative/dir", ("relative/dir", "not an absolute path")),
+    ("42", ("42", "not a folder path")),
+    ("[/tmp]", ("['/tmp']", "not a folder path")),
+])
+def test_a_refused_autosave_folder_keeps_its_reason(tmp_path: Path, raw: str, expected: tuple[str, str]) -> None:
+    _write_config(tmp_path, f"autosave_dir: {raw}\n")
+    refusal = settings.get_autosave_dir_refusal()
+    assert refusal is not None
+    assert refusal[0] == expected[0]
+    assert expected[1] in refusal[1]
+    assert settings.get_autosave_dir() == ""
+
+
+@pytest.mark.parametrize("raw", ["''", "null"])
+def test_an_unset_autosave_folder_has_no_refusal(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"autosave_dir: {raw}\n")
+    assert settings.get_autosave_dir_refusal() is None
+
+
+def _symlink_loop(tmp_path: Path) -> Path:
+    a, b = tmp_path / "loop-a", tmp_path / "loop-b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    return a
+
+
+def test_a_looped_autosave_folder_reads_back_as_default_with_its_reason(tmp_path: Path) -> None:
+    loop = _symlink_loop(tmp_path)
+    _write_config(tmp_path, f"autosave_dir: '{loop}'\n")
+    assert settings.get_autosave_dir() == ""
+    refusal = settings.get_autosave_dir_refusal()
+    assert refusal is not None
+    assert refusal[0] == str(loop)
+    assert "cannot be resolved" in refusal[1]
+
+
+def test_the_default_folder_check_survives_a_symlink_loop(tmp_path: Path) -> None:
+    assert settings._is_default_autosave_dir(str(_symlink_loop(tmp_path))) is False
+
+
+def test_setting_the_autosave_folder_clears_a_saved_refusal(tmp_path: Path) -> None:
+    _write_config(tmp_path, "autosave_dir: relative/dir\n")
+    assert settings.get_autosave_dir_refusal() is not None
+    settings.set_autosave_dir("")
+    assert settings.get_autosave_dir_refusal() is None
+
+
+# -- GH #139: text box heights ------------------------------------------------
+
+
+def test_text_box_lines_are_none_until_first_saved_and_round_trip(tmp_path: Path, monkeypatch) -> None:
+    assert settings.get_text_box_lines("trigger.description") is None
+    settings.set_text_box_lines("trigger.description", 12)
+    settings.set_text_box_lines("messages.hints", 9)
+    monkeypatch.setattr(settings, "_text_box_lines", None)
+    assert settings.get_text_box_lines("trigger.description") == 12
+    assert settings.get_text_box_lines("messages.hints") == 9
+    assert settings.get_text_box_lines("trigger.message") is None
+    assert "trigger.description: 12" in (tmp_path / "config.yaml").read_text()
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("text_box_lines: {trigger.description: 1}\n", settings.TEXT_BOX_LINES_MIN),
+    ("text_box_lines: {trigger.description: 400}\n", settings.TEXT_BOX_LINES_MAX),
+    ("text_box_lines: {trigger.description: tall}\n", None),
+    ("text_box_lines: {trigger.description: true}\n", None),
+    ("text_box_lines: {trigger.description: 7.5}\n", None),
+    ("text_box_lines: banana\n", None),
+    ("text_box_lines:\n", None),
+])
+def test_a_malformed_or_out_of_range_text_box_height_is_dropped_or_clamped_on_read(
+    tmp_path: Path, raw: str, expected
+) -> None:
+    _write_config(tmp_path, raw)
+    assert settings.get_text_box_lines("trigger.description") == expected
+
+
+def test_a_malformed_entry_drops_only_itself(tmp_path: Path) -> None:
+    _write_config(tmp_path, "text_box_lines: {trigger.description: tall, messages.hints: 10}\n")
+    assert settings.get_text_box_lines("trigger.description") is None
+    assert settings.get_text_box_lines("messages.hints") == 10
+
+
+def test_setting_none_deletes_the_key_and_the_last_one_drops_the_block(tmp_path: Path, monkeypatch) -> None:
+    settings.set_text_box_lines("trigger.description", 12)
+    settings.set_text_box_lines("messages.hints", 9)
+    settings.set_text_box_lines("trigger.description", None)
+    monkeypatch.setattr(settings, "_text_box_lines", None)
+    assert settings.get_text_box_lines("trigger.description") is None
+    assert settings.get_text_box_lines("messages.hints") == 9
+    settings.set_text_box_lines("messages.hints", None)
+    assert "text_box_lines" not in (tmp_path / "config.yaml").read_text()
+
+
+def test_the_text_box_setter_clamps_and_refuses_a_non_int(tmp_path: Path) -> None:
+    settings.set_text_box_lines("trigger.description", 999)
+    assert settings.get_text_box_lines("trigger.description") == settings.TEXT_BOX_LINES_MAX
+    with pytest.raises(ValueError):
+        settings.set_text_box_lines("trigger.description", True)
+    with pytest.raises(ValueError):
+        settings.set_text_box_lines("trigger.description", "12")
+    assert settings.get_text_box_lines("trigger.description") == settings.TEXT_BOX_LINES_MAX
+
+
+# -- GH #166: trigger status marker --------------------------------------------
+
+
+def test_the_trigger_status_settings_default_to_colour_with_ok_rows_coloured(tmp_path: Path) -> None:
+    assert settings.get_trigger_status_marker() == "color"
+    assert settings.get_trigger_status_color_ok_rows() is True
+    assert settings.get_trigger_status_color("ok") == "#4caf50"
+    assert settings.get_trigger_status_color("problem") == "#e05252"
+    assert [mid for mid, _label in settings.TRIGGER_STATUS_MARKERS] == ["color", "icon", "both", "off"]
+
+
+def test_the_trigger_status_colour_defaults_are_the_viewer_status_colours() -> None:
+    pytest.importorskip("PyQt5")
+    from descape import viewer
+
+    assert settings.get_default_trigger_status_color("ok") == viewer.STATUS_OK_COLOR
+    assert settings.get_default_trigger_status_color("problem") == viewer.STATUS_ERROR_COLOR
+
+
+@pytest.mark.parametrize("raw", ["colour", "'COLOR'", "0", "true", "[icon]"])
+def test_an_off_list_trigger_status_marker_falls_back(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"trigger_status_marker: {raw}\n")
+    assert settings.get_trigger_status_marker() == "color"
+
+
+def test_setting_an_unknown_trigger_status_marker_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_trigger_status_marker("colour")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("marker", [mid for mid, _label in settings.TRIGGER_STATUS_MARKERS])
+def test_the_trigger_status_marker_round_trips(tmp_path: Path, monkeypatch, marker: str) -> None:
+    settings.set_trigger_status_marker(marker)
+    monkeypatch.setattr(settings, "_trigger_status_marker", None)
+    assert settings.get_trigger_status_marker() == marker
+
+
+@pytest.mark.parametrize("raw", ["0", "'false'", "[]", "null"])
+def test_a_non_bool_ok_rows_value_reads_as_the_default(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"trigger_status_color_ok_rows: {raw}\n")
+    assert settings.get_trigger_status_color_ok_rows() is True
+
+
+def test_the_ok_rows_toggle_round_trips(tmp_path: Path, monkeypatch) -> None:
+    settings.set_trigger_status_color_ok_rows(False)
+    monkeypatch.setattr(settings, "_trigger_status_color_ok_rows", None)
+    assert settings.get_trigger_status_color_ok_rows() is False
+
+
+def test_a_trigger_status_colour_round_trips_normalized(tmp_path: Path, monkeypatch) -> None:
+    settings.set_trigger_status_color("problem", "#ABCDEF")
+    monkeypatch.setattr(settings, "_trigger_status_colors", None)
+    assert settings.get_trigger_status_color("problem") == "#abcdef"
+    assert settings.get_trigger_status_color("ok") == "#4caf50"
+
+
+def test_a_malformed_trigger_status_colour_keeps_only_its_own_default(tmp_path: Path) -> None:
+    _write_config(tmp_path, "trigger_status_colors:\n  ok: notacolour\n  problem: '#112233'\n  bogus: '#000000'\n")
+    assert settings.get_trigger_status_color("ok") == "#4caf50"
+    assert settings.get_trigger_status_color("problem") == "#112233"
+
+
+def test_a_non_mapping_trigger_status_colours_block_reads_as_defaults(tmp_path: Path) -> None:
+    _write_config(tmp_path, "trigger_status_colors: '#ff0000'\n")
+    assert settings.get_trigger_status_color("ok") == "#4caf50"
+
+
+def test_setting_a_bad_trigger_status_colour_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_trigger_status_color("problem", "red-ish")
+    with pytest.raises(ValueError):
+        settings.set_trigger_status_color("warning", "#ff0000")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+# GH #182: Elevation View and View > Layers persist across launches.
+
+
+def test_terrain_style_and_view_layers_default_on_an_empty_config(tmp_path: Path) -> None:
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_terrain_style() == "stepped"
+    assert settings.get_view_layers() == view_layers.LayerState()
+
+
+@pytest.mark.parametrize("style", terrain_style.TERRAIN_STYLES)
+def test_terrain_style_round_trips(tmp_path: Path, monkeypatch, style: str) -> None:
+    settings.set_terrain_style(style)
+    monkeypatch.setattr(settings, "_terrain_style", None)
+    assert settings.get_terrain_style() == style
+
+
+@pytest.mark.parametrize("value", ["isometric", "Sloped", 3, "[sloped]", "{}"])
+def test_an_unknown_terrain_style_reads_as_the_default(tmp_path: Path, value) -> None:
+    _write_config(tmp_path, f"terrain_style: {value}\n")
+    assert settings.get_terrain_style() == "stepped"
+
+
+def test_setting_an_unknown_terrain_style_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_terrain_style("Sloped")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("spec", view_layers.LAYERS, ids=lambda spec: spec.layer_id)
+def test_each_view_layer_round_trips(tmp_path: Path, monkeypatch, spec) -> None:
+    settings.set_view_layer(spec.layer_id, not spec.default)
+    monkeypatch.setattr(settings, "_view_layers", None)
+    got = settings.get_view_layers()
+    assert getattr(got, spec.layer_id) is (not spec.default)
+    others = {s.layer_id for s in view_layers.LAYERS} - {spec.layer_id}
+    assert all(getattr(got, lid) == getattr(view_layers.LayerState(), lid) for lid in others)
+
+
+def test_view_layer_entries_fall_back_per_entry(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        "view_layers:\n  small_trees: true\n  hero_glow: 'no'\n  farm_overlay: 0\n  bogus_layer: false\n",
+    )
+    assert settings.get_view_layers() == view_layers.LayerState(small_trees=True)
+
+
+def test_a_non_mapping_view_layers_block_reads_as_defaults(tmp_path: Path) -> None:
+    _write_config(tmp_path, "view_layers: [small_trees]\n")
+    assert settings.get_view_layers() == view_layers.LayerState()
+
+
+def test_setting_an_unknown_view_layer_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_view_layer("bogus_layer", True)
+    assert not (tmp_path / "config.yaml").exists()

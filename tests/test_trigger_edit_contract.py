@@ -85,6 +85,28 @@ def test_a_field_edit_reaches_the_saved_file(tmp_path: Path) -> None:
         window.close()
 
 
+def test_a_field_whose_attribute_differs_from_its_name_reaches_the_saved_file(tmp_path: Path) -> None:
+    """GH #141: a spec's name is its label and its attribute is what the
+    library links. Writing the name instead sets a stray Python attribute on
+    the Trigger, and the file never changes."""
+    from descape import trigger_fields
+    from descape.scenario_io import load_map_and_units, parse_triggers
+
+    spec = trigger_fields.FieldSpec("description_string_table_id", trigger_fields.INT, attribute="description_stid")
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.set_trigger_field(0, spec, 43998)
+
+        out = tmp_path / "edited.aoe2scenario"
+        _save(window, out)
+        reloaded = parse_triggers(load_map_and_units(out))
+        assert reloaded.triggers[0].description_stid == 43998
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_field_edit_then_undo_saves_byte_identically(tmp_path: Path) -> None:
     """One EditHistory, so an undone trigger edit has to restore the bytes
     exactly. "Close enough" here means a diff against the user's original file

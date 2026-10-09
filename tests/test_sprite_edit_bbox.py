@@ -857,15 +857,9 @@ def test_no_real_sprite_reaches_past_its_committed_constant():
     scan = conftest.load_verify_module("scan_sprite_reach")
 
     graphics_dir = Path(install) / unit_sprites.GRAPHICS_SUBPATH
-    # Mirrors tools/scan_sprite_reach.py's own main() -- composite pieces are
-    # scanned at their own (dx, dy) offset from the shared unit anchor, not
-    # at (0, 0), same reasoning as that module's docstring.
-    entries: set[tuple[str, int, int]] = set()
-    for gm_entry in unit_sprites.graphic_map().values():
-        entries.add((gm_entry["file_name"], 0, 0))
-        for piece in gm_entry.get("pieces", ()):
-            entries.add((piece["file_name"], piece["dx"], piece["dy"]))
-    entries = sorted(entries)
+    # The tool's own entry list: composite pieces at their own (dx, dy) offset
+    # from the shared unit anchor, and every per-civ building entry (GH #48).
+    entries = scan.referenced_entries()
     maxima, worst, readable, unreadable = scan.scan(graphics_dir, entries)
 
     assert readable > 0, (

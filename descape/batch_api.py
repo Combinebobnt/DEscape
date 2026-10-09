@@ -36,15 +36,16 @@ fixed it.
 from __future__ import annotations
 
 from AoE2ScenarioParser.datasets.buildings import BuildingInfo
-from AoE2ScenarioParser.datasets.terrains import TerrainId
 from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
 from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import MAX_ELEVATION
 from descape.scenario_io import LoadedScenario, load_map_and_units
+from descape.scenario_resize import Anchor, ResizeResult, resize_scenario
 from descape.scenario_write import write_scenario
-from descape.unit_model import UnitEditModel  # noqa: F401 -- re-exported, see below
+from descape.terrain_palette import known_terrain_name
+from descape.unit_model import UnitEditModel  # re-exported too, see below
 
 # Re-exported under this module so a batch script only needs `from descape
 # import batch_api` and never has to know which of scenario_io/scenario_write/
@@ -121,7 +122,9 @@ def neighbors(scenario: LoadedScenario, x: int, y: int, diagonal: bool = False) 
 def is_water(terrain_id: int) -> bool:
     """True for any water or shallows-family terrain (open water, all
     WATER_* variants, SHALLOWS/SWAMP_SHALLOWS/etc). Keyword match against
-    TerrainId's own enum name -- the same approach descape/terrain_palette.py
+    TerrainId's own enum name (or, for a .dat-only id like 131, the
+    enum-style name terrain_palette derives from its .dat code; any other id
+    raises ValueError) -- the same approach descape/terrain_palette.py
     uses for color classification, since AoE2ScenarioParser has no semantic
     terrain-family dataset of its own. "SHALLOW" has to be checked
     separately from "WATER": confirmed directly against the live TerrainId
@@ -142,7 +145,7 @@ def is_water(terrain_id: int) -> bool:
     WATER_2D_BRIDGE, FOREST_MANGROVE and the five rice-farm terrains, which
     is a behaviour change to a published API whose own assertions are pinned
     in tools/verify_batch_api.py and tests/migration_manifest.py."""
-    name = TerrainId(terrain_id).name
+    name = known_terrain_name(terrain_id)
     return "WATER" in name or "SHALLOW" in name
 
 
@@ -199,6 +202,35 @@ def raise_elevation_under_many(scenario: LoadedScenario, units: list[Unit], amou
     for (x, y), target_elevation in targets.items():
         set_tile_elevation(scenario.map_manager, x, y, target_elevation)
     return len(targets)
+
+
+def resize_map(
+    scenario: LoadedScenario,
+    width: int,
+    height: int,
+    anchor: Anchor | str = Anchor.TOP_LEFT,
+    *,
+    units: UnitEditModel | None = None,
+    triggers=None,
+    options=None,
+    messages=None,
+) -> ResizeResult:
+    """Grows or shrinks the map (descape/scenario_resize.py), with `anchor`
+    an Anchor or its name ("BOTTOM_RIGHT"). Square-only for now. Pass every
+    edit model holding edits you made first (the same four save() takes:
+    units, triggers, options, messages), or those edits are left out; terrain
+    edits are always carried. Returns a NEW document with them baked in;
+    `scenario` is untouched. To keep it:
+
+        result = batch_api.resize_map(scenario, 168, 168, "CENTER")
+        batch_api.save(result.loaded, out_path, units=result.unit_edits,
+                       triggers=result.trigger_edits)
+    """
+    if isinstance(anchor, str):
+        anchor = Anchor[anchor.upper()]
+    return resize_scenario(
+        scenario, width, height, anchor, units=units, triggers=triggers, options=options, messages=messages
+    )
 
 
 def set_terrain(tile: TerrainTile, terrain_id: int) -> None:

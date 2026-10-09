@@ -64,6 +64,53 @@ def test_overlay_color_round_trips_through_the_file(tmp_path: Path, monkeypatch)
             assert settings.get_overlay_color(color_id) == default
 
 
+# --- overlay opacity (GH #129) -----------------------------------------------
+
+
+def test_missing_opacity_config_returns_every_declared_default(tmp_path: Path) -> None:
+    for group_id, _label, default in settings.OVERLAY_OPACITIES:
+        assert settings.get_overlay_opacity(group_id) == default
+        assert settings.get_default_overlay_opacity(group_id) == default
+    assert {default for _gid, _label, default in settings.OVERLAY_OPACITIES} == {settings.OVERLAY_OPACITY_MAX}
+
+
+@pytest.mark.parametrize("bad", ["'40'", "0", "9", "101", "null", "[40]", "4.5e1", "true"])
+def test_a_malformed_persisted_opacity_falls_back_per_id_others_kept(tmp_path: Path, bad: str) -> None:
+    _write_config(tmp_path, f"overlay_opacity:\n  region: {bad}\n  trigger_area: 35\n  no_such_group: 50\n")
+    assert settings.get_overlay_opacity("region") == settings.get_default_overlay_opacity("region")
+    assert settings.get_overlay_opacity("trigger_area") == 35
+    assert settings.get_overlay_opacity("unit_select") == settings.get_default_overlay_opacity("unit_select")
+
+
+@pytest.mark.parametrize("raw", ["'not a mapping'", "[10, 20]", "42"])
+def test_a_non_mapping_overlay_opacity_reads_as_every_default(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"overlay_opacity: {raw}\n")
+    for group_id, _label, default in settings.OVERLAY_OPACITIES:
+        assert settings.get_overlay_opacity(group_id) == default
+
+
+@pytest.mark.parametrize("bad", [0, 9, 101, "40", None, 40.0, True])
+def test_set_overlay_opacity_with_a_bad_value_raises_and_writes_nothing(tmp_path: Path, bad) -> None:
+    with pytest.raises(ValueError):
+        settings.set_overlay_opacity("region", bad)
+    assert not (tmp_path / "config.yaml").exists()
+
+
+def test_set_overlay_opacity_with_an_unknown_group_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_overlay_opacity("terrain_brush", 50)
+    assert not (tmp_path / "config.yaml").exists()
+
+
+def test_overlay_opacity_round_trips_through_the_file_and_keeps_the_others(tmp_path: Path, monkeypatch) -> None:
+    settings.set_overlay_opacity("region", settings.OVERLAY_OPACITY_MIN)
+    settings.set_overlay_opacity("trigger_area", 64)
+    monkeypatch.setattr(settings, "_overlay_opacity", None)
+    assert settings.get_overlay_opacity("region") == settings.OVERLAY_OPACITY_MIN
+    assert settings.get_overlay_opacity("trigger_area") == 64
+    assert settings.get_overlay_opacity("unit_select") == settings.get_default_overlay_opacity("unit_select")
+
+
 # The "every OVERLAY_COLORS prefix has a section title" reflective check
 # lives in test_overlay_colors_viewer.py instead of here: _OVERLAY_SECTION_
 # TITLES is a SettingsDialog class attribute (descape/viewer.py), which needs

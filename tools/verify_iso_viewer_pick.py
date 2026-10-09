@@ -63,6 +63,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,7 +76,7 @@ from PyQt5.QtWidgets import QApplication
 
 from descape import iso_geometry
 from descape.viewer import ViewerWindow
-from testkit import qt_capture
+from testkit import qt_capture, settings_isolation
 
 
 def _current_elevations(scenario) -> np.ndarray:
@@ -232,16 +233,20 @@ def main() -> None:
     # singleton registration alone). Do not "clean up" this assignment.
     app = QApplication.instance() or QApplication(sys.argv[:1])
 
+    # The combo switches persist terrain_style (GH #182): keep them out of the real config.yaml.
+    settings_isolation.pin_install_path()
     failures = 0
-    for path in files:
-        try:
-            ok, detail = check_file(path)
-        except Exception as e:
-            ok, detail = False, f"{type(e).__name__}: {e}"
-        status = "PASS" if ok else "FAIL"
-        if not ok:
-            failures += 1
-        print(f"{status}  {path.name:38s} {detail}")
+    with tempfile.TemporaryDirectory(prefix="verify_iso_viewer_pick_") as tmp:
+        settings_isolation.isolate_settings(Path(tmp))
+        for path in files:
+            try:
+                ok, detail = check_file(path)
+            except Exception as e:
+                ok, detail = False, f"{type(e).__name__}: {e}"
+            status = "PASS" if ok else "FAIL"
+            if not ok:
+                failures += 1
+            print(f"{status}  {path.name:38s} {detail}")
 
     print(f"\n{len(files) - failures}/{len(files)} checks passed")
     sys.exit(1 if failures else 0)

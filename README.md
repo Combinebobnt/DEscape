@@ -149,18 +149,21 @@ are believed to be correct but unverified in practice.
 `AoE2ScenarioParser` is version-pinned rather than just listed, specifically
 because `descape/scenario_io.py` reaches into several of its *private* methods
 (see below) — an unpinned install could silently pick up a version where those
-methods changed or were removed. Confirmed via PyPI's metadata API that the
-`0.8.3` release corresponds exactly to git tag `v0.8.3` (commit
-`b763e2e37006bedab50c7d349b3ce24b9c2497f6`) — no version-placeholder issues on
-PyPI's side; that's purely an artifact of installing from a raw git clone
-instead (see below).
+methods changed or were removed. Confirmed that the PyPI `0.9.3` sdist
+matches git tag `v0.9.3` (commit `29b8a25e8a345f1b1add3318b4c41cbfe35faf97`)
+file for file, apart from `version.py`'s substituted version string — no
+version-placeholder issues on PyPI's side; that's purely an artifact of
+installing from a raw git clone instead (see below).
 
-`0.8.3` ships scenario definitions up to version 1.58. DEscape supplies the
-rest itself under `descape/versions/DE/`: its own structure for 1.21, and
-1.59's structure and trigger definitions vendored from AoE2ScenarioParser's
-unreleased 1.59 support (see that directory's `PROVENANCE.md`). The
-library's own definition always wins, so the repo copy goes dormant once
-the pin moves to a release that ships it.
+The pin is deliberately not `0.9.4`. Its new 1.43/1.57 effect fillers
+(upstream #133) are only linked for 1.54, so any newly built effect on a 1.43
+or 1.57 file (New, Copy, Retype, Paste) writes extra bytes and the saved
+Triggers section no longer parses. The library's own `from_file` /
+`write_to_file` round trip fails the same way; `0.9.3` does not.
+
+`0.9.3` ships scenario definitions for versions 1.36 to 1.59. DEscape supplies
+its own structure for 1.21 under `descape/versions/DE/`. The library's own
+definition always wins over a repo one.
 
 <details>
 <summary>Alternative: install AoE2ScenarioParser from a local clone instead</summary>
@@ -178,15 +181,15 @@ all:
 
 ```bash
 git clone https://github.com/KSneijders/AoE2ScenarioParser.git ~/source/AoE2ScenarioParser
-git -C ~/source/AoE2ScenarioParser checkout v0.8.3
-python3 -c "import pathlib; p = pathlib.Path.home() / 'source/AoE2ScenarioParser/pyproject.toml'; p.write_text(p.read_text().replace('<VERSION_HERE>', '0.8.3'))"
+git -C ~/source/AoE2ScenarioParser checkout v0.9.3
+python3 -c "import pathlib; p = pathlib.Path.home() / 'source/AoE2ScenarioParser/pyproject.toml'; p.write_text(p.read_text().replace('<VERSION_HERE>', '0.9.3'))"
 pip install -e ~/source/AoE2ScenarioParser
 pip install numpy Pillow PyQt5 PyYAML   # everything else from requirements.txt
 ```
 
 This is what this project's own development environment actually uses (proven
 working, unlike the plain `pip install -r requirements.txt` path above). If
-you update the clone past `v0.8.3`, re-run `tools/dump_scenario.py` against a
+you update the clone past `v0.9.3`, re-run `tools/dump_scenario.py` against a
 real scenario and check the output still looks sane before trusting it.
 
 </details>
@@ -224,10 +227,48 @@ few minutes to its own rotating slot. It never writes the file you have open,
 and never clears the unsaved-changes marker. A tick is skipped while the
 document is clean, unchanged since its last autosave, or mid-stroke, so the
 write only ever lands on an idle map. Slots go in an `autosave/` folder
-beside `config.yaml`, or beside the scenario itself if you pick that;
-File > Recover from Autosave… lists them and opens one as a new untitled
+beside `config.yaml` or a folder you pick in Settings > Saving, or beside the
+scenario itself if you pick that. Switching folders leaves existing autosaves
+where they are, still listed in Recover, and a `compatdata/` folder is
+refused. File > Recover from Autosave… lists them and opens one as a new untitled
 document, so recovering can never overwrite the file you're comparing it
 against.
+
+**Edit > Find and Replace…** searches every placed object, including ones
+hidden by the Filters menu, garrisoned or off the map: by name (substring or
+regex, `#id` for an exact type), owner, category, kind, specific types and
+area. Tick the results to select them on the map, delete them, change their
+owner, replace them with another object type (each keeps its id, so triggers
+and garrisons that name it still work) or export them as CSV. Each operation
+is one undo step. Its Triggers tab searches trigger names, descriptions,
+messages, identifiers and XS (with the same regex mode), the unit types
+conditions and effects name, and which triggers use a given placed object;
+it replaces text or types, deletes, enables or disables the matches, and
+double-clicking jumps to the trigger. Replacing an object offers to retarget
+the trigger effects that select it by type, in the same undo step.
+
+**File > Resize Map…** grows or shrinks the open map, keeping any of nine
+anchors in place (a corner, an edge's midpoint, or the centre). Terrain,
+elevation, objects and trigger areas and locations move with the map; new
+ground is plain grass at the height of the old edge beside it, so no cliff-like
+jump appears. Objects that end up off the map, or that the new edge would cut
+through, are deleted, together with
+anything garrisoned in them, and the dialog says how many before you commit.
+Trigger areas are shifted only in files whose triggers DEscape can write back;
+otherwise the dialog warns that they are left as they were. A resize cannot be
+undone, and your unsaved edits are carried into the resized map. Only square
+maps for now. From a script: `batch_api.resize_map(scenario, 168, 168, "CENTER")`.
+
+**Trigger status colours.** In Triggers mode, a trigger, condition or effect
+shows green when every field its type needs is set and every unit and trigger
+it names exists, and red when something is missing. Hover a red row to see
+what. Green means complete, not that the trigger does what you meant in game:
+nothing here runs it. A trigger with no effects is red unless it is shown as
+an objective, an objective header or on screen, section dividers are never coloured, and
+a condition or effect of a type DEscape does not know is left unmarked.
+Settings > Appearance > Trigger status switches the colours to tick and cross
+icons (or both, or off), stops marking rows that pass so only problems stand
+out, and changes the two colours.
 
 For XS scripts in Script Call triggers, including scripts longer than the
 in-game editor accepts, see `docs/XS_SCRIPTING.md`.
@@ -269,6 +310,15 @@ region to eligible tiles (any tile, water only, or one terrain type),
 optionally skips tiles already under a unit, and places a count or a density of
 randomized copies as one undo step. The live "N eligible tiles" line is exactly
 what will be placed.
+
+Its other mode, **Move the selected units**, takes the units selected in Units
+mode instead and moves each one to a random eligible tile of the region, one
+per tile while there is room, as one undo step. Only `x`/`y` change; rotation
+and every other field are kept, buildings snap to whole tiles with their own
+footprint (one that cannot fit stays put), and a garrison moves with its host.
+The same seed and selection give the same result. From a script, it is
+`scatter_existing_units(scenario, units, tiles, seed=7)`, which returns the
+new positions and leaves applying them to you.
 
 `batch_scripts/` has runnable examples:
 

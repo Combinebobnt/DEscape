@@ -103,7 +103,8 @@ Diplomacy
 Triggers
 ├─ Trigger fields: Enabled, Looping, Description, Display as objective,
 │  Short Description, Display on Screen, Make Header, Mute Objectives,
-│  Display Order
+│  Display Order, String Table ID (under each description), Description
+│  Order (higher lists first), Execute On Load (scenario 1.55+)
 ├─ Editor UI: trigger-list panel (New/Copy/Delete/Info),
 │  condition/effect panel (New Effect/New Condition/Delete/Copy)
 ├─ Conditions (40) -- AI Signal, AI Signal Multiplayer, Accumulate Attribute,
@@ -243,7 +244,7 @@ Configures pre/post-scenario movie clips. Mainly a campaign feature; the guide n
 
 The most powerful part of the editor: each trigger has **Effects** (actions it performs) and **Conditions** (checks that gate whether it fires) — a trigger only runs its effects once every one of its conditions is true.
 
-**Per-trigger fields**: Enabled (active at game start), Looping (effects re-run once/second vs. fire once), Description (shown in the Objectives panel), Display as objective, Short Description (on-screen objective text), Display on Screen, Make Header (larger header text, combined with the display flags), Mute Objectives (suppress completion notifications), Display Order.
+**Per-trigger fields**: Enabled (active at game start), Looping (effects re-run once/second vs. fire once), Description (shown in the Objectives panel), Display as objective, Short Description (on-screen objective text), Display on Screen, Make Header (larger header text, combined with the display flags), Mute Objectives (suppress completion notifications), Display Order, a String Table ID under each of Description and Short Description (0 and -1 both mean none; a real id appears to make the game show its own localized string instead of the typed text, inferred from the official campaigns' "Main Objectives" headers, 43998), Description Order (position in the Objectives panel: higher numbers list first, independent of trigger index; official campaigns give the header 100 and count down), Execute On Load (scenario 1.55 and later).
 
 **Editor UI**: two left-side panels — an upper trigger-list panel (New / Copy / Delete / Info) and a lower conditions-and-effects panel (New Effect / New Condition / Delete / Copy).
 

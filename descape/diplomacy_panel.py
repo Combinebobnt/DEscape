@@ -81,7 +81,7 @@ from descape.diplomacy_fields import (
 from descape.map_options_panel import MapOptionsPanel
 from descape.player_fields import defined_player_ids
 from descape.scenario_io import LoadedScenario
-from descape.viewer_common import _add_player_item, _make_spinbox, _set_player_item
+from descape.viewer_common import FontScaledWidth, _add_player_item, _make_spinbox, _set_player_item
 
 # (label, value) pairs for Ally/Neutral/Enemy, reused rather than redefined
 # -- see module docstring. trigger_fields.enum_choices() returns the raw
@@ -116,8 +116,8 @@ class DiplomacyPanel(QWidget):
     # the exact width an offscreen 8-player file's rows stop wrapping the
     # label above the field (WrapLongRows); 10 px of headroom over that
     # measured tipping point. See tests/test_diplomacy_panel.py's width
-    # check.
-    MIN_USEFUL_WIDTH = 430
+    # check. Scales with the app font (FontScaledWidth, GH #142).
+    MIN_USEFUL_WIDTH = FontScaledWidth(430)
 
     _NO_DOCUMENT = "No map open."
     # Fallback only -- the window always resolves a specific per-cell reason

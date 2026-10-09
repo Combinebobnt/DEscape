@@ -49,6 +49,11 @@ op starts, a drag begins, the idle flush runs, or Help > Debug Log opens
 or inside another op is only a phase of it (one with the same label as the
 open op is transparent), so it never disturbs the drag's own step.
 
+sub_phase(parent, name) splits an open phase without counting it twice: it
+prints as `parent.name` beside the parent (the Draw stroke end's
+`unit_plan.scan`/`.plan`/`.begin`/`.model`/`.commit`) and is left out of
+ms/step, `untimed` and the drag's `wall`/`untimed`.
+
 Level events (level_event()/level()) are cache-side builds: a level's sprite
 walk, a deferred elevation flush, a unit pack, a Flat icon layer. Each is
 tagged with where it ran (`repaint`, `margin-warm`, `level-warm`,
@@ -98,7 +103,7 @@ import os
 import sys
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from typing import Self
 
@@ -126,6 +131,11 @@ _warm_ticks: list[tuple[float, int, float]] = []
 _warm_worker: list[float] = []
 _armed_label: str | None = None
 _drag_active = False
+# begin_drag()'s brush text ("9 circle"), printed on the drag header until flush().
+_drag_brush: str | None = None
+# Mouse moves MapView stashed / handled during the drag (its move coalescer).
+_input_moves = 0
+_input_handled = 0
 # Called on every repaint recorded outside a drag; viewer_canvas installs a
 # timer restart here that ends in flush_idle(), keeping this module Qt-free.
 _idle_scheduler = None
@@ -140,8 +150,8 @@ _where_stack: list[str] = []
 _level_events: dict[tuple[str, int, str], _LevelAgg] = {}
 # One (tick_ms, installs, slowest_install_ms) per LevelWarmer tick.
 _level_warm_ticks: list[tuple[float, int, float]] = []
-# The slowest of those ticks: (tick_ms, ms per step label, gc_ms).
-_level_warm_worst: tuple[float, dict[str, float], float | None] | None = None
+# The slowest of those ticks: (tick_ms, ms per step label, gc_ms, (max step ms, its name) or None).
+_level_warm_worst: tuple[float, dict[str, float], float | None, tuple[float, str] | None] | None = None
 # Mip transitions seen by paint since the last view line, and the last mip.
 _mip_changes: list[tuple[int, int]] = []
 _view_mip: int | None = None
@@ -162,6 +172,10 @@ _span_stack: list[_SpanTimer] = []
 # This drag's span wall ms, and the phase ms recorded inside those spans.
 _drag_wall = 0.0
 _drag_span_phase_ms = 0.0
+# Names of phase()s currently open, outermost first, for sub_phase()'s parent check.
+_open_phases: list[str] = []
+# Every sub_phase() name seen: printed like a phase, left out of every sum.
+_SUB_PHASES: set[str] = set()
 # (end_time, ms, generation) per gen-2 collection and per young one of at
 # least YOUNG_GC_MIN_MS, appended by _on_gc on any thread.
 _gc_raw: deque = deque()
@@ -375,7 +389,7 @@ def _drain_textures() -> None:
 def _record(name: str, elapsed_ms: float) -> None:
     global _drag_span_phase_ms
     _recent.append((time.perf_counter(), elapsed_ms, _op_label(), name))
-    if _span_stack and _drag_active:
+    if _span_stack and _drag_active and name not in _SUB_PHASES:
         _drag_span_phase_ms += elapsed_ms
     if name == "repaint":
         _repaint_durations.append(elapsed_ms)
@@ -395,6 +409,7 @@ class _PhaseTimer:
     def __enter__(self) -> Self:
         if self._name == "repaint":
             _where_stack.append("repaint")
+        _open_phases.append(self._name)
         self._t0 = time.perf_counter()
         return self
 
@@ -402,6 +417,8 @@ class _PhaseTimer:
         elapsed_ms = (time.perf_counter() - self._t0) * 1000
         if self._name == "repaint":
             _where_stack.pop()
+        if self._name in _open_phases:
+            _open_phases.remove(self._name)
         _record(self._name, elapsed_ms)
 
 
@@ -409,6 +426,17 @@ def phase(name: str):
     if not _enabled:
         return _NULL_PHASE
     return _PhaseTimer(name)
+
+
+def sub_phase(parent: str, name: str):
+    """A split of the open phase() `parent`, recorded as `parent.name`. It
+    prints beside its parent but stays out of ms/step and untimed, which
+    already count the parent. Null when `parent` isn't open."""
+    if not _enabled or parent not in _open_phases:
+        return _NULL_PHASE
+    full = f"{parent}.{name}"
+    _SUB_PHASES.add(full)
+    return _PhaseTimer(full)
 
 
 class _SpanTimer:
@@ -656,7 +684,7 @@ class _PendingOp:
             head = f"perf op {self.label}: {total:.0f}ms"
         else:
             head = f"perf op {self.label} x{n}: {total:.0f}ms total, {total / n:.1f}ms mean (max {max(self.totals):.1f})"
-        untimed = max(0.0, total - sum(self.phases.values()))
+        untimed = max(0.0, total - sum(ms for name, ms in self.phases.items() if name not in _SUB_PHASES))
         phases = [f"{name} {ms / n:.1f}" for name, ms in self.phases.items()]
         phases.append(f"untimed {untimed / n:.1f}")
         parts = [head, " ".join(phases)]
@@ -778,17 +806,21 @@ def view_mip(mip: int) -> None:
 
 
 def level_warm_tick(
-    tick_ms: float, install_ms: Sequence[float], split: dict[str, float] | None = None, gc_ms: float | None = None
+    tick_ms: float, install_ms: Sequence[float], split: dict[str, float] | None = None, gc_ms: float | None = None,
+    max_step: tuple[float, Callable[[], str]] | None = None,
 ) -> None:
     """Records one LevelWarmer tick for the `warm:` bucket, keeping the worst
-    tick's split (ms per step label) and its gc ms for the line. Same
-    idle-flush restart as warm_tick()."""
+    tick's split (ms per step label), its gc ms and its longest single step
+    for the line. max_step is (ms, name()), name() called only when this
+    tick becomes the worst (it looks the unit up). Same idle-flush restart
+    as warm_tick()."""
     global _level_warm_worst
     if not _enabled:
         return
     _level_warm_ticks.append((tick_ms, len(install_ms), max(install_ms, default=0.0)))
     if _level_warm_worst is None or tick_ms > _level_warm_worst[0]:
-        _level_warm_worst = (tick_ms, dict(split or {}), gc_ms)
+        step = None if max_step is None else (max_step[0], max_step[1]())
+        _level_warm_worst = (tick_ms, dict(split or {}), gc_ms, step)
     _recent.append((time.perf_counter(), tick_ms, _op_label(), "level-warm tick"))
     _schedule_idle()
 
@@ -923,7 +955,7 @@ def step() -> None:
     global _current_step
     if not _enabled or not _current_step:
         return
-    _step_totals.append(sum(_current_step.values()))
+    _step_totals.append(sum(ms for name, ms in _current_step.items() if name not in _SUB_PHASES))
     for phase_name, elapsed_ms in _current_step.items():
         _phase_sums[phase_name] = _phase_sums.get(phase_name, 0.0) + elapsed_ms
     _current_step = {}
@@ -973,14 +1005,18 @@ def _warm_summary() -> str:
 
 def _worst_tick_text() -> str:
     """The slowest level-warm tick's split: its steps, `other` for the rest
-    of the tick, and its gc ms, which nests inside the steps."""
+    of the tick, its gc ms, which nests inside the steps, and its longest
+    single step with the unit that step resolved (`max step X (walk 1 p0
+    #420 const 1776)`)."""
     if _level_warm_worst is None:
         return ""
-    tick_ms, split, gc_ms = _level_warm_worst
+    tick_ms, split, gc_ms, step = _level_warm_worst
     parts = [f"{name} {ms:.1f}" for name, ms in split.items()]
     parts.append(f"other {max(0.0, tick_ms - sum(split.values())):.1f}")
     if gc_ms is not None:
         parts.append(f"gc {gc_ms:.1f}")
+    if step is not None:
+        parts.append(f"max step {step[0]:.1f} ({step[1]})")
     return " [" + "; ".join(parts) + "]"
 
 
@@ -1024,7 +1060,7 @@ def _flush_view() -> None:
         parts.append(_warm_summary())
     if parts or _level_events or _gc_pending.count:
         parts.extend(_take_extras())
-        debug_log.log(f"perf view: {', '.join(parts)}, composite {composite_backend.active_backend()}")
+        debug_log.log(f"perf view: {', '.join(parts)}{_backend_text()}")
         _clear_repaints()
         _warm_ticks = []
         _warm_worker = []
@@ -1032,17 +1068,50 @@ def _flush_view() -> None:
         _level_warm_worst = None
 
 
-def begin_drag() -> None:
+def _backend_text() -> str:
+    """`, composite X, platform Y`, the platform omitted before a QGuiApplication exists."""
+    text = f", composite {composite_backend.active_backend()}"
+    # Only if the app already loaded Qt, so this module stays Qt-free; a bare QCoreApplication reports "".
+    qtgui = sys.modules.get("PyQt5.QtGui")
+    if qtgui is None:
+        return text
+    app_cls = qtgui.QGuiApplication
+    name = app_cls.platformName() if app_cls.instance() is not None else ""
+    if name:
+        text += f", platform {name}"
+    return text
+
+
+def note_move_stashed() -> None:
+    """MapView stashed a mouse move for its coalescer."""
+    global _input_moves
+    if _enabled and _drag_active:
+        _input_moves += 1
+
+
+def note_move_handled() -> None:
+    """MapView's coalescer handed a stashed move to mouseMoveEvent."""
+    global _input_handled
+    if _enabled and _drag_active:
+        _input_handled += 1
+
+
+def begin_drag(brush: str | None = None) -> None:
     """Called when a stroke starts, before its first tile is touched. The
-    press span is already open: its wall from before this call counts."""
+    press span is already open: its wall from before this call counts.
+    `brush` ("9 circle") goes on the drag header, None for a brushless tool."""
     global _drag_active, _current_step, _phase_order, _drag_wall, _drag_span_phase_ms
+    global _input_moves, _input_handled, _drag_brush
     if not _enabled:
         return
+    _drag_brush = brush
     _write_pending_op()
     if _armed_label is None:
         _flush_view()
     # Hover pick/highlight since the last flush, not part of this drag.
     _current_step = {}
+    _input_moves = 0
+    _input_handled = 0
     _phase_order = [name for name in _phase_order if name in _phase_sums]
     _drag_wall = 0.0
     _drag_span_phase_ms = 0.0
@@ -1081,19 +1150,27 @@ def flush(label: str) -> None:
     span wall time (press, steps, and the release up to this call), and that
     minus the phases recorded inside those spans."""
     global _current_step, _step_totals, _phase_sums, _phase_order, _drag_wall, _drag_span_phase_ms
+    global _input_moves, _input_handled, _drag_brush
     if not _enabled:
         return
     _credit_open_span()
     n = len(_step_totals)
+    brush = f", brush {_drag_brush}" if _drag_brush else ""
+    _drag_brush = None
     if n == 0 and not _repaint_durations:
         _current_step = {}
         return
     _write_pending_op()
     extras = _take_extras()
+    if _input_moves or _input_handled:
+        extras.append(f"input: moves {_input_moves}, handled {_input_handled}")
     lines = []
-    # Last on the header line, so tester traces say which composite path ran.
-    backend = f", composite {composite_backend.active_backend()}"
+    # Near the end of the header line, so tester traces say which composite path and platform ran.
+    backend = _backend_text()
     if n:
+        if _repaint_durations:
+            # Per repaint call, the unit GH #78/#179's tester figures use; distance ticks record two per paint.
+            backend += f", {n / len(_repaint_durations):.2f} steps/repaint"
         total = sum(_step_totals)
         mean_step = total / n
         max_step = max(_step_totals)
@@ -1105,7 +1182,7 @@ def flush(label: str) -> None:
             wall = f", wall {_drag_wall:.0f}ms, untimed {max(0.0, _drag_wall - _drag_span_phase_ms):.0f}ms"
         lines.append(
             f"perf drag {label}: {n} steps, {total:.0f}ms total, {mean_step:.1f}ms/step (max {max_step:.1f})"
-            f"{wall}{backend}"
+            f"{wall}{brush}{backend}"
         )
         lines.append(f"  | {phase_line}")
         if _current_step:
@@ -1126,6 +1203,8 @@ def flush(label: str) -> None:
     _phase_order = []
     _drag_wall = 0.0
     _drag_span_phase_ms = 0.0
+    _input_moves = 0
+    _input_handled = 0
     _clear_repaints()
 
 
@@ -1145,6 +1224,10 @@ def _fresh_state() -> dict[str, object]:
         "_warm_worker": [],
         "_armed_label": None,
         "_drag_active": False,
+        "_drag_brush": None,
+        "_SUB_PHASES": set(),
+        "_input_moves": 0,
+        "_input_handled": 0,
         "_op_stack": [],
         "_top_op": None,
         "_pending_op": None,
@@ -1162,6 +1245,7 @@ def _fresh_state() -> dict[str, object]:
         "_span_stack": [],
         "_drag_wall": 0.0,
         "_drag_span_phase_ms": 0.0,
+        "_open_phases": [],
         "_gc_raw": deque(),
         "_gc_t0": None,
         "_gc_total_ms": 0.0,

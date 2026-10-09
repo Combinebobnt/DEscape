@@ -14,9 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
-from AoE2ScenarioParser.datasets.terrains import TerrainId
-
-from descape.terrain_palette import name_for_terrain_id
+from descape import object_catalog
+from descape.terrain_palette import is_dat_only_terrain, name_for_terrain_id, terrain_ids
 
 CATEGORY_UNUSED = "Unused / moddable"
 
@@ -77,16 +76,22 @@ def display_name(name: str) -> str:
     return name.replace("_", " ").title()
 
 
+def _entry(terrain_id: int, dat_terrains: dict[int, dict]) -> TerrainEntry:
+    name = name_for_terrain_id(terrain_id)
+    category = _category_for(name)
+    if is_dat_only_terrain(terrain_id):
+        hidden = bool(dat_terrains.get(terrain_id, {}).get("hidden"))
+    else:
+        hidden = category == CATEGORY_UNUSED
+    return TerrainEntry(id=terrain_id, name=name, category=category, hidden=hidden)
+
+
 @lru_cache(maxsize=1)
 def terrains() -> tuple[TerrainEntry, ...]:
-    """Every TerrainId as a catalog row, id order. Built from
-    name_for_terrain_id rather than re-deriving a second id->name map."""
-    return tuple(
-        TerrainEntry(
-            id=terrain.value,
-            name=name_for_terrain_id(terrain.value),
-            category=_category_for(terrain.name),
-            hidden=_category_for(terrain.name) == CATEGORY_UNUSED,
-        )
-        for terrain in sorted(TerrainId, key=lambda t: t.value)
-    )
+    """Every terrain_palette.terrain_ids() id as a catalog row, id order:
+    TerrainId plus the .dat-only ids (131-133). Built from
+    name_for_terrain_id rather than re-deriving a second id->name map. A
+    dat-only id is hidden when the .dat hides it from the editor; an enum id
+    by its prefix, as before."""
+    dat_terrains = object_catalog.dat_terrains()
+    return tuple(_entry(terrain_id, dat_terrains) for terrain_id in terrain_ids())

@@ -497,17 +497,34 @@ def _inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
     """Maps destination pixels local to a tile's (2*half_w, 2*half_h)
     diamond bounding box back to source pixels in its tile_px x tile_px
     square texture block -- the per-pixel counterpart to the whole-tile
-    analytic inverse in screen_to_tile(), same change-of-basis structure
-    (u, v diamond-local coords -> a, b source-axis coords), just applied
-    within one tile instead of across the whole map. Nearest-neighbor only
-    (floor, not interpolated) -- accepted aliasing, see the parent plan's
-    Risk #3."""
+    analytic inverse in screen_to_tile(), applied within one tile instead
+    of across the whole map. Nearest-neighbor only (floor, not
+    interpolated).
+
+    The basis is the TILE's own: s = (u - v + 1)/2 is the fraction along
+    +x (screen-NE) and t = (u + v + 1)/2 the fraction along +y (screen-SE),
+    so the left tip is grid corner (x, y), the top tip (x+1, y), the
+    bottom tip (x, y+1) and the right tip (x+1, y+1). src_x/src_y are
+    those fractions times tile_px, so the diamond reads the WHOLE square,
+    column = x and row = y like Flat's blit, along the same axes
+    render._crop_offset advances its crop. That is what makes neighbouring
+    same-terrain crops continuous across every tile seam. (s, t) equal
+    tile_uv_fractions' (fx, fy) = (1 - fq, fp).
+
+    The previous basis, a = (u+v)/2 and b = (v-u)/2, kept |a|, |b| <= 0.5
+    inside the diamond, so every tile read only the centre quarter of its
+    crop with its axes rotated 45 degrees to the crop's progression, and
+    every tile seam jumped ~71 texels at tile_px=64 (TASK-201).
+
+    Side effect, accepted: one screen pixel right steps (+1, +1) texels and
+    one pixel down steps (-2, +2), so screen-vertical minifies ~2.8:1 with
+    nearest-neighbour sampling, like the in-game squash."""
     u = (dst_x + 0.5 - half_w) / half_w
     v = (dst_y + 0.5 - half_h) / half_h
-    a = (u + v) / 2.0
-    b = (v - u) / 2.0
-    src_x = np.clip(np.floor((a + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
-    src_y = np.clip(np.floor((b + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
+    s = (u - v + 1.0) / 2.0
+    t = (u + v + 1.0) / 2.0
+    src_x = np.clip(np.floor(s * tile_px), 0, tile_px - 1).astype(np.int64)
+    src_y = np.clip(np.floor(t * tile_px), 0, tile_px - 1).astype(np.int64)
     return src_y, src_x
 
 
@@ -519,6 +536,11 @@ def diamond_indices(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
     transforming an already-rendered whole flat pixmap, done here per-tile
     instead (Stepped mode composites straight onto canvas pixels, so
     there's no single whole-image transform to reuse).
+
+    The diamond covers the WHOLE square, src_x along the tile's +x and src_y
+    along its +y (see _inverse_sample), so render._crop_offset's adjacent
+    crops continue across every tile seam. Skirts and Sloped quads inherit
+    this through the same mapping.
 
     Returns (dst_y, dst_x, src_y, src_x): four same-length 1-D int64 arrays,
     one entry per destination pixel that lies inside the diamond -- ready
@@ -549,8 +571,7 @@ def _diamond_column_edges(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndar
     side tips land mid-column, not at the bounding box's own edge columns)
     -- callers MUST filter on `used`, since `np.argmax`/reverse-argmax
     return 0 for an all-False column, which would otherwise silently
-    produce a spurious edge at row 0. Those two columns are still darkened,
-    at inner corners only, by shadow_tip_indices(), which owns them.
+    produce a spurious edge at row 0.
 
     This is what skirt_quad_indices() and shadow_quad_indices() below build
     their per-column edges from, replacing skirt_quad_indices' own former
@@ -598,10 +619,13 @@ def skirt_quad_indices(
     repeats straight down for drop_px rows, starting one row below that
     column's own last diamond row (bottoms[c] + 1) -- so the skirt's own
     top row sits immediately adjacent to the diamond's true bottom edge at
-    every column, with no gap and no overlap. Source pixels are sampled at
-    that same row via the same inverse mapping diamond_indices uses, so a
-    skirt's top row always matches the top diamond's own edge pixel with
-    no visible seam.
+    every column, with no gap and no overlap. Each column's source pixel is
+    the diamond's own edge pixel in that column (row bottoms[c], via the
+    same inverse mapping diamond_indices uses), so a skirt's top row is
+    exactly the texel shown directly above it, pinned by
+    tests/test_texture_continuity.py. Sampling one row further down, as
+    this did until TASK-201, matched under no basis: the edge texel and the
+    next row's differ by up to two texels.
 
     Formerly built via a hand-rolled `edge_x = half_w -+ 2*t` walk that
     only ever advanced by 2 columns per step -- confirmed to visit every
@@ -620,7 +644,7 @@ def skirt_quad_indices(
     in_side = (cols <= half_w) if side == "left" else (cols >= half_w)
     edge_x = cols[used & in_side]
     edge_y = bottoms[edge_x] + 1
-    src_y, src_x = _inverse_sample(edge_x, edge_y, half_w, half_h, tile_px)
+    src_y, src_x = _inverse_sample(edge_x, edge_y - 1, half_w, half_h, tile_px)
 
     drops = np.arange(drop_px)
     n_edge = edge_x.size
@@ -750,9 +774,7 @@ def shadow_quad_indices(
 
 
 @lru_cache(maxsize=256)
-def shadow_apex_indices(
-    tile_px: int, rise_px: int, sides: str = "both"
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def shadow_apex_indices(tile_px: int, rise_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """The contact-shadow band's two APEX columns (half_w - 1 and half_w),
     as their own once-per-tile pass, in shadow_quad_indices' own frame and
     four-array (dst_y, dst_x, depth, span) format.
@@ -789,8 +811,8 @@ def shadow_apex_indices(
     columns, and the caster's own top face covers everything from row 0
     down, leaving exactly that many rows visible above the apex. Returning
     the full exposure rather than a pre-capped strip keeps this module to
-    geometry and leaves falloff to render.py's _contact_ramp, the same
-    split shadow_quad_indices already documents. In practice the ramp
+    geometry and leaves falloff to render.py's CONTACT_RAMP_DIVISOR, the
+    same split shadow_quad_indices already documents. In practice the ramp
     reaches an exact 1.0 no-op after a few rows, so most of a tall wedge is
     an inert multiply rather than visible darkening.
 
@@ -804,22 +826,7 @@ def shadow_apex_indices(
     depth is 0 at the row touching the caster's apex and grows upward;
     0 <= depth < span holds elementwise, as for the band. dst_y is always
     negative (above the caster's own diamond), so callers MUST clip, same
-    as the band.
-
-    `sides` narrows the wedge to the flank(s) whose direct back neighbour is
-    lower: "up_left" keeps dst_x <= half_w, "up_right" keeps
-    dst_x >= half_w - 1, "both" keeps everything. The full wedge spans both
-    flanks of the apex, so on a straight run where only one side casts, the
-    other flank drew a 1px spur at the opposite slope to the contour, a
-    short perpendicular tick at every tile apex. The two apex columns are
-    SHARED by both halves, not partitioned: a strict half_w split was
-    measured to reopen a 1px hole at the junction. "both" is exactly the
-    union of the two halves.
-
-    The diamond's two tip columns (0 and 2*half_w - 1) are unused here and
-    in every other darkening pass, since they hold no diamond pixels."""
-    if sides not in ("up_left", "up_right", "both"):
-        raise ValueError(f"sides must be 'up_left', 'up_right' or 'both', got {sides!r}")
+    as the band."""
     if rise_px <= 0:
         raise ValueError(f"rise_px must be positive, got {rise_px}")
     _half_w, half_h = half_dims(tile_px)
@@ -843,10 +850,6 @@ def shadow_apex_indices(
     # band's own claimed columns, which need tops[c] > rise_px, so the two
     # passes cannot overlap and cannot double-darken.
     adjacent = used & (2 * tops <= rise_px)
-    if sides == "up_left":
-        adjacent &= cols <= _half_w
-    elif sides == "up_right":
-        adjacent &= cols >= _half_w - 1
     edge_x = cols[adjacent]
     if edge_x.size == 0:
         empty = np.zeros(0, dtype=np.int64)
@@ -856,70 +859,6 @@ def shadow_apex_indices(
     dst_x = np.repeat(edge_x, avail).astype(np.int64)
     dst_y = (np.repeat(tops[edge_x] - 1, avail) - depth).astype(np.int64)
     span = np.full(dst_x.size, avail, dtype=np.int64)
-    return dst_y, dst_x, depth, span
-
-
-@lru_cache(maxsize=256)
-def shadow_tip_indices(
-    tile_px: int, rise_px: int, side: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """One of the caster's two diamond TIP columns, as its own contact-shadow
-    pass at inner corners, in shadow_quad_indices' own frame and four-array
-    (dst_y, dst_x, depth, span) format. "up_right" is column 2*half_w - 1,
-    "up_left" is column 0.
-
-    WHY THIS EXISTS. _diamond_column_edges marks columns 0 and 2*half_w - 1
-    unused (the tips are single points), so no other darkening pass claims
-    them. Two casters one screen-row apart, A = (x, y) and B = (x+1, y+1),
-    therefore leave a 2-column bare stripe: A's column 2*half_w - 1 and B's
-    column 0, adjacent canvas columns. On a straight run the contour jogs
-    past it unseen. At an INNER corner, where A and B both cast onto
-    N = (x+1, y), both bands converge into that stripe and it reads as a
-    break at the vertex. Widening a seam cannot close it: the caster has no
-    diamond pixels there. `used` does not apply here for the same reason.
-
-    The stripe is N's own two apex columns, rows 1 .. 2*half_h - rise_px - 1
-    of N. Each caster darkens only its OWN tip column ("up_right" for A onto
-    N, "up_left" for B onto N), so the two halves are disjoint and no pixel
-    darkens twice. Owning both columns from A was tried and put column
-    2*half_w one past A's bounding box, which chunked rendering selects tiles
-    by: verify_iso_chunks measured 8-96 px mismatches on real files. Row 0 of
-    N is never claimed, so this cannot collide with N's seam_apex_indices.
-
-    NOT the regress a prior design pass ruled out: the extent depends only
-    on the caster's own diamond and rise_px, so nothing here can taper. The
-    other caster's and N's elevations are the caller's GATE, never an input
-    to the size, the same discipline shadow_apex_indices keeps.
-
-    dst_y in [rise_px - half_h + 1, half_h - 1]: the band's own row range
-    plus one row at the bottom, derived from _diamond_column_edges. depth is
-    0 at the bottom row and grows upward; span is the row count, so
-    0 <= depth < span holds elementwise. Empty once rise_px >= 2*half_h - 1,
-    between the band's empty threshold and the apex wedge's; callers must
-    tolerate size-0 arrays and must clip."""
-    if side not in ("up_left", "up_right"):
-        raise ValueError(f"side must be 'up_left' or 'up_right', got {side!r}")
-    if rise_px <= 0:
-        raise ValueError(f"rise_px must be positive, got {rise_px}")
-    half_w, half_h = half_dims(tile_px)
-    tops, _bottoms, _used = _diamond_column_edges(tile_px)
-    # Top: one row below N's apex top edge, mapped into our frame (N sits
-    # half_h - rise_px higher). Bottom: our own top edge in the used column
-    # next to the tip, one row below the band's contact row there.
-    if side == "up_right":
-        column, apex_col, inner_col = 2 * half_w - 1, half_w - 1, 2 * half_w - 2
-    else:
-        column, apex_col, inner_col = 0, half_w, 1
-    top = int(tops[apex_col]) + 1 - half_h + rise_px
-    bottom = int(tops[inner_col])
-    avail = bottom - top + 1
-    if avail <= 0:
-        empty = np.zeros(0, dtype=np.int64)
-        return empty, empty.copy(), empty.copy(), empty.copy()
-    depth = np.arange(avail, dtype=np.int64)
-    dst_x = np.full(avail, column, dtype=np.int64)
-    dst_y = (bottom - depth).astype(np.int64)
-    span = np.full(avail, avail, dtype=np.int64)
     return dst_y, dst_x, depth, span
 
 
@@ -1181,9 +1120,10 @@ def tile_uv_fractions(tile_px: int) -> tuple[np.ndarray, np.ndarray]:
     which physical pixel each value belongs to) -- each in [0, 1],
     independently reaching 0/1 exactly at the diamond's own 4 tips.
 
-    Derived from each destination pixel's (u, v) diamond-local coordinate
-    -- the same change of basis _inverse_sample uses for texture sampling,
-    reused here for a different purpose. The identity
+    Derived from each destination pixel's (u, v) diamond-local coordinate,
+    in its OWN basis: slope shading keeps (fp, fq) as below, while
+    _inverse_sample samples the texture at (fx, fy) = (1 - fq, fp) directly
+    (TASK-201 moved only the texture side). The identity
     |u|+|v| == max(|u+v|, |v-u|) (a 45-degree rotation) turns the diamond
     |u|+|v|<=1 into the full unit square in (p, q) = (u+v, v-u) space, so
     (fp, fq) = ((p+1)/2, (q+1)/2) parameterize that square directly --
@@ -1576,7 +1516,9 @@ def sloped_quad_indices(
     entry it resamples, so a per-pixel quantity computed over the diamond
     (render._slope_shade's shading factor is the only one today) is
     gathered as `shade[uv_idx]`. src_y/src_x are already gathered that way
-    here, so callers only need uv_idx for their own parallel arrays.
+    here, so callers only need uv_idx for their own parallel arrays. Being
+    diamond_indices' own src gathered, they read the whole tile_px square in
+    tile axes, so sloped neighbours' crops also continue across seams.
 
     Normalizes against min(d_nw, d_ne, d_sw, d_se) before computing
     anything, so the cache key collapses every "all four corners equal"
@@ -1751,8 +1693,8 @@ def index_extent(producer, *key) -> tuple[int, int, int, int] | None:
     arrays are globally sorted. skirt, shadow and sloped all emit
     column-major, and shadow's dst_y descends within a column.
 
-    maxsize 8192 covers the sum of the producers' own caches (8 + 256*6 +
-    1024 + 4096 = 6920), so an extent can never outlive its arrays' cache
+    maxsize 8192 covers the sum of the producers' own caches (8 + 256*5 +
+    1024 + 4096 = 6664), so an extent can never outlive its arrays' cache
     slot by more than the eviction order.
 
     sloped_quad_indices' equal-corner branch hands back diamond_indices'
@@ -1815,12 +1757,6 @@ def iso_tile_extent(
         boxes.append(index_extent(shadow_quad_indices, tile_px, rise_ur, "up_right"))
     if rise_diag > 0:
         boxes.append(index_extent(shadow_apex_indices, tile_px, rise_diag))
-    # The tip passes, unioned without their inner-corner gates for the same
-    # reason as the apex. Both stay inside the diamond's own bounding box.
-    if rise_ul > 0:
-        boxes.append(index_extent(shadow_tip_indices, tile_px, rise_ul, "up_left"))
-    if rise_ur > 0:
-        boxes.append(index_extent(shadow_tip_indices, tile_px, rise_ur, "up_right"))
     boxes = [b for b in boxes if b is not None]
     if not boxes:
         return None
@@ -1955,7 +1891,9 @@ def sloped_tile_outline_coarse(
     """A cheaper approximation of sloped_tile_outline() for the edit-mode
     brush highlight only (draw-perf plan item 3): one point per column per
     edge instead of that function's two (c, y0), (c+1, y0) pair, halving
-    the ring to roughly 2 points/column against its ~4. This drops the
+    the ring to roughly 2 points/column against its ~4. MapView caches the
+    polygon per shape (TASK-031.38), so the build cost is gone and the
+    halving now pays off in the pulse repaint. This drops the
     vertical step between adjacent columns, so it is NOT pixel-exact --
     fine for a hover cue that only needs to look right, wrong for anything
     that must agree with the pick plane. Every real caller other than

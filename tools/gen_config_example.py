@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 from pathlib import Path
 
 import yaml
@@ -32,7 +33,10 @@ from descape import (
     grid_overlay,
     iso_geometry,
     settings,
+    terrain_style,
+    themes,
     unit_pick,
+    view_layers,
 )
 
 OUT_PATH = ROOT / "config.example.yaml"
@@ -46,6 +50,15 @@ _ELEV_STEP_STOP_COUNT = len(settings.ELEV_STEP_PCT_STOPS)
 _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
 _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
+_TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
+_TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
+_VIEW_LAYER_LABELS = textwrap.fill(
+    ", ".join(f"{spec.layer_id} ({spec.label.replace('&', '')})" for spec in view_layers.LAYERS),
+    width=76,
+    subsequent_indent="# ",
+)
+_THEME_PRESETS = textwrap.fill(", ".join(themes.PRESETS), width=76, subsequent_indent="# ")
+_THEME_ROLES = textwrap.fill(", ".join(themes.ROLE_IDS), width=76, subsequent_indent="# ")
 
 
 def render() -> str:
@@ -62,6 +75,27 @@ def render() -> str:
         sort_keys=False,
     )
     overlay_colors_block = "\n".join(f"  {line}" for line in overlay_colors_yaml.splitlines())
+
+    overlay_opacity_yaml = yaml.safe_dump(
+        {group_id: default for group_id, _label, default in settings.OVERLAY_OPACITIES},
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    overlay_opacity_block = "\n".join(f"  {line}" for line in overlay_opacity_yaml.splitlines())
+
+    trigger_status_colors_yaml = yaml.safe_dump(
+        {status_id: default for status_id, _label, default in settings.TRIGGER_STATUS_COLORS},
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    trigger_status_colors_block = "\n".join(f"  {line}" for line in trigger_status_colors_yaml.splitlines())
+
+    view_layers_yaml = yaml.safe_dump(
+        {spec.layer_id: spec.default for spec in view_layers.LAYERS},
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    view_layers_block = "\n".join(f"  {line}" for line in view_layers_yaml.splitlines())
 
     return f"""\
 # Example config.yaml -- copy this file to config.yaml in your OS's
@@ -119,14 +153,35 @@ pan_speed: {settings.PAN_SPEED_DEFAULT}
 # (false). Default: true.
 zoom_centered_on_cursor: true
 
-# Dark app-chrome theme, Settings > Appearance. Default: false.
-dark_mode: false
+# App-chrome theme preset, Settings > Appearance. One of:
+# {_THEME_PRESETS}.
+# An unknown id falls back to the default. A config with no `theme` but the
+# retired `dark_mode: true` reads as dark. Default: {themes.THEME_DEFAULT}.
+theme: {themes.THEME_DEFAULT}
+
+# Per-role chrome colour overrides on top of the preset, "#rrggbb", Settings >
+# Appearance > Chrome colours. Roles:
+# {_THEME_ROLES}.
+# An unknown role or malformed value is ignored. Switching preset clears them.
+theme_colors: {{}}
 
 # After a file opens, warm the neighbouring zoom levels' unit sprites in
 # idle time so the first zoom doesn't stutter, Settings > Appearance.
 # Costs a few seconds of background work per open and some memory; never
 # blocks the window. Default: true.
 preload_zoom_levels: true
+
+# The toolbar's Elevation View, remembered between launches. One of
+# {_TERRAIN_STYLES}. Anything else falls back to the default on read, see
+# terrain_style.TERRAIN_STYLES. Default: {settings.TERRAIN_STYLE_DEFAULT}.
+terrain_style: {settings.TERRAIN_STYLE_DEFAULT}
+
+# View > Layers, each row on (true) or off (false), remembered between
+# launches. Rows:
+# {_VIEW_LAYER_LABELS}.
+# An unknown row or a non-true/false value keeps that row's default, shown here.
+view_layers:
+{view_layers_block}
 
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
@@ -182,6 +237,16 @@ footprint_outlines: false
 # default on read. Default: {unit_pick.FOOTPRINT_SCOPE_DEFAULT}.
 footprint_scope: {unit_pick.FOOTPRINT_SCOPE_DEFAULT}
 
+# One outline around each multi-tile footprint instead of one per tile,
+# View > Footprint Outlines > Merge tiles. A diagonal gate, and a draped
+# Sloped farm over multi-level steps, keep one per tile. Default: false.
+footprint_merged: false
+
+# Each outline in its owner's player colour, View > Footprint Outlines >
+# Colour by Owner. GAIA keeps the overlay_colors footprint_outline colour.
+# Default: false.
+footprint_by_owner: false
+
 # How strongly the grid lines blend into the terrain, Settings > Appearance:
 # {grid_overlay.BLEND_MIN} is solid black lines, 0 is invisible, {grid_overlay.BLEND_MAX} is solid white ones.
 # Out-of-range values clamp. Default: {grid_overlay.BLEND_DEFAULT}.
@@ -209,6 +274,16 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # lines tall, so unlike split_sizes above there is no fixed default to quote
 # here -- it depends on your font. The value below is only an example.
 # log_height: 120
+
+# Height in text lines of each multi-line text box you have dragged taller or
+# shorter by its bottom edge (trigger form and Messages mode), keyed
+# "trigger.<field>" or "messages.<field>". Persisted automatically when you
+# release the drag; a double-click on the edge resets the box and removes its
+# key. Clamped to {settings.TEXT_BOX_LINES_MIN}-{settings.TEXT_BOX_LINES_MAX}. Omitted entirely until first saved; until then
+# every box is six lines tall. The value below is only an example.
+# text_box_lines:
+#   trigger.description: 12
+#   messages.hints: 10
 
 # File > Open Recent, most-recently-opened first. Persisted automatically
 # on every open -- not something you normally set by hand. Capped at
@@ -249,6 +324,32 @@ ui_font_size: null
 overlay_colors:
 {overlay_colors_block}
 
+# Opacity of three overlay groups (Settings > Appearance), in percent: the
+# Units selection (and its marquee), a selected map region, and the trigger
+# overlay's areas. A multiplier on the whole group, on top of its colours;
+# {settings.OVERLAY_OPACITY_MAX} is the original look. Only
+# {settings.OVERLAY_OPACITY_MIN}-{settings.OVERLAY_OPACITY_MAX} are legal; anything else falls back to that
+# group's default ({settings.OVERLAY_OPACITY_MAX}).
+overlay_opacity:
+{overlay_opacity_block}
+
+# How the Triggers panel marks each trigger, condition and effect whose
+# required fields are all set and whose references resolve (ok), or that is
+# missing something (problem), Settings > Appearance > Trigger status. That is
+# a completeness check, not a promise the trigger works in game. One of
+# {_TRIGGER_STATUS_MARKERS}; anything else falls back to the default.
+# Default: {settings.TRIGGER_STATUS_MARKER_DEFAULT}.
+trigger_status_marker: {settings.TRIGGER_STATUS_MARKER_DEFAULT}
+
+# Whether rows that pass are marked too. false leaves only problems marked:
+# a row that passes gets no colour and no tick, in every marker mode.
+# Default: true.
+trigger_status_color_ok_rows: true
+
+# The two marker colours, as "#rrggbb"; omit one to leave it at its default.
+trigger_status_colors:
+{trigger_status_colors_block}
+
 # Settings > Saving. Autosave writes its own rotating recovery slot on a
 # timer, never the file you have open, and never clears the unsaved-changes
 # marker -- File > Recover from Autosave... is how you open one back up.
@@ -264,11 +365,20 @@ autosave_interval_min: {settings.AUTOSAVE_INTERVAL_DEFAULT}
 # default. Default: {settings.AUTOSAVE_RETENTION_DEFAULT}.
 autosave_retention: {settings.AUTOSAVE_RETENTION_DEFAULT}
 
-# Where autosave slots go: "central" (an autosave/ folder beside this config
-# file) or "sidecar" (beside the scenario itself). Sidecar falls back to
-# central for any document it cannot serve -- an untitled one, a Steam
-# Workshop/Proton path, or a shipped template. Default: "{settings.AUTOSAVE_LOCATION_DEFAULT}".
+# Where autosave slots go: "central" (the autosave folder, autosave_dir
+# below) or "sidecar" (beside the scenario itself). Sidecar falls back to
+# the autosave folder for any document it cannot serve: an untitled one, a
+# Steam Workshop/Proton path, or a shipped template. Default: "{settings.AUTOSAVE_LOCATION_DEFAULT}".
 autosave_location: {settings.AUTOSAVE_LOCATION_DEFAULT}
+
+# The autosave folder, as an absolute path. "" means the default, an
+# autosave/ folder beside this config file, which also always holds the
+# autosave index. A compatdata/ (Proton) path or a relative one is ignored.
+# If the folder is missing when an autosave runs, that slot goes to the
+# default folder instead; the folder is never created. Switching folders
+# leaves existing autosaves where they are, still listed in Recover.
+# Default: "".
+autosave_dir: ""
 
 # Whether a real save also writes the .bak (previous contents) and .orig
 # (one-time pristine snapshot) pair beside the file. Default: true.

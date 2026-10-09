@@ -31,6 +31,13 @@ depends on the placed unit's rotation. Measured on a flat footprint at native
 scale (half_w=48, half_h=24) with the parent's origin at tile (0, 0), so a
 resolved slot is directly the `[sx, sy]` offset `_PIECE_SLOTS` stores.
 
+Town centres are measured per art set (GH #48): every distinct piece list
+that unit_graphic_map.json or building_art_map.json gives a
+`_TOWN_CENTRE_SCOPE` const, printed as `_PIECE_SLOTS_BY_ART`. A new art set
+after a game patch makes the generator fail until it has a row here; the
+generator only needs the rows, so bootstrap one by hand, regenerate, then
+re-run this to measure it.
+
 Tiles scanned for step 2 are every tile touching ink, not just the footprint:
 a pasture corner post sits on a footprint corner, and a footprint-only scan
 slots two posts early enough that neighbouring grass erases 11-18 px of their
@@ -136,10 +143,34 @@ def _boxes_overlap(a, b) -> bool:
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def measure(unit_const: int) -> dict | None:
-    """The per-piece measurement for one composite const, or None if it has no
-    pieces or any piece's art is unreadable on this install."""
-    entry = unit_sprites.graphic_map().get(unit_const)
+def art_set_key(entry: dict) -> tuple[str, ...]:
+    """A town centre's art set: its pieces' file names in emitted order, the
+    key `_PIECE_SLOTS_BY_ART` stores (GH #48). The parent file alone is not
+    enough: the Persian age-2 back piece is shared by sets with different
+    annexes, which measure differently."""
+    return tuple(str(p["file_name"]) for p in entry["pieces"])
+
+
+def town_centre_art_sets(generator) -> dict[tuple[str, ...], tuple[int, dict]]:
+    """Every distinct town-centre art set either committed table can draw,
+    keyed by art_set_key(), with one (const, entry) that draws it."""
+    sets: dict[tuple[str, ...], tuple[int, dict]] = {}
+    gm = unit_sprites.graphic_map()
+    per_civ = unit_sprites.building_art().civ_art
+    for unit_const in sorted(generator._TOWN_CENTRE_SCOPE):
+        candidates = [gm.get(unit_const)] + [art.get(unit_const) for art in per_civ.values()]
+        for entry in candidates:
+            if entry is not None and "pieces" in entry:
+                sets.setdefault(art_set_key(entry), (unit_const, entry))
+    return sets
+
+
+def measure(unit_const: int, entry: dict | None = None) -> dict | None:
+    """The per-piece measurement for one composite const, drawing `entry`
+    (default: its graphic_map() entry), or None if it has no pieces or any
+    piece's art is unreadable on this install."""
+    if entry is None:
+        entry = unit_sprites.graphic_map().get(unit_const)
     if entry is None or "pieces" not in entry:
         return None
     span_x, span_y = render.tile_span(unit_const, render.NON_BUILDING_SPAN)
@@ -217,15 +248,25 @@ def main() -> None:
 
     generator = _generator_module()
     committed = getattr(generator, "_PIECE_SLOTS", {})
+    committed_by_art = getattr(generator, "_PIECE_SLOTS_BY_ART", {})
     measured: dict[int, list[list[int]]] = {}
+    measured_by_art: dict[tuple[str, ...], list[list[int]]] = {}
     print(f"Piece slot measurement -- install {install}")
-    for unit_const in sorted(generator._COMPOSITE_SCOPE | generator._ANNEX_TREE_SCOPE):
-        result = measure(unit_const)
+    jobs: list[tuple[object, int, dict | None]] = [
+        (unit_const, unit_const, None)
+        for unit_const in sorted(
+            (generator._COMPOSITE_SCOPE | generator._ANNEX_TREE_SCOPE) - generator._TOWN_CENTRE_SCOPE
+        )
+    ]
+    # GH #48: town centres differ by art set (civ and age), so they are keyed by it.
+    jobs += [(key, const, entry) for key, (const, entry) in town_centre_art_sets(generator).items()]
+    for key, unit_const, entry in jobs:
+        result = measure(unit_const, entry)
         if result is None:
-            print(f"\n{unit_const}: no pieces or unreadable art, skipped")
+            print(f"\n{key}: no pieces or unreadable art, skipped")
             continue
         order = result["order"]
-        print(f"\n{unit_const} span {result['span']}  (slot = depth index in the footprint)")
+        print(f"\n{key} span {result['span']}  (slot = depth index in the footprint)")
         for row in result["rows"]:
             minimum = "none" if row["minimum"] is None else order.index(row["minimum"])
             print(
@@ -236,17 +277,27 @@ def main() -> None:
             )
         window = result["window"]
         print(f"  sandwich window: {len(window)} tile(s) {window}")
-        measured[unit_const] = [list(row["slot"]) for row in result["rows"]]
+        slots = [list(row["slot"]) for row in result["rows"]]
+        if isinstance(key, tuple):
+            measured_by_art[key] = slots
+        else:
+            measured[key] = slots
 
     print("\n_PIECE_SLOTS = {")
     for unit_const, slots in measured.items():
         print(f"    {unit_const}: {slots},")
     print("}")
+    print("\n_PIECE_SLOTS_BY_ART = {")
+    for key, slots in sorted(measured_by_art.items()):
+        names = "".join(f'        "{name}",\n' for name in key)
+        print(f"    (\n{names}    ): {slots},")
+    print("}")
     mismatched = sorted(c for c in measured if committed.get(c) != measured[c])
+    mismatched += sorted(k[0] for k in measured_by_art if committed_by_art.get(k) != measured_by_art[k])
     if mismatched:
-        print(f"\nDIFFERS FROM THE COMMITTED _PIECE_SLOTS for: {mismatched}")
+        print(f"\nDIFFERS FROM THE COMMITTED TABLES for: {mismatched}")
     else:
-        print("\nEvery measured slot matches the committed _PIECE_SLOTS.")
+        print("\nEvery measured slot matches the committed _PIECE_SLOTS and _PIECE_SLOTS_BY_ART.")
 
 
 if __name__ == "__main__":

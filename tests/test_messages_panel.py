@@ -166,3 +166,55 @@ def test_no_set_id_shows_no_warning_row() -> None:
     panel = _panel(_loaded(), editable=True)
     assert panel.widget_for("hints_id") is None
     assert "hints" not in panel._warning_labels
+
+
+# -- GH #139: the height grip -------------------------------------------------
+
+
+def test_a_stored_height_is_applied_per_field_and_a_drag_reports_once() -> None:
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    from descape.messages_panel import MessagesPanel
+
+    conftest.ensure_qapp()
+    panel = MessagesPanel()
+    stored = {"messages.hints": 10}
+    reported = []
+    panel.text_box_lines = stored.get
+    panel.on_text_box_lines = lambda key, lines: reported.append((key, lines))
+    panel.resize(340, 900)
+    panel.show_scenario(_loaded(), editable=True)
+    panel.show()
+    QApplication.processEvents()
+    hints = panel.widget_for("hints")
+    assert hints.visible_lines() == 10
+    assert panel.widget_for("victory").visible_lines() == hints.VISIBLE_LINES
+
+    _drag(hints.grip(), 2)
+    assert reported == [("messages.hints", 12)]
+    panel.close()
+
+
+@pytest.mark.parametrize("pane", [900, 2400], ids=["pane short", "pane with room"])
+@pytest.mark.parametrize("lines", [-3, 5], ids=["shorter", "taller"])
+def test_a_messages_box_follows_its_grip_both_ways(lines: int, pane: int) -> None:
+    """A Messages box only takes a minimum height, so its layout has to
+    follow the band down as well as up, or a drag shorter does nothing. With
+    room to spare a box would otherwise sit at QPlainTextEdit's own size hint."""
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    panel = _panel(_loaded(), editable=True)
+    panel.resize(340, pane)
+    panel.show()
+    QApplication.processEvents()
+    hints = panel.widget_for("hints")
+    before = hints.height()
+    _drag(hints.grip(), lines)
+    # Box, group box, host and scroll area each re-lay out in a later pass.
+    for _ in range(5):
+        QApplication.processEvents()
+    assert hints.visible_lines() == hints.VISIBLE_LINES + lines
+    assert hints.height() - before == lines * hints.fontMetrics().lineSpacing()
+    panel.close()

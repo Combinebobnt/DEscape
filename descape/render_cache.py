@@ -547,9 +547,13 @@ def _removals_first(changed: list[UnitSplice]) -> list[UnitSplice]:
 # wholesale rebuild. A real brush-9 stroke step re-anchors <=132.
 _ELEV_SPLICE_MAX_UNITS = 1000
 
+# Sloped's own cap, aimed at whole-stroke undo (1.1k-7.7k members). 2026-10-08
+# probe, headroom held: break-even 7.3k-10k+ members, so min(3000, 7258 / 2).
+_SLOPED_ELEV_SPLICE_MAX_UNITS = 3000
+
 
 def _elevation_splices(
-    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, tiles
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, tiles, cap: int | None = None
 ) -> list[UnitSplice] | None:
     """One re-anchor UnitSplice per member of the _shared_tile_component()
     seeded by every unit whose OWN tile is in `tiles`, in walk order, or None
@@ -564,8 +568,22 @@ def _elevation_splices(
     there is no const check: a wall's neighbour-derived override stays valid
     as long as the caller passes the real one.
 
-    None past _ELEV_SPLICE_MAX_UNITS members in total, where the wholesale
-    rebuild is the cheaper of the two."""
+    None past `cap` members in total (default _ELEV_SPLICE_MAX_UNITS, read
+    at call time), where the wholesale rebuild is the cheaper of the two.
+    2026-10-07 undo probe: an uncapped in-op splice of 3860-4563 members
+    costs 41-58ms against a 44-63ms wholesale -2/-1 build + pack, so a
+    separate in-op cap was not taken."""
+    if cap is None:
+        cap = _ELEV_SPLICE_MAX_UNITS
+    members = _elevation_component(scenario, units_by_tile, unit_filter, tiles, cap)
+    if members is None:
+        return None
+    return [UnitSplice(p, i, unit, own, own, occ, occ) for p, i, unit, own, occ in members]
+
+
+def _elevation_component(scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, tiles, cap: int):
+    """_elevation_splices()' _shared_tile_component(), seeded by every visible
+    unit whose own tile is in `tiles`, or None past `cap` members."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     own_index = render.unit_own_tile_index(scenario)
@@ -577,10 +595,7 @@ def _elevation_splices(
             occupied = render.unit_occupied_tiles(unit, w, h)
             if occupied is not None:
                 seeds.append((player_id, i, unit, own, tuple(occupied)))
-    members = _shared_tile_component(scenario, units_by_tile, unit_filter, own_index, seeds, _ELEV_SPLICE_MAX_UNITS)
-    if members is None:
-        return None
-    return [UnitSplice(p, i, unit, own, own, occ, occ) for p, i, unit, own, occ in members]
+    return _shared_tile_component(scenario, units_by_tile, unit_filter, own_index, seeds, cap)
 
 
 def _splice_tiles(splices: list[UnitSplice]) -> set[tuple[int, int]]:
@@ -614,6 +629,14 @@ def _dilate(tiles, w: int, h: int) -> set[tuple[int, int]]:
         for dy in (-1, 0, 1)
         if 0 <= x + dx < w and 0 <= y + dy < h
     }
+
+
+def _corner_changed_tiles(old_cr: np.ndarray, new_cr: np.ndarray) -> set[tuple[int, int]]:
+    """Every tile with any of its 4 corners changed between two (h+1, w+1)
+    corner_rise arrays."""
+    c = old_cr != new_cr
+    ys, xs = np.nonzero(c[:-1, :-1] | c[:-1, 1:] | c[1:, :-1] | c[1:, 1:])
+    return set(zip(xs.tolist(), ys.tolist(), strict=True))
 
 
 def _drop_from_tiles(units_by_tile: dict, splice: UnitSplice) -> None:
@@ -1221,6 +1244,30 @@ class _ChunkCacheBase:
         )[1]
         with perf_trace.phase(f"splice_refused={reason}"):
             pass
+
+    def _trace_elevation_refusal(self, seed_tiles: set, cap: int) -> None:
+        """A patch()'s elevation splice going wholesale, as a zero-length
+        `elev_splice_refused=<members>/<cap>` phase on the open op or stroke.
+        <members> is the uncapped component seeded from `seed_tiles`, walked
+        again only while Perf Trace is on (as _trace_splice_refusal() recomputes
+        its plan); `?` when a unit can't be located."""
+        if not perf_trace.is_enabled():
+            return
+        members = _elevation_component(self.scenario, self.units_by_tile, self.unit_filter, seed_tiles, 10**9)
+        count = "?" if members is None else len(members)
+        with perf_trace.phase(f"elev_splice_refused={count}/{cap}"):
+            pass
+
+    def elevation_splice_cap(self) -> int:
+        """The component size past which this cache's elevation patch goes
+        wholesale (ViewerWindow._elevation_bumps_anyway() reads it)."""
+        return _ELEV_SPLICE_MAX_UNITS
+
+    def elevation_seed_tiles(self, elevation_changed: set, new_elev: dict) -> set:
+        """The own tiles whose units seed this cache's elevation splice for an
+        edit about to change `elevation_changed` to `new_elev` ({tile: level}).
+        Called before the edit reaches self.elevations. Own tile only here."""
+        return elevation_changed
 
     def _update_units_by_tile_in_place(self, changed: list[UnitSplice]) -> bool:
         """units_by_tile brought up to date for a membership-only batch without
@@ -2038,6 +2085,7 @@ class IsoChunkCache(_ChunkCacheBase):
             return
         splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, elevation_changed)
         if splices is None:
+            self._trace_elevation_refusal(elevation_changed, _ELEV_SPLICE_MAX_UNITS)
             self._source_gen += 1
             return
         if not splices:
@@ -2778,7 +2826,8 @@ class FlatChunkCache(_ChunkCacheBase):
             team_index = scenario.team_indices[s.player_id]
             for mip, icons in icon_layers.items():
                 icon = render._flat_unit_icon(
-                    s.unit, s.player_id, s.index, overrides, team_index, bounds, self._mip_tile_px[mip]
+                    s.unit, s.player_id, s.index, overrides, team_index, bounds, self._mip_tile_px[mip],
+                    render.player_art_for(scenario, s.player_id),
                 )
                 if icon is None:
                     icons.pop(row, None)
@@ -2838,7 +2887,7 @@ class FlatChunkCache(_ChunkCacheBase):
                 for row, (_p, s, bounds) in zip(final.tolist(), added, strict=True):
                     icon = render._flat_unit_icon(
                         s.unit, s.player_id, s.index, overrides, scenario.team_indices[s.player_id],
-                        bounds, self._mip_tile_px[mip],
+                        bounds, self._mip_tile_px[mip], render.player_art_for(scenario, s.player_id),
                     )
                     if icon is not None:
                         rekeyed[row] = icon
@@ -3225,16 +3274,26 @@ class SlopedChunkCache(_ChunkCacheBase):
 
         Sloped reads a unit's own tile's FOUR corners (unit_rise_px), and
         under SLOPE_CORNER_RULE each corner blends the up-to-4 tiles
-        touching it, so a changed tile moves the corners of every tile in
-        the 3x3 around it: the affected units are those whose own tile is in
-        elevation_changed dilated by one -- radius 1, unlike Stepped's 0 --
-        plus any unit sharing a tile with one (_elevation_splices()'
+        touching it, so a changed tile can move the corners of every tile in
+        the 3x3 around it. The seeds are exact rather than that dilation:
+        elevation_changed (a building bbox reads its own tile's elevation)
+        plus every tile with a corner that actually moved
+        (_corner_changed_tiles(), which drops a ring tile held up by a higher
+        neighbour), plus any unit sharing a tile with one (_elevation_splices()'
         component, re-derived unchanged).
         They are re-anchored against the NEW corner_rise, so sprites and
-        corner_rise cannot drift apart. The headroom feeds every building's
-        bbox, not just the re-anchored ones, so a headroom change (in
-        practice only a flat <-> non-flat transition) takes the wholesale
-        path, as does a component past _ELEV_SPLICE_MAX_UNITS."""
+        corner_rise cannot drift apart. A component past
+        _SLOPED_ELEV_SPLICE_MAX_UNITS (elevation_splice_cap()) takes the
+        wholesale path instead, with an elev_splice_refused token.
+
+        The headroom feeds every building's bbox, not just the re-anchored
+        ones, and it moves more often than flat <-> non-flat: the copied
+        propagation's gap-fill branch can leave a 2-level diagonal step
+        (2026-10-08 probe, headroom 8 to 16 px). Sprites never read it and
+        the unit pack never reads a bbox, so a headroom change after the
+        splice rebuilds only the bbox layer (_rebuild_bbox_layer()), an
+        empty component included, and the pack is still refreshed.
+        invalidate_units()' in-place branch keeps its eager full rebuild."""
         if elevation_changed is not None:
             if not elevation_changed:
                 return
@@ -3243,26 +3302,27 @@ class SlopedChunkCache(_ChunkCacheBase):
             if not self.with_units:
                 return
             headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
-            mm = self.scenario.map_manager
-            splices = (
-                _elevation_splices(
-                    self.scenario, self.units_by_tile, self.unit_filter,
-                    _dilate(elevation_changed, mm.map_width, mm.map_height),
-                )
-                if headroom == self._headroom
-                else None
-            )
+            seeds = elevation_changed | _corner_changed_tiles(old_corner_rise, self.corner_rise)
+            cap = self.elevation_splice_cap()
+            splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, seeds, cap)
             if splices is None:
+                self._trace_elevation_refusal(seeds, cap)
                 self._rebuild_unit_layers(headroom)
                 return
+            old_bboxes: dict = {}
             if splices:
-                old_bboxes: dict = {}
                 self.sprites = _reanchor_units(
                     self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
                     self.unit_filter, self.corner_rise, headroom, splices,
                     render.wall_variant_rotation_overrides(self.scenario), *self._layer_resolve_args(),
                     old_bboxes=old_bboxes,
                 )
+            if headroom != self._headroom:
+                with perf_trace.phase(f"elev_headroom={self._headroom}->{headroom}"):
+                    pass
+                with perf_trace.level("sloped-bboxes", 0):
+                    self._rebuild_bbox_layer(headroom)
+            elif splices:
                 self._patch_bystander_grid(old_bboxes)
             # An empty batch still rebinds the pack to the new corner_rise.
             self._unit_pack = _refreshed_pack(
@@ -3275,6 +3335,17 @@ class SlopedChunkCache(_ChunkCacheBase):
         self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
         self._rebuild_unit_layers(render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj))
 
+    def elevation_splice_cap(self) -> int:
+        return _SLOPED_ELEV_SPLICE_MAX_UNITS
+
+    def elevation_seed_tiles(self, elevation_changed: set, new_elev: dict) -> set:
+        # _refresh_source_caches()' exact seeds, from a corner_rise of the post-edit elevations.
+        elevations = self.elevations.copy()
+        for (x, y), level in new_elev.items():
+            elevations[y, x] = level
+        new_cr = iso_geometry.corner_rise_px(elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
+        return elevation_changed | _corner_changed_tiles(self.corner_rise, new_cr)
+
     def _rebuild_unit_layers(self, headroom: int) -> None:
         """The wholesale building_bboxes + sprites rebuild against the current
         corner_rise, recording the headroom it used."""
@@ -3282,17 +3353,7 @@ class SlopedChunkCache(_ChunkCacheBase):
             self._rebuild_unit_layers_timed(headroom)
 
     def _rebuild_unit_layers_timed(self, headroom: int) -> None:
-        self._headroom = headroom
         self._unit_pack = None
-        mm = self.scenario.map_manager
-        building_bboxes = (
-            render._building_bboxes_iso(
-                self.scenario, mm.map_width, mm.map_height, self.proj, self.elevations, headroom,
-                unit_filter=self.unit_filter,
-            )
-            if self.with_units
-            else {}
-        )
         memo, self.sprites, self._sprite_memo = self._sprite_memo, None, None
         if self.with_units and self.sprites_enabled:
             self.sprites, self._sprite_memo = render._drain(render.sprite_draws_by_anchor_sliced(
@@ -3302,6 +3363,22 @@ class SlopedChunkCache(_ChunkCacheBase):
                 hero_glow=self.layers.hero_glow,
                 memo=memo or render.SpriteMemo(),
             ))
+        self._rebuild_bbox_layer(headroom)
+
+    def _rebuild_bbox_layer(self, headroom: int) -> None:
+        """building_bboxes rebuilt whole at `headroom`, merged with the current
+        sprites. A headroom change needs only this: sprites read corner_rise,
+        never the headroom, and the unit pack never reads a bbox."""
+        self._headroom = headroom
+        mm = self.scenario.map_manager
+        building_bboxes = (
+            render._building_bboxes_iso(
+                self.scenario, mm.map_width, mm.map_height, self.proj, self.elevations, headroom,
+                unit_filter=self.unit_filter,
+            )
+            if self.with_units
+            else {}
+        )
         self._set_building_bboxes(
             render.merge_sprite_bboxes(building_bboxes, self.sprites)
             if self.sprites is not None

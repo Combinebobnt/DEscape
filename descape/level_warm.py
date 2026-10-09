@@ -13,7 +13,8 @@ token -- the live scenario's units and the cache's elevations array are both
 mutated in place, so a throwaway cache instance would not have been enough.
 
 Slicing the same walk across event-loop turns instead gives a BOUNDED
-worst-case stall (BUDGET_MS, overrun by at most one ~10ms cold sprite decode),
+worst-case stall (BUDGET_MS, overrun by at most one step: one unit's resolve
+or one assembly slice, see BUDGET_MS),
 needs none of that machinery, and is race-free by construction: a tick only
 ever resumes between event-loop iterations, and every mutating path cancels
 the warm before it mutates, so a warm slice and a mutation cannot interleave.
@@ -37,8 +38,12 @@ from descape import debug_log, gc_hold, perf_trace
 # The honest worst tick is the budget plus one step. Since the 2026-09-29
 # warm-tick plan a level's assembly is sliced too (render.ASSEMBLY_SLICE),
 # its install only commits, and a job's unsliced first step (walk setup,
-# UnitPack(), a flush) only starts a tick, so the step past the budget is a
-# unit's resolve (one cold decode, ~10ms) or an assembly slice.
+# UnitPack(), a flush) only starts a tick, so the step past the budget is one
+# unit's resolve or an assembly slice. A resolve is a cold .sld decode at the
+# coarse levels, and at the fine ones an editor marker's first build or a
+# many-piece composite: old-allies' level 1 warm peaked at 10.8-11.0ms steps
+# (a 1x3 blocker's marker), 17-19ms ticks (2026-10-07, after the separable
+# outline; Perf Trace's `max step` names the unit).
 BUDGET_MS = 12
 
 # The tick's clock, a module attribute so tests can drive it deterministically.
@@ -68,6 +73,22 @@ def neighbour_mips_of(cache, mip: int) -> list[int]:
     tile_px has no exact power-of-two neighbour."""
     levels = cache.mip_levels()
     return [m for m in (mip - 1, mip + 1) if levels[0] <= m <= levels[-1]]
+
+
+def _step_name(label: str, cache, unit) -> str:
+    """Perf Trace's `max step` name: the step label, plus `p<player> #<index>
+    const <c>` when the step resolved a walk's unit. Called only for a tick
+    that becomes the line's worst (perf_trace.level_warm_tick)."""
+    if unit is None:
+        return label
+    from descape import render
+
+    scenario = getattr(cache, "scenario", None)
+    if scenario is not None:
+        for player_id, i, u in render.unit_own_tile_index(scenario).get((int(unit.x), int(unit.y)), ()):
+            if u is unit:
+                return f"{label} p{player_id} #{i} const {unit.unit_const}"
+    return f"{label} const {unit.unit_const}"
 
 
 class _IdleTimerDriver:
@@ -195,6 +216,10 @@ class LevelWarmer(_IdleTimerDriver):
         self._tick_installs: list[float] | None = None
         # This tick's ms per step label (`walk -1 setup`, `install`...); None while off.
         self._tick_split: dict[str, float] | None = None
+        # This tick's longest single step, (ms, label, unit or None); None while off.
+        self._tick_max: tuple[float, str, object] | None = None
+        # What the current job's previous step yielded: the walk's unit, else None.
+        self._job_prev = None
         # The current job has not stepped yet: its first step is unsliced setup.
         self._job_fresh = False
 
@@ -264,6 +289,7 @@ class LevelWarmer(_IdleTimerDriver):
         self._job = None
         self._job_mip = None
         self._job_notify = False
+        self._job_prev = None
         self._queue = []
         self._cache = None
         self._on_job_done = None
@@ -294,15 +320,21 @@ class LevelWarmer(_IdleTimerDriver):
         gc0 = perf_trace.gc_ms()
         self._tick_installs = []
         self._tick_split = {}
+        self._tick_max = (0.0, "", None)
+        cache = self._cache
         try:
             with perf_trace.where("level-warm"):
                 return self._tick()
         finally:
             gc1 = perf_trace.gc_ms()
             gc_ms = None if gc0 is None or gc1 is None else gc1 - gc0
-            perf_trace.level_warm_tick((time.perf_counter() - start) * 1000, self._tick_installs, self._tick_split, gc_ms)
+            tick_ms = (time.perf_counter() - start) * 1000
+            ms, label, unit = self._tick_max
+            max_step = (ms, lambda: _step_name(label, cache, unit)) if label else None
+            perf_trace.level_warm_tick(tick_ms, self._tick_installs, self._tick_split, gc_ms, max_step=max_step)
             self._tick_installs = None
             self._tick_split = None
+            self._tick_max = None
 
     def _tick(self) -> bool:
         deadline = _now() + BUDGET_MS / 1000.0
@@ -351,16 +383,24 @@ class LevelWarmer(_IdleTimerDriver):
 
     def _timed_next(self, job) -> None:
         """next(job.gen) with its ms added to the tick's split, labelled by job
-        kind and mip; a job's first step is labelled `setup` apart."""
+        kind and mip; a job's first step is labelled `setup` apart. The
+        tick's longest step is kept with the unit the job yielded BEFORE it:
+        the walk yields at the top of its per-unit body, so a step's cost is
+        resolving the previous step's unit."""
         label = f"{job.kind} {self._job_mip}"
         if self._job_fresh:
             self._job_fresh = False
             label += " setup"
         t0 = _now()
+        value = None
         try:
-            next(job.gen)
+            value = next(job.gen)
         finally:
-            self._split_add(label, (_now() - t0) * 1000)
+            ms = (_now() - t0) * 1000
+            self._split_add(label, ms)
+            if self._tick_max is not None and ms > self._tick_max[0]:
+                self._tick_max = (ms, label, self._job_prev)
+            self._job_prev = value
 
     def _split_add(self, label: str, ms: float) -> None:
         if self._tick_split is not None:
@@ -377,6 +417,7 @@ class LevelWarmer(_IdleTimerDriver):
             return False
         self._job_mip, self._job, self._job_notify = self._queue.pop(0)
         self._job_fresh = True
+        self._job_prev = None
         return True
 
     def _install(self, job, payload) -> None:

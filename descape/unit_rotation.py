@@ -108,9 +108,14 @@ def rotation_is_angle(unit_const: int) -> bool:
     """UnitEditModel.set_rotation()'s predicate: is this const's rotation a
     real facing angle?
 
-    No longer "may a Rotate action touch this const": since GH #123 Rotate and
-    the Rotation field also step cyclable consts through set_variant(), and
-    unit_variant.is_rotation_editable() is that wider rule.
+    No longer "may a Rotate action touch this const": Rotate and the Rotation
+    field also step cyclable consts through set_variant() (GH #123) and turn
+    gates by swapping the const through set_unit_const() (GH #61). The field's
+    wider rule is unit_variant.rotation_field_mode() ("facing", "variant",
+    "gate" or None; it takes a gate only when every selected unit is one), of
+    which is_rotation_editable() is just the per-const half and excludes gates.
+    The Rotate action has no single predicate: ViewerWindow.on_unit_rotate
+    picks its ANGLE, cyclable and gate members itself.
     """
     return semantics_for(unit_const) == ANGLE
 

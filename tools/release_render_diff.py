@@ -22,7 +22,9 @@ What is neutralized or masked, and why. Everything else must match exactly.
   marks, no break at inside corners). Masked: the screen bounds, over their
   3x3 neighbourhood's height range, of every tile with a neighbour at a
   different height. `iso_geometry.tile_screen_bounds_over` already includes
-  the shadow passes' upward reach.
+  the shadow passes' upward reach. Since the GH #15 back-out the Stepped
+  shadows are v0.6's again, so the mask currently neutralizes nothing (the
+  `no-mask` control asserts that) and is kept for the rework's return.
 - **Sprite art changed on purpose**, sprites-on runs only. These units are
   removed from the scenario on both sides before rendering:
   walls and gates (shapes derived from their neighbours, palisade and sea
@@ -74,6 +76,7 @@ QUICK_CORPUS = (
     "F7_2_Dos Pilas (648).aoe2scenario",
 )
 # Controls: each must make the comparison fail. The last three drop one neutralization each, proving it is load-bearing.
+# Exception: no-mask passes while Stepped shadows match v0.6 (GH #15 back-out); a failure there means the mask matters again.
 INJECTS = ("repaint-tile", "no-placement-patch", "no-exclusions", "no-mask")
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).

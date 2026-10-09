@@ -252,6 +252,35 @@ def test_undo_preserves_a_custom_display_order() -> None:
     assert model.serialize() == _section_bytes(loaded)
 
 
+def test_a_section_move_is_one_record_touching_no_trigger() -> None:
+    """GH #133's doctrine: a whole-section move is one permutation inside one
+    structural_edit(), so one record with nothing in `touched` (no blob
+    dirtied, no id renumbered), and one undo puts the order back."""
+    from descape.trigger_model import moved_section_display_order
+
+    loaded, model, history = _open()
+    # Names only feed the partition; the triggers themselves stay as they are.
+    names = ["--- A ---", "a1", "--- B ---", "b1"]
+    assert model.trigger_count == len(names), "fixture assumption"
+    original = list(model.manager().trigger_display_order)
+    records = len(history.records)
+
+    model.begin_trigger_edit()
+    model.structural_edit(lambda m: setattr(
+        m, "trigger_display_order", moved_section_display_order(list(m.trigger_display_order), names, 0, 1)
+    ))
+    model.commit_trigger_edit("Move section", history)
+
+    assert len(history.records) == records + 1
+    record = history.peek_undo()
+    assert isinstance(record, TriggerDiffRecord) and record.touched == []
+    assert list(model.manager().trigger_display_order) == [2, 3, 0, 1]
+    assert model.has_edits
+    history.undo(loaded.map_manager.terrain, model)
+    assert list(model.manager().trigger_display_order) == original
+    assert model.serialize() == _section_bytes(loaded)
+
+
 def test_redo_after_undo_of_a_structural_edit() -> None:
     """Plan verification item 4."""
     loaded, model, history = _open()

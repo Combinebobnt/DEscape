@@ -15,7 +15,9 @@ file.
 
 from __future__ import annotations
 
+import gc
 import inspect
+import weakref
 
 import pytest
 
@@ -685,3 +687,278 @@ def test_on_change_does_not_fire_on_a_no_op() -> None:
     hist.apply("nothing", tiles, lambda: None)
     hist.jump_to(0, tiles)
     assert counter.calls == 0
+
+
+# -- view-only ruler records (GH #108) ----------------------------------------
+
+
+def _m(n: int):
+    from descape.ruler import Measurement
+
+    return Measurement((0, 0), (n + 1, n))
+
+
+def _ruler(hist, pinned, m) -> None:
+    """A user ruler add, recorded the way MapView and the viewer record it."""
+    from descape.edit_history import RulerDiffRecord
+
+    index = len(pinned)
+    assert pinned.insert(index, m)
+    hist.push_ruler_record(RulerDiffRecord("Add ruler", ((index, m),), (), pinned.apply_delta))
+
+
+def _clear(hist, pinned) -> None:
+    from descape.edit_history import RulerDiffRecord
+
+    removed = tuple(enumerate(pinned))
+    pinned.clear()
+    hist.push_ruler_record(RulerDiffRecord("Clear rulers", (), removed, pinned.apply_delta))
+
+
+def _pinned():
+    from descape.ruler import PinnedRulers
+
+    return PinnedRulers()
+
+
+def test_a_ruler_record_undoes_and_redoes_without_dirtying() -> None:
+    hist = EditHistory()
+    view = _pinned()
+    a, b = _m(1), _m(2)
+    _ruler(hist, view, a)
+    _ruler(hist, view, b)
+    assert not hist.is_dirty
+    hist.undo([])
+    assert list(view) == [a] and not hist.is_dirty
+    hist.redo([])
+    assert list(view) == [a, b] and not hist.is_dirty
+    hist.jump_to(0, [])
+    assert list(view) == [] and not hist.is_dirty
+
+
+def test_an_unrecorded_ruler_survives_undo_and_redo_of_an_older_one() -> None:
+    """The delta rule: a ruler drawn unrecorded while a real edit's redo was
+    pending is not part of any record, so no ruler undo or redo may drop it."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    view = _pinned()
+    a, b = _m(1), _m(2)
+    _ruler(hist, view, a)
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.undo(tiles)
+    view.insert(len(view), b)  # unrecorded: a file edit is ahead of the cursor
+    hist.undo(tiles)
+    assert list(view) == [b]
+    hist.redo(tiles)
+    assert list(view) == [a, b], "the redone ruler goes back to its own slot"
+    hist.redo(tiles)
+    assert tiles[0].terrain_id == 5
+
+
+def test_undoing_clear_rulers_keeps_rulers_drawn_since_and_the_old_order() -> None:
+    hist = EditHistory()
+    view = _pinned()
+    a, b, c, d = _m(1), _m(2), _m(3), _m(4)
+    for m in (a, b, c):
+        _ruler(hist, view, m)
+    _clear(hist, view)
+    view.insert(0, d)
+    hist.undo([])
+    assert list(view) == [a, b, c, d]
+    hist.redo([])
+    assert list(view) == [d]
+
+
+def test_a_ruler_delta_tolerates_a_live_set_that_already_changed() -> None:
+    """Undo of an add whose ruler is already gone, and redo of one already
+    back, are no-ops on the set; the cursor still moves and nothing raises."""
+    hist = EditHistory()
+    view = _pinned()
+    a = _m(1)
+    _ruler(hist, view, a)
+    view.discard(a)
+    hist.undo([])
+    assert list(view) == [] and hist.cursor == 0
+    view.insert(0, a)
+    hist.redo([])
+    assert list(view) == [a] and hist.cursor == 1
+
+
+def test_equal_rulers_are_separate_entries_through_undo_and_redo() -> None:
+    hist = EditHistory()
+    view = _pinned()
+    first, second = _m(1), _m(1)
+    _ruler(hist, view, first)
+    _ruler(hist, view, second)
+    hist.undo([])
+    assert len(view) == 1 and view.newest is first
+    hist.redo([])
+    assert len(view) == 2 and view.newest is second
+
+
+def test_is_dirty_still_counts_a_real_record_beside_ruler_records() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    view = _pinned()
+    _ruler(hist, view, _m(1))
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    _ruler(hist, view, _m(2))
+    assert hist.is_dirty
+    hist.mark_saved()
+    hist.undo(tiles)
+    assert not hist.is_dirty, "undoing a ruler past the save point dirtied the file"
+    hist.undo(tiles)
+    assert hist.is_dirty
+    hist.redo(tiles)
+    assert not hist.is_dirty
+
+
+def test_a_push_over_only_ruler_redo_keeps_the_save_point() -> None:
+    """Save, undo a ruler, then edit: the truncated tail was view-only, so
+    undoing that edit lands back on the saved file and must read clean."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    view = _pinned()
+    _ruler(hist, view, _m(1))
+    hist.mark_saved()
+    hist.undo(tiles)
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    assert hist.is_dirty
+    hist.undo(tiles)
+    assert not hist.is_dirty
+
+
+def test_rulers_overflowing_past_the_save_point_keep_the_file_clean() -> None:
+    """Save, then more ruler records than max_records: only view-only records
+    were evicted past the save point, so the file still matches it."""
+    hist = EditHistory(max_records=3)
+    tiles = [FakeTile()]
+    view = _pinned()
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.mark_saved()
+    for n in range(1, 6):
+        _ruler(hist, view, _m(n))
+    assert hist.saved_at_cursor == 0 and not hist.is_dirty
+    hist.apply("paint", tiles, _paint(tiles, 0, 6))
+    assert hist.is_dirty
+
+
+def test_a_real_edit_evicted_past_the_save_point_still_dirties() -> None:
+    hist = EditHistory(max_records=3)
+    tiles = [FakeTile()]
+    view = _pinned()
+    hist.mark_saved()
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    for n in range(1, 4):
+        _ruler(hist, view, _m(n))
+    assert hist.saved_at_cursor is None and hist.is_dirty
+
+
+def test_a_ruler_push_with_a_file_edit_to_redo_raises_without_touching_history() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    view = _pinned()
+    _ruler(hist, view, _m(1))
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    hist.undo(tiles)
+    hist.undo(tiles)
+    records = list(hist.records)
+    assert hist.redo_has_file_edits
+    with pytest.raises(RuntimeError):
+        _ruler(hist, view, _m(2))
+    assert hist.records == records and hist.can_redo
+
+
+def test_a_ruler_push_over_only_ruler_redo_is_recorded_and_keeps_the_save_point() -> None:
+    """Loosened from "refuse whenever redo is non-empty": discarding a ruler's
+    own redo costs no real edit, so the new ruler goes on the stack."""
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    view = _pinned()
+    a, b = _m(1), _m(2)
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    _ruler(hist, view, a)
+    hist.mark_saved()
+    hist.undo(tiles)
+    assert hist.can_redo and not hist.redo_has_file_edits
+    _ruler(hist, view, b)
+    assert hist.records[-1].added == ((0, b),) and not hist.can_redo
+    assert hist.saved_at_cursor == 1 and not hist.is_dirty
+    hist.undo(tiles)
+    assert list(view) == [] and not hist.is_dirty
+
+
+# -- content_key: what autosave compares (ruler-only moves are no change) ------
+
+
+def test_content_key_ignores_ruler_pushes_undos_and_redos() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile()]
+    view = _pinned()
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    key = hist.content_key
+    _ruler(hist, view, _m(1))
+    assert hist.content_key == key
+    hist.undo(tiles)
+    assert hist.content_key == key
+    hist.redo(tiles)
+    assert hist.content_key == key
+    hist.apply("paint", tiles, _paint(tiles, 0, 6))
+    assert hist.content_key != key
+
+
+def test_content_key_tells_apart_two_edits_at_the_same_cursor() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile(), FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    key = hist.content_key
+    hist.undo(tiles)
+    hist.apply("paint", tiles, _paint(tiles, 1, 5))
+    assert hist.cursor == 1 and hist.content_key != key
+
+
+def test_content_key_origin_changes_when_the_cap_evicts_a_real_edit_or_on_reset() -> None:
+    hist = EditHistory(max_records=2)
+    tiles = [FakeTile()]
+    view = _pinned()
+    origin = hist.content_key
+    _ruler(hist, view, _m(1))
+    _ruler(hist, view, _m(2))
+    _ruler(hist, view, _m(3))
+    assert hist.content_key == origin, "evicting only rulers changed the content"
+    hist.apply("paint", tiles, _paint(tiles, 0, 6))
+    _ruler(hist, view, _m(6))
+    _ruler(hist, view, _m(7))
+    assert all(r.view_only for r in hist.records)
+    assert hist.content_key != origin, "an evicted paint left the old origin in place"
+    evicted = hist.content_key
+    hist.reset()
+    assert hist.content_key != evicted
+
+
+def test_a_held_content_key_does_not_pin_a_truncated_record() -> None:
+    """Autosave holds content_key between ticks. Holding it must not keep a
+    record alive once undo-then-edit truncates it: a fill can be tens of MB."""
+    hist = EditHistory()
+    tiles = [FakeTile(), FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    held = hist.content_key
+    ref = weakref.ref(hist.records[-1])
+    hist.undo(tiles)
+    hist.apply("paint", tiles, _paint(tiles, 1, 5))
+    gc.collect()
+    assert ref() is None, "the held content_key kept the truncated record alive"
+    assert hist.content_key != held
+
+
+def test_a_held_content_key_does_not_pin_an_evicted_record() -> None:
+    hist = EditHistory(max_records=1)
+    tiles = [FakeTile()]
+    hist.apply("paint", tiles, _paint(tiles, 0, 5))
+    held = hist.content_key
+    ref = weakref.ref(hist.records[-1])
+    hist.apply("paint", tiles, _paint(tiles, 0, 6))
+    assert len(hist.records) == 1
+    gc.collect()
+    assert ref() is None, "the held content_key kept the evicted record alive"
+    assert hist.content_key != held

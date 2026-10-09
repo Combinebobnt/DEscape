@@ -18,12 +18,15 @@ from descape.trigger_organize import (
     UNNAMED_SECTION,
     DividerFormat,
     Section,
+    chain_segments,
+    copied_name,
     divider_format,
     divider_title_error,
     format_divider,
     is_divider,
     leading_divider_run,
     parse_tag,
+    retag_in_chain,
     retag_name,
     retitle_divider,
     section_end_slot,
@@ -34,6 +37,8 @@ from descape.trigger_organize import (
     split_divider,
     split_tag,
     strip_tag,
+    strip_tag_from_chain,
+    tag_chain,
 )
 
 # -- parse_tag ----------------------------------------------------------------
@@ -209,9 +214,81 @@ def test_strip_tag_on_a_chained_name_exposes_the_next_tag():
     assert parse_tag(stripped) == "S30"
 
 
+def test_tag_chain_lists_the_leading_run_of_tags():
+    assert tag_chain("[D1] Spawn") == ["D1"]
+    assert tag_chain("[P1][D1] x") == ["P1", "D1"]
+    assert tag_chain("[Old] [New] x") == ["Old", "New"]
+    assert tag_chain("[P1](D1)<x> go") == ["P1", "D1", "x"]
+    assert tag_chain("[D1]: [P1] x") == ["D1"], "the run ends at the first non-tag"
+    assert tag_chain("[D1]") == ["D1"]
+    assert tag_chain("Escort [VIP]") == []
+    assert tag_chain("") == []
+
+
 def test_strip_tag_refuses_an_untagged_name():
     with pytest.raises(ValueError):
         strip_tag("Escort [VIP]")
+
+
+_CHAIN_SHAPES = [
+    "[D1] Spawn", "[P1][D1] x", "[Old] [New] x", "[P1](D1)<x> go", "[D1]: [P1] x", "[D1]",
+    "  [A]  ( B )  x  ", "<BLUE>>>>>> go", "[A][A] x", "Escort [VIP]", "", "   ",
+]
+
+
+def test_chain_segments_rejoin_to_the_name_and_carry_tag_chains_tags():
+    for name in _CHAIN_SHAPES:
+        segments, rest = chain_segments(name)
+        assert "".join(text for text, _ in segments) + rest == name, name
+        assert [tag for _, tag in segments] == tag_chain(name), name
+    assert chain_segments("[Old] [New] x") == ([("[Old]", "Old"), (" [New]", "New")], " x")
+    assert chain_segments("<BLUE>>>>>> go") == ([("<BLUE>", "BLUE")], ">>>>> go")
+
+
+def test_retag_in_chain_replaces_the_tag_wherever_it_sits():
+    assert retag_in_chain("[Old] [New] x", "New", "Newer") == "[Old] [Newer] x"
+    assert retag_in_chain("[Old] [New] x", "Old", "Older") == "[Older] [New] x"
+    assert retag_in_chain("[P1][D1] references", "D1", "Intro") == "[P1][Intro] references"
+    assert retag_in_chain("  [A]  ( B )  x  ", "B", "Bee") == "  [A]  ( Bee )  x  "
+    assert retag_in_chain("[A][A] x", "A", "Z") == "[Z][Z] x", "every occurrence"
+    assert retag_in_chain("[P1][D1] x", "P1", "D1") == "[D1][D1] x", "a merge inside one chain keeps both"
+
+
+def test_retag_in_chain_matches_retag_name_on_the_leading_tag():
+    for name in ["[D0] Spawn", "[D10][S30] P3 Defeated", "<BLUE>>>>>> go", "[ D1 ] X", "  [D1] X  "]:
+        assert retag_in_chain(name, parse_tag(name), "Y") == retag_name(name, "Y"), name
+
+
+def test_retag_in_chain_refuses_a_tag_outside_the_leading_run():
+    for name, tag in [("Set Scene", "X"), ("[D1]: [P1] x", "P1"), ("[Old] [New] x", "new")]:
+        with pytest.raises(ValueError):
+            retag_in_chain(name, tag, "Z")
+
+
+def test_strip_tag_from_chain_removes_the_tag_wherever_it_sits():
+    assert strip_tag_from_chain("[Old] [New] x", "New") == "[Old] x"
+    assert strip_tag_from_chain("[Old] [New] x", "Old") == "[New] x"
+    assert strip_tag_from_chain("[Old][New] x", "New") == "[Old] x"
+    assert strip_tag_from_chain("[P1][D1] references", "D1") == "[P1] references"
+    assert strip_tag_from_chain("[A] [B] [C] x", "B") == "[A] [C] x"
+    assert strip_tag_from_chain("  [A]  ( B )  x", "B") == "  [A]  x"
+    assert strip_tag_from_chain("[A][A] x", "A") == "x", "every occurrence"
+    assert strip_tag_from_chain("[A] [B] [A]", "A") == "[B]"
+    assert tag_chain(strip_tag_from_chain("[Old] [New] x", "New")) == ["Old"]
+
+
+def test_strip_tag_from_chain_matches_strip_tag_on_the_leading_tag():
+    for name in [
+        "[D0] Spawn", "[P1]Wolf Sound", "[D1]: X", "(DISABLE_LIVE)_test", "<BLUE>>>>>> go",
+        "[ D1 ]   X  ", "  [D1] X", "[D1]", "[Old][New] x", "[Old] [New] x", "  [Old]  (New)  x",
+    ]:
+        assert strip_tag_from_chain(name, parse_tag(name)) == strip_tag(name), name
+
+
+def test_strip_tag_from_chain_refuses_a_tag_outside_the_leading_run():
+    for name, tag in [("Escort [VIP]", "VIP"), ("[D1]: [P1] x", "P1"), ("", "X")]:
+        with pytest.raises(ValueError):
+            strip_tag_from_chain(name, tag)
 
 
 # -- section_key / section_label ------------------------------------------------
@@ -333,6 +410,28 @@ def test_retitle_divider_keeps_the_decoration_byte_for_byte(name):
 def test_retitle_divider_refuses_a_bare_run():
     with pytest.raises(ValueError):
         retitle_divider("------", "X")
+
+
+@pytest.mark.parametrize(
+    ("name", "expected", "title"),
+    [
+        ("--- the-end ---", "--- the-end (copy) ---", "the-end (copy)"),
+        ("---X---", "---X (copy)---", "X (copy)"),
+        ("  == Setup ==  ", "  == Setup (copy) ==  ", "Setup (copy)"),
+    ],
+)
+def test_copied_name_puts_the_suffix_inside_a_divider_title(name, expected, title):
+    """GH #134: a copied section header stays a header, titled `(copy)`."""
+    assert copied_name(name) == expected
+    assert is_divider(expected)
+    assert split_divider(expected)[1] == title
+
+
+def test_copied_name_keeps_a_bare_run_and_suffixes_a_plain_name():
+    assert copied_name("------") == "------"
+    assert copied_name("Spawn wave") == "Spawn wave (copy)"
+    assert copied_name("") == " (copy)"
+    assert copied_name("x", suffix=" #2") == "x #2"
 
 
 def test_divider_title_error_catches_a_title_merging_into_the_run():

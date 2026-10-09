@@ -1,13 +1,13 @@
 {
   "_comment": "Cliff neighbour-direction-set -> (suffix, rotation candidates) -- see tools/gen_cliff_connectivity.py",
   "metadata": {
-    "total_records": 22894,
+    "total_records": 23313,
     "min_n": 30,
     "min_suffix_n": 10,
-    "covered_records": 21807,
-    "coverage": 0.9525,
-    "purity_within_coverage": 0.6088,
-    "purity_over_all_records": 0.5799
+    "covered_records": 22218,
+    "coverage": 0.953,
+    "purity_within_coverage": 0.608,
+    "purity_over_all_records": 0.5794
   },
   "entries": [
     {
@@ -26,23 +26,23 @@
         8,
         7
       ],
-      "n": 2466,
-      "suffix_fraction": 0.5511,
-      "rotation_fraction": 0.9176,
+      "n": 2496,
+      "suffix_fraction": 0.5493,
+      "rotation_fraction": 0.9168,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             1,
             2
           ],
-          "n": 1106
+          "n": 1124
         },
         "2": {
           "rotations": [
             8,
             7
           ],
-          "n": 1359
+          "n": 1371
         }
       }
     },
@@ -62,23 +62,23 @@
         10,
         11
       ],
-      "n": 2331,
-      "suffix_fraction": 0.6323,
-      "rotation_fraction": 0.9254,
+      "n": 2356,
+      "suffix_fraction": 0.629,
+      "rotation_fraction": 0.9258,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             4,
             5
           ],
-          "n": 855
+          "n": 872
         },
         "3": {
           "rotations": [
             10,
             11
           ],
-          "n": 1474
+          "n": 1482
         }
       }
     },
@@ -98,8 +98,8 @@
         14,
         1
       ],
-      "n": 2239,
-      "suffix_fraction": 0.5181,
+      "n": 2304,
+      "suffix_fraction": 0.5165,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -114,20 +114,20 @@
             6,
             24
           ],
-          "n": 456
+          "n": 489
         },
         "5": {
           "rotations": [
             6
           ],
-          "n": 608
+          "n": 610
         },
         "6": {
           "rotations": [
             14,
             1
           ],
-          "n": 1160
+          "n": 1190
         }
       }
     },
@@ -147,8 +147,8 @@
         12,
         5
       ],
-      "n": 2213,
-      "suffix_fraction": 0.3692,
+      "n": 2279,
+      "suffix_fraction": 0.3717,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "4": {
@@ -156,14 +156,14 @@
             12,
             5
           ],
-          "n": 817
+          "n": 847
         },
         "6": {
           "rotations": [
             0,
             24
           ],
-          "n": 694
+          "n": 730
         },
         "7": {
           "rotations": [
@@ -188,8 +188,8 @@
       "rotations": [
         13
       ],
-      "n": 1019,
-      "suffix_fraction": 0.5466,
+      "n": 1033,
+      "suffix_fraction": 0.547,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -197,13 +197,13 @@
             3,
             16
           ],
-          "n": 460
+          "n": 466
         },
         "8": {
           "rotations": [
             13
           ],
-          "n": 557
+          "n": 565
         }
       }
     },
@@ -223,8 +223,8 @@
         9,
         2
       ],
-      "n": 905,
-      "suffix_fraction": 0.421,
+      "n": 928,
+      "suffix_fraction": 0.4106,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -232,14 +232,14 @@
             15,
             17
           ],
-          "n": 243
+          "n": 256
         },
         "8": {
           "rotations": [
             9,
             24
           ],
-          "n": 275
+          "n": 285
         },
         "9": {
           "rotations": [
@@ -262,23 +262,23 @@
         17,
         4
       ],
-      "n": 671,
-      "suffix_fraction": 0.4709,
-      "rotation_fraction": 0.9684,
+      "n": 690,
+      "suffix_fraction": 0.4739,
+      "rotation_fraction": 0.9694,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             17,
             4
           ],
-          "n": 316
+          "n": 327
         },
         "3": {
           "rotations": [
             21,
             11
           ],
-          "n": 313
+          "n": 321
         },
         "5": {
           "rotations": [
@@ -306,23 +306,23 @@
         18,
         5
       ],
-      "n": 626,
-      "suffix_fraction": 0.5511,
-      "rotation_fraction": 0.9855,
+      "n": 632,
+      "suffix_fraction": 0.5491,
+      "rotation_fraction": 0.9856,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             18,
             5
           ],
-          "n": 345
+          "n": 347
         },
         "2": {
           "rotations": [
             22,
             8
           ],
-          "n": 255
+          "n": 259
         },
         "8": {
           "rotations": [
@@ -344,23 +344,23 @@
         19,
         1
       ],
-      "n": 573,
-      "suffix_fraction": 0.6161,
-      "rotation_fraction": 0.9773,
+      "n": 598,
+      "suffix_fraction": 0.6137,
+      "rotation_fraction": 0.9782,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             19,
             1
           ],
-          "n": 353
+          "n": 367
         },
         "2": {
           "rotations": [
             23,
             7
           ],
-          "n": 193
+          "n": 204
         },
         "6": {
           "rotations": [
@@ -388,23 +388,23 @@
         16,
         3
       ],
-      "n": 534,
-      "suffix_fraction": 0.5468,
-      "rotation_fraction": 0.9658,
+      "n": 546,
+      "suffix_fraction": 0.5495,
+      "rotation_fraction": 0.9667,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             16,
             3
           ],
-          "n": 292
+          "n": 300
         },
         "3": {
           "rotations": [
             20,
             10
           ],
-          "n": 210
+          "n": 214
         },
         "4": {
           "rotations": [
@@ -435,16 +435,16 @@
         2,
         1
       ],
-      "n": 399,
+      "n": 403,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9424,
+      "rotation_fraction": 0.9429,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             2,
             1
           ],
-          "n": 399
+          "n": 403
         }
       }
     },
@@ -468,16 +468,16 @@
         4,
         5
       ],
-      "n": 386,
+      "n": 398,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9585,
+      "rotation_fraction": 0.9598,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             4,
             5
           ],
-          "n": 386
+          "n": 398
         }
       }
     },
@@ -501,16 +501,16 @@
         3,
         16
       ],
-      "n": 351,
+      "n": 361,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9772,
+      "rotation_fraction": 0.9778,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             3,
             16
           ],
-          "n": 351
+          "n": 361
         }
       }
     },
@@ -534,16 +534,16 @@
         3,
         16
       ],
-      "n": 347,
+      "n": 355,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9942,
+      "rotation_fraction": 0.9944,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             3,
             16
           ],
-          "n": 347
+          "n": 355
         }
       }
     },
@@ -570,7 +570,7 @@
       "rotations": [
         15
       ],
-      "n": 334,
+      "n": 340,
       "suffix_fraction": 1.0,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
@@ -578,7 +578,7 @@
           "rotations": [
             15
           ],
-          "n": 334
+          "n": 340
         }
       }
     },
@@ -602,8 +602,8 @@
         9,
         2
       ],
-      "n": 313,
-      "suffix_fraction": 0.5016,
+      "n": 315,
+      "suffix_fraction": 0.4984,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -618,7 +618,7 @@
             9,
             24
           ],
-          "n": 78
+          "n": 80
         },
         "9": {
           "rotations": [
@@ -649,8 +649,8 @@
         0,
         24
       ],
-      "n": 290,
-      "suffix_fraction": 0.331,
+      "n": 302,
+      "suffix_fraction": 0.3179,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -664,14 +664,14 @@
           "rotations": [
             12
           ],
-          "n": 68
+          "n": 72
         },
         "6": {
           "rotations": [
             0,
             24
           ],
-          "n": 75
+          "n": 83
         },
         "7": {
           "rotations": [
@@ -706,16 +706,16 @@
         3,
         16
       ],
-      "n": 280,
+      "n": 284,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9964,
+      "rotation_fraction": 0.9965,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             3,
             16
           ],
-          "n": 280
+          "n": 284
         }
       }
     },
@@ -739,16 +739,16 @@
         15,
         18
       ],
-      "n": 275,
+      "n": 283,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9745,
+      "rotation_fraction": 0.9753,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             15,
             18
           ],
-          "n": 275
+          "n": 283
         }
       }
     },
@@ -772,16 +772,16 @@
         15,
         17
       ],
-      "n": 269,
+      "n": 275,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9665,
+      "rotation_fraction": 0.9709,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             15,
             17
           ],
-          "n": 269
+          "n": 275
         }
       }
     },
@@ -805,8 +805,8 @@
         14,
         1
       ],
-      "n": 244,
-      "suffix_fraction": 0.3033,
+      "n": 250,
+      "suffix_fraction": 0.32,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -834,7 +834,7 @@
             14,
             1
           ],
-          "n": 74
+          "n": 80
         }
       }
     },
@@ -858,16 +858,16 @@
         1,
         2
       ],
-      "n": 223,
+      "n": 233,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9148,
+      "rotation_fraction": 0.9185,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             1,
             2
           ],
-          "n": 223
+          "n": 233
         }
       }
     },
@@ -890,8 +890,8 @@
       "rotations": [
         13
       ],
-      "n": 216,
-      "suffix_fraction": 0.6204,
+      "n": 218,
+      "suffix_fraction": 0.6147,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -899,7 +899,7 @@
             3,
             19
           ],
-          "n": 79
+          "n": 81
         },
         "8": {
           "rotations": [
@@ -933,16 +933,16 @@
         4,
         5
       ],
-      "n": 208,
+      "n": 209,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9519,
+      "rotation_fraction": 0.9569,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             4,
             5
           ],
-          "n": 208
+          "n": 209
         }
       }
     },
@@ -1056,16 +1056,16 @@
         17,
         4
       ],
-      "n": 165,
-      "suffix_fraction": 0.9818,
-      "rotation_fraction": 0.9568,
+      "n": 168,
+      "suffix_fraction": 0.9821,
+      "rotation_fraction": 0.9576,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             17,
             4
           ],
-          "n": 162
+          "n": 165
         }
       }
     },
@@ -1085,16 +1085,90 @@
         18,
         2
       ],
-      "n": 163,
+      "n": 164,
       "suffix_fraction": 0.9939,
-      "rotation_fraction": 0.9506,
+      "rotation_fraction": 0.9509,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             18,
             2
           ],
-          "n": 162
+          "n": 163
+        }
+      }
+    },
+    {
+      "dirset": [
+        [
+          -1,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "suffix": 1,
+      "rotations": [
+        5,
+        4
+      ],
+      "n": 159,
+      "suffix_fraction": 1.0,
+      "rotation_fraction": 0.956,
+      "rotations_by_suffix": {
+        "1": {
+          "rotations": [
+            5,
+            4
+          ],
+          "n": 159
+        }
+      }
+    },
+    {
+      "dirset": [
+        [
+          0,
+          -1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "suffix": 1,
+      "rotations": [
+        1,
+        2
+      ],
+      "n": 159,
+      "suffix_fraction": 0.9497,
+      "rotation_fraction": 0.6424,
+      "rotations_by_suffix": {
+        "1": {
+          "rotations": [
+            1,
+            2
+          ],
+          "n": 151
         }
       }
     },
@@ -1155,80 +1229,6 @@
     {
       "dirset": [
         [
-          0,
-          -1
-        ],
-        [
-          0,
-          1
-        ],
-        [
-          1,
-          -1
-        ],
-        [
-          1,
-          0
-        ],
-        [
-          1,
-          1
-        ]
-      ],
-      "suffix": 1,
-      "rotations": [
-        1,
-        2
-      ],
-      "n": 157,
-      "suffix_fraction": 0.949,
-      "rotation_fraction": 0.6376,
-      "rotations_by_suffix": {
-        "1": {
-          "rotations": [
-            1,
-            2
-          ],
-          "n": 149
-        }
-      }
-    },
-    {
-      "dirset": [
-        [
-          -1,
-          0
-        ],
-        [
-          1,
-          0
-        ],
-        [
-          1,
-          1
-        ]
-      ],
-      "suffix": 1,
-      "rotations": [
-        5,
-        4
-      ],
-      "n": 153,
-      "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9542,
-      "rotations_by_suffix": {
-        "1": {
-          "rotations": [
-            5,
-            4
-          ],
-          "n": 153
-        }
-      }
-    },
-    {
-      "dirset": [
-        [
           -1,
           -1
         ],
@@ -1250,16 +1250,16 @@
         2,
         1
       ],
-      "n": 149,
+      "n": 152,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9262,
+      "rotation_fraction": 0.9276,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             2,
             1
           ],
-          "n": 149
+          "n": 152
         }
       }
     },
@@ -1346,16 +1346,16 @@
         3,
         4
       ],
-      "n": 118,
+      "n": 120,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.9237,
+      "rotation_fraction": 0.925,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
             3,
             4
           ],
-          "n": 118
+          "n": 120
         }
       }
     },
@@ -1375,8 +1375,8 @@
         16,
         3
       ],
-      "n": 110,
-      "suffix_fraction": 0.9818,
+      "n": 118,
+      "suffix_fraction": 0.9831,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -1384,7 +1384,36 @@
             16,
             3
           ],
-          "n": 108
+          "n": 116
+        }
+      }
+    },
+    {
+      "dirset": [
+        [
+          -1,
+          -1
+        ],
+        [
+          0,
+          -1
+        ]
+      ],
+      "suffix": 1,
+      "rotations": [
+        19,
+        3
+      ],
+      "n": 109,
+      "suffix_fraction": 0.9725,
+      "rotation_fraction": 1.0,
+      "rotations_by_suffix": {
+        "1": {
+          "rotations": [
+            19,
+            3
+          ],
+          "n": 106
         }
       }
     },
@@ -1434,35 +1463,6 @@
             2
           ],
           "n": 108
-        }
-      }
-    },
-    {
-      "dirset": [
-        [
-          -1,
-          -1
-        ],
-        [
-          0,
-          -1
-        ]
-      ],
-      "suffix": 1,
-      "rotations": [
-        19,
-        3
-      ],
-      "n": 107,
-      "suffix_fraction": 0.972,
-      "rotation_fraction": 1.0,
-      "rotations_by_suffix": {
-        "1": {
-          "rotations": [
-            19,
-            3
-          ],
-          "n": 104
         }
       }
     },
@@ -1627,6 +1627,45 @@
     {
       "dirset": [
         [
+          0,
+          1
+        ],
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "suffix": 4,
+      "rotations": [
+        12,
+        5
+      ],
+      "n": 88,
+      "suffix_fraction": 0.8636,
+      "rotation_fraction": 1.0,
+      "rotations_by_suffix": {
+        "1": {
+          "rotations": [
+            18
+          ],
+          "n": 12
+        },
+        "4": {
+          "rotations": [
+            12,
+            5
+          ],
+          "n": 76
+        }
+      }
+    },
+    {
+      "dirset": [
+        [
           -1,
           0
         ],
@@ -1669,45 +1708,6 @@
             0
           ],
           "n": 26
-        }
-      }
-    },
-    {
-      "dirset": [
-        [
-          0,
-          1
-        ],
-        [
-          1,
-          -1
-        ],
-        [
-          1,
-          0
-        ]
-      ],
-      "suffix": 4,
-      "rotations": [
-        12,
-        5
-      ],
-      "n": 86,
-      "suffix_fraction": 0.8605,
-      "rotation_fraction": 1.0,
-      "rotations_by_suffix": {
-        "1": {
-          "rotations": [
-            18
-          ],
-          "n": 12
-        },
-        "4": {
-          "rotations": [
-            12,
-            5
-          ],
-          "n": 74
         }
       }
     },
@@ -2133,6 +2133,51 @@
           0
         ],
         [
+          0,
+          -1
+        ],
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "suffix": 1,
+      "rotations": [
+        5,
+        4
+      ],
+      "n": 61,
+      "suffix_fraction": 1.0,
+      "rotation_fraction": 0.7541,
+      "rotations_by_suffix": {
+        "1": {
+          "rotations": [
+            5,
+            4
+          ],
+          "n": 61
+        }
+      }
+    },
+    {
+      "dirset": [
+        [
+          -1,
+          -1
+        ],
+        [
+          -1,
+          0
+        ],
+        [
           -1,
           1
         ],
@@ -2215,37 +2260,29 @@
           0
         ],
         [
+          -1,
+          1
+        ],
+        [
           0,
-          -1
-        ],
-        [
-          1,
-          -1
-        ],
-        [
-          1,
-          0
-        ],
-        [
-          1,
           1
         ]
       ],
       "suffix": 1,
       "rotations": [
-        5,
-        4
+        15,
+        18
       ],
-      "n": 59,
+      "n": 57,
       "suffix_fraction": 1.0,
-      "rotation_fraction": 0.7458,
+      "rotation_fraction": 0.7895,
       "rotations_by_suffix": {
         "1": {
           "rotations": [
-            5,
-            4
+            15,
+            18
           ],
-          "n": 59
+          "n": 57
         }
       }
     },
@@ -2273,43 +2310,6 @@
             23
           ],
           "n": 15
-        }
-      }
-    },
-    {
-      "dirset": [
-        [
-          -1,
-          -1
-        ],
-        [
-          -1,
-          0
-        ],
-        [
-          -1,
-          1
-        ],
-        [
-          0,
-          1
-        ]
-      ],
-      "suffix": 1,
-      "rotations": [
-        15,
-        18
-      ],
-      "n": 55,
-      "suffix_fraction": 1.0,
-      "rotation_fraction": 0.8182,
-      "rotations_by_suffix": {
-        "1": {
-          "rotations": [
-            15,
-            18
-          ],
-          "n": 55
         }
       }
     },
@@ -2674,8 +2674,8 @@
         18,
         5
       ],
-      "n": 35,
-      "suffix_fraction": 0.9143,
+      "n": 37,
+      "suffix_fraction": 0.9189,
       "rotation_fraction": 1.0,
       "rotations_by_suffix": {
         "1": {
@@ -2683,7 +2683,7 @@
             18,
             5
           ],
-          "n": 32
+          "n": 34
         }
       }
     },

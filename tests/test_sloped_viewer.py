@@ -320,3 +320,90 @@ def test_pick_map_point_resolves_the_continuous_point_under_a_pixel(style: str) 
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def _bumpy_sloped_window():
+    """terrain_edit_window() in Sloped over a 3-level blocked field, so a
+    block of tiles carries many distinct corner shapes."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.terrain_edit_window()
+    for tile in window.scenario.map_manager.terrain:
+        tile.elevation = (tile.x // 2 + tile.y // 3) % 3
+    window.terrain_style_combo.setCurrentText("Sloped")
+    window.refresh_map()
+    QApplication.processEvents()
+    assert window.map_view._terrain_style == "sloped", "the fixture did not switch style"
+    return window
+
+
+def _normalized_shape(mv, tx: int, ty: int) -> tuple[int, int, int, int]:
+    _ox, _oy, corners = mv._sloped_tile_base(tx, ty)
+    d_min = min(corners)
+    return tuple(d - d_min for d in corners)
+
+
+def test_cached_sloped_tile_polygon_matches_a_fresh_build_point_for_point() -> None:
+    """TASK-031.38: _tile_polygon's Sloped branch serves a cached tile-local
+    polygon translated to the tile. Checked against the pre-cache build
+    (iso_geometry's outline placed at _sloped_tile_base's origin) on every
+    tile of a mixed-shape block, both forms interleaved on a cold cache so a
+    key that confused them would fail here."""
+    from PyQt5.QtCore import QPointF
+    from PyQt5.QtGui import QPolygonF
+
+    from descape import iso_geometry, map_view
+
+    window = _bumpy_sloped_window()
+    try:
+        mv = window.map_view
+        map_view._sloped_outline_polygon.cache_clear()
+        block = [(tx, ty) for ty in range(30, 46) for tx in range(30, 46)]
+        assert len({_normalized_shape(mv, tx, ty) for tx, ty in block}) >= 8, "fixture lost its shape mix"
+        for tx, ty in block:
+            ox, oy, corners = mv._sloped_tile_base(tx, ty)
+            for coarse in (False, True):
+                fn = iso_geometry.sloped_tile_outline_coarse if coarse else iso_geometry.sloped_tile_outline
+                expected = QPolygonF([QPointF(ox + px, oy + py) for px, py in fn(mv._tile_pixels, *corners)])
+                got = mv._tile_polygon(tx, ty, coarse=coarse)
+                assert got == expected, f"tile ({tx}, {ty}) coarse={coarse}: cached polygon differs"
+        assert map_view._sloped_outline_polygon.cache_info().hits > 0, "the block never hit the cache"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_sloped_highlight_rebuild_builds_only_shapes_it_has_not_seen(monkeypatch) -> None:
+    """TASK-031.38: a brush-9 highlight at a neighbouring tile calls
+    sloped_tile_outline_coarse once per corner shape the cache has not seen,
+    not once per tile (81). Counted, not timed."""
+    from descape import brush, iso_geometry, map_view
+
+    window = _bumpy_sloped_window()
+    try:
+        mv = window.map_view
+        mv.set_brush(9, brush.BRUSH_SHAPE_SQUARE)
+        real = iso_geometry.sloped_tile_outline_coarse
+        calls = []
+
+        def counting(*args):
+            calls.append(args)
+            return real(*args)
+
+        monkeypatch.setattr(iso_geometry, "sloped_tile_outline_coarse", counting)
+        map_view._sloped_outline_polygon.cache_clear()
+
+        def shapes(cx: int, cy: int) -> set:
+            tiles = brush.brush_tiles(cx, cy, 9, brush.BRUSH_SHAPE_SQUARE, mv._map_width, mv._map_height)
+            assert len(tiles) == 81
+            return {_normalized_shape(mv, tx, ty) for tx, ty in tiles}
+
+        mv._update_highlight(40, 40)
+        first = len(calls)
+        assert first == len(shapes(40, 40)) < 81
+        mv._update_highlight(41, 40)
+        assert len(calls) - first == len(shapes(41, 40) - shapes(40, 40)), "a seen shape was rebuilt"
+        assert mv._highlight_outline_item is not None and not mv._highlight_outline_item.path().isEmpty()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

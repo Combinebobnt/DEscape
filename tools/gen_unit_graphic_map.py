@@ -182,6 +182,26 @@ duplicate with no filename, already excluded above). A gate's pieces carry
 no per-piece depth slot, unlike a town centre's, so they all paint at the
 unit's single anchor tile.
 
+**Per-civ and per-age building art (GH #48).** Every civ has its own copy of
+the unit table, and building consts (type 80) carry different standing
+graphics per architecture. The same `_entry_for()` runs over every civ's
+table and writes a second file, descape/building_art_map.json:
+
+    "civ_names":    {"<civ_index>": "<.dat civ name>"},
+    "age_upgrades": {"<base_const>": {"3"|"4"|"5": const drawn at that
+                     StartingAge}}, from the age techs' "upgrade unit"
+                     commands; only ages where the const changes.
+    "entries":      [entry, ...], unit_graphic_map.json-shaped, each
+                     distinct one once.
+    "civ_art":      {"<civ_index>": {"<const>": index into entries}}, only
+                     where that civ's entry differs from Gaia's.
+
+The run fails unless every per-civ entry and every age target agrees with
+its reference on angle_count, rotation_is_variant, variant_count and the
+unit's clearance_size, apart from the measured `_ART_INVARIANT_HOLDOUTS`.
+A decoration-shell body is the delta at the same position in that civ's own
+shell as the hand-verified Gaia body.
+
 **Decoration-shell walls.** The three `_BODY_GRAPHIC_OVERRIDES` consts keep
 the body as their top-level graphic but also carry `pieces`: the shell's
 modern deltas in .dat list order at their own offsets, with the flag shell
@@ -383,18 +403,14 @@ _COMPOSITE_SCOPE: frozenset[int] = frozenset({
 # (needs the real .sld art, so it is committed rather than derived here);
 # re-verified by tests/test_unit_graphic_map.py's corpus slot test. 1890/2079/
 # 2080 have a [1, 1] span, so every piece collapses onto the one tile.
+#
+# Town centres are not here: their slots differ by art set, so they are in
+# _PIECE_SLOTS_BY_ART below (GH #48 Slice 2).
 _PIECE_SLOTS: dict[int, list[list[int]]] = {
-    71: [[1, 2], [0, 3], [0, 3], [0, 3]],
-    109: [[1, 2], [0, 3], [0, 3], [0, 3]],
-    141: [[1, 2], [0, 3], [0, 3], [0, 3]],
-    142: [[1, 2], [0, 3], [0, 3], [0, 3]],
     1889: [[3, 0], [0, 3], [0, 2], [0, 1], [0, 3]],
     1890: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
     2079: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
     2080: [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]],
-    2275: [[1, 2], [0, 3], [0, 3], [0, 3]],
-    2276: [[1, 2], [0, 3], [0, 3], [0, 3]],
-    2277: [[1, 2], [0, 3], [0, 3], [0, 3]],
     # 1893/1897: _ANNEX_TREE_SCOPE, identical trees on a [4, 4] footprint.
     1893: [[3, 0], [3, 0], [3, 0], [2, 0], [3, 1], [1, 0], [3, 2], [1, 0], [3, 2], [0, 0], [3, 3],
            [1, 2], [0, 2], [0, 1], [0, 2], [0, 1], [0, 3], [0, 2], [0, 3], [0, 3], [0, 3], [0, 3],
@@ -402,6 +418,346 @@ _PIECE_SLOTS: dict[int, list[list[int]]] = {
     1897: [[3, 0], [3, 0], [3, 0], [2, 0], [3, 1], [1, 0], [3, 2], [1, 0], [3, 2], [0, 0], [3, 3],
            [1, 2], [0, 2], [0, 1], [0, 2], [0, 1], [0, 3], [0, 2], [0, 3], [0, 3], [0, 3], [0, 3],
            [0, 3], [0, 3], [0, 3]],
+}
+
+# The town-centre consts of _COMPOSITE_SCOPE, whose slots are keyed by art set.
+_TOWN_CENTRE_SCOPE: frozenset[int] = frozenset({71, 109, 141, 142, 2275, 2276, 2277})
+
+# Town-centre art set (its pieces' file names, in emitted order) -> each
+# piece's depth slot, as _PIECE_SLOTS. Keyed by the whole set, not the parent
+# file: the Persian age-2 back piece heads sets whose annexes differ, and they
+# measure differently. Output of tools/measure_piece_slots.py.
+_PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
+    (
+        "b_afri_town_center_age2_main_x1",
+        "b_afri_town_center_age2_back_x1",
+        "b_afri_town_center_age2_center_x1",
+        "b_afri_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_afri_town_center_age3_main_x1",
+        "b_afri_town_center_age3_back_x1",
+        "b_afri_town_center_age3_center_x1",
+        "b_afri_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_afri_town_center_age4_main_x1",
+        "b_afri_town_center_age4_back_x1",
+        "b_afri_town_center_age4_center_x1",
+        "b_afri_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ande_town_center_age2_main_x1",
+        "b_ande_town_center_age2_back_x1",
+        "b_ande_town_center_age2_center_x1",
+        "b_ande_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ande_town_center_age3_main_x1",
+        "b_ande_town_center_age3_back_x1",
+        "b_ande_town_center_age3_center_x1",
+        "b_ande_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ande_town_center_age4_main_x1",
+        "b_ande_town_center_age4_back_x1",
+        "b_ande_town_center_age4_center_x1",
+        "b_ande_town_center_age4_front_x1",
+    ): [[2, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_archaic_town_center_age1_main_x1",
+        "b_archaic_town_center_age1_back_x1",
+        "b_archaic_town_center_age1_center_x1",
+        "b_archaic_town_center_age1_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_archaic_town_center_age1_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_archaic_town_center_age1_center_x1",
+        "b_archaic_town_center_age1_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_asia_town_center_age2_main_x1",
+        "b_asia_town_center_age2_back_x1",
+        "b_asia_town_center_age2_center_x1",
+        "b_asia_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_asia_town_center_age3_main_x1",
+        "b_asia_town_center_age3_back_x1",
+        "b_asia_town_center_age3_center_x1",
+        "b_asia_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_asia_town_center_age4_main_x1",
+        "b_asia_town_center_age4_back_x1",
+        "b_asia_town_center_age4_center_x1",
+        "b_asia_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ceas_town_center_age2_main_x1",
+        "b_ceas_town_center_age2_back_x1",
+        "b_ceas_town_center_age2_center_x1",
+        "b_ceas_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ceas_town_center_age3_main_x1",
+        "b_ceas_town_center_age3_back_x1",
+        "b_ceas_town_center_age3_center_x1",
+        "b_ceas_town_center_age3_front_x1",
+    ): [[0, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ceas_town_center_age4_main_x1",
+        "b_ceas_town_center_age4_back_x1",
+        "b_ceas_town_center_age4_center_x1",
+        "b_ceas_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_dark_town_center_age1_main_x1",
+        "b_dark_town_center_age1_back_x1",
+        "b_dark_town_center_age1_center_x1",
+        "b_dark_town_center_age1_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_dark_town_center_age1_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_dark_town_center_age1_center_x1",
+        "b_dark_town_center_age1_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_east_town_center_age2_main_x1",
+        "b_east_town_center_age2_back_x1",
+        "b_east_town_center_age2_center_x1",
+        "b_east_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_east_town_center_age3_main_x1",
+        "b_east_town_center_age3_back_x1",
+        "b_east_town_center_age3_center_x1",
+        "b_east_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_east_town_center_age4_main_x1",
+        "b_east_town_center_age4_back_x1",
+        "b_east_town_center_age4_center_x1",
+        "b_east_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_greek_town_center_age2_main_x1",
+        "b_greek_town_center_age2_back_x1",
+        "b_greek_town_center_age2_center_x1",
+        "b_greek_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_greek_town_center_age3_main_x1",
+        "b_greek_town_center_age3_back_x1",
+        "b_greek_town_center_age3_center_x1",
+        "b_greek_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_greek_town_center_age4_main_x1",
+        "b_greek_town_center_age4_back_x1",
+        "b_greek_town_center_age4_center_x1",
+        "b_greek_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_indi_town_center_age2_main_x1",
+        "b_indi_town_center_age2_back_x1",
+        "b_indi_town_center_age2_center_x1",
+        "b_indi_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_indi_town_center_age3_main_x1",
+        "b_indi_town_center_age3_back_x1",
+        "b_indi_town_center_age3_center_x1",
+        "b_indi_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_indi_town_center_age4_main_x1",
+        "b_indi_town_center_age4_back_x1",
+        "b_indi_town_center_age4_center_x1",
+        "b_indi_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_medi_town_center_age2_main_x1",
+        "b_medi_town_center_age2_back_x1",
+        "b_medi_town_center_age2_center_x1",
+        "b_medi_town_center_age2_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_medi_town_center_age3_main_x1",
+        "b_medi_town_center_age3_back_x1",
+        "b_medi_town_center_age3_center_x1",
+        "b_medi_town_center_age3_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_medi_town_center_age4_main_x1",
+        "b_medi_town_center_age4_back_x1",
+        "b_medi_town_center_age4_center_x1",
+        "b_medi_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_meso_town_center_age2_main_x1",
+        "b_meso_town_center_age2_back_x1",
+        "b_meso_town_center_age2_center_x1",
+        "b_meso_town_center_age2_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_meso_town_center_age3_main_x1",
+        "b_meso_town_center_age3_back_x1",
+        "b_meso_town_center_age3_center_x1",
+        "b_meso_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_meso_town_center_age4_main_x1",
+        "b_meso_town_center_age4_back_x1",
+        "b_meso_town_center_age4_center_x1",
+        "b_meso_town_center_age4_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_nors_town_center_age2_main_x1",
+        "b_nors_town_center_age2_back_x1",
+        "b_nors_town_center_age2_center_x1",
+        "b_nors_town_center_age2_front_x1",
+    ): [[2, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_nors_town_center_age3_main_x1",
+        "b_nors_town_center_age3_back_x1",
+        "b_nors_town_center_age3_center_x1",
+        "b_nors_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_nors_town_center_age4_main_x1",
+        "b_nors_town_center_age4_back_x1",
+        "b_nors_town_center_age4_center_x1",
+        "b_nors_town_center_age4_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_orie_town_center_age2_main_x1",
+        "b_orie_town_center_age2_back_x1",
+        "b_orie_town_center_age2_center_x1",
+        "b_orie_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_orie_town_center_age3_main_x1",
+        "b_orie_town_center_age3_back_x1",
+        "b_orie_town_center_age3_center_x1",
+        "b_orie_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_orie_town_center_age4_main_x1",
+        "b_orie_town_center_age4_back_x1",
+        "b_orie_town_center_age4_center_x1",
+        "b_orie_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_persian_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_persian_town_center_age2_center_x1",
+        "b_persian_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_persian_town_center_age3_main_x1",
+        "b_persian_town_center_age3_back_x1",
+        "b_persian_town_center_age3_center_x1",
+        "b_persian_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_persian_town_center_age4_main_x1",
+        "b_persian_town_center_age4_back_x1",
+        "b_persian_town_center_age4_center_x1",
+        "b_persian_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_puru_town_center_age2_main_x1",
+        "b_puru_town_center_age2_back_x1",
+        "b_puru_town_center_age2_center_x1",
+        "b_puru_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_puru_town_center_age3_Main_x1",
+        "b_puru_town_center_age3_Back_x1",
+        "b_puru_town_center_age3_Center_x1",
+        "b_puru_town_center_age3_Front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_puru_town_center_age4_main_x1",
+        "b_puru_town_center_age4_back_x1",
+        "b_puru_town_center_age4_Center_x1",
+        "b_puru_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_seas_town_center_age2_main_x1",
+        "b_seas_town_center_age2_back_x1",
+        "b_seas_town_center_age2_center_x1",
+        "b_seas_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_seas_town_center_age3_main_x1",
+        "b_seas_town_center_age3_back_x1",
+        "b_seas_town_center_age3_center_x1",
+        "b_seas_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_seas_town_center_age4_main_x1",
+        "b_seas_town_center_age4_back_x1",
+        "b_seas_town_center_age4_center_x1",
+        "b_seas_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_slav_town_center_age2_main_x1",
+        "b_slav_town_center_age2_back_x1",
+        "b_slav_town_center_age2_center_x1",
+        "b_slav_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_slav_town_center_age3_main_x1",
+        "b_slav_town_center_age3_back_x1",
+        "b_slav_town_center_age3_center_x1",
+        "b_slav_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_slav_town_center_age4_main_x1",
+        "b_slav_town_center_age4_back_x1",
+        "b_slav_town_center_age4_center_x1",
+        "b_slav_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_thracian_town_center_age2_main_x1",
+        "b_thracian_town_center_age2_back_x1",
+        "b_thracian_town_center_age2_center_x1",
+        "b_thracian_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_thracian_town_center_age3_main_x1",
+        "b_thracian_town_center_age3_back_x1",
+        "b_thracian_town_center_age3_center_x1",
+        "b_thracian_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_thracian_town_center_age4_main_x1",
+        "b_thracian_town_center_age4_back_x1",
+        "b_thracian_town_center_age4_center_x1",
+        "b_thracian_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_west_town_center_age2_main_x1",
+        "b_west_town_center_age2_back_x1",
+        "b_west_town_center_age2_center_x1",
+        "b_west_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_west_town_center_age3_main_x1",
+        "b_west_town_center_age3_back_x1",
+        "b_west_town_center_age3_center_x1",
+        "b_west_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_west_town_center_age4_main_x1",
+        "b_west_town_center_age4_back_x1",
+        "b_west_town_center_age4_center_x1",
+        "b_west_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
 }
 
 # Native-pixel iso half-dimensions, mirroring descape.unit_sprites.
@@ -427,7 +783,8 @@ def _piece_screen_offset(mx: float, my: float, piece_graphic) -> tuple[int, int]
 
 
 def _resolve_pieces(
-    units: list, graphics: list, unit_const: int, parent_graphic
+    units: list, graphics: list, unit_const: int, parent_graphic,
+    annex_upgrades: dict[int, int] | None = None,
 ) -> list[dict[str, object]] | None:
     """The composite `pieces` list for unit_const, depth-sorted (main -> back
     -> center -> front for a town centre), or None if unit_const is out of
@@ -435,10 +792,16 @@ def _resolve_pieces(
     graphic the caller is about to emit as the entry's own five fields; it
     becomes pieces[0]'s data at (dx, dy) = (0, 0), since a const's own art has
     zero misplacement by definition -- the parent piece is drawn like any
-    other, just at its own depth slot rather than appended as an "extra"."""
+    other, just at its own depth slot rather than appended as an "extra".
+
+    `annex_upgrades` maps an annex unit_id to the one drawn instead (GH #48
+    Slice 2): a Feudal-age town centre (71) still lists the Dark Age annexes
+    618-620 in the .dat, and the age techs upgrade those to 614-616 at the
+    same age, so its pieces are resolved through the same age table."""
     if unit_const not in _COMPOSITE_SCOPE:
         return None
     building = units[unit_const].building
+    annex_upgrades = annex_upgrades or {}
     pieces = [
         (0.0, {
             "unit_id": unit_const,
@@ -453,9 +816,10 @@ def _resolve_pieces(
         })
     ]
     for annex in building.annexes:
-        if not (0 <= annex.unit_id < len(units)):
+        annex_id = annex_upgrades.get(annex.unit_id, annex.unit_id)
+        if not (0 <= annex_id < len(units)):
             continue
-        annex_unit = units[annex.unit_id]
+        annex_unit = units[annex_id]
         if annex_unit is None:
             continue
         standing = annex_unit.standing_graphic
@@ -466,7 +830,7 @@ def _resolve_pieces(
         dx, dy = _piece_screen_offset(annex.misplacement_x, annex.misplacement_y, piece_graphic)
         depth = annex.misplacement_y - annex.misplacement_x
         pieces.append((depth, {
-            "unit_id": annex.unit_id,
+            "unit_id": annex_id,
             "file_name": piece_graphic.file_name,
             "angle_count": piece_graphic.angle_count,
             "frame_count": piece_graphic.frame_count,
@@ -486,12 +850,19 @@ def _resolve_pieces(
     result = [p for _, p in pieces]
     # Keyed on scope membership, never on "has pieces": gates and walls carry
     # pieces too, and deliberately no slot.
-    slots = _PIECE_SLOTS.get(unit_const)
+    if unit_const in _TOWN_CENTRE_SCOPE:
+        key: object = tuple(str(p["file_name"]) for p in result)
+        slots = _PIECE_SLOTS_BY_ART.get(key)
+        table = "_PIECE_SLOTS_BY_ART"
+    else:
+        key = unit_const
+        slots = _PIECE_SLOTS.get(unit_const)
+        table = "_PIECE_SLOTS"
     if slots is None or len(slots) != len(result):
         raise SystemExit(
-            f"_PIECE_SLOTS has {'no' if slots is None else len(slots)} slot(s) for "
-            f"_COMPOSITE_SCOPE const {unit_const}, which emits {len(result)} pieces -- "
-            f"re-run tools/measure_piece_slots.py and commit its table"
+            f"{table} has {'no' if slots is None else len(slots)} slot(s) for "
+            f"{key!r} (_COMPOSITE_SCOPE const {unit_const}), which emits {len(result)} "
+            f"pieces -- re-run tools/measure_piece_slots.py and commit its table"
         )
     for piece, slot in zip(result, slots, strict=True):
         piece["slot"] = list(slot)
@@ -680,6 +1051,360 @@ def _resolve_wall_pieces(
     return pieces
 
 
+def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
+    """unit_const -> the index, in its decoration shell's `deltas`, of the
+    body `_BODY_GRAPHIC_OVERRIDES` names on the Gaia table. Every other civ's
+    body is the delta at that same position in ITS shell (GH #48), so the
+    hand-verified table stays a Gaia graphic id and the per-civ body is derived
+    by relationship rather than listed."""
+    positions: dict[int, int] = {}
+    for unit_const, override_id in _BODY_GRAPHIC_OVERRIDES.items():
+        unit = units[unit_const]
+        standing = unit.standing_graphic if unit is not None else (-1,)
+        shell = graphics[standing[0]] if 0 <= standing[0] < len(graphics) else None
+        body = graphics[override_id] if 0 <= override_id < len(graphics) else None
+        if body is None or not body.file_name:
+            raise SystemExit(
+                f"_BODY_GRAPHIC_OVERRIDES[{unit_const}] = {override_id} does not "
+                f"resolve to a named graphic in this .dat -- re-verify it rather "
+                f"than dropping it silently"
+            )
+        # Loud on purpose: a shell that stops being a decoration is a real
+        # change in the .dat, not something to absorb quietly.
+        ids = [] if shell is None else [d.graphic_id for d in shell.deltas]
+        if ids.count(override_id) != 1:
+            raise SystemExit(
+                f"_BODY_GRAPHIC_OVERRIDES[{unit_const}] = {override_id} is no longer "
+                f"exactly one delta of standing graphic {standing[0]} -- "
+                f"re-verify against the .dat"
+            )
+        positions[unit_const] = ids.index(override_id)
+    return positions
+
+
+def _entry_for(
+    units: list, graphics: list, graphics_dir: Path, unit_const: int,
+    body_positions: dict[int, int],
+    annex_upgrades: dict[int, dict[int, int]] | None = None,
+) -> tuple[dict[str, object] | None, str]:
+    """(entry, kind) for one const of one civ's unit table: the entry this
+    script emits for it, or None with `kind` naming the skip reason. `kind` is
+    otherwise "gate", "tree", "override", "composite" or "plain". Run for
+    every civ (GH #48), so nothing in here may read a Gaia-only fact.
+    `annex_upgrades` is `_annex_upgrades()`'s table, keyed by composite const."""
+    unit = units[unit_const]
+    if unit is None:
+        return None, "no_unit"
+    standing = unit.standing_graphic
+    graphic_id = standing[0] if standing else -1
+
+    if unit.class_ == _GATE_CLASS:
+        gate_pieces = _resolve_gate_pieces(units, graphics, unit_const, unit)
+        if gate_pieces is None:
+            return None, "gate_no_modern_replacement"
+        for _, piece_graphic, _, _ in gate_pieces:
+            if piece_graphic.angle_count != 1:
+                raise SystemExit(
+                    f"class-39 piece {piece_graphic.file_name!r} (unit_const "
+                    f"{unit_const}) has angle_count {piece_graphic.angle_count}, "
+                    f"not 1 -- gate pieces are assumed non-rotating; re-verify "
+                    f"tools/gen_unit_graphic_map.py's gate section against the "
+                    f".dat before shipping this"
+                )
+        # The parent is pieces[0] because it supplies the entry's top-level
+        # fields. For an X-state gate (e.g. 487) that is a corner pillar, not
+        # the middle span; retargeting the top-level fields changes which
+        # piece's failure drops the whole gate.
+        _, primary, _, _ = gate_pieces[0]
+        return {
+            "graphic_id": primary.id,
+            "file_name": primary.file_name,
+            "angle_count": primary.angle_count,
+            "mirroring_mode": primary.mirroring_mode,
+            "frame_count": primary.frame_count,
+            "pieces": [
+                {
+                    "unit_id": uid,
+                    "file_name": g.file_name,
+                    "angle_count": g.angle_count,
+                    "frame_count": g.frame_count,
+                    "dx": dx,
+                    "dy": dy,
+                    **({"parent": True} if i == 0 else {}),
+                }
+                for i, (uid, g, dx, dy) in enumerate(gate_pieces)
+            ],
+        }, "gate"
+
+    if unit_const in _ANNEX_TREE_SCOPE:
+        hut, tree_pieces = _resolve_annex_tree(units, graphics, unit_const)
+        return {
+            "graphic_id": hut.id,
+            "file_name": hut.file_name,
+            "angle_count": hut.angle_count,
+            "mirroring_mode": hut.mirroring_mode,
+            "frame_count": hut.frame_count,
+            "pieces": tree_pieces,
+        }, "tree"
+
+    if graphic_id is None or graphic_id < 0 or graphic_id >= len(graphics):
+        return None, "no_standing_graphic"
+    graphic = graphics[graphic_id]
+    if graphic is None or not graphic.file_name:
+        return None, "no_file_name"
+    position = body_positions.get(unit_const)
+    wall_pieces = None
+    if position is not None:
+        body_id = graphic.deltas[position].graphic_id if position < len(graphic.deltas) else -1
+        body = graphics[body_id] if 0 <= body_id < len(graphics) else None
+        if body is None or not _looks_modern(body.file_name):
+            raise SystemExit(
+                f"unit_const {unit_const}'s shell {graphic.file_name!r} has no modern "
+                f"body at delta position {position} -- re-verify _BODY_GRAPHIC_OVERRIDES"
+            )
+        wall_pieces = _resolve_wall_pieces(graphics, unit_const, graphic, body_id)
+        graphic = body
+    elif not _looks_modern(graphic.file_name):
+        resolved = _resolve_modern_graphic(graphics, graphic_id)
+        if resolved is None:
+            return None, "legacy_no_modern_replacement"
+        graphic = resolved
+    entry: dict[str, object] = {
+        "graphic_id": graphic.id,
+        "file_name": graphic.file_name,
+        "angle_count": graphic.angle_count,
+        "mirroring_mode": graphic.mirroring_mode,
+        "frame_count": graphic.frame_count,
+    }
+    if unit_const not in _EXTRA_ANGLE_CONSTS and (
+        unit.type != _CREATABLE_TYPE and graphic.angle_count > 1
+    ):
+        entry["rotation_is_variant"] = True
+        frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
+        if frames is not None and graphic.frame_count > 0:
+            entry["variant_count"] = frames // graphic.frame_count
+    if wall_pieces is not None:
+        entry["pieces"] = wall_pieces
+        return entry, "override"
+    pieces = _resolve_pieces(
+        units, graphics, unit_const, graphic, (annex_upgrades or {}).get(unit_const)
+    )
+    if pieces is not None:
+        entry["pieces"] = pieces
+        return entry, "composite"
+    return entry, "plain"
+
+
+# .dat type of a building const. GH #48's per-civ art is scoped to these.
+_BUILDING_TYPE = 80
+
+# The age-up techs, in order, and the StartingAge value each one reaches. The
+# .dat's own tech names are shifted by one: 101 is named "Middle Age".
+_AGE_TECHS: tuple[tuple[int, int], ...] = ((101, 3), (102, 4), (103, 5))
+
+# Effect command type "upgrade unit": a -> b.
+_UPGRADE_UNIT_COMMAND = 3
+
+
+def _age_upgrades(data, building_consts: set[int]) -> dict[int, dict[int, int]]:
+    """base const -> {age: const drawn at that age}, ages 3..5, only where it
+    differs from the base. Each "upgrade unit" command of the age techs, in
+    order, replaces the player's slot for exactly its source const `a`, so a
+    slot is retargeted by every later command naming it and by nothing else:
+    base_id does not chain (498's base_id is 498), and a directly placed 463
+    is never a source, so it draws its own art."""
+    slots: dict[int, int] = {}
+    result: dict[int, dict[int, int]] = {}
+    for tech_id, age in _AGE_TECHS:
+        effect = data.effects[data.techs[tech_id].effect_id]
+        for command in effect.effect_commands:
+            if command.type != _UPGRADE_UNIT_COMMAND:
+                continue
+            if command.a in building_consts and command.b in building_consts:
+                slots[command.a] = command.b
+        for base, target in slots.items():
+            if target != base:
+                result.setdefault(base, {})[age] = target
+    return result
+
+
+# The fields an entry's const-keyed logic reads (rotation dispatch, variant
+# cycling, footprints): they must not change with the art.
+_ART_INVARIANT_FIELDS = ("angle_count", "rotation_is_variant", "variant_count")
+
+
+# Building consts whose per-civ art breaks _ART_INVARIANT_FIELDS, measured
+# 2026-10-07. The civs whose art breaks it keep Gaia's art for that const; its
+# other civs keep their own. The generator fails unless the measured
+# violators are exactly these, so a new one is still loud.
+_ART_INVARIANT_HOLDOUTS: dict[int, str] = {
+    155: "Fortified Wall: Greek art (civs 47, 48, 54) stores 11 variants, not 5",
+    446: "PORT, hidden in the editor: a projectile graphic, angle_count 32 vs 1",
+}
+
+
+def _art_invariant_violations(
+    what: str, entry: dict, unit, ref_entry: dict, ref_unit,
+) -> list[str]:
+    """Every way `entry` (for `unit`) disagrees with the reference on a field
+    the placed const's own logic reads. The AGENTS.md hard rules (walls
+    angle_count 5, gates 1) were measured on Gaia; this is what extends them
+    to every civ and every age target (GH #48)."""
+    found = [
+        f"{what}: {field} {entry.get(field)!r} != reference {ref_entry.get(field)!r}"
+        for field in _ART_INVARIANT_FIELDS
+        if entry.get(field) != ref_entry.get(field)
+    ]
+    if tuple(unit.clearance_size) != tuple(ref_unit.clearance_size):
+        found.append(
+            f"{what}: clearance_size {tuple(unit.clearance_size)} != reference "
+            f"{tuple(ref_unit.clearance_size)}"
+        )
+    return found
+
+
+# .dat class of a wall (gates are _GATE_CLASS).
+_WALL_CLASS = 27
+
+
+def _structure_violations(what: str, entry: dict | None, unit, gaia_entry: dict | None, gaia_unit) -> list[str]:
+    """GH #48 Slice 3: only a wall's or gate's art may vary by civ. The gate
+    sibling groups (gate_orientation, from each const's code and class) and the
+    wall-connector set are keyed on the const, so the class, the code and
+    whether the const resolves at all must match Gaia's in every civ, and a
+    composite must still mark exactly one parent piece."""
+    found = []
+    if gaia_unit is not None and gaia_unit.class_ in (_GATE_CLASS, _WALL_CLASS):
+        if unit is None or unit.class_ != gaia_unit.class_:
+            found.append(f"{what}: class {getattr(unit, 'class_', None)} != Gaia's {gaia_unit.class_}")
+        elif gaia_unit.class_ == _GATE_CLASS and unit.name != gaia_unit.name:
+            found.append(f"{what}: gate code {unit.name!r} != Gaia's {gaia_unit.name!r}")
+        if (entry is None) != (gaia_entry is None):
+            found.append(f"{what}: resolves {'nothing' if entry is None else 'a graphic'}, unlike Gaia")
+    if entry is not None and "pieces" in entry:
+        parents = sum(1 for piece in entry["pieces"] if piece.get("parent"))
+        if parents != 1:
+            found.append(f"{what}: {parents} parent pieces, not exactly 1")
+    return found
+
+
+def _annex_upgrades(ages: dict[int, dict[int, int]]) -> dict[int, dict[int, int]]:
+    """composite const -> {annex unit_id: the one drawn instead}, for every
+    const the age table reaches at some age: its annexes are upgraded by the
+    same table at that same age (Slice 2; see _resolve_pieces())."""
+    age_of: dict[int, int] = {}
+    for by_age in ages.values():
+        for age, target in by_age.items():
+            if age_of.setdefault(target, age) != age:
+                raise SystemExit(f"const {target} is an age target at two ages -- re-verify")
+    return {
+        target: {base: by_age[age] for base, by_age in ages.items() if age in by_age}
+        for target, age in age_of.items()
+        if target in _COMPOSITE_SCOPE
+    }
+
+
+def _building_art(
+    data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
+    gaia_entries: dict[str, dict[str, object]], building_consts: set[int],
+    ages: dict[int, dict[int, int]], annex_upgrades: dict[int, dict[int, int]],
+) -> dict[str, object]:
+    """descape/building_art_map.json's content (GH #48): the age table, every
+    civ's building entries that differ from Gaia's, and the civ names."""
+    gaia_units = data.civs[0].units
+
+    civ_art: dict[str, dict[str, dict[str, object]]] = {}
+    no_gaia_entry: set[int] = set()
+    violations: list[str] = []
+    held_out: set[int] = set()
+    # Gates carry no age art: their orientation siblings are keyed on the const.
+    violations += [
+        f"age table: gate const {c} is upgraded by an age tech"
+        for base, by_age in ages.items()
+        for c in (base, *by_age.values())
+        if gaia_units[c].class_ == _GATE_CLASS
+    ]
+    for civ_index, civ in enumerate(data.civs):
+        units = civ.units
+        art: dict[str, dict[str, object]] = {}
+        for const in sorted(building_consts):
+            entry, _kind = _entry_for(
+                units, graphics, graphics_dir, const, body_positions, annex_upgrades
+            )
+            gaia_entry = gaia_entries.get(str(const))
+            violations += _structure_violations(
+                f"civ {civ_index} const {const}", entry, units[const], gaia_entry, gaia_units[const]
+            )
+            if entry is None:
+                continue
+            if gaia_entry is None:
+                # Const 183: no Gaia graphic to fall back from or check against.
+                no_gaia_entry.add(const)
+                continue
+            found = _art_invariant_violations(
+                f"civ {civ_index} const {const}", entry, units[const],
+                gaia_entry, gaia_units[const],
+            )
+            if found and const in _ART_INVARIANT_HOLDOUTS:
+                # Only this civ's art is held back; the rest of the const's civs keep theirs.
+                held_out.add(const)
+                continue
+            violations += found
+            if civ_index and entry != gaia_entry:
+                art[str(const)] = entry
+        for base, by_age in ages.items():
+            base_entry = art.get(str(base)) or gaia_entries.get(str(base))
+            for age, target in by_age.items():
+                target_entry = art.get(str(target)) or gaia_entries.get(str(target))
+                if base_entry is None or target_entry is None:
+                    raise SystemExit(
+                        f"civ {civ_index}: age {age} upgrade {base} -> {target} has no "
+                        f"entry on one side -- re-verify the age techs against the .dat"
+                    )
+                violations += _art_invariant_violations(
+                    f"civ {civ_index} age {age} {base} -> {target}", target_entry,
+                    units[target], base_entry, units[base],
+                )
+        if art:
+            civ_art[str(civ_index)] = art
+    if violations or held_out != set(_ART_INVARIANT_HOLDOUTS):
+        raise SystemExit(
+            "per-civ/per-age building art breaks the placed const's own logic -- "
+            "re-verify against the .dat:\n  " + "\n  ".join(violations[:40])
+            + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}"
+        )
+    print(f"  building consts: {len(building_consts)}; age-upgraded bases: {len(ages)}")
+    differing = {c for art in civ_art.values() for c in art}
+    print(f"  building consts whose art differs by civ: {len(differing)}")
+    print(f"    held out on Gaia art (invariant break): {sorted(held_out)}")
+    if no_gaia_entry:
+        print(f"    skipped, no Gaia entry to fall back from: {sorted(no_gaia_entry)}")
+    # Civs sharing an art set share entries, so each distinct one is stored once.
+    shared: list[dict[str, object]] = []
+    index_of: dict[str, int] = {}
+    civ_art_indexed: dict[str, dict[str, int]] = {}
+    for civ_key, art in civ_art.items():
+        for const_key, entry in art.items():
+            key = json.dumps(entry, sort_keys=True)
+            if key not in index_of:
+                index_of[key] = len(shared)
+                shared.append(entry)
+            civ_art_indexed.setdefault(civ_key, {})[const_key] = index_of[key]
+    return {
+        "_comment": (
+            "GH #48 per-civ and per-age building art -- see "
+            "tools/gen_unit_graphic_map.py"
+        ),
+        "civ_names": {str(i): civ.name for i, civ in enumerate(data.civs)},
+        "age_upgrades": {
+            str(base): {str(age): target for age, target in sorted(by_age.items())}
+            for base, by_age in sorted(ages.items())
+        },
+        "entries": shared,
+        "civ_art": civ_art_indexed,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -691,6 +1416,12 @@ def main() -> None:
         "--scan-sld",
         action="store_true",
         help="Also report how many entries have a readable .sld in this install",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "descape",
+        help="Where to write both JSON tables (default: descape/)",
     )
     args = parser.parse_args()
 
@@ -704,6 +1435,12 @@ def main() -> None:
     data = DatFile.parse(str(dat_path))
     graphics = data.graphics
     units = data.civs[0].units
+    body_positions = _body_delta_positions(units, graphics)
+    building_consts = {
+        c for c, u in enumerate(units) if u is not None and u.type == _BUILDING_TYPE
+    }
+    ages = _age_upgrades(data, building_consts)
+    annex_upgrades = _annex_upgrades(ages)
 
     entries: dict[str, dict[str, object]] = {}
     overridden: dict[int, tuple[str, str]] = {}
@@ -714,121 +1451,25 @@ def main() -> None:
     tree_composited: set[int] = set()
 
     for unit_const, unit in enumerate(units):
-        if unit is None:
-            skipped["no_unit"] += 1
+        if unit is not None:
+            standing = unit.standing_graphic
+            secondary["set" if len(standing) > 1 and standing[1] >= 0 else "unset"] += 1
+        entry, kind = _entry_for(
+            units, graphics, graphics_dir, unit_const, body_positions, annex_upgrades
+        )
+        if entry is None:
+            skipped[kind] += 1
             continue
-        standing = unit.standing_graphic
-        graphic_id = standing[0] if standing else -1
-        secondary["set" if len(standing) > 1 and standing[1] >= 0 else "unset"] += 1
-
-        if unit.class_ == _GATE_CLASS:
-            gate_pieces = _resolve_gate_pieces(units, graphics, unit_const, unit)
-            if gate_pieces is None:
-                skipped["gate_no_modern_replacement"] += 1
-                continue
-            for _, piece_graphic, _, _ in gate_pieces:
-                if piece_graphic.angle_count != 1:
-                    raise SystemExit(
-                        f"class-39 piece {piece_graphic.file_name!r} (unit_const "
-                        f"{unit_const}) has angle_count {piece_graphic.angle_count}, "
-                        f"not 1 -- gate pieces are assumed non-rotating; re-verify "
-                        f"tools/gen_unit_graphic_map.py's gate section against the "
-                        f".dat before shipping this"
-                    )
-            # The parent is pieces[0] because it supplies the entry's top-level
-            # fields. For an X-state gate (e.g. 487) that is a corner pillar, not
-            # the middle span; retargeting the top-level fields changes which
-            # piece's failure drops the whole gate.
-            _, primary, _, _ = gate_pieces[0]
-            entries[str(unit_const)] = {
-                "graphic_id": primary.id,
-                "file_name": primary.file_name,
-                "angle_count": primary.angle_count,
-                "mirroring_mode": primary.mirroring_mode,
-                "frame_count": primary.frame_count,
-                "pieces": [
-                    {
-                        "unit_id": uid,
-                        "file_name": g.file_name,
-                        "angle_count": g.angle_count,
-                        "frame_count": g.frame_count,
-                        "dx": dx,
-                        "dy": dy,
-                        **({"parent": True} if i == 0 else {}),
-                    }
-                    for i, (uid, g, dx, dy) in enumerate(gate_pieces)
-                ],
-            }
-            gate_composited.add(unit_const)
-            continue
-
-        if unit_const in _ANNEX_TREE_SCOPE:
-            hut, tree_pieces = _resolve_annex_tree(units, graphics, unit_const)
-            entries[str(unit_const)] = {
-                "graphic_id": hut.id,
-                "file_name": hut.file_name,
-                "angle_count": hut.angle_count,
-                "mirroring_mode": hut.mirroring_mode,
-                "frame_count": hut.frame_count,
-                "pieces": tree_pieces,
-            }
-            tree_composited.add(unit_const)
-            continue
-
-        if graphic_id is None or graphic_id < 0 or graphic_id >= len(graphics):
-            skipped["no_standing_graphic"] += 1
-            continue
-        graphic = graphics[graphic_id]
-        if graphic is None or not graphic.file_name:
-            skipped["no_file_name"] += 1
-            continue
-        override_id = _BODY_GRAPHIC_OVERRIDES.get(unit_const)
-        if override_id is not None:
-            body = graphics[override_id] if 0 <= override_id < len(graphics) else None
-            if body is None or not body.file_name:
-                raise SystemExit(
-                    f"_BODY_GRAPHIC_OVERRIDES[{unit_const}] = {override_id} does not "
-                    f"resolve to a named graphic in this .dat -- re-verify it rather "
-                    f"than dropping it silently"
-                )
-            # Loud on purpose: a shell that stops being a decoration is a real
-            # change in the .dat, not something to absorb quietly.
-            if override_id not in {d.graphic_id for d in graphic.deltas}:
-                raise SystemExit(
-                    f"_BODY_GRAPHIC_OVERRIDES[{unit_const}] = {override_id} is no longer "
-                    f"a delta of standing graphic {graphic.id} ({graphic.file_name}) -- "
-                    f"re-verify against the .dat"
-                )
-            overridden[unit_const] = (graphic.file_name, body.file_name)
-            wall_pieces = _resolve_wall_pieces(graphics, unit_const, graphic, override_id)
-            graphic = body
-        elif not _looks_modern(graphic.file_name):
-            resolved = _resolve_modern_graphic(graphics, graphic_id)
-            if resolved is None:
-                skipped["legacy_no_modern_replacement"] += 1
-                continue
-            graphic = resolved
-        entry: dict[str, object] = {
-            "graphic_id": graphic.id,
-            "file_name": graphic.file_name,
-            "angle_count": graphic.angle_count,
-            "mirroring_mode": graphic.mirroring_mode,
-            "frame_count": graphic.frame_count,
-        }
-        if unit_const not in _EXTRA_ANGLE_CONSTS and (
-            unit.type != _CREATABLE_TYPE and graphic.angle_count > 1
-        ):
-            entry["rotation_is_variant"] = True
-            frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
-            if frames is not None and graphic.frame_count > 0:
-                entry["variant_count"] = frames // graphic.frame_count
-        pieces = _resolve_pieces(units, graphics, unit_const, graphic)
-        if override_id is not None:
-            entry["pieces"] = wall_pieces
-        elif pieces is not None:
-            entry["pieces"] = pieces
-            composited.add(unit_const)
         entries[str(unit_const)] = entry
+        if kind == "gate":
+            gate_composited.add(unit_const)
+        elif kind == "tree":
+            tree_composited.add(unit_const)
+        elif kind == "composite":
+            composited.add(unit_const)
+        elif kind == "override":
+            shell = graphics[unit.standing_graphic[0]]
+            overridden[unit_const] = (shell.file_name, str(entry["file_name"]))
 
     for unit_const, entry in entries.items():
         parents = sum(1 for piece in entry.get("pieces", ()) if piece.get("parent"))
@@ -838,7 +1479,15 @@ def main() -> None:
                 f"sprite_pieces_for() bails on the parent, so this must be unambiguous"
             )
 
-    out_path = Path(__file__).resolve().parent.parent / "descape" / "unit_graphic_map.json"
+    building_art = _building_art(
+        data, graphics, graphics_dir, body_positions, entries, building_consts, ages, annex_upgrades
+    )
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    art_path = args.out_dir / "building_art_map.json"
+    art_path.write_text(json.dumps(building_art, indent=1) + "\n")
+    print(f"Wrote {art_path} ({art_path.stat().st_size} bytes)")
+
+    out_path = args.out_dir / "unit_graphic_map.json"
     out_path.write_text(
         json.dumps(
             {

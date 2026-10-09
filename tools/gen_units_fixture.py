@@ -44,7 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _fixture_bytes import GenerationVerificationError, _game_style_bytes
 
-from descape.scenario_io import BLANK_TEMPLATE_PATH, LoadedScenario, load_map_and_units
+from descape.scenario_io import (
+    BLANK_TEMPLATE_PATH,
+    FORBIDDEN_WRITE_MARKER,
+    LoadedScenario,
+    is_under_compatdata,
+    load_map_and_units,
+)
+from descape.scenario_write import WriteBlockedError
 
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "units_120x120.aoe2scenario"
 
@@ -232,6 +239,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=FIXTURE_PATH, help="Destination file")
     args = parser.parse_args()
 
+    if is_under_compatdata(args.out):
+        raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {args.out}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     data = build_fixture_bytes()
     args.out.write_bytes(data)

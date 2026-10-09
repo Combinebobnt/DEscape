@@ -204,6 +204,47 @@ def test_a_straddling_building_is_refused_not_repaired():
     assert plan.images == []
 
 
+BLOCKER_1X3 = 2423  # (1, 3) since GH #121
+BLOCKER_3X1 = 2424
+
+
+def test_a_blocker_keeps_its_orientation_under_an_axis_swap_and_is_reported():
+    """GH #121's named side effect: a blocker now takes the span > 1 path. It
+    has no orientation sibling, so the image keeps 1x3, re-anchored from the
+    reflected footprint's min corner, and unsquare_spans says so."""
+    source = _at(BLOCKER_1X3, 1)
+    plan = _plan([source], mode_id=1)
+    assert plan.unsquare_spans == [source]
+    (image,) = plan.images
+    assert swaps_axes(image.element)
+    assert image.unit_const == BLOCKER_1X3
+    reflected = [TRANSFORMS[image.element](tx, ty, N) for tx, ty in render.unit_occupied_tiles(source, N, N)]
+    low = (min(t[0] for t in reflected), min(t[1] for t in reflected))
+    tiles = render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N)
+    assert set(tiles) == {(low[0], low[1] + k) for k in range(3)}
+
+
+def test_a_blocker_under_a_non_swapping_element_occupies_its_reflection():
+    source = _at(BLOCKER_3X1, 3)
+    plan = _plan([source], mode_id=3)
+    assert plan.unsquare_spans == []
+    (image,) = plan.images
+    src = render.unit_occupied_tiles(source, N, N)
+    assert len(src) == 3
+    tiles = set(render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+    assert tiles == {TRANSFORMS[image.element](tx, ty, N) for tx, ty in src}
+
+
+def test_a_blocker_straddling_the_axis_is_refused_like_a_building():
+    """A 3x1 centred one tile inside mode 3's axis reaches across it, so its
+    image overlaps the original."""
+    blocker = FakeUnit(BLOCKER_3X1, N / 2 - 0.5, 20.5)
+    plan = _plan([blocker], mode_id=3)
+    assert plan.straddling == [blocker]
+    assert plan.blocked
+    assert plan.images == []
+
+
 def test_a_garrisoned_destination_unit_blocks_the_plan():
     source = _at(OAK, 1, 0)
     holder = FakeUnit(HOUSE, N - source.x - 0.5, N - source.y - 0.5)

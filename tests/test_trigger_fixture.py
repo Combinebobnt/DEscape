@@ -151,3 +151,20 @@ def test_every_trigger_still_drifts_after_a_commit() -> None:
         "fixture cannot tell the byte-blob write path apart from whole-section "
         "re-serialization -- see tools/gen_trigger_fixture.py's _game_style_bytes()"
     )
+
+
+# -- tests/fixtures/find_triggers_120x120.aoe2scenario (GH #144 Part B) ----------
+
+FIND_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "find_triggers_120x120.aoe2scenario"
+
+
+def test_find_fixture_is_tracked_deterministic_and_matches_its_generator() -> None:
+    gen = _generator()
+    assert FIND_FIXTURE_PATH.is_file(), (
+        f"{FIND_FIXTURE_PATH} is missing -- regenerate it with "
+        "`.venv/bin/python3 tools/gen_trigger_fixture.py --find`"
+    )
+    built = gen.build_find_fixture_bytes()
+    assert built == gen.build_find_fixture_bytes()
+    assert FIND_FIXTURE_PATH.read_bytes() == built
+    gen.verify_find_fixture(FIND_FIXTURE_PATH)

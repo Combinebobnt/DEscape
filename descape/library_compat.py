@@ -41,8 +41,8 @@ exactly that reason: it is the only module that loads scenarios, so importing
 it can never come first. Do not make that import lazy.
 
 Reaches into AoE2ScenarioParser private API, acceptable on the same terms as
-scenario_io.py: the install is pinned to a known commit (v0.8.3,
-b763e2e37006bedab50c7d349b3ce24b9c2497f6). See tests/test_private_api_guard.py.
+scenario_io.py: the install is pinned to a known commit (v0.9.3,
+29b8a25e8a345f1b1add3318b4c41cbfe35faf97). See tests/test_private_api_guard.py.
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ _UNRESTORABLE = frozenset({"__dict__", "__weakref__"})
 VERSIONS_DIR = Path(AoE2ScenarioParser.__file__).resolve().parent / "versions" / "DE"
 
 # Definitions this repo authors or vendors for scenario versions the library
-# ships none for: v1.21 (a structure only) and v1.59 (structure plus trigger
-# vocabulary). The library's own always wins. The one owner of this path:
+# ships none for: v1.21 (a structure only) today. A repo version may also ship
+# a trigger vocabulary, as v1.59 did on the 0.8.3 pin. The library's own always wins. The one owner of this path:
 # every reader looks it up here at call time, so a test that patches it
 # reaches scenario_io and this module alike.
 REPO_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "DE"
@@ -348,8 +348,8 @@ def _library_vocabulary_names(versions_dir: Path, kind: str) -> frozenset[str]:
 
 def repo_only_attributes(scenario_version: str) -> dict[str, frozenset[str]]:
     """Per kind, the attribute names a repo vocabulary has and no library
-    vocabulary does: fields 0.8.3's Condition/Effect can't hold (1.59's
-    `allow_in_fog`). Empty for a library vocabulary. Filtered by vocabulary
+    vocabulary does: fields the installed Condition/Effect can't hold (1.59's
+    `allow_in_fog` on the 0.8.3 pin). Empty for a library vocabulary. Filtered by vocabulary
     name, never by link name, since several links use private names."""
     found = _vocabulary_dir(scenario_version)
     if found is None or not found[1]:

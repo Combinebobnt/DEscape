@@ -12,17 +12,40 @@ from __future__ import annotations
 import pytest
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import terrain_catalog
+from descape import terrain_catalog, terrain_palette
 from descape.terrain_catalog import CATEGORY_UNUSED, display_name, terrains
 
 _HIDDEN_PREFIXES = ("MODDABLE_", "OBSOLETE_", "BLACK", "CORRUPTION", "RESERVED")
 
 
+# The .dat-only terrains (the Sept 2026 patch), named from object_catalog.json.
+_DAT_ONLY = {131: "FOREST_SPRUCE", 132: "FOREST_SPRUCE_SNOW", 133: "FOREST_OAK_GREEN"}
+_ALL_IDS = {t.value for t in TerrainId} | set(_DAT_ONLY)
+
+
 def test_every_terrain_id_has_exactly_one_entry():
     entries = terrains()
-    assert len(entries) == len(list(TerrainId))
+    assert len(entries) == len(_ALL_IDS)
     assert len({e.id for e in entries}) == len(entries)
-    assert {e.id for e in entries} == {t.value for t in TerrainId}
+    assert {e.id for e in entries} == _ALL_IDS
+    assert set(terrain_palette.terrain_ids()) == _ALL_IDS
+
+
+def test_the_dat_only_terrains_are_visible_forest():
+    by_id = {e.id: e for e in terrains()}
+    for terrain_id, name in _DAT_ONLY.items():
+        assert terrain_id not in {t.value for t in TerrainId}, "only tests anything for a dat-only id"
+        assert by_id[terrain_id].name == name
+        assert by_id[terrain_id].category == "Forest"
+        assert by_id[terrain_id].hidden is False
+        assert terrain_palette.name_for_terrain_id(terrain_id) == name
+        # The no-install colour fallback is keyed by the same names, so it covers them too.
+        assert terrain_palette._TERRAIN_COLOR_CACHE[terrain_id] == terrain_palette._color_for_name("FOREST")
+
+
+def test_enum_style_name():
+    assert terrain_palette.enum_style_name("Forest, Spruce Snow") == "FOREST_SPRUCE_SNOW"
+    assert terrain_palette.enum_style_name("  OBSOLETE (Road, Gravel)") == "OBSOLETE_ROAD_GRAVEL"
 
 
 def test_no_terrain_falls_through_to_a_catch_all():
@@ -55,14 +78,14 @@ def test_category_counts():
         "Desert": 3,
         "Dirt": 6,
         "Farms": 15,  # FARM 5 + PASTURE 5 + RICE 5
-        "Forest": 28,  # FOREST 24 + UNDERBRUSH 4
+        "Forest": 31,  # FOREST 24 + UNDERBRUSH 4 + .dat-only 131-133
         "Grass": 10,
         "Road & Rock": 7,  # GRAVEL 2 + ROAD 4 + ROCK 1
         "Snow & Ice": 10,  # ICE 3 + SNOW 7
         "Water": 18,  # SHALLOWS 4 + SWAMP 2 + WATER 12
         CATEGORY_UNUSED: 22,
     }
-    assert sum(counts.values()) == len(list(TerrainId))
+    assert sum(counts.values()) == len(_ALL_IDS)
 
 
 def test_the_junk_prefixes_win_over_the_bare_ones_they_contain():

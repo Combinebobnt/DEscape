@@ -5,6 +5,7 @@ Pure-module test, no Qt needed."""
 from __future__ import annotations
 
 import gc
+import sys
 import threading
 
 import pytest
@@ -514,6 +515,20 @@ def test_the_worst_level_warm_tick_prints_its_split_and_gc(clock):
     assert "max tick 5.0 [pack 0 4.0; other 1.0; gc 0.0]" in _lines()[1], "the worst tick resets per line"
 
 
+def test_the_worst_level_warm_tick_names_its_max_step(clock):
+    """2026-09-30 level-warm replan, B. name() runs only for a tick that becomes the worst."""
+    named = []
+
+    def name(text):
+        return lambda: named.append(text) or text
+
+    perf_trace.level_warm_tick(58.5, [], {"walk 1": 58.0}, 0.3, max_step=(46.2, name("walk 1 p0 #420 const 1776")))
+    perf_trace.level_warm_tick(13.0, [], {"walk 1": 12.9}, 0.0, max_step=(1.1, name("walk 1 p5 #9 const 4")))
+    perf_trace.flush_idle()
+    assert "max tick 58.5 [walk 1 58.0; other 0.5; gc 0.3; max step 46.2 (walk 1 p0 #420 const 1776)]" in _lines()[0]
+    assert named == ["walk 1 p0 #420 const 1776"]
+
+
 def test_cold_sprite_deltas_split_between_the_op_and_the_view_line(clock, monkeypatch):
     counts = [10, 100]
     monkeypatch.setattr(perf_trace, "_sprite_counter", lambda: tuple(counts))
@@ -861,6 +876,77 @@ def test_a_stall_window_longer_than_the_recent_buffer_prints_covered_as_a_lower_
     assert _lines()[-1] == "perf stall 40ms (untimed, no op yet; covered 0 of 40)"
 
 
+def _drag_with(clock, steps: int, repaints: int, moves: int = 0, handled: int = 0) -> list[str]:
+    perf_trace.begin_drag()
+    for _ in range(moves):
+        perf_trace.note_move_stashed()
+    for _ in range(handled):
+        perf_trace.note_move_handled()
+    for _ in range(steps):
+        _timed_phase(clock, "patch", 2)
+        perf_trace.step()
+    for _ in range(repaints):
+        _timed_phase(clock, "repaint", 5)
+    perf_trace.end_drag("draw")
+    return _lines()
+
+
+def test_drag_header_ends_with_composite_platform_and_steps_per_repaint(clock):
+    """GH #179: tester logs say which Qt platform ran and how many stroke
+    steps landed per repaint call: 0.42-0.48 under xcb vs 36-170 on the
+    tester's Wayland session before coalescing."""
+    lines = _drag_with(clock, steps=3, repaints=2, moves=5, handled=3)
+    backend = perf_trace._backend_text()
+    assert backend.startswith(f", composite {perf_trace.composite_backend.active_backend()}")
+    assert lines[0].endswith(f"{backend}, 1.50 steps/repaint"), lines[0]
+    assert "  | input: moves 5, handled 3" in lines
+
+
+def test_a_brush_given_to_begin_drag_is_on_that_drag_header_only(clock):
+    """TASK-031.38: tester logs say which brush the drag used; the next
+    brushless drag must not inherit it."""
+    perf_trace.begin_drag(brush="9 circle")
+    _timed_phase(clock, "patch", 2)
+    perf_trace.step()
+    perf_trace.end_drag("draw")
+    header = _lines()[0]
+    assert header.startswith("perf drag draw: ") and ", brush 9 circle, composite " in header, header
+    debug_log.clear()
+    lines = _drag_with(clock, steps=1, repaints=0)
+    assert "brush" not in lines[0], lines[0]
+
+
+def test_zero_repaints_omit_the_ratio_and_zero_counters_omit_the_input_line(clock):
+    lines = _drag_with(clock, steps=2, repaints=0)
+    assert lines[0].endswith(perf_trace._backend_text()), lines[0]
+    assert "steps/repaint" not in "\n".join(lines)
+    assert not any("input:" in line for line in lines)
+
+
+def test_move_counters_count_only_inside_a_drag_and_reset_per_drag(clock):
+    perf_trace.note_move_stashed()
+    perf_trace.note_move_handled()
+    assert (perf_trace._input_moves, perf_trace._input_handled) == (0, 0)
+    _drag_with(clock, steps=1, repaints=1, moves=4, handled=1)
+    debug_log.clear()
+    lines = _drag_with(clock, steps=1, repaints=1, moves=1, handled=1)
+    assert "  | input: moves 1, handled 1" in lines
+
+
+def test_the_platform_is_named_only_when_qt_reports_one(monkeypatch):
+    QGuiApplication = pytest.importorskip("PyQt5.QtGui").QGuiApplication
+    composite = f", composite {perf_trace.composite_backend.active_backend()}"
+    if QGuiApplication.instance() is None:
+        assert perf_trace._backend_text() == composite
+        return
+    assert perf_trace._backend_text() == f"{composite}, platform {QGuiApplication.platformName()}"
+    monkeypatch.setattr(QGuiApplication, "platformName", staticmethod(lambda: ""))
+    assert perf_trace._backend_text() == composite
+    monkeypatch.delitem(sys.modules, "PyQt5.QtGui")
+    assert perf_trace._backend_text() == composite, "never imports Qt itself"
+    assert "PyQt5.QtGui" not in sys.modules
+
+
 def test_spans_stay_out_of_step_totals_and_print_wall_and_untimed(clock):
     """Wall: press 20 (5 of it before begin_drag) + step 10 + release up to the
     flush 106. Untimed: minus the 29 ms of phases inside spans; footprint_refresh
@@ -910,3 +996,50 @@ def test_a_long_young_collection_names_a_stall_and_prints_nowhere_else(clock):
     assert _lines()[-1] == "perf stall 200ms (in op undo: gc gen1; covered 150 of 200: gc gen1 150)"
     perf_trace.flush_pending_op()
     assert _lines()[-1] == "perf op undo: 163ms | untimed 163.0"
+
+
+def test_a_sub_phase_prints_beside_its_parent_and_stays_out_of_every_sum(clock):
+    """TASK-031.55: unit_plan's split must not count unit_plan twice, in
+    ms/step, the drag's untimed or an op's untimed."""
+    with perf_trace.span("press"):
+        perf_trace.begin_drag()
+        with perf_trace.phase("patch"):
+            with perf_trace.sub_phase("patch", "inner"):
+                clock.advance(4)
+            clock.advance(1)
+        perf_trace.step()
+    with perf_trace.span("release"):
+        clock.advance(20)
+        with perf_trace.phase("unit_plan"):
+            with perf_trace.sub_phase("unit_plan", "scan"):
+                clock.advance(3)
+            with perf_trace.sub_phase("unit_plan", "plan"):
+                clock.advance(5)
+            clock.advance(2)
+        perf_trace.flush("paint-terrain")
+        perf_trace.end_drag("paint-terrain")
+    header, phases, end = _lines()
+    assert header.startswith("perf drag paint-terrain: 1 steps, 5ms total, 5.0ms/step (max 5.0), wall 35ms, untimed 20ms")
+    assert phases == "  | patch.inner 4.0 patch 5.0", phases
+    assert end == "  | end: unit_plan.scan 3.0 unit_plan.plan 5.0 unit_plan 10.0", end
+
+    with perf_trace.op("fill"):
+        # sub_phase() is evaluated after phase() has entered, so the parent is open.
+        with perf_trace.phase("unit_plan"), perf_trace.sub_phase("unit_plan", "model"):
+            clock.advance(6)
+        clock.advance(4)
+    perf_trace.flush_idle()
+    assert _lines()[-1] == "perf op fill: 10ms | unit_plan.model 6.0 unit_plan 6.0 untimed 4.0"
+
+
+def test_a_sub_phase_is_null_without_its_parent_open(clock):
+    assert perf_trace.sub_phase("unit_plan", "scan") is perf_trace._NULL_PHASE
+    with perf_trace.phase("stroke_record"):
+        assert perf_trace.sub_phase("unit_plan", "scan") is perf_trace._NULL_PHASE
+    with perf_trace.phase("unit_plan"):
+        pass
+    assert perf_trace._open_phases == []
+    assert perf_trace.sub_phase("unit_plan", "scan") is perf_trace._NULL_PHASE
+    perf_trace.enable(False)
+    with perf_trace.phase("unit_plan"):
+        assert perf_trace.sub_phase("unit_plan", "scan") is perf_trace._NULL_PHASE

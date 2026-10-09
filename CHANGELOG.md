@@ -26,24 +26,235 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Trigger status colours** (GH #166): Triggers mode marks each trigger,
+  condition and effect green when complete and red when a required field is
+  missing or a unit or trigger it names doesn't exist; hover a red row for
+  what's missing. Objective, objective header and on-screen display
+  triggers may have no effects, and types DEscape
+  doesn't know stay unmarked. Settings > Appearance > Trigger status offers
+  tick/cross icons, both or off, can stop marking rows that pass, and sets
+  both colours.
+- **Section Up / Section Down** (GH #133): move the selected trigger's whole
+  section past its neighbouring section in one undo step. Move Up/Down
+  still move a section header on its own.
+- **Show Obstacles filter** (GH #149): rocks, ruins, statues and mountains
+  that units can't walk through get their own toggle, split off Show Eye
+  Candy.
+- **Edit > Find and Replace…** (GH #144): a modeless dialog. Its Objects tab
+  finds placed objects by name, regex or #id, owner, category, type and area,
+  then selects, deletes, re-owns, exports to CSV, or replaces their type
+  (keeping reference ids, and optionally retargeting trigger type filters in
+  the same undo step).
+- **Find and Replace's Triggers tab** searches trigger text, XS, the types
+  conditions and effects name, and which triggers use a placed object; it
+  replaces text or types, deletes, enables or disables matches, or exports
+  them to CSV.
+- **The September 2026 patch's objects and terrains**: its 64 new
+  editor-visible objects (Jarl, Longhouse, Seal, Elk, the Norse heroes and
+  more) can be placed, terrains 131-133 appear in the Terrain browser and
+  Scatter, and every object or terrain the game data knows is named instead
+  of `UNKNOWN_<id>`.
+- **More player stats in View mode** (GH #145): units and buildings split by
+  role, Water/Unique/Heroes rows, and for GAIA the resource piles, animals,
+  cliffs, relics and the map's total food/wood/gold/stone.
+- **More UI themes**: Dim, High contrast dark/light, Solarized light/dark,
+  plus per-role custom chrome colours on top of any theme.
+- **Export / Import theme** in Settings > Appearance: the look settings as a
+  `.descape-theme.yaml` file, with a summary of what will change and what
+  was skipped before applying.
+- **File > Resize Map…** (GH #45) grows or shrinks a square map from any of
+  nine anchors. Terrain, elevation, objects and trigger areas move with it,
+  new ground takes the nearest edge's height, and objects pushed off the
+  map (with their garrisons) are deleted after a count. Not undoable. Also
+  `batch_api.resize_map()` for scripts.
+- **A Wall button on the Units tool options row** (GH #125): click for the
+  last wall you used, or its arrow for any of the 9 wall-family objects.
+- `tools/gen_blank_maps.py --sizes` accepts `WxH` and writes non-square
+  blank maps with asymmetric terrain markers, for testing non-square
+  support in-game.
+
 - **Help > About credits AoE2ScenarioParser** (GH #113): its author, link
   and GPL-3.0 licence.
 - **Search box on the Keybinds tab** (GH #116): filters by action name or
   bound key; sections with no match hide.
+- **Edit > Scatter Units in Region… can move the selected units** (GH #105):
+  a "Move the selected units" mode sends each unit selected in Units mode to
+  a random eligible tile of the region, one per tile while there is room, as
+  one undo step. Only the position changes; rotation and every other field
+  are kept, buildings snap to whole tiles with their own footprint (one that
+  cannot fit, or would land on one that stays put, stays put), and a
+  garrison moves with its host. A unit never
+  lands inside another multi-tile building, even with Avoid unticked.
+- **Gates take a typed Rotation in the Units inspector** (GH #61): 0 to 3
+  picks the orientation in the order Rotate steps (SW to NE, W to E, NW to
+  SE, N to S). One undo step, and a group of gates can be set together.
+- **Triggers: Add Tag… and Remove Tag…** (GH #101) tag or untag the
+  selected triggers, one undo step each. Add Tag skips a trigger that
+  already carries the tag anywhere in its leading tags.
+- **Triggers: selecting a Create Object effect shows a hint** naming the
+  Create Objects toolbar tool (GH #59).
+- **Auto beach also works with Draw Line and Draw Rectangle** (GH #88), in
+  the same undo step as the shape.
+- **Tooltips on every menu item and on each Elevation View entry** (GH #55).
+- **The Ruler's Tool Options row shows how to remove a ruler** (right-click
+  its end), and the status log mentions it the first time (GH #108).
+- **Garrison manager** (GH #115): drop units on a tower, castle or other
+  host to put them inside (the host is outlined while you drag; Shift-drop
+  still moves). The Inspector's Garrison block adds Pick from map,
+  Copy/Paste between hosts, Unload and a per-row Owner.
+- **Walls can skip occupied tiles** (GH #124): a "Walls skip occupied tiles"
+  toggle, off by default, for Place Unit's wall runs and Wall Rectangle.
+  Trees, resources, buildings, units and invisible blockers leave a gap with
+  run ends either side; eye candy does not block, and existing walls and
+  gates are still never doubled.
+- **Overlay opacity sliders** (GH #129) in Settings > Appearance (10-100%)
+  for the Units selection, the Select tool region and trigger overlay areas.
+- **Settings > Saving can put autosaves in a folder of your choice**
+  (GH #127). Folders under a Proton `compatdata/` path are refused.
+- **View > Footprint Outlines: Units only, Merge tiles and Colour by Owner**
+  (GH #143). Units only leaves out buildings, walls and gates (siege counts
+  as units; a garrisoned unit outlines one tile at its host's point). Merge
+  tiles draws one outline per footprint; a diagonal gate, and a Sloped farm
+  over steps of more than one level, keep per-tile outlines. Colour by Owner
+  uses each player's colour, GAIA keeps the configured one. Merge tiles and
+  Colour by Owner are listed on the Keybinds tab, unbound by default.
+- **Triggers: the two String Table IDs, Description Order and Execute On
+  Load are editable** (GH #141), the last for scenario 1.55 and later, with
+  tooltips explaining Make Header, Description Order and the string table
+  ids.
+- **Trigger form and Messages mode: multi-line text boxes have a grip on
+  their bottom edge** that changes their height in whole lines (double-click
+  resets), and each field's height is remembered across restarts (GH #139).
+- **Triggers: right-click Cut/Copy/Paste on triggers, conditions and
+  effects, and Edit > Cut (Ctrl+X, rebindable)** (GH #137). Conditions and
+  effects get their own clipboard and paste into any trigger, below the
+  clicked row. A cut and pasted trigger keeps its name and the links other
+  triggers held to it, and a paste that has to clear a link whose target
+  changed since the copy says so. In Triggers mode, Edit > Cut/Copy/Paste
+  act on the text while a text field has focus. Edit > Scatter Units in
+  Region…'s menu letter is now N, so it no longer clashes with Cut's T.
+- **Triggers: Set / Go to / Reset for location, area and object fields**
+  (GH #138). Set Location takes one map click and Set Area one dragged
+  rectangle (clamped to the map edge), each one undo step; Set Objects is
+  the former Pick button. Go to centres the map on the location, area or
+  objects, also on read-only files. Reset clears the group.
+- **Triggers: Display Instructions preview** (GH #140). With one Display
+  Instructions effect selected, a mock game screen under its fields shows
+  the box at its position, the unit portrait, the text with its colour tags
+  and variable names (or the language string an id names), and the display
+  time and sound. It follows your typing and never edits the effect.
+  Sounds are not played.
 
 ### Changed
 
+- **Elevation View and the View > Layers toggles are remembered between
+  launches** (GH #182): Terrain Textures, Farm Terrain Overlay, Small Trees
+  and Hero Glow. Perf Trace still starts off; set `DESCAPE_PERF_TRACE=1` to
+  have it on from startup.
+- **Settings > Appearance scrolls**, so the Settings dialog fits on a 768 px
+  tall screen.
+- **Menu mnemonics no longer clash**: with the Edit menu open, O picks
+  Rotate Selection and E picks Settings; with File open, V picks Recover
+  from Autosave.
+- **Duplicate keeps a contiguous selection together** (`a, b` gives
+  `a, b, a (copy), b (copy)`) instead of interleaving copies with their
+  sources. Its trigger links still point at the originals; use Copy + Paste
+  to re-link a block.
+- **Show Eye Candy now hides only passable decor** (grass, plants, stumps,
+  barrels), and "Walls skip occupied tiles" treats obstacles as occupied, so
+  a wall run leaves a gap at a rock. The gap is on the obstacle's own
+  (anchor) tile only, so a run can still cross the rest of a large one.
+- **AoE2ScenarioParser pin moved from 0.8.3 to 0.9.3.** Version 1.59 files now
+  read through the library's own definitions, and the 1.59 condition field
+  Allow In Fog is no longer shown in the trigger form (its value is kept).
+- **Settings > Appearance's Dark mode checkbox is now a Theme selector**; an
+  existing dark-mode setting carries over as the Dark theme.
+- **View mode's info page is one scrollable table** with collapsible
+  sections and Ctrl+C copy; trebuchets count as Military units, not
+  Buildings.
+- **Faster large undo in Stepped**: undoing a ~16k-tile Elevate or Set
+  elevation edit repaints faster.
+- **Faster brush outline in Sloped** (GH #180): the hover and drag outline
+  rebuilds about 25x faster. Perf Trace drag lines name the brush size and
+  shape, and a Trees stroke's end line splits `unit_plan` into its parts.
+- **Elevation strokes are slightly faster on maps with many units**: each
+  step no longer scans every unit to size its repaint.
+- **Faster elevation edits that change the steepest slope in Sloped** (GH
+  #180): an edit that steepens or flattens the map's steepest slope no longer
+  redraws every unit sprite.
+- **Faster large elevation undos in Sloped** (GH #180): undoing a stroke
+  of up to a few thousand units' worth no longer rebuilds every unit.
+- **Fewer hitches on the first zoom to the closest level**: blocker,
+  revealer and invisible-object markers build in a few ms instead of ~40.
+- **Buildings draw in their owner's architecture and starting age** (GH
+  #48): town centres, walls and gates included; Gaia keeps today's art.
+  Changing a player's civilization, architecture or starting age repaints
+  their buildings at once, undo included.
+- **A host's owner change takes its garrison along** (GH #115), from the
+  Inspector's Owner field and the Convert brush.
+- **Stepped contact shadows are back to the earlier line style** (GH #15)
+  while the filled-shadow rework continues; the
+  `tools/gen_contact_shadow_eyeball.py` A/B tool goes with it.
+- **Triggers: the Copy buttons that copied in place are now called
+  Duplicate**, and a new Copy button beside Paste puts the selected
+  triggers on the clipboard, like Edit > Copy Triggers (GH #27, #28).
+- **Triggers: Paste stays enabled whenever triggers are copied** (GH #3).
+  When they can't be pasted here (copied from a different scenario
+  version), pressing Paste or Ctrl+V says why in the status log and changes
+  nothing.
+- **Triggers: Description, Short Description, message and script boxes sit
+  full width under their caption**, like Messages mode (GH #38).
+- **Triggers: Remove tag no longer asks for confirmation**; one undo
+  reverses it (GH #101).
+- **Triggers: every tag in a name's leading run counts, not only the first**
+  (GH #101). `[Old] [New] x` is listed under New in the tag dropdown, its
+  count, the filter and Select Tag, and Rename tag / Remove tag change New in
+  place. Remove Tag… on a selection carrying several tags asks which one.
+- **Adding, removing and clearing rulers are undo steps** that never mark
+  the scenario as modified (GH #108). A ruler drawn while there are undone
+  scenario edits to redo is not added to Undo, so the redo is kept; the status
+  log says so. A ruler-only change never triggers an autosave.
+- **The Units inspector's group Rotation note says what a typed Rotation
+  turns** and which units keep their value, and names the current Rotate
+  keys that still step trees, scenery and gates (GH #71).
 - **Disabled Objects… moved from the Edit menu to the Map menu.** A saved
   keybind for it carries over.
 - **Triggers: New with Conditions or Effects highlighted collapses the other
   group in the add list** (GH #136).
 - **Perf Trace times the elevation predictor** as its own `elev_predict`
   phase on paste, undo and redo, rather than leaving it in `untimed`.
+- **Perf Trace names more of what an elevation edit did**: an
+  `elev_splice_refused` line when an edit or undo falls back to a full
+  rebuild, an `elev_headroom` line when a Sloped edit changes the steepest
+  slope, and the unit behind a level warm's slowest step.
+- **The left pane has a minimum width in every mode, and it grows with the
+  app font** (GH #142). Units, Players, Diplomacy and Messages join Terrain,
+  Triggers and Map Options, and View's info page gets one too, so its player
+  stats no longer clip at 150% scaling.
+- **Footprint outlines default to light gray (`#c8c8c8`) instead of pink**
+  (GH #143). If you ever changed an overlay colour, press the Footprint
+  outlines row's Default in Settings > Appearance to get it. The
+  "Multi-tile buildings" scope is renamed "Multi-tile objects".
+- **Flat: a multi-tile editor-only marker, such as a 1x3 or 3x1 invisible
+  blocker, is one badge filling its whole footprint**, as in Stepped and
+  Sloped. Single-tile markers look the same as before.
+- **Messages mode: an undragged text box in a tall window stays six lines**
+  instead of stretching (GH #139).
+- **The autosave "wrote to the default folder" status line says why the
+  chosen folder was passed over** (under `compatdata/`, missing, not a
+  folder, and so on). It is logged once per change, not after every
+  autosave, and a saved folder refused at startup is reported on the first
+  autosave after a restart.
 
-- **Linux Wayland sessions run under XWayland by default** (GH #78). Wayland
-  made drags repaint on every mouse move, so painting lagged. Launch with
-  `QT_QPA_PLATFORM=wayland` to opt out; XWayland may look blurry under
-  fractional scaling.
+- **Drags handle at most one mouse move per repaint, on every platform**
+  (GH #78, GH #179), instead of queueing a stroke step for each one. This
+  is meant to stop the multi-second drag freezes on native Wayland, so
+  DEscape runs natively there again; confirmation on a real Wayland session
+  is pending. On Linux, Settings > General has an "X11 compatibility on
+  Wayland" box that runs DEscape under XWayland instead from the next
+  launch; XWayland may look blurry under fractional scaling. A
+  `QT_QPA_PLATFORM` you set yourself still wins over the box, unless it
+  names a `wayland` plugin.
 - **Crash reports hide your home folder and username in file paths**,
   written as `~` and `<user>`, including a hard crash's faulthandler log.
 - **Perf Trace stall lines print `covered >= X`** when a stall outlasts the
@@ -51,6 +262,30 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Placing a gate on a wall run replaces the wall segments under it** and
+  reshapes the walls beside it (GH #159). A wall a trigger refers to stays,
+  as it would on Delete.
+- **Resize Map deletes a building the new map edge would cut through**,
+  instead of keeping it with part of its footprint off the map.
+- **Find and Replace no longer refuses a host** only because an occupant it
+  also refused was in the same batch.
+- **`batch_api.resize_map` keeps pending map-option and message edits**
+  instead of silently dropping them.
+- **A collapsed trigger section copies, cuts and deletes whole** (GH #134),
+  and Paste onto one lands after the section's end. A copied section stays a
+  section (`--- X ---` copies as `--- X (copy) ---`), and a pasted block
+  holding a header no longer splits the target section (GH #137). The Cut,
+  Copy and Paste tooltips say so.
+- **Stepped and Sloped terrain textures continue across tile edges** instead
+  of each tile showing its own separately rotated patch, and match Flat's
+  texture orientation.
+- **Feudal, Castle and Imperial Age town centres** no longer mix a later-age
+  back piece with Dark Age front pieces.
+- **Saving refuses a map whose tile list is longer than its terrain
+  block**, instead of silently writing terrain over the Units section.
+- **New trigger conditions and effects on 1.54 files with trigger version
+  4.1 save correctly.** They used to leave a Triggers section that no longer
+  parsed.
 - **Range rings use a building's real reach**, so Poenari Castle (range 0 in
   the game's panel, reach 8) now draws its ring (GH #111).
 - **Sloped: clicking a unit standing on a farm picks the unit**, not the farm,
@@ -59,6 +294,27 @@ content, link the doc instead of summarizing it.
   without closing the dialog.** Return in the filter box still presses OK.
 - **Triggers: New Section and other list rebuilds no longer re-open
   collapsed sections** (GH #135).
+- **Triggers: a tag created by renaming a trigger appears in the tag
+  dropdown at once**, not only after leaving the mode (GH #101).
+- **1x3 and 3x1 blockers cover their full three tiles** (GH #121): the
+  editor marker in Stepped and Sloped, picking, footprint outlines and
+  stacked-unit detection use the real footprint, not the centre tile.
+- **Triggers: renaming a tag on a mixed `[ ]`/`( )` tag chain names the
+  bracket the new name actually breaks.**
+- **Saving refuses a path that reaches a Proton `compatdata/` folder through
+  a symlink.** A linked file there used to be silently replaced by a real
+  file; it is now refused. A sidecar autosave for such a file goes to the
+  default folder, and the tools that write a scenario file (`strip_units`,
+  `gen_blank_maps` and the fixture generators) refuse such a path too.
+- **Unload with Show Garrisoned off keeps click priority on a shared tile in
+  paint order.**
+- **A symlink loop no longer breaks Save or autosave.** Saving to a path
+  that cannot be resolved is refused with a "cannot be resolved" message
+  instead of an internal error. A looped autosave folder is refused with the
+  same reason and autosaves go to the default folder, as does the sidecar
+  autosave of a file opened through a looped folder.
+- **Triggers: the property form is sized to its fields on entering
+  Triggers mode**, instead of starting squeezed until something re-fit it.
 
 ## [0.9] - 2026-10-01
 

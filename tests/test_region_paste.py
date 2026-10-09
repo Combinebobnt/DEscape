@@ -241,12 +241,13 @@ def test_paste_remaps_garrison_link_to_the_pasted_holders_new_id() -> None:
 
 
 def test_garrison_remap_leaves_the_reverse_map_spliced_after_undo() -> None:
-    """The discriminating regression test: a post-hoc `set_garrisoned_in_id()`
-    patch pass (the design the plan explicitly rejects) would splice a unit's
-    garrison link without going through add()'s own warm-map maintenance, so
-    a warm _garrison would drift. serialize() and restore() both run
-    _check_alignment() -> _check_derived(), which raises RuntimeError on a
-    drifted map -- this must pass clean."""
+    """The discriminating regression test: paste passes each link at add()
+    time, so add()'s own warm-map maintenance covers it. A post-hoc field
+    write would splice a link past that and a warm _garrison would drift;
+    set_garrisoned_in() (GH #115) is the scoped exception, splicing the map
+    itself. serialize() and restore() both run _check_alignment() ->
+    _check_derived(), which raises RuntimeError on a drifted map, so this must
+    pass clean."""
     window = _window()
     try:
         unit_edits = window._ensure_unit_edits()

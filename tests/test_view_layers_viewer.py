@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from descape import asset_source, unit_sprites, view_layers, viewer
+from descape import asset_source, settings, unit_sprites, view_layers, viewer
 
 import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -138,9 +138,10 @@ def test_the_farm_layer_greys_the_moment_sprites_go_off(sprite_install) -> None:
         conftest.close_window(window)
 
 
-def test_layers_are_not_persisted_across_windows(sprite_install) -> None:
-    """GH #85, mirroring test_sprite_toggle_viewer.py's own per-session test:
-    a fresh window starts every layer at its registry default."""
+def test_layers_persist_across_windows(sprite_install, monkeypatch) -> None:
+    """GH #182 reversed GH #85's per-session rule: a fresh window starts with
+    the rows as the last window left them, cache included. The memo is
+    nulled so the second window reads config.yaml, not the in-process copy."""
     first = conftest.blank_window()
     try:
         for layer_id in (TEXTURES_LAYER, FARM_LAYER):
@@ -150,13 +151,17 @@ def test_layers_are_not_persisted_across_windows(sprite_install) -> None:
     finally:
         conftest.close_window(first)
 
+    monkeypatch.setattr(settings, "_view_layers", None)
     second = conftest.blank_window()
     try:
-        for spec in view_layers.LAYERS:
-            assert second.layer_actions[spec.layer_id].isChecked() is spec.default, spec.layer_id
-            assert getattr(second._layers, spec.layer_id) is spec.default, spec.layer_id
-        assert second._cache.layers.terrain_textures is True
-        assert second._cache.layers.farm_overlay is True
+        assert second.layer_actions[TEXTURES_LAYER].isChecked() is False
+        assert second.layer_actions[FARM_LAYER].isChecked() is False
+        assert second.layer_actions[SMALL_TREES_LAYER].isChecked() is True
+        assert second._layers == view_layers.LayerState(
+            terrain_textures=False, farm_overlay=False, small_trees=True
+        )
+        assert second._cache.layers.terrain_textures is False
+        assert second._cache.layers.farm_overlay is False
     finally:
         conftest.close_window(second)
 

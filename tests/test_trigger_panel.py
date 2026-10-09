@@ -24,6 +24,7 @@ so the browser is readable at 340 px, where the single-tree 4a.3 layout needed
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -380,6 +381,88 @@ def test_toggling_a_bool_field_records_one_edit() -> None:
         assert window.trigger_edits is not None
         assert window.trigger_edits.dirty_indices() == [0]
         assert bool(window.trigger_edits.manager().triggers[0].looping) is (not before)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_trigger_header_fields_round_trip_through_the_form(tmp_path: Path) -> None:
+    """GH #141: both string table ids, description order and execute on load
+    are form rows, and each edit reaches the saved file. "Fixture: setup" is
+    1.58 with ids -1/-1, order 0 and execute on load 1."""
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        _row_widget(panel, "description_string_table_id").setValue(43998)
+        _row_widget(panel, "short_description_string_table_id").setValue(0)
+        _row_widget(panel, "description_order").setValue(100)
+        _row_widget(panel, "execute_on_load").setChecked(False)
+
+        assert window.trigger_edits is not None
+        assert window.trigger_edits.dirty_indices() == [0]
+        out = tmp_path / "edited.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+
+        trigger = parse_triggers(load_map_and_units(out)).triggers[0]
+        assert (
+            trigger.description_stid,
+            trigger.short_description_stid,
+            trigger.description_order,
+            trigger.execute_on_load,
+        ) == (43998, 0, 100, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_header_field_widgets_show_unset_order_and_tooltips_as_specified() -> None:
+    """Description Order is a u32 with no sentinel: floor 0, no "(unset)"
+    text. A string table id of -1 reads "(unset)". The order row's label
+    carries its tooltip."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        order = _row_widget(panel, "description_order")
+        assert (order.minimum(), order.specialValueText(), order.text()) == (0, "", "0")
+        stid = _row_widget(panel, "description_string_table_id")
+        assert (stid.minimum(), stid.text()) == (-1, "(unset)")
+        label = panel.property_form.labelForField(order)
+        assert label is not None
+        assert "higher numbers are listed first" in label.toolTip()
+        assert order.toolTip() == label.toolTip()
+        assert window.trigger_edits is None, "building the form must record nothing"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize(
+    ("name", "has_execute_on_load"),
+    [("C2_ElCid_coop_1_v0_16.aoe2scenario", False), ("2_Joan_coop_2_v0_15.aoe2scenario", True)],
+    ids=["1.41", "1.55"],
+)
+def test_execute_on_load_is_a_row_only_from_scenario_1_55(name: str, has_execute_on_load: bool) -> None:
+    """GH #141: the library supports execute_on_load since 1.55, and the form
+    follows the open file's version."""
+    path = Path(__file__).resolve().parent.parent / "examples" / name
+    if not path.exists():
+        pytest.skip(f"{name} is not in examples/")
+    window = _window()
+    try:
+        window.load_scenario(path)
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        # By index: a grouped file's first top-level row is a section header.
+        panel.select_trigger(0)
+        names = [spec.name for spec, *_ in panel._rows]
+        assert "description_order" in names
+        assert ("execute_on_load" in names) is has_execute_on_load
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -1884,7 +1967,8 @@ def test_no_reorder_or_move_triggers_call_is_introduced() -> None:
     # The actual call shape (".reorder_triggers(" / ".move_triggers("), not a
     # bare word match -- this docstring itself names both methods by way of
     # explaining why they must not appear as calls.
-    source = inspect.getsource(ViewerWindow.trigger_structural_edit)
+    # GH #133's Section Up/Down permute display order in their own helper.
+    source = inspect.getsource(ViewerWindow.trigger_structural_edit) + inspect.getsource(ViewerWindow._move_section)
     assert ".reorder_triggers(" not in source
     assert ".move_triggers(" not in source
 
@@ -2040,8 +2124,42 @@ def test_the_columns_re_fit_when_the_pane_is_resized() -> None:
         window.close()
 
 
+def _assert_form_rows_do_not_overlap(form) -> tuple[int, int]:
+    """Walk every row, label-and-field, wrapped and full-width (spanning)
+    alike: no widget squeezed below its minimum, no row drawing over the one
+    above, and a wrapped row's editor below its own label. Returns (rows
+    walked, rows wrapped). Rows with no widget are skipped; a spanning widget
+    answers FieldRole too."""
+    from PyQt5.QtWidgets import QFormLayout, QLabel
+
+    walked = wrapped = 0
+    previous_bottom = None
+    for row in range(form.rowCount()):
+        widgets = {}
+        for role in (QFormLayout.LabelRole, QFormLayout.FieldRole, QFormLayout.SpanningRole):
+            item = form.itemAt(row, role)
+            if item is not None and item.widget() is not None and item.widget() not in widgets.values():
+                widgets[role] = item.widget()
+        if not widgets:
+            continue
+        walked += 1
+        name = next((w.text() for w in widgets.values() if isinstance(w, QLabel)), f"row {row}")
+        for widget in widgets.values():
+            assert widget.height() >= widget.minimumSizeHint().height(), f"{name!r} is squeezed below its own minimum height"
+        geometries = [widget.geometry() for widget in widgets.values()]
+        if previous_bottom is not None:
+            assert min(g.top() for g in geometries) >= previous_bottom, f"{name!r} draws over the row above it"
+        label, field = widgets.get(QFormLayout.LabelRole), widgets.get(QFormLayout.FieldRole)
+        if label is not None and field is not None and field.geometry().left() < label.geometry().right():
+            wrapped += 1
+            assert field.geometry().top() >= label.geometry().bottom(), f"{name!r}'s wrapped editor overlaps its label"
+        previous_bottom = max(g.bottom() for g in geometries)
+    return walked, wrapped
+
+
 @pytest.mark.font_sensitive
-def test_a_long_form_scrolls_instead_of_crushing_its_rows() -> None:
+@pytest.mark.parametrize("what", ["effect", "trigger"])
+def test_a_long_form_scrolls_instead_of_crushing_its_rows(what: str) -> None:
     """Found by screenshot, and invisible to every other measurement: host
     width, scrollbar state and field widths all read correct while each row was
     squeezed to 6 px and drew over the next one.
@@ -2051,37 +2169,63 @@ def test_a_long_form_scrolls_instead_of_crushing_its_rows() -> None:
     wrapped -- so the form was handed the unwrapped height and overflowed
     inside it. Asking the layout for heightForWidth, *after* activating it, is
     what makes the vertical scrollbar appear instead.
+
+    The trigger form adds full-width caption rows and GH #141's long-label
+    rows, which WrapLongRows puts on two lines (GH #139).
     """
-    from PyQt5.QtWidgets import QFormLayout
+    from PyQt5.QtWidgets import QApplication, QFormLayout
+
+    from testkit.qt_window import FONT_DPI_OVERRIDE_ENV
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        if what == "effect":
+            _select_an_effect(panel)
+        else:
+            panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+            QApplication.processEvents()
+        form = panel.property_form
+        assert len(panel._rows) >= 8, "this fixture no longer exercises a long form"
+        walked, wrapped = _assert_form_rows_do_not_overlap(form)
+        assert walked >= len(panel._rows)
+        if what == "trigger":
+            spanning = [r for r in range(form.rowCount()) if form.itemAt(r, QFormLayout.SpanningRole)]
+            assert len(spanning) >= 4, "the two prose captions and boxes are full-width rows"
+            if not os.environ.get(FONT_DPI_OVERRIDE_ENV):
+                # At the pinned baseline font both string table id rows wrap; a smaller DPI fits them beside.
+                assert wrapped >= 2, "the wrapped-row check walked nothing"
+
+        assert panel.property_host.height() > panel.property_area.viewport().height(), (
+            "a form taller than its pane must make the host taller, not compress the rows"
+        )
+        assert panel.property_area.verticalScrollBar().isVisible()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.font_sensitive
+def test_dragging_the_splitter_refits_the_form_height() -> None:
+    """A splitter drag reaches the form only through TriggerPanel.resizeEvent.
+    The form's height is a function of its width (wrapped rows, and the
+    Display Instructions preview's aspect), so the host's must follow it."""
+    from PyQt5.QtWidgets import QApplication
 
     window = _triggers_window()
     try:
         panel = window.trigger_panel
         _select_an_effect(panel)
         form = panel.property_form
-        assert form.rowCount() >= 8, "this fixture no longer exercises a long form"
-
-        previous_bottom = None
-        for row in range(form.rowCount()):
-            label = form.itemAt(row, QFormLayout.LabelRole)
-            field = form.itemAt(row, QFormLayout.FieldRole)
-            if not (label and label.widget() and field and field.widget()):
-                continue
-            label_geometry = label.widget().geometry()
-            field_geometry = field.widget().geometry()
-            assert field.widget().height() >= field.widget().minimumSizeHint().height(), (
-                f"{label.widget().text()}'s editor is squeezed below its own minimum height"
-            )
-            if previous_bottom is not None:
-                assert label_geometry.top() >= previous_bottom, (
-                    f"{label.widget().text()} draws over the row above it"
-                )
-            previous_bottom = max(label_geometry.bottom(), field_geometry.bottom())
-
-        assert panel.property_host.height() > panel.property_area.viewport().height(), (
-            "a form taller than its pane must make the host taller, not compress the rows"
-        )
-        assert panel.property_area.verticalScrollBar().isVisible()
+        needed = []
+        for sizes in ([600, 900], [330, 1170], [900, 600]):
+            window.content_splitter.setSizes(sizes)
+            QApplication.processEvents()
+            width = panel.property_area.viewport().width()
+            needed.append(max(form.minimumSize().height(), form.heightForWidth(width)))
+            assert panel.property_host.minimumHeight() == needed[-1], (sizes, width)
+            _assert_form_rows_do_not_overlap(form)
+        assert len(set(needed)) == len(needed), f"two widths need the same height, so a step checks nothing: {needed}"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -2115,12 +2259,18 @@ def test_no_field_demands_more_width_than_the_pane_can_give() -> None:
                 for c in range(top.childCount()):
                     panel.entry_tree.setCurrentItem(top.child(c))
                     QApplication.processEvents()
-                    for spec, _kind, _index, widget in panel._rows:
+                    # GH #138's Set / Go to / Reset rows live outside _rows.
+                    groups = [
+                        (f"{group} group row", row.set_button.parentWidget()) for group, row in panel._group_rows.items()
+                    ]
+                    if panel._instruction_preview is not None:  # GH #140's preview row, also outside _rows
+                        groups.append(("instruction preview", panel._instruction_preview))
+                    for name, widget in [(spec.name, widget) for spec, *_rest, widget in panel._rows] + groups:
                         checked += 1
                         assert (
                             widget.minimumSizeHint().width() <= TriggerPanel.MIN_USEFUL_WIDTH
                         ), (
-                            f"{spec.name}'s editor demands "
+                            f"{name}'s editor demands "
                             f"{widget.minimumSizeHint().width()} px of a "
                             f"{TriggerPanel.MIN_USEFUL_WIDTH} px panel"
                         )
@@ -2328,12 +2478,12 @@ def test_tag_facet_hides_non_matching_rows_on_a_real_scenario(scenario_path) -> 
             visible_children = [
                 top.child(c) for c in range(top.childCount()) if not top.child(c).isHidden()
             ]
-            header_matches = top.data(0, Qt.UserRole) is not None and top.data(0, panel._TAG_ROLE) == wanted
+            header_matches = top.data(0, Qt.UserRole) is not None and wanted in top.data(0, panel._TAG_ROLE)
             # A visible row must owe its visibility to a real match -- its own
-            # tag (flat rows and real section headers), or a visible child's.
+            # tag chain (flat rows and real section headers), or a visible child's.
             assert header_matches or visible_children
             for child in visible_children:
-                assert child.data(0, panel._TAG_ROLE) == wanted
+                assert wanted in child.data(0, panel._TAG_ROLE)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -2682,6 +2832,280 @@ def test_a_prose_field_shows_its_stored_lines(where: str) -> None:
         assert widget.toPlainText() == "first line\nsecond line\nthird line"
         assert widget.document().blockCount() == 3
         assert widget.newline_token == "\r\n"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _caption_geometry(panel, text: str):
+    from PyQt5.QtWidgets import QLabel
+
+    labels = [w for w in panel.property_host.findChildren(QLabel) if w.text() == text and w.isVisible()]
+    assert len(labels) == 1, [w.text() for w in panel.property_host.findChildren(QLabel)]
+    return labels[0].geometry()
+
+
+@pytest.mark.parametrize(
+    "where,field",
+    [
+        ("trigger", "description"),
+        ("trigger", "short_description"),
+        ("effect message", "message"),
+        ("script call", "message"),
+    ],
+)
+def test_a_multi_line_box_sits_full_width_under_its_caption(where: str, field: str) -> None:
+    """GH #38: like Messages mode, the caption gets its own row and the box
+    spans the form below it. One-line fields keep the side caption."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.text_edits import _MultiLineEdit
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        if where == "trigger":
+            _plant_trigger_description(window, "some text")
+        elif where == "effect message":
+            _plant_prose_effect(window, "some text")
+        else:
+            _plant_script_call(window, "effect", "void f() {}")
+        QApplication.processEvents()
+        widget = _row_widget(panel, field)
+        assert isinstance(widget, _MultiLineEdit)
+        spec = next(s for s, *_ in panel._rows if s.name == field)
+        form = panel.property_form.contentsRect()
+        box = widget.geometry()
+        assert (box.left(), box.right()) == (form.left(), form.right()), (box, form)
+        caption = _caption_geometry(panel, spec.label)
+        assert caption.left() == form.left()
+        assert caption.bottom() < box.top(), "the caption sits above its box"
+
+        if where == "trigger":
+            name = _row_widget(panel, "name")
+            name_caption = panel.property_form.labelForField(name)
+            assert name_caption is not None and name_caption.geometry().right() < name.geometry().left()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #139: caption buddies, locked multi-line rows, the height grip --------
+
+
+def _caption_for(panel, widget):
+    """The full-width caption QLabel whose buddy is `widget`."""
+    from PyQt5.QtWidgets import QLabel
+
+    captions = [w for w in panel.property_host.findChildren(QLabel) if w.buddy() is widget]
+    assert len(captions) == 1, [w.text() for w in panel.property_host.findChildren(QLabel)]
+    return captions[0]
+
+
+def _with_trigger_spec(monkeypatch, name: str, **changes) -> None:
+    """Swap one trigger spec for a replaced copy, as the form will see it."""
+    from dataclasses import replace
+
+    from descape import trigger_fields
+
+    original = trigger_fields.trigger_specs
+    monkeypatch.setattr(
+        trigger_fields,
+        "trigger_specs",
+        lambda version: tuple(replace(s, **changes) if s.name == name else s for s in original(version)),
+    )
+
+
+@pytest.mark.parametrize("field", ["description", "short_description"])
+def test_a_multi_line_caption_is_its_box_s_buddy(field: str) -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        widget = _row_widget(panel, field)
+        assert _caption_for(panel, widget).text() == field.replace("_", " ")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_locked_multi_line_field_takes_its_caption_above_too(monkeypatch) -> None:
+    """A read-only spec renders as a QLabel, not a _MultiLineEdit; its caption
+    still goes on its own row with the text full width below."""
+    from PyQt5.QtWidgets import QApplication, QLabel
+
+    _with_trigger_spec(monkeypatch, "description", read_only=True)
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        QApplication.processEvents()
+        widget = _row_widget(panel, "description")
+        assert isinstance(widget, QLabel)
+        assert panel.property_form.labelForField(widget) is None, "not a side caption"
+        caption = _caption_for(panel, widget).geometry()
+        form = panel.property_form.contentsRect()
+        assert caption.bottom() < widget.geometry().top()
+        assert (widget.geometry().left(), widget.geometry().right()) == (form.left(), form.right())
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_full_width_caption_carries_its_spec_s_tooltip(monkeypatch) -> None:
+    _with_trigger_spec(monkeypatch, "description", tooltip="What the Objectives panel shows.")
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        widget = _row_widget(panel, "description")
+        assert _caption_for(panel, widget).toolTip() == "What the Objectives panel shows."
+        assert widget.toolTip() == "What the Objectives panel shows."
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_dragging_a_box_taller_refits_the_form_and_records_nothing() -> None:
+    """The host grows by the drag's delta, no row draws over the next, and a
+    resize is not a document edit: no history record, nothing dirty."""
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        QApplication.processEvents()
+        box = _row_widget(panel, "description")
+        # Baseline from a fit at the shown width, the same measurement the drag's refit makes.
+        panel._fit_property_height()
+        host_before = panel.property_host.minimumHeight()
+        box_before = box.height()
+
+        _drag(box.grip(), 4)
+        QApplication.processEvents()
+        assert box.visible_lines() == box.VISIBLE_LINES + 4
+        delta = box.height() - box_before
+        assert delta == 4 * box.fontMetrics().lineSpacing()
+        assert panel.property_host.minimumHeight() - host_before == delta
+        _assert_form_rows_do_not_overlap(panel.property_form)
+        assert window.trigger_edits is None
+        assert not window.edit_history.can_undo
+        assert not window.windowTitle().startswith("*")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_repopulating_the_form_leaves_no_empty_rows_behind() -> None:
+    """takeAt() empties a QFormLayout row but keeps the row, so every populate
+    used to stack another set of empty rows under the live ones."""
+    from PyQt5.QtWidgets import QApplication, QFormLayout
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        QApplication.processEvents()
+        form = panel.property_form
+        counts = []
+        for _ in range(3):
+            panel._populate_property_form()
+            QApplication.processEvents()
+            counts.append(form.rowCount())
+        assert counts[0] > 0
+        assert counts == [counts[0]] * 3, f"rowCount grew across populates: {counts}"
+        roles = (QFormLayout.LabelRole, QFormLayout.FieldRole, QFormLayout.SpanningRole)
+        empty = [r for r in range(form.rowCount()) if all(form.itemAt(r, role) is None for role in roles)]
+        assert not empty, f"empty rows left behind: {empty}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_entering_triggers_mode_fits_the_form_to_the_shown_width() -> None:
+    """The populate's fit ran while every new row still waited on Qt's queued
+    show, so the host kept a 102 px minimum until something else re-fit it."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        width = panel.property_area.viewport().width()
+        assert width > 0
+        assert panel._rows, "entering the mode no longer builds a form, so this tests nothing"
+        panel.property_form.activate()
+        needed = panel.property_form.heightForWidth(width)
+        assert panel.property_host.minimumHeight() >= needed, (
+            f"host minimum {panel.property_host.minimumHeight()} < heightForWidth({width}) {needed}"
+        )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_stored_height_is_applied_kept_across_reselection_and_a_drag_reports_once() -> None:
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        stored = {"trigger.description": 12}
+        reported = []
+        panel.text_box_lines = stored.get
+        panel.on_text_box_lines = lambda key, lines: reported.append((key, lines))
+        # Trigger 0's form was built on entering the mode, before the injection.
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(1))
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        QApplication.processEvents()
+        assert _row_widget(panel, "description").visible_lines() == 12
+        assert _row_widget(panel, "short_description").visible_lines() == 6, "keyed per field"
+
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(1))
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        QApplication.processEvents()
+        box = _row_widget(panel, "description")
+        assert box.visible_lines() == 12
+
+        _drag(box.grip(), 2)
+        assert reported == [("trigger.description", 14)]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_window_wires_text_box_heights_to_settings() -> None:
+    """End to end through viewer.py's injection: a saved height builds the
+    box, a drag saves the new one, and a double-click reset removes the key
+    rather than storing the default."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    from descape import settings
+
+    settings.set_text_box_lines("trigger.description", 9)
+    settings.set_text_box_lines("messages.hints", 11)
+    window = _triggers_window()
+    try:
+        window.mode_combo.setCurrentText("Messages")
+        assert window.messages_panel.widget_for("hints").visible_lines() == 11
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        QApplication.processEvents()
+        box = _row_widget(panel, "description")
+        assert box.visible_lines() == 9
+        _drag(box.grip(), -3)
+        assert settings.get_text_box_lines("trigger.description") == 6
+        QTest.mouseDClick(box.grip(), Qt.LeftButton, Qt.NoModifier, QPoint(5, 2))
+        # A real double click ends with a release; QTest's leaves the button held process-wide.
+        QTest.mouseRelease(box.grip(), Qt.LeftButton, Qt.NoModifier, QPoint(5, 2))
+        assert settings.get_text_box_lines("trigger.description") is None
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -3201,6 +3625,48 @@ def test_copy_then_paste_lands_the_block_below_the_current_trigger() -> None:
         window.close()
 
 
+def _row_buttons(layout) -> list:
+    return [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget() is not None]
+
+
+def test_the_copy_button_fills_the_clipboard_without_adding_triggers() -> None:
+    """GH #27/#28: with Paste beside it, "Copy" copies; Paste then enables."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        copy = next(b for b in _row_buttons(panel.trigger_buttons) if b.text() == "Copy")
+        _ctrl_select(panel, 0, 2)
+        assert copy.isEnabled()
+        assert not panel.trigger_paste_button.isEnabled(), "nothing to paste yet"
+        copy.click()
+        assert len(window.trigger_panel._manager().triggers) == 4, "copying adds nothing"
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits
+        assert [t.name for t in window._trigger_clipboard.triggers] == ["Fixture: setup", "Fixture: references"]
+        assert panel.trigger_paste_button.isEnabled()
+        panel.tree.clearSelection()
+        assert not copy.isEnabled(), "nothing selected to copy"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_duplicate_buttons_keep_their_names_and_still_duplicate() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        assert panel.trigger_copy_button.text() == "Duplicate"
+        assert panel.entry_copy_button.text() == "Duplicate"
+        assert [b.text() for b in _row_buttons(panel.trigger_buttons)] == ["New", "Copy", "Paste", "Delete"]
+        assert panel.trigger_copy_button in _row_buttons(panel.reorder_buttons)
+        _ctrl_select(panel, 0)
+        panel.trigger_copy_button.click()
+        assert len(window.trigger_edits.manager().triggers) == 5
+        assert window._trigger_clipboard is None, "Duplicate leaves the clipboard alone"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def trigger_clipboard_refs(trigger):
     from descape.trigger_clipboard import get_trigger_referencing_ce
 
@@ -3220,11 +3686,15 @@ def test_paste_with_no_current_trigger_appends(tmp_path: Path) -> None:
         window.close()
 
 
-def test_a_clipboard_from_another_scenario_version_is_not_pasteable(monkeypatch) -> None:
-    """Greyed with the mismatch named, and the funnel refuses on its own (a
-    keybind can race the greying) before any undo record opens.
-    QMessageBox.warning is patched: unpatched it blocks forever offscreen."""
+def test_a_clipboard_from_another_scenario_version_is_refused_out_loud(monkeypatch) -> None:
+    """GH #3: Paste stays enabled, and Ctrl+V or the button logs why it
+    refused, changing nothing. QMessageBox.warning is patched: unpatched it
+    blocks forever offscreen."""
     import dataclasses
+
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
 
     from descape import viewer as viewer_module
 
@@ -3232,21 +3702,35 @@ def test_a_clipboard_from_another_scenario_version_is_not_pasteable(monkeypatch)
     monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
     window = _triggers_window()
     try:
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
         panel = window.trigger_panel
         _ctrl_select(panel, 0)
         window.copy_triggers()
         window._trigger_clipboard = dataclasses.replace(window._trigger_clipboard, scenario_version="1.56")
         window._sync_trigger_clipboard_state()
-        assert not panel.trigger_paste_button.isEnabled()
-        assert not window.paste_action.isEnabled()
         expected = "Copied from a 1.56 scenario; this one is 1.58."
+        assert panel.trigger_paste_button.isEnabled()
+        assert window.paste_action.isEnabled()
         assert panel.trigger_paste_button.toolTip() == expected
         assert window.paste_action.toolTip() == expected
-        window.trigger_structural_edit("paste", [0])
-        assert warnings == [expected]
+        window.status_log.clear()
+
+        QTest.keyClick(window, Qt.Key_V, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert f"Cannot paste these triggers: {expected}" in window.status_log.toPlainText()
+        assert len(panel._manager().triggers) == 4
+
+        window.status_log.clear()
+        panel.trigger_paste_button.click()
+        assert f"Cannot paste these triggers: {expected}" in window.status_log.toPlainText()
+        assert len(panel._manager().triggers) == 4
+        assert warnings == []
         assert window.trigger_edits is None or not window.trigger_edits.has_edits
         assert not window.edit_history.is_dirty, "no undo record was pushed"
     finally:
+        QTest.keyRelease(window, Qt.Key_Control)
         window.edit_history.mark_saved()
         window.close()
 
@@ -3485,7 +3969,7 @@ def test_edit_copy_and_paste_dispatch_on_mode() -> None:
 _TAGGED_NAMES = ["[D1] setup", "[d1]armour split", "[P1][D1] references", "[D1]: variable"]
 
 
-def _tagged_window(tmp_path: Path):
+def _tagged_window(tmp_path: Path, names: list[str] = _TAGGED_NAMES):
     """A window on the trigger fixture with tagged names saved into it: D1 x2,
     a case variant d1, and P1 with D1 only as its chained second tag."""
     from descape.scenario_io import load_map_and_units
@@ -3494,7 +3978,7 @@ def _tagged_window(tmp_path: Path):
 
     loaded = load_map_and_units(TRIGGER_FIXTURE)
     model = TriggerEditModel(loaded)
-    for index, name in enumerate(_TAGGED_NAMES):
+    for index, name in enumerate(names):
         model.manager().triggers[index].name = name
         model.mark_dirty(index)
     base = tmp_path / "tagged.aoe2scenario"
@@ -3587,13 +4071,14 @@ def test_renaming_the_facets_tag_keeps_the_facet_on_it(tmp_path: Path, monkeypat
     try:
         panel = window.trigger_panel
         panel.set_tag_filter("D1")
-        assert _visible_ids(panel) == [0, 3]
+        assert _visible_ids(panel) == [0, 2, 3], "D1 chained second on [P1][D1] counts too"
         panel.tag_rename_button.click()
-        assert asked["getText"] == [('Rename tag "D1"', "2 triggers carry this tag. New tag:", "D1")]
+        assert asked["getText"] == [('Rename tag "D1"', "3 triggers carry this tag. New tag:", "D1")]
         assert asked["question"] == []
-        assert _names(window) == ["[Intro] setup", "[d1]armour split", "[P1][D1] references", "[Intro]: variable"]
+        assert _names(window) == ["[Intro] setup", "[d1]armour split", "[P1][Intro] references", "[Intro]: variable"]
+        assert window.edit_history.records[-1].touched == [0, 2, 3]
         assert panel.current_tag() == "Intro"
-        assert _visible_ids(panel) == [0, 3]
+        assert _visible_ids(panel) == [0, 2, 3]
         assert panel.tag_combo.findData("D1") < 0
         # Undo drops the facet to "All tags": the renamed tag is gone again.
         window.undo()
@@ -3626,7 +4111,7 @@ def test_declining_a_merge_calls_nothing(tmp_path: Path, monkeypatch) -> None:
         window.trigger_panel.set_tag_filter("d1")
         window.trigger_panel.request_tag_rename()
         assert asked["question"] == [
-            'Merge tag "d1" (1 trigger) into existing tag "D1" (2 triggers)? One undo reverses it.'
+            'Merge tag "d1" (1 trigger) into existing tag "D1" (3 triggers)? One undo reverses it.'
         ]
         assert calls == []
         assert window.edit_history.records == []
@@ -3645,31 +4130,368 @@ def test_accepting_a_merge_leaves_one_facet_holding_both(tmp_path: Path, monkeyp
         panel.request_tag_rename()
         assert panel.tag_combo.findData("d1") < 0
         assert panel.current_tag() == "D1"
-        assert _visible_ids(panel) == [0, 1, 3]
+        assert _visible_ids(panel) == [0, 1, 2, 3]
         assert len(window.edit_history.records) == 1
     finally:
         window.edit_history.mark_saved()
         window.close()
 
 
-def test_remove_tag_asks_first_and_strips_on_yes(tmp_path: Path, monkeypatch) -> None:
-    from PyQt5.QtWidgets import QMessageBox
-
+def test_remove_tag_strips_without_asking_in_one_undo_step(tmp_path: Path, monkeypatch) -> None:
+    """GH #101: no confirmation, since one undo reverses it."""
     window = _tagged_window(tmp_path)
-    asked = _answer_dialogs(monkeypatch, answer=QMessageBox.No)
+    asked = _answer_dialogs(monkeypatch)
     try:
         panel = window.trigger_panel
         panel.set_tag_filter("D1")
         panel.tag_remove_action.trigger()
-        assert asked["question"] == ['Remove tag "D1" from 2 triggers? One undo reverses it.']
-        assert window.edit_history.records == []
-
-        _answer_dialogs(monkeypatch, answer=QMessageBox.Yes)
-        panel.tag_remove_action.trigger()
-        assert _names(window) == ["setup", "[d1]armour split", "[P1][D1] references", ": variable"]
+        assert asked == {"getText": [], "question": []}
+        assert _names(window) == ["setup", "[d1]armour split", "[P1] references", ": variable"]
+        assert window.edit_history.records[-1].touched == [0, 2, 3]
         assert panel.current_tag() is None
         assert panel.tag_combo.findData("D1") < 0
         assert len(window.edit_history.records) == 1
+        window.undo()
+        assert _names(window) == _TAGGED_NAMES
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+class _Asked(list):
+    """_answer_item's record, plus the item each prompt pre-selected."""
+
+    defaults: list
+
+
+def _answer_item(monkeypatch, text=None) -> _Asked:
+    """Stub the panel's QInputDialog.getItem; record (title, label, items, editable)."""
+    from descape import trigger_panel
+
+    asked = _Asked()
+    asked.defaults = []
+
+    def get_item(parent, title, label, items, current=0, editable=True):
+        asked.append((title, label, list(items), editable))
+        asked.defaults.append(list(items)[current] if items else None)
+        return (text, True) if text is not None else ("", False)
+
+    monkeypatch.setattr(trigger_panel.QInputDialog, "getItem", staticmethod(get_item))
+    return asked
+
+
+def test_add_tag_tags_the_selected_triggers_lacking_it_in_one_step(monkeypatch) -> None:
+    """GH #101: existing tags are offered, a trigger already carrying the tag
+    is left alone, and one undo reverses the lot."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.clearSelection()
+        assert not panel.tag_add_button.isEnabled(), "nothing selected"
+        _ctrl_select(panel, 0, 2)
+        assert panel.tag_add_button.isEnabled()
+        asked = _answer_item(monkeypatch, text="  Intro ")
+        panel.tag_add_button.click()
+        assert asked == [("Add tag", "Add a tag to 2 selected triggers:", [], True)]
+        assert _names(window) == [
+            "[Intro] Fixture: setup", "Fixture: armour split", "[Intro] Fixture: references", "Fixture: variable",
+        ]
+        assert panel.tag_combo.findData("Intro") >= 0
+        assert panel.selected_trigger_indices() == [0, 2], "the selection survives"
+        assert len(window.edit_history.records) == 1
+        window.undo()
+        assert _names(window) == ["Fixture: setup", "Fixture: armour split", "Fixture: references", "Fixture: variable"]
+        window.redo()
+
+        _ctrl_select(panel, 0, 1)
+        asked = _answer_item(monkeypatch, text="Intro")
+        panel.tag_add_button.click()
+        assert asked[0][2] == ["Intro"], "existing tags are offered"
+        assert _names(window)[:2] == ["[Intro] Fixture: setup", "[Intro] Fixture: armour split"]
+        assert len(window.edit_history.records) == 2
+        window.undo()
+        assert _names(window)[:2] == ["[Intro] Fixture: setup", "Fixture: armour split"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_add_tag_chains_onto_another_tag_and_refuses_a_closer(tmp_path: Path, monkeypatch) -> None:
+    """Add tag prepends, so adding to "[d1]..." chains in front
+    ("[P1][D1] ..." is the corpus's own shape); a tag holding "]" would not
+    read back, so it is refused before anything is recorded."""
+    from descape import viewer as viewer_module
+
+    warnings = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 1)
+        _answer_item(monkeypatch, text="a]b")
+        panel.tag_add_button.click()
+        assert len(warnings) == 1 and '"a]b"' in warnings[0]
+        assert window.edit_history.records == []
+
+        _answer_item(monkeypatch, text="New")
+        panel.tag_add_button.click()
+        assert _names(window)[1] == "[New] [d1]armour split"
+        _answer_item(monkeypatch)  # cancelled
+        panel.tag_add_button.click()
+        assert len(window.edit_history.records) == 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_add_tag_skips_a_trigger_carrying_it_anywhere_in_the_chain(tmp_path: Path, monkeypatch) -> None:
+    """"[P1][D1] references" already carries D1 as its second tag, so Add tag
+    D1 leaves it alone; "[d1]..." (case differs) still gets one, in one step."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 2)
+        _answer_item(monkeypatch, text="D1")
+        panel.tag_add_button.click()
+        assert _names(window) == _TAGGED_NAMES
+        assert window.edit_history.records == []
+
+        _ctrl_select(panel, 1, 2)
+        _answer_item(monkeypatch, text="D1")
+        panel.tag_add_button.click()
+        assert _names(window) == ["[D1] setup", "[D1] [d1]armour split", "[P1][D1] references", "[D1]: variable"]
+        assert len(window.edit_history.records) == 1
+        record = window.edit_history.records[-1]
+        assert record.touched == [1] and record.label == 'Add tag "D1" (1 trigger)'
+        window.undo()
+        assert _names(window) == _TAGGED_NAMES
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_remove_tag_on_a_selection_strips_only_the_selected_carriers(tmp_path: Path, monkeypatch) -> None:
+    """The facet's Remove tag stays the every-trigger form; this one asks
+    which of the selection's tags to drop, and does not ask when there is one."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 0, 2)
+        assert panel.tag_remove_selected_button.isEnabled()
+        asked = _answer_item(monkeypatch, text="D1")
+        panel.tag_remove_selected_button.click()
+        assert asked == [("Remove tag", "Remove a tag from 2 selected triggers:", ["D1", "P1"], False)]
+        assert asked.defaults == ["D1"], "the first selected row's leading tag"
+        assert _names(window) == ["setup", "[d1]armour split", "[P1] references", "[D1]: variable"]
+        assert len(window.edit_history.records) == 1
+        assert window.edit_history.records[-1].touched == [0, 2]
+        window.undo()
+        assert _names(window) == _TAGGED_NAMES
+
+        _ctrl_select(panel, 2)
+        asked = _answer_item(monkeypatch, text="D1")
+        panel.tag_remove_selected_button.click()
+        assert asked == [("Remove tag", "Remove a tag from 1 selected trigger:", ["D1", "P1"], False)]
+        assert asked.defaults == ["P1"], "pre-selects the leading tag, not the sorted-first chained one"
+        assert _names(window)[2] == "[P1] references", "the chained second tag, stripped in place"
+        window.undo()
+        assert _names(window) == _TAGGED_NAMES
+
+        _ctrl_select(panel, 0)
+        asked = _answer_item(monkeypatch, text="unused")
+        panel.tag_remove_selected_button.click()
+        assert asked == [], "one tag in the selection: nothing to choose"
+        assert _names(window)[0] == "setup"
+        window.undo()
+        assert _names(window) == _TAGGED_NAMES
+        _ctrl_select(panel, 0)
+        window.trigger_structural_edit("new", [])
+        _ctrl_select(panel, 4)
+        assert not panel.tag_remove_selected_button.isEnabled(), "an untagged selection has nothing to remove"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_tag_made_by_renaming_a_trigger_joins_the_dropdown_at_once(tmp_path: Path) -> None:
+    """GH #101: no mode switch needed for the facet to offer it."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 1, "[Fresh] armour split")
+        assert panel.tag_combo.findData("Fresh") >= 0
+        assert panel.tag_combo.findData("d1") < 0, "its old tag had no other carrier"
+        panel.set_tag_filter("Fresh")
+        assert _visible_ids(panel) == [1]
+        window.undo()
+        assert panel.tag_combo.findData("Fresh") < 0
+        assert panel.tag_combo.findData("d1") >= 0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+_CHAINED_NAMES = ["[New] setup", "[Old] [New] x", "[Old] solo", "plain"]
+
+
+def _combo_tags(panel) -> list[str]:
+    return [panel.tag_combo.itemData(i) for i in range(1, panel.tag_combo.count())]
+
+
+def test_a_tag_anywhere_in_the_chain_is_listed_counted_and_filtered(tmp_path: Path) -> None:
+    """The TODO's own "[Old] [New] x": New is listed, counted and matched,
+    not only the leading Old. New leads nowhere, so only the chain finds it."""
+    window = _tagged_window(tmp_path, ["[Old] [New] x", "[Old] solo", "plain", "plain"])
+    try:
+        panel = window.trigger_panel
+        assert _combo_tags(panel) == ["New", "Old"]
+        assert panel._tag_count("New") == 1
+        assert panel._tag_count("Old") == 2
+        panel.set_tag_filter("New")
+        assert _visible_ids(panel) == [0]
+        panel.set_tag_filter("Old")
+        assert _visible_ids(panel) == [0, 1]
+        _rename(panel, 3, "--- Sec ---")
+        assert panel._grouped, "fixture assumption"
+        panel.set_tag_filter("New")
+        assert _visible_ids(panel) == [0], "the grouped tree filters the same way"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_remove_tag_strips_a_chained_tag_in_place_in_one_undo_step(tmp_path: Path, monkeypatch) -> None:
+    window = _tagged_window(tmp_path, _CHAINED_NAMES)
+    asked = _answer_dialogs(monkeypatch)
+    try:
+        panel = window.trigger_panel
+        panel.set_tag_filter("New")
+        panel.tag_remove_action.trigger()
+        assert asked == {"getText": [], "question": []}
+        assert _names(window) == ["setup", "[Old] x", "[Old] solo", "plain"]
+        record = window.edit_history.records[-1]
+        assert len(window.edit_history.records) == 1
+        assert record.touched == [0, 1] and record.label == 'Remove tag "New" (2 triggers)'
+        assert panel.tag_combo.findData("New") < 0
+        window.undo()
+        assert _names(window) == _CHAINED_NAMES
+        assert panel.tag_combo.findData("New") >= 0
+        window.redo()
+        assert _names(window) == ["setup", "[Old] x", "[Old] solo", "plain"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_rename_tag_retags_a_chained_tag_in_place_in_one_undo_step(tmp_path: Path, monkeypatch) -> None:
+    window = _tagged_window(tmp_path, _CHAINED_NAMES)
+    asked = _answer_dialogs(monkeypatch, text="Newer")
+    try:
+        panel = window.trigger_panel
+        panel.set_tag_filter("New")
+        panel.tag_rename_button.click()
+        assert asked["getText"] == [('Rename tag "New"', "2 triggers carry this tag. New tag:", "New")]
+        assert _names(window) == ["[Newer] setup", "[Old] [Newer] x", "[Old] solo", "plain"]
+        record = window.edit_history.records[-1]
+        assert len(window.edit_history.records) == 1 and record.touched == [0, 1]
+        assert panel.current_tag() == "Newer"
+        assert _visible_ids(panel) == [0, 1]
+        window.undo()
+        assert _names(window) == _CHAINED_NAMES
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_closer_in_a_chained_tags_new_name_is_refused(tmp_path: Path, monkeypatch) -> None:
+    from descape import viewer as viewer_module
+
+    warnings = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    window = _tagged_window(tmp_path, ["[Old] [New] x", "plain", "plain", "plain"])
+    try:
+        window.rename_trigger_tag("New", "a]b")
+        assert window.edit_history.records == []
+        assert _names(window)[0] == "[Old] [New] x"
+    finally:
+        window.close()
+    assert warnings == ['Tag "New" cannot be renamed to "a]b": it contains "]", which ends a [] tag in "[Old] [New] x".']
+
+
+@pytest.mark.parametrize("name", ["[Old] (Old) x", "(Old) [Old] x"])
+def test_a_mixed_chain_refusal_names_the_bracket_that_fails(tmp_path: Path, monkeypatch, name: str) -> None:
+    """The refusal names the segment the new tag breaks, not the first one
+    carrying the old tag: "a)b" is fine inside [] and only fails inside ()."""
+    from descape import viewer as viewer_module
+
+    warnings = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    window = _tagged_window(tmp_path, [name, "plain", "plain", "plain"])
+    try:
+        window.rename_trigger_tag("Old", "a)b")
+        assert window.edit_history.records == []
+        assert _names(window)[0] == name
+    finally:
+        window.close()
+    assert warnings == [f'Tag "Old" cannot be renamed to "a)b": it contains ")", which ends a () tag in "{name}".']
+
+
+def test_a_chain_that_fails_with_no_single_bad_segment_gets_the_generic_reason(tmp_path: Path, monkeypatch) -> None:
+    from descape import viewer as viewer_module
+
+    warnings = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    monkeypatch.setattr(viewer_module.trigger_organize, "retag_in_chain", lambda name, old, new: "untagged")
+    window = _tagged_window(tmp_path, ["[Old] x", "plain", "plain", "plain"])
+    try:
+        window.rename_trigger_tag("Old", "New")
+        assert window.edit_history.records == []
+    finally:
+        window.close()
+    assert warnings == ['Tag "Old" cannot be renamed to "New": it would not read back as that tag in "[Old] x".']
+
+
+def test_remove_selected_offers_every_tag_in_the_chain(tmp_path: Path, monkeypatch) -> None:
+    window = _tagged_window(tmp_path, _CHAINED_NAMES)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 1)
+        asked = _answer_item(monkeypatch, text="New")
+        panel.tag_remove_selected_button.click()
+        assert asked == [("Remove tag", "Remove a tag from 1 selected trigger:", ["New", "Old"], False)]
+        assert _names(window) == ["[New] setup", "[Old] x", "[Old] solo", "plain"]
+        assert window.edit_history.records[-1].touched == [1]
+        window.undo()
+        assert _names(window) == _CHAINED_NAMES
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_select_tag_keys_on_the_leading_tag_and_matches_it_anywhere(tmp_path: Path) -> None:
+    window = _tagged_window(tmp_path, _CHAINED_NAMES)
+    try:
+        panel = window.trigger_panel
+        assert not _action(panel.trigger_context_menu(panel._item_for_index[3]), "Select Tag").isEnabled()
+        _action(panel.trigger_context_menu(panel._item_for_index[0]), "Select Tag").trigger()
+        assert panel.selected_trigger_indices() == [0, 1]
+        _action(panel.trigger_context_menu(panel._item_for_index[1]), "Select Tag").trigger()
+        assert panel.selected_trigger_indices() == [1, 2]
+    finally:
+        window.close()
+
+
+def test_a_tag_chained_on_by_a_rename_joins_the_dropdown_at_once(tmp_path: Path) -> None:
+    """The leading tag is unchanged, so only a chain comparison notices."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 1, "[d1] [Fresh] armour split")
+        assert panel.tag_combo.findData("Fresh") >= 0
+        panel.set_tag_filter("Fresh")
+        assert _visible_ids(panel) == [1]
+        window.undo()
+        assert panel.tag_combo.findData("Fresh") < 0
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -3727,6 +4549,17 @@ def test_the_sections_button_lists_every_section_and_hides_when_flat() -> None:
         window.close()
 
 
+def _roomy_tree(panel) -> None:
+    """Give the trigger tree pane 500 px of the vertical split. At the default
+    1500x900 split five button rows leave the tree ~3 rows, so a test that
+    clicks a real row position needs the room to see it."""
+    from PyQt5.QtWidgets import QApplication
+
+    sizes = panel.splitter.sizes()
+    panel.splitter.setSizes([500, max(sum(sizes) - 500, 1)])
+    QApplication.processEvents()
+
+
 def test_clicking_the_synthetic_header_shows_no_trigger() -> None:
     """GH #1: the "(before the first section)" row is not a trigger, so a click
     on it leaves the entry tree empty rather than showing a stale trigger."""
@@ -3737,6 +4570,7 @@ def test_clicking_the_synthetic_header_shows_no_trigger() -> None:
     window = _triggers_window()
     try:
         panel = window.trigger_panel
+        _roomy_tree(panel)
         _rename(panel, 2, "--- Second ---")  # sections: (before) 0, 1 | 2: 3
         panel.select_trigger(1)
         assert panel.entry_tree.topLevelItemCount() > 0, "fixture assumption: a trigger is showing"
@@ -4701,6 +5535,32 @@ def _focus_out_every_row(panel) -> None:
     QApplication.processEvents()
 
 
+def _hint_texts(panel) -> list[str]:
+    from PyQt5.QtWidgets import QLabel
+
+    return [w.text() for w in panel.property_host.findChildren(QLabel) if "Create Objects" in w.text() and w.isVisible()]
+
+
+def test_a_create_object_effect_names_the_create_objects_tool() -> None:
+    """GH #59: the stamping tool works but is hard to find, so the form says so."""
+    window, indices = _create_objects_window()
+    try:
+        panel = window.trigger_panel
+        _select_entries(panel, ("effect", indices[0]))
+        assert _hint_texts(panel) == ["Tip: stamp it with Create Objects."]
+        _select_entries(panel, *[("effect", i) for i in indices])
+        assert len(_hint_texts(panel)) == 1, "a set of Create Objects shares it"
+
+        _select_entries(panel, ("effect", 0))
+        assert _effects0(window)[0].effect_type != _CREATE_OBJECT, "fixture assumption"
+        assert _hint_texts(panel) == []
+        _select_entries(panel, ("effect", 0), ("effect", indices[0]))
+        assert _hint_texts(panel) == [], "only when every selected effect is one"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_differing_field_reads_as_differs_and_a_shared_one_shows_its_value() -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QComboBox
@@ -5000,8 +5860,8 @@ def test_select_same_type_selects_every_entry_of_that_type() -> None:
         panel = window.trigger_panel
         before = _record_count(window)
         menu = panel.entry_context_menu(panel._entry_item_for("effect", indices[1]))
-        action = menu.actions()[0]
-        assert action.text() == "Select Same Type" and action.isEnabled()
+        action = _action(menu, "Select Same Type")
+        assert action.isEnabled()
         action.trigger()
 
         assert panel.selected_entry_refs() == [("effect", i) for i in indices]
@@ -5033,8 +5893,2097 @@ def test_select_same_type_is_offered_only_on_an_entry_row() -> None:
         panel.select_trigger(_ARMOUR_TRIGGER)
         for top in range(3):  # the trigger row and the two group headings
             menu = panel.entry_context_menu(panel.entry_tree.topLevelItem(top))
-            assert not menu.actions()[0].isEnabled()
-        assert panel.entry_context_menu(panel._entry_item_for("effect", 0)).actions()[0].isEnabled()
+            assert not _action(menu, "Select Same Type").isEnabled()
+        assert _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Select Same Type").isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #137: right-click Cut/Copy/Paste on triggers, conditions and effects ----
+
+
+@pytest.fixture
+def _no_menu_exec(monkeypatch):
+    """A stray context-menu event would exec a modal QMenu and hang the run."""
+    from descape import trigger_panel as panel_module
+
+    shown: list = []
+    monkeypatch.setattr(panel_module.QMenu, "exec_", lambda self, *a, **k: shown.append(self))
+    return shown
+
+
+def _right_click(tree, item) -> None:
+    """A real right-button press and release on `item`'s row, near its left
+    edge: an entry row's rect runs far past the 340 px viewport."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    tree.scrollToItem(item)
+    QApplication.processEvents()
+    rect = tree.visualItemRect(item)
+    point = QPoint(rect.left() + 8, rect.center().y())
+    assert tree.viewport().rect().contains(point), (rect, tree.viewport().rect())
+    QTest.mousePress(tree.viewport(), Qt.RightButton, Qt.NoModifier, point)
+    QTest.mouseRelease(tree.viewport(), Qt.RightButton, Qt.NoModifier, point)
+    QApplication.processEvents()
+
+
+@pytest.mark.parametrize("clicked", [3, 1], ids=["unselected row", "member of the selection"])
+def test_gh137_slice0_ab_a_right_click_on_the_trigger_tree(_no_menu_exec, clicked: int) -> None:
+    """Slice 0 a/b: an unselected row becomes the whole selection; a member
+    keeps the selection and only becomes current."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _roomy_tree(panel)
+        _ctrl_select(panel, 0, 1, 2)
+        _right_click(panel.tree, panel._item_for_index[clicked])
+        expected = [3] if clicked == 3 else [0, 1, 2]
+        assert panel.selected_trigger_indices() == expected
+        assert panel.current_trigger_index() == clicked
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("clicked", [3, 1], ids=["unselected row", "member of the selection"])
+def test_gh137_slice0_c_a_right_click_on_the_entry_tree(_no_menu_exec, clicked: int) -> None:
+    window, indices = _create_objects_window()
+    try:
+        panel = window.trigger_panel
+        assert indices == [1, 2, 3]
+        _select_entries(panel, ("effect", 0), ("effect", 1), ("effect", 2))
+        _right_click(panel.entry_tree, panel._entry_item_for("effect", clicked))
+        expected = [("effect", 3)] if clicked == 3 else [("effect", 0), ("effect", 1), ("effect", 2)]
+        assert panel.selected_entry_refs() == expected
+        assert panel.current_entry_ref() == ("effect", clicked)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+_EDITABLE_WIDGETS = ["line edit", "text box", "spin box", "editable combo"]
+
+
+def _editable_widget(window, which: str):
+    """One focused-able editor of each class Edit > Cut/Copy/Paste must defer to.
+    No production combo is editable today, so that one is a stand-in."""
+    from PyQt5.QtWidgets import QComboBox
+
+    panel = window.trigger_panel
+    panel.select_trigger(0)
+    if which == "line edit":
+        return _row_widget(panel, "name")
+    if which == "text box":
+        return _row_widget(panel, "description")
+    if which == "spin box":
+        return _row_widget(panel, "description_order")
+    combo = QComboBox(panel)
+    combo.setEditable(True)
+    combo.addItem("alpha")
+    combo.show()
+    return combo
+
+
+def _editor_text(widget) -> str:
+    from PyQt5.QtWidgets import QComboBox, QPlainTextEdit
+
+    if isinstance(widget, QPlainTextEdit):
+        return widget.toPlainText()
+    if isinstance(widget, QComboBox):
+        return widget.lineEdit().text()
+    return widget.text()
+
+
+def _select_all_text(widget) -> None:
+    from PyQt5.QtWidgets import QComboBox
+
+    (widget.lineEdit() if isinstance(widget, QComboBox) else widget).selectAll()
+
+
+@pytest.mark.parametrize("route", ["keybind", "menu"])
+@pytest.mark.parametrize("which", _EDITABLE_WIDGETS)
+def test_gh137_slice0_g_cut_copy_paste_defer_to_a_focused_editor(which: str, route: str) -> None:
+    """Slice 0 g, a hard requirement (wave 10): with an editable widget
+    focused, Ctrl+X/C/V and Edit > Cut/Copy/Paste act on its text and never
+    on the triggers."""
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    clipboard = QApplication.clipboard()
+    try:
+        widget = _editable_widget(window, which)
+        QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+        widget.setFocus()
+        QApplication.processEvents()
+        focused = QApplication.focusWidget()
+        assert focused is widget or widget.isAncestorOf(focused), focused
+
+        def press(verb: str) -> None:
+            if route == "keybind":
+                key = {"cut": Qt.Key_X, "copy": Qt.Key_C, "paste": Qt.Key_V}[verb]
+                QTest.keyClick(QApplication.focusWidget(), key, Qt.ControlModifier)
+            else:
+                action = getattr(window, f"{verb}_action")
+                assert action.isEnabled(), verb
+                action.trigger()
+            QApplication.processEvents()
+
+        baseline = _editor_text(widget)
+        assert baseline, "the editor starts with some text to copy"
+        clipboard.setText("")
+        _select_all_text(widget)
+        press("copy")
+        assert clipboard.text() == baseline
+        assert window._trigger_clipboard is None, "Copy took the triggers"
+
+        window.copy_triggers()  # a held block, so a stray trigger Paste would show
+        count = len(window.trigger_panel._manager().triggers)
+        clipboard.setText("42")
+        _select_all_text(widget)
+        press("paste")
+        assert _editor_text(widget) == "42"
+        assert len(window.trigger_panel._manager().triggers) == count, "Paste pasted triggers"
+
+        _select_all_text(widget)
+        press("cut")
+        assert _editor_text(widget) == ""
+        assert clipboard.text() == "42"
+        assert len(window.trigger_panel._manager().triggers) == count, "Cut cut triggers"
+    finally:
+        QTest.keyRelease(window, Qt.Key_Control)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _texts(menu) -> list[str]:
+    return [action.text() for action in menu.actions()]
+
+
+def _status(window) -> str:
+    return window.status_log.toPlainText()
+
+
+def test_gh137_the_trigger_menu_offers_cut_copy_paste_first() -> None:
+    import dataclasses
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(1)
+        menu = panel.trigger_context_menu(panel._item_for_index[1])
+        assert _texts(menu) == ["Cut", "Copy", "Paste", "", "Select Section", "Select Tag"]
+        assert menu.toolTipsVisible()
+        assert _action(menu, "Cut").isEnabled() and _action(menu, "Copy").isEnabled()
+        assert not _action(menu, "Paste").isEnabled(), "nothing to paste yet"
+
+        panel.tree.clearSelection()
+        menu = panel.trigger_context_menu(panel._item_for_index[1])
+        assert not _action(menu, "Cut").isEnabled() and not _action(menu, "Copy").isEnabled()
+
+        panel.select_trigger(0)
+        _action(panel.trigger_context_menu(panel._item_for_index[0]), "Copy").trigger()
+        assert [t.name for t in window._trigger_clipboard.triggers] == ["Fixture: setup"]
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits, "Copy records nothing"
+        paste = _action(panel.trigger_context_menu(panel._item_for_index[1]), "Paste")
+        assert paste.isEnabled() and paste.toolTip() == (
+            "Paste the copied triggers below this one, or below a collapsed section's end"
+        )
+
+        window._trigger_clipboard = dataclasses.replace(window._trigger_clipboard, scenario_version="1.56")
+        window._sync_trigger_clipboard_state()
+        paste = _action(panel.trigger_context_menu(panel._item_for_index[1]), "Paste")
+        assert paste.toolTip() == "Copied from a 1.56 scenario; this one is 1.58."
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task214_edit_menu_trigger_clipboard_tips_say_a_collapsed_section_counts_whole() -> None:
+    """Edit > Cut/Copy/Paste Triggers explain GH #134's collapsed-section rule like the panel's own controls."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        window.copy_triggers()
+        window._update_clipboard_actions()
+        assert "(a collapsed section cuts whole)" in window.cut_action.toolTip()
+        assert "(a collapsed section copies whole)" in window.copy_action.toolTip()
+        assert window.paste_action.toolTip().endswith(", or below a collapsed section's end")
+        assert panel.trigger_paste_button.toolTip() == panel._PASTE_TOOLTIP
+        assert "below a collapsed section's end" in panel._PASTE_TOOLTIP
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_menu_paste_lands_below_the_clicked_row_not_the_current_one() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        window.copy_triggers()
+        panel.select_trigger(3)
+        _action(panel.trigger_context_menu(panel._item_for_index[1]), "Paste").trigger()
+        assert _order(window) == [0, 1, 4, 2, 3]
+        assert panel.selected_trigger_indices() == [4]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_paste_is_disabled_on_the_synthetic_leading_header() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _divided_window()
+    try:
+        panel = window.trigger_panel
+        window.copy_triggers()
+        synthetic = panel.tree.topLevelItem(0)
+        assert synthetic.data(0, Qt.UserRole) is None
+        assert not _action(panel.trigger_context_menu(synthetic), "Paste").isEnabled()
+        assert _action(panel.trigger_context_menu(panel._item_for_index[2]), "Paste").isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_cut_is_one_record_and_its_paste_keeps_the_name_of_a_divider() -> None:
+    """The divider case of decision 2: a cut header still heads a section once
+    pasted. An undo of the cut leaves the inbound link on the original, so
+    the paste after it leaves that link alone and says so."""
+    from descape.trigger_organize import is_divider
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 0, "--- Setup ---")
+        panel.select_trigger(0)
+        records = _record_count(window)
+        _action(panel.trigger_context_menu(panel._item_for_index[0]), "Cut").trigger()
+        manager = panel._manager()
+        assert [t.name for t in manager.triggers] == ["Fixture: armour split", "Fixture: references", "Fixture: variable"]
+        assert _record_count(window) == records + 1
+        assert window.edit_history.records[-1].label == "Cut trigger 0"
+        assert window._trigger_clipboard.from_cut
+        assert "1 trigger link into the cut triggers will reconnect on Paste." in _status(window)
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[1])] == [-1, 0]
+        assert panel.selected_trigger_indices() == [0], "lands where the cut row was"
+
+        window.undo()
+        manager = panel._manager()
+        assert len(manager.triggers) == 4
+        assert window._trigger_clipboard is not None, "the clipboard keeps the block"
+        window.status_log.clear()
+        panel.select_trigger(3)
+        window.paste_triggers()
+        manager = panel._manager()
+        assert manager.triggers[4].name == "--- Setup ---" and is_divider(manager.triggers[4].name)
+        assert panel._grouped and panel._item_for_index[4].parent() is None, "it heads its own section"
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[2])] == [0, 1]
+        assert "left 1 trigger link alone" in _status(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_cut_then_paste_relinks_and_one_undo_takes_both_back() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        window.cut_triggers()
+        panel.select_trigger(2)
+        records = _record_count(window)
+        window.paste_triggers()
+        manager = panel._manager()
+        assert [t.name for t in manager.triggers][-1] == "Fixture: setup", "no (copy) suffix"
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[1])] == [3, 0]
+        assert "Pasted 1 trigger: reconnected 1 trigger link into them." in _status(window)
+        assert _record_count(window) == records + 1, "the relink rides in the paste's record"
+
+        window.undo()
+        manager = panel._manager()
+        assert len(manager.triggers) == 3
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[1])] == [-1, 0]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_cut_undo_then_paste_leaves_the_restored_link_alone() -> None:
+    """The undo puts the inbound link back on the original, so the cut
+    block's paste must not re-point it at the copy, and says it left it."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        window.cut_triggers()
+        window.undo()
+        window.status_log.clear()
+        window.paste_triggers()
+        manager = panel._manager()
+        assert manager.triggers[4].name == "Fixture: setup"
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[2])] == [0, 1]
+        status = _status(window)
+        assert "left 1 trigger link alone (changed or removed since the cut)" in status, status
+        assert "reconnected" not in status
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+_CLEARED_SINCE_COPY = "cleared 1 trigger link (target changed or removed since the copy)"
+
+
+@pytest.mark.parametrize("edited", [False, True], ids=["untouched target", "target edited and undone"])
+def test_gh137_a_same_document_trigger_paste_says_it_cleared_a_link(edited: bool) -> None:
+    """Trap 5: an undo swaps in a deep copy of the target, so the copied
+    block's link no longer resolves and lands on -1. That must not be silent."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(2)
+        window.copy_triggers()
+        if edited:
+            _rename(panel, 0, "Fixture: renamed")
+            window.undo()
+        window.status_log.clear()
+        window.paste_triggers()
+        manager = panel._manager()
+        assert manager.triggers[4].name == "Fixture: references (copy)"
+        refs = [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[4])]
+        assert refs == ([-1, 1] if edited else [0, 1])
+        status = _status(window)
+        if edited:
+            assert f"Pasted 1 trigger: {_CLEARED_SINCE_COPY}." in status, status
+        else:
+            assert "cleared" not in status, status
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("edited", [False, True], ids=["untouched target", "target edited and undone"])
+def test_gh137_a_same_document_entry_paste_says_it_cleared_a_link(edited: bool) -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(2)
+        _select_entries(panel, ("effect", 0))
+        window.copy_entries_to_clipboard()
+        if edited:
+            _rename(panel, 0, "Fixture: renamed")
+            window.undo()
+        panel.select_trigger(3)
+        window.status_log.clear()
+        window.paste_entries()
+        pasted = panel._manager().triggers[3].effects[-1]
+        assert pasted.trigger_id == (-1 if edited else 0)
+        status = _status(window)
+        if edited:
+            assert f"Pasted 1 effect: {_CLEARED_SINCE_COPY}." in status, status
+        else:
+            assert "cleared" not in status, status
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_edit_cut_and_ctrl_x_cut_the_selected_triggers() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        panel.select_trigger(1)
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        assert window.cut_action.text() == "Cu&t Triggers" and window.cut_action.isEnabled()
+        QTest.keyClick(panel.tree, Qt.Key_X, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert [t.name for t in panel._manager().triggers] == [
+            "Fixture: setup", "Fixture: references", "Fixture: variable",
+        ]
+        assert window._trigger_clipboard.from_cut
+
+        panel.select_trigger(2)
+        window.cut_action.trigger()
+        assert len(panel._manager().triggers) == 2
+        assert panel.selected_trigger_indices() == [1], "the last row cut lands on the one above"
+
+        window.mode_combo.setCurrentText("Terrain")
+        assert window.cut_action.text() == "Cu&t Triggers"
+        assert not window.cut_action.isEnabled(), "there is no Cut Region"
+    finally:
+        QTest.keyRelease(window, Qt.Key_Control)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_a_failed_cut_leaves_the_clipboard_alone(monkeypatch) -> None:
+    """_trigger_edit reports a raised body instead of re-raising, so the block
+    is committed only once the triggers are really gone."""
+    from descape import viewer as viewer_module
+
+    warnings = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        manager = window._ensure_trigger_edits().manager()
+
+        def refuse(_indices):
+            raise RuntimeError("refused")
+
+        monkeypatch.setattr(manager, "remove_triggers", refuse)
+        window.cut_triggers()
+        assert len(warnings) == 1
+        assert window._trigger_clipboard is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("legacy", [True, False], ids=["legacy order", "display order"])
+def test_gh137_pasting_a_cut_block_on_a_legacy_order_file_says_it_runs_last(legacy: bool) -> None:
+    from types import SimpleNamespace
+
+    from descape.trigger_model import exec_order_value
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        assert exec_order_value(window.scenario) == 0
+        if legacy:
+            # Map Options' own route: a pending flag counts, as the status line reads it.
+            window._set_exec_order(SimpleNamespace(label="execution order"), 1)
+            assert window.trigger_edits.exec_order == 1
+        panel.select_trigger(0)
+        window.cut_triggers()
+        window.paste_triggers()
+        said = "the pasted triggers run last wherever they are listed" in _status(window)
+        assert said is legacy
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_a_focused_editor_retitles_edit_cut_copy_paste() -> None:
+    """Focus moves retitle the three, a tree-to-editor move included, which
+    _on_app_focus_changed's text-box early return used to swallow."""
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        name = _row_widget(panel, "name")
+        QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        assert [a.text() for a in (window.cut_action, window.copy_action, window.paste_action)] == [
+            "Cu&t Triggers", "&Copy Triggers", "&Paste Triggers",
+        ]
+        assert not window.paste_action.isEnabled(), "no triggers to paste"
+
+        name.setFocus()
+        QApplication.processEvents()
+        assert [a.text() for a in (window.cut_action, window.copy_action, window.paste_action)] == [
+            "Cu&t", "&Copy", "&Paste",
+        ]
+        assert all(a.isEnabled() for a in (window.cut_action, window.copy_action, window.paste_action))
+        assert window.cut_action.toolTip() == "Cut the selected text"
+
+        name.setReadOnly(True)
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        name.setFocus()
+        QApplication.processEvents()
+        assert window.copy_action.isEnabled()
+        assert not window.cut_action.isEnabled() and not window.paste_action.isEnabled(), "read-only text"
+
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        assert window.cut_action.text() == "Cu&t Triggers"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# The fixture's "references" (2): conditions [10], effects [8, 9];
+# "variable" (3): conditions [10, 5, 6, 6], effects [56, 19, 11, 14, 15, 12, 19].
+
+
+def _types_of(window, trigger_index: int, kind: str = "effect") -> list[int]:
+    trigger = window.trigger_panel._manager().triggers[trigger_index]
+    return [getattr(e, f"{kind}_type") for e in getattr(trigger, f"{kind}s")]
+
+
+def test_gh137_the_entry_menu_offers_cut_copy_paste_with_its_own_clipboard() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 1), ("effect", 2))
+        menu = panel.entry_context_menu(panel._entry_item_for("effect", 1))
+        assert _texts(menu) == ["Cut", "Copy", "Paste", "", "Select Same Type"]
+        assert menu.toolTipsVisible()
+        assert _action(menu, "Cut").isEnabled() and _action(menu, "Copy").isEnabled()
+        assert not _action(menu, "Paste").isEnabled(), "nothing to paste yet"
+
+        _action(menu, "Copy").trigger()
+        assert window._entry_clipboard.label == "2 effects"
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits, "Copy records nothing"
+        assert window._trigger_clipboard is None, "two slots: the trigger one is untouched"
+        assert not panel.trigger_paste_button.isEnabled(), "the trigger tree's Paste ignores an entry block"
+        assert not _action(panel.trigger_context_menu(panel._item_for_index[3]), "Paste").isEnabled()
+
+        panel.select_trigger(2)
+        menu = panel.entry_context_menu(panel.entry_tree.topLevelItem(0))
+        assert not _action(menu, "Cut").isEnabled(), "no condition or effect selected"
+        assert _action(menu, "Paste").isEnabled()
+        panel.select_trigger(0)
+        window.copy_triggers()
+        assert window._entry_clipboard.label == "2 effects", "and copying triggers keeps the entry block"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_entry_paste_lands_below_the_clicked_effect_of_another_trigger() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 1), ("effect", 2))
+        window.copy_entries_to_clipboard()
+        panel.select_trigger(2)
+        records = _record_count(window)
+        _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste").trigger()
+        assert _types_of(window, 2) == [8, 19, 11, 9]
+        assert _record_count(window) == records + 1
+        assert window.edit_history.records[-1].label == "Paste 2 effects"
+        assert panel.selected_entry_refs() == [("effect", 1), ("effect", 2)]
+
+        window.undo()
+        assert _types_of(window, 2) == [8, 9]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("row", [0, 1, 2], ids=["trigger row", "conditions heading", "effects heading"])
+def test_gh137_entry_paste_on_a_non_entry_row_appends_to_each_list(row: int) -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("condition", 1), ("effect", 0))
+        window.copy_entries_to_clipboard()
+        panel.select_trigger(2)
+        _action(panel.entry_context_menu(panel.entry_tree.topLevelItem(row)), "Paste").trigger()
+        assert _types_of(window, 2, "condition") == [10, 5]
+        assert _types_of(window, 2) == [8, 9, 56]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_cut_entries_is_one_record_and_pastes_into_another_trigger() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("condition", 1), ("effect", 0))
+        records = _record_count(window)
+        _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Cut").trigger()
+        assert (len(_types_of(window, 3, "condition")), len(_types_of(window, 3))) == (3, 6)
+        assert _record_count(window) == records + 1
+        assert window.edit_history.records[-1].label == "Cut 2 entries"
+        assert window._entry_clipboard.label == "1 condition and 1 effect"
+
+        window.undo()
+        assert (len(_types_of(window, 3, "condition")), len(_types_of(window, 3))) == (4, 7)
+        assert window._entry_clipboard is not None, "the clipboard keeps the block"
+        panel.select_trigger(0)
+        window.paste_entries()
+        assert _types_of(window, 0, "condition") == [10, 5]
+        assert _types_of(window, 0) == [20, 56]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_a_refused_entry_paste_says_why_and_records_nothing() -> None:
+    import dataclasses
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 0))
+        window.copy_entries_to_clipboard()
+        window._entry_clipboard = dataclasses.replace(window._entry_clipboard, scenario_version="1.56")
+        window._sync_entry_clipboard_state()
+        expected = "Copied from a 1.56 scenario; this one is 1.58."
+        paste = _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste")
+        assert paste.isEnabled() and paste.toolTip() == expected
+        records = _record_count(window)
+        paste.trigger()
+        assert f"Cannot paste these conditions/effects: {expected}" in _status(window)
+        assert _record_count(window) == records
+        assert len(_types_of(window, 3)) == 7
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_an_entry_paste_into_another_file_reports_and_undoes_in_one_step(tmp_path: Path) -> None:
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, *[("condition", i) for i in range(4)], *[("effect", i) for i in range(7)])
+        window.copy_entries_to_clipboard()
+        window.edit_history.mark_saved()
+        window.new_map()
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_structural_edit("new", [])
+        panel.select_trigger(0)
+        window.paste_entries()
+        assert len(_types_of(window, 0)) == 7
+        assert (
+            "Pasted 4 conditions and 7 effects from another scenario: cleared 5 unit references, named 1 variable."
+            in _status(window)
+        ), _status(window)
+        manager = panel._manager()
+        assert [(v.variable_id, v.name) for v in manager.variables] == [(0, "fixture_var")]
+        out = tmp_path / "pasted.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        reloaded_scenario = load_map_and_units(out)
+        reloaded = parse_triggers(reloaded_scenario)
+        assert len(reloaded.triggers[0].effects) == 7
+        assert [(v.variable_id, v.name) for v in reloaded.variables] == [(0, "fixture_var")], "the name is saved"
+
+        window.undo()
+        manager = panel._manager()
+        assert (len(manager.triggers[0].effects), len(manager.variables)) == (0, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_a_failed_entry_cut_leaves_the_clipboard_alone(monkeypatch) -> None:
+    from descape import viewer as viewer_module
+
+    warnings = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 0))
+        trigger = window._ensure_trigger_edits().manager().triggers[3]
+
+        def refuse(**_kwargs):
+            raise RuntimeError("refused")
+
+        monkeypatch.setattr(trigger, "remove_effect", refuse)
+        window.cut_entries()
+        assert len(warnings) == 1
+        assert window._entry_clipboard is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_a_repopulate_pushes_the_entry_paste_refusal() -> None:
+    import dataclasses
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 0))
+        window.copy_entries_to_clipboard()
+        window._entry_clipboard = dataclasses.replace(window._entry_clipboard, scenario_version="1.56")
+        window.mode_combo.setCurrentText("Terrain")
+        window.mode_combo.setCurrentText("Triggers")
+        panel.select_trigger(3)
+        paste = _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste")
+        assert paste.toolTip() == "Copied from a 1.56 scenario; this one is 1.58."
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _active_triggers_window():
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    window.activateWindow()
+    QApplication.setActiveWindow(window)
+    QApplication.processEvents()
+    assert window.isActiveWindow()
+    return window
+
+
+def _focus_on(widget) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    widget.setFocus()
+    QApplication.processEvents()
+    assert widget.hasFocus()
+
+
+def _edit_texts(window) -> list[str]:
+    return [a.text() for a in (window.cut_action, window.copy_action, window.paste_action)]
+
+
+def test_gh137_edit_cut_copy_paste_follow_the_focused_tree() -> None:
+    """A tree-to-tree focus move retitles the three, and an entry selection
+    change re-gates them while the entry tree keeps focus."""
+    window = _active_triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _focus_on(panel.entry_tree)
+        assert _edit_texts(window) == ["Cu&t Conditions/Effects", "&Copy Conditions/Effects", "&Paste Conditions/Effects"]
+        _select_entries(panel)
+        panel.entry_tree.clearSelection()
+        assert not window.cut_action.isEnabled() and not window.paste_action.isEnabled()
+        _select_entries(panel, ("effect", 1))
+        assert window.cut_action.isEnabled() and window.copy_action.isEnabled()
+
+        _focus_on(panel.tree)
+        assert _edit_texts(window) == ["Cu&t Triggers", "&Copy Triggers", "&Paste Triggers"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_two_row_entry_selection_pops_up_no_discarded_form_row() -> None:
+    """select_entries() of two rows builds the form twice in one gesture. The
+    first form's rows still have Qt's queued show pending when they are
+    discarded; unhidden, it mapped one as a top-level window that took focus."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _active_triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _focus_on(panel.entry_tree)
+        panel.select_entries([("effect", 1), ("effect", 2)])
+        QApplication.processEvents()
+        strays = [
+            w for w in QApplication.topLevelWidgets() if w.isVisible() and w is not window and not window.isAncestorOf(w)
+        ]
+        assert strays == []
+        assert panel.entry_tree.hasFocus()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_ctrl_x_c_v_on_the_entry_tree_act_on_conditions_and_effects() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _active_triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _focus_on(panel.entry_tree)
+        _select_entries(panel, ("effect", 1), ("effect", 2))
+        QTest.keyClick(panel.entry_tree, Qt.Key_C, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert window._entry_clipboard.label == "2 effects"
+        assert window._trigger_clipboard is None
+
+        panel.select_trigger(2)
+        _focus_on(panel.entry_tree)
+        _select_entries(panel, ("effect", 0))
+        QTest.keyClick(panel.entry_tree, Qt.Key_V, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert _types_of(window, 2) == [8, 19, 11, 9], "below the current effect"
+        assert len(panel._manager().triggers) == 4, "no trigger was pasted"
+        assert panel.entry_tree.hasFocus(), "selecting the two pasted rows keeps the focus"
+
+        _select_entries(panel, ("effect", 3))
+        QTest.keyClick(panel.entry_tree, Qt.Key_X, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert _types_of(window, 2) == [8, 19, 11]
+        assert window._entry_clipboard.label == "1 effect"
+        assert len(panel._manager().triggers) == 4, "no trigger was cut"
+    finally:
+        QTest.keyRelease(window, Qt.Key_Control)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("opener", ["new", "retype"])
+def test_gh137_edit_cut_copy_paste_stay_off_while_the_type_picker_is_up(opener: str) -> None:
+    """The right-click menus' gate: with New or Type… open on trigger T, a
+    click on T's row and Ctrl+X must not cut T out from under the picker."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _active_triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        window.copy_triggers()  # a held block, so a stray Paste would show
+        if opener == "retype":
+            _select_entries(panel, ("effect", 0))
+        panel._request_entry_op(opener)
+        QApplication.processEvents()
+        assert panel.picker_showing()
+        item = panel._item_for_index[3]
+        panel.tree.scrollToItem(item)
+        rect = panel.tree.visualItemRect(item)
+        QTest.mouseClick(panel.tree.viewport(), Qt.LeftButton, Qt.NoModifier, QPoint(rect.left() + 8, rect.center().y()))
+        QApplication.processEvents()
+        assert panel.picker_showing() and panel.tree.hasFocus(), "the click leaves the picker up"
+        assert _edit_texts(window) == ["Cu&t Triggers", "&Copy Triggers", "&Paste Triggers"]
+        assert not any(a.isEnabled() for a in (window.cut_action, window.copy_action, window.paste_action))
+
+        for name, key in (("X", Qt.Key_X), ("V", Qt.Key_V)):
+            QTest.keyClick(panel.tree, key, Qt.ControlModifier)
+            QApplication.processEvents()
+            assert len(panel._manager().triggers) == 4, f"Ctrl+{name} acted with the picker up"
+            assert panel.picker_showing()
+
+        panel._close_picker()
+        QApplication.processEvents()
+        assert window.cut_action.isEnabled() and window.paste_action.isEnabled(), "closing the picker re-gates them"
+    finally:
+        QTest.keyRelease(window, Qt.Key_Control)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #140: the Display Instructions preview ----------------------------------
+
+# The fixture's one Display Instructions effect: trigger 0 "Fixture: setup", effect 0.
+_SETUP_TRIGGER = 0
+
+
+def _instruction_window(**fields):
+    """The trigger window with the fixture's Display Instructions effect
+    selected, its entry fields first set to `fields` (pre-model, in-test: the
+    fixture is not regenerated)."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    panel = window.trigger_panel
+    panel.select_trigger(_SETUP_TRIGGER)
+    entry = panel._manager().triggers[_SETUP_TRIGGER].effects[0]
+    assert entry.effect_type == _DISPLAY_INSTRUCTIONS
+    for name, value in fields.items():
+        setattr(entry, name, value)
+    panel.refresh_entries(select=("effect", 0))
+    QApplication.processEvents()
+    return window
+
+
+def _preview(panel):
+    preview = panel._instruction_preview
+    assert preview is not None, "no preview for a single Display Instructions effect"
+    return preview
+
+
+def _live_previews(panel) -> list:
+    from descape.instruction_preview import InstructionPreview
+
+    return panel.property_host.findChildren(InstructionPreview)
+
+
+def _drawn_third(preview) -> int:
+    """Which third of the mock screen the box's centre sits in, 0 top to 2 bottom."""
+    screen, box = preview.screen, preview.box
+    assert screen.height() > 0 and box.height() > 0, "the preview was never laid out"
+    return min(2, box.geometry().center().y() * 3 // screen.height())
+
+
+def test_a_single_display_instructions_effect_gets_a_preview_under_its_form() -> None:
+    from PyQt5.QtWidgets import QFormLayout
+
+    window = _instruction_window()
+    try:
+        panel = window.trigger_panel
+        preview = _preview(panel)
+        assert _live_previews(panel) == [preview]
+        form = panel.property_form
+        last = form.itemAt(form.rowCount() - 1, QFormLayout.SpanningRole)
+        assert last is not None and last.widget() is preview, "a full-width row below the fields"
+        assert "Fixture scenario loaded." in preview.text_label.text()
+        assert preview.drawn_position == 0
+        assert _drawn_third(preview) == 0
+        assert window.trigger_edits is None
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_no_preview_for_a_trigger_a_condition_another_effect_or_a_multi_select() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(_SETUP_TRIGGER)
+        QApplication.processEvents()
+        assert panel._instruction_preview is None, "the trigger row"
+        panel.refresh_entries(select=("condition", 0))
+        QApplication.processEvents()
+        assert panel._instruction_preview is None, "a condition"
+        _select_armour_split_effect(panel, 0)
+        QApplication.processEvents()
+        assert panel._instruction_preview is None, "a Modify Attribute effect"
+        assert _live_previews(panel) == []
+
+        added = _plant_prose_effect(window, "second")
+        assert panel._instruction_preview is not None
+        _select_entries(panel, ("effect", 0), ("effect", added))
+        assert len(panel._rows) > 0, "the two share a form"
+        assert panel._instruction_preview is None, "two Display Instructions effects"
+        assert _live_previews(panel) == []
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(("stored", "third", "note"), [(0, 0, ""), (1, 1, ""), (2, 2, ""), (-1, 0, "unset, drawn as TOP")])
+def test_the_box_sits_in_its_positions_third(stored: int, third: int, note: str) -> None:
+    window = _instruction_window(instruction_panel_position=stored)
+    try:
+        preview = _preview(window.trigger_panel)
+        assert preview.drawn_position == third
+        assert _drawn_third(preview) == third
+        if note:
+            assert note in preview.note_label.text()
+        else:
+            assert "unset" not in preview.note_label.text()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_typing_in_the_message_updates_the_preview_but_writes_nothing() -> None:
+    """Observe-only: per keystroke the preview follows, and nothing reaches
+    _changed() until the box's own focus-out commit, exactly as before."""
+    from descape.message_markup import TEXT_COLORS
+
+    window = _instruction_window()
+    try:
+        panel = window.trigger_panel
+        preview = _preview(panel)
+        entry = panel._manager().triggers[_SETUP_TRIGGER].effects[0]
+        _row_widget(panel, "message").setPlainText("<BLUE>Scout: <GREY>over here & <fixture_var>")
+        html = preview.text_label.text()
+        assert "Scout: " in html and "over here &amp; " in html
+        assert "color:#{:02x}{:02x}{:02x}".format(*TEXT_COLORS["BLUE"]) in html
+        assert "color:#{:02x}{:02x}{:02x}".format(*TEXT_COLORS["GREY"]) in html
+        assert "[fixture_var]" in html, "a trigger variable name is a placeholder"
+        _row_widget(panel, "sound_name").setText("Play_Technology_Researched")
+        assert "Sound: Play_Technology_Researched" in preview.footer_label.text()
+
+        assert entry.message == "Fixture scenario loaded."
+        assert entry.sound_name == ""
+        assert window.trigger_edits is None
+        assert not window.edit_history.is_dirty
+        assert _record_count(window) == 0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_field_edit_records_only_its_own_undo_step_and_the_preview_follows() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _instruction_window()
+    try:
+        panel = window.trigger_panel
+        combo = _row_widget(panel, "instruction_panel_position")
+        combo.setCurrentIndex(combo.findData(2))
+        QApplication.processEvents()
+        assert _record_count(window) == 1, "the position edit, and nothing from the preview"
+        preview = _preview(panel)
+        assert preview.drawn_position == 2
+        assert _drawn_third(preview) == 2
+
+        _row_widget(panel, "play_sound").setChecked(True)
+        QApplication.processEvents()
+        assert _record_count(window) == 2
+        assert "(plays)" in _preview(panel).footer_label.text()
+        assert _live_previews(panel) == [panel._instruction_preview]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_reselecting_leaves_no_stale_preview() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _instruction_window()
+    try:
+        panel = window.trigger_panel
+        first = _preview(panel)
+        _select_armour_split_effect(panel, 0)
+        QApplication.processEvents()
+        assert panel._instruction_preview is None, "the reference outlived its form"
+        assert _live_previews(panel) == []
+        assert first.parent() is None, "the old preview is unparented with its row"
+
+        panel.select_trigger(_SETUP_TRIGGER)
+        panel.refresh_entries(select=("effect", 0))
+        QApplication.processEvents()
+        assert _live_previews(panel) == [panel._instruction_preview]
+        assert panel._instruction_preview is not first
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("play_sound", "words"), [(-1, "(default)"), (0, "(off)"), (1, "(plays)")], ids=["default", "off", "plays"]
+)
+def test_the_footer_reads_play_sound_from_the_entry(play_sound: int, words: str) -> None:
+    """The checkbox shows -1 and 1 alike as checked, so the entry decides."""
+    window = _instruction_window(play_sound=play_sound, sound_name="Play_66433", display_time=7)
+    try:
+        footer = _preview(window.trigger_panel).footer_label.text()
+        assert "Sound: Play_66433" in footer and words in footer
+        assert "Shows for 7 s" in footer
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(("display_time", "words"), [(0, "Shows for 0 s"), (-1, "Shows for (unset)")])
+def test_the_footer_shows_zero_and_unset_display_times(display_time: int, words: str) -> None:
+    window = _instruction_window(display_time=display_time)
+    try:
+        footer = _preview(window.trigger_panel).footer_label.text()
+        assert words in footer
+        assert "Sound: none" in footer
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_with_no_install_a_string_id_is_not_available_and_the_icon_falls_back() -> None:
+    from descape import asset_source
+
+    assert asset_source.get_install_path() is None
+    window = _instruction_window(string_id=60014, object_list_unit_id=448)
+    try:
+        preview = _preview(window.trigger_panel)
+        assert "language string #60014 (not available)" in preview.note_label.text()
+        assert preview.icon_source in ("sprite", None)
+        if preview.icon_source is None:
+            assert preview.icon_label.pixmap() is None or preview.icon_label.pixmap().isNull()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _preview_install(tmp_path: Path) -> Path:
+    """A fake install: one string, one unit icon (Scout Cavalry's 64) and a Blue override."""
+    import json
+
+    from PIL import Image
+
+    install = tmp_path / "install"
+    strings = install / "resources" / "en" / "strings" / "key-value"
+    strings.mkdir(parents=True)
+    (strings / "key-value-strings-utf8.txt").write_text('60014 "<BLUE>From the table"\n', encoding="utf-8")
+    units = install / "widgetui" / "textures" / "ingame" / "units"
+    units.mkdir(parents=True)
+    Image.new("RGBA", (16, 16), (200, 10, 10, 255)).save(units / "064_50730.DDS", format="DDS")
+    colors = {"Blue": {"Text": [1, 2, 3, 255]}}
+    (install / "widgetui" / "UIColors.json").write_text(json.dumps({"ColorTables": colors}))
+    return install
+
+
+def test_an_install_supplies_the_string_the_icon_and_the_colours(tmp_path: Path) -> None:
+    from descape import asset_source
+
+    asset_source.set_install_path_override(_preview_install(tmp_path))
+    try:
+        window = _instruction_window(string_id=60014, object_list_unit_id=448)
+        try:
+            preview = _preview(window.trigger_panel)
+            assert "From the table" in preview.text_label.text(), "the string replaces the message"
+            assert "Fixture scenario loaded." not in preview.text_label.text()
+            assert "color:#010203" in preview.text_label.text(), "the install's Blue"
+            assert "language string #60014" in preview.note_label.text()
+            assert "not available" not in preview.note_label.text()
+            assert preview.icon_source == "icon"
+            assert not preview.icon_label.pixmap().isNull()
+        finally:
+            window.edit_history.mark_saved()
+            window.close()
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+def test_the_icon_frame_takes_the_source_players_colour_or_the_leading_tag_colour() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.message_markup import TEXT_COLORS
+
+    window = _instruction_window(message="<BLUE>tagged", use_tag_color_for_icon=-1)
+    try:
+        panel = window.trigger_panel
+        colors = window.scenario.player_colors
+        assert colors is not None
+        assert _preview(panel).tint == tuple(colors[1]), "source player ONE's colour"
+
+        panel.refresh_player_labels(panel._player_labels, None)
+        QApplication.processEvents()
+        assert _preview(panel).tint is None, "no colours, no tint"
+
+        entry = panel._manager().triggers[_SETUP_TRIGGER].effects[0]
+        entry.use_tag_color_for_icon = 1
+        panel.refresh_player_labels(panel._player_labels, colors)
+        panel.refresh_entries(select=("effect", 0))
+        QApplication.processEvents()
+        assert _preview(panel).tint == TEXT_COLORS["BLUE"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.font_sensitive
+def test_a_long_message_grows_the_preview_without_overlap_or_widening() -> None:
+    """A box taller than a third grows the screen rather than clipping, a long
+    unbreakable word cannot widen the pane, and typing re-fits the form."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.trigger_panel import TriggerPanel
+
+    def check(panel) -> None:
+        QApplication.processEvents()
+        preview = _preview(panel)
+        _assert_form_rows_do_not_overlap(panel.property_form)
+        assert preview.minimumSizeHint().width() <= TriggerPanel.MIN_USEFUL_WIDTH
+        assert not panel.property_area.horizontalScrollBar().isVisible()
+        box, screen = preview.box, preview.screen
+        assert box.height() >= box.heightForWidth(box.width()), "the box clips its text"
+        assert box.geometry().top() >= 0
+        assert box.geometry().bottom() < screen.height()
+        assert _drawn_third(preview) == 2
+        assert panel.property_host.height() >= panel.property_form.heightForWidth(panel.property_host.width())
+
+    window = _instruction_window(message="<BLUE>" + "W" * 120, instruction_panel_position=2)
+    try:
+        panel = window.trigger_panel
+        check(panel)
+        before = _preview(panel).height()
+        _row_widget(panel, "message").setPlainText("<GREY>" + "A long line of narration. " * 30)
+        check(panel)
+        assert _preview(panel).height() > before, "the screen grew with its box"
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_preview_takes_no_focus() -> None:
+    """A focusable preview child would pull focus off the message box and
+    fire its focus-out commit."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QWidget
+
+    window = _instruction_window()
+    try:
+        preview = _preview(window.trigger_panel)
+        for widget in [preview, *preview.findChildren(QWidget)]:
+            assert widget.focusPolicy() == Qt.NoFocus, widget
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #134: a collapsed section header counts as its whole section ------------
+
+
+def _ab_window(collapse_a: bool = True):
+    """The trigger fixture as two sections, --- A --- 0: 1 | --- B --- 2: 3,
+    renamed through the widget, with A collapsed by default."""
+    window = _triggers_window()
+    panel = window.trigger_panel
+    _rename(panel, 0, "--- A ---")
+    _rename(panel, 2, "--- B ---")
+    assert [s.header_index for s in panel._sections] == [0, 2], "fixture assumption"
+    panel._item_for_index[0].setExpanded(not collapse_a)
+    return window
+
+
+def _display_names(window) -> list[str]:
+    manager = window.trigger_panel._manager()
+    return [manager.triggers[i].name for i in manager.trigger_display_order]
+
+
+def _section_names(window) -> list[tuple[str, list[str]]]:
+    panel = window.trigger_panel
+    triggers = panel._manager().triggers
+    return [(triggers[s.header_index].name, [triggers[m].name for m in s.member_indices]) for s in panel._sections]
+
+
+def test_gh134_duplicating_a_collapsed_section_copies_it_whole_after_itself() -> None:
+    window = _ab_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        assert not panel._item_for_index[0].isExpanded(), "selecting the header leaves it collapsed"
+        records = _record_count(window)
+        panel.trigger_copy_button.click()
+        assert _display_names(window) == [
+            "--- A ---", "Fixture: armour split",
+            "--- A (copy) ---", "Fixture: armour split (copy)",
+            "--- B ---", "Fixture: variable",
+        ]
+        assert _section_names(window) == [
+            ("--- A ---", ["Fixture: armour split"]),
+            ("--- A (copy) ---", ["Fixture: armour split (copy)"]),
+            ("--- B ---", ["Fixture: variable"]),
+        ]
+        assert _record_count(window) == records + 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh134_deleting_a_collapsed_section_removes_it_whole_in_one_record() -> None:
+    window = _ab_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        records = _record_count(window)
+        panel.trigger_delete_button.click()
+        assert _display_names(window) == ["--- B ---", "Fixture: variable"]
+        assert _record_count(window) == records + 1
+        window.undo()
+        assert _display_names(window) == ["--- A ---", "Fixture: armour split", "--- B ---", "Fixture: variable"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh134_cutting_a_collapsed_section_cuts_it_whole() -> None:
+    window = _ab_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        window.cut_triggers()
+        assert _display_names(window) == ["--- B ---", "Fixture: variable"]
+        assert [t.name for t in window._trigger_clipboard.triggers] == ["--- A ---", "Fixture: armour split"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("collapse_b", [True, False], ids=["B collapsed", "B expanded"])
+def test_gh134_a_copied_collapsed_section_pastes_as_its_own_section_after_b(collapse_b: bool) -> None:
+    """Collapsed, the panel resolves the anchor to B's last member; expanded,
+    the window's divider-block rule does, so B never loses its member."""
+    window = _ab_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        panel.trigger_clipboard_copy_button.click()
+        assert [t.name for t in window._trigger_clipboard.triggers] == ["--- A ---", "Fixture: armour split"]
+        panel._item_for_index[2].setExpanded(not collapse_b)
+        panel.select_trigger(2)
+        panel.trigger_paste_button.click()
+        assert _section_names(window) == [
+            ("--- A ---", ["Fixture: armour split"]),
+            ("--- B ---", ["Fixture: variable"]),
+            ("--- A (copy) ---", ["Fixture: armour split (copy)"]),
+        ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("entry", ["edit", "button", "menu"])
+def test_gh134_a_plain_paste_onto_a_collapsed_header_lands_at_its_section_end(entry: str) -> None:
+    window = _ab_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        window.copy_triggers()
+        panel.select_trigger(0)
+        if entry == "edit":
+            window.paste_triggers()
+        elif entry == "button":
+            panel.trigger_paste_button.click()
+        else:
+            _action(panel.trigger_context_menu(panel._item_for_index[0]), "Paste").trigger()
+        assert _display_names(window) == [
+            "--- A ---", "Fixture: armour split", "Fixture: variable (copy)", "--- B ---", "Fixture: variable",
+        ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh134_duplicating_an_expanded_header_alone_leaves_its_members() -> None:
+    """The split guard: the copy is an empty section after A, not a header
+    that takes A's member."""
+    window = _ab_window(collapse_a=False)
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        panel.trigger_copy_button.click()
+        assert _section_names(window) == [
+            ("--- A ---", ["Fixture: armour split"]),
+            ("--- A (copy) ---", []),
+            ("--- B ---", ["Fixture: variable"]),
+        ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh134_scattered_duplicates_each_land_after_their_source() -> None:
+    window = _ab_window(collapse_a=False)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 1, 3)
+        panel.trigger_copy_button.click()
+        assert _display_names(window) == [
+            "--- A ---", "Fixture: armour split", "Fixture: armour split (copy)",
+            "--- B ---", "Fixture: variable", "Fixture: variable (copy)",
+        ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh134_move_up_and_down_stay_header_only_on_a_collapsed_section() -> None:
+    window = _ab_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        panel.trigger_move_down_button.click()
+        assert _order(window) == [1, 0, 2, 3]
+        window.undo()
+        panel._item_for_index[2].setExpanded(False)
+        panel.select_trigger(2)
+        panel.trigger_move_up_button.click()
+        assert _order(window) == [0, 2, 1, 3]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #133: Section Up / Section Down move a whole section -------------------
+
+
+@pytest.mark.parametrize("collapse_a", [True, False], ids=["A collapsed", "A expanded"])
+def test_gh133_section_down_swaps_two_sections_in_one_record(collapse_a: bool) -> None:
+    """The two renames push records of their own, so the pin is that the top
+    record is the section move and one undo restores the order with the
+    divider names still in place."""
+    from descape.edit_history import TriggerDiffRecord
+
+    window = _ab_window(collapse_a=collapse_a)
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        assert panel.section_down_button.isEnabled()
+        assert not panel.section_up_button.isEnabled()
+        records = _record_count(window)
+        panel.section_down_button.click()
+        assert _order(window) == [2, 3, 0, 1]
+        assert _section_names(window) == [
+            ("--- B ---", ["Fixture: variable"]),
+            ("--- A ---", ["Fixture: armour split"]),
+        ]
+        assert _record_count(window) == records + 1
+        record = window.edit_history.peek_undo()
+        assert isinstance(record, TriggerDiffRecord) and record.label == 'Move section "--- A ---" down'
+        assert record.touched == []
+        assert panel.selected_trigger_indices() == [0], "the selection follows the moved section"
+        assert panel.section_up_button.isEnabled() and not panel.section_down_button.isEnabled()
+
+        window.undo()
+        assert _order(window) == [0, 1, 2, 3]
+        assert _names(window)[0] == "--- A ---" and _names(window)[2] == "--- B ---"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh133_a_member_moves_its_section_and_move_up_still_moves_a_divider_alone() -> None:
+    window = _ab_window(collapse_a=False)
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        panel.section_up_button.click()
+        assert _order(window) == [2, 3, 0, 1]
+        assert window.edit_history.peek_undo().label == 'Move section "--- B ---" up'
+        window.undo()
+        panel.select_trigger(2)
+        panel.trigger_move_up_button.click()
+        assert _order(window) == [0, 2, 1, 3], "▲ still re-partitions: B takes A's member"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh133_the_leading_run_neither_moves_nor_is_swapped_past() -> None:
+    """(before) 0 | --- B --- 1: 2, 3. B's Section Up would hand trigger 0
+    to B, so it is off and says why; nothing is below B either."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 1, "--- B ---")
+        panel.select_trigger(1)
+        assert not panel.section_up_button.isEnabled()
+        assert panel.section_up_button.toolTip().endswith(" (no section above this one)")
+        assert not panel.section_down_button.isEnabled()
+        assert panel.section_down_button.toolTip().endswith(" (no section below this one)")
+        panel.select_trigger(0)
+        for button in (panel.section_up_button, panel.section_down_button):
+            assert not button.isEnabled()
+            assert "before the first section" in button.toolTip()
+        records = _record_count(window)
+        window.trigger_structural_edit("section_up", [1])
+        window.trigger_structural_edit("section_down", [0])
+        assert _record_count(window) == records, "a refused move records nothing"
+        assert _order(window) == [0, 1, 2, 3]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh133_section_moves_are_gated_like_move_up_and_down() -> None:
+    window = _ab_window(collapse_a=False)
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(1)
+        assert panel.section_down_button.isEnabled()
+
+        panel.filter_edit.setText("a")
+        panel.select_trigger(1)
+        assert not panel.section_down_button.isEnabled()
+        assert "clear the filter" in panel.section_down_button.toolTip()
+        panel.filter_edit.clear()
+
+        _rename(panel, 3, "[t] tagged")
+        panel.set_tag_filter("t")
+        panel.select_trigger(3)
+        assert not panel.section_up_button.isEnabled()
+        assert "clear the filter or tag" in panel.section_up_button.toolTip()
+        panel.set_tag_filter(None)
+
+        panel.sort_combo.setCurrentIndex(1)
+        panel.select_trigger(1)
+        assert not panel.section_down_button.isEnabled()
+        assert "Display order" in panel.section_down_button.toolTip()
+        panel.sort_combo.setCurrentIndex(0)
+        panel.select_trigger(1)
+        assert panel.section_down_button.isEnabled()
+
+        _ctrl_select(panel, 1, 3)
+        assert not panel.section_down_button.isEnabled() and not panel.section_up_button.isEnabled()
+        assert "one section" in panel.section_down_button.toolTip()
+        records = _record_count(window)
+        window.trigger_structural_edit("section_down", [1, 3])
+        assert _record_count(window) == records, "a selection spanning sections records nothing"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh133_a_flat_file_offers_no_section_move() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(1)
+        assert not panel.section_up_button.isEnabled() and not panel.section_down_button.isEnabled()
+        assert "no sections" in panel.section_up_button.toolTip()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #166: trigger status colours -------------------------------------------
+#
+# The fixture's statuses, measured: triggers 0-2 are complete; trigger 3 is not
+# (condition 3 names unit 999, which is not placed; effect 3's area is half-set;
+# effect 6, a patrol, has no location). Condition 2 of trigger 3 names unit 502,
+# which is placed (player 1).
+
+_OK_HEX = "#4caf50"
+_PROBLEM_HEX = "#e05252"
+_BROKEN_TRIGGER = 3
+_REFERENCED_UNIT_KEY = (1, 502)
+
+
+def _brush_hex(item, col: int) -> str | None:
+    from PyQt5.QtCore import Qt
+
+    brush = item.data(col, Qt.ForegroundRole)
+    return None if brush is None else brush.color().name()
+
+
+def _icon_image(item, col: int):
+    return item.icon(col).pixmap(16).toImage()
+
+
+def _expected_icon(status, hex_str: str):
+    from descape.trigger_panel import status_icon
+
+    return status_icon(status, hex_str).pixmap(16).toImage()
+
+
+def _effect_type_id(panel, name: str) -> int:
+    return next(i for i, d in panel._vocabulary.effects.items() if d.name == name)
+
+
+def test_the_panels_own_status_style_defaults_are_the_settings_defaults() -> None:
+    from descape import settings
+    from descape.trigger_panel import StatusStyle
+
+    style = StatusStyle()
+    assert style.marker == settings.TRIGGER_STATUS_MARKER_DEFAULT
+    assert style.ok == settings.get_default_trigger_status_color("ok")
+    assert style.problem == settings.get_default_trigger_status_color("problem")
+    assert style.color_ok_rows is True
+
+
+def test_a_problem_row_has_the_problem_brush_and_a_tooltip_naming_its_reasons() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        row = panel._item_for_index[_BROKEN_TRIGGER]
+        assert _brush_hex(row, col) == _PROBLEM_HEX
+        tip = row.toolTip(col).splitlines()
+        assert "condition 4 (destroy object): unit 999 (unit object) is not placed on the map" in tip
+        assert "effect 4 (kill object): area is only partly set" in tip
+        assert "effect 7 (patrol): missing location" in tip
+        assert row.text(col) == panel._trigger_label(panel._manager().triggers[_BROKEN_TRIGGER]), (
+            "the status leaked into the row text"
+        )
+
+        panel.select_trigger(_BROKEN_TRIGGER)
+        patrol = panel._entry_item_for("effect", 6)
+        assert _brush_hex(patrol, 0) == _PROBLEM_HEX
+        assert patrol.toolTip(0) == "missing location"
+        assert _brush_hex(panel._entry_item_for("effect", 0), 0) == _OK_HEX
+        assert panel._entry_item_for("effect", 0).toolTip(0) == ""
+        assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) == _PROBLEM_HEX
+        assert _brush_hex(_group(panel, "condition"), 0) == _PROBLEM_HEX
+        assert _brush_hex(_group(panel, "effect"), 0) == _PROBLEM_HEX
+    finally:
+        window.close()
+
+
+def test_an_ok_row_is_green_and_unbrushed_with_ok_colouring_off() -> None:
+    from descape import settings
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        ok_row = panel._item_for_index[0]
+        assert _brush_hex(ok_row, col) == _OK_HEX
+        assert ok_row.toolTip(col) == ""
+
+        settings.set_trigger_status_color_ok_rows(False)
+        panel.apply_status_style()
+        assert _brush_hex(ok_row, col) is None
+        assert _brush_hex(panel._item_for_index[_BROKEN_TRIGGER], col) == _PROBLEM_HEX
+        panel.select_trigger(0)
+        assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) is None
+        assert _brush_hex(panel._entry_item_for("effect", 0), 0) is None
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("marker", "brushed", "iconed"),
+    [("color", True, False), ("icon", False, True), ("both", True, True), ("off", False, False)],
+)
+def test_each_marker_mode_sets_exactly_its_brush_and_icon(marker: str, brushed: bool, iconed: bool) -> None:
+    from descape import settings
+    from descape.trigger_status import Status
+
+    settings.set_trigger_status_marker(marker)
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        for index, status, hex_str in ((0, Status.OK, _OK_HEX), (_BROKEN_TRIGGER, Status.PROBLEM, _PROBLEM_HEX)):
+            row = panel._item_for_index[index]
+            assert _brush_hex(row, col) == (hex_str if brushed else None), (marker, index)
+            assert row.icon(col).isNull() is not iconed, (marker, index)
+            if iconed:
+                assert _icon_image(row, col) == _expected_icon(status, hex_str), (marker, index)
+        # The tooltip is not a marker: every mode, "off" included, explains a problem row.
+        assert panel._item_for_index[_BROKEN_TRIGGER].toolTip(col)
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("marker", ["color", "icon", "both", "off"])
+def test_with_marking_passes_off_an_ok_row_has_no_marker_in_any_mode(marker: str) -> None:
+    """User decision, 2026-10-07: the setting means "mark triggers that pass",
+    so off drops the tick as well as the green, and only problems are marked."""
+    from descape import settings
+    from descape.trigger_status import Status
+
+    settings.set_trigger_status_marker(marker)
+    settings.set_trigger_status_color_ok_rows(False)
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        panel.select_trigger(_BROKEN_TRIGGER)
+        style = panel._status_style
+        for ok_row, ok_col in ((panel._item_for_index[0], col), (panel._entry_item_for("effect", 0), 0)):
+            assert _brush_hex(ok_row, ok_col) is None, marker
+            assert ok_row.icon(ok_col).isNull(), marker
+        for problem_row, problem_col in ((panel._item_for_index[_BROKEN_TRIGGER], col),
+                                         (panel._entry_item_for("effect", 6), 0)):
+            assert _brush_hex(problem_row, problem_col) == (_PROBLEM_HEX if style.colours else None), marker
+            assert problem_row.icon(problem_col).isNull() is not style.icons, marker
+            if style.icons:
+                assert _icon_image(problem_row, problem_col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("flag", ["display_as_objective", "display_on_screen"])
+def test_an_objective_or_on_screen_trigger_with_no_effects_is_not_a_problem(flag: str) -> None:
+    """User decisions, 2026-10-07; the Effects group row follows the trigger row."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        trigger = panel._manager().triggers[0]
+        trigger.display_as_objective, trigger.header, trigger.display_on_screen = 0, 0, 0
+        setattr(trigger, flag, 1)  # so this flag alone exempts it
+        panel.select_trigger(0)  # "Fixture: setup", one effect
+        window.entry_structural_edit("delete", 0, "effect", 0, -1)
+        row = panel._item_for_index[0]
+        assert _brush_hex(row, col) == _OK_HEX
+        assert row.toolTip(col) == ""
+        assert _brush_hex(_group(panel, "effect"), 0) == _OK_HEX
+        assert _group(panel, "effect").toolTip(0) == ""
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_fixing_a_field_through_the_form_flips_its_row_trigger_root_and_group() -> None:
+    """The _refresh_labels() path: activate_trigger requires a trigger_id."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        panel.select_trigger(2)  # "Fixture: references"
+        panel.entry_tree.setCurrentItem(panel._entry_item_for("effect", 0))
+        widget = _row_widget(panel, "trigger_id")
+        widget.setCurrentIndex(widget.findData(-1))
+
+        row = panel._item_for_index[2]
+        assert _brush_hex(row, col) == _PROBLEM_HEX
+        assert "effect 1 (activate trigger): missing trigger id" in row.toolTip(col).splitlines()
+        assert _brush_hex(panel._entry_item_for("effect", 0), 0) == _PROBLEM_HEX
+        assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) == _PROBLEM_HEX
+        assert _brush_hex(_group(panel, "effect"), 0) == _PROBLEM_HEX
+        assert _brush_hex(_group(panel, "condition"), 0) == _OK_HEX
+
+        widget.setCurrentIndex(widget.findData(1))
+        for item, item_col in (
+            (row, col),
+            (panel._entry_item_for("effect", 0), 0),
+            (panel.entry_tree.topLevelItem(0), 0),
+            (_group(panel, "effect"), 0),
+        ):
+            assert _brush_hex(item, item_col) == _OK_HEX
+            assert item.toolTip(item_col) == ""
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_deleting_the_last_effect_turns_the_trigger_red_and_adding_one_turns_it_green() -> None:
+    """The refresh_entries() path, which never reaches show_scenario()."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        # Shown on screen, which also exempts it (user decision, 2026-10-07).
+        panel._manager().triggers[0].display_on_screen = 0
+        panel.select_trigger(0)  # "Fixture: setup", one effect
+        window.entry_structural_edit("delete", 0, "effect", 0, -1)
+        row = panel._item_for_index[0]
+        assert _brush_hex(row, col) == _PROBLEM_HEX
+        assert row.toolTip(col) == "has no effects"
+        assert _brush_hex(_group(panel, "effect"), 0) == _PROBLEM_HEX
+        assert _group(panel, "effect").toolTip(0) == "has no effects"
+
+        window.entry_structural_edit("new", 0, "effect", -1, _effect_type_id(panel, "send_chat"))
+        assert _brush_hex(row, col) == _OK_HEX
+        assert _brush_hex(_group(panel, "effect"), 0) == _OK_HEX
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_retyping_an_entry_flips_its_status() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(_BROKEN_TRIGGER)
+        assert _brush_hex(panel._entry_item_for("effect", 6), 0) == _PROBLEM_HEX  # patrol, no location
+        window.entry_structural_edit("retype", _BROKEN_TRIGGER, "effect", 6, _effect_type_id(panel, "send_chat"))
+        assert _brush_hex(panel._entry_item_for("effect", 6), 0) == _OK_HEX
+        tip = panel._item_for_index[_BROKEN_TRIGGER].toolTip(panel._COL_NAME)
+        assert "patrol" not in tip and "effect 4 (kill object)" in tip
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_setting_an_area_through_the_tile_pick_turns_the_row_ok() -> None:
+    """The set_entry_field_group() path (GH #138's Set Area)."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(_BROKEN_TRIGGER)
+        panel.entry_tree.setCurrentItem(panel._entry_item_for("effect", 3))  # kill_object, half-set area
+        assert _brush_hex(panel._entry_item_for("effect", 3), 0) == _PROBLEM_HEX
+        panel._group_rows["area"].set_button.click()
+        assert window._tile_picker is not None
+        window._on_rect_picked(10, 12, 20, 22)
+
+        assert _brush_hex(panel._entry_item_for("effect", 3), 0) == _OK_HEX
+        tip = panel._item_for_index[_BROKEN_TRIGGER].toolTip(panel._COL_NAME)
+        assert "kill object" not in tip and "effect 7 (patrol)" in tip
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_unit_delete_restyles_in_triggers_mode_but_waits_for_mode_entry_elsewhere() -> None:
+    """The refresh_unit_reference_labels() path and its Triggers-mode gate."""
+    from descape.trigger_status import Status
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+
+        def destroy_status():
+            return panel.status_of(_BROKEN_TRIGGER).conditions[2].status
+
+        assert destroy_status() is Status.OK  # destroy_object on unit 502
+        assert _BROKEN_TRIGGER in panel._unit_ref_triggers
+
+        window.mode_combo.setCurrentText("Units")
+        removed, _cascaded, _blocked = window._find_delete_keys([_REFERENCED_UNIT_KEY])
+        assert removed == 1
+        assert destroy_status() is Status.OK, "a Units-mode unit edit recomputed trigger statuses"
+        window.mode_combo.setCurrentText("Triggers")
+        assert destroy_status() is Status.PROBLEM, "re-entering Triggers mode did not recompute"
+
+        window.undo()  # the unit is back, in Triggers mode
+        assert destroy_status() is Status.OK
+        panel.select_trigger(_BROKEN_TRIGGER)
+        destroy_row = panel._entry_item_for("condition", 2)
+        assert _brush_hex(destroy_row, 0) == _OK_HEX
+
+        window.redo()  # deleted again, in Triggers mode
+        assert destroy_status() is Status.PROBLEM
+        destroy_row = panel._entry_item_for("condition", 2)
+        assert _brush_hex(destroy_row, 0) == _PROBLEM_HEX
+        assert destroy_row.toolTip(0) == "unit 502 (unit object) is not placed on the map"
+        assert _brush_hex(panel._item_for_index[_BROKEN_TRIGGER], panel._COL_NAME) == _PROBLEM_HEX
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_clear_document_resets_the_status_cache() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        assert panel.status_of(_BROKEN_TRIGGER) is not None
+        panel.clear_document()
+        assert panel.status_of(_BROKEN_TRIGGER) is None
+        assert panel._unit_ref_triggers == set()
+    finally:
+        window.close()
+
+
+def test_a_settings_change_restyles_the_rows_live() -> None:
+    from descape import settings
+    from descape.trigger_status import Status
+    from descape.viewer import SettingsDialog
+
+    window = _triggers_window()
+    dialog = SettingsDialog(window)
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        broken, ok = panel._item_for_index[_BROKEN_TRIGGER], panel._item_for_index[0]
+        panel.select_trigger(_BROKEN_TRIGGER)
+
+        combo = dialog.trigger_status_marker_combo
+        combo.setCurrentIndex(combo.findData("icon"))
+        assert settings.get_trigger_status_marker() == "icon"
+        assert _brush_hex(broken, col) is None and not broken.icon(col).isNull()
+        assert not panel._entry_item_for("effect", 6).icon(0).isNull()
+
+        combo.setCurrentIndex(combo.findData("both"))
+        assert dialog.trigger_status_ok_rows_check.text() == "Mark triggers that pass"
+        dialog.trigger_status_ok_rows_check.setChecked(False)
+        assert _brush_hex(ok, col) is None and ok.icon(col).isNull()
+        assert _icon_image(broken, col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+        dialog.trigger_status_ok_rows_check.setChecked(True)
+        assert _icon_image(ok, col) == _expected_icon(Status.OK, _OK_HEX)
+
+        dialog._apply_trigger_status_color("problem", "#123456")
+        assert settings.get_trigger_status_color("problem") == "#123456"
+        assert _brush_hex(broken, col) == "#123456"
+        assert _icon_image(broken, col) == _expected_icon(Status.PROBLEM, "#123456")
+        assert _brush_hex(panel._entry_item_for("effect", 6), 0) == "#123456"
+    finally:
+        dialog.close()
+        window.close()
+
+
+def test_a_divider_row_stays_unstyled_while_its_entries_are_styled() -> None:
+    from descape import settings
+
+    settings.set_trigger_status_marker("both")
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        panel.select_trigger(1)
+        name = _row_widget(panel, "name")
+        name.setText("--- Section ---")
+        name.editingFinished.emit()  # crosses is_divider: a full repopulate
+
+        divider = panel._item_for_index[1]
+        assert _brush_hex(divider, col) is None
+        assert divider.icon(col).isNull()
+        assert divider.toolTip(col) == ""
+        panel.select_trigger(1)
+        assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) is None
+        assert _brush_hex(panel._entry_item_for("effect", 0), 0) == _OK_HEX
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_filter_still_matches_on_the_name_not_the_status() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.filter_edit.setText("variable")
+        assert not panel._item_for_index[_BROKEN_TRIGGER].isHidden()
+        assert panel._item_for_index[0].isHidden()
+        panel.filter_edit.setText("missing location")
+        assert panel._item_for_index[_BROKEN_TRIGGER].isHidden(), "the filter matched a status reason"
+    finally:
+        window.close()
+
+
+def test_a_live_marker_change_sizes_the_name_columns_like_a_fresh_populate() -> None:
+    """An icon widens the name column. A live restyle batches its setData calls
+    by switching the trigger tree's columns off ResizeToContents, so they must
+    come back, and both trees must end up as wide as a repopulate makes them."""
+    from PyQt5.QtWidgets import QApplication, QHeaderView
+
+    from descape import settings
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(_BROKEN_TRIGGER)
+        QApplication.processEvents()
+        before = (panel.tree.header().sectionSize(panel._COL_NAME), panel.entry_tree.columnWidth(0))
+
+        settings.set_trigger_status_marker("icon")
+        panel.apply_status_style()
+        QApplication.processEvents()
+        header = panel.tree.header()
+        assert all(header.sectionResizeMode(c) == QHeaderView.ResizeToContents for c in range(header.count()))
+        live = (header.sectionSize(panel._COL_NAME), panel.entry_tree.columnWidth(0))
+
+        window._show_triggers()
+        QApplication.processEvents()
+        fresh = (header.sectionSize(panel._COL_NAME), panel.entry_tree.columnWidth(0))
+        assert live == fresh
+        assert live[0] > before[0] and live[1] > before[1], "the icon did not widen the name columns"
+    finally:
+        window.close()
+
+
+def _count_evaluations(monkeypatch) -> list:
+    """Every trigger object evaluate_trigger() is called on, in call order."""
+    from descape import trigger_status
+
+    real = trigger_status.evaluate_trigger
+    calls: list = []
+
+    def counting(trigger, context):
+        calls.append(trigger)
+        return real(trigger, context)
+
+    monkeypatch.setattr(trigger_status, "evaluate_trigger", counting)
+    return calls
+
+
+def _evaluated_indices(panel, calls) -> set[int]:
+    triggers = panel._manager().triggers
+    return {i for i, t in enumerate(triggers) if any(c is t for c in calls)}
+
+
+def test_a_repopulate_reevaluates_only_the_edited_trigger_and_undo_restores_its_status(monkeypatch) -> None:
+    """The status memo across same-document show_scenario() calls: a rename
+    that crosses is_divider is a refresh="panel" edit of one trigger in place."""
+    from descape.trigger_status import Status
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        col = panel._COL_NAME
+        before = panel.status_of(_BROKEN_TRIGGER)
+        assert before.trigger.status is Status.PROBLEM
+        calls = _count_evaluations(monkeypatch)
+
+        window._show_triggers()
+        assert calls == [], "an unedited repopulate re-evaluated a trigger"
+
+        panel.select_trigger(_BROKEN_TRIGGER)
+        name = _row_widget(panel, "name")
+        name.setText("--- Section ---")
+        name.editingFinished.emit()
+        assert panel.status_of(_BROKEN_TRIGGER).trigger.status is Status.NONE
+        assert _evaluated_indices(panel, calls) == {_BROKEN_TRIGGER}
+        assert len(calls) == sum(1 for c in calls if c is panel._manager().triggers[_BROKEN_TRIGGER])
+
+        calls.clear()
+        window.undo()
+        assert panel.status_of(_BROKEN_TRIGGER) == before
+        assert _brush_hex(panel._item_for_index[_BROKEN_TRIGGER], col) == _PROBLEM_HEX
+        assert _brush_hex(panel._item_for_index[0], col) == _OK_HEX
+        assert _evaluated_indices(panel, calls) == {_BROKEN_TRIGGER}, "undo re-evaluated an untouched trigger"
+
+        calls.clear()
+        window.redo()
+        assert panel.status_of(_BROKEN_TRIGGER).trigger.status is Status.NONE
+        assert _evaluated_indices(panel, calls) == {_BROKEN_TRIGGER}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_trigger_count_change_reevaluates_an_unedited_trigger_naming_a_trigger_id(tmp_path, monkeypatch) -> None:
+    """Trigger 2 activates trigger 4, which does not exist until New appends it.
+    Trigger 2 is never edited, so only the count can make its memo stale."""
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+    from descape.trigger_model import TriggerEditModel
+    from descape.trigger_status import Status
+
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    model = TriggerEditModel(loaded)
+    model.manager().triggers[2].effects[0].trigger_id = 4
+    model.mark_dirty(2)
+    path = tmp_path / "dangling.aoe2scenario"
+    write_scenario(loaded, path, triggers=model)
+
+    window = _open(path)
+    try:
+        panel = window.trigger_panel
+        dangling = "effect 1 (activate trigger): trigger 4 does not exist"
+        assert dangling in panel.status_of(2).trigger.reasons
+        calls = _count_evaluations(monkeypatch)
+
+        window.trigger_structural_edit("new", [])
+        assert len(panel._manager().triggers) == 5
+        assert panel.status_of(2).trigger.status is Status.OK
+        assert _evaluated_indices(panel, calls) == {2, 4}, "only the new trigger and the one naming an id"
+
+        calls.clear()
+        window.undo()
+        assert dangling in panel.status_of(2).trigger.reasons
+        assert _evaluated_indices(panel, calls) == {2}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.corpus
+def test_trigger_status_restyles_a_590_trigger_file_without_a_resize_per_row() -> None:
+    """Measured 2026-10-07: 2.3 s for a live marker change and 453 ms for a
+    Triggers-mode unit edit on old-allies-final-v2 when every setData re-sized
+    the content-sized columns; 3 ms and 8 ms batched. 250 ms is far from both."""
+    import time
+
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "old-allies-final-v2.aoe2scenario"
+    if not path.is_file():
+        pytest.skip(f"missing corpus file: {path}")
+    window = _window()
+    try:
+        window.load_scenario(path)
+        window.mode_combo.setCurrentText("Triggers")
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        assert len(panel._item_for_index) > 500
+
+        settings.set_trigger_status_marker("both")
+        start = time.perf_counter()
+        panel.apply_status_style()
+        restyle_ms = (time.perf_counter() - start) * 1e3
+
+        assert len(panel._unit_ref_triggers) > 50
+        start = time.perf_counter()
+        panel.refresh_unit_reference_labels(recompute_status=True)
+        unit_ms = (time.perf_counter() - start) * 1e3
+        assert restyle_ms < 250, f"apply_status_style took {restyle_ms:.0f} ms"
+        assert unit_ms < 250, f"refresh_unit_reference_labels took {unit_ms:.0f} ms"
     finally:
         window.edit_history.mark_saved()
         window.close()

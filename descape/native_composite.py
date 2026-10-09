@@ -33,7 +33,7 @@ from descape.edge_ticks import MAJORS_PER_MINOR
 
 # Stepped op-table layout, mirrored by DEF constants in _composite_native.pyx.
 N_FIXED = 8
-PER_RISE = 9
+PER_RISE = 5
 MAX_RISE = iso_geometry.MAX_ELEVATION - iso_geometry.MIN_ELEVATION
 
 ROW_MARK, ROW_CONFORM, ROW_SPRITE = 0, 1, 2
@@ -108,12 +108,8 @@ class SteppedTables:
             for side in ("up_left", "up_right"):
                 ops.append(g.shadow_quad_indices(tile_px, rise, side)[:2])
                 keys.append(("shadow", rise, side))
-            for sides in ("both", "up_left", "up_right"):
-                ops.append(g.shadow_apex_indices(tile_px, rise, sides)[:2])
-                keys.append(("shadow", rise, "apex_" + sides))
-            for side in ("up_left", "up_right"):
-                ops.append(g.shadow_tip_indices(tile_px, rise, side)[:2])
-                keys.append(("shadow", rise, "tip_" + side))
+            ops.append(g.shadow_apex_indices(tile_px, rise)[:2])
+            keys.append(("shadow", rise, "apex"))
         assert len(ops) == N_FIXED + MAX_RISE * PER_RISE
         # One src entry per dst entry in every op, zeros where an op samples
         # nothing, so the four columns share the start offsets.

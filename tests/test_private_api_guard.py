@@ -1,4 +1,4 @@
-"""Guards the AoE2ScenarioParser==0.8.3 pin (see requirements.txt's own
+"""Guards the AoE2ScenarioParser==0.9.3 pin (see requirements.txt's own
 comment on why it's pinned, not just listed): descape/scenario_io.py,
 descape/elevation_tools.py, descape/trigger_fields.py (the quantity cluster)
 and others each reach into several of that library's *private* names. Nothing else asserts these still exist -- an unpinned or
@@ -175,7 +175,7 @@ def test_trigger_exposes_the_generic_condition_and_effect_constructors() -> None
 
     from descape import library_compat
 
-    # Repo vocabularies (v1.59) are in scope: New condition/effect reaches
+    # Repo vocabularies are in scope too: New condition/effect reaches
     # them through the same private route.
     uncovered = [
         (version, kind, entry.name)
@@ -195,7 +195,7 @@ def test_trigger_exposes_the_generic_condition_and_effect_constructors() -> None
         "enable/disable_technology",
         "or",
     }
-    assert len(uncovered) == 76  # 71 library, 5 from v1.59
+    assert len(uncovered) == 76  # all library since the 0.9.3 pin ships v1.59 (5 of them)
 
 
 def test_every_vocabulary_has_type_0_unit_reference_defaults() -> None:
@@ -205,7 +205,7 @@ def test_every_vocabulary_has_type_0_unit_reference_defaults() -> None:
     would make a cross-document paste clear nothing and report 0 (GH #3)."""
     from descape import library_compat
 
-    # Repo vocabularies too: trigger_clipboard reads v1.59's the same way.
+    # Repo vocabularies too, should one ship: trigger_clipboard reads them the same way.
     versions = library_compat.vocabulary_versions()
     assert {"1.36", "1.44", "1.54", "1.58", "1.59"} <= set(versions), versions
     for version in versions:
@@ -457,7 +457,7 @@ def test_units_fast_path_library_entry_points() -> None:
     assert isinstance(group, RetrieverObjectLinkGroup)
     assert all(link.link == link.name and link.retrieve_history_number is None for link in group.group)
     supported = {link.name: link.support for link in group.group if link.support is not None}
-    assert set(supported) == {"caption_string_id", "caption_string"}
+    assert set(supported) == {"capture_flag", "caption_string_id", "caption_string"}
     unit_params = inspect.signature(Unit.__init__).parameters
     assert {link.name for link in group.group} | {"player"} <= set(unit_params)
 

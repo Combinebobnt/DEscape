@@ -216,6 +216,8 @@ _TOGGLE_ACTION_IDS = (
     "view_grid_overlay",
     "view_grid_follow",
     "view_footprint_outlines",
+    "view_footprint_merged",
+    "view_footprint_by_owner",
     "view_selection_owner_colour",
     "view_range_rings",
     "view_player_cameras",
@@ -230,6 +232,7 @@ _TOGGLE_ACTION_IDS = (
     "filter_show_walls",
     "filter_show_buildings",
     "filter_show_eye_candy",
+    "filter_show_obstacles",
     "filter_show_invisible",
     "filter_show_garrisoned",
 )

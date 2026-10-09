@@ -3,11 +3,12 @@
 The load-bearing property, and the reason the gate and the writer are the
 same function: re-encoding the region from the parsed counts and id lists
 reproduces decompressed_body exactly. Everything else here either builds on
-that (an edit re-derives only counts 0..7) or pins a fail-closed path.
+that (an edit re-derives each count from its own list) or pins a fail-closed
+path.
 
 The default-tier fixtures both carry empty disable lists, which is what the
 corpus says 12 of 20 real files look like too. The interesting shapes --
-a nonzero count slot 8, an out-of-enum id -- have no default-tier fixture
+a nonzero player-9 list, an out-of-enum id -- have no default-tier fixture
 and are therefore exercised synthetically, against a stub whose parsed
 values this module reads exactly as it would a real file's.
 """
@@ -30,7 +31,7 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.
 # encode_region()/verify_disables_block() read three things off a
 # LoadedScenario: the Options section's retriever_map, decompressed_body,
 # and the two section-end anchors. A stub supplying exactly those is what
-# lets a nonzero count slot 8 -- which no corpus file has -- be tested at
+# lets a nonzero player-9 list -- which no corpus file has -- be tested at
 # all, and it keeps that test honest: a stub whose region did NOT round-trip
 # would fail the same assertion a real file would.
 
@@ -64,16 +65,16 @@ class _StubLoaded:
     retrievers are laid out exactly as a real file's, plus the body those
     retrievers describe."""
 
-    def __init__(self, lists, counts_tail=(0,) * 8, lead=32, tail_all_techs=1):
+    def __init__(self, lists, lead=32, tail_all_techs=1):
         retriever_map: dict[str, _Retriever] = {}
         region = bytearray()
         for category in disables_fields.CATEGORIES:
-            counts = [len(lists[(category, p)]) for p in range(1, 9)] + list(counts_tail)
+            counts = [len(lists[(category, p)]) for p in range(1, 17)]
             retriever_map[disables_fields.count_retriever_name(category)] = _Retriever(
                 list(counts), 4 * len(counts)
             )
             region += struct.pack(f"<{len(counts)}I", *counts)
-            for player_id in range(1, 9):
+            for player_id in range(1, 17):
                 ids = list(lists[(category, player_id)])
                 retriever_map[
                     disables_fields.ids_retriever_name(category, player_id)
@@ -95,7 +96,7 @@ def _empty_lists() -> dict[tuple[str, int], tuple[int, ...]]:
     return {
         (category, player_id): ()
         for category in disables_fields.CATEGORIES
-        for player_id in range(1, 9)
+        for player_id in range(1, 17)
     }
 
 
@@ -143,21 +144,36 @@ def test_forward_walk_and_backward_walk_agree(path) -> None:
 # -- counts -----------------------------------------------------------------
 
 
-def test_count_slots_8_to_15_survive_a_round_trip_verbatim() -> None:
-    """No corpus file stores a nonzero slot 8, so this is the only place the
-    pass-it-through-verbatim rule for those slots is actually exercised."""
-    tail = (7, 0, 0, 0, 0, 0, 0, 9)
-    loaded = _StubLoaded(_empty_lists(), counts_tail=tail)
+def _with_player_9_and_16() -> dict[tuple[str, int], tuple[int, ...]]:
+    lists = _empty_lists()
+    lists[("techs", 9)] = (5, 6)
+    lists[("techs", 16)] = (7,)
+    return lists
+
+
+def test_a_nonzero_player_9_list_round_trips_byte_identical() -> None:
+    """No corpus file stores a list past player 8, so this is the only place
+    the codec's lists 9..16 are actually exercised."""
+    loaded = _StubLoaded(_with_player_9_and_16())
     assert disables_fields.verify_disables_block(loaded) is True
     start, end = disables_fields.disables_region_span(loaded)
     assert disables_fields.encode_region(loaded, {}) == loaded.decompressed_body[start:end]
-    # And an edit elsewhere must not zero them either.
-    edited = disables_fields.encode_region(loaded, {("units", 1): (100,)})
-    counts = struct.unpack_from("<16I", edited, 16 * 4)  # the units block's own array
-    assert counts[8:] == tail
 
 
-def test_an_edit_rederives_counts_0_to_7_only() -> None:
+def test_an_edit_to_player_2_leaves_player_9_intact() -> None:
+    loaded = _StubLoaded(_with_player_9_and_16())
+    edited = disables_fields.encode_region(loaded, {("techs", 2): (11, 12, 13)})
+    counts = struct.unpack_from("<16I", edited, 0)  # the techs block's own array
+    assert counts == (0, 3, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1)
+    assert struct.unpack_from("<6I", edited, 16 * 4) == (11, 12, 13, 5, 6, 7)
+
+
+def test_the_dialog_edits_eight_players_and_the_codec_carries_sixteen() -> None:
+    assert len(disables_fields.all_field_ids()) == 3 * disables_fields.NUM_EDITABLE_PLAYERS == 24
+    assert disables_fields.NUM_CODEC_LISTS == 16
+
+
+def test_an_edit_rederives_the_edited_counts() -> None:
     loaded = _StubLoaded(_empty_lists())
     edited = disables_fields.encode_region(
         loaded, {("techs", 1): (22, 23, 24), ("techs", 5): (101,)}

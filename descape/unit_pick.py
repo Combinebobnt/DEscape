@@ -43,11 +43,13 @@ Both are load-bearing, and both make the obvious reuse wrong:
 
 from __future__ import annotations
 
+import functools
+import itertools
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render, unit_kind
 from descape.unit_filter import UnitFilter
 
 # pick_unit()'s "the caller did not resolve a tile" default, distinct from an
@@ -105,7 +107,10 @@ def unit_key(player_id: int, unit) -> tuple[int, int]:
 def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
     """Builds the index in EXACTLY render._flat_unit_draws()/_units_by_tile()'s
     own player-then-unit-list iteration order, so `order` is directly
-    comparable against paint order.
+    comparable against paint order right after a build. patch_index_for_add()
+    appends instead, so after a Place, Paste-inside or Garrison-add into any
+    owner but the last one indexed, `order` ranks the new unit above later
+    players' units that paint over it, until the next rebuild.
 
     Filtered units are absent entirely rather than flagged, so a hidden unit
     is not pickable -- the same object drives what's drawn and what's
@@ -137,8 +142,9 @@ def _append_entry(index: UnitIndex, player_id: int, unit, bounds: tuple[int, int
     """The shared tail of build_index()'s per-unit loop and
     patch_index_for_add() (Batch D's D4) -- appends one new entry at
     `order = len(index.entries)` and registers it in by_key/by_tile, so a
-    single Place can't drift from what a full rebuild would produce for
-    that same unit."""
+    single Place gets the same footprint and key a full rebuild would give
+    that unit. Not necessarily the same `order`: a rebuild ranks it inside its owner's
+    block, an append after every entry (see build_index())."""
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     entry = UnitEntry(
         player_id=player_id,
@@ -764,8 +770,12 @@ def stack_cycle_step(members, picked, previous: int | None):
 # edge_ticks.TICK_INTERVALS.
 FOOTPRINT_SCOPE_MULTITILE = "multitile"
 FOOTPRINT_SCOPE_BUILDINGS = "buildings"
+FOOTPRINT_SCOPE_UNITS = "units"
 FOOTPRINT_SCOPE_ALL = "all"
-FOOTPRINT_SCOPES = (FOOTPRINT_SCOPE_MULTITILE, FOOTPRINT_SCOPE_BUILDINGS, FOOTPRINT_SCOPE_ALL)
+# Menu order.
+FOOTPRINT_SCOPES = (
+    FOOTPRINT_SCOPE_MULTITILE, FOOTPRINT_SCOPE_BUILDINGS, FOOTPRINT_SCOPE_UNITS, FOOTPRINT_SCOPE_ALL
+)
 FOOTPRINT_SCOPE_DEFAULT = FOOTPRINT_SCOPE_MULTITILE
 
 
@@ -777,15 +787,107 @@ def footprint_entries(index: UnitIndex, scope: str) -> list[UnitEntry]:
     "buildings" is BUILDING_TILE_SPANS membership, which render._unit_color
     already treats as that test. Iterates index.entries, so the overlay
     inherits the unit filter for free and can never disagree with what is
-    drawn."""
+    drawn.
+
+    "Units" (GH #143) excludes the Show Buildings and Show Walls sets
+    (unit_kind.building_consts() | wall_consts(), walls and gates both),
+    rather than a fifth is-this-a-building rule. "Buildings" deliberately
+    stays on BUILDING_TILE_SPANS, so the two overlap on mobile siege (the
+    trebuchets and the rest of .dat classes 51/54) plus 1192, which no
+    scenario places."""
     if scope not in FOOTPRINT_SCOPES:
         raise ValueError(f"footprint scope must be one of {list(FOOTPRINT_SCOPES)}, got {scope!r}")
     if scope == FOOTPRINT_SCOPE_ALL:
         return list(index.entries)
     if scope == FOOTPRINT_SCOPE_BUILDINGS:
         return [e for e in index.entries if e.unit.unit_const in render.BUILDING_TILE_SPANS]
+    if scope == FOOTPRINT_SCOPE_UNITS:
+        excluded = unit_kind.building_consts() | unit_kind.wall_consts()
+        return [e for e in index.entries if e.unit.unit_const not in excluded]
     spans = (render.tile_span(e.unit.unit_const, render.NON_BUILDING_SPAN) for e in index.entries)
     return [e for e, (span_x, span_y) in zip(index.entries, spans, strict=True) if span_x > 1 or span_y > 1]
+
+
+def _unit_segments(polygon) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """The polygon's edges as undirected segments: an axis-aligned edge between
+    integer points is cut into unit steps, any other edge stays whole."""
+    segments = []
+    for (x0, y0), (x1, y1) in zip(polygon, polygon[1:] + polygon[:1], strict=True):
+        if (x0, y0) == (x1, y1):
+            continue
+        if x0 == x1 and float(y0).is_integer() and float(y1).is_integer():
+            step = 1 if y1 > y0 else -1
+            cuts = [(x0, y) for y in range(int(y0), int(y1) + step, step)]
+        elif y0 == y1 and float(x0).is_integer() and float(x1).is_integer():
+            step = 1 if x1 > x0 else -1
+            cuts = [(x, y0) for x in range(int(x0), int(x1) + step, step)]
+        else:
+            cuts = [(x0, y0), (x1, y1)]
+        segments.extend(itertools.pairwise(cuts))
+    return segments
+
+
+def merge_footprint_polygons(polygons: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:
+    """GH #143's Merge: one unit's per-tile outlines as the one ring around
+    their union, or `polygons` unchanged when there is no such single ring.
+
+    Every edge is cut into unit steps where it is an axis-aligned integer edge
+    (Sloped's pixel staircases, sloped_tile_outline()) and kept whole
+    otherwise (Stepped's and Sloped's plain diamonds, which neighbouring
+    tiles share exactly). An edge two tiles share cancels; what is left is
+    chained into a ring, keeping only its corners, so no point is drawn that
+    some input polygon does not already have.
+
+    Falls back to the input, the per-tile look, when the leftover edges are
+    not one simple ring: a pinch vertex where tiles touch only at a corner
+    (diagonal gates' sparse BUILDING_TILE_OFFSETS), more than one loop (a
+    draped Sloped farm over multi-level steps, whose staircases leave gap
+    rows: GH #143 Step 0), or a corner no input polygon has. A single
+    polygon (Flat's one rect, every 1x1 unit) is returned as is."""
+    if len(polygons) < 2:
+        return polygons
+    corners = _merged_ring(tuple(tuple(polygon) for polygon in polygons))
+    return polygons if corners is None else [list(corners)]
+
+
+@functools.lru_cache(maxsize=512)
+def _merged_ring(polygons: tuple[tuple[tuple[float, float], ...], ...]) -> tuple | None:
+    """merge_footprint_polygons' ring, or None to fall back. Cached: a draped
+    Sloped farm costs ~1.6 ms here and every unit edit re-merges every farm.
+    A draped key is ~250 KB at 64 px, so 512 entries cap it near 128 MB
+    while still covering old-allies' 216 farms."""
+    parity: dict[frozenset, int] = {}
+    for polygon in polygons:
+        for a, b in _unit_segments(polygon):
+            key = frozenset((a, b))
+            parity[key] = parity.get(key, 0) ^ 1
+    neighbours: dict[tuple[float, float], list[tuple[float, float]]] = {}
+    for key, odd in parity.items():
+        if odd:
+            a, b = tuple(key)
+            neighbours.setdefault(a, []).append(b)
+            neighbours.setdefault(b, []).append(a)
+    if not neighbours or any(len(ends) != 2 for ends in neighbours.values()):
+        return None
+
+    start = min(neighbours)
+    ring = [start]
+    previous, current = start, neighbours[start][0]
+    while current != start:
+        ring.append(current)
+        a, b = neighbours[current]
+        previous, current = current, (b if a == previous else a)
+    if len(ring) != len(neighbours):
+        return None  # more than one loop
+
+    corners = []
+    for i, (x, y) in enumerate(ring):
+        (px, py), (nx, ny) = ring[i - 1], ring[(i + 1) % len(ring)]
+        if (x - px) * (ny - y) - (y - py) * (nx - x) != 0:
+            corners.append((x, y))
+    if not set(corners) <= {point for polygon in polygons for point in polygon}:
+        return None
+    return tuple(corners)
 
 
 def unit_polygons(

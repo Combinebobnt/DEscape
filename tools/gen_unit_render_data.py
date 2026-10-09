@@ -5,7 +5,7 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Six tables, five keyed by unit_const and one ("hero_glow") a sorted list of
+Seven tables, six keyed by unit_const and one ("hero_glow") a sorted list of
 consts:
 
 - "buildings": [span_x, span_y] -- the footprint's real width and height in
@@ -114,7 +114,22 @@ consts:
   (grass, flowers, shrubs) carry arbitrary non-.5 coordinates and are
   re-snapped by the same branch, but they are genuinely free-placed
   eye-candy rather than a grid family, and the displacement is invisible on
-  a 1-tile sprite. Widening this gate would move them for no gain.
+  a 1-tile sprite. Widening this gate would move them for no gain. The one
+  class-14 exception is the "blocker_spans" allowlist below.
+
+- "blocker_spans": [span_x, span_y] -- the same shape again, for exactly the
+  four consts in `_BLOCKER_SPAN_CONSTS` (Blocker 1x3/3x1 2423/2424 and
+  Buildable Blocker 1x3/3x1 2429/2430, GH #121). Class 14 like the
+  decorations above, so neither table has them and they read as 1x1: the
+  marker, picking, outlines and occupied tiles all covered the centre tile of
+  a three-tile barrier. Sourced from `collision_size` like "object_spans"
+  ((0.5, 1.5) and (1.5, 0.5), matching the names' 1x3/3x1).
+
+  An explicit allowlist, not a class rule, so no decoration moves. Safe
+  because the span cannot move a placed blocker: all 37 corpus placements
+  (16 of 2423, 21 of 2424) sit at x.5/y.5, and an odd span centres on that
+  same tile. Its own key rather than more "object_spans" rows, which
+  `tests/test_unit_footprints.py` pins to exactly the 96 cliffs.
 
 - "hero_glow": [unit_const, ...] -- the heroes the game draws its golden glow
   around (GH #39). The rule is `(creatable.hero_mode & 0xff) & (1 | 64)` AND
@@ -177,6 +192,8 @@ _GATE_CLASS = 39
 # Desert graphic. Taken from the .dat's own class_ rather than a hand-kept
 # const list precisely so that partial family can't be missed.
 _CLIFF_CLASS = 34
+# Class-14 blockers with a real multi-tile collision; see the "blocker_spans" docs.
+_BLOCKER_SPAN_CONSTS = (2423, 2424, 2429, 2430)
 
 
 # The seven gold HeroGlow graphics; see the "hero_glow" docs above.
@@ -248,6 +265,7 @@ def main() -> None:
     buildings: dict[str, list[int]] = {}
     building_tiles: dict[str, list[list[int]]] = {}
     object_spans: dict[str, list[int]] = {}
+    blocker_spans: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
     foundation_terrain: dict[str, int] = {}
     hero_glow: list[int] = []
@@ -259,6 +277,11 @@ def main() -> None:
             hero_glow.append(unit_const)
         if unit.class_ == _CLIFF_CLASS:
             object_spans[str(unit_const)] = [
+                max(1, round(unit.collision_size_x * 2)),
+                max(1, round(unit.collision_size_y * 2)),
+            ]
+        if unit_const in _BLOCKER_SPAN_CONSTS:
+            blocker_spans[str(unit_const)] = [
                 max(1, round(unit.collision_size_x * 2)),
                 max(1, round(unit.collision_size_y * 2)),
             ]
@@ -291,6 +314,9 @@ def main() -> None:
                 "object_spans": dict(
                     sorted(object_spans.items(), key=lambda kv: int(kv[0]))
                 ),
+                "blocker_spans": dict(
+                    sorted(blocker_spans.items(), key=lambda kv: int(kv[0]))
+                ),
                 "resource_colors": dict(
                     sorted(resource_colors.items(), key=lambda kv: int(kv[0]))
                 ),
@@ -307,6 +333,7 @@ def main() -> None:
         f"Wrote {len(buildings)} building footprints, "
         f"{len(building_tiles)} sparse building_tiles, "
         f"{len(object_spans)} object_spans, "
+        f"{len(blocker_spans)} blocker_spans, "
         f"{len(resource_colors)} resource colors, "
         f"{len(foundation_terrain)} foundation terrains and "
         f"{len(hero_glow)} glowing heroes to {out_path}"

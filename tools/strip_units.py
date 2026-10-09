@@ -39,8 +39,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from descape.scenario_io import LoadedScenario, load_map_and_units
-from descape.scenario_write import _compress_bytes
+from descape.scenario_io import FORBIDDEN_WRITE_MARKER, LoadedScenario, is_under_compatdata, load_map_and_units
+from descape.scenario_write import WriteBlockedError, _compress_bytes
 
 
 class StripVerificationError(Exception):
@@ -92,6 +92,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Up front, so one refused path never leaves a half-stripped batch behind.
+    for path in args.scenarios:
+        if is_under_compatdata(path):
+            raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {path}")
     _self_test(args.golden)
     print(f"Self-test passed against {args.golden}")
 

@@ -9,6 +9,10 @@ Two different problems live here:
    `tools/gen_object_catalog.py`'s committed `object_catalog.json` swaps in
    real in-game display names, class grouping, and the editor-hidden flag
    from the user's own install without this module's callers changing.
+   `objects()` also lists every .dat-table object no dataset covers and the
+   .dat does not hide from the editor, under `derived_category()`'s
+   .dat-derived category. `combined_object_name()` stays dataset-only: the
+   trigger field formatter's ALL-CAPS contract depends on it.
 2. **Document-scoped references** (`TriggerId`/`VariableId`) -- resolved
    against the open document's own trigger/variable list, which no dataset
    covers.
@@ -62,12 +66,54 @@ def _dat_table() -> dict:
     library-only name on a miss, so a missing file behaves exactly like the
     library-only catalog this module shipped with before slice 4."""
     if not _CATALOG_JSON_PATH.is_file():
-        return {"objects": {}, "techs": {}}
+        return {"objects": {}, "techs": {}, "terrains": {}}
     return json.loads(_CATALOG_JSON_PATH.read_text())
 
 
 def _dat_entry(section: str, id_: int) -> dict | None:
     return _dat_table()[section].get(str(id_))
+
+
+def dat_objects() -> dict[int, dict]:
+    """unit_const -> the committed .dat row for every object, or {} with no
+    generated table. A fresh dict of fresh rows, as dat_terrains()."""
+    return {int(k): dict(v) for k, v in _dat_table()["objects"].items()}
+
+
+def dat_terrains() -> dict[int, dict]:
+    """terrain_id -> the committed `{string_id, code, hidden}` row for every
+    enabled .dat terrain, or {} with no generated table. A fresh dict, so a
+    caller can't mutate the cached table."""
+    return {int(k): dict(v) for k, v in _dat_table().get("terrains", {}).items()}
+
+
+# Type 80 classes that the library files under Units/Heroes, not Buildings:
+# packed (51) and unpacked (54) siege.
+_SIEGE_BUILDING_CLASSES = frozenset({51, 54})
+_RELIC_CLASS = 42
+
+
+def derived_category(dat_entry: dict) -> str:
+    """The picker category for an object no library dataset covers, from its
+    .dat fields alone. Re-measured against every library id by
+    tests/test_object_catalog.py (1245 of 1246 editor-visible ids agree)."""
+    type_ = dat_entry.get("type")
+    class_ = dat_entry.get("class")
+    if type_ == 70 and class_ == _RELIC_CLASS:
+        return "Others"
+    if type_ == 80 and class_ not in _SIEGE_BUILDING_CLASSES:
+        return "Buildings"
+    if type_ in (70, 80):
+        return "Heroes" if dat_entry.get("hero_mode", 0) & 1 else "Units"
+    return "Others"
+
+
+def icon_for(object_id: int) -> int | None:
+    """The .dat's icon index for an object (GH #140's unit portrait), or None
+    for -1 or an id the committed catalog lacks."""
+    entry = _dat_entry("objects", object_id)
+    icon = None if entry is None else entry.get("icon")
+    return icon if isinstance(icon, int) and icon >= 0 else None
 
 
 def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None) -> str:
@@ -127,18 +173,29 @@ def combined_object_name(object_const: int) -> str:
     return _combined_object_names().get(object_const, "")
 
 
+def is_known_object(object_const: int) -> bool:
+    """Whether any library dataset or the committed .dat table covers this const."""
+    return bool(combined_object_name(object_const)) or _dat_entry("objects", object_const) is not None
+
+
 def display_name(unit_const: int) -> str:
     """Mirrors terrain_palette.name_for_terrain_id's shape, UNKNOWN_<id>
     fallback included: a scenario can legitimately reference a unit_const no
     dataset covers, and that must read as a known gap rather than a crash.
 
     combined_object_name() supplies the four-dataset merge (~1,355 members
-    total, first dataset wins on an ID collision); the title-casing and
-    UNKNOWN_<id> fallback are this call site's own display convention, not
-    shared with trigger_fields.resolve_reference's ALL CAPS one.
+    total, first dataset wins on an ID collision); the title-casing is this
+    call site's own display convention, not shared with
+    trigger_fields.resolve_reference's ALL CAPS one. An id no dataset covers
+    falls through to object_name() (install string -> .dat code), so a
+    dat-only const, editor-hidden or not, reads e.g. "Jarl" rather than
+    UNKNOWN_<id>; only an id the .dat table lacks too reads UNKNOWN_<id>.
     """
     name = combined_object_name(unit_const)
-    return name.title() if name else f"UNKNOWN_{unit_const}"
+    if name:
+        return name.title()
+    # Install strings are already cased, so no .title() past the library path.
+    return object_name(unit_const)
 
 
 @dataclass(frozen=True)
@@ -173,7 +230,12 @@ def _entry(id_: int, name: str, category: str, dat_entry: dict | None = None) ->
 def objects() -> tuple[CatalogEntry, ...]:
     """Every object across the four datasets, categorized by which one it
     came from, alphabetical by name. An id already claimed by an earlier
-    dataset in _OBJECT_DATASETS is not repeated under a later category."""
+    dataset in _OBJECT_DATASETS is not repeated under a later category.
+
+    Then every .dat-table id no dataset covers and the .dat does not hide
+    from the editor (the Sept 2026 patch's Jarl, Longhouse, Spruce, ...),
+    named install string -> .dat code and categorized by derived_category().
+    Editor-hidden dat-only ids stay out entirely (user decision 2026-09-27)."""
     seen: set[int] = set()
     entries = []
     lang = asset_source.get_language()
@@ -185,6 +247,12 @@ def objects() -> tuple[CatalogEntry, ...]:
             dat_entry = _dat_entry("objects", member.ID)
             name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
             entries.append(_entry(member.ID, name, category, dat_entry))
+    for key, dat_entry in _dat_table()["objects"].items():
+        id_ = int(key)
+        if id_ in seen or dat_entry.get("hidden"):
+            continue
+        name = resolve_name(id_, "", dat_entry, lang)
+        entries.append(_entry(id_, name, derived_category(dat_entry), dat_entry))
     return tuple(sorted(entries, key=lambda e: e.name))
 
 

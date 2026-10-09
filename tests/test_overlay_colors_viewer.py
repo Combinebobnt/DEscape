@@ -115,6 +115,246 @@ def test_live_apply_repaints_without_replacing_the_item(tmp_path, monkeypatch) -
         window.close()
 
 
+# --- overlay opacity (GH #129) -----------------------------------------------
+
+
+def _opacities(items) -> list[float]:
+    return [round(item.opacity(), 3) for item in items]
+
+
+def _selection_items(map_view) -> list:
+    return [item for group in map_view._unit_select_groups.values() for item in group if item is not None]
+
+
+def _region_items(map_view) -> list:
+    return [map_view._region_fill_item, map_view._region_outline_item, map_view._region_ants_item]
+
+
+def _units_window(by_owner: bool = True):
+    """test_unit_selection_viewer's GAIA tree, P1 and P2 buildings, in Units mode."""
+    from test_unit_selection_viewer import _owner_window
+
+    settings.set_selection_by_owner(by_owner)
+    return _owner_window()
+
+
+def _select_all_units(window) -> None:
+    window.map_view.set_unit_selection(list(window.map_view._unit_index.entries))
+
+
+def _start_marquee(map_view) -> None:
+    from PyQt5.QtCore import QPoint
+
+    map_view._update_marquee(QPoint(5, 5), QPoint(60, 40))
+
+
+def test_every_overlay_opacity_group_has_exactly_one_slider_row() -> None:
+    """Each group sits under a colour section that exists, and its slider is
+    not a swatch: test_every_overlay_color_has_a_matching_swatch_row pins those."""
+    from PyQt5.QtWidgets import QSlider
+
+    from descape.viewer import SettingsDialog
+
+    group_ids = [gid for gid, _label, _default in settings.OVERLAY_OPACITIES]
+    prefixes = {color_id.split("_", 1)[0] for color_id, _label, _default in settings.OVERLAY_COLORS}
+    assert sorted(SettingsDialog._OVERLAY_OPACITY_SECTIONS.values()) == sorted(group_ids)
+    assert set(SettingsDialog._OVERLAY_OPACITY_SECTIONS) <= prefixes
+    dialog, window = _dialog_and_window()
+    try:
+        assert sorted(dialog._overlay_opacity_sliders) == sorted(group_ids)
+        named = [s for s in dialog.findChildren(QSlider) if s.objectName().startswith("overlay_opacity_")]
+        assert sorted(s.objectName() for s in named) == sorted(f"overlay_opacity_{gid}" for gid in group_ids)
+        for gid in group_ids:
+            slider = dialog._overlay_opacity_sliders[gid]
+            assert (slider.minimum(), slider.maximum()) == (settings.OVERLAY_OPACITY_MIN, settings.OVERLAY_OPACITY_MAX)
+            assert slider.value() == settings.get_overlay_opacity(gid)
+        assert set(dialog._overlay_swatches) == {cid for cid, _label, _default in settings.OVERLAY_COLORS}
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_apply_overlay_opacity_fades_every_selection_and_region_item_in_place() -> None:
+    window = _units_window()
+    try:
+        mv = window.map_view
+        _select_all_units(window)
+        _start_marquee(mv)
+        mv.set_region((2, 2, 6, 6))
+        items = [*_selection_items(mv), mv._marquee_item, *_region_items(mv)]
+        assert len(_selection_items(mv)) == 9, "three owner groups, each fill, under-stroke and outline"
+        assert set(_opacities(items)) == {1.0}
+        ids_before = [id(item) for item in items]
+
+        settings.set_overlay_opacity("unit_select", 40)
+        settings.set_overlay_opacity("region", 30)
+        mv.apply_overlay_opacity()
+
+        assert [id(item) for item in [*_selection_items(mv), mv._marquee_item, *_region_items(mv)]] == ids_before
+        assert set(_opacities([*_selection_items(mv), mv._marquee_item])) == {0.4}
+        assert set(_opacities(_region_items(mv))) == {0.3}
+        # A multiplier on the item, never the colour.
+        fill, _under, _outline = mv._unit_select_groups[None]
+        assert fill.brush().color().alpha() == mv.UNIT_SELECT_FILL_ALPHA
+        assert mv._region_fill_item.brush().color().alpha() == mv.REGION_SELECT_FILL_ALPHA
+    finally:
+        conftest.close_window(window)
+
+
+def test_selections_created_after_the_change_start_faded() -> None:
+    settings.set_overlay_opacity("unit_select", 40)
+    settings.set_overlay_opacity("region", 30)
+    window = _units_window()
+    try:
+        mv = window.map_view
+        _select_all_units(window)
+        _start_marquee(mv)
+        mv.set_region((2, 2, 6, 6))
+        assert set(_opacities([*_selection_items(mv), mv._marquee_item])) == {0.4}
+        assert set(_opacities(_region_items(mv))) == {0.3}
+    finally:
+        conftest.close_window(window)
+
+
+def test_turning_colour_by_owner_on_fades_the_new_under_stroke() -> None:
+    """GAIA keeps the configured group key either way, so the toggle adds an
+    under-stroke to a live group rather than building a new one."""
+    window = _units_window(by_owner=False)
+    try:
+        mv = window.map_view
+        gaia = next(e for e in mv._unit_index.entries if e.player_id == 0)
+        mv.set_unit_selection([gaia])
+        assert mv._unit_select_groups[None][1] is None
+        settings.set_overlay_opacity("unit_select", 40)
+        mv.apply_overlay_opacity()
+        mv.set_selection_by_owner(True)
+        under = mv._unit_select_groups[None][1]
+        assert under is not None
+        assert round(under.opacity(), 3) == 0.4
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_live_override_reaches_a_group_created_mid_drag_and_clears_on_persist() -> None:
+    window = _units_window()
+    try:
+        mv = window.map_view
+        mv.apply_overlay_opacity(overrides={"unit_select": 25})
+        assert settings.get_overlay_opacity("unit_select") == 100, "an override is never persisted"
+        _select_all_units(window)
+        assert set(_opacities(_selection_items(mv))) == {0.25}
+        mv.apply_overlay_opacity()
+        assert set(_opacities(_selection_items(mv))) == {1.0}
+    finally:
+        conftest.close_window(window)
+
+
+def _trigger_window():
+    from test_trigger_overlay_viewer import PATROL, _window
+
+    window = _window()
+    window.trigger_panel.select_entry(*PATROL)
+    return window
+
+
+def _trigger_roles(map_view) -> dict:
+    return {item.data(0): item for item in map_view.trigger_overlay_items()}
+
+
+def test_trigger_area_opacity_fades_areas_only_and_keeps_the_items() -> None:
+    window = _trigger_window()
+    try:
+        mv = window.map_view
+        roles = _trigger_roles(mv)
+        assert {"fill_strong", "outline_strong", "fill_dim", "outline_dim", "label"} <= set(roles)
+        ids_before = sorted(id(item) for item in mv.trigger_overlay_items())
+
+        settings.set_overlay_opacity("trigger_area", 40)
+        mv.apply_overlay_opacity()
+
+        assert sorted(id(item) for item in mv.trigger_overlay_items()) == ids_before
+        for role, item in _trigger_roles(mv).items():
+            faded = role.startswith(("fill_", "outline_"))
+            assert round(item.opacity(), 3) == (0.4 if faded else 1.0), role
+        assert roles["fill_strong"].brush().color().alpha() == mv.TRIGGER_FILL_ALPHA
+        assert roles["fill_dim"].brush().color().alpha() == mv.TRIGGER_DIM_FILL_ALPHA
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_trigger_colour_change_keeps_the_area_opacity() -> None:
+    """apply_overlay_colors rebuilds the trigger items, so the creation site has to carry it."""
+    window = _trigger_window()
+    try:
+        mv = window.map_view
+        settings.set_overlay_opacity("trigger_area", 40)
+        mv.apply_overlay_opacity()
+        settings.set_overlay_color("trigger_area_outline", "#ff00ff")
+        mv.apply_overlay_colors()
+        roles = _trigger_roles(mv)
+        assert roles["outline_strong"].pen().color().name() == "#ff00ff"
+        for role in ("fill_strong", "outline_strong", "fill_dim", "outline_dim"):
+            assert round(roles[role].opacity(), 3) == 0.4, role
+        assert round(roles["label"].opacity(), 3) == 1.0
+    finally:
+        conftest.close_window(window)
+
+
+def test_apply_overlay_opacity_with_no_map_and_after_close_is_a_no_op() -> None:
+    window = conftest.blank_window(load=False)
+    try:
+        window.map_view.apply_overlay_opacity()
+        window.map_view.apply_overlay_opacity(overrides={"region": 20})
+    finally:
+        conftest.close_window(window)
+    window = _units_window()
+    try:
+        _select_all_units(window)
+        window.map_view.set_region((2, 2, 6, 6))
+        window.close_scenario()
+        window.map_view.apply_overlay_opacity()
+        window.map_view.apply_overlay_opacity(overrides={"unit_select": 20, "region": 20, "trigger_area": 20})
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_slider_fades_live_and_persists_once_on_close() -> None:
+    from descape.viewer import SettingsDialog
+
+    window = conftest.blank_window()
+    dialog = SettingsDialog(window)
+    try:
+        mv = window.map_view
+        mv.set_region((2, 2, 6, 6))
+        dialog._overlay_opacity_sliders["region"].setValue(40)
+        assert set(_opacities(_region_items(mv))) == {0.4}
+        assert dialog._overlay_opacity_labels["region"].text() == "40%"
+        # Debounced: every setter is a full YAML round trip.
+        assert settings.get_overlay_opacity("region") == 100
+        dialog.done(0)
+        assert settings.get_overlay_opacity("region") == 40
+        assert "Overlay opacity: Select tool -> 40%" in window.status_log.toPlainText()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_the_opacity_default_button_restores_and_persists_at_once() -> None:
+    from descape.viewer import SettingsDialog
+
+    settings.set_overlay_opacity("trigger_area", 30)
+    window = conftest.blank_window()
+    dialog = SettingsDialog(window)
+    try:
+        assert dialog._overlay_opacity_sliders["trigger_area"].value() == 30
+        dialog._overlay_opacity_defaults["trigger_area"].click()
+        assert dialog._overlay_opacity_sliders["trigger_area"].value() == 100
+        assert settings.get_overlay_opacity("trigger_area") == 100
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_apply_overlay_colors_clears_the_stale_edit_highlight() -> None:
     """_clear_highlight() runs as part of apply_overlay_colors() (the edit
     highlight has no in-place update path) -- confirm the highlight actually

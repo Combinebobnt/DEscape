@@ -424,7 +424,7 @@ def resolve_civilization_name(value: int | str) -> str:
 class PlayerWriteTarget:
     offset: int  # byte offset within decompressed_body
     length: int  # byte length
-    codec: str  # "s32" | "u32" | "u8" | "f32" | "c256"
+    codec: str  # "s32" | "u32" | "s16" | "u8" | "f32" | "c256"
 
 
 @dataclass(frozen=True)
@@ -443,6 +443,7 @@ class _Resolved:
 
 _CODEC_STRUCT: dict[str, struct.Struct] = {
     "u8": struct.Struct("<B"),
+    "s16": struct.Struct("<h"),  # player_data_3's initial_camera_x/y (camera_fields())
     "s32": struct.Struct("<i"),
     "u32": struct.Struct("<I"),
     "f32": struct.Struct("<f"),
@@ -870,6 +871,66 @@ def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | 
     if array_start < 0:
         return None
     return _variable_stride_target(array_start, retriever.data, player_id - 1, "color")
+
+
+@dataclass(frozen=True)
+class CameraField:
+    """One stored camera coordinate a map resize must keep on the map."""
+
+    target: PlayerWriteTarget
+    axis: str  # "x" (bounded by map_width) or "y" (map_height)
+    value: int | float  # as parsed, and confirmed against the body's bytes
+
+
+_PLAYER_DATA_3_CAMERAS = (
+    ("editor_camera_x", "x"), ("editor_camera_y", "y"),
+    ("initial_camera_x", "x"), ("initial_camera_y", "y"),
+)
+
+
+def camera_fields(loaded: LoadedScenario) -> tuple[CameraField, ...] | None:
+    """Every camera coordinate stored in `loaded` that this module can locate:
+    Units.player_data_3's editor_camera_x/y (f32) and initial_camera_x/y
+    (s16) for each entry, located the way _color_mirror_target() locates
+    `color` (only on a units_write_supported file), and Map.initial_player_views'
+    location_x/y (s32) for each entry (absent before 1.40, skipped on the
+    misframed 1.41 the same way specs_for() drops it).
+
+    None when any located field does not reproduce its parsed value from the
+    body's own bytes: the walk is then off somewhere, so no camera is safe
+    to patch."""
+    fields: list[CameraField] = []
+    retrievers = _retriever_map(loaded, "Units")
+    pd3 = retrievers.get("player_data_3") if retrievers is not None else None
+    if loaded.units_write_supported and pd3 is not None and pd3.data:
+        array_start = loaded.units_block_offset - retriever_length(pd3)
+        if array_start < 0:
+            return None
+        for index in range(len(pd3.data)):
+            for name, axis in _PLAYER_DATA_3_CAMERAS:
+                resolved = _variable_stride_target(array_start, pd3.data, index, name)
+                if resolved is None:
+                    return None
+                fields.append(CameraField(resolved.target, axis, resolved.parsed_value))
+    views = _retriever_map(loaded, "Map")
+    views = views.get("initial_player_views") if views is not None else None
+    if loaded.scenario_version != _MISALIGNED_POV_VERSION and views is not None and views.data:
+        for index in range(len(views.data)):
+            for name, axis in (("location_x", "x"), ("location_y", "y")):
+                resolved = _array_target(loaded, "Map", "initial_player_views", name, index)
+                if resolved is None:
+                    return None
+                fields.append(CameraField(resolved.target, axis, resolved.parsed_value))
+    body = loaded.decompressed_body
+    for field in fields:
+        t = field.target
+        try:
+            expected = encode_target(t, field.value)
+        except ValueError:
+            return None
+        if t.offset < 0 or body[t.offset : t.offset + t.length] != expected:
+            return None
+    return tuple(fields)
 
 
 def _player_data_1_variable_target(

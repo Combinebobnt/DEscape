@@ -194,6 +194,14 @@ def area_centre(coords: Sequence[int]) -> tuple[int, int]:
     return ((x1 + x2) // 2, (y1 + y2) // 2)
 
 
+def tile_centroid(tiles: Sequence[tuple[int, int]]) -> tuple[int, int] | None:
+    """The integer centroid of some units' own tiles, or None for none: a
+    run's origin and Go to Objects (GH #138) share it."""
+    if not tiles:
+        return None
+    return (sum(x for x, _y in tiles) // len(tiles), sum(y for _x, y in tiles) // len(tiles))
+
+
 def location_superseded(shapes: Iterable[TriggerShape]) -> bool:
     """Whether ONE entry's location is only an authoring-time copy: a resolved
     location_object_reference is the real destination (60 of 61 corpus
@@ -222,7 +230,7 @@ def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
     if area is not None:
         origin = area_centre(area.coords)
     elif selected:
-        origin = (sum(x for x, _y in selected) // len(selected), sum(y for _x, y in selected) // len(selected))
+        origin = tile_centroid(selected)
     else:
         return None
     if target is not None:

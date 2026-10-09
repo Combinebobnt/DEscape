@@ -10,14 +10,14 @@ once and written straight through to disk on change.
 from __future__ import annotations
 
 import contextlib
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-from descape import asset_source, edge_ticks, grid_overlay, iso_geometry, view_layers
+from descape import asset_source, edge_ticks, grid_overlay, iso_geometry, terrain_style, themes, view_layers
 from descape.asset_source import CONFIG_PATH
+from descape.themes import normalize_hex as _normalize_hex
 
 _zoom_centered_on_cursor: bool | None = None
 
@@ -111,24 +111,82 @@ def set_pan_speed(value: int) -> None:
     _save_config(config)
 
 
-_dark_mode: bool | None = None
+# App-chrome theme, Settings > Appearance: a themes.PRESETS id plus per-role
+# overrides. See viewer_dialogs.apply_theme() for what it does and doesn't
+# affect. Replaces the old `dark_mode` bool, migrated on read below.
+_theme: str | None = None
+_theme_colors: dict[str, str] | None = None
 
 
-def get_dark_mode() -> bool:
-    """Whether the dark app-chrome theme is on -- see viewer.apply_theme()
-    for what that does and doesn't affect. Off (light) by default."""
-    global _dark_mode
-    if _dark_mode is None:
-        _dark_mode = bool(_load_config().get("dark_mode", False))
-    return _dark_mode
+def get_theme() -> str:
+    """The active preset id. If `theme` is absent, reads the legacy
+    `dark_mode` bool once (true -> dark, else light), the potato_mode shape;
+    an unknown id falls back to themes.THEME_DEFAULT."""
+    global _theme
+    if _theme is None:
+        config = _load_config()
+        raw = config.get("theme")
+        if raw is None and "dark_mode" in config:
+            raw = "dark" if config.get("dark_mode") else "light"
+        _theme = raw if isinstance(raw, str) and raw in themes.PRESETS else themes.THEME_DEFAULT
+    return _theme
 
 
-def set_dark_mode(enabled: bool) -> None:
-    global _dark_mode
-    _dark_mode = enabled
+def set_theme(preset_id: str) -> None:
+    """Switching preset clears every override. Raises ValueError, writing
+    nothing, on an unknown id."""
+    if preset_id not in themes.PRESETS:
+        raise ValueError(f"theme must be one of {list(themes.PRESETS)}, got {preset_id!r}")
+    global _theme, _theme_colors
+    _theme = preset_id
+    _theme_colors = {}
     config = _load_config()
-    config["dark_mode"] = enabled
+    config["theme"] = preset_id
+    config["theme_colors"] = {}
+    config.pop("dark_mode", None)  # fully migrated once set through the new control
     _save_config(config)
+
+
+def _load_theme_colors() -> dict[str, str]:
+    global _theme_colors
+    if _theme_colors is None:
+        persisted = _load_config().get("theme_colors", {})
+        _theme_colors = {}
+        if isinstance(persisted, dict):
+            for role_id, value in persisted.items():
+                if role_id not in themes.ROLE_IDS:
+                    continue
+                # malformed -- this role follows the preset, others unaffected
+                with contextlib.suppress(ValueError):
+                    _theme_colors[role_id] = _normalize_hex(value)
+    return _theme_colors
+
+
+def get_theme_colors() -> dict[str, str]:
+    """A copy of the per-role overrides, {role_id: "#rrggbb"}."""
+    return dict(_load_theme_colors())
+
+
+def _save_theme_colors(colors: dict[str, str]) -> None:
+    config = _load_config()
+    config["theme_colors"] = dict(colors)
+    _save_config(config)
+
+
+def set_theme_color(role_id: str, value: str) -> None:
+    """Raises ValueError, writing nothing, on an unknown role or malformed hex."""
+    if role_id not in themes.ROLE_IDS:
+        raise ValueError(f"unknown theme role {role_id!r}")
+    normalized = _normalize_hex(value)
+    colors = _load_theme_colors()
+    colors[role_id] = normalized
+    _save_theme_colors(colors)
+
+
+def clear_theme_color(role_id: str) -> None:
+    colors = _load_theme_colors()
+    if colors.pop(role_id, None) is not None:
+        _save_theme_colors(colors)
 
 
 def get_zoom_centered_on_cursor() -> bool:
@@ -175,6 +233,29 @@ def set_preload_zoom_levels(enabled: bool) -> None:
     _save_config(config)
 
 
+# Settings > General, Linux only: run under XWayland (QT_QPA_PLATFORM=xcb) on
+# a Wayland session. Read in viewer.main() before the QApplication exists, so
+# it takes effect next launch (descape/qt_platform.py). Default off.
+_xwayland_on_wayland: bool | None = None
+
+
+def get_xwayland_on_wayland() -> bool:
+    """Whether a Linux Wayland session with XWayland launches under xcb.
+    Off by default."""
+    global _xwayland_on_wayland
+    if _xwayland_on_wayland is None:
+        _xwayland_on_wayland = bool(_load_config().get("xwayland_on_wayland", False))
+    return _xwayland_on_wayland
+
+
+def set_xwayland_on_wayland(enabled: bool) -> None:
+    global _xwayland_on_wayland
+    _xwayland_on_wayland = enabled
+    config = _load_config()
+    config["xwayland_on_wayland"] = enabled
+    _save_config(config)
+
+
 # Draw/Paint Can's Trees and Eye candy toolbar checkboxes -- whether painting
 # a forest terrain auto-places its matching GAIA tree/doodad units, mirroring
 # the in-game editor's own Eye Candy option (descape/terrain_units.py).
@@ -214,6 +295,65 @@ def set_paint_eye_candy(enabled: bool) -> None:
     _paint_eye_candy = enabled
     config = _load_config()
     config["paint_eye_candy"] = enabled
+    _save_config(config)
+
+
+# The toolbar's Elevation View, one of terrain_style.TERRAIN_STYLES. Persisted as a
+# view preference by user decision (GH #182), unlike Show sprites and the unit filter.
+TERRAIN_STYLE_DEFAULT = "stepped"
+_terrain_style: str | None = None
+
+
+def get_terrain_style() -> str:
+    global _terrain_style
+    if _terrain_style is None:
+        value = _load_config().get("terrain_style", TERRAIN_STYLE_DEFAULT)
+        _terrain_style = value if value in terrain_style.TERRAIN_STYLES else TERRAIN_STYLE_DEFAULT
+    return _terrain_style
+
+
+def set_terrain_style(style: str) -> None:
+    """Raises ValueError, writing nothing, on a token not in TERRAIN_STYLES."""
+    global _terrain_style
+    if style not in terrain_style.TERRAIN_STYLES:
+        raise ValueError(f"unknown terrain style {style!r}")
+    _terrain_style = style
+    config = _load_config()
+    config["terrain_style"] = style
+    _save_config(config)
+
+
+# View > Layers rows, layer_id -> bool. Persisted by user decision (GH #182), unlike
+# Show sprites and the unit filter: a layer left hidden comes back hidden.
+_view_layers: dict[str, bool] | None = None
+_DEFAULT_VIEW_LAYERS: dict[str, bool] = {spec.layer_id: spec.default for spec in view_layers.LAYERS}
+
+
+def _load_view_layers() -> dict[str, bool]:
+    global _view_layers
+    if _view_layers is None:
+        persisted = _load_config().get("view_layers", {})
+        _view_layers = dict(_DEFAULT_VIEW_LAYERS)
+        if isinstance(persisted, dict):
+            for layer_id, value in persisted.items():
+                # Unknown ids are ignored; a non-bool keeps only its own row's default.
+                if layer_id in _DEFAULT_VIEW_LAYERS and isinstance(value, bool):
+                    _view_layers[layer_id] = value
+    return _view_layers
+
+
+def get_view_layers() -> view_layers.LayerState:
+    return view_layers.LayerState(**_load_view_layers())
+
+
+def set_view_layer(layer_id: str, on: bool) -> None:
+    """Raises ValueError, writing nothing, on an id not in view_layers.LAYERS."""
+    if layer_id not in _DEFAULT_VIEW_LAYERS:
+        raise ValueError(f"unknown view layer {layer_id!r}")
+    layers = _load_view_layers()
+    layers[layer_id] = bool(on)
+    config = _load_config()
+    config["view_layers"] = dict(layers)
     _save_config(config)
 
 
@@ -357,6 +497,9 @@ _grid_follow_elevation: bool | None = None
 # persisted for the same passive-chrome reason as the two above.
 _footprint_outlines: bool | None = None
 _footprint_scope: str | None = None
+# GH #143: one ring per footprint instead of per tile, and each outline in its owner's colour.
+_footprint_merged: bool | None = None
+_footprint_by_owner: bool | None = None
 # View > Range Rings (GH #49): a circle around each selected building showing
 # its attack range. Persisted for the same passive-chrome reason, but OFF by
 # default -- it draws over the sprites, so it is opt-in rather than ambient.
@@ -449,6 +592,36 @@ def set_footprint_scope(value: str) -> None:
     _footprint_scope = value
     config = _load_config()
     config["footprint_scope"] = value
+    _save_config(config)
+
+
+def get_footprint_merged() -> bool:
+    global _footprint_merged
+    if _footprint_merged is None:
+        _footprint_merged = bool(_load_config().get("footprint_merged", False))
+    return _footprint_merged
+
+
+def set_footprint_merged(enabled: bool) -> None:
+    global _footprint_merged
+    _footprint_merged = enabled
+    config = _load_config()
+    config["footprint_merged"] = enabled
+    _save_config(config)
+
+
+def get_footprint_by_owner() -> bool:
+    global _footprint_by_owner
+    if _footprint_by_owner is None:
+        _footprint_by_owner = bool(_load_config().get("footprint_by_owner", False))
+    return _footprint_by_owner
+
+
+def set_footprint_by_owner(enabled: bool) -> None:
+    global _footprint_by_owner
+    _footprint_by_owner = enabled
+    config = _load_config()
+    config["footprint_by_owner"] = enabled
     _save_config(config)
 
 
@@ -623,7 +796,9 @@ def set_elev_step_pct(value: int) -> None:
 # MapView class constants (map_view.py). RGB only: unit_select_fill/
 # region_fill's alpha, ruler_label_outline's alpha, and the edit highlight's
 # pulse opacity are tuned legibility/pulse behaviour, not theme, so they stay
-# hardcoded beside the configurable RGB below. Stored as "#rrggbb" strings --
+# hardcoded beside the configurable RGB below. Three groups also carry a
+# user opacity multiplier on top of those fixed alphas: OVERLAY_OPACITIES
+# below (GH #129). Stored as "#rrggbb" strings --
 # this module is Qt-free, and STATUS_OK_COLOR (viewer.py) is already a
 # hex-string precedent. One row per named constant even where two rows share
 # a default (unit_select/unit_select_fill, region_fill/region_ants): each is
@@ -637,7 +812,7 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_select_fill", "Selection fill", "#50aaff"),
     ("unit_stack", "Stacked-unit badge text", "#ffd24a"),
     ("unit_stack_background", "Stacked-unit badge background", "#000000"),
-    ("footprint_outline", "Footprint outlines", "#e65ae6"),
+    ("footprint_outline", "Footprint outlines", "#c8c8c8"),
     ("range_ring", "Range ring", "#9ee65a"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
     ("ruler_label", "Label text", "#ffbe6e"),
@@ -659,15 +834,6 @@ _overlay_colors: dict[str, str] | None = None
 
 def get_overlay_color_label(color_id: str) -> str:
     return _OVERLAY_COLOR_LABELS.get(color_id, color_id)
-
-
-def _normalize_hex(value: str) -> str:
-    """Lowercased "#rrggbb", accepted case-insensitively. Raises ValueError on
-    anything else -- the membership-gated idiom set_distance_tick_interval
-    uses, generalized from a fixed set of legal values to a fixed shape."""
-    if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
-        return value.lower()
-    raise ValueError(f"overlay color must be '#rrggbb', got {value!r}")
 
 
 def _load_overlay_colors() -> dict[str, str]:
@@ -700,6 +866,165 @@ def set_overlay_color(color_id: str, value: str) -> None:
     colors[color_id] = normalized
     config = _load_config()
     config["overlay_colors"] = colors
+    _save_config(config)
+
+
+# GH #129: a whole-group opacity multiplier (QGraphicsItem.setOpacity) for
+# three overlay groups, on top of their fixed colour alphas. 100 is today's
+# look; the floor keeps a selection from vanishing and reading as a bug.
+# Terrain brush is deliberately not a group (decision, 2026-09-26).
+OVERLAY_OPACITY_MIN = 10
+OVERLAY_OPACITY_MAX = 100
+OVERLAY_OPACITIES: list[tuple[str, str, int]] = [
+    ("unit_select", "Selection opacity", OVERLAY_OPACITY_MAX),
+    ("region", "Opacity", OVERLAY_OPACITY_MAX),
+    ("trigger_area", "Area opacity", OVERLAY_OPACITY_MAX),
+]
+_DEFAULT_OVERLAY_OPACITY: dict[str, int] = {gid: default for gid, _label, default in OVERLAY_OPACITIES}
+_overlay_opacity: dict[str, int] | None = None
+
+
+def _valid_overlay_opacity(value) -> bool:
+    # bool is an int subclass; a YAML `true` is not a percentage.
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and OVERLAY_OPACITY_MIN <= value <= OVERLAY_OPACITY_MAX
+    )
+
+
+def _load_overlay_opacity() -> dict[str, int]:
+    global _overlay_opacity
+    if _overlay_opacity is None:
+        persisted = _load_config().get("overlay_opacity", {})
+        _overlay_opacity = dict(_DEFAULT_OVERLAY_OPACITY)
+        if isinstance(persisted, dict):
+            for group_id, value in persisted.items():
+                # Unknown ids are ignored; a malformed value keeps only its own default.
+                if group_id in _DEFAULT_OVERLAY_OPACITY and _valid_overlay_opacity(value):
+                    _overlay_opacity[group_id] = value
+    return _overlay_opacity
+
+
+def get_overlay_opacity(group_id: str) -> int:
+    """Percent, OVERLAY_OPACITY_MIN-MAX, for one OVERLAY_OPACITIES group."""
+    return _load_overlay_opacity().get(group_id, _DEFAULT_OVERLAY_OPACITY.get(group_id, OVERLAY_OPACITY_MAX))
+
+
+def get_default_overlay_opacity(group_id: str) -> int:
+    return _DEFAULT_OVERLAY_OPACITY.get(group_id, OVERLAY_OPACITY_MAX)
+
+
+def set_overlay_opacity(group_id: str, pct: int) -> None:
+    """Raises ValueError, writing nothing, on an unknown group or a value
+    that isn't an int in range: checked before _load_config()."""
+    if group_id not in _DEFAULT_OVERLAY_OPACITY:
+        raise ValueError(f"unknown overlay opacity group {group_id!r}")
+    if not _valid_overlay_opacity(pct):
+        raise ValueError(f"overlay opacity must be an int {OVERLAY_OPACITY_MIN}-{OVERLAY_OPACITY_MAX}, got {pct!r}")
+    opacity = _load_overlay_opacity()
+    opacity[group_id] = pct
+    config = _load_config()
+    config["overlay_opacity"] = dict(opacity)
+    _save_config(config)
+
+
+# GH #166: the Triggers panel's status marker, Settings > Appearance > Trigger
+# status. Apart from OVERLAY_COLORS because apply_overlay_colors() only reaches
+# the map view. The defaults are viewer.STATUS_OK_COLOR / STATUS_ERROR_COLOR.
+TRIGGER_STATUS_COLORS: list[tuple[str, str, str]] = [
+    ("ok", "Complete", "#4caf50"),
+    ("problem", "Something missing", "#e05252"),
+]
+_DEFAULT_TRIGGER_STATUS_COLORS: dict[str, str] = {sid: default for sid, _label, default in TRIGGER_STATUS_COLORS}
+_TRIGGER_STATUS_COLOR_LABELS: dict[str, str] = {sid: label for sid, label, _default in TRIGGER_STATUS_COLORS}
+_trigger_status_colors: dict[str, str] | None = None
+
+TRIGGER_STATUS_MARKERS: list[tuple[str, str]] = [
+    ("color", "Colour"),
+    ("icon", "Tick and cross icons"),
+    ("both", "Colour and icons"),
+    ("off", "Off"),
+]
+TRIGGER_STATUS_MARKER_DEFAULT = "color"
+_TRIGGER_STATUS_MARKER_IDS = tuple(mid for mid, _label in TRIGGER_STATUS_MARKERS)
+_trigger_status_marker: str | None = None
+_trigger_status_color_ok_rows: bool | None = None
+
+
+def get_trigger_status_color_label(status_id: str) -> str:
+    return _TRIGGER_STATUS_COLOR_LABELS.get(status_id, status_id)
+
+
+def _load_trigger_status_colors() -> dict[str, str]:
+    global _trigger_status_colors
+    if _trigger_status_colors is None:
+        persisted = _load_config().get("trigger_status_colors", {})
+        _trigger_status_colors = dict(_DEFAULT_TRIGGER_STATUS_COLORS)
+        if isinstance(persisted, dict):
+            for status_id, value in persisted.items():
+                if status_id not in _DEFAULT_TRIGGER_STATUS_COLORS:
+                    continue
+                # malformed: this id keeps its default, the other is unaffected
+                with contextlib.suppress(ValueError):
+                    _trigger_status_colors[status_id] = _normalize_hex(value)
+    return _trigger_status_colors
+
+
+def get_trigger_status_color(status_id: str) -> str:
+    """"#rrggbb" for "ok" or "problem"."""
+    return _load_trigger_status_colors().get(status_id, _DEFAULT_TRIGGER_STATUS_COLORS.get(status_id, "#000000"))
+
+
+def get_default_trigger_status_color(status_id: str) -> str:
+    return _DEFAULT_TRIGGER_STATUS_COLORS.get(status_id, "#000000")
+
+
+def set_trigger_status_color(status_id: str, value: str) -> None:
+    """Raises ValueError, writing nothing, on an unknown id or a malformed value."""
+    if status_id not in _DEFAULT_TRIGGER_STATUS_COLORS:
+        raise ValueError(f"unknown trigger status colour {status_id!r}")
+    normalized = _normalize_hex(value)
+    colors = _load_trigger_status_colors()
+    colors[status_id] = normalized
+    config = _load_config()
+    config["trigger_status_colors"] = dict(colors)
+    _save_config(config)
+
+
+def get_trigger_status_marker() -> str:
+    """One of TRIGGER_STATUS_MARKERS' ids; anything else reads as the default."""
+    global _trigger_status_marker
+    if _trigger_status_marker is None:
+        raw = _load_config().get("trigger_status_marker")
+        _trigger_status_marker = raw if raw in _TRIGGER_STATUS_MARKER_IDS else TRIGGER_STATUS_MARKER_DEFAULT
+    return _trigger_status_marker
+
+
+def set_trigger_status_marker(marker: str) -> None:
+    if marker not in _TRIGGER_STATUS_MARKER_IDS:
+        raise ValueError(f"trigger_status_marker must be one of {list(_TRIGGER_STATUS_MARKER_IDS)}, got {marker!r}")
+    global _trigger_status_marker
+    _trigger_status_marker = marker
+    config = _load_config()
+    config["trigger_status_marker"] = marker
+    _save_config(config)
+
+
+def get_trigger_status_color_ok_rows() -> bool:
+    """Whether rows that pass are marked too (colour and tick); off leaves only problems marked."""
+    global _trigger_status_color_ok_rows
+    if _trigger_status_color_ok_rows is None:
+        raw = _load_config().get("trigger_status_color_ok_rows", True)
+        _trigger_status_color_ok_rows = raw if isinstance(raw, bool) else True
+    return _trigger_status_color_ok_rows
+
+
+def set_trigger_status_color_ok_rows(enabled: bool) -> None:
+    global _trigger_status_color_ok_rows
+    _trigger_status_color_ok_rows = bool(enabled)
+    config = _load_config()
+    config["trigger_status_color_ok_rows"] = bool(enabled)
     _save_config(config)
 
 
@@ -780,7 +1105,7 @@ def set_distance_tick_font_px(value: int) -> None:
 
 
 # DEscape's own UI font, Settings > Appearance -- app chrome only, the way
-# dark_mode is. This module stays Qt-free, so there is no QFont or family
+# the theme is. This module stays Qt-free, so there is no QFont or family
 # validation here: the getters hand back raw values and
 # viewer_dialogs.apply_ui_font() owns the fallback.
 UI_FONT_SIZE_MIN = 7
@@ -833,6 +1158,50 @@ def set_ui_font_size(size: int | None) -> None:
     _ui_font_size = size
     config = _load_config()
     config["ui_font_size"] = size
+    _save_config(config)
+
+
+def apply_appearance_values(values: dict) -> None:
+    """A validated theme-file import (theme_file.parse_theme_file()'s
+    ImportPlan.values): one config read, every key set, one save, memo globals
+    updated, so an import is never half-applied and never ~30 YAML round
+    trips. Keys absent from `values` are left alone; overlay colours merge."""
+    global _theme, _theme_colors, _ui_font_family, _ui_font_size, _overlay_colors
+    global _ruler_label_font_px, _distance_tick_font_px, _stack_badge_position, _grid_blend, _grid_thickness
+    merged_overlay = dict(_load_overlay_colors()) if "overlay_colors" in values else None
+    config = _load_config()
+    if "theme" in values:
+        _theme = values["theme"]["preset"]
+        _theme_colors = dict(values["theme"]["colors"])
+        config["theme"] = _theme
+        config["theme_colors"] = dict(_theme_colors)
+        config.pop("dark_mode", None)
+    if "ui_font_family" in values:
+        _ui_font_family = values["ui_font_family"]
+        config["ui_font_family"] = _ui_font_family
+    if "ui_font_size" in values:
+        _ui_font_size = values["ui_font_size"]
+        config["ui_font_size"] = _ui_font_size
+    if merged_overlay is not None:
+        merged_overlay.update(values["overlay_colors"])
+        _overlay_colors = merged_overlay
+        config["overlay_colors"] = dict(merged_overlay)
+    if "ruler_label_font_px" in values:
+        _ruler_label_font_px = values["ruler_label_font_px"]
+        config["ruler_label_font_px"] = _ruler_label_font_px
+    if "distance_tick_font_px" in values:
+        _distance_tick_font_px = values["distance_tick_font_px"]
+        config["distance_tick_font_px"] = _distance_tick_font_px
+    if "stack_badge_position" in values:
+        _stack_badge_position = values["stack_badge_position"]
+        config["stack_badge_position"] = _stack_badge_position
+    if "grid_blend" in values:
+        _grid_blend = values["grid_blend"]
+        config["grid_blend"] = _grid_blend
+        config.pop("grid_lightness", None)
+    if "grid_thickness" in values:
+        _grid_thickness = values["grid_thickness"]
+        config["grid_thickness"] = _grid_thickness
     _save_config(config)
 
 
@@ -946,6 +1315,61 @@ def set_log_height(height: int) -> None:
     _save_config(config)
 
 
+# GH #139: a multi-line text box's dragged height, in lines, per field key
+# ("trigger.<spec name>", "messages.<field id>"). Same range as text_edits.MIN_LINES/MAX_LINES.
+TEXT_BOX_LINES_MIN = 2
+TEXT_BOX_LINES_MAX = 40
+_text_box_lines: dict[str, int] | None = None
+
+
+def _is_line_count(value) -> bool:
+    # bool is an int subclass; a YAML `true` is not a line count.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _clamp_text_box_lines(lines: int) -> int:
+    return max(TEXT_BOX_LINES_MIN, min(TEXT_BOX_LINES_MAX, lines))
+
+
+def _load_text_box_lines() -> dict[str, int]:
+    global _text_box_lines
+    if _text_box_lines is None:
+        persisted = _load_config().get("text_box_lines", {})
+        _text_box_lines = {}
+        if isinstance(persisted, dict):
+            for key, value in persisted.items():
+                # A malformed entry drops only itself; out of range clamps.
+                if isinstance(key, str) and _is_line_count(value):
+                    _text_box_lines[key] = _clamp_text_box_lines(value)
+    return _text_box_lines
+
+
+def get_text_box_lines(key: str) -> int | None:
+    """The stored line count for one text box, or None when it has never
+    been dragged (or was reset), so the box keeps its built-in default."""
+    return _load_text_box_lines().get(key)
+
+
+def set_text_box_lines(key: str, lines: int | None) -> None:
+    """Store a box's line count, clamped; None deletes the key (the grip's
+    double-click reset). Raises ValueError, writing nothing, on a non-int."""
+    if lines is not None and not _is_line_count(lines):
+        raise ValueError(f"text box lines must be an int or None, got {lines!r}")
+    stored = _load_text_box_lines()
+    if lines is None:
+        if key not in stored:
+            return
+        del stored[key]
+    else:
+        stored[key] = _clamp_text_box_lines(lines)
+    config = _load_config()
+    if stored:
+        config["text_box_lines"] = dict(stored)
+    else:
+        config.pop("text_box_lines", None)
+    _save_config(config)
+
+
 # File > Open Recent. Most-recently-opened first; capped rather than
 # unbounded so the submenu (and the config file) can't grow forever.
 MAX_RECENT_FILES = 10
@@ -1047,6 +1471,9 @@ class ToolDef:
     # deliberately not persisted), so there is no settings getter/setter pair
     # behind it -- this field only says which tool grows the checkbox.
     supports_free_place: bool = False
+    # Whether this tool offers "Walls skip occupied tiles" (GH #124), for the
+    # tools that commit wall runs. Session-only, like supports_free_place.
+    supports_skip_occupied: bool = False
     # Which mode(s) this tool's toolbar button shows in; empty means every
     # mode. Drives viewer_common.tool_applicable() and
     # ViewerWindow._update_tool_enabled()'s per-mode visibility loop --
@@ -1141,6 +1568,7 @@ TOOLS: list[ToolDef] = [
     ToolDef(
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
         click_only=True, modes=("units",), supports_free_place=True,
+        supports_skip_occupied=True,
     ),
     # The wall enclosure plan (2026-09-21): an outline-only, tile-axis ring
     # of walls, one undo record per drag. Its own drag_shape value, like Draw
@@ -1150,7 +1578,7 @@ TOOLS: list[ToolDef] = [
     # Unbound: a duplicate QKeySequence silently kills BOTH actions.
     ToolDef(
         "wall_rect", "Wall Rectangle", stroke_label="Place wall rectangle", default_key="",
-        drag_shape="wall_rect", modes=("units",),
+        drag_shape="wall_rect", modes=("units",), supports_skip_occupied=True,
     ),
     # Phase 3.5b's b2.5 (D3): a brush, not a click-once tool, so it reuses
     # the generic stroke mechanism (begin/tile/end) every brush tool already
@@ -1191,6 +1619,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # unbound like view_distance_ticks below -- no default suggested by the
     # feature request that added this entry, just making it user-bindable.
     ("file_new_default", "New Map (Default Size)", ""),
+    # File > Resize Map…. Unbound, like file_new_default above.
+    ("file_resize", "Resize Map…", ""),
     ("file_open", "Open Map", "Ctrl+O"),
     ("file_close", "Close Map", "Ctrl+W"),
     ("file_save", "Save", "Ctrl+S"),
@@ -1209,6 +1639,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # an accepted tradeoff.
     # "Copy"/"Paste", not "... Region": the actions dispatch on mode, and in
     # Triggers mode they copy and paste triggers (GH #27).
+    # GH #137: triggers, conditions and effects only (no Cut Region).
+    ("edit_cut", "Cut", "Ctrl+X"),
     ("edit_copy", "Copy", "Ctrl+C"),
     ("edit_paste", "Paste", "Ctrl+V"),
     # Phase 2.8: the Select tool's whole-map-select / clear-selection pair.
@@ -1227,6 +1659,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # dialog openers either side of it, and kept inside the contiguous
     # edit_* run so _build_keybinds_tab emits no second "Edit" header.
     ("edit_scatter_units", "Scatter Units in Region…", ""),
+    # GH #144, unbound like the openers around it and inside the edit_* run.
+    ("edit_find_replace", "Find and Replace…", ""),
     ("edit_settings", "Settings…", ""),
     # Map mirroring (Stage 1: terrain + elevation). Unbound like
     # view_distance_ticks below -- no default suggested, just user-bindable.
@@ -1254,6 +1688,10 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_grid_follow", "Grid Follows Elevation", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_footprint_outlines", "Footprint Outlines", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_footprint_merged", "Footprint Outlines: Merge Tiles", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_footprint_by_owner", "Footprint Outlines: Colour by Owner", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_selection_owner_colour", "Colour Selection by Owner", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
@@ -1321,6 +1759,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_show_walls", "Show Walls", ""),
     ("filter_show_buildings", "Show Buildings", ""),
     ("filter_show_eye_candy", "Show Eye Candy", ""),
+    ("filter_show_obstacles", "Show Obstacles", ""),
     ("filter_show_invisible", "Show Invisible Objects", ""),
     ("filter_show_garrisoned", "Show Garrisoned Units", ""),
     ("filter_all_players", "All Players", ""),
@@ -1356,6 +1795,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #75: widen the selection to whole stacks. Ctrl+K ("stacK"): free, and a
     # modifier combo keeps it clear of the bare-letter tool keys.
     ("unit_select_stack", "Select Whole Stack", "Ctrl+K"),
+    # GH #125's wall button. Unbound: a duplicate key sequence silently disables both actions.
+    ("unit_wall_pick", "Pick Last-Used Wall", ""),
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
@@ -1552,7 +1993,11 @@ _autosave_enabled: bool | None = None
 _autosave_interval_min: int | None = None
 _autosave_retention: int | None = None
 _autosave_location: str | None = None
+# GH #127: "" means autosave.autosave_dir(), the default folder.
+_autosave_dir: str | None = None
 _backups_enabled: bool | None = None
+# The saved autosave_dir that _autosave_dir read as "", and why; ("", "") if none was refused.
+_autosave_dir_refused: tuple[str, str] | None = None
 
 
 def get_autosave_enabled() -> bool:
@@ -1617,9 +2062,10 @@ def set_autosave_retention(value: int) -> None:
 
 
 def get_autosave_location() -> str:
-    """"central" (beside config.yaml) or "sidecar" (beside the source file).
-    Sidecar falls back to central per document where it cannot be served --
-    see descape/autosave.py's slot_path()."""
+    """"central" (the autosave folder: get_autosave_dir(), by default beside
+    config.yaml) or "sidecar" (beside the source file). Sidecar falls back to
+    that same folder per document where it cannot be served; see
+    descape/autosave.py's slot_path()."""
     global _autosave_location
     if _autosave_location is None:
         raw = _load_config().get("autosave_location")
@@ -1636,6 +2082,76 @@ def set_autosave_location(value: str) -> None:
     _autosave_location = value
     config = _load_config()
     config["autosave_location"] = value
+    _save_config(config)
+
+
+def _is_default_autosave_dir(value: str) -> bool:
+    # Imported here, not at module level: autosave pulls scenario_io and the parser.
+    from descape import autosave
+
+    try:
+        return Path(value).resolve() == autosave.autosave_dir().resolve()
+    except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
+        return False
+
+
+def get_autosave_dir() -> str:
+    """The configured folder for central slots (GH #127), or "" for the
+    default. A persisted value that isn't an absolute path autosave allows
+    reads as "" rather than raising, and so does the default folder spelled
+    out. Existence is the tick's question (autosave.central_dir()), so an
+    unplugged drive keeps its setting."""
+    global _autosave_dir
+    if _autosave_dir is None:
+        _autosave_dir = _read_autosave_dir()[0]
+    return _autosave_dir
+
+
+def get_autosave_dir_refusal() -> tuple[str, str] | None:
+    """(saved value as text, reason) when get_autosave_dir() read a saved
+    folder as "" because autosave refuses it, else None. Lets the first
+    autosave after a restart say why it fell back to the default folder."""
+    global _autosave_dir_refused
+    if _autosave_dir_refused is None:
+        _autosave_dir_refused = _read_autosave_dir()[1]
+    return _autosave_dir_refused if _autosave_dir_refused[1] else None
+
+
+def _read_autosave_dir() -> tuple[str, tuple[str, str]]:
+    """The config's autosave_dir as get_autosave_dir() serves it, and the
+    (value, reason) pair for a refused one, ("", "") otherwise."""
+    from descape import autosave
+
+    raw = _load_config().get("autosave_dir")
+    if raw is None or raw == "":
+        return "", ("", "")
+    if not isinstance(raw, str):  # never into Path()
+        return "", (str(raw), f"the saved value is not a folder path ({type(raw).__name__})")
+    reason = autosave.autosave_dir_refusal(Path(raw))
+    if reason is not None:
+        return "", (raw, reason)
+    if _is_default_autosave_dir(raw):
+        return "", ("", "")
+    return raw, ("", "")
+
+
+def set_autosave_dir(value: str) -> None:
+    """"" resets to the default. Raises ValueError with the refusal reason,
+    writing nothing, for a folder autosave refuses. The default folder itself
+    is stored as ""."""
+    from descape import autosave
+
+    if value:
+        reason = autosave.autosave_dir_refusal(Path(value))
+        if reason is not None:
+            raise ValueError(f"{value} can't hold autosaves: {reason}")
+        if _is_default_autosave_dir(value):
+            value = ""
+    global _autosave_dir, _autosave_dir_refused
+    _autosave_dir = value
+    _autosave_dir_refused = ("", "")
+    config = _load_config()
+    config["autosave_dir"] = value
     _save_config(config)
 
 

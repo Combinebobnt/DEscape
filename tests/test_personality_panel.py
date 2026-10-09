@@ -223,6 +223,7 @@ def test_an_install_path_change_rescans(fake_roots) -> None:
         conftest.close_window(window)
 
 
+@pytest.mark.font_sensitive
 def test_a_long_mod_name_fits_min_useful_width(fake_roots) -> None:
     from descape.players_panel import PlayersPanel
 

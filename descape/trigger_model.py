@@ -53,7 +53,7 @@ from AoE2ScenarioParser.objects.managers.trigger_manager import (
     get_trigger_referencing_ce,
 )
 
-from descape import trigger_fields, unlinked_fields
+from descape import trigger_fields, trigger_organize, unlinked_fields
 from descape.edit_history import EditHistory, TriggerDiffRecord
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -321,6 +321,70 @@ def display_order_with_copy_inserted(
     return remapped
 
 
+def _section_last_slots(names: Sequence[str], order: Sequence[int]) -> dict[int, int]:
+    """Each trigger in `order` mapped to the display slot of its section's
+    last trigger (its last member, or the header of an empty section)."""
+    slots = {index: slot for slot, index in enumerate(order)}
+    last_slot = {}
+    for section in trigger_organize.sections(names, order):
+        rows = ([] if section.header_index is None else [section.header_index]) + list(section.member_indices)
+        for index in rows:
+            last_slot[index] = slots[rows[-1]]
+    return last_slot
+
+
+def display_order_with_copies_inserted(
+    before_triggers: Sequence,
+    before_order: Sequence[int],
+    after_triggers: Sequence,
+    copy_of: dict[int, object],
+) -> list[int]:
+    """trigger_display_order after N copy_trigger() calls (GH #134), translated
+    by identity like display_order_with_copy_inserted(): every copy renumbers.
+
+    `copy_of` maps id(source) -> its copy. The sources split into contiguous
+    runs of `before_order`, and each run's copies land together, in source
+    display order, right after the run, so a block stays a block instead of
+    interleaving. A run holding a divider instead lands after the end of the
+    section the run ends in: once a copied divider stays a divider, inserting
+    it mid-section would hand that section's tail to the copy. A plain run
+    ending at that same slot keeps its copies first, inside its own section.
+    """
+    new_index_of = {id(t): i for i, t in enumerate(after_triggers)}
+    names = [t.name or "" for t in before_triggers]
+    last_slot = _section_last_slots(names, before_order)
+    # (insert after this slot, divider run?, the run's list indices)
+    runs: list[tuple[int, bool, list[int]]] = []
+    run: list[int] = []
+    for slot, index in enumerate([*before_order, None]):
+        if index is not None and id(before_triggers[index]) in copy_of:
+            run.append(index)
+            continue
+        if run:
+            has_divider = any(trigger_organize.is_divider(names[i]) for i in run)
+            end = last_slot[run[-1]] if has_divider else slot - 1
+            runs.append((end, has_divider, run))
+            run = []
+    inserts: dict[int, list[int]] = {}
+    for end, _, sources in sorted(runs, key=lambda r: (r[0], r[1])):
+        inserts.setdefault(end, []).extend(new_index_of[id(copy_of[id(before_triggers[i])])] for i in sources)
+    result = []
+    for slot, index in enumerate(before_order):
+        result.append(new_index_of[id(before_triggers[index])])
+        result.extend(inserts.get(slot, ()))
+    return result
+
+
+def paste_anchor(names: Sequence[str], order: Sequence[int], anchor: int | None, block_has_divider: bool) -> int | None:
+    """Where a paste below `anchor` really lands (GH #134): `anchor` itself,
+    or the last trigger of its section when the block holds a divider, so a
+    pasted section never splits the one it lands in."""
+    if anchor is None or not block_has_divider:
+        return anchor
+    end = trigger_organize.section_end_slot(names, order, trigger_organize.section_header_of(names, order, anchor))
+    return order[end - 1]
+
+
 def moved_display_order(order: Sequence[int], trigger_index: int, delta: int) -> list[int]:
     """A new trigger_display_order with the trigger at list index
     `trigger_index` moved by `delta` display slots (+1 = Move Down, -1 = Move
@@ -342,6 +406,40 @@ def moved_display_order(order: Sequence[int], trigger_index: int, delta: int) ->
         )
     moved[slot], moved[target] = moved[target], moved[slot]
     return moved
+
+
+def moved_section_display_order(
+    order: Sequence[int], names: Sequence[str], trigger_index: int, delta: int
+) -> list[int]:
+    """A new trigger_display_order with the section holding `trigger_index`
+    (its header or any member) swapped, as one block, with its neighbouring
+    section: delta -1 = Section Up, +1 = Section Down (GH #133).
+
+    `names` are the raw trigger names (`t.name or ""`), the same input the
+    panel partitions with, so the block moved is exactly the section shown.
+    Each block starts at its divider, so membership never changes, only block
+    order. Raises IndexError for a trigger in the leading run (no divider), a
+    move past either end, or a move up into the leading run; ValueError for
+    any other delta. Button enablement is the guard, as for
+    moved_display_order().
+    """
+    if delta not in (-1, 1):
+        raise ValueError(f"a section moves by -1 or +1, not {delta}")
+    parts = trigger_organize.sections(names, order)
+    position = next(
+        (p for p, s in enumerate(parts) if trigger_index == s.header_index or trigger_index in s.member_indices),
+        None,
+    )
+    if position is None:
+        raise IndexError(f"trigger {trigger_index} is not in the display order")
+    if parts[position].header_index is None:
+        raise IndexError(f"trigger {trigger_index} sits before the first section, which cannot move")
+    neighbour = position + delta
+    if not 0 <= neighbour < len(parts) or parts[neighbour].header_index is None:
+        raise IndexError(f"no section {'above' if delta < 0 else 'below'} trigger {trigger_index}'s section")
+    blocks = [((s.header_index,) if s.header_index is not None else ()) + s.member_indices for s in parts]
+    blocks[position], blocks[neighbour] = blocks[neighbour], blocks[position]
+    return [index for block in blocks for index in block]
 
 
 def moved_display_order_block(order: Sequence[int], indices: Sequence[int], delta: int) -> list[int]:
@@ -737,7 +835,7 @@ class TriggerEditModel:
         """
         self._pending = None
 
-    def commit_trigger_edit(self, label: str, history: EditHistory) -> TriggerDiffRecord:
+    def commit_trigger_edit(self, label: str, history: EditHistory, push: bool = True) -> TriggerDiffRecord:
         """Close the pair opened by begin_trigger_edit(), mark the declared
         triggers dirty, and push one record onto `history`.
 
@@ -756,6 +854,10 @@ class TriggerEditModel:
         and getting it wrong in the false-negative direction makes a genuine
         second edit to an already-dirty trigger silently un-undoable. The UI's
         job is not to open an edit it did not make.
+
+        `push=False` mirrors UnitEditModel.commit_unit_edit()'s: the caller
+        (Find and Replace's unit+trigger Replace, GH #144) folds the returned
+        record into a CompositeDiffRecord and must push that itself.
         """
         if self._pending is None:
             raise RuntimeError("commit_trigger_edit() called with no edit in progress")
@@ -772,7 +874,8 @@ class TriggerEditModel:
         after = self.snapshot(post_touched)
 
         record = TriggerDiffRecord(label, before, after, touched=post_touched)
-        history.push_trigger_record(record)
+        if push:
+            history.push_trigger_record(record)
         return record
 
     # -- structural edits ----------------------------------------------------
@@ -924,8 +1027,8 @@ class TriggerEditModel:
                 f"trigger structs but the model tracks {len(self._blobs)} blobs -- a "
                 f"structural edit bypassed structural_edit()"
             )
-        # The commit re-slotted every condition; 1.59's allow_in_fog has no
-        # link, so it would otherwise stay with the slot.
+        # The commit re-slotted every condition. A no-op since 0.9.3 links
+        # allow_in_fog; see unlinked_fields for why the call stays.
         for trigger, entry in zip(manager.triggers, entries, strict=True):
             unlinked_fields.push(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
 

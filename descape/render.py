@@ -57,7 +57,7 @@ def _sprite_reach_px(proj: iso_geometry.IsoProjection) -> tuple[int, int, int, i
 
     The tile radius above is no substitute, and not because it is slightly too
     small: it models the terrain diamond, skirt and contact shadow, and no unit
-    PIXEL extent at all. Sprites reach 404/650/424/316 native px from their
+    PIXEL extent at all. Sprites reach 404/700/424/316 native px from their
     hotspot (unit_sprites.MAX_SPRITE_REACH_*), which the elevation sweep
     happens to cover horizontally and badly under-covers upward.
 
@@ -143,7 +143,9 @@ def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, 
     exactly where tile (x, y)'s left off. That makes a same-terrain area one
     continuous unrolled tiling of the source texture rather than visibly cut-up
     squares, which works because ground textures are themselves authored to
-    tile seamlessly at their own edges.
+    tile seamlessly at their own edges. Stepped and Sloped get the same
+    continuity only because iso_geometry._inverse_sample reads the whole
+    crop along these same axes (column = x, row = y).
 
     Relies on texture_size being an exact multiple of tile_px (enforced by the
     assertion below, checked against the real values every render rather than
@@ -269,49 +271,26 @@ SKIRT_SHADE = {"left": 0.75, "right": 0.55}
 # unit paint-order interleaving _paint_tile_and_units_iso() depends on).
 CONTACT_SHADE = 0.65
 
-# How far up-screen the contact shadow ramps back to no darkening, in rows
-# per px of the occluder's rise: ramp = max(CONTACT_RAMP_MIN,
-# round(rise_px * CONTACT_RAMP_GAIN)). A taller step casts a longer shadow.
+# How far up-screen the contact shadow ramps back to no darkening, as a
+# divisor of half_h -- so the ramp is a constant fraction of a tile at every
+# tile_px, and independent of the elevation delta that produced the band.
 #
-# The band's exposed sliver is a CLIP REGION, not the shadow's shape. Shading
-# the whole sliver made shadow length inversely proportional to step height
-# (a taller step hides more of its neighbor): a 1-level step darkened 51.6%
-# of the neighbor tile at elev_step_pct=50 and 82.0% at 10, a lattice of dark
-# triangles rather than relief. The fixed half_h//4 ramp that replaced it
-# did not respond to the occluder at all (16.4% / 12.1% / 7.4% coverage at
-# pct 10 / 50 / 100, FALLING with step height). A height-derived ramp fills
-# the whole sliver only where ramp >= span, i.e. at tall steps, where a
-# filled triangle hugs the silhouette instead of blanketing a tile.
+# Not a cosmetic knob: shading the band's WHOLE exposed sliver (this is
+# where that design decision landed) makes shadow length
+# inversely proportional to step height, since a taller step hides more of
+# its neighbor. Rendered, a 1-level step then darkens 51.6% of the neighbor
+# tile at elev_step_pct=50 and 82.0% at 10, and every up-screen tile reads
+# as a filled triangle -- a lattice of dark triangles rather than relief.
+# An ambient-occlusion band should instead be a roughly fixed screen-space
+# width hugging the occluder's silhouette, which is what this gives.
 #
-# Coverage is self-limiting: it rises with rise_px, then falls as the sliver
-# runs out. Measured at tile_px=64 (both bands over the neighbor diamond),
-# peak over all rise_px: 22.7% at GAIN 0.75, 27.7% at 1.0, 32.0% at 1.25.
-# The ceiling is ~35% at pct=50. 1.0 chosen by A/B render
-# (tools/gen_contact_shadow_eyeball.py, pct 10-200, tile_px 64 and 128):
-# 1.25 reaches 33.9% at tile_px=128, pct=50, a point off the ceiling for a
-# barely heavier look; 0.75 shrinks pct=100's filled triangles to slivers.
-CONTACT_RAMP_GAIN = 1.0
-
-# Floor so a 1-2px step still darkens its contact row. It also flattens the
-# low end: at rise 1 -> 2 coverage falls 5.9% -> 5.5%, since both floor to 2.
-CONTACT_RAMP_MIN = 2
-
-# How heavily the apex wedge (iso_geometry.shadow_apex_indices) draws where
-# it joins the band. "even": the band's own height-derived ramp, so the
-# contour runs at uniform weight with only the band's geometric taper as a
-# dip on each flank. "taper": the band's own darkened thickness in its
-# junction column, so the contour thins to match the band at every apex.
-# The old fixed ramp // 2 matched the junction only at tile_px=64 (1 row
-# each); at 128 it was 3 rows against 1, the barb this replaces.
-#
-# "taper" chosen by A/B render, on a measured failure of "even" rather than
-# taste: on the 4-terrace pyramid at pct=100 an even wedge is as tall as the
-# step and bridges into the next terrace ring, so the darkened footprint is
-# 1 connected component instead of 3 at GAIN >= 1.0 (tile_px 64 and 128).
-# At pct=50 it also leaves a dark lump at every corner apex. "taper" holds
-# 3/3/3 at pct 25/50/100 for every GAIN tried; its contour scallops to 1px
-# at each apex, which reads as a row of filled triangles at tall steps.
-CONTACT_WEDGE_WEIGHT = "taper"
+# 4 (a quarter of half_h, i.e. 4px at tile_px=64) chosen by A/B render at
+# elev_step_pct 10/50/100 against half_h//2, which still left visible
+# triangle texture at 100 where the sliver is only ~14 rows tall. The band
+# GEOMETRY is untouched by this -- capping is expressed purely as falloff,
+# so the band remains exactly the exposed sliver and simply reaches factor
+# 1.0 (an exact no-op multiply) beyond the ramp.
+CONTACT_RAMP_DIVISOR = 4
 
 # Darkening for the 1px seam line along a tile's own two up-screen diamond
 # edges (see iso_geometry.seam_edge_indices) -- a single symmetric scalar
@@ -388,9 +367,9 @@ def _seam_factors(tile_px: int, side: str) -> np.ndarray:
     Deliberately NOT scaled with half_h. A fixed 1px is what keeps the seam
     from compounding with the band: the band drawn onto tile N reaches N's
     own top-edge row, exactly where N's seam goes, and _shadow_factors is
-    at its 1.0 no-op endpoint there in all but three configurations of
+    at its 1.0 no-op endpoint there in all but two configurations of
     tile_px {8,16,32,64,128} x elev_step_pct {25,50,100,200} --
-    (8, 25), (8, 50) and (16, 25), where 2 pixels per band sit on a span == 1
+    (16, 25) and (8, 50), where 2 pixels per band sit on a span == 1
     column near the apex and carry the full CONTACT_SHADE. Worst case is
     SEAM_SHADE * CONTACT_SHADE = 0.39, dark but nowhere near black --
     accepted, and pinned by tests/test_seam_line.py so it cannot silently
@@ -406,42 +385,21 @@ def _seam_factors(tile_px: int, side: str) -> np.ndarray:
     return np.full(dst_x.size, SEAM_SHADE, dtype=np.float32)
 
 
-def _contact_ramp(tile_px: int, rise_px: int, side: str) -> int:
-    """Ramp length in rows for one _shadow_factors call. The band's is
-    height-derived (CONTACT_RAMP_GAIN). An "apex_*" wedge's follows
-    CONTACT_WEDGE_WEIGHT: the band's own ramp, or the band's darkened
-    thickness in the column it joins, so either way it tracks the band at
-    every tile_px instead of matching it at one."""
-    ramp = max(CONTACT_RAMP_MIN, round(rise_px * CONTACT_RAMP_GAIN))
-    if side.startswith("tip_"):
-        # Its contact row is one below the flanking band columns', so one
-        # more row lands its top edge level with theirs instead of notched.
-        return ramp + 1
-    if not side.startswith("apex_") or CONTACT_WEDGE_WEIGHT == "even":
-        return ramp
-    band_side = "up_right" if side == "apex_up_right" else "up_left"
-    _dy, dst_x, _depth, span = iso_geometry.shadow_quad_indices(tile_px, rise_px, band_side)
-    if dst_x.size == 0:
-        return CONTACT_RAMP_MIN  # band empty: the wedge is a thin cue on its own
-    junction = dst_x == (dst_x.max() if band_side == "up_left" else dst_x.min())
-    # A ramp of eff darkens eff - 1 rows, or 1 at eff == 1, same as the band's.
-    return int(min(span[junction][0], ramp))
-
-
-@lru_cache(maxsize=2048)  # N2 fetches 105 per level per composite; four levels must not thrash
+@lru_cache(maxsize=2048)  # N2 fetches 45 per level per composite; four levels must not thrash
 def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     """float32 darkening factors aligned 1:1 with
     iso_geometry.shadow_quad_indices(tile_px, rise_px, side)'s own output
     (same call, same cache key shape) -- CONTACT_SHADE at depth=0 (the row
     touching the caster's diamond), ramping linearly back to exactly 1.0
-    (no darkening) over the next _contact_ramp() rows, and staying at 1.0
-    for the rest of that column's exposed sliver.
+    (no darkening) over the next CONTACT_RAMP_DIVISOR-th of half_h rows,
+    and staying at 1.0 for the rest of that column's exposed sliver.
 
-    The ramp length is derived from rise_px, NOT the column's own span --
-    see CONTACT_RAMP_GAIN's own comment for the measurements behind that.
-    Normalizing on span (what this did until 2026-08-15) spread one step's
-    worth of darkening over up to 82% of the neighbor tile, so the whole
-    up-screen half of a hill read as a lattice of dark triangles.
+    The ramp length is a fixed fraction of a tile, NOT the column's own
+    span and NOT rise_px -- see CONTACT_RAMP_DIVISOR's own comment for the
+    measurements behind that. Normalizing on span (what this did until
+    2026-08-15) spread one step's worth of darkening over up to 82% of the
+    neighbor tile, so the whole up-screen half of a hill read as a lattice
+    of dark triangles.
 
     min(span, ramp), not a bare ramp: near the caster's apex the wedge has
     tapered to fewer rows than the ramp itself, and ramping over the full
@@ -457,7 +415,8 @@ def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     keeps exactly the truncation edge the paragraph above is about. The
     max(1, ...) makes the endpoint safe instead of avoiding it: it covers
     both eff == 1 (a single-pixel apex column, which stays at
-    CONTACT_SHADE either way) and a 1-row taper-weight wedge. One consequence worth stating: the ramp darkens ramp - 1
+    CONTACT_SHADE either way) and half_h < CONTACT_RAMP_DIVISOR
+    (tile_px=8). One consequence worth stating: the ramp darkens ramp - 1
     rows, not ramp, since its last row is the 1.0 endpoint itself.
 
     Reaching EXACTLY 1.0 rather than merely close is deliberate and safe:
@@ -473,13 +432,24 @@ def _shadow_factors(tile_px: int, rise_px: int, side: str) -> np.ndarray:
     image and truncates back to uint8 either way, and pinning the
     intermediate dtype is what keeps the full-canvas and scratch-canvas
     paint paths bit-identical."""
-    if side.startswith("apex_"):
-        _dst_y, _dst_x, depth, span = iso_geometry.shadow_apex_indices(tile_px, rise_px, side[len("apex_") :])
-    elif side.startswith("tip_"):
-        _dst_y, _dst_x, depth, span = iso_geometry.shadow_tip_indices(tile_px, rise_px, side[len("tip_") :])
+    if side == "apex":
+        _dst_y, _dst_x, depth, span = iso_geometry.shadow_apex_indices(tile_px, rise_px)
     else:
         _dst_y, _dst_x, depth, span = iso_geometry.shadow_quad_indices(tile_px, rise_px, side)
-    eff = np.minimum(span, np.int64(_contact_ramp(tile_px, rise_px, side)))
+    _half_w, half_h = iso_geometry.half_dims(tile_px)
+    ramp = max(1, half_h // CONTACT_RAMP_DIVISOR)
+    if side == "apex":
+        # HALF the band's ramp, and this is a measured choice, not a knob.
+        # The wedge's own span is the diagonal's full exposure (24 rows at
+        # tile_px=64, elev_step_pct=50), so a shared ramp would render it
+        # 4 rows thick where the band it bridges has already tapered to 2
+        # at the junction. That step reads as a horizontal barb hanging off
+        # every tile's apex, which is the "crisp line that visibly thickens
+        # into a lump" failure a prior design pass worried about. Halving
+        # matches the junction thickness exactly, so the
+        # contour runs at even weight through the join.
+        ramp = max(1, ramp // 2)
+    eff = np.minimum(span, np.int64(ramp))
     denom = np.maximum(eff - 1, np.int64(1))
     # denom.astype(np.float32) is mandatory, not redundant -- do NOT
     # simplify it away: float32 / int64 promotes to float64, which breaks
@@ -1060,44 +1030,12 @@ def _render_tile_iso(
     # higher than its diagonal while level with BOTH direct back
     # neighbors, and darkening the apex there would be a lone floating
     # mark with no band on either side of it to bridge.
-    #
-    # Narrowed to the qualifying side's flank, by the SEAM loop's elevation
-    # test rather than whether that side's band drew: the band empties at
-    # a lower rise than the wedge, and the wedge's thin cue there is wanted.
-    # Drawing both flanks on a one-sided run left a 1px spur at every apex.
     if seam_qualified and rise_diag > 0:
-        sides = "both" if rise_ul > 0 and rise_ur > 0 else ("up_left" if rise_ul > 0 else "up_right")
-        a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_diag, sides)
+        a_dst_y, a_dst_x, _depth, _span = iso_geometry.shadow_apex_indices(tile_px, rise_diag)
         if a_dst_y.size:
             # Non-None for the same reason the band's own extent is.
-            extent = iso_geometry.index_extent(iso_geometry.shadow_apex_indices, tile_px, rise_diag, sides)
-            darkens.append((a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_diag, "apex_" + sides), extent))
-
-    # The receiving neighbour's two apex columns at an INNER corner, where two
-    # casters one screen-row apart both shadow the same lower tile N and
-    # neither band reaches their diamond tip columns (see
-    # iso_geometry.shadow_tip_indices). Each caster darkens its own tip column
-    # only, so the halves are disjoint and stay inside this tile's bounding box.
-    #
-    # Gated on the OTHER caster being higher than N too: on a straight run the
-    # contour is already continuous, and an ungated stripe is a lattice.
-    # A subset of N's own diamond, so it cannot spill onto flat ground. The
-    # other caster has no pixels in this column; a later-painted front tile
-    # can only cover it. At the map edge the other caster may not exist, so
-    # that half stays open.
-    tip_gates = (
-        # N = (x, y-1), other caster (x-1, y-1).
-        ("up_left", rise_ul, tx > 0 and rise_ul > 0 and int(elevations[ty - 1, tx - 1]) > int(elevations[ty - 1, tx])),
-        # N = (x+1, y), other caster (x+1, y+1).
-        ("up_right", rise_ur, ty + 1 < map_h and rise_ur > 0 and int(elevations[ty + 1, tx + 1]) > int(elevations[ty, tx + 1])),
-    )
-    for side, rise_px, inner_corner in tip_gates:
-        if not inner_corner:
-            continue
-        t_dst_y, t_dst_x, _depth, _span = iso_geometry.shadow_tip_indices(tile_px, rise_px, side)
-        if t_dst_y.size:
-            extent = iso_geometry.index_extent(iso_geometry.shadow_tip_indices, tile_px, rise_px, side)
-            darkens.append((t_dst_y, t_dst_x, _shadow_factors(tile_px, rise_px, "tip_" + side), extent))
+            extent = iso_geometry.index_extent(iso_geometry.shadow_apex_indices, tile_px, rise_diag)
+            darkens.append((a_dst_y, a_dst_x, _shadow_factors(tile_px, rise_diag, "apex"), extent))
 
     native = composite_backend.native
     if native is not None:
@@ -1384,6 +1322,65 @@ def _observed_elevation_range(
     return lo3[ys - ry0, xs - rx0], hi3[ys - ry0, xs - rx0]
 
 
+# Dirty sets at least this large take _dirty_screen_bbox()'s array path
+# (_dirty_seed_mask). Its fixed cost is a map-sized mask: break-even was ~81
+# tiles on old-allies and June (2026-10-07), so a brush-9 step stays on the loop.
+BBOX_ARRAY_PATH_MIN_TILES = 256
+
+
+def _dirty_seed_mask(
+    mm, dirty_indices, elevations: np.ndarray, proj: iso_geometry.IsoProjection, flatten_elevations: bool,
+    elevation_changed: set, pre_elevation: dict,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """_dirty_screen_bbox()'s per-tile part over index arrays: writes
+    `elevations` and fills elevation_changed/pre_elevation exactly as its loop
+    does, then returns (seed mask, dirty xs, dirty ys), the mask being the
+    dirty tiles dilated by 1 and clipped to the map. None for an empty set,
+    or for a tile outside proj's range (after the writes, as the loop).
+
+    Tile i is (i % w, i // w), the library's own i_to_xy(); each tile's
+    elevation is one property read rather than the loop's several."""
+    w, h = mm.map_width, mm.map_height
+    idx = np.unique(np.fromiter(dirty_indices, dtype=np.int64, count=len(dirty_indices)))
+    if idx.size == 0:
+        return None
+    xs, ys = idx % w, idx // w
+    if flatten_elevations:
+        elevations[ys, xs] = 0
+    else:
+        terrain = mm.terrain
+        new = np.fromiter((terrain[i].elevation for i in idx.tolist()), dtype=np.int64, count=idx.size)
+        pre = elevations[ys, xs]
+        moved = pre != new
+        tiles = list(zip(xs[moved].tolist(), ys[moved].tolist(), strict=True))
+        elevation_changed.update(tiles)
+        pre_elevation.update(zip(tiles, pre[moved].tolist(), strict=True))
+        elevations[ys, xs] = new
+    written = elevations[ys, xs]
+    if ((written < proj.min_elev) | (written > proj.max_elev)).any():
+        return None
+    padded = np.zeros((h + 2, w + 2), dtype=bool)
+    padded[ys + 1, xs + 1] = True
+    mask = np.zeros((h, w), dtype=bool)
+    for dy in range(3):
+        for dx in range(3):
+            mask |= padded[dy : dy + h, dx : dx + w]
+    return mask, xs, ys
+
+
+def _units_owning_tiles(scenario, tiles) -> list:
+    """Every unit whose own `(int(u.x), int(u.y))` is in `tiles`, over all
+    players and ignoring any filter, from unit_own_tile_index().
+
+    Exactly the set a walk over scenario.unit_manager.units testing that own
+    tile would keep: the index is keyed on the same expression, covers every
+    player's list unfiltered, and is memoized on unit_gen, which every
+    UnitEditModel mutator bumps and no terrain or elevation edit touches.
+    tests/test_dirty_bbox_unit_index.py keeps that walk as its oracle."""
+    own_index = unit_own_tile_index(scenario)
+    return [u for t in tiles for _, _, u in own_index.get(t, ())]
+
+
 def _dirty_screen_bbox(
     scenario: LoadedScenario,
     dirty_indices,
@@ -1487,10 +1484,6 @@ def _dirty_screen_bbox(
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
-    dirty_xy = {(mm.terrain[i].x, mm.terrain[i].y) for i in dirty_indices}
-    if not dirty_xy:
-        return None
-
     # Computed locally and unconditionally now (draw-perf seed-dilation plan
     # Step 3, fact 3): the seed union below needs this set itself, not just
     # whatever a caller wanted for its own cache-refresh decision. Aliased
@@ -1500,36 +1493,51 @@ def _dirty_screen_bbox(
     # The old value itself, kept beside the set rather than in it: the set is
     # aliased to the caller's and its type is part of that contract.
     pre_elevation: dict[tuple[int, int], int] = {}
-    if not flatten_elevations:
+
+    # A large dirty set takes the array path (_dirty_seed_mask), same result.
+    seed_mask = None
+    if len(dirty_indices) >= BBOX_ARRAY_PATH_MIN_TILES:
+        out = _dirty_seed_mask(mm, dirty_indices, elevations, proj, flatten_elevations, elevation_changed_local,
+                               pre_elevation)
+        if out is None:
+            return None
+        seed_mask, dirty_xs, dirty_ys = out
+        dirty_xy = set(zip(dirty_xs.tolist(), dirty_ys.tolist(), strict=True)) if units_changed and with_sprites else None
+    else:
+        dirty_xy = {(mm.terrain[i].x, mm.terrain[i].y) for i in dirty_indices}
+        if not dirty_xy:
+            return None
+
+        if not flatten_elevations:
+            for x, y in dirty_xy:
+                pre = int(elevations[y, x])
+                if pre != mm.get_tile(x, y).elevation:
+                    elevation_changed_local.add((x, y))
+                    pre_elevation[(x, y)] = pre
+
         for x, y in dirty_xy:
-            pre = int(elevations[y, x])
-            if pre != mm.get_tile(x, y).elevation:
-                elevation_changed_local.add((x, y))
-                pre_elevation[(x, y)] = pre
+            elevations[y, x] = 0 if flatten_elevations else mm.get_tile(x, y).elevation
 
-    for x, y in dirty_xy:
-        elevations[y, x] = 0 if flatten_elevations else mm.get_tile(x, y).elevation
+        if any(not (proj.min_elev <= int(elevations[y, x]) <= proj.max_elev) for x, y in dirty_xy):
+            return None
 
-    if any(not (proj.min_elev <= int(elevations[y, x]) <= proj.max_elev) for x, y in dirty_xy):
-        return None
-
-    # Lateral expansion, floor of 1 always (draw-perf seed-dilation plan
-    # Step 3): a tile's own skirt geometry samples its "left"/"right"
-    # neighbor's elevation (see _render_tile_iso), so an edited tile can
-    # change a *neighbor's* skirt even though the neighbor's own elevation
-    # never changed -- +-1 is enough for that alone (see
-    # iso_geometry.skirt_quad_indices' docstring for exactly which two of a
-    # tile's four grid-neighbors can ever show a skirt facing it). This
-    # alone is exact for any terrain-only edit: no unit moves, so no pixel
-    # outside dilate(dirty, 1) changes value (fact 2) -- the footprint union
-    # below is additive, not a replacement for this.
-    seed = set(dirty_xy)
-    for x, y in list(dirty_xy):
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h:
-                    seed.add((nx, ny))
+        # Lateral expansion, floor of 1 always (draw-perf seed-dilation plan
+        # Step 3): a tile's own skirt geometry samples its "left"/"right"
+        # neighbor's elevation (see _render_tile_iso), so an edited tile can
+        # change a *neighbor's* skirt even though the neighbor's own elevation
+        # never changed -- +-1 is enough for that alone (see
+        # iso_geometry.skirt_quad_indices' docstring for exactly which two of a
+        # tile's four grid-neighbors can ever show a skirt facing it). This
+        # alone is exact for any terrain-only edit: no unit moves, so no pixel
+        # outside dilate(dirty, 1) changes value (fact 2) -- the footprint union
+        # below is additive, not a replacement for this.
+        seed = set(dirty_xy)
+        for x, y in list(dirty_xy):
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        seed.add((nx, ny))
 
     # Exact footprint union, only for triggered buildings (draw-perf
     # seed-dilation plan Step 3): a unit's footprint is drawn entirely at
@@ -1544,7 +1552,8 @@ def _dirty_screen_bbox(
     #
     # Dilates the (small) TRIGGER set, not a per-anchor ring scan over every
     # unit. The with_sprites block below dilates its own trigger set the same
-    # way for its band (Batch A6).
+    # way for its band (Batch A6). The triggered units come from the own-tile
+    # index, not a walk over every unit (TASK-031.56, _units_owning_tiles).
     # Footprint tile -> the own tiles of units drawn on it. A footprint is
     # drawn at its unit's own-tile height, which the footprint tile's own
     # neighbourhood can be too far away to see.
@@ -1557,28 +1566,32 @@ def _dirty_screen_bbox(
                     nx, ny = x + dx, y + dy
                     if 0 <= nx < w and 0 <= ny < h:
                         triggered.add((nx, ny))
-        for units in scenario.unit_manager.units:
-            for u in units:
-                if (int(u.x), int(u.y)) not in triggered:
-                    continue
-                bounds = unit_tile_bounds(u, w, h)
-                if bounds is None:
-                    continue
-                fx0, fx1, fy0, fy1 = bounds
-                own = (int(u.x), int(u.y))
-                for fx in range(fx0, fx1):
-                    for fy in range(fy0, fy1):
+        for u in _units_owning_tiles(scenario, triggered):
+            bounds = unit_tile_bounds(u, w, h)
+            if bounds is None:
+                continue
+            fx0, fx1, fy0, fy1 = bounds
+            own = (int(u.x), int(u.y))
+            if seed_mask is not None:
+                seed_mask[fy0:fy1, fx0:fx1] = True
+            for fx in range(fx0, fx1):
+                for fy in range(fy0, fy1):
+                    if seed_mask is None:
                         seed.add((fx, fy))
-                        footprint_owners.setdefault((fx, fy), set()).add(own)
+                    footprint_owners.setdefault((fx, fy), set()).add(own)
 
     # Union screen bbox, each seed tile swept over the elevations it was
     # actually painted at, before or after the edit (bbox-elev-sweep plan).
     # Not its own pre/post pair alone: a neighbour's edit moves this tile's
     # skirt bottom and Sloped corners, which _observed_elevation_range covers.
     # tests/test_bbox_elev_sweep.py's diff mask is what pins this.
-    seed_tiles = list(seed)
-    sxs = np.fromiter((x for x, _ in seed_tiles), dtype=np.int64, count=len(seed_tiles))
-    sys_ = np.fromiter((y for _, y in seed_tiles), dtype=np.int64, count=len(seed_tiles))
+    if seed_mask is None:
+        seed_tiles = list(seed)
+        sxs = np.fromiter((x for x, _ in seed_tiles), dtype=np.int64, count=len(seed_tiles))
+        sys_ = np.fromiter((y for _, y in seed_tiles), dtype=np.int64, count=len(seed_tiles))
+    else:
+        mys, mxs = np.nonzero(seed_mask)
+        sxs, sys_ = mxs.astype(np.int64), mys.astype(np.int64)
     lo, hi = _observed_elevation_range(elevations, pre_elevation, sxs, sys_)
     if footprint_owners:
         owners = list({o for owns in footprint_owners.values() for o in owns})
@@ -1587,7 +1600,12 @@ def _dirty_screen_bbox(
             np.array([x for x, _ in owners], dtype=np.int64), np.array([y for _, y in owners], dtype=np.int64),
         )
         owner_range = {o: (int(olo[i]), int(ohi[i])) for i, o in enumerate(owners)}
-        seed_index = {t: i for i, t in enumerate(seed_tiles)}
+        if seed_mask is None:
+            seed_index = {t: i for i, t in enumerate(seed_tiles)}
+        else:
+            index_grid = np.full(seed_mask.shape, -1, dtype=np.int64)
+            index_grid[sys_, sxs] = np.arange(len(sxs))
+            seed_index = {t: int(index_grid[t[1], t[0]]) for t in footprint_owners}
         for tile, owns in footprint_owners.items():
             i = seed_index[tile]
             for o in owns:
@@ -3144,7 +3162,10 @@ def _flat_icon_layer_sliced(
             # `i` is the unit's position in the PLAYER'S full unit list (this
             # loop's own enumerate), not `row`, which only advances past units
             # unit_filter keeps.
-            draw = _flat_unit_icon(unit, player_id, i, overrides, team_index, bounds, tile_px)
+            draw = _flat_unit_icon(
+                unit, player_id, i, overrides, team_index, bounds, tile_px,
+                player_art_for(scenario, player_id),
+            )
             if draw is not None:
                 icons[row] = draw
             row += 1
@@ -3159,12 +3180,14 @@ def _flat_unit_icon(
     team_index: int,
     bounds: tuple[int, int, int, int],
     tile_px: int,
+    art: tuple[int | None, int] | None = None,
 ) -> unit_sprites.SpriteDraw | None:
     """One unit's Flat icon, the per-unit body of _flat_icon_layer_sliced()
     and of FlatChunkCache's row splice, shared so the two cannot drift. index
     is the unit's position in its player's full list, the key `overrides`
     (wall_variant_rotation_overrides()) uses. Footprint size comes from the
-    CLAMPED bounds, matching the rect _flat_unit_bbox() paints."""
+    CLAMPED bounds, matching the rect _flat_unit_bbox() paints. `art` is the
+    owner's player_art_for() pair (GH #48)."""
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     rotation = stored_rotation(player_id, unit)
     # A wall/gate's shape isn't always recoverable from its own stored
@@ -3177,7 +3200,18 @@ def _flat_unit_icon(
         (tile_x1 - tile_x0) * tile_px,
         (tile_y1 - tile_y0) * tile_px,
         getattr(unit, "reference_id", None),
+        art,
     )
+
+
+def player_art_for(scenario, player_id: int) -> tuple[int | None, int] | None:
+    """`player_id`'s (art_civ, age) building-art pair (GH #48, civ_art), or
+    None for today's Gaia-table art: a duck-typed fake scenario carries no
+    player_art."""
+    art = getattr(scenario, "player_art", None)
+    if art is None or not 0 <= player_id < len(art):
+        return None
+    return art[player_id]
 
 
 def composite_rect_flat(
@@ -4307,6 +4341,7 @@ def _resolve_unit_sprite(
         tree_scale if unit.unit_const in TREE_UNIT_IDS else 1.0,
         getattr(unit, "reference_id", None),
         hero_glow=hero_glow and unit.unit_const in HERO_GLOW_CONSTS,
+        art=player_art_for(scenario, player_id),
     )
     # A pasture (DRAPED_SPRITE_CONSTS) carries both: its drape plus its annex-tree art.
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
@@ -4445,6 +4480,7 @@ def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, pla
         overrides.get((player_id, i), stored_rotation(player_id, unit)),
         getattr(unit, "reference_id", None), player_id,
         scenario.team_indices[player_id], scenario.player_colors[player_id], rise,
+        player_art_for(scenario, player_id),
     )
 
 
@@ -4487,10 +4523,12 @@ def sprite_draws_by_anchor_sliced(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
     memo: SpriteMemo | None = None,
-) -> Generator[None, None, SpriteLayer | tuple[SpriteLayer, SpriteMemo]]:
+) -> Generator[object, None, SpriteLayer | tuple[SpriteLayer, SpriteMemo]]:
     """sprite_draws_by_anchor() as a resumable generator -- one yield per
     unit, so level_warm.LevelWarmer can advance it a few milliseconds at a
-    time and resume on the next event-loop tick. See that function for what
+    time and resume on the next event-loop tick. Each yield hands out the
+    unit about to be resolved (no allocation; every drain ignores it), which
+    Perf Trace's level-warm `max step` names. See that function for what
     the result actually is; this is a pure control-flow extraction of its
     body, and it is the ONLY copy of that walk (the public function above is
     a thin drain of this one), so the two can't drift.
@@ -4528,7 +4566,7 @@ def sprite_draws_by_anchor_sliced(
 
     for player_id, units in enumerate(scenario.unit_manager.units):
         for i, unit in enumerate(units):
-            yield
+            yield unit
             if memo is None:
                 contribution = _resolve_unit_sprite(
                     scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
@@ -4778,6 +4816,7 @@ def _flat_icon_for_unit(
         (tile_x1 - tile_x0) * tile_px,
         (tile_y1 - tile_y0) * tile_px,
         getattr(unit, "reference_id", None),
+        player_art_for(scenario, player_id),
     )
 
 

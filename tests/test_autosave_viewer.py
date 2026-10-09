@@ -85,7 +85,7 @@ def test_a_tick_on_a_dirty_document_writes_a_slot_and_leaves_it_dirty(tmp_path) 
 
 
 def test_a_second_tick_with_no_further_edit_writes_nothing(tmp_path) -> None:
-    """The _autosaved_at_cursor gate: a document edited once and then left
+    """The _autosaved_content gate: a document edited once and then left
     alone is dirty forever, and would otherwise re-serialize identical bytes
     every interval for the rest of the session."""
     window, _target = _window_on(tmp_path)
@@ -97,6 +97,53 @@ def test_a_second_tick_with_no_further_edit_writes_nothing(tmp_path) -> None:
 
         assert len(_slots()) == 1
         assert "Autosaved to" not in window.status_log.toPlainText()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_ruler_only_cursor_move_does_not_count_as_a_change(tmp_path) -> None:
+    """Ruler records move the history cursor but never the file, so a ruler
+    add or its undo on a modified document must not re-serialize it."""
+    from descape.ruler import Measurement
+
+    def writes() -> int:
+        # Slot names are per-second, so count the log lines, not the files.
+        return window.status_log.toPlainText().count("Autosaved to")
+
+    window, _target = _window_on(tmp_path)
+    try:
+        _dirty(window)
+        window._autosave_tick()
+        assert writes() == 1
+        cursor = window.edit_history.cursor
+        window.map_view._pinned_rulers.add(Measurement((1, 1), (5, 5)))
+        window.map_view.clear_rulers()
+        assert window.edit_history.cursor == cursor + 1, "the Clear rulers record was not pushed"
+        window._autosave_tick()
+        assert writes() == 1, "a ruler push re-serialized the file"
+        window.undo()
+        window._autosave_tick()
+        assert writes() == 1, "a ruler undo re-serialized the file"
+        _dirty(window)
+        window._autosave_tick()
+        assert writes() == 2
+    finally:
+        conftest.close_window(window)
+
+
+def test_undo_then_a_different_edit_at_the_same_cursor_still_autosaves(tmp_path) -> None:
+    """The gate keys on the document's content, not a cursor index: the
+    replacement edit lands on the cursor the first autosave captured."""
+    window, _target = _window_on(tmp_path)
+    try:
+        _dirty(window)
+        window._autosave_tick()
+        window.undo()
+        tiles = window.scenario.map_manager.terrain
+        new_terrain = 15 if tiles[1].terrain_id == 2 else 2
+        window.edit_history.apply("paint", tiles, lambda: setattr(tiles[1], "terrain_id", new_terrain))
+        window._autosave_tick()
+        assert window.status_log.toPlainText().count("Autosaved to") == 2
     finally:
         conftest.close_window(window)
 
@@ -200,6 +247,39 @@ def test_save_as_discards_the_untitled_slots_it_was_autosaved_under(tmp_path, mo
         conftest.close_window(window)
 
 
+def test_an_autosave_whose_slot_cannot_be_computed_logs_a_failure(tmp_path, monkeypatch) -> None:
+    """Swallowed to a log line like any other autosave failure, never raised
+    out of a timer slot into sys.excepthook."""
+    def _raise(*args, **kwargs):
+        raise RuntimeError("Symlink loop from 'x'")
+
+    real_slot_path = autosave.slot_path
+    window, _target = _window_on(tmp_path)
+    try:
+        _dirty(window)
+        monkeypatch.setattr(autosave, "slot_path", _raise)
+        window._autosave_tick()
+        assert "Autosave failed: RuntimeError" in window.status_log.toPlainText()
+        assert _slots() == []
+    finally:
+        # Not monkeypatch.undo(), which would also drop conftest's autouse isolation patches.
+        monkeypatch.setattr(autosave, "slot_path", real_slot_path)
+        conftest.close_window(window)
+
+
+def test_save_as_starts_beside_a_looped_source_unresolved(tmp_path) -> None:
+    loop_a, loop_b = tmp_path / "loop-a", tmp_path / "loop-b"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+    window, target = _window_on(tmp_path)
+    try:
+        window.scenario.path = loop_a / target.name
+        assert window._save_as_start_path() == str(loop_a / target.name)
+    finally:
+        window.scenario.path = target
+        conftest.close_window(window)
+
+
 @pytest.mark.parametrize("backups_enabled", [True, False])
 def test_the_backups_switch_gates_the_bak_and_orig_pair(tmp_path, backups_enabled: bool) -> None:
     """Guards the shipped, already-verified backup path in both directions:
@@ -247,6 +327,162 @@ def test_the_saving_tab_controls_persist_and_re_arm_the_timer(tmp_path) -> None:
         assert settings.get_backups_enabled() is False
     finally:
         dialog.close()
+        conftest.close_window(window)
+
+
+# -- GH #127: a custom autosave folder ---------------------------------------
+
+
+def _pick_folder(monkeypatch, folder: Path) -> None:
+    from descape import viewer as viewer_module
+
+    monkeypatch.setattr(viewer_module.QFileDialog, "getExistingDirectory", lambda *a, **k: str(folder))
+
+
+def _custom_slots(folder: Path) -> list[Path]:
+    return sorted(folder.glob(f"*{autosave.AUTOSAVE_SUFFIX}"))
+
+
+def test_browse_persists_the_folder_and_the_next_tick_writes_there(tmp_path, monkeypatch) -> None:
+    from descape.viewer import SettingsDialog
+
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    window, _target = _window_on(tmp_path)
+    dialog = SettingsDialog(window)
+    try:
+        assert dialog.autosave_location_combo.itemText(0) == "In the autosave folder"
+        assert dialog.autosave_dir_edit.text() == ""
+        assert dialog.autosave_dir_edit.placeholderText() == f"{autosave.autosave_dir()} (default)"
+        _pick_folder(monkeypatch, custom)
+        dialog.autosave_dir_browse_button.click()
+        assert settings.get_autosave_dir() == str(custom)
+        assert dialog.autosave_dir_edit.text() == str(custom)
+        assert f"Autosave folder: {custom}" in window.status_log.toPlainText()
+
+        _dirty(window)
+        window._autosave_tick()
+        assert len(_custom_slots(custom)) == 1
+        assert _slots() == []
+        assert [e.path for e in autosave.entries()] == _custom_slots(custom)
+
+        dialog.autosave_dir_default_button.click()
+        assert settings.get_autosave_dir() == ""
+        assert dialog.autosave_dir_edit.text() == ""
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_a_compatdata_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypatch) -> None:
+    from descape.viewer import STATUS_ERROR_COLOR, SettingsDialog
+
+    proton = tmp_path / "steamapps" / "compatdata" / "813780"
+    proton.mkdir(parents=True)
+    window = conftest.blank_window(load=False)
+    dialog = SettingsDialog(window)
+    try:
+        _pick_folder(monkeypatch, proton)
+        dialog.autosave_dir_browse_button.click()
+        assert settings.get_autosave_dir() == ""
+        assert not (tmp_path / "config.yaml").exists() or "autosave_dir" not in (tmp_path / "config.yaml").read_text()
+        assert "compatdata" in dialog.autosave_dir_status_label.text()
+        assert STATUS_ERROR_COLOR in dialog.autosave_dir_status_label.styleSheet()
+        assert "Autosave folder refused" in window.status_log.toPlainText()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_a_deleted_custom_folder_falls_back_and_is_not_recreated(tmp_path) -> None:
+    custom = tmp_path / "usb-stick"
+    custom.mkdir()
+    settings.set_autosave_dir(str(custom))
+    custom.rmdir()
+    window, _target = _window_on(tmp_path)
+    try:
+        _dirty(window)
+        window._autosave_tick()
+        assert len(_slots()) == 1
+        assert not custom.exists()
+        assert (
+            f"Autosave folder {custom} can't hold autosaves: it was not found; wrote to the default folder"
+            in window.status_log.toPlainText()
+        )
+    finally:
+        conftest.close_window(window)
+
+
+def _fallback_lines(window) -> list[str]:
+    return [line for line in window.status_log.toPlainText().splitlines() if "wrote to the default folder" in line]
+
+
+def _autosaved_count(window) -> int:
+    # Not len(_slots()): two ticks in one second share a slot name.
+    return window.status_log.toPlainText().count("Autosaved to ")
+
+
+def test_a_custom_folder_relinked_into_compatdata_names_that_reason(tmp_path) -> None:
+    """Refused at tick time, not missing: the line says why."""
+    custom = tmp_path / "usb-stick"
+    custom.mkdir()
+    settings.set_autosave_dir(str(custom))
+    proton = tmp_path / "steamapps" / "compatdata" / "813780"
+    proton.mkdir(parents=True)
+    custom.rmdir()
+    custom.symlink_to(proton, target_is_directory=True)
+    window, _target = _window_on(tmp_path)
+    try:
+        _dirty(window)
+        window._autosave_tick()
+        assert len(_slots()) == 1
+        assert list(proton.iterdir()) == []
+        lines = _fallback_lines(window)
+        assert len(lines) == 1
+        assert "compatdata/ folder" in lines[0]
+        assert "not found" not in lines[0]
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_fallback_line_is_logged_once_while_the_folder_stays_refused(tmp_path) -> None:
+    custom = tmp_path / "usb-stick"
+    custom.mkdir()
+    settings.set_autosave_dir(str(custom))
+    custom.rmdir()
+    window, _target = _window_on(tmp_path)
+    try:
+        for _ in range(2):
+            _dirty(window)
+            window._autosave_tick()
+        assert _autosaved_count(window) == 2  # both ticks wrote, so the second had its chance to log
+        assert len(_fallback_lines(window)) == 1
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("kind", ["compatdata", "not_text"])
+def test_a_saved_folder_refused_at_startup_is_logged_on_the_first_autosave(tmp_path, kind) -> None:
+    """After a restart get_autosave_dir() reads a refused value as "", so the
+    reason has to come from settings.get_autosave_dir_refusal()."""
+    proton = tmp_path / "steamapps" / "compatdata" / "813780"
+    proton.mkdir(parents=True)
+    raw = {"compatdata": f"'{proton}'", "not_text": "42"}[kind]
+    (tmp_path / "config.yaml").write_text(f"autosave_dir: {raw}\n")  # before anything reads it
+    window, _target = _window_on(tmp_path)
+    try:
+        assert settings.get_autosave_dir() == ""
+        for _ in range(2):
+            _dirty(window)
+            window._autosave_tick()
+        assert _autosaved_count(window) == 2
+        assert _slots()  # into the default folder
+        lines = _fallback_lines(window)
+        assert len(lines) == 1
+        expected = {"compatdata": f"Autosave folder {proton} can't hold autosaves: it is under a Proton compatdata/",
+                    "not_text": "Autosave folder 42 can't hold autosaves: the saved value is not a folder path"}[kind]
+        assert expected in lines[0]
+    finally:
         conftest.close_window(window)
 
 

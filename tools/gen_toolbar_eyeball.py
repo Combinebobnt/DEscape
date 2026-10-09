@@ -36,6 +36,9 @@ _STATES = (
     ("view", "View", ""),
     ("terrain_draw", "Terrain", "draw"),
     ("terrain_set_elevation", "Terrain", "set_level"),
+    # GH #125's wall button sits on row 2 for every Units-mode tool.
+    ("units_pan", "Units", ""),
+    ("units_wall_rect", "Units", "wall_rect"),
 )
 
 _QAPP = None

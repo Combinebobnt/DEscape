@@ -478,7 +478,7 @@ class EdgeTickItem(QGraphicsItem):
     Scene-space drawing would be sheared and rotated by Flat's
     scale(1, 0.5) + rotate(-45), and sub-pixel at fit-to-view on a 480x480.
 
-    Colours deliberately ignore settings.get_dark_mode: MapView paints its
+    Colours deliberately ignore the chrome theme (settings.get_theme): MapView paints its
     scene background unconditionally to OUTSIDE_MAP_COLOR, so there is no
     light variant of the surface these sit on. Gold is not used either, since
     that's the edit highlight's default color ("live and about to paint"),

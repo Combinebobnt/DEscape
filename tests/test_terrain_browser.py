@@ -307,13 +307,14 @@ def test_the_toolbar_terrain_combo_and_browse_button_are_gone() -> None:
 
 
 def test_the_default_terrain_is_the_retired_combos_first_entry() -> None:
-    """The combo listed TerrainId sorted by enum name and started on index 0;
-    moving the picker must not change what an untouched Draw stroke paints."""
-    from AoE2ScenarioParser.datasets.terrains import TerrainId
+    """The combo listed terrains sorted by enum name and started on index 0;
+    moving the picker must not change what an untouched Draw stroke paints.
+    The set is terrain_palette.terrain_ids(), TerrainId plus the .dat-only ids."""
+    from descape.terrain_palette import name_for_terrain_id, terrain_ids
 
     window = _terrain_window()
     try:
-        assert window.terrain_panel.terrain_id() == sorted(TerrainId, key=lambda t: t.name)[0].value
+        assert window.terrain_panel.terrain_id() == sorted(terrain_ids(), key=name_for_terrain_id)[0]
     finally:
         _close(window)
 

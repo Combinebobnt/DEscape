@@ -27,6 +27,12 @@ the same placements whether tiles arrive as a list, a set or a generator.
 units.begin_unit_edit([player]) / units.commit_unit_edit(label, history) for
 one undo step; scatter never touches EditHistory.
 
+**Moving existing units is a separate function.** scatter_existing_units()
+(GH #105) only plans new x/y for units the caller already has and mutates
+nothing, so scatter_units()'s place-new contract above stays as it is. The
+caller applies the plan with set_position(), which leaves rotation, z and
+every other field verbatim.
+
 Leaf module: batch_api.py must not import fill_tools.py, so a scatter helper
 living inside batch_api could never be combined with it. A batch script
 imports both.
@@ -41,7 +47,10 @@ from typing import NamedTuple
 
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
+# render is already loaded by unit_model, so importing it here costs nothing.
+from descape.render import NON_BUILDING_SPAN, span_anchor, unit_tile_bounds
 from descape.scenario_io import LoadedScenario
+from descape.terrain_palette import tile_span
 from descape.unit_model import UnitEditModel
 
 # Strictly below 0.5 so a jittered unit's int(x)/int(y) never leaves its tile.
@@ -58,24 +67,59 @@ class _Spec(NamedTuple):
     initial_animation_frame: int
 
 
-def occupied_tiles(scenario: LoadedScenario) -> set[tuple[int, int]]:
+def occupied_tiles(
+    scenario: LoadedScenario, exclude: Iterable[Unit] = (), *, multi_tile_only: bool = False
+) -> set[tuple[int, int]]:
     """Every on-map tile covered by an existing unit's footprint, all nine
     player lists. Footprints come from render.unit_tile_bounds(), the same
-    oracle unit_pick.build_index() uses; off-map units cover nothing."""
-    # Deferred: render is heavy, and only avoid_occupied needs it.
-    from descape.render import unit_tile_bounds
+    oracle unit_pick.build_index() uses; off-map units cover nothing.
 
+    `exclude` (by identity) skips units about to move, so their own
+    footprints do not block them; a tile they share with another unit stays
+    covered. `multi_tile_only` counts only units whose span exceeds 1x1 on
+    either axis, the test scatter_existing_units() uses for a building."""
     mm = scenario.map_manager
     width, height = mm.map_width, mm.map_height
+    skip = {id(unit) for unit in exclude}
     covered: set[tuple[int, int]] = set()
     for player_units in scenario.unit_manager.units:
         for unit in player_units:
+            if id(unit) in skip:
+                continue
+            if multi_tile_only and tile_span(unit.unit_const, NON_BUILDING_SPAN) == (1, 1):
+                continue
             bounds = unit_tile_bounds(unit, width, height)
             if bounds is None:
                 continue
             x0, x1, y0, y1 = bounds
             covered.update((x, y) for y in range(y0, y1) for x in range(x0, x1))
     return covered
+
+
+def garrison_riders(scenario: LoadedScenario, hosts: Iterable[Unit]) -> list[Unit]:
+    """Every unit garrisoned inside one of `hosts`, transitively, minus the
+    hosts themselves: the units that ride along when the hosts move (GH #42).
+
+    Model-free, so the Scatter dialog can ask before the unit model exists.
+    A host whose reference_id is -1 holds nothing, since -1 is what every
+    ungarrisoned unit carries; viewer._garrison_referrers() has the same rule."""
+    held: dict[int, list[Unit]] = {}
+    for player_units in scenario.unit_manager.units:
+        for unit in player_units:
+            held.setdefault(getattr(unit, "garrisoned_in_id", -1), []).append(unit)
+    pending = list(hosts)
+    seen = {id(unit) for unit in pending}
+    riders: list[Unit] = []
+    while pending:
+        host = pending.pop()
+        if host.reference_id == -1:
+            continue
+        for unit in held.get(host.reference_id, ()):
+            if id(unit) not in seen:
+                seen.add(id(unit))
+                riders.append(unit)
+                pending.append(unit)
+    return riders
 
 
 def _normalize_tiles(tiles: Iterable, width: int, height: int) -> list[tuple[int, int]]:
@@ -213,3 +257,96 @@ def scatter_units(
     if not specs:
         return []
     return units.add_many(player, specs)
+
+
+class ExistingScatter(NamedTuple):
+    """scatter_existing_units()'s plan, aligned with its input by position."""
+
+    # New (x, y) per input unit, or None for one that stays put (no room, or a
+    # building whose planned spot overlapped another building that stays put).
+    positions: list[tuple[float, float] | None]
+    # How many 1x1 units landed on a tile another mover already took.
+    reused: int
+
+
+def scatter_existing_units(
+    scenario: LoadedScenario,
+    units: Sequence[Unit],
+    tiles: Iterable,
+    *,
+    seed: int | None = None,
+    jitter: float = 0.0,
+) -> ExistingScatter:
+    """Plans a random new position inside `tiles` for each of `units` and
+    mutates nothing (GH #105). Only x/y are planned: the caller applies them
+    with set_position(), so rotation and every other field stay verbatim.
+
+    Deterministic per seed for a given input order; a caller whose units
+    arrive in click order sorts them first. Multi-tile units go first, each
+    snapped to the tile grid with its own span (render.span_anchor(), the
+    anchor every corpus placement carries) on a footprint wholly inside
+    `tiles` and clear of every earlier mover; one with no such spot stays
+    put (None) rather than overlapping. A building that stays put keeps its
+    old footprint, so no other mover lands on it: a building placed there
+    stays put too, repeated until nothing overlaps. Then 1x1 units take one
+    free tile each, at the centre plus optional jitter (clamped to MAX_JITTER). When
+    there are more of them than free tiles, the rest reuse free tiles and
+    are counted in `reused`; with no free tile at all they stay put.
+    """
+    if jitter < 0:
+        raise ValueError(f"jitter must be >= 0, got {jitter}")
+    mm = scenario.map_manager
+    eligible = _normalize_tiles(tiles, mm.map_width, mm.map_height)
+    eligible_set = set(eligible)
+    rng = random.Random(seed)
+    jitter = min(jitter, MAX_JITTER)
+    spans = [tile_span(unit.unit_const, NON_BUILDING_SPAN) for unit in units]
+    positions: list[tuple[float, float] | None] = [None] * len(units)
+    taken: set[tuple[int, int]] = set()
+
+    big = [i for i, (sx, sy) in enumerate(spans) if sx > 1 or sy > 1]
+    if big:
+        # One shuffled order for every building: first fit, O(eligible) each.
+        order = eligible[:]
+        rng.shuffle(order)
+        footprints: dict[int, list[tuple[int, int]]] = {}
+        for i in big:
+            sx, sy = spans[i]
+            for lx, ly in order:
+                footprint = [(lx + dx, ly + dy) for dy in range(sy) for dx in range(sx)]
+                if all(t in eligible_set and t not in taken for t in footprint):
+                    taken.update(footprint)
+                    footprints[i] = footprint
+                    positions[i] = span_anchor(lx, ly, sx, sy)
+                    break
+        # A building that stays put keeps its old tiles: un-place any building
+        # that landed on them, to a fixed point (placements only shrink).
+        held: set[tuple[int, int]] = set()
+        stayers = [i for i in big if positions[i] is None]
+        while stayers:
+            for i in stayers:
+                bounds = unit_tile_bounds(units[i], mm.map_width, mm.map_height)
+                if bounds is not None:
+                    x0, x1, y0, y1 = bounds
+                    held.update((x, y) for y in range(y0, y1) for x in range(x0, x1))
+            stayers = [i for i in big if positions[i] is not None and not held.isdisjoint(footprints[i])]
+            for i in stayers:
+                positions[i] = None
+                taken.difference_update(footprints[i])
+        taken |= held
+
+    small = [i for i, (sx, sy) in enumerate(spans) if sx <= 1 and sy <= 1]
+    free = [t for t in eligible if t not in taken]
+    reused = 0
+    if small and free:
+        picked = rng.sample(free, min(len(small), len(free)))
+        extra = len(small) - len(picked)
+        picked += [rng.choice(free) for _ in range(extra)]
+        reused = extra
+        for i, (x, y) in zip(small, picked, strict=True):
+            ux, uy = x + 0.5, y + 0.5
+            if jitter:
+                ux += rng.uniform(-jitter, jitter)
+                uy += rng.uniform(-jitter, jitter)
+            positions[i] = (ux, uy)
+    return ExistingScatter(positions, reused)

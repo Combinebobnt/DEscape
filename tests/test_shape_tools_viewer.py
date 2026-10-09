@@ -553,3 +553,60 @@ def test_a_mid_drag_undo_is_safe() -> None:
         )
     finally:
         _close(window)
+
+
+# -- auto beach on the shape tools (GH #88) ----------------------------------
+
+_WATER_DEEP = 22
+_BEACH = 2
+
+
+def _terrain_tiles(window, terrain_id: int) -> set[tuple[int, int]]:
+    return {(t.x, t.y) for t in window.scenario.map_manager.terrain if t.terrain_id == terrain_id}
+
+
+def _beach_shape_window(tool: str, ticked: bool):
+    window = _shape_window(tool)
+    window.terrain_panel.set_terrain(_WATER_DEEP)
+    window.auto_beach_check.setChecked(ticked)
+    window.beach_combo.setCurrentIndex(window.beach_combo.findData(_BEACH))
+    return window
+
+
+@pytest.mark.parametrize("tool,width", [("draw_line", 1), ("draw_rect", 1), ("draw_rect", 3)])
+def test_auto_beach_rings_a_water_shape_in_one_undo_step(tool: str, width: int) -> None:
+    """Width 3 on a filled rectangle checks that ringing only the shape's edge
+    tiles (viewer._shape_shore) lays the same ring as the whole shape."""
+    from descape import beach_edges, terrain_classes
+    from descape.beach_edges import ring_tiles
+
+    # _shape_shore is exact only while the ring skips every water family.
+    assert terrain_classes.WATER_FAMILIES == beach_edges._PROTECTED_FAMILIES
+    window = _beach_shape_window(tool, ticked=True)
+    window.beach_width_spin.setValue(width)
+    try:
+        assert window.auto_beach_param_action.isVisible()
+        assert window.auto_beach_check.isEnabled()
+        mm = window.scenario.map_manager
+        before = len(window.edit_history.records)
+        _drag(window.map_view, (4, 10), (20, 14))
+        water = _terrain_tiles(window, _WATER_DEEP)
+        assert water
+        assert _terrain_tiles(window, _BEACH) == set(ring_tiles(water, width, mm.map_width, mm.map_height))
+        assert len(window.edit_history.records) == before + 1
+        window.undo()
+        assert _terrain_tiles(window, _WATER_DEEP) == set()
+        assert _terrain_tiles(window, _BEACH) == set()
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("tool", ["draw_line", "draw_rect"])
+def test_an_unticked_box_lays_no_beach_on_a_shape(tool: str) -> None:
+    window = _beach_shape_window(tool, ticked=False)
+    try:
+        _drag(window.map_view, (4, 10), (20, 14))
+        assert _terrain_tiles(window, _WATER_DEEP)
+        assert _terrain_tiles(window, _BEACH) == set()
+    finally:
+        _close(window)

@@ -68,14 +68,22 @@ def is_cyclable(unit_const: int) -> bool:
 
 
 def is_rotation_editable(unit_const: int) -> bool:
-    """Whether the Rotation field and the Rotate actions may change this const
-    (GH #123): a real facing via set_rotation(), or a variant via set_variant()."""
+    """Whether this const alone admits the Rotation field (GH #123): a real
+    facing via set_rotation(), or a variant via set_variant().
+
+    False for a gate, whose orientation lives in its const. Rotate still turns
+    gates in any selection, via set_unit_const(), and the field edits them only
+    when every selected unit is a gate: rotation_field_mode()'s "gate" mode
+    (GH #61) decides that, not this predicate.
+    """
     return unit_rotation.rotation_is_angle(unit_const) or is_cyclable(unit_const)
 
 
 def rotation_field_mode(unit_consts) -> str | None:
     """What a typed Rotation means for this selection: "facing" if any member
-    is ANGLE, else "variant" if any is cyclable, else None.
+    is ANGLE, else "variant" if any is cyclable, else "gate" if every member
+    is a gate (GH #61: an orientation index, written via set_unit_const()),
+    else None. A gate in a mixed selection is skipped, as before.
 
     The panel and ViewerWindow._on_unit_field_changed both ask this of the same
     selection, so they cannot disagree about a typed value.
@@ -85,6 +93,8 @@ def rotation_field_mode(unit_consts) -> str | None:
         return "facing"
     if any(is_cyclable(const) for const in consts):
         return "variant"
+    if consts and all(gate_orientation.is_gate(const) for const in consts):
+        return "gate"
     return None
 
 

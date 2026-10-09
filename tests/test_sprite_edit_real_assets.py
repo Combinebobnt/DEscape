@@ -39,9 +39,10 @@ pytestmark = [
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
 
-# The Britons Wonder. Chosen because tools/scan_sprite_reach.py resolves
-# b_west_wonder_britons_x1 as the asset that sets MAX_SPRITE_REACH_UP (650px)
-# -- i.e. the single sprite that most out-reaches the terrain-only dilation
+# The Britons Wonder, the Gaia-table art this blank-template scenario draws.
+# tools/scan_sprite_reach.py resolved b_west_wonder_britons_x1 as the asset
+# that set MAX_SPRITE_REACH_UP (650px) until GH #48's per-civ art raised it to
+# the Burgundian Wonder's 700 -- still the sprite here that most out-reaches the terrain-only dilation
 # this widening exists to correct. A small unit would leave the whole module
 # passing on the pre-existing UNIT_FOOTPRINT_MAX_RADIUS slack.
 WONDER_CONST = 276

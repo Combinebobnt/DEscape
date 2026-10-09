@@ -1,13 +1,17 @@
 """Carries struct fields the installed AoE2ScenarioParser class doesn't link,
 so they follow their unit or condition through edits instead of a list slot.
 
-Scenario version 1.59 added `UnitStruct.capture_flag` and
-`ConditionStruct.allow_in_fog`. DEscape reads 1.59 through a vendored
-structure (descape/versions/DE/v1.59/), but the pinned 0.8.3 `Unit` and
-`Condition` classes have no RetrieverObjectLink for either field. On save the
-library commits objects into list slots by index and shortens or pads the list
-from its end, so an unlinked value stays with its slot: delete a unit, move
-its list neighbour, and the neighbour saves with the deleted unit's flag.
+**Dormant on the 0.9.3 pin.** Scenario version 1.59 added
+`UnitStruct.capture_flag` and `ConditionStruct.allow_in_fog`. On the old
+0.8.3 pin DEscape read 1.59 through a vendored structure, and 0.8.3's `Unit`
+and `Condition` had no RetrieverObjectLink for either field. 0.9.3 links both,
+so active_fields() is empty for every structure and pull()/push() return at
+once. Kept, table included, because the next game update can add a field
+again before a library release links it: a repo structure for that version
+then needs only a table entry. On save the library commits objects into list
+slots by index and shortens or pads the list from its end, so an unlinked
+value stays with its slot: delete a unit, move its list neighbour, and the
+neighbour saves with the deleted unit's flag.
 
 The fix, without monkeypatching the library's link lists:
 
@@ -20,9 +24,10 @@ The fix, without monkeypatching the library's link lists:
 
 Dormant by construction once the pin moves to a library that links a field:
 active_fields() skips any name the class links, so nothing is double-handled.
-tests/test_v159_load_path.py asserts UNLINKED_FIELDS equals "UnitStruct/
-ConditionStruct retriever names minus the class's link names" for every repo
-structure, so a new vendored version with another such field fails there.
+tests/test_v159_load_path.py asserts active_fields() is empty for every
+structure, and that every field a repo structure adds beyond what the class
+links is in UNLINKED_FIELDS, so a new vendored version with another such field
+fails there until it has an entry.
 
 No Unit RetrieverObjectLink is added instead: UnitManager finds the caption
 links by position (unit_manager.py:155,159).
@@ -39,7 +44,7 @@ from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from descape import library_compat
 
 # class -> {field: default for an object that never carried one}. -1 is the
-# vendored structure's own default for both.
+# 1.59 structure's own default for both.
 UNLINKED_FIELDS: Mapping[type, Mapping[str, Any]] = {
     Unit: {"capture_flag": -1},
     Condition: {"allow_in_fog": -1},

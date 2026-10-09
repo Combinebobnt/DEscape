@@ -53,14 +53,41 @@ pan_speed: 700
 # (false). Default: true.
 zoom_centered_on_cursor: true
 
-# Dark app-chrome theme, Settings > Appearance. Default: false.
-dark_mode: false
+# App-chrome theme preset, Settings > Appearance. One of:
+# light, dark, dim, high_contrast_dark, high_contrast_light, solarized_light,
+# solarized_dark.
+# An unknown id falls back to the default. A config with no `theme` but the
+# retired `dark_mode: true` reads as dark. Default: light.
+theme: light
+
+# Per-role chrome colour overrides on top of the preset, "#rrggbb", Settings >
+# Appearance > Chrome colours. Roles:
+# window, window_text, base, alternate_base, text, button, button_text,
+# highlight, highlighted_text, tooltip_base, tooltip_text, link.
+# An unknown role or malformed value is ignored. Switching preset clears them.
+theme_colors: {}
 
 # After a file opens, warm the neighbouring zoom levels' unit sprites in
 # idle time so the first zoom doesn't stutter, Settings > Appearance.
 # Costs a few seconds of background work per open and some memory; never
 # blocks the window. Default: true.
 preload_zoom_levels: true
+
+# The toolbar's Elevation View, remembered between launches. One of
+# flat, stepped, sloped. Anything else falls back to the default on read, see
+# terrain_style.TERRAIN_STYLES. Default: stepped.
+terrain_style: stepped
+
+# View > Layers, each row on (true) or off (false), remembered between
+# launches. Rows:
+# terrain_textures (Terrain Textures), farm_overlay (Farm Terrain Overlay),
+# small_trees (Small Trees), hero_glow (Hero Glow).
+# An unknown row or a non-true/false value keeps that row's default, shown here.
+view_layers:
+  terrain_textures: true
+  farm_overlay: true
+  small_trees: false
+  hero_glow: true
 
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
@@ -112,9 +139,19 @@ trigger_overlay: true
 # Default: false.
 footprint_outlines: false
 
-# Which units carry one: multitile or buildings or all. Anything else falls back to the
+# Which units carry one: multitile or buildings or units or all. Anything else falls back to the
 # default on read. Default: multitile.
 footprint_scope: multitile
+
+# One outline around each multi-tile footprint instead of one per tile,
+# View > Footprint Outlines > Merge tiles. A diagonal gate, and a draped
+# Sloped farm over multi-level steps, keep one per tile. Default: false.
+footprint_merged: false
+
+# Each outline in its owner's player colour, View > Footprint Outlines >
+# Colour by Owner. GAIA keeps the overlay_colors footprint_outline colour.
+# Default: false.
+footprint_by_owner: false
 
 # How strongly the grid lines blend into the terrain, Settings > Appearance:
 # -100 is solid black lines, 0 is invisible, 100 is solid white ones.
@@ -144,6 +181,16 @@ window_size: [1280, 720]
 # here -- it depends on your font. The value below is only an example.
 # log_height: 120
 
+# Height in text lines of each multi-line text box you have dragged taller or
+# shorter by its bottom edge (trigger form and Messages mode), keyed
+# "trigger.<field>" or "messages.<field>". Persisted automatically when you
+# release the drag; a double-click on the edge resets the box and removes its
+# key. Clamped to 2-40. Omitted entirely until first saved; until then
+# every box is six lines tall. The value below is only an example.
+# text_box_lines:
+#   trigger.description: 12
+#   messages.hints: 10
+
 # File > Open Recent, most-recently-opened first. Persisted automatically
 # on every open -- not something you normally set by hand. Capped at
 # 10 entries; omitted entirely until first saved. The value below is
@@ -157,6 +204,7 @@ window_size: [1280, 720]
 keybinds:
   file_new: Ctrl+N
   file_new_default: ''
+  file_resize: ''
   file_open: Ctrl+O
   file_close: Ctrl+W
   file_save: Ctrl+S
@@ -165,6 +213,7 @@ keybinds:
   file_exit: Ctrl+Q
   edit_undo: Ctrl+Z
   edit_redo: Ctrl+Y
+  edit_cut: Ctrl+X
   edit_copy: Ctrl+C
   edit_paste: Ctrl+V
   edit_select_all: Ctrl+A
@@ -172,6 +221,7 @@ keybinds:
   edit_clipboard_history: ''
   edit_history: ''
   edit_scatter_units: ''
+  edit_find_replace: ''
   edit_settings: ''
   map_mirror: ''
   map_disables: ''
@@ -182,6 +232,8 @@ keybinds:
   view_grid_overlay: ''
   view_grid_follow: ''
   view_footprint_outlines: ''
+  view_footprint_merged: ''
+  view_footprint_by_owner: ''
   view_selection_owner_colour: ''
   view_range_rings: ''
   view_player_cameras: ''
@@ -211,6 +263,7 @@ keybinds:
   filter_show_walls: ''
   filter_show_buildings: ''
   filter_show_eye_candy: ''
+  filter_show_obstacles: ''
   filter_show_invisible: ''
   filter_show_garrisoned: ''
   filter_all_players: ''
@@ -225,6 +278,7 @@ keybinds:
   unit_variant_next: ''''
   unit_variant_random: '-'
   unit_select_stack: Ctrl+K
+  unit_wall_pick: ''
   player_select_0: '0'
   player_select_1: '1'
   player_select_2: '2'
@@ -284,7 +338,7 @@ overlay_colors:
   unit_select_fill: '#50aaff'
   unit_stack: '#ffd24a'
   unit_stack_background: '#000000'
-  footprint_outline: '#e65ae6'
+  footprint_outline: '#c8c8c8'
   range_ring: '#9ee65a'
   ruler_line: '#ff8228'
   ruler_label: '#ffbe6e'
@@ -298,6 +352,35 @@ overlay_colors:
   trigger_area_fill: '#7ce650'
   trigger_run: '#b4f078'
   trigger_unit_ref: '#3cd28c'
+
+# Opacity of three overlay groups (Settings > Appearance), in percent: the
+# Units selection (and its marquee), a selected map region, and the trigger
+# overlay's areas. A multiplier on the whole group, on top of its colours;
+# 100 is the original look. Only
+# 10-100 are legal; anything else falls back to that
+# group's default (100).
+overlay_opacity:
+  unit_select: 100
+  region: 100
+  trigger_area: 100
+
+# How the Triggers panel marks each trigger, condition and effect whose
+# required fields are all set and whose references resolve (ok), or that is
+# missing something (problem), Settings > Appearance > Trigger status. That is
+# a completeness check, not a promise the trigger works in game. One of
+# color, icon, both, off; anything else falls back to the default.
+# Default: color.
+trigger_status_marker: color
+
+# Whether rows that pass are marked too. false leaves only problems marked:
+# a row that passes gets no colour and no tick, in every marker mode.
+# Default: true.
+trigger_status_color_ok_rows: true
+
+# The two marker colours, as "#rrggbb"; omit one to leave it at its default.
+trigger_status_colors:
+  ok: '#4caf50'
+  problem: '#e05252'
 
 # Settings > Saving. Autosave writes its own rotating recovery slot on a
 # timer, never the file you have open, and never clears the unsaved-changes
@@ -314,11 +397,20 @@ autosave_interval_min: 5
 # default. Default: 3.
 autosave_retention: 3
 
-# Where autosave slots go: "central" (an autosave/ folder beside this config
-# file) or "sidecar" (beside the scenario itself). Sidecar falls back to
-# central for any document it cannot serve -- an untitled one, a Steam
-# Workshop/Proton path, or a shipped template. Default: "central".
+# Where autosave slots go: "central" (the autosave folder, autosave_dir
+# below) or "sidecar" (beside the scenario itself). Sidecar falls back to
+# the autosave folder for any document it cannot serve: an untitled one, a
+# Steam Workshop/Proton path, or a shipped template. Default: "central".
 autosave_location: central
+
+# The autosave folder, as an absolute path. "" means the default, an
+# autosave/ folder beside this config file, which also always holds the
+# autosave index. A compatdata/ (Proton) path or a relative one is ignored.
+# If the folder is missing when an autosave runs, that slot goes to the
+# default folder instead; the folder is never created. Switching folders
+# leaves existing autosaves where they are, still listed in Recover.
+# Default: "".
+autosave_dir: ""
 
 # Whether a real save also writes the .bak (previous contents) and .orig
 # (one-time pristine snapshot) pair beside the file. Default: true.

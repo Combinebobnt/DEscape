@@ -422,6 +422,46 @@ def test_a_cliffs_own_tile_stays_inside_its_bounds(frac):
         assert y0 <= int(32.0 + frac) < y1
 
 
+# -- blockers (GH #121) ---------------------------------------------------
+
+# Hardcoded from the .dat's `collision_size` (0.5, 1.5) / (1.5, 0.5), doubled.
+# Class 14 like every free-placed decoration, so neither table above has them.
+REAL_BLOCKER_SPANS = {
+    2423: ("Blocker 1x3", (1, 3)),
+    2424: ("Blocker 3x1", (3, 1)),
+    2429: ("Buildable Blocker 1x3", (1, 3)),
+    2430: ("Buildable Blocker 3x1", (3, 1)),
+}
+
+
+@pytest.mark.parametrize("unit_const", sorted(REAL_BLOCKER_SPANS))
+def test_blockers_span_their_real_number_of_tiles(unit_const):
+    """A 1x3 blocker read as 1x1, so its marker, pick, outline and occupied
+    tiles all covered the centre tile of a three-tile barrier."""
+    name, expected = REAL_BLOCKER_SPANS[unit_const]
+    assert unit_const not in BUILDING_TILE_SPANS, f"{name} must stay out of the is-a-building test"
+    assert unit_const not in OBJECT_TILE_SPANS, f"{name} must stay out of the 96-const cliff table"
+    assert span_of(32.5, 32.5, unit_const) == expected, name
+
+
+def test_the_blocker_span_table_is_exactly_the_allowlist():
+    """Its own JSON key, never more object_spans rows (the cliff table below is
+    pinned to the 96 cliffs) and never a class-wide rule."""
+    from descape import terrain_palette
+
+    table = terrain_palette.BLOCKER_TILE_SPANS
+    assert table == {c: span for c, (_name, span) in REAL_BLOCKER_SPANS.items()}
+
+
+def test_a_1x3_blocker_occupies_three_tiles_centred_on_its_own():
+    """Every corpus blocker sits at x.5/y.5, so an odd span centres on the
+    placed tile: no placement or coordinate changes with the span."""
+    unit = Unit(x=3.5, y=9.5, unit_const=2423)
+    assert set(render.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(3, 8), (3, 9), (3, 10)}
+    unit = Unit(x=3.5, y=9.5, unit_const=2424)
+    assert set(render.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(2, 9), (3, 9), (4, 9)}
+
+
 def test_the_cliff_span_table_and_the_cliff_variant_set_cover_the_same_consts():
     """Both are the .dat's `class_ == 34`, reached two different ways:
     OBJECT_TILE_SPANS is generated from it, unit_sprites._CLIFF_VARIANT_CONSTS

@@ -11,6 +11,7 @@ must agree, and against synthetic v1.21-shaped inputs, where they must not.
 
 from __future__ import annotations
 
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -102,10 +103,11 @@ def test_verify_terrain_block_walks_a_three_byte_stride() -> None:
 
 def test_patch_terrain_block_at_stride_three_never_writes_a_layer() -> None:
     tiles = [_tile(1, 2), _tile(3, 4), _tile(5, 6)]
-    body = _stride3_body(tiles)
+    # The (width, height) pair before the block, which the write path checks.
+    body = _stride3_body(tiles, prefix=b"\xaa\xbb" + struct.pack("<ii", 3, 1))
     scenario = SimpleNamespace(
         decompressed_body=body,
-        terrain_block_offset=2,
+        terrain_block_offset=10,
         terrain_struct_size=3,
         terrain_has_layer=False,
         map_manager=SimpleNamespace(terrain=tiles),
@@ -114,7 +116,7 @@ def test_patch_terrain_block_at_stride_three_never_writes_a_layer() -> None:
     patched = _patch_terrain_block(scenario)
     assert len(patched) == len(body)
     expected = bytearray(body)
-    expected[2 + 3 : 2 + 5] = bytes([9, 1])
+    expected[10 + 3 : 10 + 5] = bytes([9, 1])
     # The unused byte, the neighbouring tiles, and both ends are untouched:
     # the in-memory layer -1 never reached disk.
     assert patched == bytes(expected)
@@ -358,17 +360,17 @@ def test_structure_is_available_from_library_or_repo() -> None:
     assert scenario_io.structure_is_available("1.59")
     assert not scenario_io.structure_is_available("9.99")
     assert scenario_io._repo_structure_path("1.58") is None
-    for version in ("1.21", "1.59"):
-        expected = library_compat.REPO_VERSIONS_DIR / f"v{version}" / "structure.json"
-        assert scenario_io._repo_structure_path(version) == expected
+    assert scenario_io._repo_structure_path("1.59") is None  # the library's on the 0.9.3 pin
+    expected = library_compat.REPO_VERSIONS_DIR / "v1.21" / "structure.json"
+    assert scenario_io._repo_structure_path("1.21") == expected
 
 
 def test_repo_versions_split_on_vocabulary() -> None:
-    """v1.21 ships a structure only, v1.59 a structure plus vocabulary: only
-    the latter's triggers are attempted. A library version is never a repo
-    one, whatever its vocabulary."""
+    """v1.21 ships a structure only, so its triggers are never attempted. A
+    library version is never a repo one, whatever its vocabulary. The
+    structure-plus-vocabulary repo branch is test_repo_vocabulary_branch_*."""
     assert not scenario_io.repo_version_has_triggers("1.21")
-    assert scenario_io.repo_version_has_triggers("1.59")
+    assert not scenario_io.repo_version_has_triggers("1.59")
     assert not scenario_io.repo_version_has_triggers("1.58")
     assert not library_compat.vocabulary_is_available("1.21")
     assert library_compat.vocabulary_is_available("1.59")
@@ -489,7 +491,7 @@ def test_parse_triggers_refuses_a_repo_structure_file_without_parsing(tmp_path, 
     assert loaded._trigger_manager is None
 
 
-def test_trigger_panel_explains_why_triggers_are_unreadable() -> None:
+def test_trigger_panel_explains_why_triggers_are_unreadable(tmp_path, monkeypatch) -> None:
     """One text per cause: the 1.54/3.9 re-save advice would be false about a
     v1.21 file, whose map and units come from this repo's own structure."""
     import dataclasses
@@ -513,10 +515,16 @@ def test_trigger_panel_explains_why_triggers_are_unreadable() -> None:
         panel.show_scenario(dataclasses.replace(window.scenario, trigger_read_supported=False, _trigger_manager=None))
         assert panel.status.text() == panel._UNSUPPORTED["library"]
 
-        # A repo version that ships a vocabulary never gets the "does not
-        # cover triggers" text: that would be false about v1.59.
+        # A repo version that ships a vocabulary (as v1.59 did on the 0.8.3
+        # pin) never gets the "does not cover triggers" text.
+        repo = tmp_path / "repo" / "v9.99"
+        repo.mkdir(parents=True)
+        for kind in ("structure", "conditions", "effects"):
+            (repo / f"{kind}.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(library_compat, "REPO_VERSIONS_DIR", repo.parent)
+        assert scenario_io.repo_version_has_triggers("9.99")
         panel.show_scenario(dataclasses.replace(
-                window.scenario, structure_source="repo", scenario_version="1.59",
+                window.scenario, structure_source="repo", scenario_version="9.99",
                 trigger_read_supported=False, _trigger_manager=None,
             ))
         assert panel.status.text() == panel._UNSUPPORTED["library"]
@@ -541,7 +549,7 @@ def test_unsupported_version_sentence_measures_older_against_the_library() -> No
 
 def test_unsupported_structure_message_names_the_repo_version() -> None:
     text = scenario_io.unsupported_structure_message("1.35")
-    assert "1.35 is older" in text and "versions 1.21, 1.59, but not for this one" in text
+    assert "1.35 is older" in text and "version 1.21, but not for this one" in text
     assert "UnknownScenarioStructureError" not in text and ":(" not in text
 
 

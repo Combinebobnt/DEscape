@@ -145,6 +145,13 @@ def _team_index(s):
     s.team_indices = tuple(indices)
 
 
+def _player_art(s):
+    # GH #48: player 2's (art_civ, age); the resolver draws by it, so the memo must miss.
+    art = list(s.player_art)
+    art[2] = (6, 4)
+    s.player_art = tuple(art)
+
+
 def _delete(s):
     del _units(s)[2][0]
 
@@ -165,6 +172,7 @@ EDITS = {
     "elevation_beside_unit": (_elevation_beside_unit, 0, 1),
     "player_color": (_player_color, 3, 3),
     "team_index": (_team_index, 2, 2),
+    "player_art": (_player_art, 2, 2),
     "delete": (_delete, 0, 0),
     "add": (_add, 1, 1),
 }

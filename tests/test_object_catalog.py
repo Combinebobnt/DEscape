@@ -271,3 +271,101 @@ def test_tech_name_and_object_name_read_separate_id_spaces() -> None:
     things in the two tables, so resolving a tech through the objects table
     would name it after an unrelated unit."""
     assert object_catalog.tech_name(109) != object_catalog.object_name(109)
+
+
+# -- dat-only objects (the Sept 2026 patch's Jarl, Longhouse, Spruce, ...) -----
+
+# Library ids whose library category derived_category() does not reproduce,
+# measured 2026-10-07: PTWC 444 (type 80, class 51, hero_mode 34) is the one
+# editor-visible miss; 1639, 1654 and 2171 are editor-hidden helpers.
+_DERIVED_CATEGORY_EXCEPTIONS = frozenset({444, 1639, 1654, 2171})
+
+
+def _library_categories() -> dict[int, str]:
+    categories: dict[int, str] = {}
+    for dataset, category in object_catalog._OBJECT_DATASETS:
+        for member in dataset:
+            categories.setdefault(member.ID, category)
+    return categories
+
+
+def test_derived_category_reproduces_the_library_category() -> None:
+    """The rule only ever categorizes dat-only ids, so it is re-measured here
+    against every id the library does categorize. A new mismatch fails with
+    its id listed rather than silently miscategorizing future dat-only ids."""
+    mismatches = set()
+    for id_, category in _library_categories().items():
+        dat_entry = object_catalog._dat_entry("objects", id_)
+        assert dat_entry is not None, f"object_catalog.json lacks library id {id_}"
+        if object_catalog.derived_category(dat_entry) != category:
+            mismatches.add(id_)
+    assert mismatches == _DERIVED_CATEGORY_EXCEPTIONS
+
+
+@pytest.mark.parametrize(
+    ("id_", "category"),
+    [(2708, "Units"), (2559, "Buildings"), (2735, "Units"), (2731, "Others"), (2721, "Heroes")],
+)
+def test_objects_lists_the_patchs_dat_only_objects(id_: int, category: str) -> None:
+    assert id_ not in _library_categories(), "the case only tests anything for a dat-only id"
+    found = object_catalog.entry(object_catalog.objects(), id_)
+    assert found is not None, f"{id_} missing from objects()"
+    assert found.category == category
+    assert found.hidden is False
+
+
+@pytest.mark.parametrize("id_", [621, 35, 2607])
+def test_objects_leaves_out_editor_hidden_dat_only_ids(id_: int) -> None:
+    dat_entry = object_catalog._dat_entry("objects", id_)
+    assert dat_entry is not None and dat_entry["hidden"] is True
+    assert id_ not in _library_categories()
+    assert object_catalog.entry(object_catalog.objects(), id_) is None
+
+
+def test_objects_adds_exactly_the_editor_visible_dat_only_ids() -> None:
+    table = object_catalog._dat_table()["objects"]
+    library = _library_categories()
+    expected = {int(k) for k, v in table.items() if int(k) not in library and not v["hidden"]}
+    assert len(expected) == 64  # measured 2026-09-27, unchanged by the 2026-10-07 regen
+    added = {e.id for e in object_catalog.objects()} - set(library)
+    assert added == expected
+
+
+def test_display_name_names_a_dat_only_const_with_no_install() -> None:
+    """The .dat code with no install, where it used to read UNKNOWN_2708. A
+    hidden dat-only const (GH #52's barrel, 2607) is named the same way."""
+    assert object_catalog.display_name(2708) == "Jarl"
+    assert object_catalog.display_name(2607) == "GUNPOWDERKEG"
+    assert object_catalog.display_name(999999) == "UNKNOWN_999999"
+
+
+def test_display_name_names_a_dat_only_const_from_the_install(tmp_path) -> None:
+    strings_dir = tmp_path / "install" / "resources" / "en" / "strings" / "key-value"
+    strings_dir.mkdir(parents=True)
+    (strings_dir / "key-value-strings-utf8.txt").write_text('21390 "Longhouse A"\n', encoding="utf-8")
+    asset_source.set_install_path_override(tmp_path / "install")
+    try:
+        assert object_catalog.display_name(2559) == "Longhouse A"
+        assert object_catalog.name_for(object_catalog.objects(), 2559) == "Longhouse A"
+    finally:
+        asset_source.set_install_path_override(None)
+    assert object_catalog.display_name(2559) == "LONGHOUSEA"
+
+
+def test_combined_object_name_stays_dataset_only() -> None:
+    """The trigger formatter's ALL-CAPS contract reads this, so dat-only ids
+    must not leak into it."""
+    assert object_catalog.combined_object_name(2708) == ""
+
+
+def test_a_missing_json_still_gives_the_library_only_catalog(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(object_catalog, "_CATALOG_JSON_PATH", tmp_path / "absent.json")
+    object_catalog._dat_table.cache_clear()
+    object_catalog.clear_caches()
+    try:
+        assert {e.id for e in object_catalog.objects()} == set(_library_categories())
+        assert object_catalog.dat_terrains() == {}
+        assert object_catalog.display_name(2708) == "UNKNOWN_2708"
+    finally:
+        object_catalog._dat_table.cache_clear()
+        object_catalog.clear_caches()

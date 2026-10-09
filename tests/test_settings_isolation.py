@@ -104,7 +104,7 @@ def test_no_tool_hand_rolls_its_own_reset_list() -> None:
 def test_isolate_settings_redirects_both_paths_and_clears_every_memo(tmp_path: Path, monkeypatch) -> None:
     import descape.asset_source as asset_source_module
 
-    monkeypatch.setattr(settings, "_dark_mode", True)
+    monkeypatch.setattr(settings, "_theme", "dark")
     monkeypatch.setattr(settings, "_ruler_label_font_px", 99)
     written = isolate_settings(tmp_path)
 

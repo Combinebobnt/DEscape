@@ -3,10 +3,12 @@
 # AoE2ScenarioParser is pinned, not just listed -- descape/scenario_io.py reaches
 # into several of its *private* methods (see README.md), so an unpinned install
 # could silently pick up a version where those methods changed or were removed.
-# Confirmed this exact version's PyPI release corresponds to git tag v0.8.3
-# (commit b763e2e37006bedab50c7d349b3ce24b9c2497f6) -- see README.md if you want
+# Confirmed this exact version's PyPI release corresponds to git tag v0.9.3
+# (commit 29b8a25e8a345f1b1add3318b4c41cbfe35faf97) -- see README.md if you want
 # that source available locally to read/debug against instead of a plain install.
-AoE2ScenarioParser==0.8.3
+# Not 0.9.4: it writes a corrupt Triggers section for any newly built effect on
+# a 1.43 or 1.57 file (README.md).
+AoE2ScenarioParser==0.9.3
 
 numpy
 Pillow

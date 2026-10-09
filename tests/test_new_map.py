@@ -238,7 +238,8 @@ def test_custom_size_on_dirty_document_confirms_discard_exactly_once(monkeypatch
     window = ViewerWindow()
     try:
         window.new_map()
-        window.edit_history.cursor = 1  # force is_dirty True with no real edit needed
+        # Force is_dirty with no real edit: a lost save point reads dirty (a bare cursor bump no longer does, GH #108).
+        window.edit_history.saved_at_cursor = None
         assert window.edit_history.is_dirty
 
         discard_calls = []

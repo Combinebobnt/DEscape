@@ -28,7 +28,7 @@ from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 
 
 # Adapted from AoE2ScenarioParser (https://github.com/KSneijders/AoE2ScenarioParser),
-# v0.8.3 (commit b763e2e3), AoE2ScenarioParser/objects/managers/map_manager.py,
+# v0.8.3 (commit b763e2e3; unchanged through v0.9.4), AoE2ScenarioParser/objects/managers/map_manager.py,
 # MapManager._elevation_tile_recursion. GPL-3.0, the same license as DEscape;
 # copyright for the original remains with the AoE2ScenarioParser authors.
 # Changed only to take `mm` explicitly, add every written index to `touched`,

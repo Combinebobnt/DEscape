@@ -5,9 +5,9 @@ descape/option_fields.py's and descape/diplomacy_fields.py's split from
 their panels.
 
 The region is the whole front of the Options section: three blocks, one per
-category, each a 16-wide u32 count array followed by eight variable-length
-u32 id lists (players 1..8). Its layout, measured over every corpus file
-this repo carries:
+category, each a 16-wide u32 count array followed by sixteen variable-length
+u32 id lists, one per count slot (players 1..16). Its layout, measured over
+every corpus file this repo carries:
 
 - It starts exactly at scenario_io's diplomacy_section_end anchor and runs
   to the `combat_mode` retriever, the first fixed-width field after it
@@ -15,11 +15,13 @@ this repo carries:
 - Re-encoding it from the parsed counts and id lists reproduces
   decompressed_body byte-for-byte (20/20), which is what makes a
   browse-only save byte-identical and what verify_disables_block() checks.
-- Count slots 8..15 are never nonzero in the corpus, but they are copied
-  through verbatim rather than zeroed: nothing here has established what
-  the game does with them, and AGENTS.md's pass-it-through-verbatim rules
-  apply to a field whose meaning is unconfirmed.
-- A disabled id is not necessarily in the library enums. 621 ("Town
+- Lists 9..16 are empty (counts 0) in every corpus file, and DE has eight
+  players, so only lists 1..8 are editable. AoE2ScenarioParser 0.9.3 started
+  parsing a list per count slot, so all sixteen counts are derived from their
+  own lists and lists 9..16 round-trip verbatim like any unedited list. An
+  older parser read only eight, which made a nonzero count 9..16 misplace
+  every later byte.
+- A disabled id is not necessarily in `objects()`. 621 ("Town
   Center") appears in a buildings list and 35 ("Battering Ram") in a units
   list, neither of which object_catalog.objects() carries. Such an id must
   round-trip untouched.
@@ -50,10 +52,10 @@ CATEGORIES = ("techs", "units", "buildings")
 
 _SINGULAR = {"techs": "tech", "units": "unit", "buildings": "building"}
 
-# Id lists are per player 1..8; the count arrays in front of them are 16
-# wide. The extra eight slots are filler -- see the module docstring.
-NUM_LIST_PLAYERS = 8
-NUM_COUNT_SLOTS = 16
+# The codec reads and writes one id list per count slot, 16; the dialog edits
+# the eight DE players. See the module docstring.
+NUM_CODEC_LISTS = 16
+NUM_EDITABLE_PLAYERS = 8
 
 # The first fixed-width Options retriever after the disables region. Not
 # itself an OptionFieldSpec, so the cross-check in verify_disables_block()
@@ -99,11 +101,11 @@ def parse_disables_field_id(field_id: str) -> tuple[str, int]:
 
 
 def all_field_ids() -> tuple[str, ...]:
-    """Every (category, player) id this module covers -- 3 x 8."""
+    """Every editable (category, player) id -- 3 x 8."""
     return tuple(
         disables_field_id(category, player_id)
         for category in CATEGORIES
-        for player_id in range(1, NUM_LIST_PLAYERS + 1)
+        for player_id in range(1, NUM_EDITABLE_PLAYERS + 1)
     )
 
 
@@ -130,8 +132,7 @@ def current_ids(loaded: LoadedScenario, category: str, player_id: int) -> tuple[
 
 
 def current_counts(loaded: LoadedScenario, category: str) -> tuple[int, ...]:
-    """The whole stored count array for `category`, all 16 slots -- slots
-    8..15 included, since encode_region() copies them through verbatim."""
+    """The whole stored count array for `category`, all 16 slots."""
     retriever_map = _options_retriever_map(loaded)
     if retriever_map is None:
         return ()
@@ -164,7 +165,7 @@ def disables_region_span(loaded: LoadedScenario) -> tuple[int, int] | None:
     for category in CATEGORIES:
         if count_retriever_name(category) not in retriever_map:
             return None
-        for player_id in range(1, NUM_LIST_PLAYERS + 1):
+        for player_id in range(1, NUM_CODEC_LISTS + 1):
             if ids_retriever_name(category, player_id) not in retriever_map:
                 return None
 
@@ -223,16 +224,15 @@ def encode_region(
     verify_disables_block() turns into the load-time gate, so the gate and
     the writer are the same code path and cannot drift apart.
 
-    Counts 0..7 are re-derived from the (possibly edited) list lengths;
-    slots 8..15 are copied through verbatim, never zeroed. See the module
-    docstring.
+    Every count is re-derived from its own (possibly edited) list's length.
+    See the module docstring.
     """
     edits = dict(edits or {})
     out = bytearray()
     for category in CATEGORIES:
         counts = list(current_counts(loaded, category))
         lists: list[tuple[int, ...]] = []
-        for player_id in range(1, NUM_LIST_PLAYERS + 1):
+        for player_id in range(1, NUM_CODEC_LISTS + 1):
             key = (category, player_id)
             ids = (
                 tuple(int(v) for v in edits[key])
@@ -263,7 +263,7 @@ def verify_disables_block(loaded: LoadedScenario) -> bool:
        walk happens to be self-consistent but misplaced.
 
     Fails closed on a missing anchor, a missing retriever, an empty region,
-    or a count array narrower than the eight player slots it must carry.
+    or a count array narrower than the sixteen lists it must carry.
     """
     span = disables_region_span(loaded)
     if span is None:
@@ -274,7 +274,7 @@ def verify_disables_block(loaded: LoadedScenario) -> bool:
         return False
 
     for category in CATEGORIES:
-        if len(current_counts(loaded, category)) < NUM_LIST_PLAYERS:
+        if len(current_counts(loaded, category)) < NUM_CODEC_LISTS:
             return False
 
     if encode_region(loaded, {}) != body[start:end]:

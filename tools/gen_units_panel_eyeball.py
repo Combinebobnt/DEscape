@@ -16,11 +16,13 @@ Captures, at MIN_USEFUL_WIDTH and a comfortable width:
 3. A tree selected -- Hit points only, combat rows gone, Rotation an
    editable variant number (GH #123).
 4. Group mode: an agreeing pair of archers, then a mixed archers + tree
-   selection (mixed owner/name/X, the "won't rotate" note), then an archer
+   selection (mixed owner/name/X, and the GH #71 note: typing turns the 2
+   archers, Rotate still steps the tree), then an archer
    + trebuchet pair facing one way (a 32-direction scale, GH #61).
 5. Catalog filtered to a long name (elision check, no horizontal clipping).
 6. The vertical splitter dragged to its floor (the _fit_inspector_height
-   check -- the two notes must scroll, never overlap).
+   check: the inspector must scroll, never overlap). The tree shown here has
+   no rotation note since GH #123, so only the stats note is in play.
 
 Writes build/units_panel_eyeball/, gitignored. No test reads it. No golden
 images -- there is no baseline, only visual inspection.
@@ -173,7 +175,7 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
 
     # 4. Group mode (GH #71): two archers agree on name/owner/rotation, and
     # X/Y read "(mixed)"; then archers + a tree, which adds a mixed owner and
-    # name and the "1 of 3 won't rotate" note.
+    # name and the "Typing a Rotation turns the 2 selected units" note.
     window.units_panel.show_group([_entry_for(window, 103), _entry_for(window, 104)])
     path = out_dir / f"w{width}_4a_group_agreeing.png"
     _grab(window, path)
@@ -196,7 +198,8 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
     window.units_panel.catalog_view.filter_edit.setText("")
 
     # 6. Splitter dragged to its floor -- _fit_inspector_height's own check.
-    window.units_panel.show_unit(_entry_for(window, 102))  # the tree: both notes visible
+    # The tree: only the stats note shows, as its Rotation is editable since GH #123.
+    window.units_panel.show_unit(_entry_for(window, 102))
     from descape import settings
 
     splitter = window.units_panel.splitter

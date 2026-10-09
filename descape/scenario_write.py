@@ -123,6 +123,7 @@ from descape.scenario_io import (
     FORBIDDEN_WRITE_MARKER,
     TEMPLATE_DIR,
     LoadedScenario,
+    is_under_compatdata,
 )
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
@@ -138,6 +139,10 @@ _TRIGGER_COUNT_STRUCT = struct.Struct("<I")
 # reads at construction, duplicated here as a plain offset-0 patch the same
 # way _TRIGGER_COUNT_STRUCT is duplicated per module rather than shared.
 _NEXT_UNIT_ID_STRUCT = struct.Struct("<I")
+
+# Map.map_width/map_height, the two s32 immediately before the terrain block
+# (see descape/scenario_new.py's module docstring for why that holds).
+_MAP_SIZE_STRUCT = struct.Struct("<ii")
 
 
 class WriteBlockedError(Exception):
@@ -178,12 +183,24 @@ def _patch_terrain_block(scenario: LoadedScenario) -> bytes:
     elevation any other way must re-establish that itself first -- an
     illegal jump between neighbours renders as a degenerate stretched seam
     in the editor and crashes the game outright on load, not a cosmetic
-    glitch."""
+    glitch.
+
+    Refuses (WriteBlockedError) a tile list whose length differs from the
+    load-time (map_width, map_height) pair stored at terrain_block_offset - 8:
+    a longer list would otherwise run on past the block and overwrite the
+    Units section with terrain structs, silently."""
     body = bytearray(scenario.decompressed_body)
     offset = scenario.terrain_block_offset
     stride = scenario.terrain_struct_size
     has_layer = scenario.terrain_has_layer
-    for i, tile in enumerate(scenario.map_manager.terrain):
+    width, height = _MAP_SIZE_STRUCT.unpack_from(body, offset - _MAP_SIZE_STRUCT.size)
+    terrain = scenario.map_manager.terrain
+    if len(terrain) != width * height:
+        raise WriteBlockedError(
+            f"The map holds {len(terrain)} tiles but this file's terrain block has room for "
+            f"{width}x{height} = {width * height} -- refusing to write past it."
+        )
+    for i, tile in enumerate(terrain):
         o = offset + stride * i
         body[o] = tile.terrain_id
         body[o + 1] = tile.elevation
@@ -596,9 +613,12 @@ def write_scenario(
     the real write; WriteResult.backups lists whichever were written.
 
     Raises:
-        WriteBlockedError: if out_path's path contains FORBIDDEN_WRITE_MARKER
-            (never write into a Workshop/Proton compatdata folder -- the
-            user's only copy of these files), if out_path's parent is
+        WriteBlockedError: if out_path contains FORBIDDEN_WRITE_MARKER as
+            written or once resolved through symlinks (never write into a
+            Workshop/Proton compatdata folder -- the user's only copy of
+            these files; scenario_io.is_under_compatdata()), if out_path
+            cannot be resolved at all (a symlink loop, say: such a path can't
+            be shown to be outside one, so it fails closed), if out_path's parent is
             TEMPLATE_DIR (never overwrite a shipped File > New template --
             covers the whole directory, so future sibling templates are
             protected without another edit here), or if this scenario failed
@@ -628,14 +648,94 @@ def write_scenario(
             pre-existing backup is left intact.
     """
     out_path = Path(out_path)
-    if FORBIDDEN_WRITE_MARKER in str(out_path):
+    # The as-written check first, so a marked path whose resolve() raises is still "blocked".
+    resolved = None
+    if FORBIDDEN_WRITE_MARKER not in str(out_path):
+        try:
+            resolved = out_path.resolve()
+        except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
+            raise WriteBlockedError(
+                f"Refusing to write to a path that cannot be resolved ({e}), so it can't be"
+                f" shown to be outside a {FORBIDDEN_WRITE_MARKER!r} folder: {out_path}"
+            ) from e
+    if resolved is None or is_under_compatdata(out_path, resolved):
         raise WriteBlockedError(
-            f"Refusing to write to a path containing {FORBIDDEN_WRITE_MARKER!r}: {out_path}"
+            f"Refusing to write to a path containing {FORBIDDEN_WRITE_MARKER!r}"
+            f" (as written or through a symlink): {out_path}"
         )
-    if out_path.resolve().parent == TEMPLATE_DIR.resolve():
+    if resolved.parent == TEMPLATE_DIR.resolve():
         raise WriteBlockedError(
             f"Refusing to write into the shipped template directory ({TEMPLATE_DIR}): {out_path}"
         )
+
+    header_bytes, patched_body = build_patched_body(scenario, triggers, options, units, messages)
+
+    if header_bytes == scenario.header_bytes and patched_body == scenario.decompressed_body:
+        # Nothing patched anything -- reuse the original compressed bytes
+        # verbatim rather than recompressing, since re-deflating identical
+        # decompressed bytes does not reliably reproduce the original
+        # compressed stream (different encoder/level/version upstream).
+        compressed = scenario.original_compressed_body
+    else:
+        compressed = _compress_bytes(patched_body)
+    final_bytes = header_bytes + compressed
+
+    existed = out_path.exists()
+    if existed and out_path.stat().st_size == len(final_bytes) and out_path.read_bytes() == final_bytes:
+        return WriteResult(wrote=False, backups=[])
+
+    backups: list[Path] = []
+    if backup:
+        from descape.backup import make_backups  # local: descape.backup imports this module
+
+        backups = make_backups(out_path)
+
+    tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(final_bytes)
+        if existed:
+            shutil.copymode(out_path, tmp)
+        os.replace(tmp, out_path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    return WriteResult(wrote=True, backups=backups)
+
+
+@dataclass(frozen=True)
+class PatchedBody:
+    """build_patched_body()'s result plus where the terrain block landed in
+    `body`, which the upstream resizing splices may have shifted."""
+
+    header: bytes
+    body: bytes
+    terrain_offset: int
+
+
+def build_patched_body(
+    scenario: LoadedScenario,
+    triggers: TriggerEditModel | None = None,
+    options: OptionsEditModel | None = None,
+    units: UnitEditModel | None = None,
+    messages: MessagesEditModel | None = None,
+) -> tuple[bytes, bytes]:
+    """(header_bytes, decompressed body) carrying every pending edit, exactly
+    what write_scenario() compresses and writes. Split out so map resize
+    (descape/scenario_resize.py) can splice into the decompressed body of the
+    document's *current* state, not its last-saved one. Raises every
+    WriteBlockedError write_scenario() documents except the two path guards."""
+    patched = build_patched(scenario, triggers, options, units, messages)
+    return patched.header, patched.body
+
+
+def build_patched(
+    scenario: LoadedScenario,
+    triggers: TriggerEditModel | None = None,
+    options: OptionsEditModel | None = None,
+    units: UnitEditModel | None = None,
+    messages: MessagesEditModel | None = None,
+) -> PatchedBody:
+    """build_patched_body() plus the terrain block's offset in the result."""
     if not scenario.terrain_write_supported:
         raise WriteBlockedError(
             "This file's terrain block failed load-time verification -- "
@@ -731,11 +831,16 @@ def write_scenario(
     patched_body = _assemble_body(scenario, patched_body, units, triggers)
 
     if options is not None:
+        patched_body = _patch_ai_library(patched_body, scenario, options)
+    # Every splice from here on sits upstream of Map, so the terrain block
+    # moves by exactly their summed length change.
+    length_before_upstream = len(patched_body)
+
+    if options is not None:
         # Runs unconditionally, like _patch_player_data_1() below and for the
         # same reason: serialize_disables_resize() already no-ops cleanly for
         # a model with no pending disable-list edit, and this keeps the whole
         # descending-offset ordering rule readable in one place.
-        patched_body = _patch_ai_library(patched_body, scenario, options)
         patched_body = _patch_disables(patched_body, scenario, options)
         patched_body = _patch_personality(patched_body, scenario, options)
 
@@ -750,33 +855,10 @@ def write_scenario(
         # one place rather than duplicating the has_edits gate here.
         patched_body = _patch_player_data_1(patched_body, scenario, options)
 
-    if header_bytes == scenario.header_bytes and patched_body == scenario.decompressed_body:
-        # Nothing patched anything -- reuse the original compressed bytes
-        # verbatim rather than recompressing, since re-deflating identical
-        # decompressed bytes does not reliably reproduce the original
-        # compressed stream (different encoder/level/version upstream).
-        compressed = scenario.original_compressed_body
-    else:
-        compressed = _compress_bytes(patched_body)
-    final_bytes = header_bytes + compressed
-
-    existed = out_path.exists()
-    if existed and out_path.stat().st_size == len(final_bytes) and out_path.read_bytes() == final_bytes:
-        return WriteResult(wrote=False, backups=[])
-
-    backups: list[Path] = []
-    if backup:
-        from descape.backup import make_backups  # local: descape.backup imports this module
-
-        backups = make_backups(out_path)
-
-    tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_bytes(final_bytes)
-        if existed:
-            shutil.copymode(out_path, tmp)
-        os.replace(tmp, out_path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-    return WriteResult(wrote=True, backups=backups)
+    terrain_offset = scenario.terrain_block_offset + len(patched_body) - length_before_upstream
+    size = _MAP_SIZE_STRUCT.size
+    assert (
+        patched_body[terrain_offset - size : terrain_offset]
+        == scenario.decompressed_body[scenario.terrain_block_offset - size : scenario.terrain_block_offset]
+    ), "the terrain block did not land where the upstream splices' length change puts it"
+    return PatchedBody(header_bytes, patched_body, terrain_offset)

@@ -22,7 +22,12 @@ and the revealer without an install, gets a glyph generated here. Game art is
 read from the user's install at runtime and never bundled.
 
 **Layout.** One tile's diamond (2*half_w wide, half_w tall, hotspot at its
-centre), filled mid-grey and semi-opaque with an opaque ring, both marked in
+centre), or for a multi-tile const (the 1x3/3x1 blockers, GH #121) the whole
+footprint's parallelogram with the symbol at one tile's size in its middle,
+so it reads as one barrier. Flat draws a multi-tile const as a rectangle
+filling its footprint rect, the symbol again at one tile's size
+(rect_marker_layers); a 1x1 const keeps the one-tile diamond contain-fitted
+into its square, so Flat's 1x1 icons are unchanged. Filled mid-grey and semi-opaque with an opaque ring, both marked in
 the coverage layer so the owner's colour multiplies onto them the way it does
 onto a sprite's player-colour mask. The symbol sits upright on top, white
 with a dark outline and outside the coverage, so it reads the same for every
@@ -38,7 +43,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from descape import asset_source
 
@@ -64,12 +69,21 @@ _SYMBOL_W = 1.2
 def clear_caches() -> None:
     """Called from unit_sprites.clear_caches(), which an install change reaches."""
     marker_layers.cache_clear()
+    rect_marker_layers.cache_clear()
     _visibility_icon.cache_clear()
 
 
 def _diamond(w: int, h: int, inset: float) -> list[tuple[float, float]]:
     cx, cy = w / 2, h / 2
     return [(cx, inset), (w - 2 * inset, cy), (cx, h - inset), (2 * inset, cy)]
+
+
+def _footprint(w: int, h: int, span: tuple[int, int], inset: float) -> list[tuple[float, float]]:
+    """An sx x sy footprint's iso outline in its own (w, h) box, in _diamond's
+    point order; for (1, 1) it is exactly _diamond()."""
+    sx, sy = span
+    hw, hh = w / (sx + sy), h / (sx + sy)
+    return [(sx * hw, inset), (w - 2 * inset, sy * hh), (sy * hw, h - inset), (2 * inset, sx * hh)]
 
 
 def _stroke(h: int) -> int:
@@ -139,10 +153,39 @@ def _symbol_mask(category: str, w: int, h: int) -> Image.Image:
     return mask
 
 
+def _window_max(a: np.ndarray, k: int, axis: int) -> np.ndarray:
+    """The max over a k-wide window centred on each element along `axis`,
+    out-of-array read as 0. Doubling shifts: ~log2(k) np.maximum, not k."""
+    def span(start: int, stop: int) -> tuple[slice, slice]:
+        return (slice(start, stop), slice(None)) if axis == 0 else (slice(None), slice(start, stop))
+
+    r = k // 2
+    pad = [(0, 0), (0, 0)]
+    pad[axis] = (r, k - 1 - r)
+    m = np.pad(a, pad)
+    n = a.shape[axis]
+    width = 1
+    while width * 2 <= k:
+        size = m.shape[axis]
+        m = np.maximum(m[span(0, size - width)], m[span(width, size)])
+        width *= 2
+    # m[j] is now the max of width elements from j; two overlapping runs cover k.
+    rest = k - width
+    return np.maximum(m[span(0, n)], m[span(rest, rest + n)])
+
+
+def _max_filter(mask: Image.Image, k: int) -> Image.Image:
+    """ImageFilter.MaxFilter(k), byte for byte, as a separable max (rows, then
+    columns): ~36 ms at half_w 64 down to well under 1 ms. Pillow pads by
+    edge replication, which a max cannot tell from the 0 padding here."""
+    a = np.asarray(mask)
+    return Image.fromarray(np.ascontiguousarray(_window_max(_window_max(a, k, 1), k, 0)))
+
+
 def _outlined(mask: Image.Image, lw: int) -> Image.Image:
     """White strokes over a dark outline one stroke-width wider, as RGBA."""
     grow = lw | 1
-    halo = mask.filter(ImageFilter.MaxFilter(grow if grow >= 3 else 3))
+    halo = _max_filter(mask, grow if grow >= 3 else 3)
     out = Image.new("RGBA", mask.size, (0, 0, 0, 0))
     out.paste(Image.new("RGBA", mask.size, _OUTLINE), (0, 0), halo)
     out.paste(Image.new("RGBA", mask.size, _SYMBOL), (0, 0), mask)
@@ -168,20 +211,50 @@ def _contain(img: Image.Image, w: int, h: int) -> Image.Image:
 
 
 @lru_cache(maxsize=256)
-def marker_layers(category: str, half_w: int) -> tuple[np.ndarray, np.ndarray, int, int]:
+def marker_layers(
+    category: str, half_w: int, span: tuple[int, int] = (1, 1)
+) -> tuple[np.ndarray, np.ndarray, int, int]:
     """(main RGBA, coverage RGBA, hotspot_x, hotspot_y) for one category at this
-    half_w, untinted. `coverage` has unit_sprites' playercolor layout: alpha > 0
-    where the owner's colour applies, channel 0 its strength."""
+    half_w and footprint span, untinted. `coverage` has unit_sprites' playercolor
+    layout: alpha > 0 where the owner's colour applies, channel 0 its strength."""
     if category not in CATEGORIES:
         raise ValueError(f"unknown marker category {category!r}")
-    w, h = 2 * max(1, half_w), max(1, half_w)
+    # `h` stays ONE tile's height: the ring and the symbol are sized by it.
+    h = max(1, half_w)
+    w, box_h = (span[0] + span[1]) * h, max(1, (span[0] + span[1]) * h // 2)
+    ss = _SUPERSAMPLE
+    W, H = w * ss, box_h * ss
+
+    poly = _footprint(W, H, span, ss * 0.5)
+    main, coverage = _badge_layers(category, poly, h, w, box_h)
+    return main, coverage, w // 2, box_h // 2
+
+
+@lru_cache(maxsize=256)
+def rect_marker_layers(category: str, w: int, h: int, half_w: int) -> tuple[np.ndarray, np.ndarray]:
+    """(main RGBA, coverage RGBA) for Flat's multi-tile marker (the 1x3/3x1
+    blockers, GH #121): a w x h rectangle badge filling the footprint rect,
+    with the symbol marker_layers() draws for a tile of this half_w in its
+    middle. No hotspot: a Flat icon is placed by its own rect."""
+    if category not in CATEGORIES:
+        raise ValueError(f"unknown marker category {category!r}")
     ss = _SUPERSAMPLE
     W, H = w * ss, h * ss
+    inset = ss * 0.5
+    rect = [(inset, inset), (W - inset, inset), (W - inset, H - inset), (inset, H - inset)]
+    return _badge_layers(category, rect, max(1, half_w), w, h)
 
+
+def _badge_layers(
+    category: str, poly: list[tuple[float, float]], h: int, w: int, box_h: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """The badge `poly` (supersampled, in a (w, box_h) box) with the symbol
+    for a one-tile height `h` centred on it, downsampled to (main, coverage)."""
+    ss = _SUPERSAMPLE
+    W, H = w * ss, box_h * ss
     badge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     cover = Image.new("L", (W, H), 0)
     ring = max(ss, 2 * ss if h >= 12 else ss)
-    poly = _diamond(W, H, ss * 0.5)
     ImageDraw.Draw(badge).polygon(poly, fill=(_BADGE_GREY,) * 3 + (_BADGE_ALPHA,))
     ImageDraw.Draw(badge).line(poly + poly[:1], fill=(_RING_GREY,) * 3 + (255,), width=ring, joint="curve")
     ImageDraw.Draw(cover).polygon(poly, fill=255)
@@ -203,17 +276,17 @@ def marker_layers(category: str, half_w: int) -> tuple[np.ndarray, np.ndarray, i
             badge.alpha_composite(symbol, (ox, oy))
             cover.paste(0, (ox, oy), symbol.getchannel("A"))
 
-    main = np.asarray(badge.resize((w, h), Image.LANCZOS), dtype=np.uint8).copy()
+    main = np.asarray(badge.resize((w, box_h), Image.LANCZOS), dtype=np.uint8).copy()
     # LANCZOS leaves near-zero-alpha fringe pixels with arbitrary RGB; drop them.
     main[main[..., 3] < 8] = 0
-    cov = np.asarray(cover.resize((w, h), Image.LANCZOS), dtype=np.uint8)
+    cov = np.asarray(cover.resize((w, box_h), Image.LANCZOS), dtype=np.uint8)
     cov = np.where(main[..., 3] > 0, cov, 0).astype(np.uint8)
-    coverage = np.zeros((h, w, 4), dtype=np.uint8)
+    coverage = np.zeros((box_h, w, 4), dtype=np.uint8)
     coverage[..., 0] = cov
     coverage[..., 3] = np.where(cov > 0, 255, 0)
     main.setflags(write=False)
     coverage.setflags(write=False)
-    return main, coverage, w // 2, h // 2
+    return main, coverage
 
 
 def _install_str() -> str | None:

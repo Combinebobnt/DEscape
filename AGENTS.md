@@ -7,8 +7,10 @@ commands, and architecture.
 ## Hard rules
 
 - Never write to a path under a Proton `compatdata/` prefix — that's the user's
-  only copy of Workshop-synced scenario files. v1 has no write path at all; a
-  future one must refuse any output path containing `compatdata`.
+  only copy of Workshop-synced scenario files. Every path that writes a
+  scenario file (Save, autosave, and the tools that write one directly)
+  refuses an output path containing `compatdata`, as written or resolved
+  through symlinks (`scenario_io.is_under_compatdata()`). A new one must too.
 - GAIA units' `rotation` field is not an angle for ~65% of GAIA objects — it's a
   tree/doodad graphic-variant index (integer values well outside `[0, 2π)`, e.g.
   7..53). Every write path must pass it through verbatim, never normalize it.
@@ -59,7 +61,9 @@ commands, and architecture.
     because the game re-derives their index from neighbours, so a written
     value would be overridden. It always writes a literal integer index: every
     corpus placement on a cyclable const stores one, never the radian form.
-  - *Place Unit's wall-run junction rewrites*, via
+  - *Place Unit's wall-run junction rewrites*, and its rewrites of the walls
+    beside a gate it places (GH #159, which also removes the walls under the
+    gate's footprint), via
     `UnitEditModel.set_wall_variant()`, only on the 9 wall-family consts
     `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
     and only for an index in `0..4`. Those are the 8 walls plus Aqueduct
@@ -75,6 +79,17 @@ commands, and architecture.
     `initial_animation_frame` is not touched (it is 0 on all 8193 corpus wall
     placements). Gates are outside the scope and stay there: they have
     `angle_count == 1` and their orientation lives in the const.
+  - *Replace* (Edit > Find and Replace, GH #144), via
+    `UnitEditModel.replace_type()`, which changes a unit's const (see the
+    const exceptions below) and so must decide what its `rotation` and
+    `initial_animation_frame` mean under the new const. The two move together
+    (they are always equal in the corpus for cliffs, trees and doodads), by
+    `unit_model.replaced_rotation()`: verbatim when both consts are ANGLE,
+    both are walls (the 9 `rotation_variant_eligible()` consts; the game
+    re-derives the index from neighbours), or both are INERT (which keeps the
+    `7.0` sentinel); verbatim for two cyclable consts when the old variant
+    index exists in the new const, else `0.0`/`0`; `0.0`/`0` for every other
+    pairing and for any target gate.
 - Gates carry no rotation at all: all 24 visible gate consts (6 families × 4
   orientations) have `angle_count == 1`, so there is no second frame for a
   rotation to select, and across 300 corpus gate placements the field is only
@@ -83,22 +98,35 @@ commands, and architecture.
   / `_n_`, one const per orientation (stone: 64/88/659/667). "Rotating" a gate
   therefore means swapping the const among its four siblings, which changes the
   footprint.
-- **The one exception to "a placed unit's `unit_const` never changes", and its
-  exact scope.** `UnitEditModel.set_unit_const()` is the only code anywhere
-  that may change an existing unit's `unit_const`, and only to one of the four
-  orientation siblings `descape/gate_orientation.py` derives for it; anything
-  else raises rather than silently no-op'ing, and that guard is what keeps this
-  rule enforced rather than merely documented. It must re-anchor `x`/`y` by
-  preserving the footprint's low corner (`span_low_corner()` forward,
-  `render.span_anchor()` back), because the four orientations have four
-  different spans and every corpus placement sits at `tile + span/2` per axis.
-  `rotation` and `z` pass through verbatim as above: a gate's stored rotation
-  is `0.0` or the junk sentinel `7.0`, and every sibling has
-  `angle_count == 1`, so there is nothing there to normalize.
-  Map mirroring is not an exception to this rule: it never changes a placed
-  gate's const, it `add()`s a *new* gate whose const comes from
-  `mirror_tools.reorient_gate_const()` and whose anchor is re-derived from
-  that sibling's own span.
+- **The two exceptions to "a placed unit's `unit_const` never changes", and
+  their exact scope.** `UnitEditModel.set_unit_const()` and
+  `UnitEditModel.replace_type()` are the only code anywhere that may change an
+  existing unit's `unit_const`. Each raises outside its scope rather than
+  silently no-op'ing, and that guard is what keeps this rule enforced rather
+  than merely documented.
+  - `replace_type()` is user-directed, from Edit > Find and Replace only (GH
+    #144). It keeps `reference_id`, so triggers and garrison links that name
+    the unit keep working, plus the list slot, owner, `z`, status, caption,
+    `capture_flag` and `garrisoned_in_id`. `x`/`y` stay verbatim on an axis
+    whose span is unchanged and are re-anchored on the footprint's low corner
+    only on an axis whose span changes. It raises (`replace_refusal()`) for
+    the same const, a const `object_catalog` does not know, a cliff on either
+    side, two orientation siblings of one gate (that is `set_unit_const()`'s),
+    an off-map unit or a new footprint leaving the map, and a garrison the
+    new const cannot hold or a host that cannot hold the new const.
+  - `set_unit_const()` changes a gate's const only to one of the four
+    orientation siblings `descape/gate_orientation.py` derives for it. It
+    must re-anchor `x`/`y` by preserving the footprint's low corner
+    (`span_low_corner()` forward, `render.span_anchor()` back), because the
+    four orientations have four different spans and every corpus placement
+    sits at `tile + span/2` per axis. `rotation` and `z` pass through
+    verbatim as above: a gate's stored rotation is `0.0` or the junk sentinel
+    `7.0`, and every sibling has `angle_count == 1`, so there is nothing
+    there to normalize.
+  - Map mirroring is not an exception to this rule: it never changes a placed
+    gate's const, it `add()`s a *new* gate whose const comes from
+    `mirror_tools.reorient_gate_const()` and whose anchor is re-derived from
+    that sibling's own span.
 - The same is true of walls, for a different reason, and it is confirmed
   in-game: a wall graphic's five stored frames are SHAPES (two diagonal runs, a
   tower, a flatter run, a narrow column), not five facings, so `rotation`
@@ -107,12 +135,25 @@ commands, and architecture.
   index as `k*2π/5` radians — so both must be read, and neither may have an
   angular zero-point offset applied. `unit_sprites.variant_index()` is the only
   correct reader; `angle_index()` mis-maps 3 and 4. A write path must pass the
-  field through verbatim here too, with the single exception listed above
-  (`UnitEditModel.set_wall_variant()`, which writes the value derived from
-  the same neighbours the game would read). A wall's correct stored value is also a
+  field through verbatim here too, with the two exceptions listed above:
+  `UnitEditModel.set_wall_variant()`, which writes the value derived from
+  the same neighbours the game would read, and *Replace*
+  (`UnitEditModel.replace_type()`, by `unit_model.replaced_rotation()`),
+  which keeps a wall's index verbatim when the new const is also a wall and
+  writes `0.0` when a non-wall becomes a wall. A wall's correct stored value is also a
   function of its neighbours (98.9%/99.1% agreement between neighbour mask and
   stored index across the corpus), so rotating one would write a value the game
   re-derives. Walls are VARIANT, and Rotate skips them.
+- **An existing unit's `garrisoned_in_id` changes only through
+  `UnitEditModel.set_garrisoned_in()`** (GH #115), which splices the garrison
+  reverse-map and raises outside its structural scope: never inside a
+  `fields_only` edit, and when linking, never into itself, into a reference_id
+  no live unit has, into a host that is transitively inside the unit (a
+  cycle), or for a unit that holds a garrison of its own (no nesting). -1
+  unloads and is always allowed. Type and capacity are not model rules: every
+  UI path checks them through `garrison.refusal()`, so a batch script stays
+  unvalidated, as with `add()`. Region paste and `add()` set the field at
+  construction only.
 - A unit's `standing_graphic` is not always the thing you draw. For some consts
   it is a DECORATION — an animated flag — whose real body is a delta hanging
   off it, and whose own art covers only the one shape the decoration sits on.

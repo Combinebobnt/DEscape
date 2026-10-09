@@ -35,9 +35,9 @@ def test_missing_parent_directory_is_created_on_write(tmp_path, monkeypatch):
     monkeypatch.setattr(asset_source, "CONFIG_PATH", deep_path)
     monkeypatch.setattr(settings, "CONFIG_PATH", deep_path)
 
-    settings.set_dark_mode(True)
+    settings.set_theme("dark")
     assert deep_path.is_file()
-    assert yaml.safe_load(deep_path.read_text())["dark_mode"] is True
+    assert yaml.safe_load(deep_path.read_text())["theme"] == "dark"
 
     other_deep_path = tmp_path / "another" / "missing" / "tree" / "config.yaml"
     monkeypatch.setattr(asset_source, "CONFIG_PATH", other_deep_path)

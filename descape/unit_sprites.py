@@ -55,10 +55,11 @@ from typing import NamedTuple
 
 import numpy as np
 
-from descape import asset_source, debug_log, editor_markers, gate_orientation, unit_kind
+from descape import asset_source, debug_log, editor_markers, gate_orientation, terrain_palette, unit_kind
 from descape.sld_decoder import LayerKind, SLDError, load_sld
 
 GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
+BUILDING_ART_PATH = Path(__file__).resolve().parent / "building_art_map.json"
 GRAPHICS_SUBPATH = "resources/_common/drs/graphics"
 
 # DE's own iso tile diamond width for x1 assets. Measured against the spans the
@@ -90,9 +91,13 @@ NATIVE_TILE_W = 96
 # out-reach every plain single-graphic unit measured before them, which is
 # exactly why scan_sprite_reach.py scans pieces at their own offset rather
 # than the parent's.
+#
+# UP grew from 650 to 700 with per-civ building art (GH #48): the scan now
+# also walks building_art_map.json, and the Burgundian Wonder out-reaches the
+# Britons one every owner used to draw.
 MAX_SPRITE_REACH_LEFT = 404   # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_RIGHT = 424  # b_scen_cathedral_rubble_x1
-MAX_SPRITE_REACH_UP = 650     # b_west_wonder_britons_x1
+MAX_SPRITE_REACH_UP = 700     # b_west_wonder_burgundians_x1
 MAX_SPRITE_REACH_DOWN = 316   # b_scen_gate_city_flag_x1 (piece, dx=0 dy=-312)
 
 # How far the stored angle set is rotated from the scenario's own `rotation`
@@ -423,8 +428,10 @@ def clear_caches() -> None:
     _icon_cache.clear()
     sld_frame_count.cache_clear()
     wall_connector_consts.cache_clear()
+    building_art.cache_clear()
     # The revealer marker reads the game's own icon from the install.
     marker_for.cache_clear()
+    rect_marker_for.cache_clear()
     editor_markers.clear_caches()
 
 
@@ -434,6 +441,76 @@ def graphic_map() -> dict[int, dict]:
     frame_count}, from the committed table."""
     data = json.loads(GRAPHIC_MAP_PATH.read_text())["graphics"]
     return {int(k): v for k, v in data.items()}
+
+
+class BuildingArt(NamedTuple):
+    """building_art_map.json, int-keyed (GH #48). See tools/gen_unit_graphic_map.py."""
+
+    age_upgrades: dict[int, dict[int, int]]  # base const -> {age: const drawn}
+    civ_art: dict[int, dict[int, dict]]      # civ index -> {const: entry}
+    civ_names: dict[int, str]
+
+
+@lru_cache(maxsize=1)
+def building_art() -> BuildingArt:
+    """The committed per-civ and per-age building art table."""
+    data = json.loads(BUILDING_ART_PATH.read_text())
+    entries = data["entries"]
+    return BuildingArt(
+        age_upgrades={
+            int(base): {int(age): target for age, target in by_age.items()}
+            for base, by_age in data["age_upgrades"].items()
+        },
+        civ_art={
+            int(civ): {int(const): entries[index] for const, index in art.items()}
+            for civ, art in data["civ_art"].items()
+        },
+        civ_names={int(civ): name for civ, name in data["civ_names"].items()},
+    )
+
+
+# Town centres, the one composite family whose art is per civ and age (GH #48
+# Slice 2); tools/gen_unit_graphic_map.py's _TOWN_CENTRE_SCOPE.
+_TOWN_CENTRE_CONSTS: frozenset[int] = frozenset({71, 109, 141, 142, 2275, 2276, 2277})
+
+
+def _art_excluded(unit_const: int) -> bool:
+    """GH #48: consts that keep today's art whatever their owner: composites
+    other than town centres, walls and gates, i.e. the architecture-neutral
+    pastures. Walls and gates vary by art only; their const-keyed logic (wall
+    connectivity, gate siblings) is civ-invariant, which the generator asserts."""
+    entry = graphic_map().get(unit_const)
+    return (
+        entry is not None and "pieces" in entry
+        and unit_const not in _TOWN_CENTRE_CONSTS and unit_const not in wall_connector_consts()
+    )
+
+
+def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None:
+    """The entry a placed `unit_const` draws for an owner with this
+    (art_civ, age) (descape/civ_art.py): the const the age techs upgrade it to
+    at `age`, in that civ's art if it has its own, else in the Gaia table.
+    Only the drawn entry changes: every caller still keys rotation, variant,
+    footprint and wall/gate logic on the placed const, which the generator's
+    invariant asserts make safe. A directly placed age target (463) is never
+    remapped, and a non-building const is in neither table, so it falls
+    straight through to graphic_map()."""
+    if _art_excluded(unit_const):
+        return graphic_map().get(unit_const)
+    art = building_art()
+    drawn = art.age_upgrades.get(unit_const, {}).get(age, unit_const)
+    if art_civ is not None:
+        entry = art.civ_art.get(art_civ, {}).get(drawn)
+        if entry is not None:
+            return entry
+    return graphic_map().get(drawn)
+
+
+def _entry_for_art(unit_const: int, art: tuple[int | None, int] | None) -> dict | None:
+    """graphic_map()'s entry when `art` is None (today's art), else resolve_entry()'s."""
+    if art is None:
+        return graphic_map().get(unit_const)
+    return resolve_entry(unit_const, art[0], art[1])
 
 
 def angle_index(
@@ -1238,24 +1315,44 @@ def _draw_for_entry(
 
 
 @lru_cache(maxsize=512)
-def marker_for(category: str, team_index: int, half_w: int) -> SpriteDraw:
-    """An invisible object's one-tile editor-only marker (GH #53 Part B), tinted
-    for its owner through the same _tinted() multiply a sprite gets. The hotspot
-    is the diamond's centre, where the coloured mark sat. See editor_markers."""
-    main, coverage, hx, hy = editor_markers.marker_layers(category, half_w)
+def marker_for(category: str, team_index: int, half_w: int, span: tuple[int, int] = (1, 1)) -> SpriteDraw:
+    """An invisible object's editor-only marker (GH #53 Part B), tinted for its
+    owner through the same _tinted() multiply a sprite gets, shaped to its
+    footprint `span` (GH #121). The hotspot is the footprint's centre, where the
+    coloured mark sat. See editor_markers."""
+    main, coverage, hx, hy = editor_markers.marker_layers(category, half_w, span)
     team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
     return SpriteDraw(rgba=_tinted(main, coverage, team), hotspot_x=hx, hotspot_y=hy)
 
 
-def _marker_icon(category: str, team_index: int, footprint_w: int, footprint_h: int) -> SpriteDraw:
-    """marker_for() contain-fitted into a Flat footprint rect: built at the largest
-    half_w that fits (2*half_w wide, half_w tall), so no second resample."""
-    draw = marker_for(category, team_index, max(1, min(footprint_w // 2, footprint_h)))
-    return SpriteDraw(rgba=draw.rgba, hotspot_x=0, hotspot_y=0)
+def _marker_icon(
+    category: str, team_index: int, footprint_w: int, footprint_h: int, span: tuple[int, int]
+) -> SpriteDraw:
+    """A 1x1 span: marker_for() contain-fitted into a Flat footprint rect, built at
+    the largest half_w that fits (2*half_w wide, half_w tall), so no second
+    resample. Any other span (the 1x3/3x1 blockers): rect_marker_for(), one badge
+    filling the whole rect, as the iso views draw one badge over the footprint."""
+    if span == (1, 1):
+        draw = marker_for(category, team_index, max(1, min(footprint_w // 2, footprint_h)))
+        return SpriteDraw(rgba=draw.rgba, hotspot_x=0, hotspot_y=0)
+    # One tile's side, from the axis the map edge did not clamp.
+    tile = max(footprint_w // span[0], footprint_h // span[1])
+    half_w = max(1, min(tile, footprint_w, footprint_h) // 2)
+    return rect_marker_for(category, team_index, footprint_w, footprint_h, half_w)
+
+
+@lru_cache(maxsize=512)
+def rect_marker_for(category: str, team_index: int, w: int, h: int, half_w: int) -> SpriteDraw:
+    """Flat's multi-tile marker: editor_markers.rect_marker_layers() tinted for its
+    owner like marker_for(). hotspot 0, as icon_for() returns."""
+    main, coverage = editor_markers.rect_marker_layers(category, w, h, half_w)
+    team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
+    return SpriteDraw(rgba=_tinted(main, coverage, team), hotspot_x=0, hotspot_y=0)
 
 
 def sprite_for(
-    unit_const: int, rotation: float, team_index: int, half_w: int
+    unit_const: int, rotation: float, team_index: int, half_w: int,
+    art: tuple[int | None, int] | None = None,
 ) -> SpriteDraw | None:
     """This unit's tinted, scaled sprite, or None to fall back to a mark.
 
@@ -1268,8 +1365,11 @@ def sprite_for(
     For a composite building (unit_graphic_map.json's optional "pieces" key),
     this draws only the entry's OWN graphic -- unchanged behavior for every
     existing caller. sprite_pieces_for() is the composite-aware sibling.
+
+    `art` is the owner's (art_civ, age) (GH #48, resolve_entry()); None draws
+    today's Gaia-table art.
     """
-    entry = graphic_map().get(unit_const)
+    entry = _entry_for_art(unit_const, art)
     if entry is None:
         return None
     return _draw_for_entry(unit_const, entry, rotation, team_index, half_w)
@@ -1278,6 +1378,7 @@ def sprite_for(
 def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
+    art: tuple[int | None, int] | None = None,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -1313,11 +1414,14 @@ def sprite_pieces_for(
 
     A const with no .dat graphic (unit_kind.invisible_category(), GH #53 Part
     B) resolves to its editor-only marker instead, one piece at (0, 0).
+
+    `art` as sprite_for()'s.
     """
     category = unit_kind.invisible_category(unit_const)
     if category is not None:
-        return [SpritePiece(draw=marker_for(category, team_index, half_w), dx=0, dy=0)]
-    entry = graphic_map().get(unit_const)
+        span = terrain_palette.tile_span(unit_const, (1, 1))
+        return [SpritePiece(draw=marker_for(category, team_index, half_w, span), dx=0, dy=0)]
+    entry = _entry_for_art(unit_const, art)
     if entry is None:
         return []
     pieces_data = entry.get("pieces")
@@ -1487,9 +1591,18 @@ def _frame_key(
     )
 
 
+def _art_key(entry: dict) -> tuple:
+    """What an icon is drawn from besides its frames: the file(s) and, for a
+    composite, each piece's offset. Equal keys draw the same icon."""
+    pieces = entry.get("pieces")
+    if not pieces:
+        return (entry["file_name"],)
+    return tuple((p["file_name"], p["dx"], p["dy"]) for p in pieces)
+
+
 def icon_for(
     unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int,
-    seed: int | None = None,
+    seed: int | None = None, art: tuple[int | None, int] | None = None,
 ) -> SpriteDraw | None:
     """This unit's sprite fitted into a footprint_w x footprint_h pixel rect --
     Flat mode's counterpart to sprite_for() (P3-g7). None to fall back to the
@@ -1526,19 +1639,24 @@ def icon_for(
     correct for both projections at once.
 
     An invisible const (GH #53 Part B) returns its editor-only marker instead,
-    never None, so Flat's row lockstep with _flat_unit_draws() holds."""
+    never None, so Flat's row lockstep with _flat_unit_draws() holds.
+
+    `art` as sprite_for()'s. The cache is keyed on the resolved art
+    (_art_key()), not the const, so one owner's art is never served to
+    another's (GH #48)."""
     if footprint_w <= 0 or footprint_h <= 0:
         return None
     category = unit_kind.invisible_category(unit_const)
     if category is not None:
-        return _marker_icon(category, team_index, footprint_w, footprint_h)
-    entry = graphic_map().get(unit_const)
+        span = terrain_palette.tile_span(unit_const, (1, 1))
+        return _marker_icon(category, team_index, footprint_w, footprint_h, span)
+    entry = _entry_for_art(unit_const, art)
     if entry is None:
         return None
 
     team_slot = team_index % len(TEAM_COLORS)
     key = (
-        unit_const,
+        _art_key(entry),
         _frame_key(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
         team_slot, footprint_w, footprint_h,
     )

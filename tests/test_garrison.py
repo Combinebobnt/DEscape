@@ -110,3 +110,42 @@ def test_every_corpus_occupant_is_accepted_by_its_host(scenario_path) -> None:
                 f"{host.unit_const}, which this module refuses"
             )
             assert garrison.capacity(host.unit_const) > 0, host.unit_const
+
+
+# -- GH #115: one refusal rule for every garrison path -------------------------
+
+_NAMES = {4: "Archer", 83: "Villager", 280: "Mangonel", 38: "Knight"}
+
+
+def _name(const: int) -> str:
+    return _NAMES[const]
+
+
+def test_refusal_names_the_first_object_the_host_cannot_hold() -> None:
+    assert garrison.refusal(79, "Watch Tower", 0, [4, 280, 38], name_of=_name) == (
+        "Garrison: Mangonel cannot go inside Watch Tower"
+    )
+
+
+def test_refusal_reports_a_full_host() -> None:
+    assert garrison.refusal(79, "Watch Tower", 5, [4], name_of=_name) == "Garrison: Watch Tower is full (5 places)"
+
+
+def test_refusal_is_all_or_nothing_over_a_batch_that_overflows() -> None:
+    """Three free places and four incoming: the whole batch is refused, so no
+    caller can garrison the first three and drop the fourth."""
+    message = garrison.refusal(79, "Watch Tower", 2, [4, 4, 83, 83], name_of=_name)
+    assert message == "Garrison: Watch Tower has room for 3 more (5 places)"
+    assert garrison.refusal(79, "Watch Tower", 2, [4, 4, 83], name_of=_name) is None
+
+
+def test_refusal_of_an_empty_batch_is_none_even_on_a_full_host() -> None:
+    assert garrison.refusal(79, "Watch Tower", 5, [], name_of=_name) is None
+
+
+def test_refusal_checks_type_before_capacity() -> None:
+    assert "cannot go inside" in garrison.refusal(79, "Watch Tower", 5, [280], name_of=_name)
+
+
+def test_refusal_on_a_host_that_holds_nothing_names_the_type() -> None:
+    assert garrison.refusal(70, "House", 0, [83], name_of=_name) == "Garrison: Villager cannot go inside House"

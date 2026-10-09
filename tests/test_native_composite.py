@@ -399,14 +399,13 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
     def elevate(x, y, what):
         tile = mm.terrain[y * mm.map_width + x]
         tile.elevation += 1 if tile.elevation < iso_geometry.MAX_ELEVATION else -1
-        pack, headroom = _pack_of(cache, style), getattr(cache, "_headroom", None)
+        pack = _pack_of(cache, style)
         with composite_backend.use_backend("native"):
             _patch_tiles(cache, style, scenario, [(x, y)], sprites)
         _assert_matches_fresh(cache, style, scenario, sprites, what)
-        # A Sloped headroom change takes the wholesale path, which must drop the pack.
-        if getattr(cache, "_headroom", None) == headroom:
-            assert _pack_of(cache, style) is pack, f"{what} rebuilt the unit pack instead of refreshing it"
-            refreshed.append(what)
+        # A Sloped headroom change rebuilds only the bboxes, so it keeps the pack too.
+        assert _pack_of(cache, style) is pack, f"{what} rebuilt the unit pack instead of refreshing it"
+        refreshed.append(what)
 
     painted = [(EDIT_X + dx, EDIT_Y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
     painted += [(int(mark.x), int(mark.y)), (FARM_X - 1, FARM_Y)]
@@ -1034,9 +1033,7 @@ def _stepped_producer_calls(tile_px: int):
                 yield f"skirt_quad_indices {px} {side}", iso_geometry.skirt_quad_indices(tile_px, px, side)
             for side in ("up_left", "up_right"):
                 yield f"shadow_quad_indices {px} {side}", iso_geometry.shadow_quad_indices(tile_px, px, side)
-                yield f"shadow_tip_indices {px} {side}", iso_geometry.shadow_tip_indices(tile_px, px, side)
-            for sides in ("both", "up_left", "up_right"):
-                yield f"shadow_apex_indices {px} {sides}", iso_geometry.shadow_apex_indices(tile_px, px, sides)
+            yield f"shadow_apex_indices {px}", iso_geometry.shadow_apex_indices(tile_px, px)
 
 
 @pytest.mark.parametrize("tile_px", TILE_PX_LADDER)

@@ -625,8 +625,8 @@
       "frame_count": 1,
       "pieces": [
         {
-          "unit_id": 618,
-          "file_name": "b_dark_town_center_age1_main_x1",
+          "unit_id": 614,
+          "file_name": "b_west_town_center_age2_main_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -654,8 +654,8 @@
           ]
         },
         {
-          "unit_id": 619,
-          "file_name": "b_dark_town_center_age1_center_x1",
+          "unit_id": 615,
+          "file_name": "b_west_town_center_age2_center_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -668,8 +668,8 @@
           ]
         },
         {
-          "unit_id": 620,
-          "file_name": "b_dark_town_center_age1_front_x1",
+          "unit_id": 616,
+          "file_name": "b_west_town_center_age2_front_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -1561,8 +1561,8 @@
       "frame_count": 1,
       "pieces": [
         {
-          "unit_id": 618,
-          "file_name": "b_dark_town_center_age1_main_x1",
+          "unit_id": 481,
+          "file_name": "b_west_town_center_age3_main_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -1590,8 +1590,8 @@
           ]
         },
         {
-          "unit_id": 619,
-          "file_name": "b_dark_town_center_age1_center_x1",
+          "unit_id": 482,
+          "file_name": "b_west_town_center_age3_center_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -1604,8 +1604,8 @@
           ]
         },
         {
-          "unit_id": 620,
-          "file_name": "b_dark_town_center_age1_front_x1",
+          "unit_id": 483,
+          "file_name": "b_west_town_center_age3_front_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -1627,8 +1627,8 @@
       "frame_count": 1,
       "pieces": [
         {
-          "unit_id": 618,
-          "file_name": "b_dark_town_center_age1_main_x1",
+          "unit_id": 611,
+          "file_name": "b_west_town_center_age4_main_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -1636,8 +1636,8 @@
           "mx": 1.0,
           "my": -1.0,
           "slot": [
-            1,
-            2
+            0,
+            3
           ]
         },
         {
@@ -1656,8 +1656,8 @@
           ]
         },
         {
-          "unit_id": 619,
-          "file_name": "b_dark_town_center_age1_center_x1",
+          "unit_id": 612,
+          "file_name": "b_west_town_center_age4_center_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,
@@ -1670,8 +1670,8 @@
           ]
         },
         {
-          "unit_id": 620,
-          "file_name": "b_dark_town_center_age1_front_x1",
+          "unit_id": 613,
+          "file_name": "b_west_town_center_age4_front_x1",
           "angle_count": 1,
           "frame_count": 1,
           "dx": 0,

@@ -131,14 +131,61 @@ def test_rotation_editor_visible_for_an_angle_const_hidden_for_a_variant_const()
     assert panel.unit_field_labels["rotation"].text() == "37"
 
 
-def test_a_gate_shows_its_raw_rotation_read_only() -> None:
-    """GH #61: a gate's orientation lives in its const, so the junk sentinel
-    it stores is shown as it is, never as a facing."""
+def test_a_gate_shows_its_orientation_index_never_its_stored_rotation() -> None:
+    """GH #61: a gate's orientation lives in its const, so the field shows the
+    const's index in Rotate's order, never the junk sentinel 7.0 as a facing."""
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(unit_const=88, rotation=7.0))  # stone gate, se
+    spin = panel.unit_field_editors["rotation"]
+    assert spin.isVisibleTo(panel.unit_inspector_grid)
+    assert not panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
+    assert (spin.minimum(), spin.maximum(), spin.value()) == (0, 3, 2)
+    assert spin.toolTip().startswith("Orientation 2 of 4: NW to SE (const 88).")
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert received == []
+
+
+def test_a_gate_orientation_wheel_step_wraps_like_rotate() -> None:
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    panel.show_unit(_entry(unit_const=667))  # stone gate, n: the last in Rotate's order
+    panel.unit_field_editors["rotation"].stepBy(1)
+    assert received == [("rotation", 0)]
+
+
+def test_a_group_of_gates_edits_together_and_a_gate_with_a_wall_does_not() -> None:
     panel = _panel()
-    panel.show_unit(_entry(unit_const=_GATE_CONST, rotation=7.0))
-    assert not panel.unit_field_editors["rotation"].isVisibleTo(panel.unit_inspector_grid)
-    assert panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
-    assert panel.unit_field_labels["rotation"].text() == "7"
+    panel.show_group([_entry(unit_const=_GATE_CONST), _entry(unit_const=88)])
+    spin = panel.unit_field_editors["rotation"]
+    assert spin.isVisibleTo(panel.unit_inspector_grid)
+    assert spin.text() == "(mixed)"
+    assert spin.toolTip().startswith("Orientation for every selected gate.")
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    panel.show_group([_entry(unit_const=_GATE_CONST), _entry(unit_const=_WALL_CONST)])
+    assert not spin.isVisibleTo(panel.unit_inspector_grid)
+    assert panel.unit_field_labels["rotation"].text() == "(n/a)"
+
+
+def test_gate_orientation_names_match_every_gate_graphics_direction_token() -> None:
+    """The tooltip's names are pinned to the data, not hand-trusted."""
+    import json
+    import re
+    from pathlib import Path
+
+    from descape import gate_orientation, units_panel
+
+    graphics = json.loads((Path(units_panel.__file__).parent / "unit_graphic_map.json").read_text())
+    checked = 0
+    for group in gate_orientation.groups().values():
+        for index, const in enumerate(group):
+            match = re.search(r"_(ne|se|e|n)_", graphics["graphics"][str(const)]["file_name"])
+            if match:
+                # The game's own names: "Gate Southwest To Northeast" is b_..._ne_..., etc.
+                expected = {"ne": "SW to NE", "e": "W to E", "se": "NW to SE", "n": "N to S"}[match.group(1)]
+                assert units_panel._GATE_ORIENTATION_NAMES[index] == expected, const
+                checked += 1
+    assert checked == 48
 
 
 def test_stats_block_shows_all_five_rows_for_a_full_combat_const() -> None:
@@ -223,6 +270,7 @@ def test_rotation_caption_carries_the_full_caveat_as_a_tooltip() -> None:
     assert "radians" in panel.unit_rotation_label.toolTip()
 
 
+@pytest.mark.font_sensitive
 def test_min_width_and_height_stay_within_a_reasonable_floor() -> None:
     """A size floor, matching the trigger/players panel suites' own checks:
     this page must not raise the whole window's minimum."""
@@ -230,6 +278,18 @@ def test_min_width_and_height_stay_within_a_reasonable_floor() -> None:
     panel.show_unit(_entry())
     hint = panel.minimumSizeHint()
     assert hint.width() <= UnitsPanel.MIN_USEFUL_WIDTH
+
+
+@pytest.mark.font_sensitive
+def test_the_garrison_buttons_fit_the_floor_with_a_host_shown() -> None:
+    """GH #142: the Garrison block is hidden in the width test above, and its
+    widest button row is what grows past a fixed floor at a large font."""
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST))
+    panel.show_garrison([("Archer", "Player 1", 11), ("Villager", "GAIA", 12)], 5)
+    assert panel.garrison_buttons.isVisibleTo(panel)
+    width = panel.garrison_buttons.minimumSizeHint().width()
+    assert width <= UnitsPanel.MIN_USEFUL_WIDTH, f"garrison buttons demand {width} px"
 
 
 def test_splitter_defaults_to_the_catalog_getting_at_least_two_thirds() -> None:
@@ -376,7 +436,8 @@ def test_show_group_marks_disagreeing_fields_mixed() -> None:
     # Only the two archers count for rotation, and they agree.
     assert panel.unit_field_editors["rotation"].text() == "1"  # 0.5 rad = 1.27 of 16
     assert panel.unit_rotation_note.isVisibleTo(panel)
-    assert panel.unit_rotation_note.text().startswith("1 of 3 selected won't rotate")
+    assert panel.unit_rotation_note.text().startswith("Typing a Rotation turns the 2 selected units")
+    assert "The other 1 of 3" in panel.unit_rotation_note.text()
     assert not panel.unit_stats_header.isVisibleTo(panel)
 
 
@@ -400,7 +461,7 @@ def test_group_with_no_editable_member_shows_na_and_hides_the_editor() -> None:
     assert not panel.unit_field_editors["rotation"].isVisibleTo(grid)
     assert panel.unit_field_labels["rotation"].isVisibleTo(grid)
     assert panel.unit_field_labels["rotation"].text() == "(n/a)"
-    assert panel.unit_rotation_note.text().startswith("2 of 2 selected")
+    assert panel.unit_rotation_note.text().startswith("Typing a Rotation changes none of the 2 selected")
 
 
 def test_show_unit_after_group_restores_single_unit_state() -> None:
@@ -751,8 +812,39 @@ def test_an_archer_and_tree_group_is_facing_mode_and_the_note_counts_the_tree() 
     assert spin.text() == "1"
     assert panel.unit_rotation_note.isVisibleTo(panel)
     note = panel.unit_rotation_note.text()
-    assert note.startswith("1 of 2 selected won't rotate")
-    assert "Rotate buttons" in note
+    assert note.startswith("Typing a Rotation turns the 1 selected unit with a facing.")
+    assert "Rotate (. and ,) still steps trees" in note
+
+
+def test_the_group_note_leads_with_what_a_typed_rotation_turns() -> None:
+    """GH #71: "won't rotate" read as "trees can't rotate", though Rotate steps them."""
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=0.5), _entry(unit_const=_TREE_CONST, rotation=7.0)])
+    note = panel.unit_rotation_note.text()
+    assert note.startswith("Typing a Rotation turns the 2 selected units with a facing.")
+    assert "The other 1 of 3 (trees, walls, gates, buildings, scenery) keep theirs." in note
+    assert "won't rotate" not in note
+    assert "Rotate (. and ,) still steps trees and scenery through their variants." in note
+
+
+def test_the_group_note_names_the_rebound_rotate_keys(monkeypatch) -> None:
+    from descape import settings
+
+    keys = {"unit_rotate_cw": "R", "unit_rotate_ccw": ""}
+    monkeypatch.setattr(settings, "get_keybind", lambda action_id: keys.get(action_id, ""))
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.5), _entry(unit_const=_GATE_CONST)])
+    note = panel.unit_rotation_note.text()
+    assert note.startswith("Typing a Rotation turns the 1 selected unit with a facing.")
+    assert "Rotate (R) still turns gates through their four orientations." in note
+
+
+def test_the_note_for_a_group_with_nothing_typeable_says_so() -> None:
+    panel = _panel()
+    panel.show_group([_entry(unit_const=_GATE_CONST, rotation=7), _entry(unit_const=_WALL_CONST, rotation=2)])
+    note = panel.unit_rotation_note.text()
+    assert note.startswith("Typing a Rotation changes none of the 2 selected:")
+    assert "Rotate (. and ,) still turns gates" in note
 
 
 def test_a_tree_and_wall_group_is_variant_mode_and_the_note_counts_the_wall() -> None:
@@ -763,8 +855,20 @@ def test_a_tree_and_wall_group_is_variant_mode_and_the_note_counts_the_wall() ->
     assert (spin.minimum(), spin.maximum()) == (0, 41)
     assert spin.text() == "7"
     note = panel.unit_rotation_note.text()
-    assert note.startswith("1 of 2 selected won't rotate")
-    assert "walls" in note
+    assert note.startswith("Typing a Rotation picks that variant for the 1 selected object with graphic variants.")
+    assert "The other 1 of 2 (walls, cliffs, gates, single-frame objects) keep theirs." in note
+    assert "won't rotate" not in note
+    assert "Rotate" not in note.removeprefix("Typing a Rotation")
+
+
+def test_a_tree_and_gate_variant_group_note_says_rotate_turns_the_gate() -> None:
+    """The tail names only what the typed value skips: the gate, never the tree it already steps."""
+    panel = _panel()
+    panel.show_group([_entry(unit_const=_TREE_CONST, rotation=7.0), _entry(unit_const=_GATE_CONST)])
+    note = panel.unit_rotation_note.text()
+    assert note.startswith("Typing a Rotation picks that variant for the 1 selected object with graphic variants.")
+    assert note.endswith("Rotate (. and ,) still turns gates through their four orientations.")
+    assert "steps trees" not in note
 
 
 # --- GH #42: the Garrison block -----------------------------------------
@@ -850,3 +954,161 @@ def test_a_group_selection_or_a_new_single_unit_hides_the_garrison_block() -> No
     panel.show_garrison([("Archer", "Player 1", 11)], 5)
     panel.show_unit(_entry(reference_id=3))
     assert not panel.garrison_tree.isVisibleTo(panel)
+
+
+# --- GH #115: the Garrison block's manager buttons ---------------------------
+
+
+def _row_buttons(panel):
+    return (
+        panel.garrison_copy_button,
+        panel.garrison_unload_button,
+        panel.garrison_delete_button,
+        panel.garrison_owner_combo,
+    )
+
+
+def test_the_buttons_keep_the_planned_order() -> None:
+    panel = _panel()
+    order = [
+        panel.garrison_add_button,
+        panel.garrison_pick_button,
+        panel.garrison_copy_button,
+        panel.garrison_paste_button,
+        panel.garrison_unload_button,
+        panel.garrison_delete_button,
+        panel.garrison_owner_combo,
+    ]
+    widgets = []
+    for row in panel.garrison_button_rows:
+        layout = row.layout()
+        widgets += [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget()]
+    assert widgets == order
+
+
+def test_the_row_buttons_need_a_selected_row() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Archer", "Player 1", 11), ("Villager", "Player 1", 12)], 5)
+    assert not any(w.isEnabled() for w in _row_buttons(panel))
+
+    panel.garrison_tree.topLevelItem(0).setSelected(True)
+    assert all(w.isEnabled() for w in _row_buttons(panel))
+
+    panel.garrison_tree.clearSelection()
+    assert not any(w.isEnabled() for w in _row_buttons(panel))
+
+
+def test_paste_follows_the_viewers_can_paste_flag() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([], 5)
+    assert not panel.garrison_paste_button.isEnabled()
+    panel.show_garrison([], 5, can_paste=True)
+    assert panel.garrison_paste_button.isEnabled()
+
+
+def test_pick_from_map_is_checkable_and_disabled_on_a_full_host() -> None:
+    toggled = []
+    panel = _panel(on_garrison_pick=toggled.append)
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([], 5)
+    assert panel.garrison_pick_button.isCheckable()
+    assert panel.garrison_pick_button.isEnabled()
+
+    panel.garrison_pick_button.click()
+    assert toggled == [True]
+
+    full = [(f"Archer {i}", "Player 1", 20 + i) for i in range(5)]
+    panel.show_garrison(full, 5)
+    assert panel.garrison_pick_button.isEnabled(), "an armed pick can always be switched off"
+
+    panel.set_garrison_pick_armed(False)
+    panel.show_garrison(full, 5)
+    assert not panel.garrison_pick_button.isEnabled()
+
+
+def test_set_garrison_pick_armed_reports_nothing_back() -> None:
+    toggled = []
+    panel = _panel(on_garrison_pick=toggled.append)
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([], 5)
+
+    panel.set_garrison_pick_armed(True)
+    assert panel.garrison_pick_button.isChecked()
+    panel.set_garrison_pick_armed(False)
+    assert not panel.garrison_pick_button.isChecked()
+    assert toggled == []
+
+
+def test_copy_paste_unload_and_owner_report_through_their_callbacks() -> None:
+    copied, pasted, unloaded, owners = [], [], [], []
+    panel = _panel(
+        on_garrison_copy=copied.append,
+        on_garrison_paste=lambda: pasted.append(True),
+        on_garrison_unload=unloaded.append,
+        on_garrison_owner=lambda ids, pid: owners.append((ids, pid)),
+    )
+    panel.show_unit(_entry(unit_const=_TOWER_CONST, reference_id=10))
+    panel.show_garrison([("Archer", "Player 1", 11), ("Villager", "Player 1", 12)], 5, can_paste=True)
+    panel.garrison_tree.topLevelItem(1).setSelected(True)
+
+    panel.garrison_copy_button.click()
+    panel.garrison_paste_button.click()
+    panel.garrison_unload_button.click()
+    combo = panel.garrison_owner_combo
+    combo.setCurrentIndex(combo.findData(3))
+    combo.activated.emit(combo.currentIndex())
+
+    assert copied == [[12]]
+    assert pasted == [True]
+    assert unloaded == [[12]]
+    assert owners == [([12], 3)]
+    assert combo.currentData() is None, "the combo goes back to its prompt row"
+
+
+def test_the_owner_combo_follows_player_labels() -> None:
+    from descape import player_labels
+
+    panel = _panel()
+    combo = panel.garrison_owner_combo
+    labels = player_labels.DEFAULT_LABELS
+    renamed = type(labels)(
+        text=tuple("Renamed" if i == 2 else t for i, t in enumerate(labels.text)),
+        full=tuple("Renamed" if i == 2 else t for i, t in enumerate(labels.full)),
+    )
+    panel.refresh_player_labels(renamed, None)
+    assert combo.itemText(combo.findData(2)) == "Renamed"
+
+
+def test_select_object_alone_is_a_no_op_on_a_filtered_out_row() -> None:
+    """The premise behind pick_object() (GH #125)."""
+    panel = _panel()
+    panel.select_object(4)
+    panel.catalog_view.filter_edit.setText("this matches nothing at all")
+    panel.select_object(117)
+    assert panel.selected_object_const() == 4
+
+
+def test_pick_object_clears_a_filter_that_hides_the_row() -> None:
+    panel = _panel()
+    panel.select_object(4)
+    panel.catalog_view.filter_edit.setText("this matches nothing at all")
+    assert panel.pick_object(117)
+    assert panel.selected_object_const() == 117
+    assert panel.catalog_view.filter_edit.text() == ""
+
+
+def test_pick_object_keeps_a_filter_that_shows_the_row() -> None:
+    panel = _panel()
+    panel.catalog_view.filter_edit.setText("wall")
+    assert panel.pick_object(72)
+    assert panel.selected_object_const() == 72
+    assert panel.catalog_view.filter_edit.text() == "wall"
+
+
+def test_pick_object_refuses_an_unknown_const() -> None:
+    panel = _panel()
+    panel.select_object(4)
+    assert not panel.pick_object(-12345)
+    assert panel.selected_object_const() == 4

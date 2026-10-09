@@ -39,30 +39,35 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import object_catalog, player_labels, unit_fields, unit_rotation, unit_variant
+from descape import (
+    gate_orientation,
+    object_catalog,
+    player_labels,
+    settings,
+    unit_fields,
+    unit_rotation,
+    unit_variant,
+)
 from descape.constant_picker import HIDDEN_LABEL, catalog_preview, items_for
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.unit_stats_table import unit_stats
 from descape.value_picker import ValuePickerView
-from descape.viewer_common import _add_player_item, _relabel_player_rows
+from descape.viewer_common import FontScaledWidth, _add_player_item, _relabel_player_rows
 
 # unit_fields.UnitFieldSpec.conditional -> the rule it names. The specs stay
 # Qt-free and data-only by naming a rule as a string; this is the one place
 # that resolves it, so the rule itself stays independently testable.
 _FIELD_CONDITIONALS = {"rotation_is_editable": unit_variant.is_rotation_editable}
 
-# The full caveat, unconditionally available via the Rotation caption's
-# tooltip (see _build_inspector_pane) regardless of which const is selected.
-# unit_rotation_note below shows the same text, but only when the selected
-# const's rotation genuinely isn't a real angle -- see
-# _apply_conditional_fields.
+# Always on the Rotation caption's tooltip. unit_rotation_note (reworded for a group) shows it only when a typed value would
+# skip a selected unit (alone: a wall, cliff or single-frame object, never a tree or gate); see _apply_conditional_fields.
 _ROTATION_TOOLTIP = (
     "Rotation is shown as a facing number, 0 to one less than the unit's "
     "direction count, stored in radians (hover the field). Trees, plants and "
-    "scenery show their graphic variant number instead. Walls, cliffs and "
-    "gates store a graphic-variant index the game derives itself, and "
-    "single-frame objects have nothing to change: both are shown raw and not "
-    "editable."
+    "scenery show their graphic variant number instead, and gates their "
+    "orientation, 0 to 3 in the order Rotate steps. Walls and cliffs store a "
+    "graphic-variant index the game derives itself, and single-frame objects "
+    "have nothing to change: both are shown raw and not editable."
 )
 
 # The in-game editor's own Units-tab selection panel set (docs/
@@ -99,18 +104,45 @@ _GARRISON_OVER_CAPACITY = (
 _GARRISON_WRONG_TYPE = "{count} of these cannot garrison here in game. Shown as it is; DEscape never changes it."
 
 # Group-mode wording of unit_rotation_note: {skipped} of {total} selected.
-# Facing mode first; the variant-mode tail replaces it when no member is ANGLE.
+# GH #71: leads with what a typed value does, since "won't rotate" read as "trees can't".
 _GROUP_ROTATION_NOTE = (
-    "{skipped} of {total} selected won't rotate: a typed Rotation sets a "
-    "facing, which trees, walls, gates and scenery don't have, so it leaves "
-    "them unchanged."
+    "Typing a Rotation turns the {turned} selected {units} with a facing. "
+    "The other {skipped} of {total} (trees, walls, gates, buildings, scenery) keep theirs."
 )
-_GROUP_ROTATION_NOTE_TREES = " The Rotate buttons still step trees and scenery through their variants."
+_GROUP_NO_ROTATION_NOTE = (
+    "Typing a Rotation changes none of the {total} selected: walls, cliffs, "
+    "gates and single-frame objects keep their stored value."
+)
+# Appended when Rotate would step a member the typed value skips.
+_GROUP_ROTATE_TAIL = " Rotate{keys} still {does}."
+_ROTATE_TAIL_TREES = "steps trees and scenery through their variants"
+_ROTATE_TAIL_GATES = "turns gates through their four orientations"
+# GH #61: gate_orientation's cycle order, as the game names it (graphic tokens _ne_/_e_/_se_/_n_).
+_GATE_ORIENTATION_NAMES = ("SW to NE", "W to E", "NW to SE", "N to S")
 _GROUP_VARIANT_NOTE = (
-    "{skipped} of {total} selected won't rotate: walls, cliffs, gates and "
-    "single-frame objects keep their stored value, so a typed variant leaves "
-    "them unchanged."
+    "Typing a Rotation picks that variant for the {turned} selected {objects} with graphic variants. "
+    "The other {skipped} of {total} (walls, cliffs, gates, single-frame objects) keep theirs."
 )
+
+
+def _rotate_tail(units) -> str:
+    """" Rotate (. and ,) still ..." for the members Rotate steps, or "" if none."""
+    does = []
+    if any(unit_variant.is_cyclable(unit.unit_const) for unit in units):
+        does.append(_ROTATE_TAIL_TREES)
+    if any(gate_orientation.is_gate(unit.unit_const) for unit in units):
+        does.append(_ROTATE_TAIL_GATES)
+    if not does:
+        return ""
+    # Read live: both keys are rebindable, and either may be cleared.
+    bound = [key for key in (settings.get_keybind("unit_rotate_cw"), settings.get_keybind("unit_rotate_ccw")) if key]
+    keys = f" ({' and '.join(bound)})" if bound else ""
+    return _GROUP_ROTATE_TAIL.format(keys=keys, does=" and ".join(does))
+
+
+def _gate_index(unit) -> int:
+    """A gate's orientation index: its const's place in gate_orientation's cycle order."""
+    return gate_orientation.orientation_siblings(unit.unit_const).index(unit.unit_const)
 
 
 def _variant_of(unit) -> int:
@@ -125,8 +157,9 @@ class UnitsPanel(QWidget):
     # Measured at MIN_USEFUL_WIDTH: 64 px sprite preview + ~16 px scrollbar +
     # ~280 px tree viewport + margins. Between messages/map_options (300) and
     # diplomacy (430) -- see tools/gen_units_panel_eyeball.py's screenshot
-    # pass for confirmation; adjust there; not by argument.
-    MIN_USEFUL_WIDTH = 380
+    # pass for confirmation; adjust there; not by argument. Scales with the
+    # app font (FontScaledWidth, GH #142).
+    MIN_USEFUL_WIDTH = FontScaledWidth(380)
 
     def __init__(
         self,
@@ -137,6 +170,11 @@ class UnitsPanel(QWidget):
         on_garrison_delete=None,
         on_garrison_navigate=None,
         map_size=None,
+        on_garrison_pick=None,
+        on_garrison_copy=None,
+        on_garrison_paste=None,
+        on_garrison_unload=None,
+        on_garrison_owner=None,
     ):
         super().__init__()
         # (width, height) of the loaded map, or None: queried at populate time
@@ -152,6 +190,12 @@ class UnitsPanel(QWidget):
         self._on_garrison_add = on_garrison_add or (lambda *args: None)
         self._on_garrison_delete = on_garrison_delete or (lambda *args: None)
         self._on_garrison_navigate = on_garrison_navigate or (lambda *args: None)
+        # GH #115: Pick from map (checked), Copy/Unload (row ids), Paste, and Owner (row ids, pid).
+        self._on_garrison_pick = on_garrison_pick or (lambda *args: None)
+        self._on_garrison_copy = on_garrison_copy or (lambda *args: None)
+        self._on_garrison_paste = on_garrison_paste or (lambda *args: None)
+        self._on_garrison_unload = on_garrison_unload or (lambda *args: None)
+        self._on_garrison_owner = on_garrison_owner or (lambda *args: None)
         # True while show_unit()/show_group()/clear() are populating widgets
         # programmatically -- suppresses _field_changed() the same way
         # PlayersPanel._changed()'s own _populating guard does, so a
@@ -265,6 +309,19 @@ class UnitsPanel(QWidget):
     def select_object(self, const: int) -> None:
         self.catalog_view.select(const)
 
+    def pick_object(self, const: int) -> bool:
+        """select_object() that also lands on a row the catalog filter hides,
+        by clearing that filter (GH #125's wall button). True if `const` is
+        now the pending object."""
+        view = self.catalog_view
+        view.select(const)
+        if view.current_value() != const and view.filter_edit.text():
+            view.filter_edit.clear()
+        # A row that became current while hidden emits nothing when the filter unhides it.
+        if view.current_value() == const and self._pending_object_const != const:
+            self._set_pending_object(const)
+        return self.selected_object_const() == const
+
     def owner_id(self) -> int:
         return self.owner_combo.currentData()
 
@@ -274,6 +331,7 @@ class UnitsPanel(QWidget):
         self._player_labels = labels
         self._player_colors = colors
         _relabel_player_rows(self.owner_combo, labels, colors)
+        _relabel_player_rows(self.garrison_owner_combo, labels, colors)
         owner = self.unit_field_editors.get("player")
         if owner is not None:
             _relabel_player_rows(owner, labels, colors)
@@ -316,9 +374,8 @@ class UnitsPanel(QWidget):
             grid.addWidget(caption, row, 0)
             self.unit_field_captions[spec.field_id] = caption
             if spec.field_id == "rotation":
-                # The "shown as a facing" half of the old always-visible
-                # note, made always-accessible for zero vertical cost
-                # instead -- see unit_rotation_note below for the other half.
+                # The full caveat, always reachable at zero vertical cost.
+                # unit_rotation_note below surfaces it only when a typed value skips a unit.
                 caption.setToolTip(_ROTATION_TOOLTIP)
                 self.unit_rotation_label = caption
             # A conditional field gets BOTH widgets, in the same cell: the
@@ -374,14 +431,8 @@ class UnitsPanel(QWidget):
                 self._mixed_sentinels[spec.field_id] = None
         self.inspector_layout.addWidget(self.unit_inspector_grid)
 
-        # Conditional (only for a const whose rotation isn't a real angle) --
-        # see _apply_conditional_fields, which owns this widget's visibility.
-        # A top-level AGENTS.md hard rule, and this panel is the first place
-        # it becomes user-visible: for ~65% of GAIA objects `rotation` is a
-        # tree/doodad graphic-variant index (values like 7..53), not an angle.
-        # Same text as the Rotation caption's tooltip above -- both name the
-        # same fact, one always reachable, the other surfaced only when it
-        # actually applies to the selected const.
+        # Shown only when a typed Rotation would skip a selected unit, reworded for a group;
+        # _apply_conditional_fields owns its visibility and text.
         self.unit_rotation_note = QLabel(_ROTATION_TOOLTIP)
         self.unit_rotation_note.setWordWrap(True)
         self.inspector_layout.addWidget(self.unit_rotation_note)
@@ -440,17 +491,48 @@ class UnitsPanel(QWidget):
         self.garrison_note.setWordWrap(True)
         self.inspector_layout.addWidget(self.garrison_note)
 
+        # Three rows in the planned order (GH #115): four buttons on one row
+        # already overflow the inspector at MIN_USEFUL_WIDTH (measured offscreen).
         self.garrison_buttons = QWidget()
-        button_row = QHBoxLayout(self.garrison_buttons)
-        button_row.setContentsMargins(0, 0, 0, 0)
+        rows_layout = QVBoxLayout(self.garrison_buttons)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.garrison_button_rows = (QWidget(), QWidget(), QWidget())
+        for row in self.garrison_button_rows:
+            QHBoxLayout(row).setContentsMargins(0, 0, 0, 0)
+            rows_layout.addWidget(row)
         self.garrison_add_button = QPushButton("Add...")
         self.garrison_add_button.clicked.connect(lambda *_: self._on_garrison_add())
+        self.garrison_pick_button = QPushButton("Pick from map")
+        self.garrison_pick_button.setCheckable(True)
+        self.garrison_pick_button.setToolTip("Click units on the map to put them inside; Esc or right-click to finish")
+        self.garrison_pick_button.toggled.connect(self._garrison_pick_toggled)
+        self.garrison_copy_button = QPushButton("Copy")
+        self.garrison_copy_button.setToolTip("Copy the selected rows, to paste inside this or another host")
+        self.garrison_copy_button.clicked.connect(lambda *_: self._garrison_rows_clicked(self._on_garrison_copy))
+        self.garrison_paste_button = QPushButton("Paste")
+        self.garrison_paste_button.setToolTip("Add copies of the copied rows inside this host, each with its own owner")
+        self.garrison_paste_button.clicked.connect(lambda *_: self._on_garrison_paste())
+        self.garrison_unload_button = QPushButton("Unload")
+        self.garrison_unload_button.setToolTip("Take the selected rows out, onto the tile beside this host")
+        self.garrison_unload_button.clicked.connect(lambda *_: self._garrison_rows_clicked(self._on_garrison_unload))
         self.garrison_delete_button = QPushButton("Delete")
-        self.garrison_delete_button.setEnabled(False)
         self.garrison_delete_button.clicked.connect(lambda *_: self._garrison_delete_clicked())
-        button_row.addWidget(self.garrison_add_button)
-        button_row.addWidget(self.garrison_delete_button)
-        button_row.addStretch(1)
+        self.garrison_owner_combo = QComboBox()
+        self.garrison_owner_combo.setToolTip("Give the selected rows a new owner")
+        self.garrison_owner_combo.addItem("Owner...", None)
+        for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
+            _add_player_item(self.garrison_owner_combo, player_id, self._player_labels, self._player_colors, player_id)
+        self.garrison_owner_combo.activated.connect(self._garrison_owner_activated)
+        groups = (
+            (self.garrison_add_button, self.garrison_pick_button, self.garrison_copy_button),
+            (self.garrison_paste_button, self.garrison_unload_button, self.garrison_delete_button),
+            (self.garrison_owner_combo,),
+        )
+        for row, widgets in zip(self.garrison_button_rows, groups, strict=True):
+            for widget in widgets:
+                row.layout().addWidget(widget)
+            row.layout().addStretch(1)
+        self._set_garrison_row_actions_enabled(False)
         self.inspector_layout.addWidget(self.garrison_buttons)
         self.hide_garrison()
 
@@ -647,19 +729,21 @@ class UnitsPanel(QWidget):
         """Swaps each conditional field between its editor and its read-only
         label for the selected unit(s) -- today only Rotation, whose rule is
         unit_variant.is_rotation_editable. The editor shows if ANY unit's const
-        admits it; unit_rotation_note shows if a typed value would skip any
+        admits it, or if every selected unit is a gate (rotation_field_mode's
+        "gate" mode); unit_rotation_note shows if a typed value would skip any
         unit, so the caveat appears exactly where it applies.
 
         Only ever called with the populating guard already held: it sets an
         editor's value, and the resulting valueChanged must not record a
         phantom undo step.
 
-        Rotation has two modes (unit_variant.rotation_field_mode). As a facing
+        Rotation has three modes (unit_variant.rotation_field_mode). As a facing
         (GH #61), rotation_to_facing wraps a junk stored value like 7.0 (574
         corpus placements) onto its own frame, and a group whose members
         differ in direction count edits on the finest grid. As a variant
         (GH #123), on a selection with no ANGLE member, the range is the fewest
-        variants any member has. Either way the range is set before the value,
+        variants any member has. As a gate orientation (GH #61), on an all-gate
+        selection, 0..3 in Rotate's order. Every way the range is set before the value,
         or the value would clamp to the previous selection's maximum.
         """
         group = len(units) > 1
@@ -668,29 +752,43 @@ class UnitsPanel(QWidget):
                 continue
             rule = _FIELD_CONDITIONALS[spec.conditional]
             admitted = [unit for unit in units if rule(unit.unit_const)]
-            allowed = bool(admitted)
+            # Over every unit, as the viewer asks it: "gate" needs the whole selection.
+            mode = unit_variant.rotation_field_mode(unit.unit_const for unit in units)
+            allowed = bool(admitted) or (spec.field_id == "rotation" and mode == "gate")
             editor = self.unit_field_editors[spec.field_id]
             editor.setVisible(allowed)
             label = self.unit_field_labels[spec.field_id]
             label.setVisible(not allowed)
             if spec.field_id != "rotation":
                 continue
-            mode = unit_variant.rotation_field_mode(unit.unit_const for unit in admitted)
             # Counted from the active mode's writable set, not the rule's
             # admitted one: in facing mode a typed value skips a tree too.
             if mode == "facing":
                 writable = [unit for unit in admitted if unit_rotation.rotation_is_angle(unit.unit_const)]
+            elif mode == "gate":
+                writable = list(units)
             else:
                 writable = admitted
             skipped = len(units) - len(writable)
             self.unit_rotation_note.setVisible(skipped > 0)
             if group:
                 if mode == "variant":
-                    note = _GROUP_VARIANT_NOTE.format(skipped=skipped, total=len(units))
-                else:
-                    note = _GROUP_ROTATION_NOTE.format(skipped=skipped, total=len(units))
-                    if any(unit_variant.is_cyclable(unit.unit_const) for unit in admitted):
-                        note += _GROUP_ROTATION_NOTE_TREES
+                    turned = len(writable)
+                    note = _GROUP_VARIANT_NOTE.format(
+                        turned=turned, objects="object" if turned == 1 else "objects", skipped=skipped, total=len(units)
+                    )
+                    # Tail over the skipped members only: the typed value already steps the trees.
+                    note += _rotate_tail([unit for unit in units if not unit_variant.is_cyclable(unit.unit_const)])
+                elif mode == "facing":
+                    turned = len(writable)
+                    note = _GROUP_ROTATION_NOTE.format(
+                        turned=turned, units="unit" if turned == 1 else "units", skipped=skipped, total=len(units)
+                    )
+                    note += _rotate_tail(units)
+                elif mode is None:
+                    note = _GROUP_NO_ROTATION_NOTE.format(total=len(units)) + _rotate_tail(units)
+                else:  # "gate": every member takes the typed index, so nothing is skipped
+                    note = ""
                 self.unit_rotation_note.setText(note)
                 if not allowed:
                     label.setText("(n/a)")
@@ -705,6 +803,10 @@ class UnitsPanel(QWidget):
                 editor.setRange(editor.minimum(), scale - 1)
                 self._set_group_spin(spec.field_id, [_variant_of(unit) for unit in writable])
                 editor.setToolTip(self._variant_tooltip(writable, scale))
+            elif mode == "gate":
+                editor.setRange(editor.minimum(), len(_GATE_ORIENTATION_NAMES) - 1)
+                self._set_group_spin(spec.field_id, [_gate_index(unit) for unit in writable])
+                editor.setToolTip(self._gate_tooltip(writable))
 
     @staticmethod
     def _facing_tooltip(units, scale: int) -> str:
@@ -720,6 +822,16 @@ class UnitsPanel(QWidget):
             f"Facing on a {scale}-direction scale. Units with fewer directions "
             f"({others}) turn to their nearest frame."
         )
+
+    @staticmethod
+    def _gate_tooltip(units) -> str:
+        order = ", ".join(f"{i} {name}" for i, name in enumerate(_GATE_ORIENTATION_NAMES))
+        if len(units) == 1:
+            index = _gate_index(units[0])
+            head = f"Orientation {index} of 4: {_GATE_ORIENTATION_NAMES[index]} (const {units[0].unit_const})"
+        else:
+            head = "Orientation for every selected gate"
+        return f"{head}. Order {order}, the order Rotate steps."
 
     @staticmethod
     def _variant_tooltip(units, scale: int) -> str:
@@ -789,14 +901,16 @@ class UnitsPanel(QWidget):
 
     # -- garrison block (GH #42) ---------------------------------------------
 
-    def show_garrison(self, rows, capacity: int, wrong_type: int = 0) -> None:
+    def show_garrison(self, rows, capacity: int, wrong_type: int = 0, can_paste: bool = False) -> None:
         """The Garrison block for the one selected host.
 
         `rows` is a sequence of (label, owner, reference_id) the viewer built
         from the model -- this panel never reads a model itself. `capacity` is
         the base .dat figure, and `wrong_type` counts occupants the game
         itself would not admit; both are reported, never corrected, since a
-        file is shown as it is.
+        file is shown as it is. `can_paste` is the viewer's call (GH #115): a
+        garrison clipboard holding something, and a host that can hold it.
+        Pick from map's checked state is not touched; see set_garrison_pick_armed().
         """
         rows = list(rows)
         self.garrison_header.setText(f"<b>Garrison ({len(rows)} / {capacity})</b>")
@@ -816,7 +930,10 @@ class UnitsPanel(QWidget):
         self.garrison_add_button.setToolTip(
             "" if len(rows) < capacity else f"Full: the game gives this one {capacity} places"
         )
-        self.garrison_delete_button.setEnabled(False)
+        # An armed pick stays enabled so it can still be switched off.
+        self.garrison_pick_button.setEnabled(len(rows) < capacity or self.garrison_pick_button.isChecked())
+        self.garrison_paste_button.setEnabled(can_paste)
+        self._set_garrison_row_actions_enabled(False)
         for widget in (self.garrison_header, self.garrison_tree, self.garrison_buttons):
             widget.setVisible(True)
         self._fit_inspector_height()
@@ -831,8 +948,45 @@ class UnitsPanel(QWidget):
         """The reference_ids of the selected occupant rows."""
         return [item.data(0, Qt.UserRole) for item in self.garrison_tree.selectedItems()]
 
+    def set_garrison_can_paste(self, can_paste: bool) -> None:
+        """Paste's enablement alone, so a Copy keeps the rows it copied selected."""
+        self.garrison_paste_button.setEnabled(can_paste)
+
+    def set_garrison_pick_armed(self, armed: bool) -> None:
+        """The viewer's word on Pick from map, shown without reporting back."""
+        self.garrison_pick_button.blockSignals(True)
+        self.garrison_pick_button.setChecked(armed)
+        self.garrison_pick_button.blockSignals(False)
+        if armed:
+            self.garrison_pick_button.setEnabled(True)
+
+    def _set_garrison_row_actions_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.garrison_copy_button,
+            self.garrison_unload_button,
+            self.garrison_delete_button,
+            self.garrison_owner_combo,
+        ):
+            widget.setEnabled(enabled)
+
     def _garrison_selection_changed(self) -> None:
-        self.garrison_delete_button.setEnabled(bool(self.garrison_tree.selectedItems()))
+        self._set_garrison_row_actions_enabled(bool(self.garrison_tree.selectedItems()))
+
+    def _garrison_pick_toggled(self, checked: bool) -> None:
+        self._on_garrison_pick(checked)
+
+    def _garrison_rows_clicked(self, callback) -> None:
+        selected = self.garrison_selection()
+        if selected:
+            callback(selected)
+
+    def _garrison_owner_activated(self, index: int) -> None:
+        player_id = self.garrison_owner_combo.itemData(index)
+        # Back to the prompt row first, so picking the same owner again still fires.
+        self.garrison_owner_combo.setCurrentIndex(0)
+        selected = self.garrison_selection()
+        if player_id is not None and selected:
+            self._on_garrison_owner(selected, player_id)
 
     def _garrison_delete_clicked(self) -> None:
         selected = self.garrison_selection()

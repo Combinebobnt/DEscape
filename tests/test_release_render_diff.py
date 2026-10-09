@@ -9,7 +9,8 @@ sprite art changed on purpose.
 The controls below are what make a pass mean something. A single retextured
 tile fails every comparison, and dropping any one neutralization fails exactly
 the comparisons that neutralization exists for, so none of them is masking
-more than it has to.
+more than it has to. The contact-shadow mask is the exception while Stepped
+shadows match v0.6 (GH #15 back-out): its control must then fail nowhere.
 
 Corpus-marked: it needs the real examples/, an install via AOE2DE_INSTALL_PATH
 (conftest hides config.yaml from the suite), and the `v0.6` tag in this clone.
@@ -68,7 +69,8 @@ def test_the_render_matches_v06_outside_the_intended_changes(scenario_path, tmp_
         ("repaint-tile", ALL_CONFIGS),
         ("no-placement-patch", ALL_CONFIGS),
         ("no-exclusions", {(style, True) for style in tool.STYLES}),
-        ("no-mask", {("stepped", False), ("stepped", True)}),
+        # GH #15 back-out: Stepped shadows equal v0.6 again, so the mask must be inert.
+        ("no-mask", set()),
     ],
 )
 def test_every_control_fails_exactly_where_it_should(inject, must_fail, tmp_path):

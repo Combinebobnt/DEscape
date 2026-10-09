@@ -154,6 +154,26 @@ def test_undo_restores_a_cycled_gates_const_and_anchor_on_the_live_unit(tmp_path
     assert out.read_bytes() == FIXTURE_PATH.read_bytes()
 
 
+def test_undo_restores_an_unloaded_units_link_on_the_live_unit(tmp_path: Path) -> None:
+    """GH #115's UnitState widening: set_garrisoned_in() writes the link in
+    place, so an undo that brought back only the blob would leave the live
+    villager unloaded while the file says it is inside the House."""
+    loaded, model, history = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+
+    model.begin_unit_edit([1])
+    model.set_garrisoned_in(villager, -1)
+    model.commit_unit_edit("Unload units", history)
+    assert villager.garrisoned_in_id == -1
+
+    history.undo([], None, None, model)
+
+    assert villager.garrisoned_in_id == _REF_HOUSE
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()
+
+
 def test_undo_returns_no_tile_indices() -> None:
     loaded, model, history = _open()
     villager = _unit(loaded, _REF_VILLAGER_P1)

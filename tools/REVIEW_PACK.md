@@ -14,10 +14,9 @@ and renders off-engine.
 ```sh
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject no-apex-wedge
-.venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject notch-inject
-.venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject no-tip
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --replica 1   # 2nd clean copy
 .venv/bin/python3 tools/gen_review_pack.py --check      # deterministic, writes nothing
+.venv/bin/python3 tools/gen_review_pack.py --check --pack ground_texture   # needs examples/ + install
 ```
 
 Each run prints the opaque directory it wrote to. Record that pairing somewhere
@@ -107,7 +106,10 @@ Three rules the pilot learned the hard way:
   question, not the check id, not the directory the frames sit in. The pilot's
   checks were renamed mid-build for exactly this: `straight_run_notch` named
   what it was hunting, and `flat_ground_control` announced that its frame was a
-  control.
+  control. That includes the checkout path every frame path starts with: a
+  worktree named for its task leaks the task into REVIEW.md and into the
+  reviewer's own prompt, so render from one with `--out-dir` pointing at a
+  neutral directory.
 - **Ask the open question before the closed one**, or the reviewer agrees with
   whichever phrasing it was handed. Where two reports contradict each other, a
   forced choice between the symptoms (`GAP` / `EXTRA` / `NEITHER`) is the right
@@ -147,6 +149,10 @@ Three rules the pilot learned the hard way:
   inner-corner tip pass off, which is literally the pre-`4bd5f07` render, and it
   is the only inject in the pack that cuts into a mass rather than adding a mark.
   Its size is the real defect's size, not a number this tool picked.
+  Since the GH #15 back-out (2026-10-04) the tip pass and the side-split wedge
+  are gone, so `no-tip` and `notch-inject` are gone with them: their defects
+  are the clean render now. The shadow_band pack has only its coarse inject
+  until a localized one is designed against the line-style render.
 - **Measure each inject's reach; do not argue it from geometry.** `--check`
   prints, per inject, every frame it touched and by how much. The pilot's
   pre-registration asserted from the geometry that neither inject could reach

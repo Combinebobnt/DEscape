@@ -77,7 +77,7 @@ def test_the_viewer_unit_and_recolour_invalidates_skip_the_mirror_reread(reads, 
         assert reads == [], "_after_unit_mutation's wholesale invalidate re-read the mirror"
 
         window._ensure_option_edits()
-        monkeypatch.setattr(viewer, "refresh_player_colors", lambda *_args: True)
+        monkeypatch.setattr(viewer, "refresh_player_render_context", lambda *_args: True)
         epoch = window._cache._mutation_epoch
         window._apply_player_color_change()
         assert window._cache._mutation_epoch > epoch, "the recolour evicted nothing -- vacuous"

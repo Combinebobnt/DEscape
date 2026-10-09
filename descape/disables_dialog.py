@@ -255,7 +255,7 @@ class DisablesDialog(QDialog):
         # Row i is pid i + 1. player_colors is pid-indexed (scenario.player_colors),
         # so a `pid in colors` membership test never matched and no swatch drew.
         labels = labels or player_labels.DEFAULT_LABELS
-        for player_id in range(1, disables_fields.NUM_LIST_PLAYERS + 1):
+        for player_id in range(1, disables_fields.NUM_EDITABLE_PLAYERS + 1):
             _add_player_item(self.player_combo, player_id, labels, player_colors)
         self.player_combo.currentIndexChanged.connect(self._on_player_changed)
         layout.addWidget(self.player_combo)

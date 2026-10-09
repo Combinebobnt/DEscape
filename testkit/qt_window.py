@@ -153,8 +153,12 @@ def stepped_window(
     `show=False` returns the window unshown and unpumped, for a caller that
     must measure a paint cycle it triggers itself.
 
+    Elevation View and View > Layers persist (GH #182), so both are pinned
+    to their defaults here: a caller without settings isolation would
+    otherwise inherit the developer's last saved style and layers.
+
     Does NOT call terrain_style_combo.setCurrentText("Stepped"). Terrain
-    Style already defaults to "stepped" (ViewerWindow._terrain_style), and
+    Style is pinned to "stepped" above (ViewerWindow._terrain_style), and
     _build_toolbar sets the combo before connect(), so a later same-text set
     emits nothing; on_terrain_style_changed() also early-returns whenever
     the requested style matches the current one. Two of the merged copies
@@ -176,6 +180,8 @@ def stepped_window(
         settings_module._elev_step_pct = elev_step_pct
     if graphics_quality is not None:
         settings_module._graphics_quality = graphics_quality
+    settings_module._terrain_style = settings_module.TERRAIN_STYLE_DEFAULT
+    settings_module._view_layers = dict(settings_module._DEFAULT_VIEW_LAYERS)
 
     window = ViewerWindow()
     window.load_scenario(path)

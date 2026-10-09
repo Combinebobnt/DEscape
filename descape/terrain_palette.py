@@ -10,11 +10,12 @@ can't distinguish e.g. FOREST_OAK from FOREST_PINE, both just match "FOREST").
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import asset_source
+from descape import asset_source, object_catalog
 
 _KEYWORD_COLORS: list[tuple[str, tuple[int, int, int]]] = [
     ("DEEP_WATER", (28, 62, 130)),
@@ -38,7 +39,40 @@ _KEYWORD_COLORS: list[tuple[str, tuple[int, int, int]]] = [
 
 _DEFAULT_COLOR = (100, 100, 100)
 
-_ID_TO_NAME: dict[int, str] = {t.value: t.name for t in TerrainId}
+_ENUM_IDS: frozenset[int] = frozenset(t.value for t in TerrainId)
+
+
+def enum_style_name(code: str) -> str:
+    """A .dat terrain's internal name as a TerrainId-style name:
+    "Forest, Spruce" -> "FOREST_SPRUCE"."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", code).strip("_").upper()
+
+
+def _build_id_to_name() -> dict[int, str]:
+    """TerrainId's names, plus every .dat-table terrain the enum lacks (the
+    Sept 2026 patch's 131-133) under enum_style_name() of its .dat code. The
+    .dat names only name dat-only ids: for old ids they do not reproduce the
+    enum's ("Forest" vs FOREST_OAK)."""
+    names = {t.value: t.name for t in TerrainId}
+    for terrain_id, entry in object_catalog.dat_terrains().items():
+        if terrain_id not in names and entry.get("code", "").strip():
+            names[terrain_id] = enum_style_name(entry["code"])
+    return names
+
+
+_ID_TO_NAME: dict[int, str] = _build_id_to_name()
+_TERRAIN_IDS: tuple[int, ...] = tuple(sorted(_ID_TO_NAME))
+
+
+def terrain_ids() -> tuple[int, ...]:
+    """Every terrain id with a name: TerrainId plus the .dat-only ids, id
+    order. The one enumeration other modules use instead of TerrainId."""
+    return _TERRAIN_IDS
+
+
+def is_dat_only_terrain(terrain_id: int) -> bool:
+    """True for a named id TerrainId lacks, i.e. one named from the .dat."""
+    return terrain_id in _ID_TO_NAME and terrain_id not in _ENUM_IDS
 
 
 def _color_for_name(name: str) -> tuple[int, int, int]:
@@ -62,6 +96,15 @@ def color_for_terrain_id(terrain_id: int) -> tuple[int, int, int]:
 
 def name_for_terrain_id(terrain_id: int) -> str:
     return _ID_TO_NAME.get(terrain_id, f"UNKNOWN_{terrain_id}")
+
+
+def known_terrain_name(terrain_id: int) -> str:
+    """name_for_terrain_id() for an id in terrain_ids(); ValueError for any
+    other, as TerrainId(terrain_id) raised before the .dat-only ids."""
+    try:
+        return _ID_TO_NAME[terrain_id]
+    except KeyError:
+        raise ValueError(f"{terrain_id!r} is not a known terrain id") from None
 
 
 # unit_const ids for tree/tree-like GAIA flora -- see tools/gen_tree_unit_ids.py.
@@ -111,13 +154,18 @@ HERO_GLOW_CONSTS: frozenset[int] = frozenset(_UNIT_RENDER_DATA.get("hero_glow", 
 OBJECT_TILE_SPANS: dict[int, tuple[int, int]] = {
     int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("object_spans", {}).items()
 }
+# unit_const -> (span_x, span_y) for the four 1x3/3x1 blockers (GH #121), an
+# explicit allowlist; see tools/gen_unit_render_data.py's "blocker_spans" docs.
+BLOCKER_TILE_SPANS: dict[int, tuple[int, int]] = {
+    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("blocker_spans", {}).items()
+}
 
 def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     """The footprint span every render path should ask for. BUILDING_TILE_SPANS
     stays the is-a-building MEMBERSHIP test (render._unit_color reads it that
-    way); this answers how big something is, over both tables. Their keys are
-    disjoint by construction -- a cliff's `building` field is None, which is
-    exactly why it needed a second table.
+    way); this answers how big something is, over all three tables. Their keys
+    are disjoint by construction -- a cliff's or blocker's `building` field is
+    None, which is exactly why each needed its own table.
 
     **A function rather than a merged dict**, so it reads both tables live. A
     pre-merged snapshot would silently ignore a runtime `monkeypatch.setitem`
@@ -126,7 +174,10 @@ def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     span = BUILDING_TILE_SPANS.get(unit_const)
     if span is not None:
         return span
-    return OBJECT_TILE_SPANS.get(unit_const, default)
+    span = OBJECT_TILE_SPANS.get(unit_const)
+    if span is not None:
+        return span
+    return BLOCKER_TILE_SPANS.get(unit_const, default)
 
 RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {
     int(uid): tuple(rgb) for uid, rgb in _UNIT_RENDER_DATA["resource_colors"].items()

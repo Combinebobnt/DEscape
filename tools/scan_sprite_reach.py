@@ -125,6 +125,20 @@ def scan(graphics_dir: Path, entries: list[tuple[str, int, int]]):
     return maxima, worst, readable, unreadable
 
 
+def referenced_entries() -> list[tuple[str, int, int]]:
+    """scan()'s input: every (file_name, dx, dy) a unit can draw, from
+    unit_graphic_map.json and, since GH #48, every per-civ building entry in
+    building_art_map.json (age targets are ordinary consts, already in the
+    first table)."""
+    entries: set[tuple[str, int, int]] = set()
+    per_civ = [e for art in unit_sprites.building_art().civ_art.values() for e in art.values()]
+    for gm_entry in [*unit_sprites.graphic_map().values(), *per_civ]:
+        entries.add((gm_entry["file_name"], 0, 0))
+        for piece in gm_entry.get("pieces", ()):
+            entries.add((piece["file_name"], piece["dx"], piece["dy"]))
+    return sorted(entries)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -144,14 +158,12 @@ def main() -> None:
         return
 
     graphics_dir = Path(install) / unit_sprites.GRAPHICS_SUBPATH
-    entries: set[tuple[str, int, int]] = set()
-    for gm_entry in unit_sprites.graphic_map().values():
-        entries.add((gm_entry["file_name"], 0, 0))
-        for piece in gm_entry.get("pieces", ()):
-            entries.add((piece["file_name"], piece["dx"], piece["dy"]))
-    entries = sorted(entries)
+    entries = referenced_entries()
     print(f"Sprite reach scan -- install {install}")
-    print(f"{len(entries)} distinct (file, offset) entries referenced by unit_graphic_map.json")
+    print(
+        f"{len(entries)} distinct (file, offset) entries referenced by unit_graphic_map.json "
+        f"and building_art_map.json"
+    )
 
     maxima, worst, readable, unreadable = scan(graphics_dir, entries)
     print(f"{readable} readable, {unreadable} unreadable (absent from this install)")

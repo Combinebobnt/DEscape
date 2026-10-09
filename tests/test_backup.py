@@ -155,6 +155,83 @@ def test_blocked_write_leaves_zero_backup_files(tmp_path) -> None:
     assert not orig_path(template_target).exists()
 
 
+def _linked_proton_folder(tmp_path: Path) -> tuple[Path, Path]:
+    """(real, link): a scenario inside a Proton-style folder, and the same
+    file opened through a directory symlink whose own path lacks the marker."""
+    real_dir = tmp_path / FORBIDDEN_WRITE_MARKER / "813780"
+    real_dir.mkdir(parents=True)
+    real = _copy_fixture(real_dir)
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+    return real, link_dir / real.name
+
+
+def test_a_directory_symlink_into_the_proton_prefix_is_refused(tmp_path) -> None:
+    """The hard rule through a linked folder: the path as written carries no
+    marker, so only the resolved check can catch it."""
+    from descape import autosave
+
+    real, link_path = _linked_proton_folder(tmp_path)
+    assert FORBIDDEN_WRITE_MARKER not in str(link_path)  # else this passes without the resolve
+    before = real.read_bytes()
+
+    s = load_map_and_units(link_path)
+    key = autosave.doc_key(link_path, "0123456789abcdef")
+    assert autosave.slot_path(key, link_path.name, link_path, "sidecar").parent == autosave.autosave_dir()
+
+    _flip_one_tile(s)  # unmodified bytes would return before any backup, proving nothing
+    with pytest.raises(WriteBlockedError):
+        write_scenario(s, link_path)
+    assert real.read_bytes() == before
+    assert sorted(p.name for p in real.parent.iterdir()) == [real.name]
+
+
+def test_a_file_symlink_into_the_proton_prefix_is_refused_not_replaced(tmp_path) -> None:
+    """Before the resolved check, Save replaced such a link with a real file."""
+    real, _ = _linked_proton_folder(tmp_path)
+    link_path = tmp_path / "linked.aoe2scenario"
+    link_path.symlink_to(real)
+    assert FORBIDDEN_WRITE_MARKER not in str(link_path)
+
+    s = load_map_and_units(link_path)
+    _flip_one_tile(s)
+    with pytest.raises(WriteBlockedError):
+        write_scenario(s, link_path)
+    assert link_path.is_symlink()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [FORBIDDEN_WRITE_MARKER, "link", link_path.name]
+    assert sorted(p.name for p in real.parent.iterdir()) == [real.name]
+
+
+def test_a_marked_path_is_blocked_before_resolve_can_fail(tmp_path, monkeypatch) -> None:
+    """A symlink loop or unreadable parent makes resolve() raise; a path that
+    already names compatdata/ must still read "blocked", not "Save failed"."""
+    s = load_map_and_units(FIXTURE_PATH)
+
+    def _raise(self, strict=False):
+        raise RuntimeError("Symlink loop")
+
+    monkeypatch.setattr(Path, "resolve", _raise)
+    with pytest.raises(WriteBlockedError):
+        write_scenario(s, tmp_path / FORBIDDEN_WRITE_MARKER / "map.aoe2scenario")
+
+
+def test_a_looped_save_path_is_refused_with_zero_backups(tmp_path) -> None:
+    """Fail closed: a path that can't be resolved can't be shown to be outside
+    a Proton prefix. Unrefused, the atomic write would replace the link."""
+    a, b = tmp_path / "a.aoe2scenario", tmp_path / "b.aoe2scenario"
+    a.symlink_to(b)
+    b.symlink_to(a)
+
+    s = load_map_and_units(FIXTURE_PATH)
+    _flip_one_tile(s)  # unmodified bytes could return before the write, proving nothing
+    with pytest.raises(WriteBlockedError, match="cannot be resolved"):
+        write_scenario(s, a)
+    assert a.is_symlink() and b.is_symlink()
+    for p in (a, b):
+        assert not bak_path(p).exists() and not bak_path(p).is_symlink()
+        assert not orig_path(p).exists() and not orig_path(p).is_symlink()
+
+
 def test_backup_failure_aborts_the_save(tmp_path, monkeypatch) -> None:
     target = _copy_fixture(tmp_path)
     before = target.read_bytes()

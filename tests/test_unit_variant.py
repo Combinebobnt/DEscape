@@ -123,6 +123,11 @@ def test_walls_cliffs_gates_inert_and_single_variant_consts_are_not_rotation_edi
         ([ARCHER, OAK, WALL], "facing"),
         ([WALL], None),
         ([WALL, GATE, HOUSE], None),
+        ([GATE], "gate"),
+        ([GATE, 88], "gate"),
+        ([GATE, WALL], None),
+        ([GATE, OAK], "variant"),
+        ([GATE, ARCHER], "facing"),
     ],
 )
 def test_rotation_field_mode(consts, mode):
@@ -130,8 +135,8 @@ def test_rotation_field_mode(consts, mode):
 
 
 def test_rotation_field_mode_ignores_consts_the_rule_does_not_admit():
-    """The panel passes only the admitted consts, the viewer every selected
-    one: a wall or house in the input must not change the answer."""
+    """Once a facing or variant member is present, a wall or house in the
+    input must not change the answer (only an all-gate selection is "gate")."""
     for admitted in ([OAK], [ARCHER, OAK]):
         assert unit_variant.rotation_field_mode(admitted) == unit_variant.rotation_field_mode(
             [*admitted, WALL, HOUSE]

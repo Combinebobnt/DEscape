@@ -12,11 +12,12 @@ the same way tools/gen_units_fixture.py and tools/gen_trigger_fixture.py are:
    by diffing every FileHeader/DataHeader value of a real game-saved 1.59
    file against a 1.58 one; nothing else in those sections carries it. The
    donor has no units or conditions, so its body is already valid 1.59.
-2. Load that through the real loader, which reads it with the vendored
-   descape/versions/DE/v1.59/structure.json.
+2. Load that through the real loader, which reads it with
+   AoE2ScenarioParser's own v1.59 structure.
 3. Add units and triggers through AoE2ScenarioParser's own managers, commit,
    then set the two 1.59-only fields (`capture_flag`, `allow_in_fog`)
-   directly on the committed slots: 0.8.3's Unit/Condition can't take them.
+   directly on the committed slots. Written there because this generator
+   predates the 0.9.x pin that links them; the bytes are the same.
 4. Serialize through the library's own retrievers with empty strings written
    the game's way (tools/_fixture_bytes.py), never through descape code.
 
@@ -33,12 +34,10 @@ What it holds, and why:
 
 Deterministic: two runs produce identical bytes (tests/test_v159_fixture.py).
 
-Maintainer-side cross-check, not part of any test: the fixture parses with
-AoE2ScenarioParser's own upstream 1.59 support (branch feat/v1-59-support,
-commit faadf3fd, in a throwaway `git worktree add --detach`, then
-PYTHONPATH=<worktree>), reading back every capture_flag and allow_in_fog
-below, and its FileHeader/DataHeader field layout matches a real game-saved
-1.59 file's.
+Its FileHeader/DataHeader field layout matches a real game-saved 1.59
+file's. Moving the pin from 0.8.3 (which read it through a vendored copy of
+upstream's 1.59 structure) to 0.9.4, and then to 0.9.3, regenerated it
+byte-identical.
 """
 
 from __future__ import annotations
@@ -56,11 +55,14 @@ from _fixture_bytes import GenerationVerificationError, _game_style_bytes
 
 from descape.scenario_io import (
     BLANK_TEMPLATE_PATH,
+    FORBIDDEN_WRITE_MARKER,
     LoadedScenario,
+    is_under_compatdata,
     load_map_and_units,
     load_map_and_units_from_bytes,
     parse_triggers,
 )
+from descape.scenario_write import WriteBlockedError
 
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "v159_units_triggers.aoe2scenario"
 
@@ -158,10 +160,8 @@ def _patch_counter(buffer: bytearray, end_offset: int, value: int) -> None:
 
 def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
     loaded = load_map_and_units_from_bytes(_patched_donor(donor_path), FIXTURE_PATH.name, fast_units=False)
-    if loaded.scenario_version != SCENARIO_VERSION or loaded.structure_source != "repo":
-        raise GenerationVerificationError(
-            f"patched donor loaded as {loaded.scenario_version}/{loaded.structure_source}, expected 1.59/repo"
-        )
+    if loaded.scenario_version != SCENARIO_VERSION:
+        raise GenerationVerificationError(f"patched donor loaded as {loaded.scenario_version}, expected 1.59")
     _build_units(loaded)
     _build_triggers(loaded)
 
@@ -206,10 +206,11 @@ def read_allow_in_fog(loaded: LoadedScenario) -> dict[tuple[int, int], int]:
 
 
 def verify_fixture(path: Path) -> None:
-    """Reloads through the real loader, like the other generators."""
-    reloaded = load_map_and_units(path)
-    if reloaded.scenario_version != SCENARIO_VERSION or reloaded.structure_source != "repo":
-        raise GenerationVerificationError(f"{path}: reloaded as {reloaded.scenario_version}/{reloaded.structure_source}")
+    """Reloads through the real loader, like the other generators. The library
+    walk, since read_capture_flags() reads the parsed slots."""
+    reloaded = load_map_and_units(path, fast_units=False)
+    if reloaded.scenario_version != SCENARIO_VERSION:
+        raise GenerationVerificationError(f"{path}: reloaded as {reloaded.scenario_version}")
     if not (reloaded.terrain_write_supported and reloaded.units_write_supported and reloaded.messages_write_supported):
         raise GenerationVerificationError(f"{path}: a load-time write gate failed after reload")
     for player, expected in UNIT_COUNTS.items():
@@ -232,6 +233,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=FIXTURE_PATH, help="Destination file")
     args = parser.parse_args()
 
+    if is_under_compatdata(args.out):
+        raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {args.out}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     data = build_fixture_bytes()
     args.out.write_bytes(data)

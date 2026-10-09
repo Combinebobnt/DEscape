@@ -34,6 +34,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
+from functools import cache
 from typing import Any
 
 from AoE2ScenarioParser.datasets import buildings, players, techs, trigger_lists, units
@@ -42,8 +43,9 @@ from AoE2ScenarioParser.objects.data_objects.effect import (
     _get_armour_attack_source,
     _is_float_quantity_effect,
 )
+from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
 
-from . import object_catalog
+from . import library_compat, object_catalog, scenario_io
 from .library_compat import VocabularyEntry
 
 # -- kinds -------------------------------------------------------------------
@@ -86,6 +88,10 @@ MIXED = _Mixed()
 # Shown but never written. quantity_float left this set: it is editable exactly
 # when it is the live cluster slot (apply_quantity_cluster_rule()).
 DISPLAY_ONLY: frozenset[str] = frozenset()
+
+# Vocabulary fields with no row, no detail text and no retype carry: the value
+# is preserved untouched. allow_in_fog (1.59, condition 27) waits for its checkbox.
+HIDDEN_FIELDS: frozenset[str] = frozenset({"allow_in_fog"})
 
 # Fields whose library attribute differs from the vocabulary name. Effect has
 # no public quantity_float; its value lives in Effect.quantity.
@@ -181,7 +187,8 @@ class FieldSpec:
     `choices` is (label, value) pairs for ENUM only. `sentinel` is the value
     meaning "unset", or None for kinds that have no such value. `attribute`
     is the library attribute read and written, when it differs from `name`
-    ("" means the same). `multiline`
+    ("" means the same). `tooltip` goes on the form row's label and editor
+    when non-empty; vocabulary-derived specs leave it empty. `multiline`
     is XS, PROSE or "" -- a mode rather than a bool, since the two multi-line
     kinds need different widgets (monospace and un-wrapped vs. proportional
     and wrapping) and different newline handling, while `if spec.multiline:`
@@ -196,6 +203,7 @@ class FieldSpec:
     read_only: bool = False
     multiline: str = ""
     attribute: str = ""
+    tooltip: str = ""
 
     def __post_init__(self) -> None:
         if not self.attribute:
@@ -206,23 +214,74 @@ class FieldSpec:
         return self.name.replace("_", " ")
 
 
-# The trigger's own fields, in the order the in-game editor shows them. Fixed
-# rather than derived: TriggerStruct's JSON carries storage fields
-# (description_stid, condition_order) that are not user-editable properties.
+_STRING_TABLE_TOOLTIP = (
+    "A game string table id. When nonzero, the game shows its own localized string "
+    "instead of the text typed here. Leave at 0 for custom text."
+)
+
+# The trigger's own fields. Fixed rather than derived: the struct also carries
+# condition_order, effect_order and an unknown 5-byte field nobody edits.
 TRIGGER_FIELDS: tuple[FieldSpec, ...] = (
     # `name` stays one line: 1569 corpus values, median 18 chars, none with a
     # newline. The other two are real prose (description: 407 values, max 235,
     # 16 of them multi-line across all three newline tokens).
     FieldSpec("name", STR, sentinel=None),
     FieldSpec("short_description", STR, sentinel=None, multiline=PROSE),
+    # Both ids keep the UNSET sentinel: 0 and -1 both mean "no id" in the corpus, and -1 must round-trip.
+    FieldSpec(
+        "short_description_string_table_id",
+        INT,
+        attribute="short_description_stid",
+        tooltip=_STRING_TABLE_TOOLTIP,
+    ),
     FieldSpec("description", STR, sentinel=None, multiline=PROSE),
+    FieldSpec(
+        "description_string_table_id",
+        INT,
+        attribute="description_stid",
+        tooltip=_STRING_TABLE_TOOLTIP,
+    ),
     FieldSpec("enabled", BOOL, sentinel=None),
     FieldSpec("looping", BOOL, sentinel=None),
-    FieldSpec("header", BOOL, sentinel=None),
+    FieldSpec(
+        "header",
+        BOOL,
+        sentinel=None,
+        tooltip=(
+            "Shows this trigger's description as a section heading in the Objectives panel. "
+            "Usually paired with Display as Objective on, Display on Screen off, and the "
+            "highest Description Order in its group."
+        ),
+    ),
+    FieldSpec(
+        "description_order",
+        INT,
+        sentinel=None,
+        tooltip=(
+            "Position in the in-game Objectives panel: higher numbers are listed first. "
+            "Not the same as the trigger list's Display order."
+        ),
+    ),
     FieldSpec("display_as_objective", BOOL, sentinel=None),
     FieldSpec("display_on_screen", BOOL, sentinel=None),
     FieldSpec("mute_objectives", BOOL, sentinel=None),
+    FieldSpec("execute_on_load", BOOL, sentinel=None),
 )
+
+
+@cache
+def trigger_specs(scenario_version: str) -> tuple[FieldSpec, ...]:
+    """TRIGGER_FIELDS minus any field the library's own link does not support
+    at `scenario_version` (execute_on_load before 1.55)."""
+    # Checked first: Support.supports() calls float(v). An unparseable version shows every field.
+    if scenario_io._version_key(scenario_version) is None:
+        return TRIGGER_FIELDS
+    support = {link.name: link.support for link in library_compat._iter_links(Trigger._link_list)}
+    return tuple(
+        spec
+        for spec in TRIGGER_FIELDS
+        if support.get(spec.attribute) is None or support[spec.attribute].supports(scenario_version)
+    )
 
 
 def enum_choices(presentation: str) -> tuple[tuple[str, int], ...]:
@@ -345,7 +404,7 @@ def field_specs(
     """
     specs = []
     for attribute in entry.attributes:
-        if attribute == type_attribute:
+        if attribute == type_attribute or attribute in HIDDEN_FIELDS:
             continue
         default = entry.default_attributes.get(attribute)
         kind, presentation = _kind_for(attribute, default, presentation_map.get(attribute, ""))
@@ -469,7 +528,7 @@ def retype_carryover(
     applied: dict[str, Any] = {}
     dropped: list[str] = []
     for attribute in old_definition.attributes:
-        if attribute == type_attribute:
+        if attribute == type_attribute or attribute in HIDDEN_FIELDS:
             continue
         value = _live_value(entry, attribute)
         if value is None or value == old_definition.default_attributes.get(attribute):

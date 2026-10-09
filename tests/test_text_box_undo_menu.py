@@ -180,6 +180,34 @@ def test_with_focus_back_on_the_map_the_menu_follows_edit_history(which: str) ->
         conftest.close_window(window)
 
 
+@pytest.mark.parametrize("which", BOXES)
+def test_a_grip_drag_leaves_the_focused_boxs_undo_stack_and_edit_history_alone(which: str) -> None:
+    """GH #139: resizing is not an edit. The box keeps focus, its own stack
+    and text are untouched, and menu Undo still steps the typing back."""
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    window, box = _box_window(which)
+    try:
+        _focus(box)
+        _type(box, " xyz")
+        typed = box.toPlainText()
+        steps = box.document().availableUndoSteps()
+        before_history = _history(window)
+
+        _drag(box.grip(), 3)
+        QApplication.processEvents()
+        assert box.visible_lines() == box.VISIBLE_LINES + 3
+        assert QApplication.focusWidget() is box
+        assert box.toPlainText() == typed
+        assert box.document().availableUndoSteps() == steps
+        assert _history(window) == before_history
+        window.undo_action.trigger()
+        assert box.toPlainText() != typed, "menu Undo still acts on the box's typing"
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_box_in_another_window_does_not_drive_this_windows_menu() -> None:
     """focusChanged is app-global; each window only follows its own boxes."""
     first, _first_box = _box_window("messages hints")

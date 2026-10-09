@@ -1,14 +1,15 @@
-"""Default-tier coverage for scenario version 1.59, read through the vendored
-descape/versions/DE/v1.59/ definitions on the 0.8.3 pin.
+"""Default-tier coverage for scenario version 1.59, read through
+AoE2ScenarioParser 0.9.3's own v1.59 definitions.
 
 Everything runs on tests/fixtures/v159_units_triggers.aoe2scenario
 (tools/gen_v159_fixture.py). The two 1.59-only fields, `capture_flag` and
-`allow_in_fog`, have no RetrieverObjectLink on 0.8.3, so the library leaves
-them in their list slot when it re-slots objects on save. The slot-shift
-tests below are the regression guard for descape/unlinked_fields.py: each
-edit moves an object into a slot whose old value differs from its own, then
-re-reads the saved file and checks the value by reference id or condition
-identity, never by position.
+`allow_in_fog`, had no RetrieverObjectLink on the old 0.8.3 pin, so the
+library left them in their list slot when it re-slotted objects on save, and
+descape/unlinked_fields.py carried them. 0.9.3 links both, the carrier is
+dormant, and the slot-shift tests below now prove the library's own linking:
+each edit moves an object into a slot whose old value differs from its own,
+then re-reads the saved file and checks the value by reference id or
+condition identity, never by position.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from descape.unit_model import UnitEditModel
 import conftest
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "v159_units_triggers.aoe2scenario"
+V158_UNITS = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
 
 class _History:
@@ -61,10 +63,10 @@ def test_fixture_matches_its_generator() -> None:
     assert _gen().build_fixture_bytes() == FIXTURE.read_bytes()
 
 
-def test_fixture_loads_from_the_repo_structure_with_triggers() -> None:
+def test_fixture_loads_from_the_library_structure_with_triggers() -> None:
     gen = _gen()
     loaded = load_map_and_units(FIXTURE)
-    assert (loaded.scenario_version, loaded.structure_source) == ("1.59", "repo")
+    assert (loaded.scenario_version, loaded.structure_source) == ("1.59", "library")
     assert loaded.terrain_write_supported and loaded.units_write_supported and loaded.messages_write_supported
     assert loaded.trigger_read_supported is None
     manager = parse_triggers(loaded)
@@ -74,7 +76,7 @@ def test_fixture_loads_from_the_repo_structure_with_triggers() -> None:
     TriggerEditModel(loaded)
 
 
-def test_the_carrier_pulls_both_fields_at_load() -> None:
+def test_both_fields_come_through_at_load() -> None:
     gen = _gen()
     loaded = load_map_and_units(FIXTURE)
     assert {u.reference_id: u.capture_flag for units in loaded.unit_manager.units for u in units} == gen.CAPTURE_FLAGS
@@ -271,6 +273,51 @@ def test_paste_region_keeps_capture_flag(tmp_path) -> None:
 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_pre_159_region_pastes_into_159_as_default_flags(tmp_path) -> None:
+    """Copy Region in a 1.58 document twice, paste both into the 1.59 fixture,
+    save: every pasted unit saves -1. The first copy runs on the fresh load,
+    whose poisoned capture_flag raises on read; the second after adding a
+    unit there, whose depoison leaves loaded units with no attribute."""
+    gen = _gen()
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    window = ViewerWindow()
+    try:
+        window.load_scenario(V158_UNITS)
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("select")
+        window.on_region_selected((10, 10, 14, 11))  # P1's 200, 201, 203
+        window.copy_region()
+        loaded_only = window._clipboard_history.active_id
+        window._ensure_unit_edits().add(player=1, unit_const=4, x=13.5, y=10.5)
+        window.copy_region()  # the same three plus the added one
+        window.edit_history.mark_saved()
+
+        window.load_scenario(FIXTURE)
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("select")
+        window.paste_units_check.setChecked(True)
+        window.on_hover((80, 80))
+        window.paste_region()
+        assert window._clipboard_history.set_active(loaded_only)
+        window.on_hover((80, 90))
+        window.paste_region()
+
+        out = tmp_path / "paste_158.aoe2scenario"
+        write_scenario(window.scenario, out, backup=False, **window._edit_model_kwargs())
+        flags = gen.read_capture_flags(load_map_and_units(out, fast_units=False))
+        pasted = [ref for ref in flags if ref not in gen.CAPTURE_FLAGS]
+        assert len(pasted) == 7
+        assert {flags[ref] for ref in pasted} == {-1}
+        assert {ref: flags[ref] for ref in gen.CAPTURE_FLAGS} == gen.CAPTURE_FLAGS
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_mirroring_keeps_capture_flag(tmp_path) -> None:
     from descape.mirror_tools import plan_mirror, plan_mirror_units
 
@@ -306,25 +353,47 @@ def test_mirroring_keeps_capture_flag(tmp_path) -> None:
         window.close()
 
 
-# -- the vocabulary filter and the carrier table ------------------------------
+# -- the vocabulary, the hidden field and the dormant carrier -----------------
 
 
-def test_the_repo_vocabulary_drops_exactly_allow_in_fog() -> None:
-    assert library_compat.repo_only_attributes("1.59") == {
-        "conditions": frozenset({"allow_in_fog"}),
-        "effects": frozenset(),
-    }
+def test_the_library_vocabulary_lists_allow_in_fog_on_condition_27_only() -> None:
+    """1.59's vocabulary is the library's now, so nothing is filtered out of
+    it: allow_in_fog stays in the data and only the trigger form hides it."""
+    for version in ("1.58", "1.59"):
+        assert library_compat.repo_only_attributes(version) == {"conditions": frozenset(), "effects": frozenset()}
     vocabulary = library_compat.load_vocabulary("1.59")
-    for entries, presentation in (
-        (vocabulary.conditions, vocabulary.condition_presentation),
-        (vocabulary.effects, vocabulary.effect_presentation),
-    ):
-        assert "allow_in_fog" not in presentation
-        for entry in entries.values():
-            assert "allow_in_fog" not in entry.attributes and "allow_in_fog" not in entry.default_attributes
-    # Private-name links (effect.py) are vocabulary names too, so they stay.
-    assert "quantity" in vocabulary.effects[0].default_attributes
-    assert library_compat.repo_only_attributes("1.58") == {"conditions": frozenset(), "effects": frozenset()}
+    assert [i for i, entry in vocabulary.conditions.items() if "allow_in_fog" in entry.attributes] == [27]
+    assert not any("allow_in_fog" in entry.attributes for entry in vocabulary.effects.values())
+
+
+def test_allow_in_fog_has_no_form_row_and_survives_a_sibling_edit(tmp_path) -> None:
+    """Hidden until its checkbox ships: condition 27 gets no allow_in_fog
+    spec and no retype carry, and editing a sibling field keeps the stored 1."""
+    from descape import trigger_fields
+
+    gen = _gen()
+    vocabulary = library_compat.load_vocabulary("1.59")
+    specs = trigger_fields.field_specs(vocabulary.conditions[27], vocabulary.condition_presentation, "condition_type")
+    names = {spec.name for spec in specs}
+    assert "allow_in_fog" not in names and "unit_object" in names
+
+    loaded = load_map_and_units(FIXTURE)
+    model = TriggerEditModel(loaded)
+    model.begin_trigger_edit(content_touched=[gen.FOG_TRIGGER])
+    condition = model.manager().triggers[gen.FOG_TRIGGER].conditions[gen.FOG_CONDITION]
+    assert condition.allow_in_fog == 1
+    _applied, dropped = trigger_fields.retype_carryover(
+        condition, vocabulary.conditions[27], vocabulary.conditions[10], "condition_type"
+    )
+    assert "allow_in_fog" not in dropped
+    condition.source_player = 3
+    model.commit_trigger_edit("Edit condition", _History())
+
+    reloaded = _save_and_reload(loaded, tmp_path, "sibling_edit", triggers=model)
+    manager = parse_triggers(reloaded)
+    saved = manager.triggers[gen.FOG_TRIGGER].conditions[gen.FOG_CONDITION]
+    assert (saved.source_player, saved.allow_in_fog) == (3, 1)
+    assert gen.read_allow_in_fog(reloaded) == gen.ALLOW_IN_FOG
 
 
 def _struct(structure: dict, name: str) -> dict | None:
@@ -338,36 +407,52 @@ def _struct(structure: dict, name: str) -> dict | None:
     return None
 
 
-def _unlinked(versions_dir: Path, cls: type, struct_name: str) -> dict[str, set[str]]:
+def _struct_fields(versions_dir: Path, struct_name: str) -> dict[str, dict]:
     out = {}
     for path in sorted(versions_dir.glob("v*/structure.json")):
         found = _struct(json.loads(path.read_text(encoding="utf-8")), struct_name)
-        out[path.parent.name] = set(found["retrievers"]) - unlinked_fields.link_names(cls)
+        if found is not None:
+            out[path.parent.name] = found["retrievers"]
     return out
 
 
 @pytest.mark.parametrize(("cls", "struct_name"), [(Unit, "UnitStruct"), (Condition, "ConditionStruct")])
-def test_the_carrier_table_is_exactly_what_repo_structures_add(cls, struct_name) -> None:
-    """UNLINKED_FIELDS equals, per class, the struct fields a repo structure
-    has that the installed class doesn't link, beyond the constant/padding
-    fields every library structure already leaves unlinked. After a pin bump
-    that links them, this difference is empty and the carrier is dormant."""
-    baseline = set().union(*_unlinked(library_compat.VERSIONS_DIR, cls, struct_name).values())
-    added = set().union(*_unlinked(library_compat.REPO_VERSIONS_DIR, cls, struct_name).values()) - baseline
-    assert added == set(unlinked_fields.UNLINKED_FIELDS[cls])
+def test_the_carrier_is_dormant_on_every_structure(cls, struct_name) -> None:
+    """The installed classes link every UNLINKED_FIELDS name, so active_fields()
+    is empty for every structure DEscape can load. A future repo structure
+    whose new field the class doesn't link fails the subset check until the
+    table names it."""
+    library = _struct_fields(library_compat.VERSIONS_DIR, struct_name)
+    repo = _struct_fields(library_compat.REPO_VERSIONS_DIR, struct_name)
+    assert "v1.59" in library
+    for retrievers in (*library.values(), *repo.values()):
+        assert unlinked_fields.active_fields(cls, retrievers) == []
+    linked = unlinked_fields.link_names(cls)
+    baseline = set().union(*(set(r) - linked for r in library.values()))
+    added = set().union(set(), *(set(r) - linked for r in repo.values())) - baseline
+    assert added <= set(unlinked_fields.UNLINKED_FIELDS[cls])
 
 
-def test_the_carrier_is_dormant_before_1_59() -> None:
-    loaded = load_map_and_units("tests/fixtures/units_120x120.aoe2scenario", fast_units=False)
-    entry = loaded._scenario.sections["Units"].retriever_map["players_units"].data[0].retriever_map["units"].data[0]
-    assert unlinked_fields.active_fields(Unit, entry.retriever_map) == []
-    assert not any(hasattr(u, "capture_flag") for units in loaded.unit_manager.units for u in units)
-    fast = load_map_and_units("tests/fixtures/units_120x120.aoe2scenario")
-    assert not any(hasattr(u, "capture_flag") for units in fast.unit_manager.units for u in units)
+def test_a_pre_159_unit_reads_as_default_through_capture_flag_of() -> None:
+    """On a 1.58 load the library poisons capture_flag, so `getattr(u,
+    "capture_flag", -1)` raises instead of defaulting. capture_flag_of() is
+    the one safe read, poisoned or depoisoned."""
+    from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
+
+    from descape.unit_model import capture_flag_of
+
+    for fast in (False, True):
+        loaded = load_map_and_units(V158_UNITS, fast_units=fast)
+        units = [u for player_units in loaded.unit_manager.units for u in player_units]
+        with pytest.raises(UnsupportedAttributeError):
+            getattr(units[0], "capture_flag", -1)
+        assert {capture_flag_of(u) for u in units} == {-1}
+        library_compat.depoison()
+        assert {capture_flag_of(u) for u in units} == {-1}
 
 
 def test_scenario_io_names_the_repo_versions() -> None:
-    assert scenario_io._repo_versions() == ["1.21", "1.59"]
+    assert scenario_io._repo_versions() == ["1.21"]
 
 
 # -- corpus tier: the one real game-saved 1.59 file ---------------------------
@@ -388,7 +473,7 @@ def _raw_flags(loaded) -> dict[int, int]:
 @pytest.mark.corpus
 def test_real_file_dirty_save_rewrites_every_unit_identically(tmp_path) -> None:
     loaded = _real_v159()
-    assert (loaded.scenario_version, loaded.structure_source) == ("1.59", "repo")
+    assert (loaded.scenario_version, loaded.structure_source) == ("1.59", "library")
     manager = parse_triggers(loaded)
     assert manager is not None and len(manager.triggers) == 38 and loaded.trigger_write_supported
     units = UnitEditModel(loaded)

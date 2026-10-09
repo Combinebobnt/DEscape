@@ -121,7 +121,7 @@ assuming the full corpus needs re-running.
 | `corpus` | needs the real `examples/` corpus | deselected; `-m "corpus or slow"` to opt in, restricted to `QUICK_CORPUS_NAMES` (~11 min) unless `--corpus-full` (~27 min) is also passed |
 | `slow` | full-render comparisons, O(pixels) sweeps | deselected (unused so far -- no Phase 1 entry needed it) |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
-| `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
+| `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms, and the Units, Players, Diplomacy and View info-page minimum-width checks | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
 
 `test_lint.py` (`ruff check .`, see `ruff.toml`) runs in the default tier
 alongside these, unmarked, since it's not a corpus/gui/slow concern. It stays
@@ -239,8 +239,8 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   library's (length 1 holding a NUL) -- same `_game_style_bytes()` helper
   the trigger fixture uses, now shared via `tools/_fixture_bytes.py`.
 - `tests/fixtures/v159_units_triggers.aoe2scenario` -- the default tier's
-  only scenario version 1.59 file, read through the vendored
-  `descape/versions/DE/v1.59/` definitions. Generated from the 120x120 donor
+  only scenario version 1.59 file, read through AoE2ScenarioParser's own
+  v1.59 definitions. Generated from the 120x120 donor
   by `tools/gen_v159_fixture.py` (version fields patched to 1.59, then units
   and triggers added through the library); regenerate with
   `.venv/bin/python3 tools/gen_v159_fixture.py` and commit the result. **A
@@ -249,7 +249,8 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   every capture setting (-1..3), ordered so list neighbours always differ,
   and two triggers with an Object Visible Multiplayer condition, one with
   `allow_in_fog=1` between two timers. That ordering is what makes the
-  slot-shift regression tests for `descape/unlinked_fields.py` bite.
+  slot-shift regression tests bite: they guarded `descape/unlinked_fields.py`
+  on the 0.8.3 pin and now prove the library's own linking of both fields.
   `reference_id`s have a deliberate gap, and `next_unit_id_to_place` sits
   above every assigned id, mirroring every real corpus file (a naive
   `len(units)`-based add path fails on either).

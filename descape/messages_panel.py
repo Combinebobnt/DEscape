@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 
 from descape.messages_fields import MESSAGE_FIELDS, STRING_ID_UNSET, normalize_for_display
 from descape.text_edits import ProseTextEdit
+from descape.viewer_common import FontScaledWidth
 
 
 class MessageTextEdit(ProseTextEdit):
@@ -39,7 +40,8 @@ class MessagesPanel(QWidget):
     id field's value is the raw string-table id (STRING_ID_UNSET if unset).
     """
 
-    MIN_USEFUL_WIDTH = 300
+    # Scales with the app font (FontScaledWidth, GH #142).
+    MIN_USEFUL_WIDTH = FontScaledWidth(300)
 
     _NO_DOCUMENT = "No map open."
     _READ_ONLY_NOTE = "Read-only for this file -- nothing here can be written back."
@@ -52,6 +54,9 @@ class MessagesPanel(QWidget):
     def __init__(self, on_message_field=None):
         super().__init__()
         self._on_message_field = on_message_field or (lambda *args: None)
+        # GH #139: a box's stored height in lines by key, and its store (None resets). Assigned by the window.
+        self.text_box_lines = lambda key: None
+        self.on_text_box_lines = lambda key, lines: None
 
         self._loaded = None
         self._values: dict[str, str | int] = {}
@@ -188,6 +193,12 @@ class MessagesPanel(QWidget):
             if tip:
                 editor.setToolTip(tip)
             editor.editingFinished.connect(lambda s=spec, e=editor: self._changed(s, e.toPlainText()))
+            key = f"messages.{spec.field_id}"
+            stored = self.text_box_lines(key)
+            if stored is not None:
+                editor.set_visible_lines(stored)
+            editor.linesCommitted.connect(lambda lines, k=key: self.on_text_box_lines(k, lines))
+            editor.linesReset.connect(lambda k=key: self.on_text_box_lines(k, None))
             box_layout.addWidget(editor)
 
             self._widgets[spec.field_id] = editor

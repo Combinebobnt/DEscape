@@ -519,9 +519,10 @@ def _capture_multi_select_states(out_dir: Path) -> list[Path]:
         print(f"trigger button row at {panel.tree.width()} px (MIN_USEFUL_WIDTH is {panel.MIN_USEFUL_WIDTH}):")
         for button in (
             panel.trigger_new_button,
-            panel.trigger_copy_button,
+            panel.trigger_clipboard_copy_button,
             panel.trigger_paste_button,
             panel.trigger_delete_button,
+            panel.trigger_copy_button,
         ):
             needed = QFontMetrics(button.font()).horizontalAdvance(button.text())
             verdict = "CLIPPED" if needed > button.width() - 12 else "fits"
@@ -771,8 +772,190 @@ def _capture_multi_entry_states(out_dir: Path) -> list[Path]:
     return written
 
 
-def generate(out_dir: Path) -> list[Path]:
+def _capture_instruction_preview_states(out_dir: Path) -> list[Path]:
+    """GH #140: the Display Instructions preview, wide and at MIN_USEFUL_WIDTH.
+    Set AOE2DE_INSTALL_PATH for the unit icon; without it the icon falls back."""
+    from PyQt5.QtWidgets import QApplication
+
+    states = (
+        ("middle_tags", {"message": "<BLUE>Scout: over here, <GREY>quietly. <<<<<EPIC!>>>>>",
+                         "instruction_panel_position": 1, "object_list_unit_id": 448,
+                         "play_sound": 1, "sound_name": "Play_Technology_Researched"}),
+        ("bottom_long", {"message": "<AQUA>" + "A long line of narration. " * 12,
+                         "instruction_panel_position": 2, "object_list_unit_id": 448,
+                         "use_tag_color_for_icon": 1, "display_time": -1}),
+        ("unset_position", {"instruction_panel_position": -1, "string_id": 60014}),
+    )
+    written: list[Path] = []
+    window = _open_window(TRIGGER_FIXTURE)
+    panel = window.trigger_panel
+    try:
+        window.resize(1500, 1100)
+        QApplication.processEvents()
+        total = sum(window.content_splitter.sizes())
+        panel.splitter.setSizes([180, 820])
+        entry = panel._manager().triggers[0].effects[0]
+        for name, fields in states:
+            for field, value in fields.items():
+                setattr(entry, field, value)
+            panel.select_trigger(0)
+            panel.refresh_entries(select=("effect", 0))
+            QApplication.processEvents()
+            for width, suffix in ((600, ""), (int(panel.MIN_USEFUL_WIDTH), "_narrow")):
+                window.content_splitter.setSizes([width, total - width])
+                QApplication.processEvents()
+                preview = panel._instruction_preview
+                panel.property_area.ensureWidgetVisible(preview)
+                QApplication.processEvents()
+                path = out_dir / f"instruction_preview_{name}{suffix}.png"
+                _grab(window, path)
+                # The preview alone too: a short pane scrolls its top or footer out of the panel grab.
+                alone = out_dir / f"instruction_preview_{name}{suffix}_alone.png"
+                preview.grab().save(str(alone))
+                written += [path, alone]
+            print(f"instruction preview {name}: icon {preview.icon_source}, tint {preview.tint}, "
+                  f"footer {preview.footer_label.text()!r}, note {preview.note_label.text()!r}")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written
+
+
+COLLAPSED_COPY_FILE = ROOT / "examples" / "F7_3_York (865).aoe2scenario"
+
+
+def _section_summary(panel, around: int) -> list[str]:
+    """Each section near position `around`: its title and member names."""
+    triggers = panel._manager().triggers
+    lines = []
+    for position in range(max(0, around - 1), min(len(panel._sections), around + 3)):
+        section = panel._sections[position]
+        title = "(leading)" if section.header_index is None else triggers[section.header_index].name
+        members = [triggers[m].name for m in section.member_indices]
+        lines.append(f"    [{position}] {title!r}: {len(members)} members {members}")
+    return lines
+
+
+def _capture_collapsed_copy_states(out_dir: Path) -> list[Path]:
+    """GH #134 before/after: Duplicate on a collapsed section header, and Copy
+    then Paste onto the next collapsed header. Expected: the copy is its own
+    section right after the original (Duplicate) or after the next section's
+    end (Paste), with the same member count and no originals interleaved."""
+    from PyQt5.QtWidgets import QAbstractItemView, QApplication
+
+    if not COLLAPSED_COPY_FILE.is_file():
+        print(f"(skipping collapsed copy states -- missing {COLLAPSED_COPY_FILE.name})")
+        return []
+    written: list[Path] = []
+
+    def shot(window, header_index: int, name: str) -> None:
+        panel = window.trigger_panel
+        QApplication.processEvents()
+        panel.tree.scrollToItem(panel._item_for_index[header_index], QAbstractItemView.PositionAtTop)
+        QApplication.processEvents()
+        path = out_dir / name
+        _grab(window, path)
+        written.append(path)
+
+    for verb in ("duplicate", "paste"):
+        window = _open_window(COLLAPSED_COPY_FILE)
+        panel = window.trigger_panel
+        try:
+            window.resize(1500, 1100)
+            sizes = panel.splitter.sizes()
+            # The tree pane's share of the panel's vertical split: room for a section and its copy.
+            panel.splitter.setSizes([600, sizes[1]])
+            position = next(
+                p for p, s in enumerate(panel._sections)
+                if p > 0 and s.header_index is not None and 2 <= len(s.member_indices) <= 6
+            )
+            section = panel._sections[position]
+            panel._item_for_index[section.header_index].setExpanded(False)
+            panel.select_trigger(section.header_index)
+            print(f"collapsed copy ({verb}): {COLLAPSED_COPY_FILE.name}, section {position}, before:")
+            print("\n".join(_section_summary(panel, position)))
+            shot(window, section.header_index, f"collapsed_{verb}_before.png")
+            if verb == "duplicate":
+                panel.trigger_copy_button.click()
+            else:
+                panel.trigger_clipboard_copy_button.click()
+                after = panel._sections[position + 1]
+                panel._item_for_index[after.header_index].setExpanded(False)
+                panel.select_trigger(after.header_index)
+                panel.trigger_paste_button.click()
+            print("  after:")
+            print("\n".join(_section_summary(panel, position)))
+            shot(window, section.header_index, f"collapsed_{verb}_after.png")
+            panel.expand_all_sections()
+            # Paste lands a whole section further down, so frame the pasted header there.
+            triggers = panel._manager().triggers
+            focus = section.header_index if verb == "duplicate" else next(
+                s.header_index for s in panel._sections
+                if s.header_index is not None and triggers[s.header_index].name.endswith("(copy) ---")
+            )
+            shot(window, focus, f"collapsed_{verb}_after_expanded.png")
+        finally:
+            window.edit_history.mark_saved()
+            window.close()
+    return written
+
+
+def _capture_section_move_states(out_dir: Path) -> list[Path]:
+    """GH #133 before/after: Section Down on a small F7_3_York section.
+    Expected: the section and the one below trade places whole, each keeps
+    its member count, no member leaks across, and the Exec # cells renumber
+    to the new display slots."""
+    from PyQt5.QtWidgets import QAbstractItemView, QApplication
+
+    if not COLLAPSED_COPY_FILE.is_file():
+        print(f"(skipping section move states -- missing {COLLAPSED_COPY_FILE.name})")
+        return []
+    written: list[Path] = []
+    window = _open_window(COLLAPSED_COPY_FILE)
+    panel = window.trigger_panel
+    try:
+        window.resize(1500, 1100)
+        sizes = panel.splitter.sizes()
+        panel.splitter.setSizes([600, sizes[1]])
+        position = next(
+            p for p, s in enumerate(panel._sections)
+            if p > 0 and s.header_index is not None and 2 <= len(s.member_indices) <= 6
+            and p + 1 < len(panel._sections) and len(panel._sections[p + 1].member_indices) <= 6
+        )
+        moved = panel._sections[position].header_index
+        below = panel._sections[position + 1].header_index
+        panel.select_trigger(moved)
+        print(f"section move: {COLLAPSED_COPY_FILE.name}, Section Down on section {position}, before:")
+        print("\n".join(_section_summary(panel, position)))
+        for name, top in (("f7_3_york_section_before.png", moved), ("f7_3_york_section_after.png", below)):
+            if name.endswith("after.png"):
+                panel.section_down_button.click()
+                print("  after:")
+                print("\n".join(_section_summary(panel, position)))
+                print(f"  undo label: {window.edit_history.peek_undo().label!r}")
+            QApplication.processEvents()
+            panel.tree.scrollToItem(panel._item_for_index[top], QAbstractItemView.PositionAtTop)
+            QApplication.processEvents()
+            path = out_dir / name
+            _grab(window, path)
+            written.append(path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written
+
+
+_ONLY = {
+    "instruction_preview": _capture_instruction_preview_states,
+    "collapsed_copy": _capture_collapsed_copy_states,
+    "section_move": _capture_section_move_states,
+}
+
+
+def generate(out_dir: Path, only: str | None = None) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if only is not None:
+        return _ONLY[only](out_dir)
     written: list[Path] = []
     for prefix, filename, expected_sections in TARGETS:
         written += _capture_one(prefix, filename, expected_sections, out_dir)
@@ -786,12 +969,16 @@ def generate(out_dir: Path) -> list[Path]:
     written += _capture_multi_entry_states(out_dir)
     written += _capture_tag_states(out_dir)
     written += _capture_section_states(out_dir)
+    written += _capture_instruction_preview_states(out_dir)
+    written += _capture_collapsed_copy_states(out_dir)
+    written += _capture_section_move_states(out_dir)
     return written
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="Output directory")
+    parser.add_argument("--only", choices=sorted(_ONLY), help="Capture one group of states only")
     args = parser.parse_args()
 
     if not PYQT5_AVAILABLE:
@@ -802,7 +989,7 @@ def main() -> None:
     _ensure_qapp()
     with tempfile.TemporaryDirectory() as tmp:
         settings_isolation.isolate_settings(Path(tmp))
-        written = generate(args.out_dir)
+        written = generate(args.out_dir, args.only)
 
     for path in written:
         try:

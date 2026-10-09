@@ -27,6 +27,11 @@ seeded per stroke so runs are comparable.
 resident. --resident canvas renders the whole mip-0 canvas first, the worst
 case for patch(bbox)'s eager recomposite of every resident chunk.
 
+--fit runs every case at fit zoom (the zoom a load opens at) instead of 1:1,
+so the next paint recomposites the whole visible map: at 240x240 that is all
+480 Sloped mip-0 chunks, where --resident canvas makes them resident but
+leaves the 1:1 viewport showing a few. The strokes are the same tiles.
+
 --tool fill replaces the Draw strokes with one Paint Can over a small
 region with Trees/Eye candy on, then its undo: a non-Draw wholesale caller.
 
@@ -576,8 +581,9 @@ def _zoom_cycle(window) -> None:
 
 def _bench_file(
     path: Path, styles, brushes, kinds, sprite_modes, resident: str, force_wholesale: bool, tool: str = "draw",
-    force_reach: bool = False, zoom_cycle: bool = False,
+    force_reach: bool = False, zoom_cycle: bool = False, fit: bool = False,
 ) -> list[str]:
+    from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QTransform
 
     from descape import perf_trace, settings, viewer_canvas
@@ -627,9 +633,12 @@ def _bench_file(
             if style.startswith("flat"):
                 window.iso_action.setChecked(style == "flat")
             view = window.map_view
-            view.setTransform(QTransform())
             mm = window.scenario.map_manager
-            view.center_on_tile(mm.map_width // 2, mm.map_height // 2)
+            if fit:
+                view.fitInView(view._map_rect if view._map_rect is not None else view.sceneRect(), Qt.KeepAspectRatio)
+            else:
+                view.setTransform(QTransform())
+                view.center_on_tile(mm.map_width // 2, mm.map_height // 2)
             _pump(4.0)
             for sprites in sprite_modes:
                 _set_sprites(window, sprites)
@@ -643,7 +652,7 @@ def _bench_file(
                 vp = view.viewport()
                 target = view.viewport_chunk_target()
                 emit(
-                    f"    style={style} sprites={sprites} resident={resident} "
+                    f"    style={style} sprites={sprites} resident={resident} zoom={'fit' if fit else '1:1'} "
                     f"viewport {vp.width()}x{vp.height()} units {_unit_count(window)} "
                     f"cache {type(window._cache).__name__} "
                     f"mips {_tight_bbox.resident_levels(window._cache)} visible {target and target[0]}"
@@ -685,6 +694,7 @@ def main() -> None:
         help="auto: whatever the viewer picks; reach: force the reach-padded fallback",
     )
     parser.add_argument("--zoom-cycle", action="store_true", help="Zoom out one mip and back before the strokes")
+    parser.add_argument("--fit", action="store_true", help="Fit zoom (the zoom a load opens at), not 1:1")
     args = parser.parse_args()
     if args.area_ratio is not None:
         from descape import viewer
@@ -717,7 +727,7 @@ def main() -> None:
                 continue
             _bench_file(
                 path, styles, brushes, kinds, sprite_modes, args.resident, args.force_wholesale, args.tool,
-                force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle,
+                force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle, fit=args.fit,
             )
 
 

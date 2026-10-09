@@ -17,7 +17,7 @@ parsed, never touched, and (for a future write path) spliced back verbatim.
 
 This reaches into several of AoE2ScenarioParser's private methods, which is acceptable
 only because the install is an editable clone pinned to a known commit -- see README.md.
-Pinned commit: b763e2e37006bedab50c7d349b3ce24b9c2497f6 (tag v0.8.3).
+Pinned commit: 29b8a25e8a345f1b1add3318b4c41cbfe35faf97 (tag v0.9.3).
 
 Also captures what v2's write path (descape/scenario_write.py) needs: the raw header
 bytes, the full original decompressed body, and the byte offset of the terrain struct
@@ -44,6 +44,7 @@ from typing import Any
 import AoE2ScenarioParser.datasets.conditions as condition_dataset
 import AoE2ScenarioParser.datasets.effects as effect_dataset
 from AoE2ScenarioParser import settings
+from AoE2ScenarioParser.exceptions.asp_exceptions import EndOfFileError
 from AoE2ScenarioParser.helper import bytes_parser
 from AoE2ScenarioParser.helper.incremental_generator import IncrementalGenerator
 from AoE2ScenarioParser.objects.aoe2_object_manager import AoE2ObjectManager
@@ -99,6 +100,17 @@ settings.SHOW_SCENARIO_VERSION_WARNINGS = False
 # the user's only copy of these files. scenario_write.write_scenario() checks this.
 FORBIDDEN_WRITE_MARKER = "compatdata"
 
+
+def is_under_compatdata(path: Path | str, resolved: Path | None = None) -> bool:
+    """True if the marker is in `path` as written or resolved through symlinks:
+    a linked folder or file into a Proton prefix carries it only once resolved.
+    `resolved` reuses a caller's own resolve(); resolve() errors propagate."""
+    if FORBIDDEN_WRITE_MARKER in str(path):
+        return True
+    if resolved is None:
+        resolved = Path(path).resolve()
+    return FORBIDDEN_WRITE_MARKER in str(resolved)
+
 # The donor blank map descape/scenario_new.py splices to build every File > New
 # Map size -- reused rather than built from AoE2ScenarioParser's own from_default(),
 # so New goes through this same byte-patch load path instead of the library's own
@@ -146,7 +158,8 @@ def structure_is_available(scenario_version: str) -> bool:
 
 def repo_version_has_triggers(scenario_version: str) -> bool:
     """True for a version read from a repo structure that also ships a
-    trigger vocabulary (v1.59), so parse_triggers() may try it. False for a
+    trigger vocabulary (none today; v1.59 was one before the library shipped
+    it), so parse_triggers() may try it. False for a
     vocabulary-less repo version (v1.21) and for every library version. Key
     trigger behaviour off this, never off structure_source alone."""
     return _repo_structure_path(scenario_version) is not None and library_compat.vocabulary_is_available(
@@ -162,8 +175,8 @@ def _repo_versions() -> list[str]:
 
 def _initialise_repo_vocabulary(scenario_version: str) -> None:
     """The library's _initialise_version_dependencies() loop, fed a repo
-    vocabulary (minus the attributes 0.8.3's Condition/Effect can't hold)
-    rather than a library file. Same module dicts, no monkeypatching."""
+    vocabulary (minus the attributes the installed Condition/Effect can't
+    hold) rather than a library file. Same module dicts, no monkeypatching."""
     raw = library_compat.vocabulary_json(scenario_version)
     for module, kind, names in (
         (condition_dataset, "conditions", condition_dataset.condition_names),
@@ -247,7 +260,7 @@ class LoadedScenario:
     # display-only sentinel that does not exist on disk (a File > New document).
     scenario_version: str
     structure_source: str  # "library", or "repo" for a version only
-    # library_compat.REPO_VERSIONS_DIR defines (v1.21, v1.59). Whether
+    # library_compat.REPO_VERSIONS_DIR defines (v1.21). Whether
     # parse_triggers() attempts one is repo_version_has_triggers(), not this.
     map_manager: MapManager
     unit_manager: UnitManager
@@ -406,6 +419,12 @@ class LoadedScenario:
     # descape/unit_model.py slices each unit's original blob from these. None
     # if units_write_supported is False.
     unit_spans: list[list[tuple[int, int]]] | None = None
+
+    # GH #48: (art_civ, age) per player_id 0..8, from civ_art.player_art() at
+    # load and refresh_player_render_context() after a Players edit. Read with
+    # getattr(scenario, "player_art", None): the duck-typed fakes lack it, and
+    # None draws today's Gaia-table art.
+    player_art: tuple[tuple[int | None, int], ...] | None = None
 
 
 def retriever_length(retriever: Any) -> int:
@@ -1261,7 +1280,7 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     header_instructions_span = _header_instructions_span(header_bytes, header_retriever_map)
     header_player_count_span = _header_player_count_span(header_bytes, header_retriever_map)
 
-    return LoadedScenario(
+    loaded = LoadedScenario(
         path=path,
         scenario_version=scenario_version,
         structure_source="library" if repo_structure is None else "repo",
@@ -1308,6 +1327,20 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         _scenario=scenario,
         unit_spans=unit_spans,
     )
+    loaded.player_art = _player_art_or_none(loaded)
+    return loaded
+
+
+def _player_art_or_none(loaded: LoadedScenario, pending=None) -> tuple[tuple[int | None, int], ...] | None:
+    """civ_art.player_art(), or None (today's Gaia-table art) when surprising
+    player data makes player_fields raise: art must never make a file unopenable."""
+    # Lazy: civ_art reads through player_fields, which imports this module.
+    from descape import civ_art
+
+    try:
+        return civ_art.player_art(loaded, pending)
+    except (ValueError, TypeError, LookupError):
+        return None
 
 
 def _read_player_colors(scenario: AoE2DEScenario) -> list[int]:
@@ -1359,6 +1392,23 @@ def refresh_player_colors(loaded: LoadedScenario, pending_colors: dict[int, int]
     changed = player_colors != loaded.player_colors or team_indices != loaded.team_indices
     loaded.player_colors = player_colors
     loaded.team_indices = team_indices
+    return changed
+
+
+def refresh_player_render_context(
+    loaded: LoadedScenario, pending_by_field: dict[str, dict[int, int | str]]
+) -> bool:
+    """Every derived per-player tuple the renderer reads, re-derived in place
+    from the stored values overlaid with the pending Players-mode edits
+    ({field_id: {player_id: value}}): refresh_player_colors()'s colours and
+    team indices, plus GH #48's player_art from the civilization,
+    architecture and starting-age edits. True iff anything changed. Same
+    wholesale, real-LoadedScenario-only contract as refresh_player_colors()."""
+    changed = refresh_player_colors(loaded, dict(pending_by_field.get("color", {})))
+    art = _player_art_or_none(loaded, pending_by_field)
+    if art != loaded.player_art:
+        loaded.player_art = art
+        changed = True
     return changed
 
 
@@ -1425,8 +1475,8 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     and opening a file for terrain editing must not pay for it.
 
     Returns None rather than raising for the 1.54/trigger-3.9 set, whose
-    Triggers section the library cannot serialize at all ("Unable to convert
-    NoneType with non-zero repeat to bytes"). Those files open and edit
+    Triggers section the library cannot parse at all (ValueError on 0.8.3 and
+    the 0.9.3 pin, EndOfFileError on 0.9.4). Those files open and edit
     normally for terrain and units; only trigger reading is unavailable.
 
     Also returns None, without attempting a parse, for a file loaded from a
@@ -1434,7 +1484,7 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     repo_version_has_triggers()): nothing ships condition/effect definitions
     for it and _load_map_and_units() never initialised any, so a parse would
     read another version's vocabulary. A repo version that does ship one
-    (v1.59) parses like a library version.
+    parses like a library version.
 
     **Call this again before reading a manager you obtained earlier.** The
     library's field gating is class-level and therefore global to the process:
@@ -1493,10 +1543,11 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
                 manager.triggers, scenario.sections["Triggers"].retriever_map["trigger_data"].data or [], strict=True
             ):
                 unlinked_fields.pull(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
-    except (ValueError, KeyError, IndexError, TypeError, struct.error):
-        # The shapes a misparse actually throws (the 1.54/3.9 set raises
-        # ValueError). Deliberately not bare `Exception`: an AttributeError from
-        # a library rename, or a MemoryError on the 1.17 MB file, is a real bug
+    except (EndOfFileError, ValueError, KeyError, IndexError, TypeError, struct.error):
+        # The shapes a misparse actually throws. The 1.54/3.9 set raises
+        # ValueError from the pinned 0.9.3's failure dump; EndOfFileError is
+        # what 0.9.4, which guards that dump, raises instead. Deliberately not bare `Exception`: an
+        # AttributeError from a library rename, or a MemoryError on the 1.17 MB file, is a real bug
         # and must surface rather than be reported to the user as "this file has
         # no triggers". A Triggers section this tool genuinely cannot parse must
         # still degrade instead of failing the open -- routing around exactly

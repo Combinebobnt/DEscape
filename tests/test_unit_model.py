@@ -765,13 +765,10 @@ def test_remove_of_the_referencing_unit_itself_is_unaffected() -> None:
 def test_an_operation_on_an_untracked_unit_raises() -> None:
     """A Unit object this model never tracked (e.g. constructed by hand,
     bypassing add()) must not be silently accepted."""
-    from AoE2ScenarioParser.objects.data_objects.unit import Unit
-
-    _loaded, model = _open()
-    stray = Unit(
-        player=0, x=0, y=0, z=0, reference_id=99999, unit_const=4, status=2,
-        rotation=0, initial_animation_frame=0,
-    )
+    loaded, model = _open()
+    # new_unit() depoisons first: on this pre-1.59 file a bare Unit(...) raises
+    # on its own capture_flag default.
+    stray = unit_model.new_unit(loaded._scenario.uuid, 0, 4, 0.0, 0.0, 99999)
     with pytest.raises(ValueError):
         model.set_position(stray, 1.0, 1.0, 0.0)
 
@@ -816,6 +813,10 @@ def _mutate_remove(loaded, model) -> None:
     model.remove(_unit(loaded, _REF_TREE_OAK))
 
 
+def _mutate_set_garrisoned_in(loaded, model) -> None:
+    model.set_garrisoned_in(_unit(loaded, _REF_VILLAGER_P1), -1)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -828,6 +829,7 @@ def _mutate_remove(loaded, model) -> None:
         _mutate_add_many,
         _mutate_remove_many,
         _mutate_remove,
+        _mutate_set_garrisoned_in,
     ],
     ids=[
         "set_position",
@@ -839,6 +841,7 @@ def _mutate_remove(loaded, model) -> None:
         "add_many",
         "remove_many",
         "remove",
+        "set_garrisoned_in",
     ],
 )
 def test_every_public_mutator_bumps_unit_gen(mutate) -> None:
@@ -865,13 +868,9 @@ def test_a_direct_list_append_does_not_bump_unit_gen() -> None:
     other code) that appends straight to unit_manager.units must bump
     scenario.unit_gen itself if it wants a memo built afterward to be
     invalidated."""
-    from AoE2ScenarioParser.objects.data_objects.unit import Unit
-
     loaded, _model = _open()
     gen0 = loaded.unit_gen
-    loaded.unit_manager.units[0].append(
-        Unit(player=0, x=0, y=0, z=0, reference_id=88888, unit_const=4, status=2, rotation=0, initial_animation_frame=0)
-    )
+    loaded.unit_manager.units[0].append(unit_model.new_unit(loaded._scenario.uuid, 0, 4, 0.0, 0.0, 88888))
     assert loaded.unit_gen == gen0
 
 
@@ -1132,6 +1131,166 @@ def test_every_membership_changing_op_still_produces_a_whole_list_record() -> No
     record = model.commit_unit_edit("Remove villager", history)
     assert isinstance(record.before, UnitSnapshot)
     assert record.unit_field_entries is None
+
+
+# -- GH #115: set_garrisoned_in() ----------------------------------------------
+
+
+def _tower(loaded, model, player: int = 1, x: float = 40.5, y: float = 40.5):
+    """A Watch Tower placed through the model: the fixture's own host is a House."""
+    return model.add(player=player, unit_const=79, x=x, y=y)
+
+
+def test_set_garrisoned_in_garrisons_unloads_and_moves_between_hosts() -> None:
+    """Each step splices the warm reverse-map; serialize() runs
+    _check_alignment() -> _check_derived(), which raises on any drift."""
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    other = _tower(loaded, model, player=2, x=50.5, y=50.5)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    model.warm_garrison_map()
+
+    model.set_garrisoned_in(archer, tower.reference_id)
+    assert archer.garrisoned_in_id == tower.reference_id
+    assert model.referencing(tower) == [archer]
+    model.serialize()
+
+    model.set_garrisoned_in(archer, other.reference_id)
+    assert model.referencing(tower) == []
+    assert model.referencing(other) == [archer]
+    model.serialize()
+
+    model.set_garrisoned_in(archer, -1)
+    assert archer.garrisoned_in_id == -1
+    assert model.referencing(other) == []
+    model.serialize()
+
+
+def test_set_garrisoned_in_dirties_only_that_unit() -> None:
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    player, index = model._locate(archer)
+    clean = [i for i, blob in enumerate(model._blobs[2]) if blob is not None]
+
+    model.set_garrisoned_in(archer, tower.reference_id)
+
+    assert model._blobs[player][index] is None
+    assert [i for i, blob in enumerate(model._blobs[2]) if blob is not None] == clean
+
+
+def test_set_garrisoned_in_to_the_current_value_is_a_no_op() -> None:
+    loaded, model = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    gen0 = loaded.unit_gen
+    model.set_garrisoned_in(villager, _REF_HOUSE)
+    assert loaded.unit_gen == gen0
+    assert not model.has_edits
+
+
+def test_set_garrisoned_in_refuses_a_unit_inside_itself() -> None:
+    loaded, model = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    with pytest.raises(ValueError, match="itself"):
+        model.set_garrisoned_in(archer, archer.reference_id)
+    assert archer.garrisoned_in_id == -1
+
+
+def test_set_garrisoned_in_refuses_a_host_with_no_unit() -> None:
+    loaded, model = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    with pytest.raises(ValueError, match="no unit"):
+        model.set_garrisoned_in(archer, 999_999)
+    assert archer.garrisoned_in_id == -1
+
+
+def test_set_garrisoned_in_refuses_a_cycle() -> None:
+    """The House holds the villager, so the House going inside the villager
+    would close a loop."""
+    loaded, model = _open()
+    house = _unit(loaded, _REF_HOUSE)
+    with pytest.raises(ValueError, match="cycle"):
+        model.set_garrisoned_in(house, _REF_VILLAGER_P1)
+    assert house.garrisoned_in_id == -1
+
+
+def test_set_garrisoned_in_refuses_a_cycle_through_a_unit_holding_nothing() -> None:
+    """A two-step loop the no-nesting check alone would not see: the tower is
+    inside the archer (a file fact), and the archer holds only the tower."""
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    tower.garrisoned_in_id = archer.reference_id
+    model._garrison = None
+    with pytest.raises(ValueError, match="cycle"):
+        model.set_garrisoned_in(archer, tower.reference_id)
+
+
+def test_set_garrisoned_in_refuses_a_unit_that_holds_a_garrison() -> None:
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    house = _unit(loaded, _REF_HOUSE)
+    with pytest.raises(ValueError, match="holds"):
+        model.set_garrisoned_in(house, tower.reference_id)
+    assert house.garrisoned_in_id == -1
+
+
+def test_set_garrisoned_in_unloads_even_a_unit_that_holds_a_garrison() -> None:
+    """Unload only ever removes a level of nesting, so the scope does not
+    block it."""
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    house = _unit(loaded, _REF_HOUSE)
+    house.garrisoned_in_id = tower.reference_id
+    model._garrison = None
+    model.set_garrisoned_in(house, -1)
+    assert house.garrisoned_in_id == -1
+
+
+def test_a_unit_whose_own_reference_id_is_minus_one_is_not_read_as_a_holder() -> None:
+    """-1's reverse-map bucket is every free unit, which is not a garrison."""
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    archer.reference_id = -1
+    model.set_garrisoned_in(archer, tower.reference_id)
+    assert archer.garrisoned_in_id == tower.reference_id
+
+
+def test_set_garrisoned_in_is_refused_inside_a_fields_only_edit() -> None:
+    loaded, model = _open()
+    tower = _tower(loaded, model)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    model.begin_unit_edit([1], fields_only=True)
+    with pytest.raises(RuntimeError, match="fields_only"):
+        model.set_garrisoned_in(archer, tower.reference_id)
+    model.abort_unit_edit()
+    assert archer.garrisoned_in_id == -1
+
+
+def test_undo_and_redo_restore_the_live_garrison_link() -> None:
+    """The live Unit's link, not only its blob: UnitState carries
+    garrisoned_in_id, or the inspector and the save would disagree."""
+    loaded, model = _open()
+    history = EditHistory()
+    tower = _tower(loaded, model)
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    model.warm_garrison_map()
+
+    model.begin_unit_edit([1])
+    model.set_garrisoned_in(archer, tower.reference_id)
+    model.set_position(archer, tower.x, tower.y, tower.z)
+    model.commit_unit_edit("Garrison units", history)
+
+    history.undo([], None, None, model)
+    assert archer.garrisoned_in_id == -1
+    assert model.referencing(tower) == []
+    model.serialize()
+
+    history.redo([], None, None, model)
+    assert archer.garrisoned_in_id == tower.reference_id
+    assert model.referencing(tower) == [archer]
+    model.serialize()
 
 
 # -- corpus ---------------------------------------------------------------

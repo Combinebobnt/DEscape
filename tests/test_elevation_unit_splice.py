@@ -17,7 +17,8 @@ which a bare list append never bumps.
 
 Sloped fixtures carry one far-away bump (BUMP_TILE) so the first raise does
 not move _unit_rise_headroom_px from 0 to one elev_step: that transition
-changes every building's bbox and falls back by design, and has its own test.
+changes every building's bbox and rebuilds the bbox layer whole, and has its
+own tests.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from test_bystander_grid_patch import grid_state
+from test_farm_terrain import FAKE_FARM_CONST, fake_farm  # noqa: F401 -- fake_farm is a fixture
 from test_invalidate_units_splice import (
     MILL_CONST,
     Unit,
@@ -32,10 +34,11 @@ from test_invalidate_units_splice import (
     _decorated_mill,
     shared_art_install,  # noqa: F401 -- pytest fixture, imported for its name
     slotted_composite_install,  # noqa: F401 -- pytest fixture, imported for its name
+    traced,  # noqa: F401 -- pytest fixture, imported for its name
 )
 from test_sprite_edit_bbox import REACH_NAMES, sprite_install  # noqa: F401 -- fixture
 
-from descape import asset_source, render, render_cache, unit_sprites
+from descape import asset_source, debug_log, perf_trace, render, render_cache, unit_sprites
 from descape.elevation_tools import set_tiles_elevation
 from descape.render import (
     dirty_screen_bbox_iso,
@@ -100,8 +103,16 @@ def _raise(style: str, cache, scenario, tiles) -> set:
     patch(). Repaints the whole canvas afterwards so the pixel oracle checks
     source state, not the dirty bbox."""
     mm = scenario.map_manager
+    return _patch_edit(style, cache, scenario, lambda: set_tiles_elevation(
+        mm, [(x, y, mm.get_tile(x, y).elevation + 1) for x, y in tiles]
+    ))
+
+
+def _patch_edit(style: str, cache, scenario, edit) -> set:
+    """_raise()'s dirty bbox, patch() and repaint around any elevation edit."""
+    mm = scenario.map_manager
     before = [t.elevation for t in mm.terrain]
-    set_tiles_elevation(mm, [(x, y, mm.get_tile(x, y).elevation + 1) for x, y in tiles])
+    edit()
     dirty = [i for i, t in enumerate(mm.terrain) if t.elevation != before[i]]
     changed: set = set()
     bbox_fn = dirty_screen_bbox_iso if style == "stepped" else dirty_screen_bbox_sloped
@@ -501,6 +512,12 @@ def test_a_wall_in_a_shared_component_keeps_its_neighbour_derived_shape(style, w
 # --- fallbacks --------------------------------------------------------------
 
 
+def _set_caps(monkeypatch, cap: int) -> None:
+    """Both styles' elevation splice caps."""
+    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", cap)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", cap)
+
+
 def _assert_fell_back(cache, counts) -> None:
     cache.render_rect(0, 0, *cache.canvas_dims(0), mip=0)  # Stepped's wholesale path is lazy
     assert counts["building_bboxes"] >= 1, "this edit should have taken the wholesale fallback"
@@ -511,7 +528,7 @@ def test_a_component_over_the_cap_falls_back(style, shared_art_install, monkeypa
     scenario = _scenario()
     _mill_chain(scenario)
     cache = _make_cache(style, scenario, sprites=True)
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    _set_caps(monkeypatch, 2)
     counts = _call_counts(monkeypatch)
 
     _raise(style, cache, scenario, [(60, 60)])
@@ -526,7 +543,7 @@ def test_a_stroke_over_the_unit_threshold_falls_back(style, sprite_install, monk
     _place(scenario, 1, SPRITE_CONST, 30.5, 30.5)
     _place(scenario, 1, SPRITE_CONST, 50.5, 50.5)
     cache = _make_cache(style, scenario, sprites=True)
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 1)
+    _set_caps(monkeypatch, 1)
     counts = _call_counts(monkeypatch)
 
     _raise(style, cache, scenario, [(30, 30), (50, 50)])
@@ -535,21 +552,342 @@ def test_a_stroke_over_the_unit_threshold_falls_back(style, sprite_install, monk
     _assert_pixels_match(style, cache, scenario, True)
 
 
-def test_a_sloped_headroom_change_falls_back(sprite_install, monkeypatch):  # noqa: F811
-    """The first raise on a truly flat map moves the Sloped bbox headroom from
-    0 to one elev_step, which widens EVERY building's bbox, not just the
-    re-anchored ones."""
+# --- Sloped headroom changes: the bbox layer alone --------------------------
+
+
+def _wholesale_calls(monkeypatch) -> list:
+    """Every SlopedChunkCache._rebuild_unit_layers() headroom, in call order,
+    plus "sprites" for each whole sprite walk (the sliced one the cache calls,
+    which _call_counts() does not see)."""
+    calls = []
+    real = SlopedChunkCache._rebuild_unit_layers
+    monkeypatch.setattr(SlopedChunkCache, "_rebuild_unit_layers", lambda self, h: (calls.append(h), real(self, h))[1])
+    real_walk = render.sprite_draws_by_anchor_sliced
+    monkeypatch.setattr(
+        render, "sprite_draws_by_anchor_sliced", lambda *a, **k: (calls.append("sprites"), real_walk(*a, **k))[1]
+    )
+    return calls
+
+
+def _lower(cache, scenario, tiles) -> set:
+    mm = scenario.map_manager
+    return _patch_edit("sloped", cache, scenario, lambda: set_tiles_elevation(
+        mm, [(x, y, mm.get_tile(x, y).elevation - 1) for x, y in tiles]
+    ))
+
+
+def _assert_bbox_only(cache, scenario, counts, wholesale, pack, headroom) -> None:
+    """The headroom moved, one bbox walk and no sprite walk or wholesale
+    rebuild ran, the pack was refreshed rather than dropped, and source state
+    and pixels equal a fresh cache's."""
+    assert cache._headroom == headroom
+    assert not wholesale, "the headroom change rebuilt every unit layer"
+    assert counts == {"building_bboxes": 1, "sprites": 0}, counts
+    assert cache._unit_pack is pack, "the headroom change dropped the unit pack"
+    _assert_pixels_match("sloped", cache, scenario, True)
+    _assert_matches_fresh_cache("sloped", cache, scenario, True)
+
+
+def test_a_sloped_headroom_change_rebuilds_only_the_bboxes(sprite_install, monkeypatch):  # noqa: F811
+    """The first raise on a truly flat map moves the headroom from 0 to one
+    elev_step, which widens EVERY building's bbox, not just the re-anchored
+    ones; the undo back to flat narrows them again."""
     scenario = _scenario(flat=True)
     _place(scenario, 1, MILL_CONST, 60.0, 60.0)
     _place(scenario, 1, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
     cache = _make_cache("sloped", scenario, sprites=True)
+    elev_step = cache.proj.elev_step
+    assert cache._headroom == 0
+    wholesale = _wholesale_calls(monkeypatch)
+
+    for move, headroom in ((_raise, elev_step), (_lower, 0)):
+        pack = cache._unit_pack
+        assert (pack is not None) == (render_cache.composite_backend.native is not None)
+        wholesale.clear()  # the last round's fresh cache was built wholesale
+        counts = _call_counts(monkeypatch)
+        if move is _raise:
+            _raise("sloped", cache, scenario, [UNIT_TILE])
+        else:
+            _lower(cache, scenario, [UNIT_TILE])
+        _assert_bbox_only(cache, scenario, counts, wholesale, pack, headroom)
+
+
+def test_an_empty_component_still_widens_every_bbox(monkeypatch):
+    """A flat-map raise with no unit within radius 1 splices nothing, but the
+    headroom still moves, so the Mill's bbox must widen anyway."""
+    scenario = _scenario(flat=True)
+    _place(scenario, 1, MILL_CONST, 60.0, 60.0)
+    cache = _make_cache("sloped", scenario, sprites=True)
+    before = dict(cache.building_bboxes)
+    wholesale = _wholesale_calls(monkeypatch)
+    calls = _splice_calls(monkeypatch)
+    pack = cache._unit_pack
+    counts = _call_counts(monkeypatch)
+
+    _raise("sloped", cache, scenario, [(20, 20)])
+
+    assert calls == [[]], "the raise reached a unit, so the component is not empty"
+    assert before and cache.building_bboxes.keys() == before.keys()
+    for key, (x0, y0, x1, y1) in before.items():
+        nx0, ny0, nx1, ny1 = cache.building_bboxes[key]
+        assert ny0 < y0 and (nx0, nx1, ny1) == (x0, x1, y1), f"{key}'s bbox did not widen upward"
+    _assert_bbox_only(cache, scenario, counts, wholesale, pack, cache.proj.elev_step)
+
+
+def test_a_two_level_step_on_a_sloped_map_rebuilds_only_the_bboxes(sprite_install, monkeypatch):  # noqa: F811
+    """The propagation's gap-fill shape: a 2-level diagonal pair appearing on
+    an already non-flat map moves the headroom from one elev_step to two.
+    Raw-assigned, as the gap-fill branch writes it."""
+    scenario = _scenario()
+    _place(scenario, 1, MILL_CONST, 60.0, 60.0)
+    unit = _place(scenario, 1, SPRITE_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+    cache = _make_cache("sloped", scenario, sprites=True)
+    elev_step = cache.proj.elev_step
+    assert cache._headroom == elev_step
+    wholesale = _wholesale_calls(monkeypatch)
+    calls = _splice_calls(monkeypatch)
+    pack = cache._unit_pack
+    counts = _call_counts(monkeypatch)
+
+    def gap_fill():
+        mm = scenario.map_manager
+        mm.get_tile(*UNIT_TILE).elevation = BASE_ELEVATION + 1
+        mm.get_tile(UNIT_TILE[0] + 1, UNIT_TILE[1] + 1).elevation = BASE_ELEVATION + 2
+
+    _patch_edit("sloped", cache, scenario, gap_fill)
+
+    assert _component(calls) == _ids(unit)
+    _assert_bbox_only(cache, scenario, counts, wholesale, pack, 2 * elev_step)
+
+
+def test_a_sloped_headroom_change_over_the_cap_still_falls_back(shared_art_install, monkeypatch):  # noqa: F811
+    scenario = _scenario(flat=True)
+    _mill_chain(scenario)
+    cache = _make_cache("sloped", scenario, sprites=True)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 2)
+    wholesale = _wholesale_calls(monkeypatch)
+
+    _raise("sloped", cache, scenario, [(60, 60)])
+
+    assert wholesale[0] == cache.proj.elev_step, "an over-cap headroom change should have gone wholesale"
+    _assert_pixels_match("sloped", cache, scenario, True)
+    _assert_matches_fresh_cache("sloped", cache, scenario, True)
+
+
+@pytest.mark.parametrize("flat", [True, False], ids=["headroom-moves", "headroom-held"])
+def test_a_headroom_change_says_so_on_the_op_line(flat, traced):  # noqa: F811
+    scenario = _scenario(flat=flat)
+    _place(scenario, 1, MILL_CONST, 60.0, 60.0)
+    cache = _make_cache("sloped", scenario)
+
+    with perf_trace.op("Set elevation"):
+        _raise("sloped", cache, scenario, [(60, 60)])
+    perf_trace.flush_idle()
+
+    line = next(line for line in debug_log.get_log_text().splitlines() if "perf op set-elevation" in line)
+    if flat:
+        assert f"elev_headroom=0->{cache.proj.elev_step}" in line, line
+    else:
+        assert "elev_headroom" not in line, line
+
+
+def test_a_headroom_change_logs_nothing_with_perf_trace_off():
+    scenario = _scenario(flat=True)
+    _place(scenario, 1, MILL_CONST, 60.0, 60.0)
+    cache = _make_cache("sloped", scenario)
+    debug_log.clear()
+    assert not perf_trace.is_enabled()
+
+    _raise("sloped", cache, scenario, [(60, 60)])
+    perf_trace.flush_idle()
+
+    assert cache._headroom > 0
+    assert "elev_headroom" not in debug_log.get_log_text()
+
+
+# --- Sloped's own cap and exact seeds (TASK-031.35) ---------------------------
+
+
+def _set_one(style: str, cache, scenario, tile, level) -> set:
+    """A raw single-tile write, as an undo restores one."""
+    return _patch_edit(style, cache, scenario, lambda: setattr(scenario.map_manager.get_tile(*tile), "elevation", level))
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_each_style_uses_its_own_cap(style, shared_art_install, monkeypatch):  # noqa: F811
+    """A 3-member component between Stepped's cap (2) and Sloped's (3):
+    Sloped splices the raise, its undo and redo, Stepped falls back on each."""
+    scenario = _scenario()
+    _mill_chain(scenario)
+    cache = _make_cache(style, scenario, sprites=True)
+    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 3)
+    calls = _splice_calls(monkeypatch)
+
+    for edit in ("raise", "undo", "redo"):
+        calls.clear()
+        counts = _call_counts(monkeypatch)
+        gen = getattr(cache, "_source_gen", None)
+        if edit == "raise":
+            _raise(style, cache, scenario, [(60, 60)])
+        else:
+            _set_one(style, cache, scenario, (60, 60), BASE_ELEVATION + (edit == "redo"))
+        if style == "sloped":
+            assert len(_component(calls)) == 3, edit
+            _assert_spliced(style, cache, scenario, True, counts)
+        else:
+            assert calls == [None] and cache._source_gen == gen + 1, f"{edit}: Stepped spliced past its cap"
+            _assert_pixels_match(style, cache, scenario, True)
+            _assert_matches_fresh_cache(style, cache, scenario, True)
+
+
+def test_a_sloped_component_past_its_own_cap_falls_back(shared_art_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    _mill_chain(scenario)
+    cache = _make_cache("sloped", scenario, sprites=True)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 2)
+    wholesale = _wholesale_calls(monkeypatch)
+
+    _raise("sloped", cache, scenario, [(60, 60)])
+
+    assert wholesale, "a component past Sloped's cap should have gone wholesale"
+    _assert_pixels_match("sloped", cache, scenario, True)
+    _assert_matches_fresh_cache("sloped", cache, scenario, True)
+
+
+@pytest.mark.parametrize("cap", [2, 3], ids=["refused", "spliced"])
+def test_a_refused_sloped_splice_says_so_on_the_op_line(cap, shared_art_install, traced, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    _mill_chain(scenario)
+    cache = _make_cache("sloped", scenario)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", cap)
+
+    with perf_trace.op("Undo"):
+        _raise("sloped", cache, scenario, [(60, 60)])
+    perf_trace.flush_idle()
+
+    line = next(line for line in debug_log.get_log_text().splitlines() if "perf op undo" in line)
+    if cap == 2:
+        assert "elev_splice_refused=3/2" in line, line
+    else:
+        assert "elev_splice_refused" not in line, line
+
+
+def test_a_refused_sloped_splice_logs_nothing_with_perf_trace_off(shared_art_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    _mill_chain(scenario)
+    cache = _make_cache("sloped", scenario)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 2)
+    wholesale = _wholesale_calls(monkeypatch)
+    debug_log.clear()
+    assert not perf_trace.is_enabled()
+
+    _raise("sloped", cache, scenario, [(60, 60)])
+
+    assert wholesale
+    assert "elev_splice_refused" not in debug_log.get_log_text()
+
+
+# A lowering of TALL from BASE+1, beside HELD at BASE+1: every corner of HELD
+# stays up (max rule), so its unit reads nothing new; DIAG's shared corner drops.
+TALL, HELD, DIAG = (40, 40), (41, 40), (39, 39)
+
+
+def _held_ring(scenario):
+    mm = scenario.map_manager
+    for tile in (TALL, HELD):
+        mm.get_tile(*tile).elevation = BASE_ELEVATION + 1
+    return {t: _place(scenario, 1, MARK_CONST, t[0] + 0.5, t[1] + 0.5) for t in (TALL, HELD, DIAG)}
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_a_ring_tile_held_up_by_a_higher_neighbour_stays_out_of_the_component(sprites, sprite_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    units = _held_ring(scenario)
+    cache = _make_cache("sloped", scenario, sprites=sprites)
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _set_one("sloped", cache, scenario, TALL, BASE_ELEVATION)
+
+    assert sorted(_component(calls)) == sorted(_ids(units[TALL], units[DIAG]))
+    _assert_spliced("sloped", cache, scenario, sprites, counts)
+
+
+def test_a_raise_seeds_the_whole_ring(sprite_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    ring = [(UNIT_TILE[0] + dx, UNIT_TILE[1] + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+    units = [_place(scenario, 1, MARK_CONST, x + 0.5, y + 0.5) for x, y in ring]
+    cache = _make_cache("sloped", scenario, sprites=True)
+    calls = _splice_calls(monkeypatch)
     counts = _call_counts(monkeypatch)
 
     _raise("sloped", cache, scenario, [UNIT_TILE])
 
-    assert counts["building_bboxes"] >= 1, "a headroom change should have taken the wholesale fallback"
-    _assert_pixels_match("sloped", cache, scenario, True)
-    _assert_matches_fresh_cache("sloped", cache, scenario, True)
+    assert sorted(_component(calls)) == sorted(_ids(*units))
+    _assert_spliced("sloped", cache, scenario, True, counts)
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_a_filled_pit_re_anchors_its_own_unit(sprites, monkeypatch):
+    """A one-tile pit raised level with its neighbours moves none of its
+    corners (each was already held up), but its own elevation feeds the
+    Mill's bbox, so E itself must seed."""
+    scenario = _scenario()
+    scenario.map_manager.get_tile(*UNIT_TILE).elevation = BASE_ELEVATION - 1
+    mill = _place(scenario, 1, MILL_CONST, float(UNIT_TILE[0]), float(UNIT_TILE[1]))  # own tile UNIT_TILE
+    cache = _make_cache("sloped", scenario, sprites=sprites)
+    before = cache.building_bboxes[UNIT_TILE]
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _set_one("sloped", cache, scenario, UNIT_TILE, BASE_ELEVATION)
+
+    assert cache.building_bboxes[UNIT_TILE] != before, "the pit fill left the Mill's bbox stale"
+    _assert_spliced("sloped", cache, scenario, sprites, counts)
+    assert _component(calls) == _ids(mill)
+
+
+@pytest.mark.parametrize("distance", [1, 2])
+def test_a_farm_near_the_edit_matches_a_fresh_cache(distance, fake_farm, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    _place(scenario, 2, FAKE_FARM_CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+    cache = _make_cache("sloped", scenario, sprites=True)
+    counts = _call_counts(monkeypatch)
+
+    _raise("sloped", cache, scenario, [(UNIT_TILE[0] + distance, UNIT_TILE[1])])
+
+    _assert_spliced("sloped", cache, scenario, True, counts)
+
+
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("side", ["under", "over"])
+def test_the_viewer_predictor_agrees_with_the_patch(style, side, sprite_install, monkeypatch):  # noqa: F811
+    """_elevation_bumps_anyway(), asked with the map edited and the cache not,
+    against what the patch then does, one member each side of the cap. The
+    held ring makes Sloped's dilation and exact seeds disagree (3 vs 2)."""
+    from types import SimpleNamespace
+
+    from descape.viewer import ViewerWindow
+
+    scenario = _scenario()
+    _held_ring(scenario)
+    cache = _make_cache(style, scenario)
+    members = 2 if style == "sloped" else 1
+    cap = members if side == "under" else members - 1
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS" if style == "sloped" else "_ELEV_SPLICE_MAX_UNITS", cap)
+    window = SimpleNamespace(_cache=cache, scenario=scenario)
+    calls = _splice_calls(monkeypatch)
+    predicted = []
+
+    def edit():
+        scenario.map_manager.get_tile(*TALL).elevation = BASE_ELEVATION
+        predicted.append(ViewerWindow._elevation_bumps_anyway(window, {TALL}))
+
+    _patch_edit(style, cache, scenario, edit)
+
+    assert predicted == [calls == [None]] == [side == "over"], (predicted, calls)
 
 
 # --- Stepped's per-level laziness and warms ---------------------------------

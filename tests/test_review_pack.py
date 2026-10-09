@@ -26,6 +26,17 @@ def test_gen_review_pack_check_passes() -> None:
     gen.check()
 
 
+@pytest.mark.corpus
+def test_ground_texture_pack_check_passes() -> None:
+    """Needs examples/ and the real install: the pack renders a real map's
+    real textures, which is the whole point of it."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._ground_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("ground_texture")
+
+
 # ------------------------------------------------------------ spec coupling
 
 

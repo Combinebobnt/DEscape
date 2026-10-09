@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from descape import asset_source
-from descape.scenario_io import FORBIDDEN_WRITE_MARKER, TEMPLATE_DIR
+from descape.scenario_io import FORBIDDEN_WRITE_MARKER, TEMPLATE_DIR, is_under_compatdata
 
 AUTOSAVE_SUFFIX = ".autosave"
 AUTOSAVE_DIRNAME = "autosave"
@@ -52,11 +52,55 @@ class AutosaveEntry:
 
 
 def autosave_dir() -> Path:
-    """The central slot directory, beside config.yaml. Resolved at call time,
-    not import time: tests (and the eyeball tools) monkeypatch
-    asset_source.CONFIG_PATH, and a module-level constant would freeze the
-    real user's directory in before they ever got the chance."""
+    """The default slot directory, beside config.yaml, and always the
+    index's home, whatever folder Settings > Saving picks for the slots
+    (central_dir()). Resolved at call time, not import time: tests (and the
+    eyeball tools) monkeypatch asset_source.CONFIG_PATH, and a module-level
+    constant would freeze the real user's directory in before they ever got
+    the chance."""
     return asset_source.CONFIG_PATH.parent / AUTOSAVE_DIRNAME
+
+
+def autosave_dir_refusal(path: Path) -> str | None:
+    """Why `path` can't be the autosave folder, or None if it can (GH #127).
+
+    Refused: a relative path, anything under a Proton compatdata/ prefix
+    (checked raw AND resolved, so a symlink into one is caught too), and the
+    shipped template folder. write_scenario()'s own guard stays the
+    structural enforcement of the AGENTS.md hard rule; this is the early,
+    user-facing layer on top of it.
+    """
+    if not path.is_absolute():
+        return "it is not an absolute path"
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
+        return f"it cannot be resolved ({e})"
+    if is_under_compatdata(path, resolved):
+        return f"it is under a Proton {FORBIDDEN_WRITE_MARKER}/ folder, which DEscape never writes to"
+    if resolved == TEMPLATE_DIR.resolve():
+        return "it is DEscape's own template folder"
+    return None
+
+
+def central_dir(custom: str) -> Path:
+    """Where central slots go: the configured folder if it is set, allowed
+    and exists today, else autosave_dir(). Never created here: an unmounted
+    drive's path would otherwise quietly appear on the root filesystem."""
+    return central_dir_with_refusal(custom)[0]
+
+
+def central_dir_with_refusal(custom: str) -> tuple[Path, str | None]:
+    """central_dir(), plus why a set `custom` was passed over today (None if
+    it is unset or used): autosave_dir_refusal()'s reason, or that it is
+    missing or not a folder."""
+    if not custom:
+        return autosave_dir(), None
+    path = Path(custom)
+    reason = autosave_dir_refusal(path)
+    if reason is None and not path.is_dir():
+        reason = "it is not a folder" if path.exists() else "it was not found"
+    return (path, None) if reason is None else (autosave_dir(), reason)
 
 
 def index_path() -> Path:
@@ -78,7 +122,11 @@ def doc_key(path: Path | None, doc_id: str) -> str:
     """
     if path is None:
         return hashlib.sha1(f"untitled:{doc_id}".encode(), usedforsecurity=False).hexdigest()[:12]
-    return hashlib.sha1(str(path.resolve()).encode(), usedforsecurity=False).hexdigest()[:12]
+    try:
+        keyed = path.resolve()
+    except (OSError, RuntimeError):  # a symlink loop: key on the path as given
+        keyed = path.absolute()
+    return hashlib.sha1(str(keyed).encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def _falls_back_to_central(source: Path | None) -> bool:
@@ -86,7 +134,8 @@ def _falls_back_to_central(source: Path | None) -> bool:
     writes centrally for them instead of silently doing nothing:
 
     1. An untitled document, which has no path at all.
-    2. A compatdata/ path -- write_scenario() refuses any such out_path
+    2. A compatdata/ path, as written or resolved through a symlink
+       (is_under_compatdata()) -- write_scenario() refuses any such out_path
        (the AGENTS.md hard rule). These Workshop/Proton files are precisely
        the ones the user has no second copy of, so falling back is the whole
        point rather than a corner case.
@@ -98,11 +147,10 @@ def _falls_back_to_central(source: Path | None) -> bool:
     """
     if source is None:
         return True
-    if FORBIDDEN_WRITE_MARKER in str(source):
-        return True
     try:
-        return source.resolve().parent == TEMPLATE_DIR.resolve()
-    except OSError:
+        resolved = source.resolve()
+        return is_under_compatdata(source, resolved) or resolved.parent == TEMPLATE_DIR.resolve()
+    except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
         return True
 
 
@@ -116,15 +164,18 @@ def slot_path(
     source: Path | None,
     location: str,
     timestamp: float | None = None,
+    central: Path | None = None,
 ) -> Path:
     """Where this document's next slot goes. Central filenames carry the key
     so two documents that share a file name (a copy in another folder, say)
     cannot collide in one flat directory; sidecar ones don't need it, being
-    already namespaced by their own folder."""
+    already namespaced by their own folder. `central` (default
+    autosave_dir()) is the central folder, sidecar's fallback included."""
     stamp = timestamp_text(timestamp)
     if location == "sidecar" and not _falls_back_to_central(source):
         return source.parent / f"{source.name}.{stamp}{AUTOSAVE_SUFFIX}"
-    return autosave_dir() / f"{display_name}.{key}.{stamp}{AUTOSAVE_SUFFIX}"
+    folder = autosave_dir() if central is None else central
+    return folder / f"{display_name}.{key}.{stamp}{AUTOSAVE_SUFFIX}"
 
 
 def _load_index() -> dict:

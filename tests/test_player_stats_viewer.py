@@ -1,5 +1,6 @@
-"""GH #5: View mode's per-player stats combo and block, driven through a real
-offscreen ViewerWindow. The counts themselves are tests/test_player_stats.py."""
+"""GH #5 and GH #145: View mode's per-player stats combo and the page-0 table,
+driven through a real offscreen ViewerWindow. The counts themselves are
+tests/test_player_stats.py."""
 
 from __future__ import annotations
 
@@ -31,15 +32,33 @@ def _window(path: Path):
     return window
 
 
-def _row(window, label: str) -> str:
-    """The row's count and note as displayed, checked against the label's own text."""
-    rows = {row[0]: row for row in window.player_stats_rows}
-    assert label in rows, window.player_stats_rows
-    _, count, note = rows[label]
-    text = window.player_stats_label.text()
-    assert f"<td>{label}</td>" in text
-    assert all(part in text for part in (count, note.replace("&", "&amp;")) if part)
+def _player_items(window) -> dict[tuple[str, str], object]:
+    """(parent label, label) -> the Player section's tree item."""
+    from PyQt5.QtCore import Qt
+
+    section = window._info_sections["Player"]
+    items = {}
+    for i in range(section.childCount()):
+        top = section.child(i)
+        items[("", top.data(0, Qt.UserRole))] = top
+        for j in range(top.childCount()):
+            items[(top.data(0, Qt.UserRole), top.child(j).data(0, Qt.UserRole))] = top.child(j)
+    return items
+
+
+def _row(window, label: str, parent: str = "") -> str:
+    """The row's count and note as displayed, checked against the tree item's own text."""
+    rows = {(row[3], row[0]): row for row in window.player_stats_rows}
+    assert (parent, label) in rows, window.player_stats_rows
+    _, count, note, _ = rows[(parent, label)]
+    item = _player_items(window)[(parent, label)]
+    shown = " ".join(item.text(col) for col in range(3))
+    assert all(part in shown for part in (count, note) if part), (shown, count, note)
     return " ".join(part for part in (count, note) if part)
+
+
+def _labels(window) -> set[str]:
+    return {label for _parent, label in _player_items(window)}
 
 
 def _placements(window) -> int:
@@ -57,9 +76,9 @@ def test_the_combo_lists_gaia_then_the_defined_players_and_defaults_to_player_on
         # GH #130: the fixture's tribe names are empty, so the labels are bare P<n>.
         assert _combo_items(window) == [("GAIA", 0), ("P1", 1), ("P2", 2)]
         assert window.stats_player_combo.currentData() == 1
-        assert window.player_stats_label.text().startswith("<b>P1</b>")
+        assert window.stats_player_combo.currentText() == "P1"
         assert _placements(window) == 3
-        assert "Units per player" not in window.info.toPlainText()
+        assert "Units per player" not in window._info_text()
     finally:
         conftest.close_window(window)
 
@@ -123,7 +142,7 @@ def test_player_select_keybinds_drive_the_combo_in_view_mode() -> None:
         assert window.mode == "view"
         window._select_player(0)
         assert window.stats_player_combo.currentData() == 0
-        assert window.player_stats_label.text().startswith("<b>GAIA</b>")
+        assert window.stats_player_combo.currentText() == "GAIA"
         window._select_player(2)
         assert window.stats_player_combo.currentData() == 2
         assert _placements(window) == 2
@@ -176,10 +195,10 @@ def test_map_analysis_updates_both_info_halves() -> None:
     saying they weren't, since the mode-switch refresh never saw the flip."""
     window = _window(TRIGGER_FIXTURE)
     try:
-        assert "Embedded XS: (unknown until triggers are parsed)" in window.info.toPlainText()
+        assert "Embedded XS: (unknown until triggers are parsed)" in window._info_text()
         window._show_analysis()
         assert window.scenario.trigger_read_supported is True
-        assert "Embedded XS: (none)" in window.info.toPlainText()
+        assert "Embedded XS: (none)" in window._info_text()
         assert re.fullmatch(r"2 +\(of 4; 2 reference no player\)", _row(window, "Triggers"))
     finally:
         window._close_analysis_dialog()
@@ -214,6 +233,138 @@ def test_closing_the_scenario_clears_the_combo() -> None:
         window.close_scenario()
         assert window.stats_player_combo.count() == 0
         assert not window.stats_player_combo.isEnabled()
-        assert window.player_stats_label.text() == ""
+        assert window.player_stats_rows == []
+        assert window._info_sections["Player"].childCount() == 0
+        assert window._info_sections["File"].childCount() == 0
+    finally:
+        conftest.close_window(window)
+
+
+# -- GH #145: the table, its sections and the hide rule ------------------------
+
+_GAIA_SIDE = {"Trees", "Resource piles", "Gold mines", "Animals", "Cliffs", "Relics", "Resources on map"}
+
+
+def test_a_players_rows_carry_no_gaia_side_rows_and_gaias_do() -> None:
+    window = _window(UNITS_FIXTURE)
+    try:
+        window._select_player(1)
+        assert not _labels(window) & _GAIA_SIDE, _labels(window)
+        assert _row(window, "Economy", "Units") == "1"
+        assert _row(window, "Military", "Units") == "1"
+        assert _row(window, "Water", "Units") == "0 also counted above"
+        assert _row(window, "Economy", "Buildings") == "1"
+
+        window._select_player(0)
+        assert _labels(window).issuperset(_GAIA_SIDE), _labels(window)
+        assert _row(window, "Trees") == "2"
+        assert _row(window, "Wood", "Resources on map") == "200"  # two trees at 100
+        # The other side for GAIA: only non-zero unit and building rows. The fixture's GAIA owns one wall.
+        assert _row(window, "Walls & gates", "Buildings") == "1"
+        assert ("Units", "Economy") not in _player_items(window)
+        assert ("", "Units") not in _player_items(window)
+    finally:
+        conftest.close_window(window)
+
+
+def test_placing_a_villager_bumps_economy_and_undo_reverts_it() -> None:
+    from PyQt5.QtCore import QPointF, Qt
+
+    window = _window(UNITS_FIXTURE)
+    try:
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.mode_combo.setCurrentText("Units")
+        before = int(_row(window, "Economy", "Units"))
+        window.units_panel.select_object(_PLACE_CONST)  # 83, a villager
+        window.units_panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        tp = window.map_view._tile_pixels
+        window.on_unit_place(QPointF(12 * tp + tp // 2, 12 * tp + tp // 2), Qt.NoModifier)
+        assert int(_row(window, "Economy", "Units")) == before + 1
+        window.undo()
+        assert int(_row(window, "Economy", "Units")) == before
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_sections_are_file_player_terrain_technical_in_order() -> None:
+    window = _window(UNITS_FIXTURE)
+    try:
+        tree = window.info_tree
+        titles = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+        assert titles == ["File", "Player", "Terrain (top 8)", "Technical"]
+        assert tree.itemWidget(tree.topLevelItem(1), 1) is window.stats_player_combo
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_short_window_shows_the_tables_own_scrollbar() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.shown_window(1200, 500)
+    try:
+        window.load_scenario(UNITS_FIXTURE)
+        window._select_player(0)
+        QApplication.processEvents()
+        assert window.info_tree.verticalScrollBar().maximum() > 0
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_combo_survives_refreshes_as_the_player_headers_widget() -> None:
+    window = _window(UNITS_FIXTURE)
+    try:
+        combo = window.stats_player_combo
+        header = window._info_sections["Player"]
+        for _ in range(3):
+            window._update_player_stats()
+            window._update_info()
+        assert window.stats_player_combo is combo
+        assert window._info_sections["Player"] is header
+        assert window.info_tree.itemWidget(header, 1) is combo
+        assert combo.count() == 3
+    finally:
+        conftest.close_window(window)
+
+
+def test_changing_the_combo_rebuilds_only_the_player_children() -> None:
+    window = _window(UNITS_FIXTURE)
+    try:
+        static = {
+            title: [window._info_sections[title].child(i) for i in range(window._info_sections[title].childCount())]
+            for title in ("File", "Terrain (top 8)", "Technical")
+        }
+        player_before = list(_player_items(window).values())
+        window._select_player(2)
+        for title, items in static.items():
+            section = window._info_sections[title]
+            assert [section.child(i) for i in range(section.childCount())] == items, title
+        assert not set(map(id, player_before)) & set(map(id, _player_items(window).values()))
+    finally:
+        conftest.close_window(window)
+
+
+def test_ctrl_c_copies_the_selected_rows_tab_separated() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.shown_window(1200, 800)
+    try:
+        window.load_scenario(UNITS_FIXTURE)
+        # A committed region arms the window's Copy Region on the same key, which the tree must win.
+        window._region = (0, 0, 4, 4)
+        window._update_tool_enabled()
+        assert window.copy_action.isEnabled()
+        items = _player_items(window)
+        items[("", "Placements")].setSelected(True)
+        items[("Units", "Economy")].setSelected(True)
+        window.info_tree.setFocus()
+        QApplication.clipboard().clear()
+        key = QKeySequence(QKeySequence.Copy)[0]
+        QTest.keyClick(window.info_tree, key & ~Qt.KeyboardModifierMask, Qt.KeyboardModifiers(key & Qt.KeyboardModifierMask))
+        assert QApplication.clipboard().text() == "Placements\t3\nEconomy\t1"
     finally:
         conftest.close_window(window)

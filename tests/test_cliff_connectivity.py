@@ -52,7 +52,7 @@ def test_adjacency_dir_is_symmetric_under_swap() -> None:
 
 
 def test_resolve_pinned_vertical_run() -> None:
-    # The single best-populated dirset in the measured corpus (n=2466): a
+    # The single best-populated dirset in the measured corpus (n=2496): a
     # straight two-neighbour (N, S) run resolves to suffix 2 (the family's
     # "02" 1x3 piece), with rotations 7/8 as its two observed faces.
     dirset = frozenset({(0, -1), (0, 1)})

@@ -5,12 +5,19 @@ divider triggers that partition the display-order list into sections.
 
 Deliberately Qt-free, mirroring trigger_fields.py's convention, so the
 heuristic is testable in the default tier without a QApplication.
-No write path and no persistence: every function here reads a name/order
-pair and returns derived data, nothing more -- name and
+No write path of its own and no persistence: every function here reads a
+name/order pair and returns derived data, nothing more -- name and
 trigger_display_order already survive a reorder, which is why that's
-sufficient. The tag rewriters (retag_name/strip_tag) and the divider
-formatters (format_divider/retitle_divider) return a new name; the window's
-funnels are what write it.
+sufficient. The tag rewriters (retag_name/strip_tag and their chain-wide
+retag_in_chain/strip_tag_from_chain), the divider formatters
+(format_divider/retitle_divider) and copied_name() return a new name; the
+window's funnels are what write it. Written data does derive from here,
+though: trigger_model's copy and paste placement reads sections() and
+section_end_slot() to pick the display slots it writes, and its section move
+(moved_section_display_order()) writes a permutation of sections() blocks.
+That is safe because the partition written is the partition displayed: a
+false-positive divider moves a block the user can see, whole, and costs a
+nesting level, never data.
 """
 
 from __future__ import annotations
@@ -87,6 +94,52 @@ def strip_tag(name: str) -> str:
     # suffix is right padding, then the closer, then the rest.
     after_closer = suffix.lstrip()[1:]
     return lead + after_closer.lstrip()
+
+
+def tag_chain(name: str) -> list[str]:
+    """Every tag in `name`'s leading run, outermost first: parse_tag() then
+    strip_tag() until no tag leads, so "[P1][D1] x" gives ["P1", "D1"]."""
+    chain = []
+    while (tag := parse_tag(name)) is not None:
+        chain.append(tag)
+        name = strip_tag(name)
+    return chain
+
+
+def chain_segments(name: str) -> tuple[list[tuple[str, str]], str]:
+    """`name`'s leading tag run cut into (segment, tag) pairs plus the rest,
+    with `"".join(segments) + rest == name`. A segment is split_tag()'s prefix,
+    tag, inner right padding and closer; the tags are tag_chain()'s."""
+    segments = []
+    pos = 0
+    while (parts := split_tag(name[pos:])) is not None:
+        prefix, tag, suffix = parts
+        end = pos + len(prefix) + len(tag) + (len(suffix) - len(suffix.lstrip())) + 1
+        segments.append((name[pos:end], tag))
+        pos = end
+    return segments, name[pos:]
+
+
+def retag_in_chain(name: str, old: str, new: str) -> str:
+    """`name` with every `old` in its leading tag chain replaced by `new` in
+    place (retag_name() per segment), every other character kept."""
+    segments, rest = chain_segments(name)
+    if all(tag != old for _, tag in segments):
+        raise ValueError(f"{name!r} carries no tag {old!r}")
+    return "".join(retag_name(text, new) if tag == old else text for text, tag in segments) + rest
+
+
+def strip_tag_from_chain(name: str, tag: str) -> str:
+    """`name` with every `tag` in its leading tag chain removed, wherever it
+    sits. Dropping the first segment follows strip_tag(): leading whitespace
+    kept, the whitespace after the removed closer dropped."""
+    segments, rest = chain_segments(name)
+    if all(t != tag for _, t in segments):
+        raise ValueError(f"{name!r} carries no tag {tag!r}")
+    kept = "".join(text for text, t in segments if t != tag) + rest
+    if segments[0][1] != tag:
+        return kept
+    return name[: len(name) - len(name.lstrip())] + kept.lstrip()
 
 
 def leading_divider_run(name: str) -> int:
@@ -223,6 +276,21 @@ def retitle_divider(name: str, title: str) -> str:
     if parts is None:
         raise ValueError(f"{name!r} has no divider title to replace")
     return parts[0] + title + parts[2]
+
+
+COPY_SUFFIX = " (copy)"
+
+
+def copied_name(name: str, suffix: str = COPY_SUFFIX) -> str:
+    """The name a copy of `name` gets (GH #134): `suffix` inside a titled
+    divider's title, so the copy still heads a section of its own; a bare
+    run like `------` verbatim; anything else with `suffix` appended."""
+    parts = split_divider(name)
+    if parts is not None:
+        return parts[0] + parts[1] + suffix + parts[2]
+    if is_divider(name):
+        return name
+    return name + suffix
 
 
 def divider_title_error(name: str, title: str) -> str:

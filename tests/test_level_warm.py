@@ -202,11 +202,13 @@ def test_sliced_flat_icon_walk_equals_the_whole_one(sprite_install, mixed_scenar
 
 def test_a_partial_sprite_walk_yields_no_layer(sprite_install, mixed_scenario) -> None:
     """The payload rides StopIteration, never a yield, so there is no way for
-    a caller to observe (and install) a half-built layer."""
+    a caller to observe (and install) a half-built layer. Each yield is the
+    unit about to be resolved (Perf Trace's `max step`), in walk order."""
     elevations, proj = _elevations_and_proj(mixed_scenario)
     gen = render.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations)
-    assert next(gen) is None
-    assert next(gen) is None
+    units = [u for player_units in mixed_scenario.unit_manager.units for u in player_units]
+    assert next(gen) is units[0]
+    assert next(gen) is units[1]
 
 
 @pytest.mark.corpus
@@ -953,7 +955,8 @@ def test_a_traced_tick_reports_its_steps_by_job_and_its_gc(monkeypatch) -> None:
     monkeypatch.setattr(perf_trace, "time", type("T", (), {"perf_counter": staticmethod(clock)}))
     ticks = []
     monkeypatch.setattr(
-        perf_trace, "level_warm_tick", lambda ms, installs, split, gc_ms: ticks.append((dict(split), gc_ms))
+        perf_trace, "level_warm_tick",
+        lambda ms, installs, split, gc_ms, max_step=None: ticks.append((dict(split), gc_ms)),
     )
     cache = _FakeJobsCache(clock, steps=3)
     real_job = cache.level_warm_job
@@ -990,6 +993,61 @@ def test_a_traced_tick_reports_its_steps_by_job_and_its_gc(monkeypatch) -> None:
     assert set(ticks[1][0]) == {"walk 1", "install", "done"}
     assert ticks[2] == (pytest.approx({"flush 2 setup": 1.0, "flush 2": 2.0, "install": 0.0, "done": 0.0}), 0.0)
     assert len(ticks) == 3
+
+
+@dataclass
+class _StandIn:
+    x: float
+    y: float
+    unit_const: int
+
+
+def test_a_traced_tick_names_its_longest_step_by_the_unit_it_resolved(monkeypatch) -> None:
+    """2026-09-30 level-warm replan, B: the walk yields each unit at the TOP
+    of its body, so the step that ends with yielding unit k spent its time
+    resolving unit k-1. The tick's max step names that previous unit."""
+    from types import SimpleNamespace
+
+    from descape import perf_trace
+    from descape.render_cache import LevelWarmJob
+
+    clock = _StepClock()
+    monkeypatch.setattr(level_warm, "_now", clock)
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    for name, value in perf_trace._fresh_state().items():
+        monkeypatch.setattr(perf_trace, name, value)
+    monkeypatch.setattr(perf_trace, "time", type("T", (), {"perf_counter": staticmethod(clock)}))
+    steps = []
+    monkeypatch.setattr(
+        perf_trace, "level_warm_tick",
+        lambda ms, installs, split, gc_ms, max_step=None: steps.append(
+            None if max_step is None else (max_step[0], max_step[1]())
+        ),
+    )
+    p0 = [_StandIn(3.5, 4.5, 101), _StandIn(9.5, 2.5, 1776)]
+    p1 = [_StandIn(3.5, 4.5, 102), _StandIn(20.5, 20.5, 103)]
+    slow = p0[1]
+
+    class Cache:
+        scenario = SimpleNamespace(unit_manager=SimpleNamespace(units=[p0, p1]))
+
+        def level_warm_job(self, mip):
+            def walk():
+                for unit in (*p0, *p1):
+                    yield unit
+                    clock.t += 0.020 if unit is slow else 0.001
+
+            return LevelWarmJob(gen=walk(), install=lambda _payload: True)
+
+        def pack_warm_job(self, mip, after_level_warm=False):
+            return None
+
+    warmer = level_warm.LevelWarmer()
+    warmer.start(Cache(), [1])
+    while warmer.tick():
+        pass
+    worst = max((s for s in steps if s is not None), key=lambda s: s[0])
+    assert worst == (pytest.approx(20.0), "walk 1 p0 #1 const 1776")
 
 
 # --- the warm set follows the view (zoom plan 2026-09-29, Step 2) ----------

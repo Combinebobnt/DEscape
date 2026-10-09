@@ -1500,6 +1500,34 @@ def test_a_unit_under_a_building_is_stacked_and_one_over_it_is_not() -> None:
     assert over == {}
 
 
+_BLOCKER_1X3 = 2423
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped"])
+def test_picking_a_1x3_blockers_side_tile_selects_it(style) -> None:
+    """GH #121: the blocker's span reaches pick, so its end tiles are its own."""
+    scn = _stack_scenario((3.5, 9.5, _BLOCKER_1X3))
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    for ty in (8, 10):
+        if style == "flat":
+            sx, sy = 3 * tile_px + tile_px // 2, ty * tile_px + tile_px // 2
+        else:
+            sx, sy = _tile_center(3, ty, proj)
+        entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
+        assert entry is not None and entry.unit.unit_const == _BLOCKER_1X3, (style, ty)
+
+
+def test_a_1x1_unit_under_a_blockers_side_tile_is_hidden() -> None:
+    """The named side effect of the span: _hides() now treats a blocker as a
+    multi-tile slab over a 1x1 unit it was placed after."""
+    under = stack_groups(build_index(_stack_scenario((3.5, 8.5, _PLAIN_CONST), (3.5, 9.5, _BLOCKER_1X3))))
+    assert _group_refs(under, (3, 8)) == [2, 1]
+    over = stack_groups(build_index(_stack_scenario((3.5, 9.5, _BLOCKER_1X3), (3.5, 8.5, _PLAIN_CONST))))
+    assert over == {}
+
+
 def test_a_building_carrying_three_stacks_yields_three_separate_groups() -> None:
     scn = _stack_scenario(
         (9.5, 9.5, _PLAIN_CONST), (10.5, 11.5, _PLAIN_CONST), (12.5, 12.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST)
@@ -1559,7 +1587,8 @@ def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) 
 
 # Per file, (groups, hidden units), re-measured rather than trusted. Summed over
 # the full corpus: 831 groups / 1152 hidden = the sizing plan's 826 / 1147 plus
-# its 5 duplicate-building cases, which that plan counted separately.
+# its 5 duplicate-building cases, which that plan counted separately, less the
+# 2 old-allies groups GH #121 dissolved (a 1x1 unit on a now 3x1 blocker's point).
 _STACKS_PER_FILE = {
     "0_June_Event_Scenario.aoe2scenario": (14, 14),
     "2_Joan_coop_1_v0_13.aoe2scenario": (13, 14),
@@ -1579,14 +1608,14 @@ _STACKS_PER_FILE = {
     "R4_LeLoi_4.aoe2scenario": (162, 402),
     "atilla_1_scn_resaved.aoe2scenario": (82, 95),
     "blank_map.aoe2scenario": (0, 0),
-    "old-allies-final-v2.aoe2scenario": (98, 118),
+    "old-allies-final-v2.aoe2scenario": (96, 116),  # (98, 118) before GH #121's blocker spans
     "ring75_v0_scx_resaved.aoe2scenario": (0, 0),
 }
 
 
 def test_the_per_file_stack_table_sums_to_the_sizing_measurement() -> None:
-    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5
-    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5
+    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2
+    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2
 
 
 @pytest.mark.corpus
@@ -1599,3 +1628,136 @@ def test_stack_groups_match_the_measured_corpus_counts(corpus_files) -> None:
         measured[path.name] = (len(groups), sum(hidden for _members, hidden in groups.values()))
     assert measured, "no corpus file from the measured table is present"
     assert measured == {name: _STACKS_PER_FILE[name] for name in measured}
+
+
+# --- GH #143: merge_footprint_polygons ---------------------------------------
+
+
+def _shoelace(polygon) -> float:
+    return abs(
+        sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(polygon, polygon[1:] + polygon[:1], strict=True))
+    ) / 2
+
+
+def _one_unit_entry(unit_const: int, x: float, y: float, map_w: int = MAP_W, map_h: int = MAP_H):
+    tiles = [SyntheticTile(x=tx, y=ty, elevation=0) for ty in range(map_h) for tx in range(map_w)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [SyntheticUnit(x=x, y=y, unit_const=unit_const, reference_id=1)]
+    scn = FakeScenario(map_w, map_h, tiles, units_by_player)
+    return scn, build_index(scn).entries[0]
+
+
+def _stepped_polygons(unit_const: int, x: float, y: float):
+    scn, entry = _one_unit_entry(unit_const, x, y)
+    elevations, proj = render.elevations_and_proj(scn)
+    return unit_polygons(entry, "stepped", _tile_px(), MAP_W, MAP_H, elevations=elevations, proj=proj)
+
+
+def _assert_one_ring_tracing(merged, polygons) -> None:
+    """One ring, built only from input vertices, enclosing exactly the tiles' area."""
+    assert len(merged) == 1, f"{len(merged)} rings"
+    (ring,) = merged
+    inputs = {point for polygon in polygons for point in polygon}
+    assert set(ring) <= inputs
+    assert len(set(ring)) == len(ring)
+    assert _shoelace(ring) == pytest.approx(sum(_shoelace(p) for p in polygons))
+
+
+def test_merge_passes_a_single_polygon_through() -> None:
+    polygon = [[(0, 0), (4, 0), (4, 4), (0, 4)]]
+    assert unit_pick.merge_footprint_polygons(polygon) == polygon
+
+
+def test_merge_turns_a_2x2_stepped_building_into_its_4_corners() -> None:
+    house = 70
+    assert BUILDING_TILE_SPANS[house] == (2, 2)
+    polygons = _stepped_polygons(house, 10.0, 10.0)
+    assert len(polygons) == 4
+    merged = unit_pick.merge_footprint_polygons(polygons)
+    _assert_one_ring_tracing(merged, polygons)
+    points = [p for polygon in polygons for p in polygon]
+    corners = {
+        min(points, key=lambda p: p[1]),
+        max(points, key=lambda p: p[0]),
+        max(points, key=lambda p: p[1]),
+        min(points, key=lambda p: p[0]),
+    }
+    assert set(merged[0]) == corners
+
+
+_BLOCKER_3X1 = 2424
+
+
+def test_merge_turns_a_3x1_blocker_into_one_ring() -> None:
+    assert render.tile_span(_BLOCKER_3X1, render.NON_BUILDING_SPAN) == (3, 1)
+    polygons = _stepped_polygons(_BLOCKER_3X1, 10.5, 10.5)
+    assert len(polygons) == 3
+    merged = unit_pick.merge_footprint_polygons(polygons)
+    _assert_one_ring_tracing(merged, polygons)
+    assert len(merged[0]) == 4
+
+
+def test_merge_returns_disjoint_polygons_unchanged() -> None:
+    polygons = [[(0, 0), (2, 0), (2, 2), (0, 2)], [(5, 5), (7, 5), (7, 7), (5, 7)]]
+    assert unit_pick.merge_footprint_polygons(polygons) == polygons
+
+
+@pytest.mark.parametrize("gate_const", [_GATE_CONST, _N_GATE_CONST])
+def test_merge_refuses_a_diagonal_gate_whose_tiles_touch_only_at_corners(gate_const) -> None:
+    """A pinch vertex (degree 4) has no single outer ring, so the unit stays per-tile."""
+    assert _GATE_CONST == 659  # stone gate, e orientation
+    polygons = _stepped_polygons(gate_const, _GATE_X, _GATE_Y)
+    assert len(polygons) == 6
+    assert unit_pick.merge_footprint_polygons(polygons) == polygons
+
+
+# GH #143 Step 0, measured 2026-10-05 over 432 random 3x3 draped farms: one ring on
+# every 1-level and ramp field (216/216), but 60/216 multi-level fields left gaps.
+_FARM_MERGE_PROJ_ARGS = (5, 5, 64, 0, 3, 50)
+_FARM_ONE_LEVEL_RISE = np.array(
+    [[0, 0, 0, 0, 0, 0], [0, 0, 8, 8, 0, 0], [0, 8, 8, 0, 8, 0], [0, 0, 8, 0, 0, 0], [0, 8, 0, 8, 8, 0], [0, 0, 0, 0, 0, 0]]
+)
+_FARM_MULTI_LEVEL_RISE = np.array(
+    [
+        [0, 8, 8, 16, 16, 0],
+        [24, 24, 24, 24, 16, 0],
+        [24, 24, 24, 24, 16, 0],
+        [0, 16, 16, 16, 8, 8],
+        [8, 16, 24, 24, 24, 16],
+        [8, 16, 24, 24, 24, 16],
+    ]
+)
+
+
+def _draped_farm_polygons(corner_rise):
+    _scn, entry = _one_unit_entry(_FARM_CONST, 2.5, 2.5, 5, 5)
+    assert render._terrain_overlay_for(_FARM_CONST) is not None
+    proj = iso_geometry.canvas_size_and_origin(*_FARM_MERGE_PROJ_ARGS, corner_headroom_steps=1)
+    polygons = unit_polygons(entry, "sloped", 64, 5, 5, None, proj, corner_rise=corner_rise, farms_draped=True)
+    assert len(polygons) == 9
+    return polygons
+
+
+def test_merge_joins_a_draped_farm_on_one_level_slopes() -> None:
+    polygons = _draped_farm_polygons(_FARM_ONE_LEVEL_RISE)
+    merged = unit_pick.merge_footprint_polygons(polygons)
+    _assert_one_ring_tracing(merged, polygons)
+
+
+def test_merge_leaves_a_draped_farm_over_multi_level_steps_per_tile() -> None:
+    polygons = _draped_farm_polygons(_FARM_MULTI_LEVEL_RISE)
+    assert unit_pick.merge_footprint_polygons(polygons) == polygons
+
+
+def test_merging_the_same_farm_again_reuses_the_ring(monkeypatch) -> None:
+    """Every unit edit re-merges every farm in scope; a draped one costs ~1.6 ms uncached."""
+    unit_pick._merged_ring.cache_clear()
+    calls = []
+    real = unit_pick._unit_segments
+    monkeypatch.setattr(unit_pick, "_unit_segments", lambda polygon: calls.append(1) or real(polygon))
+    polygons = _draped_farm_polygons(_FARM_ONE_LEVEL_RISE)
+    first = unit_pick.merge_footprint_polygons(polygons)
+    segment_calls = len(calls)
+    assert segment_calls == 9
+    assert unit_pick.merge_footprint_polygons(_draped_farm_polygons(_FARM_ONE_LEVEL_RISE)) == first
+    assert len(calls) == segment_calls
