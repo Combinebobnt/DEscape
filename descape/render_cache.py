@@ -540,6 +540,31 @@ def _removals_first(changed: list[UnitSplice]) -> list[UnitSplice]:
     return [s for s in changed if s.new_own_tile is None] + [s for s in changed if s.new_own_tile is not None]
 
 
+def _write_dirty_elevations(
+    scenario: LoadedScenario, elevations: np.ndarray, proj: iso_geometry.IsoProjection, dirty_indices,
+    flatten: bool = False,
+) -> bool | None:
+    """refresh_wholesale()'s elevation write: each dirty tile's elevation (0
+    under `flatten`, Flat + Isometric) into `elevations` in place, vectorized.
+    None, writing nothing, if any lies outside proj's range (the caller then
+    re-renders, as dirty_screen_bbox_iso() declining does); else whether any
+    tile's elevation moved."""
+    mm = scenario.map_manager
+    w = mm.map_width
+    idx = np.unique(np.fromiter(dirty_indices, dtype=np.int64, count=len(dirty_indices)))
+    xs, ys = idx % w, idx // w
+    if flatten:
+        new = np.zeros(idx.size, dtype=elevations.dtype)
+    else:
+        terrain = mm.terrain
+        new = np.fromiter((terrain[i].elevation for i in idx.tolist()), dtype=np.int64, count=idx.size)
+        if ((new < proj.min_elev) | (new > proj.max_elev)).any():
+            return None
+    moved = bool((elevations[ys, xs] != new).any())
+    elevations[ys, xs] = new
+    return moved
+
+
 # Past this many re-anchored units an elevation patch takes the wholesale path
 # instead. Measured on June Event (14,106 units, sprites on): _reanchor_units
 # costs ~1ms + 13us/unit and the bystander-grid patch 0.75ms at 132 keys, 1.8ms
@@ -727,12 +752,11 @@ def _reanchor_units(
     hero_glow: bool = False,
     old_bboxes: dict | None = None,
 ) -> render.SpriteLayer | None:
-    """Applies every splice in `splices` to one cache's (or, for Iso, one
-    level's) building_bboxes -- keyed by own-tile -- and, if `sprites` is
-    not None, its SpriteLayer. Mutates building_bboxes IN PLACE (callers
-    rely on that for their own id()-based staleness proxies, e.g.
-    SlopedChunkCache._set_building_bboxes / tests/
-    test_patch_unit_sources.py) and returns the (possibly new, since
+    """Applies every splice in `splices` to one level's building_bboxes --
+    keyed by own-tile -- and, if `sprites` is not None, its SpriteLayer.
+    Mutates building_bboxes IN PLACE (callers rely on that for their own
+    id()-based staleness proxies, e.g. tests/test_patch_unit_sources.py) and
+    returns the (possibly new, since
     SpriteLayer is frozen) sprite layer for the caller to reassign -- `None`
     in, `None` back out, unchanged, when sprites are disabled. The
     SpriteLayer's four dicts are copied ONCE per call, not once per splice:
@@ -946,9 +970,10 @@ class _ChunkCacheBase:
     _mutation_epoch: int = 0
     # Whether _unit_pack_of() exists: Stepped and Sloped keep a native unit pack.
     _has_unit_pack: bool = False
-    # Flat int64 terrain id per tile (y * w + x) for the native composite, or
-    # None (Flat, numpy backend). The default is None, so rebinding is safe.
+    # Flat int64 terrain id and layer per tile (y * w + x), for the native
+    # composite and the blend keys; every cache builds both in __init__.
     _terrain_ids: np.ndarray | None = None
+    _layer_ids: np.ndarray | None = None
 
     def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
         """Enumerates the level set ONCE, at construction -- never lazily.
@@ -1210,12 +1235,12 @@ class _ChunkCacheBase:
 
     def _refresh_source_caches(self, elevation_changed: set | None = None, splice_levels=None) -> None:
         """splice_levels: patch()'s rebuild_levels, the levels allowed to do
-        per-level source work now. Only IsoChunkCache's elevation splice reads it."""
+        per-level source work now. Only _LeveledChunkCache's elevation splice reads it."""
         raise NotImplementedError
 
     def _defers_patch(self, mip: int) -> bool:
         """Whether a resident level must evict patch()'s chunks rather than
-        composite them: its unit layer has deferred work (IsoChunkCache)."""
+        composite them: its unit layer has deferred work (_LeveledChunkCache)."""
         return False
 
     def can_splice(self, changed: list[UnitSplice] | None) -> bool:
@@ -1332,10 +1357,11 @@ class _ChunkCacheBase:
 
         changed (Batch D's D4): None (the default, and every pre-D4 caller's
         exact behaviour) means "unknown" and takes this base wholesale path
-        unconditionally. A non-None list is a per-cache splice opportunity
-        for IsoChunkCache/SlopedChunkCache, each scoped to the single-unit
-        tool paths that can build one -- see UnitSplice's own docstring and
-        each override's. This base implementation ignores `changed`
+        unconditionally. A non-None list is a splice opportunity for
+        IsoChunkCache and SlopedChunkCache, through their shared
+        _LeveledChunkCache.invalidate_units() override, scoped to the
+        single-unit tool paths that can build one -- see UnitSplice's own
+        docstring and that override's. This base implementation ignores `changed`
         entirely and always does the safe, wholesale thing: it is the
         documented fallback every override's own ineligibility guard falls
         back to, not just the None-caller's path.
@@ -1358,11 +1384,9 @@ class _ChunkCacheBase:
         nothing worth warming -- the entry point level_warm.LevelWarmer
         drives (2026-09-04 plan, Step 2).
 
-        The base implementation returns None, which is SlopedChunkCache's
-        real answer rather than a stub: Sloped enumerates exactly one mip
-        level (_init_mip_levels({0: tile_px})), so it can never hit a
-        not-yet-visited one -- there is no first-zoom stall there to remove.
-        IsoChunkCache and FlatChunkCache override this."""
+        The base None is an unused conservative default ("nothing to warm"):
+        every concrete class overrides it, _LeveledChunkCache (Stepped and
+        Sloped) and FlatChunkCache."""
         return None
 
     def is_level_resident(self, mip: int) -> bool:
@@ -1374,14 +1398,9 @@ class _ChunkCacheBase:
         exact freeze this whole subsystem exists to remove, now inside a
         margin-warm timer callback with no user action to blame it on.
 
-        True is SlopedChunkCache's real answer, not a permissive base-class
-        default -- checked, not assumed: _refresh_source_caches() there
-        builds units_by_tile, corner_rise, building_bboxes and sprites
-        eagerly, at construction and on every refresh ("no generation-
-        counter laziness ... this cache has only one (mip 0) level" -- see
-        that method's own docstring), so _composite_rect() has nothing
-        lazy left to trigger. IsoChunkCache and FlatChunkCache override
-        this with their own real staleness predicates."""
+        The base True is an unused default for a class with nothing lazy to
+        build: every concrete class overrides it with its own staleness
+        predicate, _LeveledChunkCache (Stepped and Sloped) and FlatChunkCache."""
         return True
 
     def _unit_pack_of(self, mip: int, create: bool):
@@ -1519,7 +1538,8 @@ class _ChunkCacheBase:
         """get_chunk() split for margin_warm's worker threads: everything but
         the kernel runs here, on the caller's (GUI) thread. None means call
         get_chunk() instead: the chunk is cached, or has no worker-safe path
-        (numpy backend, Flat, a texture the kernel can't crop)."""
+        (numpy backend, Flat, a texture the kernel can't crop or a blend it
+        can't compose)."""
         key = (mip, cx, cy)
         if key in self._cache:
             return None
@@ -1621,15 +1641,42 @@ class _ChunkCacheBase:
         step that bumps the gen rebuilds the visible level only, not every
         resident one; the stale level rebuilds when next composited or warmed.
         A current level outside it defers its elevation splice instead
-        (IsoChunkCache._splice_levels), and any level with deferred work
-        (_defers_patch) evicts too, so no cached chunk shows an unflushed layer."""
+        (_LeveledChunkCache._splice_levels), and any level with deferred work
+        (_defers_patch) evicts too, so no cached chunk shows an unflushed layer.
+
+        The two halves are patch_sources() and patch_composite()."""
+        if self.patch_sources(bbox, elevation_changed, rebuild_levels):
+            self.patch_composite(bbox, levels, rebuild_levels)
+
+    def patch_sources(
+        self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, rebuild_levels=None
+    ) -> bool:
+        """patch()'s source half: the terrain-id mirror over bbox, then
+        _refresh_source_caches(). False, refreshing nothing, for an empty bbox.
+
+        Run alone by a terrain + unit history move (TASK-031.61 A4), whose
+        unit step then repaints the union of this bbox and its own, so the
+        terrain is composited once rather than patched here and evicted after.
+        Such a caller owns the composite of bbox at every resident level, and
+        passes an empty elevation_changed only: with one, a level may go stale
+        and SlopedChunkCache.patch() also rewrites the pick planes."""
         px0, py0, px1, py1 = bbox
         # Before the early return too: the caller may have written elevations in place.
         self._mutation_epoch += 1
         if px1 <= px0 or py1 <= py0:
-            return
+            return False
         self._refresh_terrain_ids(bbox)
         self._refresh_source_caches(elevation_changed, splice_levels=rebuild_levels)
+        return True
+
+    def patch_composite(self, bbox: tuple[int, int, int, int], levels=None, rebuild_levels=None) -> None:
+        """patch()'s composite half, after patch_sources(): recomposites bbox
+        in every cached chunk of the resident levels (`levels` only, when
+        given), or evicts it where a level outside rebuild_levels went stale
+        or has deferred work."""
+        px0, py0, px1, py1 = bbox
+        if px1 <= px0 or py1 <= py0:
+            return
         for mip in self._select_levels(levels):
             lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
             if lx1 <= lx0 or ly1 <= ly0:
@@ -1691,9 +1738,14 @@ class _ChunkCacheBase:
         No elevation_changed parameter: this is Flat's only patch_rects()
         caller today, and FlatChunkCache._refresh_source_caches() is a
         documented no-op regardless of what's passed to it -- there is
-        nothing here for that set to gate."""
-        for rect in rects:
-            self.patch(rect)
+        nothing here for that set to gate.
+
+        Two passes, every rect's sources before any composite: a blended
+        tile reads its neighbours' mirror entries, which a later rect may
+        be the one refreshing."""
+        live = [rect for rect in rects if self.patch_sources(rect)]
+        for rect in live:
+            self.patch_composite(rect)
 
     def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None, terrain_changed: bool = True) -> None:
         """Evicts every cached chunk, at every RESIDENT mip level (only those
@@ -1747,19 +1799,20 @@ class _ChunkCacheBase:
                 del self._cache[key]
 
     def _init_terrain_ids(self) -> None:
-        """Builds the terrain-id mirror on the native backend (2.9 ms at 240x240,
-        11 ms at 480x480). A full re-render builds a fresh cache, so a fresh mirror."""
-        if composite_backend.native is None:
-            return
-        mm = self.scenario.map_manager
-        self._terrain_ids = native_composite._terrain_ids(self.scenario, np.arange(mm.map_width * mm.map_height))
+        """Builds the terrain-id and layer mirrors on either backend (2.9 ms
+        each at 240x240, 11 ms at 480x480): the native composite reads the
+        first, terrain blending both. A full re-render builds a fresh cache,
+        so fresh mirrors."""
+        self._terrain_ids = render.tile_field_mirror(self.scenario, "terrain_id")
+        self._layer_ids = render.tile_field_mirror(self.scenario, "layer")
 
     def _refresh_terrain_ids(self, bbox: tuple[int, int, int, int]) -> None:
         """Re-reads the mirror over bbox (REFERENCE canvas pixels) after a
         terrain edit. Every in-app terrain write reaches the cache through
         patch() or invalidate_region() with a bbox that covers each dirty
-        tile's footprint, and tiles_in_screen_rect's swept test returns a
-        superset of the tiles painting into it, so every dirty tile is re-read.
+        tile's footprint, and tiles_in_screen_rect's swept test (Flat: the
+        tile grid under the rect) returns a superset of the tiles painting
+        into it, so every dirty tile is re-read, layer mirror included.
         A whole-canvas bbox reads every tile directly, which beats the rect
         enumeration at that size."""
         if self._terrain_ids is None:
@@ -1772,11 +1825,18 @@ class _ChunkCacheBase:
         canvas_w, canvas_h = self.canvas_dims(0)
         if px0 <= 0 and py0 <= 0 and px1 >= canvas_w and py1 >= canvas_h:
             idx = np.arange(w * h)
+        elif self.style == "flat":
+            t = self.tile_px
+            tx0, ty0 = max(px0 // t, 0), max(py0 // t, 0)
+            tx1, ty1 = min(-(-px1 // t), w), min(-(-py1 // t), h)
+            ys, xs = np.mgrid[ty0:ty1, tx0:tx1]
+            idx = (ys * w + xs).ravel()
         else:
             tiles = iso_geometry.tiles_in_screen_rect(px0, py0, px1, py1, w, h, self.proj)
             idx = tiles[:, 1] * w + tiles[:, 0]
         if idx.size:
             self._terrain_ids[idx] = native_composite._terrain_ids(self.scenario, idx)
+            self._layer_ids[idx] = render.tile_field_mirror(self.scenario, "layer", idx)
 
     def _refresh_unit_sources(self) -> None:
         """Rebuilds whatever per-cache structure holds units, after the unit
@@ -1821,13 +1881,13 @@ class _ChunkCacheBase:
         The two kinds of field cost different things, so they are diffed
         rather than both paying for the worse case:
 
-        - A PAINT-TIME field (terrain_textures) is read straight off
+        - A PAINT-TIME field (terrain_textures, terrain_blend) is read straight off
           self.layers by _composite_rect, so eviction alone is the whole
           update.
         - A BUILD-TIME field (_BUILD_TIME_LAYER_FIELDS: farm_overlay,
           small_trees, hero_glow) is baked into the SpriteLayer's own contents when it
           is BUILT, so it needs _refresh_unit_sources() first. Skipping that
-          would leave IsoChunkCache._level()'s `gen != self._source_gen`
+          would leave _LeveledChunkCache._level()'s `gen != self._source_gen`
           short-circuit holding and the level serving the pre-flip layer --
           the under-repaint class set_sprites_enabled() documents, not
           cosmetic staleness.
@@ -1860,8 +1920,8 @@ class _ChunkCacheBase:
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Stores whether this cache composites real .sld sprites -- P3-g's
         toggle. The base implementation ONLY stores the value; every concrete
-        subclass now overrides it to actually rebuild and evict (IsoChunkCache
-        for Stepped, SlopedChunkCache from P3-g6, FlatChunkCache from P3-g7),
+        subclass now overrides it to actually rebuild and evict
+        (_LeveledChunkCache for Stepped and Sloped, FlatChunkCache from P3-g7),
         so this body is reached only by a subclass that has yet to grow a
         sprite path. Storing the value here regardless is what lets
         ViewerWindow carry the toggle's state across an Elevation View switch
@@ -1900,7 +1960,7 @@ class _IsoLevel:
     a bbox build. building_bboxes is the expensive, PROJECTION-DEPENDENT
     part (see _building_bboxes_iso/_unit_screen_bbox_iso): built lazily on
     first composite at this level, and rebuilt lazily whenever `gen` falls
-    behind the cache's own _source_gen -- see IsoChunkCache._level()."""
+    behind the cache's own _source_gen -- see _LeveledChunkCache._level()."""
 
     tile_px: int
     proj: iso_geometry.IsoProjection
@@ -1919,11 +1979,625 @@ class _IsoLevel:
     # Batch F N2's native view of units_by_tile + sprites at this level.
     unit_pack: native_composite.UnitPack | None = None
     # Elevation tiles whose re-anchor this current level has deferred (an
-    # off-screen level during a Stepped stroke); IsoChunkCache._flush_pending().
+    # off-screen level during a Stepped stroke); _LeveledChunkCache._flush_pending().
     pending_elev: set[tuple[int, int]] = field(default_factory=set)
+    # The extra_top_px building_bboxes were built with (Sloped's headroom; always 0 on Stepped).
+    extra_top: int = 0
+    # The heights array sprites and unit_pack were last synced to (_level_heights()).
+    heights: np.ndarray | None = None
 
 
-class IsoChunkCache(_ChunkCacheBase):
+@dataclass
+class _SlopedLevel(_IsoLevel):
+    """A Sloped level (TASK-031.60): _IsoLevel plus the level's own
+    corner_rise and headroom, derived at its own proj from the elevations
+    whenever level 0's corner_rise is rebound (SlopedChunkCache._level_rise()).
+    Geometry, not unit layers: deriving them never builds the level."""
+
+    corner_rise: np.ndarray | None = None
+    # The live extra_top target at this level; extra_top is what the bboxes were built with.
+    headroom: int = 0
+    # The level-0 corner_rise these two were derived alongside.
+    rise_source: np.ndarray | None = None
+
+
+class _LeveledChunkCache(_ChunkCacheBase):
+    """The lazy per-level unit layers Stepped and Sloped share (TASK-031.59):
+    one _IsoLevel per mip, built in _level() the first time the level is
+    composited after its gen falls behind _source_gen, and spliced in place by
+    elevation and unit edits on the levels already current.
+
+    A subclass supplies the projections (_init_levels()), canvas_dims(),
+    _composite_rect()/_prepare_rect() and _refresh_source_caches(), plus the
+    hooks below, which are the only per-level values the styles disagree on.
+    Their defaults are Stepped's: no corner_rise for the sprite walk and the
+    re-anchor, self.elevations as the pack heights, no extra bbox top. _sloped
+    is the native kernels' style flag."""
+
+    _sloped = False
+    # The per-level record; Sloped's adds the level's own corner_rise and headroom.
+    _level_type: type[_IsoLevel] = _IsoLevel
+
+    def _init_levels(self, projs: dict[int, iso_geometry.IsoProjection]) -> None:
+        """One unbuilt _level_type record per projection, the base mip
+        machinery, and the counters the lazy build and the splices read."""
+        self._levels: dict[int, _IsoLevel] = {
+            level: self._level_type(tile_px=p.tile_px, proj=p) for level, p in projs.items()
+        }
+        self._init_mip_levels({level: lvl.tile_px for level, lvl in self._levels.items()})
+        self._source_gen = 0
+        # Bumped by every splice that leaves _source_gen alone, so a warm
+        # started before one can tell its half-walked layer is stale.
+        self._splice_epoch = 0
+        # Bumped whenever units_by_tile is mutated in place, which a unit
+        # pack's identity check can't see.
+        self._units_version = 0
+
+    def _level_corner_rise(self, lvl: _IsoLevel) -> np.ndarray | None:
+        """The corner_rise the level's sprite walk and re-anchor read."""
+        return None
+
+    def _level_heights(self, lvl: _IsoLevel) -> np.ndarray:
+        """The heights array the level's sprites and unit pack are built against."""
+        return self.elevations
+
+    def _level_extra_top(self, lvl: _IsoLevel) -> int:
+        """The extra_top_px the level's building_bboxes are built with."""
+        return 0
+
+    def _level_synced(self, lvl: _IsoLevel) -> bool:
+        """Whether the level's layers were synced to the live heights and
+        extra_top. Always true on Stepped, whose elevations array is written in place."""
+        return lvl.heights is self._level_heights(lvl) and lvl.extra_top == self._level_extra_top(lvl)
+
+    def _refresh_all_units(self) -> None:
+        """The wholesale half of _refresh_source_caches(): units_by_tile
+        rebuilt and every level marked stale, to rebuild lazily in _level()."""
+        self.units_by_tile = render._units_by_tile(self.scenario, self.unit_filter) if self.with_units else {}
+        self._source_gen += 1
+
+    def _refresh_level_units(self, seeds: set, splice_levels=None) -> None:
+        """The elevation half of _refresh_source_caches(): the unit layers are
+        re-anchored in place rather than rebuilt (the 2026-09-24 anchor-local
+        splice). The wholesale level rebuild cost 21-91ms per stroke step with
+        sprites on on Stepped, not the ~15-20ms the gen gate was accepted on.
+
+        `seeds` are the own tiles whose units the edit can move:
+        elevation_changed on Stepped, which reads a unit's own tile only
+        (_resolve_unit_sprite's elevations[uy, ux], _unit_iso_footprint's own
+        floored tile), plus elevation_seed_tiles()' corner-changed tiles on
+        Sloped. The affected units are exactly those, plus any unit sharing a
+        tile with one, which re-derives unchanged (_elevation_splices()'
+        component). Each already-current level gets one _reanchor_units()
+        call with the real wall overrides (an elevation edit leaves them
+        valid) and a patched bystander_grid. A stale level is left stale and
+        rebuilds fully in _level(). No gen bump, so _splice_epoch is bumped
+        instead for level_warm_job()'s install predicate. A component past
+        elevation_splice_cap() bumps the gen, the wholesale fallback.
+
+        An empty component returns early only while every current level is
+        _level_synced(): a Sloped edit replaces corner_rise and may move the
+        headroom with no unit in reach, and the levels still need their pack
+        rebound and their bboxes widened (_splice_level() with no splices).
+
+        splice_levels (patch()'s rebuild_levels, 2026-09-28 stepped-defer
+        plan): a current level outside it adds `seeds` to its pending_elev
+        instead of splicing, flushed on its next _level()."""
+        cap = self.elevation_splice_cap()
+        splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, seeds, cap)
+        if splices is None:
+            self._trace_elevation_refusal(seeds, cap)
+            self._source_gen += 1
+            return
+        if not splices and all(self._level_synced(lvl) for lvl in self._levels.values() if lvl.gen == self._source_gen):
+            return
+        overrides = render.wall_variant_rotation_overrides(self.scenario)
+        self._splice_levels(splices, overrides, self._units_version, splice_levels, seeds)
+
+    def _splice_levels(
+        self, splices: list[UnitSplice], overrides: dict, old_version: int, levels=None, pending=None
+    ) -> None:
+        """_splice_level() on every already-current level. Shared by the
+        elevation patch and invalidate_units(); bumps _splice_epoch since
+        neither moves _source_gen. old_version is _units_version before the
+        caller's own units_by_tile splice.
+
+        levels (elevation patch only): a current level outside it unions
+        `pending`, the edit's elevation-changed tiles, into its pending_elev
+        instead. Re-anchor is delete-then-recompute from live state, so one
+        flush over a stroke's union equals splicing each step in turn."""
+        for mip, lvl in self._levels.items():
+            if lvl.gen != self._source_gen:
+                continue
+            if levels is not None and mip not in levels:
+                lvl.pending_elev |= pending
+                continue
+            self._splice_level(lvl, splices, overrides, old_version)
+        self._splice_epoch += 1
+
+    def _splice_level(self, lvl: _IsoLevel, splices: list[UnitSplice], overrides: dict, old_version: int) -> None:
+        """_reanchor_units() on one current level, then its grid (patched over
+        the keys the splice rewrote, not rebuilt) and unit pack. Reads the
+        level directly: this runs inside _flush_pending().
+
+        A level whose extra_top no longer matches _level_extra_top() (a
+        Sloped headroom change) rebuilds its bboxes and grid whole instead of
+        patching the grid, empty `splices` included: the headroom widens every
+        building's bbox, while sprites never read it and the pack never reads
+        a bbox. The pack is refreshed from the heights it was synced to onto
+        the live ones, so an empty batch still rebinds it."""
+        old_sprites = lvl.sprites
+        extra_top = self._level_extra_top(lvl)
+        old_bboxes: dict = {}
+        if splices:
+            lvl.sprites = _reanchor_units(
+                lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
+                self.unit_filter, self._level_corner_rise(lvl), extra_top, splices, overrides,
+                *self._layer_resolve_args(), old_bboxes=old_bboxes,
+            )
+        if extra_top != lvl.extra_top:
+            mip = next(m for m, other in self._levels.items() if other is lvl)
+            # Per level: each Sloped level checks its own headroom (TASK-031.60).
+            with perf_trace.phase(f"elev_headroom={lvl.extra_top}->{extra_top}@{mip}"):
+                pass
+            with perf_trace.level("bboxes", mip):
+                lvl.building_bboxes, lvl.bystander_grid = render._drain(self._assemble_level(lvl, lvl.sprites))
+                lvl.extra_top = extra_top
+        elif splices:
+            lvl.bystander_grid = (
+                render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
+                if lvl.bystander_grid is None
+                else render.patch_bystander_grid(lvl.bystander_grid, old_bboxes, lvl.building_bboxes)
+            )
+        heights = self._level_heights(lvl)
+        lvl.unit_pack = _refreshed_pack(
+            lvl.unit_pack, splices, self.units_by_tile, old_sprites, old_version, lvl.heights,
+            lvl.sprites, self._units_version, heights,
+        )
+        lvl.heights = heights
+
+    def _defers_patch(self, mip: int) -> bool:
+        # A stale level's pending set is moot: its rebuild clears it.
+        lvl = self._levels[mip]
+        return lvl.gen == self._source_gen and bool(lvl.pending_elev)
+
+    def _flush_pending(self, mip: int) -> None:
+        """Applies a current level's deferred elevation re-anchors: one
+        _elevation_splices() over the union, then _splice_level(). A union
+        past elevation_splice_cap() marks the level stale instead, so
+        _level() rebuilds it wholesale. An empty union still splices when the
+        level is not _level_synced(), as _refresh_level_units() does.
+
+        Only valid while units_by_tile agrees with the scenario, which is why
+        _level() is the one caller: between a unit edit and its
+        invalidate_units() the unit has moved but its buckets have not, and
+        a flush there would re-add it at its new tile on top of the old one.
+        invalidate_units() needs no flush of its own: its splice reaches
+        pending levels too (they are current), and the later flush then
+        reads consistent state."""
+        lvl = self._levels[mip]
+        with perf_trace.level("flush", mip) as ev:
+            # Cleared first so nothing reached from the splice below can re-enter.
+            tiles, lvl.pending_elev = lvl.pending_elev, set()
+            if ev is not None:
+                ev.tiles = len(tiles)
+            splices = _elevation_splices(
+                self.scenario, self.units_by_tile, self.unit_filter, tiles, self.elevation_splice_cap()
+            )
+            if splices is None:
+                if ev is not None:
+                    ev.kind = "flush>rebuild"
+                lvl.gen = -1
+                return
+            if not splices and self._level_synced(lvl):
+                return
+            overrides = render.wall_variant_rotation_overrides(self.scenario)
+            self._splice_level(lvl, splices, overrides, self._units_version)
+            self._splice_epoch += 1
+
+    def _level(self, mip: int) -> _IsoLevel:
+        """The mip level's own state, rebuilding its building_bboxes if
+        stale (gen != self._source_gen). Called only from _composite_rect,
+        so a level is never rebuilt just because it's resident -- only
+        when actually composited. Combined with patch()'s "iterate resident
+        levels only" (_ChunkCacheBase.patch), an edit at a fixed zoom (one
+        level resident) pays exactly one _building_bboxes_iso rebuild,
+        identical to pre-mip behavior; immediately after a mip switch (two
+        levels resident), the first edit pays two -- units_by_tile itself
+        is still built once per edit regardless of level count, so the
+        real cost is bounded by resident level count, not enumerated level
+        count. A current level with deferred elevation work is flushed first
+        (_flush_pending), which may itself mark it stale."""
+        lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            self._flush_pending(mip)
+        if lvl.gen != self._source_gen:
+            heights, extra_top = self._level_heights(lvl), self._level_extra_top(lvl)
+            with perf_trace.level("build", mip) as ev:
+                # P3-g3: resolving and decoding sprites is far too expensive to do
+                # per chunk, so it rides this same per-level lazy rebuild.
+                sprites = memo = None
+                if self.with_units and self.sprites_enabled:
+                    sprites, memo = render._drain(self._sprite_walk(lvl))
+                if ev is not None:
+                    ev.mark("walk")
+                bboxes, grid = render._drain(self._assemble_level(lvl, sprites))
+                self._commit_level(mip, sprites, memo, bboxes, grid, self._source_gen, heights, extra_top)
+                if ev is not None:
+                    ev.mark("install")
+        return lvl
+
+    def _sprite_walk(self, lvl: _IsoLevel):
+        """The level's memo-backed sprite walk, shared by _level() and
+        level_warm_job() so the two can't pass different arguments."""
+        return render.sprite_draws_by_anchor_sliced(
+            self.scenario, lvl.proj, self.elevations, self.unit_filter,
+            corner_rise=self._level_corner_rise(lvl),
+            with_farms=self.layers.farm_overlay,
+            tree_scale=self.layers.tree_scale,
+            hero_glow=self.layers.hero_glow,
+            memo=lvl.memo or render.SpriteMemo(),
+        )
+
+    def _assemble_level(self, lvl: _IsoLevel, sprites: render.SpriteLayer | None):
+        """A level's building_bboxes and bystander grid from an already-built
+        sprite layer, as a resumable generator (at most render.ASSEMBLY_SLICE
+        units or keys per step) returning (bboxes, grid). Installs nothing:
+        _commit_level() does that.
+
+        One assembly for both paths: _level() drains it, the warm jobs step it
+        across ticks (2026-09-29 warm-tick plan). Two assemblies would be the
+        divergence class Flat's row-count assert exists to catch, and Stepped
+        has no equivalent tripwire.
+
+        merge_sprite_bboxes is what makes composite_rect_iso pull a sprite's
+        anchor tile in as a bystander -- without it a sprite clips at its
+        owning chunk's edge. The grid is built from the MERGED dict."""
+        mm = self.scenario.map_manager
+        # Its own step: the walk's last one ends here, not inside the first slice.
+        yield
+        bboxes = {}
+        if self.with_units:
+            bboxes = yield from render._building_bboxes_iso_sliced(
+                self.scenario, mm.map_width, mm.map_height, lvl.proj, self.elevations, self._level_extra_top(lvl),
+                unit_filter=self.unit_filter,
+            )
+        if sprites is not None:
+            bboxes = yield from render.merge_sprite_bboxes_sliced(bboxes, sprites)
+        grid = yield from render.build_bystander_grid_sliced(bboxes, self.chunk_px)
+        return bboxes, grid
+
+    def _commit_level(
+        self, mip: int, sprites: render.SpriteLayer | None, memo: render.SpriteMemo | None,
+        bboxes: dict, grid: render.BystanderGrid, gen: int, heights: np.ndarray, extra_top: int,
+    ) -> None:
+        """Installs an assembled level: field assignment only, so a warm's
+        install step costs nothing. The warm's install predicate runs first.
+        heights and extra_top are the hooks' values captured at walk start."""
+        lvl = self._levels[mip]
+        lvl.sprites = sprites
+        lvl.memo = memo
+        lvl.unit_pack = None
+        # A fresh build already reflects every elevation.
+        lvl.pending_elev = set()
+        lvl.building_bboxes = bboxes
+        lvl.bystander_grid = grid
+        lvl.heights = heights
+        lvl.extra_top = extra_top
+        lvl.gen = gen
+
+    def _rebuild_walk(self, lvl: _IsoLevel):
+        """The sliced level rebuild both warm jobs run: the sprite walk (sprites
+        on), then _assemble_level(). Returns (sprites, memo, bboxes, grid)."""
+        sprites = memo = None
+        if self.with_units and self.sprites_enabled:
+            sprites, memo = yield from self._sprite_walk(lvl)
+        bboxes, grid = yield from self._assemble_level(lvl, sprites)
+        return sprites, memo, bboxes, grid
+
+    def _rebuild_install(
+        self, mip: int, built: tuple, start_gen: int, start_epoch: int, heights: np.ndarray, extra_top: int
+    ) -> bool:
+        """A warm job's install: the four-check predicate (see level_warm_job),
+        then _commit_level(). heights and extra_top were captured with start_gen."""
+        lvl = self._levels[mip]
+        if (
+            self._source_gen != start_gen
+            or self._splice_epoch != start_epoch
+            or lvl.gen == self._source_gen
+            or self._level_heights(lvl) is not heights
+        ):
+            return False
+        self._commit_level(mip, *built, start_gen, heights, extra_top)
+        return True
+
+    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
+        """Whether invalidate_units(changed) would take its splice path."""
+        return self._unit_splice_plan(changed) is not None
+
+    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
+        """Batch D's D4 splice: `changed` (a list of UnitSplice, one per
+        single-unit-tool-path edit) lets a Move/Nudge/Rotate/Set field/Place/
+        single Delete update units_by_tile and every ALREADY-BUILT level's
+        building_bboxes/sprites in place, instead of paying
+        _refresh_source_caches()'s full _units_by_tile() rebuild plus every
+        resident level's next-composite _building_bboxes_iso/
+        sprite_draws_by_anchor walk.
+
+        None (unknown -- every pre-D4 caller, plus set_unit_filter()/
+        set_sprites_enabled() via _refresh_unit_sources()) keeps today's
+        exact wholesale path via the base class. A `changed` that
+        _splice_plan() can't handle (see _batch_splice_eligible() and the two
+        component splices) falls back to that same wholesale path --
+        this method never partially applies a batch: if any entry in
+        `changed` isn't splice-safe, ALL of it is covered for free by one
+        _refresh_source_caches() call, since that derives fresh from live
+        scenario state regardless of which edits produced it. A batch on
+        shared tiles (a Convert: _reassign_component_splices(); a Draw stroke
+        end, its undo or a group Move: _membership_component_splices())
+        splices its whole component instead of `changed`: that list is built
+        before _units_version moves and before units_by_tile is touched,
+        since its search reads the pre-edit buckets. A wholesale fallback
+        says why on the Perf Trace line (_trace_splice_refusal()).
+
+        **Deliberately does NOT bump self._source_gen.** _level()'s
+        gen-gated laziness is the whole reason this splice is worth writing
+        (see this class's own docstring): bumping the gen would mark every
+        level -- including the one this method just spliced -- stale again,
+        forcing the exact per-level _building_bboxes_iso/
+        sprite_draws_by_anchor rebuild this method exists to avoid. Only
+        levels with `lvl.gen == self._source_gen` (already built and
+        current) are spliced; an already-stale level is left alone and
+        rebuilds fully fresh, correctly, the next time _level() reaches it.
+        Not bumping the gen is also why _splice_levels() bumps
+        _splice_epoch, which level_warm_job()'s install predicate checks:
+        without it a warm started before this splice would install a layer
+        describing the pre-edit units. The caller (_after_unit_mutation, D5)
+        still cancels warms first, which saves the wasted walk.
+
+        The whole batch goes through ONE _reanchor_units() call per level,
+        so a Convert of N units copies each SpriteLayer dict once, not N
+        times. overrides come from _splice_overrides() over the plan: a
+        reassigned wall, a moved one and the walls a moved connector reshapes
+        (_connector_neighbours()) all resolve with the real dict. An added or
+        removed wall/connector still goes wholesale (`const:add`/`const:remove`).
+
+        A refused batch, or any batch with splice_levels=False (the caller knows
+        a later elevation patch will bump the gen anyway, so a level splice would
+        be wasted), first tries _update_units_by_tile_in_place(): units_by_tile
+        does not depend on elevation, so a membership-only batch patches it in
+        place and bumps the gen, leaving every level stale exactly as the
+        wholesale path does. A zero-length `units_in_place` phase marks it."""
+        self._mutation_epoch += 1
+        plan = self._unit_splice_plan(changed) if splice_levels else None
+        if plan is None:
+            self._trace_splice_refusal(changed, skipped=not splice_levels)
+            if changed is not None and self._update_units_by_tile_in_place(changed):
+                with perf_trace.phase("units_in_place"):
+                    pass
+                self._source_gen += 1
+                return
+            self._refresh_source_caches()
+            return
+        changed = _removals_first(plan)
+        old_version = self._units_version
+        self._units_version += 1
+        for s in changed:
+            _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
+        self._splice_levels(changed, _splice_overrides(self.scenario, changed), old_version)
+
+    def level_warm_job(self, mip: int) -> LevelWarmJob | None:
+        """The resumable warm for one level -- see _ChunkCacheBase's own
+        docstring for the shape.
+
+        None when there is nothing expensive left to warm: with sprites (or
+        units) off, a level costs only _building_bboxes_iso, measured at
+        3.9ms against sprite_draws_by_anchor's 676ms, so ticking for it would
+        be pure overhead. None too when the level is already current, which
+        is the common case for the level the opening paint just built.
+
+        **The install predicate is four checks, and `lvl.gen ==
+        self._source_gen` is the one that isn't obvious.** The first two are
+        staleness (the source moved under a warm that started before it, so
+        the layer describes a scenario that no longer exists): a gen bump,
+        or a splice (_splice_epoch), which moves units or elevations without
+        one. The third is the opposite case: a real paint got there first
+        and built an equivalent level, and overwriting it would throw away a
+        layer already wired into the chunk cache to install a fresh copy of
+        the same thing. The fourth is staleness again: _level_heights() is no
+        longer the array captured at start. Sloped replaces corner_rise on
+        every elevation patch, even one whose splice is empty and moves
+        neither counter; on Stepped it never fires.
+
+        A current level with deferred elevation work gets a flush job instead,
+        sprites on or off (_flush_warm_walk), so no chunk warm or paint pays
+        the flush (2026-09-29 warm-tick plan)."""
+        lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            return self._flush_warm_job(mip)
+        if not (self.with_units and self.sprites_enabled):
+            return None
+        start_gen = self._source_gen
+        start_epoch = self._splice_epoch
+        if lvl.gen == start_gen:
+            return None
+        heights, extra_top = self._level_heights(lvl), self._level_extra_top(lvl)
+        # The walk and the assembly both step here; install only commits.
+        return LevelWarmJob(
+            gen=self._rebuild_walk(lvl),
+            install=lambda built: self._rebuild_install(mip, built, start_gen, start_epoch, heights, extra_top),
+        )
+
+    def _flush_warm_job(self, mip: int) -> LevelWarmJob:
+        """level_warm_job() for a current level with pending tiles: the walk's
+        payload is None when the flush left the level current, else
+        (rebuild, start_gen, start_epoch, heights, extra_top)."""
+
+        def install(payload) -> bool:
+            return payload is None or self._rebuild_install(mip, *payload)
+
+        return LevelWarmJob(gen=self._flush_warm_walk(mip), install=install, kind="flush")
+
+    def _flush_warm_walk(self, mip: int):
+        """_flush_pending() as one step, then, if an over-cap union marked the
+        level stale, level_warm_job()'s sliced rebuild. Re-checks on its first
+        step, since a paint may have flushed the level after start(). Safe
+        between ticks: every mutation cancels warms before it runs and re-arms
+        after invalidate_units(), so units_by_tile agrees with the scenario."""
+        lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            self._flush_pending(mip)
+        if lvl.gen == self._source_gen:
+            return None
+        # Captured after the flush: an under-cap one bumps _splice_epoch.
+        start_gen, start_epoch = self._source_gen, self._splice_epoch
+        heights, extra_top = self._level_heights(lvl), self._level_extra_top(lvl)
+        yield
+        built = yield from self._rebuild_walk(lvl)
+        return built, start_gen, start_epoch, heights, extra_top
+
+    def is_level_resident(self, mip: int) -> bool:
+        """Mirrors level_warm_job()'s own staleness check (`lvl.gen ==
+        self._source_gen`) rather than level_warm_job()'s None-or-not
+        answer: the two predicates ask different questions (this one is a
+        pure "is get_chunk() safe to call right now", level_warm_job() also
+        factors in "is there anything worth WARMING" -- with sprites off a
+        level can be resident yet still return a level_warm_job() of None,
+        since a cheap _building_bboxes_iso-only rebuild isn't worth
+        ticking for). tests/test_margin_warm.py pins the two together after
+        a completed warm so a future change to one can't silently diverge
+        from the other.
+
+        A current level with deferred elevation work is not resident either:
+        get_chunk() would flush it, and an over-cap flush rebuilds it
+        wholesale inside that call. level_warm_job() flushes it instead
+        (2026-09-29 warm-tick plan)."""
+        lvl = self._levels[mip]
+        return lvl.gen == self._source_gen and not lvl.pending_elev
+
+    def set_sprites_enabled(self, enabled: bool) -> None:
+        """Turns real .sld sprites on or off on a LIVE cache -- P3-g's toggle.
+
+        Shaped like set_unit_filter() above, guard included, plus one extra
+        step. The no-op guard matters for the same reason it does there:
+        evicting the whole canvas is the most expensive thing this class can
+        be asked to do.
+
+        _refresh_unit_sources() is what bumps _source_gen, and skipping it
+        would leave _level()'s `gen != self._source_gen` short-circuit
+        holding: the level would keep serving the pre-flip sprite layer, with
+        merge_sprite_bboxes' contribution still folded into
+        building_bboxes. That is the under-repaint class of bug, not cosmetic
+        staleness. invalidate_region() is the set_unit_filter() trap
+        unchanged -- units are baked into chunk PIXELS, so without it the
+        toggle appears to do nothing until the user scrolls somewhere
+        uncached.
+
+        The extra step is warming the resident levels eagerly (step 5). It
+        looks redundant next to the lazy rebuild _level() already does, and
+        it is not: turning sprites ON pays a 0.5-4.1s cold .sld decode
+        (P3-g4's measurement, the reason the default is off), and the caller
+        holds a wait cursor around THIS call. Left lazy, the cursor lifts
+        before the real work starts and the window instead freezes for those
+        seconds inside the next Qt paint, with a normal cursor and no
+        indication anything is happening -- the exact UX P3-g4 cited.
+
+        Step ordering is load-bearing: the resident set must be captured
+        before invalidate_region() empties the cache and takes it away, and
+        invalidate_region()'s bbox is read from canvas_dims() after the flip:
+        Sloped's canvas grows with sprites on at a low elev_step_pct stop, and
+        the old, smaller bbox would leave the new bottom strip never composited."""
+        if enabled == self.sprites_enabled:
+            return
+        self.sprites_enabled = enabled
+        resident = sorted({key[0] for key in self._cache}) or [0]
+        self._refresh_unit_sources()
+        for mip in resident:
+            self._level(mip)
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
+
+    def set_layers(self, layers: LayerState) -> None:
+        """The base method plus set_sprites_enabled()'s eager resident-level
+        warm, and only on a _BUILD_TIME_LAYER_FIELDS flip, which is the only
+        kind that rebuilds a sprite layer at all.
+
+        Same reason and same load-bearing step order as there: the caller
+        holds a wait cursor around this call, so leaving the rebuild to
+        _level()'s laziness would lift the cursor and then freeze the window
+        inside the next Qt paint instead; and the resident set has to be
+        captured BEFORE invalidate_region() empties the cache and takes it
+        away.
+
+        Cheaper than set_sprites_enabled() in practice, on both halves.
+        Small Trees does miss _scaled_cache for every tree (its key carries
+        the factor), but the .sld decode behind that sits in its own
+        _native_cache, keyed without the factor, so the flip pays a re-tint
+        and a re-resize rather than that method's cold decode. Flipping the
+        farm
+        layer re-walks the units but decodes no new .sld, so it does not pay
+        that method's 0.5-4.1s cold-decode case."""
+        if layers == self.layers:
+            return
+        if all(
+            getattr(layers, f) == getattr(self.layers, f) for f in _BUILD_TIME_LAYER_FIELDS
+        ):
+            super().set_layers(layers)
+            return
+        self.layers = layers
+        resident = sorted({key[0] for key in self._cache}) or [0]
+        self._refresh_unit_sources()
+        for mip in resident:
+            self._level(mip)
+        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
+
+    def _unit_level_state(self, mip: int):
+        """The level as installed, read straight off self._levels, never via
+        _level(): a stale level stays stale (see sprite_extent_before()). Both
+        height terms come from the hooks, live: a stale level's own extra_top
+        paired with the live corner_rise would under-cover after a refused,
+        headroom-raising undo, while the live one over-covers, which is safe."""
+        lvl = self._levels[mip]
+        return lvl.proj, lvl.sprites, lvl.building_bboxes, self._level_corner_rise(lvl), self._level_extra_top(lvl)
+
+    @property
+    def building_bboxes(self) -> dict:
+        """Level 0's building_bboxes, forcing a rebuild first if stale.
+        Debugging/introspection accessor only -- composite_rect_iso() is
+        always called with a specific level's own bboxes via _level(mip),
+        never through this property."""
+        return self._level(0).building_bboxes
+
+    def _current_pack(self, lvl: _IsoLevel) -> native_composite.UnitPack | None:
+        pack = lvl.unit_pack
+        if pack is not None and pack.matches(
+            self.units_by_tile, lvl.sprites, self._units_version, self._level_heights(lvl)
+        ):
+            return pack
+        return None
+
+    def _unit_pack_of(self, mip: int, create: bool):
+        lvl = self._levels[mip]
+        return self._native_units(lvl, mip) if create else self._current_pack(lvl)
+
+    def _native_units(self, lvl: _IsoLevel, mip: int):
+        """The level's unit pack for the native composite's N2 path (None on
+        numpy), rebuilt whenever it no longer describes the level's sources."""
+        if composite_backend.native is None:
+            return None
+        if not self.with_units:
+            return native_composite.NO_UNITS
+        pack = self._current_pack(lvl)
+        if pack is None:
+            mm = self.scenario.map_manager
+            with perf_trace.level("pack", mip):
+                pack = lvl.unit_pack = native_composite.UnitPack(
+                    self._sloped, mm.map_width, mm.map_height, lvl.proj, self.units_by_tile, lvl.sprites,
+                    self._units_version, self._level_heights(lvl),
+                )
+        return pack
+
+
+class IsoChunkCache(_LeveledChunkCache):
     """Qt-free LRU cache of composited Stepped-mode canvas chunks, keyed by
     (mip, chunk_x, chunk_y) -- Phase B-B of Track B.
     chunk_x/chunk_y are chunk-GRID indices: canvas pixel
@@ -2006,9 +2680,9 @@ class IsoChunkCache(_ChunkCacheBase):
         # fails loudly if the two ever disagreed. Must happen before
         # _init_max_chunks(), which reads canvas_dims() -> self._levels[0].proj.
         mm = scenario.map_manager
-        projs = iso_geometry.mip_projections_for(mm.map_width, mm.map_height, proj, settings.get_elev_step_pct())
-        self._levels: dict[int, _IsoLevel] = {level: _IsoLevel(tile_px=p.tile_px, proj=p) for level, p in projs.items()}
-        self._init_mip_levels({level: lvl.tile_px for level, lvl in self._levels.items()})
+        self._init_levels(
+            iso_geometry.mip_projections_for(mm.map_width, mm.map_height, proj, settings.get_elev_step_pct())
+        )
         # canvas_dims()'s own exactness assert: is_exact_mip() proves every
         # IsoProjection field scales exactly, but canvas_dims() adds the
         # skirt-headroom term (_canvas_pixel_dims) on top of proj.canvas_h --
@@ -2022,13 +2696,6 @@ class IsoChunkCache(_ChunkCacheBase):
                 f"level tile_px={lvl.tile_px}'s canvas_dims (skirt headroom included) isn't an "
                 f"exact mip of the reference's -- {(lw, lh)} vs reference {(ref_w, ref_h)}"
             )
-        self._source_gen = 0
-        # Bumped by every splice that leaves _source_gen alone, so a warm
-        # started before one can tell its half-walked layer is stale.
-        self._splice_epoch = 0
-        # Bumped whenever units_by_tile is mutated in place, which a unit
-        # pack's identity check can't see.
-        self._units_version = 0
         self._init_terrain_ids()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
@@ -2056,471 +2723,38 @@ class IsoChunkCache(_ChunkCacheBase):
         A patch() caller instead passes the elevation-changed subset of its
         own edit (empty for a terrain-paint-only edit). units_by_tile is
         NEVER rebuilt then (3a): no terrain or elevation edit can move a
-        unit, so this dict cannot go stale from a patch().
-
-        The unit layers are re-anchored in place rather than rebuilt (the
-        2026-09-24 anchor-local splice). The wholesale level rebuild cost
-        21-91ms per stroke step with sprites on, not the ~15-20ms the gen
-        gate was accepted on. Stepped reads a unit's OWN tile only
-        (_resolve_unit_sprite's elevations[uy, ux], _unit_iso_footprint's own
-        floored tile), so the affected units are exactly those whose own
-        tile is in elevation_changed -- radius 0, unlike Sloped's 1 -- plus
-        any unit sharing a tile with one, which re-derives unchanged
-        (_elevation_splices()' component). Each
-        already-current level gets one _reanchor_units() call with the real
-        wall overrides (an elevation edit leaves them valid) and a patched
-        bystander_grid. A stale level is left stale and rebuilds fully in
-        _level(). No gen bump, so _splice_epoch is bumped instead for
-        level_warm_job()'s install predicate. A component past
-        _ELEV_SPLICE_MAX_UNITS bumps the gen, the wholesale fallback.
-
-        splice_levels (patch()'s rebuild_levels, 2026-09-28 stepped-defer
-        plan): a current level outside it adds elevation_changed to its
-        pending_elev instead of splicing, flushed on its next _level()."""
+        unit, so this dict cannot go stale from a patch(). The unit layers are
+        re-anchored in place by _refresh_level_units(), seeded by
+        elevation_changed itself: Stepped reads a unit's OWN tile only, radius
+        0, unlike Sloped's corner-changed ring."""
         if elevation_changed is None:
-            self.units_by_tile = render._units_by_tile(self.scenario, self.unit_filter) if self.with_units else {}
-            self._source_gen += 1
+            self._refresh_all_units()
             return
         if not self.with_units or not elevation_changed:
             return
-        splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, elevation_changed)
-        if splices is None:
-            self._trace_elevation_refusal(elevation_changed, _ELEV_SPLICE_MAX_UNITS)
-            self._source_gen += 1
-            return
-        if not splices:
-            return
-        overrides = render.wall_variant_rotation_overrides(self.scenario)
-        self._splice_levels(splices, overrides, self._units_version, splice_levels, elevation_changed)
+        self._refresh_level_units(elevation_changed, splice_levels)
 
-    def _splice_levels(
-        self, splices: list[UnitSplice], overrides: dict, old_version: int, levels=None, pending=None
-    ) -> None:
-        """_splice_level() on every already-current level. Shared by the
-        elevation patch and invalidate_units(); bumps _splice_epoch since
-        neither moves _source_gen. old_version is _units_version before the
-        caller's own units_by_tile splice.
+    def refresh_wholesale(self, dirty_indices, flatten: bool = False) -> bool | None:
+        """The in-place counterpart of a full re-render, for an edit past
+        STEPPED_FULL_RERENDER_THRESHOLD (TASK-031.61 A5): this cache, its
+        elevations array and every level's SpriteMemo survive, so the next
+        level build re-resolves only the units whose elevation key moved.
 
-        levels (elevation patch only): a current level outside it unions
-        `pending`, the edit's elevation-changed tiles, into its pending_elev
-        instead. Re-anchor is delete-then-recompute from live state, so one
-        flush over a stroke's union equals splicing each step in turn."""
-        for mip, lvl in self._levels.items():
-            if lvl.gen != self._source_gen:
-                continue
-            if levels is not None and mip not in levels:
-                lvl.pending_elev |= pending
-                continue
-            self._splice_level(lvl, splices, overrides, old_version)
-        self._splice_epoch += 1
-
-    def _splice_level(self, lvl: _IsoLevel, splices: list[UnitSplice], overrides: dict, old_version: int) -> None:
-        """_reanchor_units() on one current level, then its grid (patched over
-        the keys the splice rewrote, not rebuilt) and unit pack. Reads the
-        level directly: this runs inside _flush_pending()."""
-        old_sprites = lvl.sprites
-        old_bboxes: dict = {}
-        lvl.sprites = _reanchor_units(
-            lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
-            self.unit_filter, None, 0, splices, overrides, *self._layer_resolve_args(),
-            old_bboxes=old_bboxes,
-        )
-        lvl.bystander_grid = (
-            render.build_bystander_grid(lvl.building_bboxes, self.chunk_px)
-            if lvl.bystander_grid is None
-            else render.patch_bystander_grid(lvl.bystander_grid, old_bboxes, lvl.building_bboxes)
-        )
-        lvl.unit_pack = _refreshed_pack(
-            lvl.unit_pack, splices, self.units_by_tile, old_sprites, old_version, self.elevations,
-            lvl.sprites, self._units_version, self.elevations,
-        )
-
-    def _defers_patch(self, mip: int) -> bool:
-        # A stale level's pending set is moot: its rebuild clears it.
-        lvl = self._levels[mip]
-        return lvl.gen == self._source_gen and bool(lvl.pending_elev)
-
-    def _flush_pending(self, mip: int) -> None:
-        """Applies a current level's deferred elevation re-anchors: one
-        _elevation_splices() over the union, then _splice_level(). A union
-        past _ELEV_SPLICE_MAX_UNITS marks the level stale instead, so
-        _level() rebuilds it wholesale.
-
-        Only valid while units_by_tile agrees with the scenario, which is why
-        _level() is the one caller: between a unit edit and its
-        invalidate_units() the unit has moved but its buckets have not, and
-        a flush there would re-add it at its new tile on top of the old one.
-        invalidate_units() needs no flush of its own: its splice reaches
-        pending levels too (they are current), and the later flush then
-        reads consistent state."""
-        lvl = self._levels[mip]
-        with perf_trace.level("flush", mip) as ev:
-            # Cleared first so nothing reached from the splice below can re-enter.
-            tiles, lvl.pending_elev = lvl.pending_elev, set()
-            if ev is not None:
-                ev.tiles = len(tiles)
-            splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, tiles)
-            if splices is None:
-                if ev is not None:
-                    ev.kind = "flush>rebuild"
-                lvl.gen = -1
-                return
-            if not splices:
-                return
-            overrides = render.wall_variant_rotation_overrides(self.scenario)
-            self._splice_level(lvl, splices, overrides, self._units_version)
-            self._splice_epoch += 1
-
-    def _level(self, mip: int) -> _IsoLevel:
-        """The mip level's own state, rebuilding its building_bboxes if
-        stale (gen != self._source_gen). Called only from _composite_rect,
-        so a level is never rebuilt just because it's resident -- only
-        when actually composited. Combined with patch()'s "iterate resident
-        levels only" (_ChunkCacheBase.patch), an edit at a fixed zoom (one
-        level resident) pays exactly one _building_bboxes_iso rebuild,
-        identical to pre-mip behavior; immediately after a mip switch (two
-        levels resident), the first edit pays two -- units_by_tile itself
-        is still built once per edit regardless of level count, so the
-        real cost is bounded by resident level count, not enumerated level
-        count. A current level with deferred elevation work is flushed first
-        (_flush_pending), which may itself mark it stale."""
-        lvl = self._levels[mip]
-        if lvl.gen == self._source_gen and lvl.pending_elev:
-            self._flush_pending(mip)
-        if lvl.gen != self._source_gen:
-            with perf_trace.level("build", mip) as ev:
-                # P3-g3: resolving and decoding sprites is far too expensive to do
-                # per chunk, so it rides this same per-level lazy rebuild.
-                sprites = memo = None
-                if self.with_units and self.sprites_enabled:
-                    sprites, memo = render._drain(self._sprite_walk(lvl))
-                if ev is not None:
-                    ev.mark("walk")
-                bboxes, grid = render._drain(self._assemble_level(lvl, sprites))
-                self._commit_level(mip, sprites, memo, bboxes, grid, self._source_gen)
-                if ev is not None:
-                    ev.mark("install")
-        return lvl
-
-    def _sprite_walk(self, lvl: _IsoLevel):
-        """The level's memo-backed sprite walk, shared by _level() and
-        level_warm_job() so the two can't pass different arguments."""
-        return render.sprite_draws_by_anchor_sliced(
-            self.scenario, lvl.proj, self.elevations, self.unit_filter,
-            with_farms=self.layers.farm_overlay,
-            tree_scale=self.layers.tree_scale,
-            hero_glow=self.layers.hero_glow,
-            memo=lvl.memo or render.SpriteMemo(),
-        )
-
-    def _assemble_level(self, lvl: _IsoLevel, sprites: render.SpriteLayer | None):
-        """A level's building_bboxes and bystander grid from an already-built
-        sprite layer, as a resumable generator (at most render.ASSEMBLY_SLICE
-        units or keys per step) returning (bboxes, grid). Installs nothing:
-        _commit_level() does that.
-
-        One assembly for both paths: _level() drains it, the warm jobs step it
-        across ticks (2026-09-29 warm-tick plan). Two assemblies would be the
-        divergence class Flat's row-count assert exists to catch, and Stepped
-        has no equivalent tripwire.
-
-        merge_sprite_bboxes is what makes composite_rect_iso pull a sprite's
-        anchor tile in as a bystander -- without it a sprite clips at its
-        owning chunk's edge. The grid is built from the MERGED dict."""
-        mm = self.scenario.map_manager
-        # Its own step: the walk's last one ends here, not inside the first slice.
-        yield
-        bboxes = {}
-        if self.with_units:
-            bboxes = yield from render._building_bboxes_iso_sliced(
-                self.scenario, mm.map_width, mm.map_height, lvl.proj, self.elevations, unit_filter=self.unit_filter
-            )
-        if sprites is not None:
-            bboxes = yield from render.merge_sprite_bboxes_sliced(bboxes, sprites)
-        grid = yield from render.build_bystander_grid_sliced(bboxes, self.chunk_px)
-        return bboxes, grid
-
-    def _commit_level(
-        self, mip: int, sprites: render.SpriteLayer | None, memo: render.SpriteMemo | None,
-        bboxes: dict, grid: render.BystanderGrid, gen: int,
-    ) -> None:
-        """Installs an assembled level: field assignment only, so a warm's
-        install step costs nothing. The warm's install predicate runs first."""
-        lvl = self._levels[mip]
-        lvl.sprites = sprites
-        lvl.memo = memo
-        lvl.unit_pack = None
-        # A fresh build already reflects every elevation.
-        lvl.pending_elev = set()
-        lvl.building_bboxes = bboxes
-        lvl.bystander_grid = grid
-        lvl.gen = gen
-
-    def _rebuild_walk(self, lvl: _IsoLevel):
-        """The sliced level rebuild both warm jobs run: the sprite walk (sprites
-        on), then _assemble_level(). Returns (sprites, memo, bboxes, grid)."""
-        sprites = memo = None
-        if self.with_units and self.sprites_enabled:
-            sprites, memo = yield from self._sprite_walk(lvl)
-        bboxes, grid = yield from self._assemble_level(lvl, sprites)
-        return sprites, memo, bboxes, grid
-
-    def _rebuild_install(self, mip: int, built: tuple, start_gen: int, start_epoch: int) -> bool:
-        """A warm job's install: the three-check predicate (see level_warm_job),
-        then _commit_level()."""
-        if (
-            self._source_gen != start_gen
-            or self._splice_epoch != start_epoch
-            or self._levels[mip].gen == self._source_gen
-        ):
-            return False
-        self._commit_level(mip, *built, start_gen)
-        return True
-
-    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
-        """Whether invalidate_units(changed) would take its splice path."""
-        return self._unit_splice_plan(changed) is not None
-
-    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
-        """Batch D's D4 splice: `changed` (a list of UnitSplice, one per
-        single-unit-tool-path edit) lets a Move/Nudge/Rotate/Set field/Place/
-        single Delete update units_by_tile and every ALREADY-BUILT level's
-        building_bboxes/sprites in place, instead of paying
-        _refresh_source_caches()'s full _units_by_tile() rebuild plus every
-        resident level's next-composite _building_bboxes_iso/
-        sprite_draws_by_anchor walk.
-
-        None (unknown -- every pre-D4 caller, plus set_unit_filter()/
-        set_sprites_enabled() via _refresh_unit_sources()) keeps today's
-        exact wholesale path via the base class. A `changed` that
-        _splice_plan() can't handle (see _batch_splice_eligible() and the two
-        component splices) falls back to that same wholesale path --
-        this method never partially applies a batch: if any entry in
-        `changed` isn't splice-safe, ALL of it is covered for free by one
-        _refresh_source_caches() call, since that derives fresh from live
-        scenario state regardless of which edits produced it. A batch on
-        shared tiles (a Convert: _reassign_component_splices(); a Draw stroke
-        end, its undo or a group Move: _membership_component_splices())
-        splices its whole component instead of `changed`: that list is built
-        before _units_version moves and before units_by_tile is touched,
-        since its search reads the pre-edit buckets. A wholesale fallback
-        says why on the Perf Trace line (_trace_splice_refusal()).
-
-        **Deliberately does NOT bump self._source_gen.** _level()'s
-        gen-gated laziness is the whole reason this splice is worth writing
-        (see this class's own docstring): bumping the gen would mark every
-        level -- including the one this method just spliced -- stale again,
-        forcing the exact per-level _building_bboxes_iso/
-        sprite_draws_by_anchor rebuild this method exists to avoid. Only
-        levels with `lvl.gen == self._source_gen` (already built and
-        current) are spliced; an already-stale level is left alone and
-        rebuilds fully fresh, correctly, the next time _level() reaches it.
-        Not bumping the gen is also why _splice_levels() bumps
-        _splice_epoch, which level_warm_job()'s install predicate checks:
-        without it a warm started before this splice would install a layer
-        describing the pre-edit units. The caller (_after_unit_mutation, D5)
-        still cancels warms first, which saves the wasted walk.
-
-        The whole batch goes through ONE _reanchor_units() call per level,
-        so a Convert of N units copies each SpriteLayer dict once, not N
-        times. overrides come from _splice_overrides() over the plan: a
-        reassigned wall, a moved one and the walls a moved connector reshapes
-        (_connector_neighbours()) all resolve with the real dict. An added or
-        removed wall/connector still goes wholesale (`const:add`/`const:remove`).
-
-        A refused batch, or any batch with splice_levels=False (the caller knows
-        a later elevation patch will bump the gen anyway, so a level splice would
-        be wasted), first tries _update_units_by_tile_in_place(): units_by_tile
-        does not depend on elevation, so a membership-only batch patches it in
-        place and bumps the gen, leaving every level stale exactly as the
-        wholesale path does. A zero-length `units_in_place` phase marks it."""
+        Writes the dirty tiles' elevations into self.elevations in place
+        (_write_dirty_elevations(); None, touching nothing, when one is out of
+        range), bumps the gen directly when any moved (not through
+        _refresh_source_caches(), whose elevation splice would seed and walk a
+        component over every tile), then re-reads the terrain ids and evicts
+        the whole canvas at every level. units_by_tile stays: no elevation or
+        terrain edit moves a unit. Returns whether an elevation moved."""
+        moved = _write_dirty_elevations(self.scenario, self.elevations, self.proj, dirty_indices, flatten)
+        if moved is None:
+            return None
         self._mutation_epoch += 1
-        plan = self._unit_splice_plan(changed) if splice_levels else None
-        if plan is None:
-            self._trace_splice_refusal(changed, skipped=not splice_levels)
-            if changed is not None and self._update_units_by_tile_in_place(changed):
-                with perf_trace.phase("units_in_place"):
-                    pass
-                self._source_gen += 1
-                return
-            self._refresh_source_caches()
-            return
-        changed = _removals_first(plan)
-        old_version = self._units_version
-        self._units_version += 1
-        for s in changed:
-            _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
-        self._splice_levels(changed, _splice_overrides(self.scenario, changed), old_version)
-
-    def level_warm_job(self, mip: int) -> LevelWarmJob | None:
-        """Stepped's resumable warm for one level -- see _ChunkCacheBase's
-        own docstring for the shape.
-
-        None when there is nothing expensive left to warm: with sprites (or
-        units) off, a level costs only _building_bboxes_iso, measured at
-        3.9ms against sprite_draws_by_anchor's 676ms, so ticking for it would
-        be pure overhead. None too when the level is already current, which
-        is the common case for the level the opening paint just built.
-
-        **The install predicate is three checks, and `lvl.gen ==
-        self._source_gen` is the one that isn't obvious.** The first two are
-        staleness (the source moved under a warm that started before it, so
-        the layer describes a scenario that no longer exists): a gen bump,
-        or a splice (_splice_epoch), which moves units or elevations without
-        one. The third is the opposite case: a real paint got there first
-        and built an equivalent level, and overwriting it would throw away a
-        layer already wired into the chunk cache to install a fresh copy of
-        the same thing.
-
-        A current level with deferred elevation work gets a flush job instead,
-        sprites on or off (_flush_warm_walk), so no chunk warm or paint pays
-        the flush (2026-09-29 warm-tick plan)."""
-        lvl = self._levels[mip]
-        if lvl.gen == self._source_gen and lvl.pending_elev:
-            return self._flush_warm_job(mip)
-        if not (self.with_units and self.sprites_enabled):
-            return None
-        start_gen = self._source_gen
-        start_epoch = self._splice_epoch
-        if lvl.gen == start_gen:
-            return None
-        # The walk and the assembly both step here; install only commits.
-        return LevelWarmJob(
-            gen=self._rebuild_walk(lvl),
-            install=lambda built: self._rebuild_install(mip, built, start_gen, start_epoch),
-        )
-
-    def _flush_warm_job(self, mip: int) -> LevelWarmJob:
-        """level_warm_job() for a current level with pending tiles: the walk's
-        payload is None when the flush left the level current, else
-        (rebuild, start_gen, start_epoch)."""
-
-        def install(payload) -> bool:
-            return payload is None or self._rebuild_install(mip, *payload)
-
-        return LevelWarmJob(gen=self._flush_warm_walk(mip), install=install, kind="flush")
-
-    def _flush_warm_walk(self, mip: int):
-        """_flush_pending() as one step, then, if an over-cap union marked the
-        level stale, level_warm_job()'s sliced rebuild. Re-checks on its first
-        step, since a paint may have flushed the level after start(). Safe
-        between ticks: every mutation cancels warms before it runs and re-arms
-        after invalidate_units(), so units_by_tile agrees with the scenario."""
-        lvl = self._levels[mip]
-        if lvl.gen == self._source_gen and lvl.pending_elev:
-            self._flush_pending(mip)
-        if lvl.gen == self._source_gen:
-            return None
-        # Captured after the flush: an under-cap one bumps _splice_epoch.
-        start_gen, start_epoch = self._source_gen, self._splice_epoch
-        yield
-        built = yield from self._rebuild_walk(lvl)
-        return built, start_gen, start_epoch
-
-    def is_level_resident(self, mip: int) -> bool:
-        """Mirrors level_warm_job()'s own staleness check (`lvl.gen ==
-        self._source_gen`) rather than level_warm_job()'s None-or-not
-        answer: the two predicates ask different questions (this one is a
-        pure "is get_chunk() safe to call right now", level_warm_job() also
-        factors in "is there anything worth WARMING" -- with sprites off a
-        level can be resident yet still return a level_warm_job() of None,
-        since a cheap _building_bboxes_iso-only rebuild isn't worth
-        ticking for). tests/test_margin_warm.py pins the two together after
-        a completed warm so a future change to one can't silently diverge
-        from the other.
-
-        A current level with deferred elevation work is not resident either:
-        get_chunk() would flush it, and an over-cap flush rebuilds it
-        wholesale inside that call. level_warm_job() flushes it instead
-        (2026-09-29 warm-tick plan)."""
-        lvl = self._levels[mip]
-        return lvl.gen == self._source_gen and not lvl.pending_elev
-
-    def set_sprites_enabled(self, enabled: bool) -> None:
-        """Turns real .sld sprites on or off on a LIVE cache -- P3-g's toggle.
-
-        Shaped like set_unit_filter() above, guard included, plus one extra
-        step. The no-op guard matters for the same reason it does there:
-        evicting the whole canvas is the most expensive thing this class can
-        be asked to do.
-
-        _refresh_unit_sources() is what bumps _source_gen, and skipping it
-        would leave _level()'s `gen != self._source_gen` short-circuit
-        holding: the level would keep serving the pre-flip sprite layer, with
-        merge_sprite_bboxes' contribution still folded into
-        building_bboxes. That is the under-repaint class of bug, not cosmetic
-        staleness. invalidate_region() is the set_unit_filter() trap
-        unchanged -- units are baked into chunk PIXELS, so without it the
-        toggle appears to do nothing until the user scrolls somewhere
-        uncached.
-
-        The extra step is warming the resident levels eagerly (step 5). It
-        looks redundant next to the lazy rebuild _level() already does, and
-        it is not: turning sprites ON pays a 0.5-4.1s cold .sld decode
-        (P3-g4's measurement, the reason the default is off), and the caller
-        holds a wait cursor around THIS call. Left lazy, the cursor lifts
-        before the real work starts and the window instead freezes for those
-        seconds inside the next Qt paint, with a normal cursor and no
-        indication anything is happening -- the exact UX P3-g4 cited.
-
-        Step ordering is load-bearing: the resident set must be captured
-        before invalidate_region() empties the cache and takes it away."""
-        if enabled == self.sprites_enabled:
-            return
-        self.sprites_enabled = enabled
-        resident = sorted({key[0] for key in self._cache}) or [0]
-        self._refresh_unit_sources()
-        for mip in resident:
-            self._level(mip)
-        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
-
-    def set_layers(self, layers: LayerState) -> None:
-        """The base method plus set_sprites_enabled()'s eager resident-level
-        warm, and only on a _BUILD_TIME_LAYER_FIELDS flip, which is the only
-        kind that rebuilds a sprite layer at all.
-
-        Same reason and same load-bearing step order as there: the caller
-        holds a wait cursor around this call, so leaving the rebuild to
-        _level()'s laziness would lift the cursor and then freeze the window
-        inside the next Qt paint instead; and the resident set has to be
-        captured BEFORE invalidate_region() empties the cache and takes it
-        away.
-
-        Cheaper than set_sprites_enabled() in practice, on both halves.
-        Small Trees does miss _scaled_cache for every tree (its key carries
-        the factor), but the .sld decode behind that sits in its own
-        _native_cache, keyed without the factor, so the flip pays a re-tint
-        and a re-resize rather than that method's cold decode. Flipping the
-        farm
-        layer re-walks the units but decodes no new .sld, so it does not pay
-        that method's 0.5-4.1s cold-decode case."""
-        if layers == self.layers:
-            return
-        if all(
-            getattr(layers, f) == getattr(self.layers, f) for f in _BUILD_TIME_LAYER_FIELDS
-        ):
-            super().set_layers(layers)
-            return
-        self.layers = layers
-        resident = sorted({key[0] for key in self._cache}) or [0]
-        self._refresh_unit_sources()
-        for mip in resident:
-            self._level(mip)
-        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)
-
-    def _unit_level_state(self, mip: int):
-        """The level as installed, read straight off self._levels, never via
-        _level(): a stale level stays stale (see sprite_extent_before())."""
-        lvl = self._levels[mip]
-        return lvl.proj, lvl.sprites, lvl.building_bboxes, None, 0
-
-    @property
-    def building_bboxes(self) -> dict:
-        """Level 0's building_bboxes, forcing a rebuild first if stale.
-        Debugging/introspection accessor only -- composite_rect_iso() is
-        always called with a specific level's own bboxes via _level(mip),
-        never through this property."""
-        return self._level(0).building_bboxes
+        if moved:
+            self._source_gen += 1
+        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        return moved
 
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
         """(width, height) in LEVEL `mip` canvas pixels, including skirt
@@ -2528,33 +2762,6 @@ class IsoChunkCache(_ChunkCacheBase):
         DIRECTLY (never through _level()), so sizing the cache can never
         trigger a building_bboxes build."""
         return render._canvas_pixel_dims(self._levels[mip].proj)
-
-    def _current_pack(self, lvl: _IsoLevel) -> native_composite.UnitPack | None:
-        pack = lvl.unit_pack
-        if pack is not None and pack.matches(self.units_by_tile, lvl.sprites, self._units_version, self.elevations):
-            return pack
-        return None
-
-    def _unit_pack_of(self, mip: int, create: bool):
-        lvl = self._levels[mip]
-        return self._native_units(lvl, mip) if create else self._current_pack(lvl)
-
-    def _native_units(self, lvl: _IsoLevel, mip: int):
-        """The level's unit pack for composite_rect_iso's N2 path (None on
-        numpy), rebuilt whenever it no longer describes the level's sources."""
-        if composite_backend.native is None:
-            return None
-        if not self.with_units:
-            return native_composite.NO_UNITS
-        pack = self._current_pack(lvl)
-        if pack is None:
-            mm = self.scenario.map_manager
-            with perf_trace.level("pack", mip):
-                pack = lvl.unit_pack = native_composite.UnitPack(
-                    False, mm.map_width, mm.map_height, lvl.proj, self.units_by_tile, lvl.sprites,
-                    self._units_version, self.elevations,
-                )
-        return pack
 
     def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
         lvl = self._level(mip)
@@ -2579,6 +2786,7 @@ class IsoChunkCache(_ChunkCacheBase):
                 grid=self.grid,
                 unit_pack=unit_pack,
                 terrain_ids=self._terrain_ids,
+                layer_ids=self._layer_ids,
             )
 
     def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
@@ -2586,7 +2794,7 @@ class IsoChunkCache(_ChunkCacheBase):
         return render.prepare_rect_native(
             False, self.scenario, x0, y0, x1, y1, self.elevations, lvl.proj, lvl.tile_px, lvl.building_bboxes,
             self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
-            terrain_ids=self._terrain_ids,
+            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids,
         )
 
 
@@ -2683,6 +2891,7 @@ class FlatChunkCache(_ChunkCacheBase):
         self._unit_gen = 0
         # _refresh_source_caches() also sets self._row_uid/_row_player, one
         # entry per row of every level's draws (identical across levels).
+        self._init_terrain_ids()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -3060,6 +3269,8 @@ class FlatChunkCache(_ChunkCacheBase):
                 icons=icons,
                 layers=self.layers,
                 grid=self.grid,
+                terrain_ids=self._terrain_ids,
+                layer_ids=self._layer_ids,
             )
 
 
@@ -3107,7 +3318,7 @@ planes, lands above the fraction, and keeps exactly today's drop behaviour
 rather than paying ~3x eagerly for planes that may never be read."""
 
 
-class SlopedChunkCache(_ChunkCacheBase):
+class SlopedChunkCache(_LeveledChunkCache):
     """Qt-free LRU cache of composited Sloped-mode canvas chunks -- Phase 6's
     Track C3 counterpart to IsoChunkCache/
     FlatChunkCache. Same grid/LRU mechanics (_ChunkCacheBase), composited
@@ -3118,23 +3329,34 @@ class SlopedChunkCache(_ChunkCacheBase):
     test_flat_chunks.py hold their own compositors to (see tests/
     test_sloped_chunks.py for this class's own version of those checks).
 
-    Single mip level (_init_mip_levels({0: tile_px})) -- deliberately, not
-    an oversight: this is the same "level set is still {0}" intermediate
-    state IsoChunkCache/FlatChunkCache themselves were in before Track
-    B-D's real per-level ladder landed (see _ChunkCacheBase._init_mip_
-    levels' own docstring), and it lands during that same track's active
-    development. A genuine Sloped mip ladder is a legitimate follow-up --
-    this class's bilinear warp would need its own per-level corner_rise_px
-    array, mirroring IsoChunkCache's per-level building_bboxes -- kept out
-    of Track C's own approved scope rather than built inline here.
+    On the shared lazy per-level machinery (_LeveledChunkCache, TASK-031.59):
+    each level's unit layers build in _level() on the first composite after
+    a gen bump and are spliced in place by elevation and unit edits while
+    current, as Stepped's are. The hooks below are where Sloped differs: a
+    level's corner_rise feeds its sprite walk, re-anchor, unit pack and
+    compositor, and its headroom widens every building bbox at that level.
+
+    The mip ladder (TASK-031.60) is Stepped's mip_projections_for() set
+    filtered to the coarser levels (k <= 0), so zoomed in Sloped renders at
+    level 0 exactly as before. Each level's corner_rise and headroom are
+    recomputed at its own proj (_level_rise()), never scaled from level 0, so
+    a level depends on elevations and its own proj only, never on level 0's
+    array, at the same cost as scaling. (At exact power-of-two levels a
+    recomputed corner_rise equals level 0's scaled down under every rule, so
+    only a spy tells them apart.) Level 0 shares
+    self.corner_rise and _target_headroom, which stay eager and scene-space
+    (pick planes, overlays, unit_pick); reading them never builds a level.
 
     proj must carry corner_headroom_steps=1 (see sloped_elevations_and_
     proj()) -- built by the caller and passed in, matching IsoChunkCache's
     own convention of taking proj as a constructor parameter rather than
-    building it itself."""
+    building it itself. The ladder derives the steps from proj itself, so a
+    headroom-0 proj gets a headroom-0 ladder."""
 
     style = "sloped"
     _has_unit_pack = True
+    _sloped = True
+    _level_type = _SlopedLevel
 
     def __init__(
         self,
@@ -3166,31 +3388,88 @@ class SlopedChunkCache(_ChunkCacheBase):
         # this to decide whether to build a sprite layer at all -- same
         # ordering trap IsoChunkCache.__init__ documents for itself.
         self.sprites_enabled = sprites
-        # Same ordering constraint: _refresh_source_caches() reads the
-        # build-time layer fields (_BUILD_TIME_LAYER_FIELDS) when it builds
-        # the sprite layer.
+        # Same ordering constraint: _level() reads the build-time layer
+        # fields (_BUILD_TIME_LAYER_FIELDS) when it builds the sprite layer.
         self.layers = layers
         self._pick_planes: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
-        # IsoChunkCache's per-level memo, for this cache's one level.
-        self._sprite_memo: render.SpriteMemo | None = None
-        # IsoChunkCache's per-level unit pack and units_by_tile version.
-        self._unit_pack: native_composite.UnitPack | None = None
-        self._units_version = 0
-        self._init_mip_levels({0: tile_px})
-        # Set here, not left to _init_max_chunks below: _set_building_bboxes()
-        # reads it and _refresh_source_caches() runs first.
-        self.chunk_px = chunk_px
+        assert proj.tile_px == tile_px, f"proj.tile_px {proj.tile_px} != tile_px {tile_px}"
+        mm = scenario.map_manager
+        projs = iso_geometry.mip_projections_for(
+            mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
+            corner_headroom_steps=proj.corner_headroom_px // proj.elev_step,
+        )
+        self._init_levels({level: p for level, p in projs.items() if level <= 0})
+        # Both canvas_dims() answers (sprites off and on) must scale exactly, as IsoChunkCache asserts.
+        for lvl in self._levels.values():
+            for dims in (lambda p: (p.canvas_w, p.canvas_h), render._canvas_pixel_dims):
+                (rw, rh), (lw, lh) = dims(proj), dims(lvl.proj)
+                assert lw * proj.tile_px == rw * lvl.tile_px and lh * proj.tile_px == rh * lvl.tile_px, (
+                    f"level tile_px={lvl.tile_px}'s canvas {(lw, lh)} isn't an exact mip of {(rw, rh)}"
+                )
         self._init_terrain_ids()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
+    def _level_rise(self, lvl: _SlopedLevel) -> _SlopedLevel:
+        """lvl with its corner_rise and headroom current: level 0's are
+        self.corner_rise and _target_headroom; another level's are recomputed
+        at its own proj, once per rebinding of self.corner_rise. Lazy, so an
+        edit pays only for the levels it splices or composites: a deferred
+        level's sync check (_level_synced()) never computes it."""
+        if lvl.rise_source is not self.corner_rise:
+            if lvl is self._levels[0]:
+                lvl.corner_rise, lvl.headroom = self.corner_rise, self._target_headroom
+            else:
+                # Rebound, never written in place: prepare_sloped holds the array without copying it.
+                rise = iso_geometry.corner_rise_px(self.elevations, lvl.proj, rule=render.SLOPE_CORNER_RULE)
+                lvl.corner_rise, lvl.headroom = rise, render._unit_rise_headroom_px(rise, self.elevations, lvl.proj)
+            lvl.rise_source = self.corner_rise
+        return lvl
+
+    def _level_synced(self, lvl: _IsoLevel) -> bool:
+        # A stale rise_source means _level_rise() would rebind the heights: unsynced, so skip computing them.
+        return lvl.rise_source is self.corner_rise and super()._level_synced(lvl)
+
+    def _level_corner_rise(self, lvl: _IsoLevel) -> np.ndarray | None:
+        return self._level_rise(lvl).corner_rise
+
+    def _level_heights(self, lvl: _IsoLevel) -> np.ndarray:
+        return self._level_rise(lvl).corner_rise
+
+    def _level_extra_top(self, lvl: _IsoLevel) -> int:
+        return self._level_rise(lvl).headroom
+
+    def _refresh_corner_rise(self) -> None:
+        """corner_rise rebuilt from self.elevations (a new array, never
+        written in place) and the headroom recomputed against it. The
+        rebinding is what makes every other level re-derive its own in _level_rise()."""
+        self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
+        self._target_headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
+
+    # Level 0's layers, each read through _level(0) so it forces the lazy build first.
+    @property
+    def sprites(self) -> render.SpriteLayer | None:
+        return self._level(0).sprites
+
+    @property
+    def bystander_grid(self) -> render.BystanderGrid | None:
+        return self._level(0).bystander_grid
+
+    @property
+    def _headroom(self) -> int:
+        return self._level(0).extra_top
+
+    @property
+    def _unit_pack(self) -> native_composite.UnitPack | None:
+        return self._level(0).unit_pack
+
+    @property
+    def _sprite_memo(self) -> render.SpriteMemo | None:
+        return self._level(0).memo
+
     def _refresh_source_caches(self, elevation_changed: set | None = None, splice_levels=None) -> None:
-        """Rebuilds units_by_tile and building_bboxes -- unlike
-        IsoChunkCache, no generation-counter laziness: this cache has only
-        one (mip 0) level, so there is no "rebuild only when actually
-        composited at THIS level" saving to make (see IsoChunkCache.
-        _refresh_source_caches()'s own docstring for why that laziness
-        exists there and would buy nothing here).
+        """Refreshes corner_rise and the unit sources: units_by_tile eagerly,
+        the per-level unit layers lazily or by splice (_LeveledChunkCache).
 
         building_bboxes reuses _building_bboxes_iso()/_unit_screen_bbox_
         iso() rather than a Sloped-specific reimplementation, but as of
@@ -3213,8 +3492,10 @@ class SlopedChunkCache(_ChunkCacheBase):
         that evaluates to under this project's +-1-elevation-neighbour
         invariant, but a LOADED file is not required to satisfy that
         invariant, and this costs only four vectorized array maxes. Zero on
-        a flat map, so flat-map byte-identity is untouched. self._headroom
-        records the value the current building_bboxes were built with.
+        a flat map, so flat-map byte-identity is untouched. It is
+        _target_headroom, recomputed with corner_rise (_refresh_corner_rise());
+        a level records the value its building_bboxes were built with as
+        _IsoLevel.extra_top (level 0's is the _headroom alias).
 
         Sloped honours unit_filter exactly as Flat and Stepped do -- and,
         since C5, so does unit picking (unit_pick.pick_unit's sloped
@@ -3240,25 +3521,21 @@ class SlopedChunkCache(_ChunkCacheBase):
         corner_rise can no longer disagree with self.elevations, however the
         constructor was called.
 
-        self.sprites (Track P3-g6): built here, on the same "whenever
-        elevations could have changed" cadence as corner_rise itself, since
-        a sprite's anchor depends on corner_rise via unit_rise_px() -- an
-        edit that leaves this stale would repaint sprites at their pre-edit
-        height. with_farms defaults True (Track C6): a farm now drapes over
-        its own footprint tiles' warped terrain, matching Stepped, whenever
-        sprites are on; the sprites-off case still falls back to the plain
-        mark (see render.py's own farm handling for that residual).
-        merge_sprite_bboxes() runs AFTER the headroom-widened building
-        bboxes above, never replacing them -- both operations only ever
-        grow a bbox (F3), so the order between them doesn't affect the
-        result, but merging into the already-final dict avoids a second
-        allocation.
+        A level's sprite layer (Track P3-g6) is built against corner_rise
+        (_level_corner_rise()), since a sprite's anchor depends on it via
+        unit_rise_px(), and kept in step with it: every corner_rise rebuild
+        here either splices the current levels or bumps the gen. with_farms
+        defaults True (Track C6): a farm drapes over its own footprint tiles'
+        warped terrain, matching Stepped, whenever sprites are on; the
+        sprites-off case still falls back to the plain mark (see render.py's
+        own farm handling for that residual). merge_sprite_bboxes() runs
+        AFTER the headroom-widened building bboxes (_assemble_level()).
 
         elevation_changed (draw-perf plan Step 3): None means "unknown" --
         construction, or a unit-filter/sprite-toggle refresh via
-        _refresh_unit_sources() -- and gets the unconditional wholesale
-        rebuild below (units_by_tile included), same as before this
-        parameter existed.
+        _refresh_unit_sources() -- and rebuilds units_by_tile and corner_rise
+        and bumps the gen (_refresh_all_units()), so every level rebuilds on
+        its next composite. No unit layer is built here.
 
         A patch() caller instead passes the elevation-changed subset of its
         own edit. 3a applies here too: units_by_tile never rebuilds on a
@@ -3281,59 +3558,36 @@ class SlopedChunkCache(_ChunkCacheBase):
         (_corner_changed_tiles(), which drops a ring tile held up by a higher
         neighbour), plus any unit sharing a tile with one (_elevation_splices()'
         component, re-derived unchanged).
-        They are re-anchored against the NEW corner_rise, so sprites and
-        corner_rise cannot drift apart. A component past
-        _SLOPED_ELEV_SPLICE_MAX_UNITS (elevation_splice_cap()) takes the
-        wholesale path instead, with an elev_splice_refused token.
+        They are re-anchored on each current level against that level's NEW
+        corner_rise (_level_rise(), recomputed at its own proj) and checked
+        against its own headroom by _refresh_level_units(), so sprites and
+        corner_rise cannot drift apart; a level outside splice_levels defers
+        them to its pending set instead. The seeds and the splice component
+        are computed once, from level 0: tile space, and exact across levels
+        under `max` (a superset under `average`) (TASK-031.60). A component
+        past _SLOPED_ELEV_SPLICE_MAX_UNITS (elevation_splice_cap()) bumps the
+        gen instead, with one elev_splice_refused token, and each level
+        rebuilds once on its next composite (TASK-031.28: an elevation
+        paste's or undo's unit step no longer builds the layers eagerly first).
 
         The headroom feeds every building's bbox, not just the re-anchored
         ones, and it moves more often than flat <-> non-flat: the copied
         propagation's gap-fill branch can leave a 2-level diagonal step
         (2026-10-08 probe, headroom 8 to 16 px). Sprites never read it and
         the unit pack never reads a bbox, so a headroom change after the
-        splice rebuilds only the bbox layer (_rebuild_bbox_layer()), an
-        empty component included, and the pack is still refreshed.
-        invalidate_units()' in-place branch keeps its eager full rebuild."""
-        if elevation_changed is not None:
-            if not elevation_changed:
-                return
-            old_corner_rise, old_sprites = self.corner_rise, self.sprites
-            self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
-            if not self.with_units:
-                return
-            headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
-            seeds = elevation_changed | _corner_changed_tiles(old_corner_rise, self.corner_rise)
-            cap = self.elevation_splice_cap()
-            splices = _elevation_splices(self.scenario, self.units_by_tile, self.unit_filter, seeds, cap)
-            if splices is None:
-                self._trace_elevation_refusal(seeds, cap)
-                self._rebuild_unit_layers(headroom)
-                return
-            old_bboxes: dict = {}
-            if splices:
-                self.sprites = _reanchor_units(
-                    self.building_bboxes, self.sprites, self.scenario, self.proj, self.elevations,
-                    self.unit_filter, self.corner_rise, headroom, splices,
-                    render.wall_variant_rotation_overrides(self.scenario), *self._layer_resolve_args(),
-                    old_bboxes=old_bboxes,
-                )
-            if headroom != self._headroom:
-                with perf_trace.phase(f"elev_headroom={self._headroom}->{headroom}"):
-                    pass
-                with perf_trace.level("sloped-bboxes", 0):
-                    self._rebuild_bbox_layer(headroom)
-            elif splices:
-                self._patch_bystander_grid(old_bboxes)
-            # An empty batch still rebinds the pack to the new corner_rise.
-            self._unit_pack = _refreshed_pack(
-                self._unit_pack, splices, self.units_by_tile, old_sprites, self._units_version, old_corner_rise,
-                self.sprites, self._units_version, self.corner_rise,
-            )
+        splice rebuilds only the bbox layer (_splice_level()), an empty
+        component included, and the pack is still refreshed."""
+        if elevation_changed is None:
+            self._refresh_corner_rise()
+            self._refresh_all_units()
             return
-
-        self.units_by_tile = render._units_by_tile(self.scenario, self.unit_filter) if self.with_units else {}
-        self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
-        self._rebuild_unit_layers(render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj))
+        if not elevation_changed:
+            return
+        old_corner_rise = self.corner_rise
+        self._refresh_corner_rise()
+        if not self.with_units:
+            return
+        self._refresh_level_units(elevation_changed | _corner_changed_tiles(old_corner_rise, self.corner_rise), splice_levels)
 
     def elevation_splice_cap(self) -> int:
         return _SLOPED_ELEV_SPLICE_MAX_UNITS
@@ -3346,128 +3600,22 @@ class SlopedChunkCache(_ChunkCacheBase):
         new_cr = iso_geometry.corner_rise_px(elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
         return elevation_changed | _corner_changed_tiles(self.corner_rise, new_cr)
 
-    def _rebuild_unit_layers(self, headroom: int) -> None:
-        """The wholesale building_bboxes + sprites rebuild against the current
-        corner_rise, recording the headroom it used."""
-        with perf_trace.level("sloped-units", 0):
-            self._rebuild_unit_layers_timed(headroom)
-
-    def _rebuild_unit_layers_timed(self, headroom: int) -> None:
-        self._unit_pack = None
-        memo, self.sprites, self._sprite_memo = self._sprite_memo, None, None
-        if self.with_units and self.sprites_enabled:
-            self.sprites, self._sprite_memo = render._drain(render.sprite_draws_by_anchor_sliced(
-                self.scenario, self.proj, self.elevations, self.unit_filter,
-                corner_rise=self.corner_rise, with_farms=self.layers.farm_overlay,
-                tree_scale=self.layers.tree_scale,
-                hero_glow=self.layers.hero_glow,
-                memo=memo or render.SpriteMemo(),
-            ))
-        self._rebuild_bbox_layer(headroom)
-
-    def _rebuild_bbox_layer(self, headroom: int) -> None:
-        """building_bboxes rebuilt whole at `headroom`, merged with the current
-        sprites. A headroom change needs only this: sprites read corner_rise,
-        never the headroom, and the unit pack never reads a bbox."""
-        self._headroom = headroom
-        mm = self.scenario.map_manager
-        building_bboxes = (
-            render._building_bboxes_iso(
-                self.scenario, mm.map_width, mm.map_height, self.proj, self.elevations, headroom,
-                unit_filter=self.unit_filter,
-            )
-            if self.with_units
-            else {}
-        )
-        self._set_building_bboxes(
-            render.merge_sprite_bboxes(building_bboxes, self.sprites)
-            if self.sprites is not None
-            else building_bboxes
-        )
-
-    def _set_building_bboxes(self, bboxes: dict) -> None:
-        """The only place this class assigns building_bboxes, so its chunk-
-        bucketed index can never be left describing an older dict. A new
-        dict gets a full grid build here; one spliced in place by
-        _reanchor_units() gets its grid patched in _patch_bystander_grid().
-
-        Assigns the dict itself rather than a copy, since the patch-unit-
-        sources test uses id(cache.building_bboxes) as its staleness proxy."""
-        self.building_bboxes = bboxes
-        self.bystander_grid = render.build_bystander_grid(bboxes, self.chunk_px)
-
-    def _patch_bystander_grid(self, old_bboxes: dict) -> None:
-        """The grid brought up to date after _reanchor_units() rewrote the keys
-        in old_bboxes of building_bboxes in place."""
-        self.bystander_grid = render.patch_bystander_grid(self.bystander_grid, old_bboxes, self.building_bboxes)
-
-    def can_splice(self, changed: list[UnitSplice] | None) -> bool:
-        """Whether invalidate_units(changed) would take its splice path."""
-        return self._unit_splice_plan(changed) is not None
-
-    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
-        """Batch D's D4 splice, SlopedChunkCache's counterpart to
-        IsoChunkCache.invalidate_units() -- see that method's own docstring
-        for the shared contract (None/ineligible both mean "fall back to
-        the wholesale _refresh_source_caches() path, covering the whole
-        `changed` batch for free").
-
-        Simpler than Iso's version in one real way: a single mip-0 level
-        (no per-level gen-gated laziness to preserve), so there is nothing
-        to leave alone -- every splice always touches this cache's one
-        building_bboxes/sprites pair, spliced in place with its grid patched
-        (_patch_bystander_grid()), so the id()-based staleness proxy tests
-        still see the same invariant (dict mutated in place, id() unchanged)
-        that a `patch()` would leave it in.
-
-        corner_rise is untouched, same as _refresh_source_caches()'s own
-        elevation_changed=empty-set branch: no unit edit moves elevation,
-        so the spliced bboxes use self._headroom, the value every other
-        entry in building_bboxes was built with. `_pick_planes` is
-        terrain-only and stays untouched for the same reason patch() leaves
-        it alone here. The batch goes through one _reanchor_units() call,
-        one SpriteLayer copy for the whole Convert stroke, with
-        _splice_overrides() for the same reason as Iso's, and a batch on
-        shared tiles splices its whole component, built first, as Iso's does.
-
-        A refused batch, or splice_levels=False, tries Iso's in-place
-        units_by_tile update first; on success the unit layers rebuild eagerly
-        as the wholesale path does, minus the units_by_tile walk."""
+    def refresh_wholesale(self, dirty_indices, flatten: bool = False) -> bool | None:
+        """IsoChunkCache.refresh_wholesale() for Sloped: the elevations written
+        in place, then, when any moved, corner_rise and the headroom rebuilt
+        and the gen bumped, so the next level build re-resolves from the
+        sprite memo (not _refresh_source_caches(), so units_by_tile is not
+        walked again). The whole-canvas eviction re-reads the terrain ids and
+        clears the pick planes. `flatten` is Stepped-only and ignored here."""
+        moved = _write_dirty_elevations(self.scenario, self.elevations, self.proj, dirty_indices)
+        if moved is None:
+            return None
         self._mutation_epoch += 1
-        plan = self._unit_splice_plan(changed) if splice_levels else None
-        if plan is None:
-            self._trace_splice_refusal(changed, skipped=not splice_levels)
-            if changed is not None and self._update_units_by_tile_in_place(changed):
-                with perf_trace.phase("units_in_place"):
-                    pass
-                self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
-                self._rebuild_unit_layers(render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj))
-                return
-            self._refresh_source_caches()
-            return
-        changed = _removals_first(plan)
-        old_version, old_sprites = self._units_version, self.sprites
-        self._units_version += 1
-        for s in changed:
-            _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
-        proj, _sprites, _bb, corner_rise, extra_top = self._unit_level_state(0)
-        old_bboxes: dict = {}
-        self.sprites = _reanchor_units(
-            self.building_bboxes, self.sprites, self.scenario, proj, self.elevations,
-            self.unit_filter, corner_rise, extra_top, changed, _splice_overrides(self.scenario, changed),
-            *self._layer_resolve_args(), old_bboxes=old_bboxes,
-        )
-        self._patch_bystander_grid(old_bboxes)
-        self._unit_pack = _refreshed_pack(
-            self._unit_pack, changed, self.units_by_tile, old_sprites, old_version, self.corner_rise,
-            self.sprites, self._units_version, self.corner_rise,
-        )
-
-    def _unit_level_state(self, mip: int):
-        """This cache's one level. Always current: every source refresh here
-        is eager, so there is no stale layer to worry about."""
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
-        return self.proj, self.sprites, self.building_bboxes, self.corner_rise, self._headroom
+        if moved:
+            self._refresh_corner_rise()
+            self._source_gen += 1
+        self.invalidate_region((0, 0, *self.canvas_dims(0)))
+        return moved
 
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
         """(width, height) in canvas pixels -- proj.canvas_w/canvas_h alone,
@@ -3495,42 +3643,20 @@ class SlopedChunkCache(_ChunkCacheBase):
         upward gap -- it brings Sloped to the same tolerance Stepped
         already has, instead of a new, Sloped-only regression. set_sprites_
         enabled()'s invalidate_region() call is what makes the newly-
-        visible strip actually get painted once this answer changes."""
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
+        visible strip actually get painted once this answer changes.
+
+        LEVEL `mip` pixels, from the level's own proj, read directly (never
+        through _level()); __init__ asserts both answers scale exactly."""
+        proj = self._levels[mip].proj
         if self.sprites_enabled:
-            return render._canvas_pixel_dims(self.proj)
-        return self.proj.canvas_w, self.proj.canvas_h
-
-    def _current_pack(self) -> native_composite.UnitPack | None:
-        pack = self._unit_pack
-        if pack is not None and pack.matches(self.units_by_tile, self.sprites, self._units_version, self.corner_rise):
-            return pack
-        return None
-
-    def _unit_pack_of(self, mip: int, create: bool):
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
-        return self._native_units() if create else self._current_pack()
-
-    def _native_units(self):
-        """IsoChunkCache._native_units() for this cache's one level."""
-        if composite_backend.native is None:
-            return None
-        if not self.with_units:
-            return native_composite.NO_UNITS
-        pack = self._current_pack()
-        if pack is None:
-            mm = self.scenario.map_manager
-            with perf_trace.level("pack", 0):
-                pack = self._unit_pack = native_composite.UnitPack(
-                    True, mm.map_width, mm.map_height, self.proj, self.units_by_tile, self.sprites,
-                    self._units_version, self.corner_rise,
-                )
-        return pack
+            return render._canvas_pixel_dims(proj)
+        return proj.canvas_w, proj.canvas_h
 
     def _composite_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
+        lvl = self._level(mip)
         # Resolved first so a pack build stays its own level event, outside the phase.
-        unit_pack = self._native_units()
+        unit_pack = self._native_units(lvl, mip)
+        corner_rise = self._level_corner_rise(lvl)
         with perf_trace.repaint_phase("composite"):
             return render.composite_rect_sloped(
                 self.scenario,
@@ -3538,26 +3664,28 @@ class SlopedChunkCache(_ChunkCacheBase):
                 y0,
                 x1,
                 y1,
-                self.corner_rise,
-                self.proj,
-                self.tile_px,
+                corner_rise,
+                lvl.proj,
+                lvl.tile_px,
                 self.units_by_tile,
-                self.building_bboxes,
+                lvl.building_bboxes,
                 self.with_units,
-                sprites=self.sprites,
-                bystander_grid=self.bystander_grid,
+                sprites=lvl.sprites,
+                bystander_grid=lvl.bystander_grid,
                 layers=self.layers,
                 grid=self.grid,
                 unit_pack=unit_pack,
                 terrain_ids=self._terrain_ids,
+                layer_ids=self._layer_ids,
             )
 
     def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
-        assert mip == 0, f"SlopedChunkCache has only mip level 0, got {mip}"
+        lvl = self._level(mip)
         return render.prepare_rect_native(
-            True, self.scenario, x0, y0, x1, y1, self.corner_rise, self.proj, self.tile_px, self.building_bboxes,
-            self.with_units, self.bystander_grid, self.layers, self.grid, self._native_units(),
-            terrain_ids=self._terrain_ids,
+            True, self.scenario, x0, y0, x1, y1, self._level_corner_rise(lvl), lvl.proj, lvl.tile_px,
+            lvl.building_bboxes,
+            self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
+            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids,
         )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:
@@ -3604,9 +3732,11 @@ class SlopedChunkCache(_ChunkCacheBase):
         Sloped counterpart to iso_geometry.screen_to_tile().
 
         Reference-canvas pixels, which is also scene space: mip decision D2
-        pins scene space to the reference level permanently, and this cache
-        has only that one level anyway, so viewer.py can pass a scene
-        position through unconverted.
+        pins scene space to the reference level permanently, so viewer.py
+        can pass a scene position through unconverted. The pick planes are
+        level 0's whatever level is on screen (TASK-031.60): at a coarser
+        level the visible pixels and the plane can disagree by about one
+        scene pixel at tile edges, as Stepped's analytic pick does.
 
         Worth stating because it is the opposite of what the missing-feature
         history suggests: this is STRICTLY BETTER than Stepped's
@@ -3627,7 +3757,7 @@ class SlopedChunkCache(_ChunkCacheBase):
         return tile_id % map_w, tile_id // map_w
 
     def patch(
-        self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, levels=None
+        self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, levels=None, rebuild_levels=None
     ) -> None:
         """"Patch, don't drop" for the pick planes too (Batch B step B8),
         the same contract base patch() already holds for colour chunks: a
@@ -3684,7 +3814,7 @@ class SlopedChunkCache(_ChunkCacheBase):
         if px1 <= px0 or py1 <= py0:
             return
         if elevation_changed is not None and not elevation_changed:
-            super().patch(bbox, elevation_changed, levels)
+            super().patch(bbox, elevation_changed, levels, rebuild_levels=rebuild_levels)
             return
 
         targets = []
@@ -3704,7 +3834,7 @@ class SlopedChunkCache(_ChunkCacheBase):
                 targets.append((cx, cy, ix0, iy0, ix1, iy1))
 
         try:
-            super().patch(bbox, elevation_changed, levels)
+            super().patch(bbox, elevation_changed, levels, rebuild_levels=rebuild_levels)
         except BaseException:
             self._pick_planes.clear()
             raise
@@ -3730,26 +3860,3 @@ class SlopedChunkCache(_ChunkCacheBase):
         # memo can never outlive a source-state change if that ever varies.
         self._pick_planes.clear()
         super().set_unit_filter(unit_filter)
-
-    def set_sprites_enabled(self, enabled: bool) -> None:
-        """Turns real .sld sprites on or off on a live cache -- Track P3-g6,
-        IsoChunkCache.set_sprites_enabled()'s shape minus the mip loop (this
-        cache has only one level).
-
-        No per-level warm-eager step either: that step exists there to keep
-        a wait cursor over the cold .sld decode instead of freezing the next
-        Qt paint with no indication anything is happening. _refresh_source_
-        caches() below already pays that decode eagerly and synchronously
-        (it isn't gated behind a lazy _level() rebuild the way IsoChunkCache's
-        is), so there is nothing left to warm.
-
-        invalidate_region()'s bbox is read from canvas_dims() AFTER
-        self.sprites_enabled flips -- load-bearing when turning sprites ON at
-        a low elev_step_pct stop, where canvas_dims() itself grows (the Step
-        0 fix): invalidating the OLD, smaller bbox would leave the newly-
-        visible bottom strip never composited at all, not just stale."""
-        if enabled == self.sprites_enabled:
-            return
-        self.sprites_enabled = enabled
-        self._refresh_source_caches()
-        self.invalidate_region((0, 0, *self.canvas_dims(0)), terrain_changed=False)

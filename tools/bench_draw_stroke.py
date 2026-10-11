@@ -18,16 +18,11 @@ a cause instead of guessed at:
                     subset of this step's own edit (empty for a pure
                     terrain-paint step, which is what this bench's own
                     strokes are) -- so this reflects whatever that method
-                    actually decides to rebuild, not a fixed cost. For
-                    Sloped this ALSO includes what Stepped keeps in
-                    level_rebuild below -- SlopedChunkCache has no per-level
-                    laziness (see its own docstring), so its corner_rise/
-                    building_bboxes/sprites rebuild together whenever ANY
-                    elevation changed, every patch(). That is not a bug in
-                    this bench; it is the fact being measured.
-  level_rebuild    cache._level(mip)'s lazy building_bboxes/sprite rebuild.
-                    Stepped only -- folded into refresh_sources for Sloped,
-                    always 0 for Flat (no building_bboxes concept there).
+                    actually decides to rebuild, not a fixed cost.
+  level_rebuild    cache._level(mip)'s lazy building_bboxes/sprite rebuild,
+                    per resident level. Stepped and Sloped alike (both
+                    _LeveledChunkCache); always 0 for Flat (no
+                    building_bboxes concept there).
   bystander_scan   composite_rect_iso()/composite_rect_sloped()'s own
                     candidates-vs-building_bboxes merge, timed by calling
                     render._bystander_candidates(), the real shared helper,
@@ -187,13 +182,11 @@ def _patch_phased(cache, style: str, bbox, elevation_changed: set | None = None)
                 if ix1 <= ix0 or iy1 <= iy0:
                     continue
 
-                if style == "stepped":
+                if style in ("stepped", "sloped"):
                     t0 = time.perf_counter()
                     lvl = cache._level(mip)
                     phases["level_rebuild"] += _ms(time.perf_counter() - t0)
                     proj, building_bboxes, grid = lvl.proj, lvl.building_bboxes, lvl.bystander_grid
-                elif style == "sloped":
-                    proj, building_bboxes, grid = cache.proj, cache.building_bboxes, cache.bystander_grid
                 else:
                     proj = building_bboxes = grid = None
 

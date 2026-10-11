@@ -28,9 +28,9 @@ results would be artifacts of load order rather than of the files. Each file is 
 in a fresh interpreter (--one, the internal single-file mode) so no cross-file state
 can exist at all.
 
-Read-only, always. Much of the real corpus lives under a Proton prefix -- the path
-scenario_io.FORBIDDEN_WRITE_MARKER = "compatdata" (descape/scenario_io.py:74) exists to
-protect, since it is the user's only copy of those files. This script only ever loads.
+Read-only, always. Much of the real corpus lives under a Proton prefix, some of it
+in mods/subscribed/ folders the game's mod manager re-syncs, so a census never writes
+back into it. This script only ever loads.
 
 Usage:
     tools/census_trigger_versions.py examples/ examples/play_Test

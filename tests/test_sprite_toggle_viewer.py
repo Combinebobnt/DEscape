@@ -289,7 +289,7 @@ def test_sloped_toggle_evicts_chunks(sprite_install) -> None:
     """Sloped's own copy of test_an_unchanged_value_evicts_nothing's setup,
     but for the CHANGING-value case (Track P3-g6): flipping sprites on in
     Sloped must evict every warmed chunk, or the toggle "does nothing until
-    you scroll somewhere uncached" (SlopedChunkCache.set_sprites_enabled's
+    you scroll somewhere uncached" (_LeveledChunkCache.set_sprites_enabled's
     own docstring names this exact failure mode). Before g6 this had
     nothing to pin -- the base class's set_sprites_enabled only stored the
     flag, with no cache to evict."""

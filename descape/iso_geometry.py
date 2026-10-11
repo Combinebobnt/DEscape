@@ -528,6 +528,15 @@ def _inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
     return src_y, src_x
 
 
+def square_to_diamond_local(s, t):
+    """The exact inverse of _inverse_sample's basis: square fractions (s, t)
+    along the tile's +x and +y to diamond-local (u, v), each in [-1, 1], u
+    from the left tip to the right tip and v from the top tip to the bottom
+    tip. The unit square lands exactly on the diamond |u| + |v| <= 1, so
+    every square texel has a diamond point (terrain_blend's mask space)."""
+    return s + t - 1.0, t - s
+
+
 @lru_cache(maxsize=8)
 def diamond_indices(tile_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Precomputed nearest-neighbor gather indices warping a tile_px x

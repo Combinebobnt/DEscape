@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import random
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -142,6 +143,7 @@ def plan_terrain_units(
     trees: bool,
     doodads: bool,
     rng: random.Random,
+    blocked: AbstractSet[tuple[int, int]] = frozenset(),
 ) -> TerrainUnitPlan:
     """The pure planner: no model mutation, no Qt, no undo bookkeeping.
 
@@ -157,6 +159,10 @@ def plan_terrain_units(
     whose const is in the enabled categories, built once for the whole
     gesture by the caller; this function removes from it as it plans, so
     that index stays correct for any later caller in the same gesture.
+
+    `blocked` holds (x, y) tiles that must never get a new unit: the caller
+    passes the changed tiles under a cliff's footprint (GH #183). A blocked
+    tile's existing trees/doodads are still removed, just not replaced.
     """
     plan = TerrainUnitPlan()
     if not trees and not doodads:
@@ -175,6 +181,8 @@ def plan_terrain_units(
                 plan.removes.append(unit)
                 existing[(x, y)].remove(unit)
 
+        if (x, y) in blocked:
+            continue
         rolled = roll_unit(new_terrain_id, trees=trees, doodads=doodads, rng=rng)
         if rolled is None:
             continue

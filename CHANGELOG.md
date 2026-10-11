@@ -26,6 +26,32 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Terrain blending** (GH #13): with textures on, each tile blends into
+  higher-priority neighbouring terrain through the game's own transition
+  masks, each reaching the neighbour fully at their shared edge, and a tile's layered
+  second terrain draws over it, in all three
+  terrain styles. A first pass, not an exact match for the game. Toggle it
+  with View > Layers > Terrain Blending, remembered between launches.
+- **Cliff preview** (GH #128): with the Cliff tool, hovering the map shows
+  the picked piece where a click would place it, and a drag previews the
+  whole run it will lay. The preview clears on release, when the pointer
+  leaves the map, and on a tool switch.
+- **Eraser tool** (GH #184): a brush in Terrain and Units mode that deletes
+  what is under it, one undo step per drag. Its Targets menu picks Units,
+  Buildings, Trees, Terrain Overlay, Invisible Objects and Gaia Objects
+  (Everything ticks all six); Cliffs is a separate opt-in. Objects hidden by
+  Filters are not erased, except that erasing a building also erases its
+  garrison. Default key X.
+- **Rotate before placing** (GH #172): with Place Unit armed, Ctrl+wheel or
+  the Rotate keys turn the placement preview before you click. Units turn,
+  trees and scenery step through their variants, gates switch orientation,
+  and each click places what the preview shows. Plain wheel still zooms.
+  While the cursor is over the map the Rotate keys turn the preview, not the
+  unit just placed; move off the map to rotate the selection.
+- **Facet direction preview** (GH #167): a Create Object or Replace Object
+  effect shows under its Facet field an approximate direction the unit will
+  face (the facet mapping is not yet confirmed in game), with the unit's own
+  sprite when an install is configured. Unset shows nothing.
 - **Trigger status colours** (GH #166): Triggers mode marks each trigger,
   condition and effect green when complete and red when a required field is
   missing or a unit or trigger it names doesn't exist; hover a red row for
@@ -62,7 +88,7 @@ content, link the doc instead of summarizing it.
 - **Export / Import theme** in Settings > Appearance: the look settings as a
   `.descape-theme.yaml` file, with a summary of what will change and what
   was skipped before applying.
-- **File > Resize Map…** (GH #45) grows or shrinks a square map from any of
+- **Map > Resize Map…** (GH #45) grows or shrinks a square map from any of
   nine anchors. Terrain, elevation, objects and trigger areas move with it,
   new ground takes the nearest edge's height, and objects pushed off the
   map (with their garrisons) are deleted after a count. Not undoable. Also
@@ -110,7 +136,7 @@ content, link the doc instead of summarizing it.
 - **Overlay opacity sliders** (GH #129) in Settings > Appearance (10-100%)
   for the Units selection, the Select tool region and trigger overlay areas.
 - **Settings > Saving can put autosaves in a folder of your choice**
-  (GH #127). Folders under a Proton `compatdata/` path are refused.
+  (GH #127). A `mods/subscribed/` folder is refused.
 - **View > Footprint Outlines: Units only, Merge tiles and Colour by Owner**
   (GH #143). Units only leaves out buildings, walls and gates (siege counts
   as units; a garrisoned unit outlines one tile at its host's point). Merge
@@ -144,9 +170,39 @@ content, link the doc instead of summarizing it.
   and variable names (or the language string an id names), and the display
   time and sound. It follows your typing and never edits the effect.
   Sounds are not played.
+- **Map Analysis checks off-grid placement**: buildings off the half-tile
+  grid (warning) or half a tile off their footprint's grid (info), and
+  player and GAIA units not at their tile's centre (info, one row each).
+- **Players mode lists GAIA** (GH #187), with the settings the in-game
+  editor offers for it: civilization, architecture, the two locks, starting
+  age, resources, colour and pop limit.
 
 ### Changed
 
+- **Trigger pane buttons are more compact**: Move Up/Down are now ▲ ▼
+  beside Duplicate, next to the new ⇈ ⇊ Section Up/Down. New Section…,
+  Rename Section… and Move to Section moved from their own row into the
+  Sections menu, which is now always shown.
+- **Sloped view renders at coarser levels when zoomed out** (GH #180), as
+  Elevation view already did: at fit zoom on a large map, stroke ends, undo
+  and first paint are about twice as fast, and an elevation paste or its
+  redo rebuilds the unit layers once instead of twice.
+- **Large edits in Elevation and Sloped view are faster** (GH #180): a Trees
+  or Eye candy Draw stroke past 1000 tree changes, and its undo and redo,
+  repaint only the stroke's area, and an edit or undo past 20,000 tiles
+  refreshes the map in place instead of rebuilding it.
+
+- **Save into the game's own scenario folder works**: the Proton
+  `compatdata/` profile is no longer refused, and a save into the game
+  profile (on Windows too) always writes `.bak`/`.orig`, whatever Settings
+  > Saving says. A `mods/subscribed/` folder is refused instead, since the
+  game's mod manager re-syncs it.
+- **Units inspector shows the unit's portrait and stat icons** (GH #148):
+  hit points, attack, armour and range as icon and value pairs, two to a
+  row, as in the in-game editor, in a shorter header. Display Instructions
+  previews show a building's own portrait.
+- **A read-only Rotation explains itself in a tooltip** (GH #147) instead of
+  a paragraph under the Units inspector.
 - **Elevation View and the View > Layers toggles are remembered between
   launches** (GH #182): Terrain Textures, Farm Terrain Overlay, Small Trees
   and Hero Glow. Perf Trace still starts off; set `DESCAPE_PERF_TRACE=1` to
@@ -241,7 +297,7 @@ content, link the doc instead of summarizing it.
 - **Messages mode: an undragged text box in a tall window stays six lines**
   instead of stretching (GH #139).
 - **The autosave "wrote to the default folder" status line says why the
-  chosen folder was passed over** (under `compatdata/`, missing, not a
+  chosen folder was passed over** (in `mods/subscribed/`, missing, not a
   folder, and so on). It is logged once per change, not after every
   autosave, and a saved folder refused at startup is reported on the first
   autosave after a restart.
@@ -259,9 +315,34 @@ content, link the doc instead of summarizing it.
   written as `~` and `<user>`, including a hard crash's faulthandler log.
 - **Perf Trace stall lines print `covered >= X`** when a stall outlasts the
   trace's recent-event buffer, instead of under-reporting.
+- **Place Unit and Scatter put resources and trees on GAIA** (GH #206):
+  gold, stone, berry bushes, fish and trees always go to GAIA, whatever the
+  owner picker says, and the status line says so. Reassigning one to a player
+  (Owner, Convert, Find > Reassign) still works but warns.
 
 ### Fixed
 
+- **View stats no longer clips the Player selector's tribe names**: the
+  selector sits on its own full-width row.
+- **Buildings with an even size (House, Mill, Market, Town Center, Castle,
+  ...) now land on the game's grid** (GH #206). Place Unit, single-unit Move
+  and Scatter used to put them half a tile off it, so the game showed them
+  shifted. Snapped placement now
+  centres them on the cursor. Dragging a misplaced one once fixes it.
+- **Cliff drags connect at corners** (GH #44): a drag picks each piece's
+  size per junction from how real maps join cliffs, so L turns, zig-zags and
+  diagonal staircases draw one continuous wall instead of separate lumps. A
+  plain straight run uses the full-size piece; legs go thin where a corner
+  needs them to.
+- **Scenario version 1.41 files no longer misread their Map settings**:
+  Point of View reads clean values and now appears on these files, as does
+  Lock Co-op Alliances, and Collide & Correcting and Villager Force Drop no
+  longer show garbage (their exact byte order awaits an in-game check).
+- **Painting forest with Trees or Eye candy on no longer plants trees on
+  cliffs** (GH #183). The terrain under a cliff is still painted.
+- **Fish draw at their in-game size and show their bodies** (GH #178): deep
+  fish outline, pick and occupy 2x2 tiles and the Whale 3x3, and fish that
+  showed only a mark or a thin splash draw the fish itself.
 - **Placing a gate on a wall run replaces the wall segments under it** and
   reshapes the walls beside it (GH #159). A wall a trigger refers to stays,
   as it would on Delete.
@@ -301,7 +382,7 @@ content, link the doc instead of summarizing it.
   stacked-unit detection use the real footprint, not the centre tile.
 - **Triggers: renaming a tag on a mixed `[ ]`/`( )` tag chain names the
   bracket the new name actually breaks.**
-- **Saving refuses a path that reaches a Proton `compatdata/` folder through
+- **Saving refuses a path that reaches a `mods/subscribed/` folder through
   a symlink.** A linked file there used to be silently replaced by a real
   file; it is now refused. A sidecar autosave for such a file goes to the
   default folder, and the tools that write a scenario file (`strip_units`,

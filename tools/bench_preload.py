@@ -10,20 +10,9 @@ AoE2:DE install (sprite pixels are read from it at runtime, nothing is
 bundled); with no install every unit falls back to a coloured mark and every
 number below understates the real cold cost.
 
-Stepped and Flat get the full level-build/chunk-grid breakdown below. Sloped
-gets a narrower row (added for the 2026-09-07 margin-warm plan's Step A3.6):
-it has exactly one mip level (SlopedChunkCache._init_mip_levels({0: tile_px}),
-see its own docstring), so there is no not-yet-visited LEVEL to warm and the
-level-build columns don't apply -- but a chunk warm (descape.margin_warm) is
-a different question: Sloped's single-level ladder means mip_for_scale's
-clamp binds, so a zoomed-in viewport still covers only a fraction of the
-mip-0 canvas, and the margin ring around it is non-empty. Sloped's own
-_refresh_source_caches() already builds everything (units_by_tile,
-corner_rise, building_bboxes, sprites) eagerly at construction -- see that
-method's own docstring -- so a freshly-constructed cache is already in the
-"after level-warm" state the other two styles reach via an explicit warm
-call; the Sloped row measures only the per-chunk compositing cost on top of
-that.
+All three styles get the full level-build/chunk-grid breakdown below. Sloped
+has had Stepped's coarser levels since TASK-031.60 (before that it had only
+level 0 and a narrower row), so its ladder stops at mip 0.
 
 Three things measured per real corpus file, per style, per mip level:
 
@@ -201,30 +190,10 @@ def _bench_style(name: str, make_cache, level_warm, scenario) -> list[str]:
     return lines
 
 
-def _bench_sloped(scenario) -> list[str]:
-    """Sloped's own row (Step A3.6) -- narrower than _bench_style()'s: one
-    mip level, no separate level-build step (_refresh_source_caches()
-    already ran everything eagerly at construction, see _sloped_cache's own
-    docstring), so only the two chunk-compositing columns this module's
-    docstring explains apply."""
-    lines = ["    sloped:"]
-    probe = _sloped_cache(scenario)
-    canvas_w, canvas_h = probe.canvas_dims(0)
-    del probe
-
-    rect = _sample_rect(canvas_w, canvas_h)
-    rect2 = _sample_rect(canvas_w, canvas_h, x_offset=SAMPLE_PX * 3)
-    unit_sprites.clear_caches()
-    cache = _sloped_cache(scenario)
-    first_chunk = _time(lambda: cache.render_rect(*rect, mip=0))
-    second_chunk = _time(lambda: cache.render_rect(*rect2, mip=0))
-
-    lines.append(f"      mip  0: after level-warm {_ms(first_chunk)} | 2nd chunk same cache {_ms(second_chunk)}")
-    return lines
-
-
 def _sloped_level_warm(cache: SlopedChunkCache, mip: int) -> None:
-    # Construction built everything but the pack (see _bench_sloped's docstring).
+    # Iso's warm since TASK-031.59; before it, construction built everything but the pack.
+    if hasattr(cache, "_level"):
+        cache._level(mip)
     _pack_warm(cache, mip)
 
 
@@ -266,10 +235,10 @@ def _dist(label: str, samples: list[float]) -> str:
 def _bench_per_chunk(scenario, style: str, repeats: int, mip: int = 0) -> list[str]:
     """--per-chunk mode: one timed get_chunk(mip, cx, cy) per chunk of the
     whole level-`mip` grid, on a level-warm cache -- exactly the unit of
-    work MarginWarmer.tick() packs into its budget. Mip 0 by default because it is
-    Sloped's only level, so it is the one level all three styles can be
-    compared on; --mip takes the cache's own level index (negative is
-    coarser) and a style without that level is reported and skipped.
+    work MarginWarmer.tick() packs into its budget. Mip 0 by default because it
+    is the one level every style and map has; --mip takes the cache's own
+    level index (negative is coarser) and a style without that level is
+    reported and skipped (Sloped has none above 0).
 
     Run 1 starts from cleared sprite caches (cold); later runs build a fresh
     chunk cache but keep the process-wide sprite caches (warm), which is the
@@ -412,7 +381,7 @@ def bench_file(path: Path) -> str:
     lines = [f"  {path.name}"]
     lines.extend(_bench_style("stepped", _stepped_cache, _iso_level_warm, scenario))
     lines.extend(_bench_style("flat", _flat_cache, _flat_level_warm, scenario))
-    lines.extend(_bench_sloped(scenario))
+    lines.extend(_bench_style("sloped", _sloped_cache, _sloped_level_warm, scenario))
     return "\n".join(lines)
 
 

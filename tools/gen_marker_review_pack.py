@@ -64,7 +64,7 @@ _ZOOMS = {"s": -2, "m": 0, "l": 1}
 # frame id -> (scene, style, mip, crop tiles)
 _FRAMES = {
     **{f"stepped_{z}": ("row", "stepped", mip, _ROW_TILES) for z, mip in _ZOOMS.items()},
-    # SlopedChunkCache renders only level 0 (the view scales it), so Sloped has one frame.
+    # One Sloped frame, at level 0: Sloped has no finer level, and its coarser ones are not framed here.
     "sloped_m": ("row", "sloped", 0, _ROW_TILES),
     **{f"flat_{z}": ("row", "flat", mip, _ROW_TILES) for z, mip in _ZOOMS.items()},
     "eye_a": ("revealer", "stepped", 1, _REVEALER_TILES),
@@ -119,7 +119,7 @@ def _box(cache, style: str, mip: int, tiles):
         xs = [x for x, _y in tiles]
         ys = [y for _x, y in tiles]
         return (min(xs) - 1) * px, (min(ys) - 1) * px, (max(xs) + 2) * px, (max(ys) + 2) * px
-    proj = cache.proj if style == "sloped" else cache._levels[mip].proj
+    proj = cache._levels[mip].proj
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, tiles, _MAX_ELEV if style == "sloped" else 0)
     pad = proj.half_w
     return max(0, x0 - pad), max(0, y0 - pad), x1 + pad, y1 + pad // 2

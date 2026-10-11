@@ -235,10 +235,9 @@ def resize_map(
 
 def set_terrain(tile: TerrainTile, terrain_id: int) -> None:
     """Sets tile's terrain_id and clears a stale `layer` (double-terrain
-    blend) left over from whatever the tile used to be -- render.py doesn't
-    draw `layer`, but the game does, so leaving it set after changing
-    terrain_id would make this terrain a lie about what the game actually
-    shows (same fix viewer.py's Draw tool already applies per-click; see
-    its own comment in ViewerWindow's mouse handler)."""
+    blend) left over from whatever the tile used to be: both the game and
+    render.py's terrain blending draw `layer` over terrain_id, so a stale
+    one would keep showing the old terrain (same fix viewer.py's Draw tool
+    applies per-click)."""
     tile.terrain_id = terrain_id
     tile.layer = -1

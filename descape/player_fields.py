@@ -239,18 +239,36 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
 )
 
 
+# The rows the in-game editor's Players tab shows for GAIA (GH #187 Step 0, tester screenshots).
+GAIA_FIELDS: frozenset[str] = frozenset({
+    "civilization", "architecture", "lock_civilization", "lock_personality", "starting_age",
+    "food", "wood", "stone", "gold", "color", "pop_limit",
+})
+# pop_limit's spec layout is NO_GAIA; GAIA's copy is Map slot 8 only (GH #187 plan Amendments).
+_GAIA_MAP_ONLY_FIELDS = frozenset({"pop_limit"})
+
+
+def _has_gaia_slot(layout: PlayerArrayLayout) -> bool:
+    try:
+        layout.index_for(0)
+    except ValueError:
+        return False
+    return True
+
+
+assert {s.field_id for s in _SPECS} >= GAIA_FIELDS
+assert all(
+    _has_gaia_slot(s.layout) for s in _SPECS if s.field_id in GAIA_FIELDS - _GAIA_MAP_ONLY_FIELDS
+)
+
+
 # The Point of View pair, named once rather than spelled out at each of the
-# three places that key off it (the panel's buttons, the camera markers, and
-# specs_for()'s 1.41 drop below).
+# places that key off it (the panel's buttons and the camera markers).
 POV_X_FIELD = "initial_view_x"
 POV_Y_FIELD = "initial_view_y"
-_POV_FIELD_IDS = frozenset({POV_X_FIELD, POV_Y_FIELD})
 # What an unset view stores: every unset slot across the corpus is -1, on
 # both axes (blank_map and ring75 are -1 throughout).
 POV_UNSET = -1
-# See specs_for()'s docstring: the one scenario version whose Point of View
-# array the library frames one byte early.
-_MISALIGNED_POV_VERSION = "1.41"
 
 
 def pov_bounds(field_id: str, width: int, height: int) -> tuple[int, int]:
@@ -304,30 +322,27 @@ def specs_for(loaded: LoadedScenario) -> tuple[PlayerFieldSpec, ...]:
     scenario_version, matching option_fields.specs_for()'s reasoning: a
     structure-version gate and an empty repeat-driven array both look like
     "0 bytes" and both mean "not on this file".
-
-    The one version check, and why it is not a violation of that rule: on a
-    scenario version 1.41 file the library's structure declares
-    `block_humanity_team_change` BEFORE `collide_and_correct`, where every
-    measured 1.41 file puts it AFTER the 16 initial_player_views. The array
-    is present, so the presence check passes -- it is just framed one byte
-    early, so the Point of View rows show garbage and a typed value would
-    patch at the wrong offset. Dropping the specs takes the group, GH #22's
-    buttons and its camera markers off those files together. Delete this
-    once the structure override lands (the 1.41 misalignment is its own
-    `[NEEDS PLAN]` roadmap entry).
     """
-    drop = _POV_FIELD_IDS if loaded.scenario_version == _MISALIGNED_POV_VERSION else frozenset()
-    out = []
-    out.extend(
+    return tuple(
         spec
         for spec in _SPECS
-        if spec.field_id not in drop
-        and (
-            _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field)
-            or (spec.fallback is not None and _retriever_present(loaded, *spec.fallback))
-        )
+        if _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field)
+        or (spec.fallback is not None and _retriever_present(loaded, *spec.fallback))
     )
-    return tuple(out)
+
+
+def specs_for_player(loaded: LoadedScenario, player_id: int) -> tuple[PlayerFieldSpec, ...]:
+    """specs_for() for P1..P8; for GAIA (0) only GAIA_FIELDS, minus pop_limit
+    when its Map slot does not resolve. The panel and the write path both use
+    this, so the rows shown and the targets written cannot disagree."""
+    specs = specs_for(loaded)
+    if player_id != 0:
+        return specs
+    return tuple(
+        spec for spec in specs
+        if spec.field_id in GAIA_FIELDS
+        and (spec.field_id not in _GAIA_MAP_ONLY_FIELDS or _gaia_pop_limit_target(loaded) is not None)
+    )
 
 
 def current_value(loaded: LoadedScenario, spec: PlayerFieldSpec, player_id: int) -> int | str:
@@ -335,7 +350,9 @@ def current_value(loaded: LoadedScenario, spec: PlayerFieldSpec, player_id: int)
     Only valid for a spec that specs_for(loaded) actually returned, and only
     for a player_id spec.layout (or, on fallback, PlayerArrayLayout.NO_GAIA
     -- every fallback target is Units.player_data_4, itself NO_GAIA-shaped)
-    has a slot for.
+    has a slot for. GAIA's pop_limit is the exception: it reads
+    Map.per_player_population_cap[8] only, and raises on a file without that
+    array (GH #187).
 
     Returns int or str -- never a list, never a float. Population limit's
     fallback (Units.player_data_4[i].population_limit) is stored as an f32;
@@ -344,7 +361,12 @@ def current_value(loaded: LoadedScenario, spec: PlayerFieldSpec, player_id: int)
     fail-fast-on-a-surprise reasoning as option_fields.current_value()'s
     scalar-only guard.
     """
-    if _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field):
+    if player_id == 0 and spec.field_id in _GAIA_MAP_ONLY_FIELDS:
+        if not _retriever_present(loaded, "Map", "per_player_population_cap"):
+            raise ValueError(f"GAIA's {spec.field_id!r} needs Map.per_player_population_cap (1.44+)")
+        section_name, retriever_name, struct_field = "Map", "per_player_population_cap", None
+        layout = PlayerArrayLayout.P1_TO_P8_THEN_GAIA
+    elif _retriever_present(loaded, spec.section, spec.retriever, spec.struct_field):
         section_name, retriever_name, struct_field, layout = (
             spec.section, spec.retriever, spec.struct_field, spec.layout,
         )
@@ -464,7 +486,7 @@ _STR16_LENGTH_STRUCT = struct.Struct("<h")
 # civilization_choices() (a nonsense choice for a real player, one
 # misclick away in a 64-row combo -- see that function's docstring), but
 # that is a UI-level exclusion, not a wire-format one: encode_target() is
-# also what verify_player_block()'s GAIA sentinel re-encodes to check for
+# also what verify_player_block() re-encodes GAIA's slot with to check for
 # an offset shift, and GAIA's own slot is real per-file data this module
 # must be able to round-trip, not reject. Computed once at import time
 # since Civilization's membership is fixed.
@@ -497,9 +519,9 @@ _STR16_CAPABLE_FIELDS = frozenset({"civilization", "architecture"})
 # locations -- eight `active` flags plus FileHeader.player_count.
 PLAYER_COUNT_FIELD_ID = "player_count"
 
-# Players 1..8. GAIA (player_data_1 index 8) and indices 9..15 are filler
-# this never reads or writes -- the same scope diplomacy_fields.py's own
-# NUM_PLAYERS sets, restated here since defined_player_ids() moved in.
+# Players 1..8: what Number of Players, the active-flag walk and Diplomacy
+# mean by "players" -- the same scope diplomacy_fields.py's own NUM_PLAYERS
+# sets. GAIA's per-player rows are GAIA_FIELDS, keyed with player id 0.
 NUM_PLAYERS = 8
 
 
@@ -893,8 +915,7 @@ def camera_fields(loaded: LoadedScenario) -> tuple[CameraField, ...] | None:
     Units.player_data_3's editor_camera_x/y (f32) and initial_camera_x/y
     (s16) for each entry, located the way _color_mirror_target() locates
     `color` (only on a units_write_supported file), and Map.initial_player_views'
-    location_x/y (s32) for each entry (absent before 1.40, skipped on the
-    misframed 1.41 the same way specs_for() drops it).
+    location_x/y (s32) for each entry (absent before 1.40).
 
     None when any located field does not reproduce its parsed value from the
     body's own bytes: the walk is then off somewhere, so no camera is safe
@@ -914,7 +935,7 @@ def camera_fields(loaded: LoadedScenario) -> tuple[CameraField, ...] | None:
                 fields.append(CameraField(resolved.target, axis, resolved.parsed_value))
     views = _retriever_map(loaded, "Map")
     views = views.get("initial_player_views") if views is not None else None
-    if loaded.scenario_version != _MISALIGNED_POV_VERSION and views is not None and views.data:
+    if views is not None and views.data:
         for index in range(len(views.data)):
             for name, axis in (("location_x", "x"), ("location_y", "y")):
                 resolved = _array_target(loaded, "Map", "initial_player_views", name, index)
@@ -1228,10 +1249,19 @@ def _pop_limit_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolve
     return _array_target(loaded, "Map", "per_player_population_cap", None, player_id - 1)
 
 
+def _gaia_pop_limit_target(loaded: LoadedScenario) -> _Resolved | None:
+    """GAIA's pop_limit: Map.per_player_population_cap[8], which is shaped like
+    P1_TO_P8_THEN_GAIA. No player_data_4 copy (8 entries, no GAIA); None pre-1.44."""
+    index = PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for(0)
+    return _array_target(loaded, "Map", "per_player_population_cap", None, index)
+
+
 def _resolve_all(loaded: LoadedScenario) -> dict[str, tuple[_Resolved, ...]]:
     """{f"player:{field_id}:{player_id}": (primary, *mirrors)} for every
-    writable Tier-1 spec and every player 1..8 -- never GAIA (player_id 0),
-    which no Tier-1 spec's write path covers.
+    writable Tier-1 spec and every player 1..8, plus GAIA (player_id 0) for
+    GAIA_FIELDS only (GH #187). GAIA gets no mirror: Units.player_data_4 and
+    player_data_3 hold no GAIA copy. Its pop_limit is Map slot 8 alone
+    (_gaia_pop_limit_target()).
 
     A spec whose primary target cannot be resolved is omitted entirely. A
     spec with a *structural* mirror (food/wood/gold/stone, from _MIRRORS)
@@ -1262,7 +1292,21 @@ def _resolve_all(loaded: LoadedScenario) -> dict[str, tuple[_Resolved, ...]]:
             spec.field_id in _STR16_CAPABLE_FIELDS
             and _player_data_1_field_codec(loaded, spec.struct_field) == "str16"
         )
-        for player_id in range(1, 9):
+        for player_id in range(9):
+            if player_id == 0:
+                if spec.field_id not in GAIA_FIELDS:
+                    continue
+                if spec.field_id in _GAIA_MAP_ONLY_FIELDS:
+                    primary = _gaia_pop_limit_target(loaded)
+                elif is_str16:
+                    primary = _player_data_1_variable_target(loaded, spec.struct_field, 0)
+                else:
+                    primary = _array_target(
+                        loaded, spec.section, spec.retriever, spec.struct_field, spec.layout.index_for(0)
+                    )
+                if primary is not None:
+                    out[player_field_id(spec.field_id, 0)] = (primary,)
+                continue
             index = spec.layout.index_for(player_id)
             if spec.field_id == "pop_limit":
                 primary = _array_target(loaded, "Units", "player_data_4", "population_limit", index)
@@ -1309,18 +1353,19 @@ def write_targets(loaded: LoadedScenario) -> dict[str, tuple[PlayerWriteTarget, 
 
 def verify_player_block(loaded: LoadedScenario) -> bool:
     """True iff every Tier-1 write target -- primary, every mirror, and (for
-    every P1_TO_P8_THEN_GAIA-layout spec) the read-only GAIA sentinel at
-    index 8 -- reproduces exactly the value already parsed there. All-or-
+    every P1_TO_P8_THEN_GAIA-layout spec) GAIA's slot at index 8 --
+    reproduces exactly the value already parsed there. All-or-
     nothing across the whole per-player write surface, matching
     options_write_supported()/diplomacy_write_supported(): a partial write
     surface would offer some rows and silently drop others on a file where
     the walk half-worked, with no way for a user to tell those apart.
 
-    The GAIA sentinel check exists because per-player arrays of identical
+    The GAIA slot check exists because per-player arrays of identical
     values (e.g. every player on Dark Age) compare equal at a shifted
     offset -- GAIA's own slot generally differs from P1..P8's, which makes
-    it the cheapest real shift detector available. Never written; read-only
-    even once this returns True.
+    it the cheapest real shift detector available. For GAIA_FIELDS that slot
+    is a written target since GH #187, checked through _resolve_all(); any
+    other P1_TO_P8_THEN_GAIA spec keeps a read-only sentinel there.
 
     Fails closed (False) on an untrusted anchor, on units_write_supported
     being False, or on an empty target set -- never on a comparison it
@@ -1351,14 +1396,17 @@ def verify_player_block(loaded: LoadedScenario) -> bool:
     for spec in specs_for(loaded):
         if spec.field_id in _NOT_BYTE_PATCHED or spec.layout is not PlayerArrayLayout.P1_TO_P8_THEN_GAIA:
             continue
+        if spec.field_id in GAIA_FIELDS:
+            # A GAIA_FIELDS slot is a real target now, already matched above.
+            if player_field_id(spec.field_id, 0) not in resolved:
+                return False
+            continue
         if spec.field_id in _STR16_CAPABLE_FIELDS and _player_data_1_field_codec(loaded, spec.struct_field) == "str16":
             # Step B: with the variable-stride locator able to reach index
             # 8, this is a *stronger* shift detector than for the
             # fixed-width fields above -- a wrong entry offset in a
             # variable-stride array lands mid-string, not on a plausible
-            # integer. GAIA's own value is never written even so (this
-            # loop only ever calls _matches(), never encode_target() for a
-            # new value).
+            # integer. Unreached while civilization/architecture are GAIA_FIELDS.
             gaia = _player_data_1_variable_target(loaded, spec.struct_field, 0)
         else:
             gaia = _array_target(loaded, spec.section, spec.retriever, spec.struct_field, 8)

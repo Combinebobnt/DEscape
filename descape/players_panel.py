@@ -1,5 +1,5 @@
 """PlayersPanel: the Players mode's left page -- per-player settings for
-P1..P8.
+GAIA and P1..P8.
 
 Structurally a sibling of MapOptionsPanel (same group-box-per-spec-group
 form, same _fit_combo_width/_make_spinbox reuse, same three-way tooltip
@@ -39,9 +39,12 @@ FileHeader.player_count's offset as well as the eight `active` flags, and
 the header walk that supplies it fails on a scenario version 1.37 file, so
 it can be the only read-only row on a file whose other rows all edit fine.
 
-GAIA is deliberately never selectable: eight of PlayerFieldSpec's arrays
-have no GAIA slot at all (PlayerArrayLayout.index_for raises for one), and
-GAIA's own PlayerDataTwo color slot is known junk (terrain_palette.py).
+GAIA is the selector's first row (GH #187), showing only
+`player_fields.GAIA_FIELDS`: the rows the in-game editor's Players tab shows
+for GAIA. Tribe name, name string ID, base priority and Personality are
+absent there, and the Point of View pair is not a Players-tab control at all.
+GAIA's Pop Limit is Map.per_player_population_cap's slot 8, so a pre-1.44
+file has no Pop Limit row for GAIA (`specs_for_player()`).
 """
 
 from __future__ import annotations
@@ -82,7 +85,7 @@ from descape.player_fields import (
     current_value,
     defined_player_count,
     pov_bounds,
-    specs_for,
+    specs_for_player,
 )
 from descape.scenario_io import LoadedScenario
 from descape.viewer_common import (
@@ -182,7 +185,7 @@ _POV_GROUP = "Point of View"
 
 
 class PlayersPanel(QWidget):
-    """Per-player settings: a P1..P8 selector plus one form (the Players
+    """Per-player settings: a GAIA, P1..P8 selector plus one form (the Players
     mode's left page).
 
     Dumb by design, same as MapOptionsPanel/TriggerPanel: it reports "the
@@ -438,7 +441,6 @@ class PlayersPanel(QWidget):
 
         same_document = loaded is self._loaded
         self._loaded = loaded
-        self._specs = specs_for(loaded)
         self._editable_fields = frozenset(editable_fields)
         self._read_only_reasons = dict(read_only_reasons or {})
         self._pending_values = {k: dict(v) for k, v in (pending_values or {}).items()}
@@ -452,9 +454,10 @@ class PlayersPanel(QWidget):
             self._player_id = 1
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
-            for player_id in range(1, 9):
-                _add_player_item(self.player_combo, player_id, self._player_labels, loaded.player_colors)
-            self.player_combo.setCurrentIndex(0)
+            # GAIA first, as in the Units owner combo; Player 1 stays the default.
+            for player_id in range(NUM_PLAYERS + 1):
+                _add_player_item(self.player_combo, player_id, self._player_labels, loaded.player_colors, player_id)
+            self.player_combo.setCurrentIndex(self.player_combo.findData(1))
             self.player_combo.blockSignals(False)
             self.player_combo.setEnabled(True)
 
@@ -508,18 +511,18 @@ class PlayersPanel(QWidget):
         self._on_player_count(value)
 
     def select_player(self, player_id: int) -> bool:
-        """Backs the player_select_1..8 shortcut in Players mode. GAIA
-        (player_id 0) and "no scenario loaded" both return False -- see this
-        panel's own module docstring for why GAIA has no slot here."""
-        if not (1 <= player_id <= 8) or not self.player_combo.isEnabled():
+        """Backs the player_select_0..8 shortcuts in Players mode (0 is
+        GAIA). False with no scenario loaded or for an id the selector lacks."""
+        index = self.player_combo.findData(player_id)
+        if index < 0 or not self.player_combo.isEnabled():
             return False
-        self.player_combo.setCurrentIndex(player_id - 1)
+        self.player_combo.setCurrentIndex(index)
         return True
 
     def _on_player_changed(self, index: int) -> None:
         if index < 0:
             return
-        self._player_id = index + 1
+        self._player_id = self.player_combo.itemData(index)
         self._populate_current_player()
         # After the repopulate, so anything the callback reads back off this
         # panel (current_view(), current_player_id()) already describes the
@@ -531,6 +534,7 @@ class PlayersPanel(QWidget):
         self._populating = True
         try:
             self._rebuild_host()
+            self._specs = specs_for_player(self._loaded, self._player_id)
             self._values = {
                 spec.field_id: self._pending_values.get(spec.field_id, {}).get(
                     self._player_id, current_value(self._loaded, spec, self._player_id)
@@ -548,7 +552,8 @@ class PlayersPanel(QWidget):
         # row is editable.
         read_only = sum(1 for spec in self._specs if spec.field_id not in self._editable_fields)
         version = self._loaded.scenario_version
-        summary = f"{total} setting{'' if total == 1 else 's'} for P{self._player_id} — scenario {version}"
+        who = "GAIA" if self._player_id == 0 else f"P{self._player_id}"
+        summary = f"{total} setting{'' if total == 1 else 's'} for {who} — scenario {version}"
         if read_only == total and total:
             summary += ", all read-only"
         elif read_only:
@@ -598,8 +603,7 @@ class PlayersPanel(QWidget):
     def _build_point_of_view_buttons(self, form: QFormLayout | None) -> None:
         """GH #22's Set / Go to / Reset View row, appended to the Point of
         View group when the file has one -- so a scenario version that never
-        stored the field, and a 1.41 file whose copy the library mis-frames
-        (player_fields.specs_for()), get no buttons along with no spinboxes.
+        stored the field gets no buttons along with no spinboxes.
 
         Rebuilt on every player switch with the rest of the form, which is
         what keeps the enabled states in step with the newly shown player
@@ -703,7 +707,9 @@ class PlayersPanel(QWidget):
         # SPINBOX -- value is guaranteed int here, never str (current_value()
         # only returns a str for a TEXT-kind spec).
         minimum, maximum = spec.minimum, spec.maximum
-        if spec.field_id in _F32_EXACT_RANGE_FIELDS:
+        # GAIA's copies have no f32 mirror, so its rows keep the spec's own range.
+        f32_bounded = spec.field_id in _F32_EXACT_RANGE_FIELDS and self._player_id != 0
+        if f32_bounded:
             # Widened rather than clamped if `value` itself somehow falls
             # outside ±_F32_EXACT_RANGE (no corpus file's does): a spinbox
             # range narrower than the value it is about to show would
@@ -721,7 +727,7 @@ class PlayersPanel(QWidget):
         widget = _make_spinbox(value, editable, minimum=minimum, maximum=maximum)
         # Range notes only when editable: a read-only row's tooltip is its
         # gate reason, which the note would otherwise displace (_build_groups()).
-        if editable and spec.field_id in _F32_EXACT_RANGE_FIELDS:
+        if editable and f32_bounded:
             widget.setToolTip(_F32_EXACT_RANGE_TOOLTIP)
         if editable and pov_last_tile is not None:
             widget.setToolTip(f"0 to {pov_last_tile}, or -1 for unset")
@@ -886,15 +892,15 @@ class PlayersPanel(QWidget):
         return self._player_count
 
     def refresh_player_labels(self, labels, colors) -> None:
-        """Relabel and re-icon the P1..P8 combo (GH #130), after a tribe name
-        or colour edit.
+        """Relabel and re-icon the GAIA, P1..P8 combo (GH #130), after a tribe
+        name or colour edit.
 
         Its own path rather than a show_scenario() round trip: the combo is
         built under `if not same_document`, which is False on every edit, so
-        a repopulate alone never relabels it. Row i is pid i + 1, relabelled
-        in place with no clear() or setCurrentIndex(), which keeps that
-        guard's selection-preservation intent and the index-to-pid mapping.
+        a repopulate alone never relabels it. Each row's pid is its itemData,
+        relabelled in place with no clear() or setCurrentIndex(), which keeps
+        that guard's selection-preservation intent.
         """
         self._player_labels = labels
         for i in range(self.player_combo.count()):
-            _set_player_item(self.player_combo, i, i + 1, labels, colors)
+            _set_player_item(self.player_combo, i, self.player_combo.itemData(i), labels, colors)

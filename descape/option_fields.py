@@ -175,9 +175,7 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
             "Villagers drop carried resources the moment their task changes, not "
             "only once they start the new task."
         ),
-        # Stays as-stored on the six 1.41 C2_ElCid_coop_* files (90/119/167/
-        # 255): the byte was never a flag there, so a checkbox would overwrite
-        # different semantics. _is_representable() is what enforces that.
+        # A stored value other than 0/1 stays as-stored: _is_representable().
     ),
     OptionFieldSpec(
         "lock_coop_alliances", "Lock co-op alliances", "Map",

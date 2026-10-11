@@ -34,6 +34,9 @@ Two library behaviours make a shim necessary.
    load_vocabulary() reads the per-version JSON off disk instead, which also
    means the UI can populate a condition/effect picker before any file is open.
 
+It also corrects a structure.json that frames a field at the wrong offset
+without changing its section's length: fix_structure(), per load.
+
 **Import ordering is load-bearing.** PRISTINE_CLASS_STATE snapshots every
 POISONED_CLASSES class at import time, and that snapshot is only clean if nothing has loaded a
 scenario yet. descape/scenario_io.py imports this module at its own top for
@@ -238,6 +241,69 @@ def adapt_map_links(map_section: Any, terrain: list | None = None) -> None:
         MapManager._link_list = _relinked(MapManager, replacements)
     if "layer" not in terrain_struct_fields(map_section):
         TerrainTile._link_list = _relinked(TerrainTile, {"layer": None})
+
+
+_V141_MISFRAMED_RUN = ("block_humanity_team_change", "collide_and_correct", "villager_force_drop", "initial_player_views")
+_V141_FIXED_RUN = ("collide_and_correct", "villager_force_drop", "initial_player_views", "lock_coop_alliances")
+
+
+def _contiguous_at(names: list[str], run: tuple[str, ...]) -> int:
+    """Index where `run` starts as a contiguous slice of `names`, else -1."""
+    if run[0] not in names:
+        return -1
+    start = names.index(run[0])
+    return start if tuple(names[start : start + len(run)]) == run else -1
+
+
+def fix_structure(structure: dict, scenario_version: str) -> None:
+    """Correct, in place, a library structure.json that misframes a field
+    without changing its section's length. A no-op for every version but 1.41.
+
+    1.41's Map: the library declares `script_name, block_humanity_team_change,
+    collide_and_correct, villager_force_drop, initial_player_views[16], ...`,
+    but on every 1.41 file measured (the six C2_ElCid_coop_* scenarios) the
+    flag byte sits AFTER the 16 views, where 1.42+ declares
+    `lock_coop_alliances`. Read the library's way, villager_force_drop takes
+    the first view byte (90, 119, 167 or 255) and every view is shifted one
+    byte (location_x values like 1694498816). Read this way, all six give
+    collide_and_correct 1, villager_force_drop 0, lock 1 and in-map views
+    (P1 (119,101) on ElCid_1, (81,11) on ElCid_2). The 1.54/1.55
+    2_Joan_coop_* files from the same campaign family read the same three
+    flags under their own structures, and the in-game editor's setting is
+    "Lock Co-op Alliances (formerly Block Humanity Team Change)", hence the
+    rename. The bytes alone cannot rule out `block, cc, views, vfd` (same
+    view bytes, flags permuted); the Joan files and the 1.40/1.42 shapes
+    favour this one. The section's length is unchanged, so `map_width`
+    onward parsed correctly either way.
+
+    Recognises exactly two 1.41 shapes: the library's misframed one
+    (rewritten) and the corrected one (left alone, so an upstream fix can
+    neither shift the field twice nor stop 1.41 files opening). Anything else
+    raises ValueError. Must run before the Map section is parsed.
+    """
+    if scenario_version != "1.41":
+        return
+    retrievers = structure["Map"]["retrievers"]
+    names = list(retrievers)
+    if "block_humanity_team_change" not in names and _contiguous_at(names, _V141_FIXED_RUN) >= 0:
+        return
+    start = _contiguous_at(names, _V141_MISFRAMED_RUN)
+    if (
+        start < 0
+        or "lock_coop_alliances" in names
+        or retrievers["block_humanity_team_change"].get("type") != "u8"
+        or "repeat" in retrievers["block_humanity_team_change"]
+    ):
+        raise ValueError(
+            "v1.41 Map retrievers match neither the known misframed nor the corrected order: "
+            + ", ".join(names[:16])
+        )
+    flag = retrievers["block_humanity_team_change"]
+    items = [(name, definition) for name, definition in retrievers.items() if name != "block_humanity_team_change"]
+    views_at = next(i for i, (name, _) in enumerate(items) if name == "initial_player_views")
+    items.insert(views_at + 1, ("lock_coop_alliances", flag))
+    retrievers.clear()
+    retrievers.update(items)
 
 
 def release_terrain_link() -> None:

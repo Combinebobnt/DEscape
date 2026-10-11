@@ -40,6 +40,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
+    asset_source,
     gate_orientation,
     object_catalog,
     player_labels,
@@ -48,19 +49,19 @@ from descape import (
     unit_rotation,
     unit_variant,
 )
-from descape.constant_picker import HIDDEN_LABEL, catalog_preview, items_for
+from descape.constant_picker import HIDDEN_LABEL, catalog_preview, items_for, preview_pixmap
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.unit_stats_table import unit_stats
 from descape.value_picker import ValuePickerView
-from descape.viewer_common import FontScaledWidth, _add_player_item, _relabel_player_rows
+from descape.viewer_common import FontScaledWidth, _add_player_item, _relabel_player_rows, pixmap_from_rgba
 
 # unit_fields.UnitFieldSpec.conditional -> the rule it names. The specs stay
 # Qt-free and data-only by naming a rule as a string; this is the one place
 # that resolves it, so the rule itself stays independently testable.
 _FIELD_CONDITIONALS = {"rotation_is_editable": unit_variant.is_rotation_editable}
 
-# Always on the Rotation caption's tooltip. unit_rotation_note (reworded for a group) shows it only when a typed value would
-# skip a selected unit (alone: a wall, cliff or single-frame object, never a tree or gate); see _apply_conditional_fields.
+# Always on the Rotation caption's tooltip. GH #147: a lone read-only unit gets a one-line per-kind tooltip on its value
+# instead of this inline; unit_rotation_note is group-only (see _apply_conditional_fields).
 _ROTATION_TOOLTIP = (
     "Rotation is shown as a facing number, 0 to one less than the unit's "
     "direction count, stored in radians (hover the field). Trees, plants and "
@@ -73,24 +74,29 @@ _ROTATION_TOOLTIP = (
 # The in-game editor's own Units-tab selection panel set (docs/
 # INGAME_EDITOR_REFERENCE.md's "Selecting: shows HP/Attack/Armour") plus
 # Range, which the original stats request named explicitly. unit_stats()
-# keys use genieutils' own British spelling; captions don't have to.
+# keys use genieutils' own British spelling; captions don't have to. The third
+# column is the game's own staticons file for it (GH #148, per widgetui/materials.json).
 _STAT_FIELDS = (
-    ("hp", "Hit points"),
-    ("attack", "Attack"),
-    ("melee_armour", "Melee armour"),
-    ("pierce_armour", "Pierce armour"),
-    ("range", "Range"),
+    ("hp", "Hit points", "hp"),
+    ("attack", "Attack", "damage"),
+    ("melee_armour", "Melee armour", "armor"),
+    ("pierce_armour", "Pierce armour", "range-armor"),
+    ("range", "Range", "range"),
 )
+# Icon+value pairs per stats row: HP/Attack, Melee/Pierce, Range.
+_STAT_PAIRS_PER_ROW = 2
+PORTRAIT_PX = 64
 
-# Shortened per the vertical-budget mitigations: one line at MIN_USEFUL_WIDTH
-# rather than the full sentence, which is still one tooltip away.
-_STATS_NOTE_SHORT = "Base values: no civ bonuses, tech upgrades or trigger effects applied."
+# GH #148: tooltip-only, on the stats grid; it no longer costs a visible line.
 _STATS_NOTE_FULL = (
     "Base values from the game's own unit table: no civ bonuses, tech "
     "upgrades or trigger effects applied."
 )
 
 _MIXED_TEXT = "(mixed)"
+
+# unit_fields.FIELDS rows the header shows instead of the field grid (GH #148).
+_HEADER_FIELDS = ("name", "unit_const")
 
 # Four rows plus the header, measured at the test font: the corpus never puts
 # more than 6 units in one host, and a taller list would push Add/Delete below
@@ -151,6 +157,16 @@ def _variant_of(unit) -> int:
     return unit_variant.variant_of(
         unit.rotation, unit_rotation.angle_count_for(const), unit_variant.variant_count_for(const)
     )
+
+
+def _readonly_rotation_tooltip(unit_const: int) -> str:
+    """GH #147: why a lone unit's Rotation is read-only, in two sentences; the caption keeps the full text."""
+    if unit_rotation.semantics_for(unit_const) == unit_rotation.INERT:
+        return "Single-frame object: nothing to rotate. Shown raw, not editable."
+    # A lone gate never reaches here: it takes gate mode.
+    if unit_const in unit_variant.excluded_consts():
+        return "Graphic variant index the game derives from neighbouring pieces. Shown raw, not editable."
+    return "Only one graphic variant: nothing to change. Shown raw, not editable."
 
 
 class UnitsPanel(QWidget):
@@ -360,22 +376,24 @@ class UnitsPanel(QWidget):
         self.unit_inspector_empty.setWordWrap(True)
         self.inspector_layout.addWidget(self.unit_inspector_empty)
 
-        self.unit_inspector_grid = QWidget()
-        grid = QGridLayout(self.unit_inspector_grid)
-        grid.setContentsMargins(0, 0, 0, 0)
         self.unit_field_labels: dict[str, QLabel] = {}
         self.unit_field_editors: dict[str, QWidget] = {}
         self.unit_field_captions: dict[str, QLabel] = {}
+        self.inspector_layout.addWidget(self._build_unit_header())
+
+        self.unit_inspector_grid = QWidget()
+        grid = QGridLayout(self.unit_inspector_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
         # Group mode's "(mixed)" spinbox value, one step below the live minimum.
         # A FLOAT's is set per group by _set_spin_mixed (None when not mixed).
         self._mixed_sentinels: dict[str, float | None] = {}
-        for row, spec in enumerate(unit_fields.FIELDS):
+        grid_specs = [spec for spec in unit_fields.FIELDS if spec.field_id not in _HEADER_FIELDS]
+        for row, spec in enumerate(grid_specs):
             caption = QLabel(f"{spec.label}:")
             grid.addWidget(caption, row, 0)
             self.unit_field_captions[spec.field_id] = caption
             if spec.field_id == "rotation":
-                # The full caveat, always reachable at zero vertical cost.
-                # unit_rotation_note below surfaces it only when a typed value skips a unit.
+                # The full caveat, always reachable at zero vertical cost; never shown inline (GH #147).
                 caption.setToolTip(_ROTATION_TOOLTIP)
                 self.unit_rotation_label = caption
             # A conditional field gets BOTH widgets, in the same cell: the
@@ -431,43 +449,13 @@ class UnitsPanel(QWidget):
                 self._mixed_sentinels[spec.field_id] = None
         self.inspector_layout.addWidget(self.unit_inspector_grid)
 
-        # Shown only when a typed Rotation would skip a selected unit, reworded for a group;
+        # Group-only: shown when a typed Rotation would skip a selected member.
         # _apply_conditional_fields owns its visibility and text.
-        self.unit_rotation_note = QLabel(_ROTATION_TOOLTIP)
+        self.unit_rotation_note = QLabel("")
         self.unit_rotation_note.setWordWrap(True)
         self.inspector_layout.addWidget(self.unit_rotation_note)
 
-        # A separate grid, not appended to unit_field_labels/unit_fields.FIELDS:
-        # these are derived reference data (empires2_x2_p1.dat, committed as
-        # unit_stats.json) and will never be editable, unlike every row above.
-        # Whole block hidden when unit_stats() has nothing for the const (no
-        # combat block, e.g. a pure decorative) -- see _apply_stats.
-        self.unit_stats_header = QLabel("<b>Base stats</b>")
-        self.inspector_layout.addWidget(self.unit_stats_header)
-
-        self.unit_stats_grid = QWidget()
-        stats_grid = QGridLayout(self.unit_stats_grid)
-        stats_grid.setContentsMargins(0, 0, 0, 0)
-        # Both labels per row, not just the value: ~1,169 of 2,642 consts
-        # have no type_50 combat block at all (a tree, say), and hiding only
-        # the value would leave four rows reading "Attack:", "Range:" with
-        # nothing beside them instead of disappearing outright.
-        self.unit_stat_rows: dict[str, tuple[QLabel, QLabel]] = {}
-        for row, (field_id, caption) in enumerate(_STAT_FIELDS):
-            cap_label = QLabel(f"{caption}:")
-            value_label = QLabel("")
-            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            stats_grid.addWidget(cap_label, row, 0)
-            stats_grid.addWidget(value_label, row, 1)
-            self.unit_stat_rows[field_id] = (cap_label, value_label)
-        self.inspector_layout.addWidget(self.unit_stats_grid)
-
-        self.unit_stats_note = QLabel(_STATS_NOTE_SHORT)
-        self.unit_stats_note.setWordWrap(True)
-        self.unit_stats_note.setToolTip(_STATS_NOTE_FULL)
-        self.inspector_layout.addWidget(self.unit_stats_note)
-
-        # A third separate grid (GH #42), on Base stats' own pattern and for
+        # A separate grid (GH #42), on the stats grid's own pattern and for
         # the same reason: a garrison is a list of OTHER units, not a field of
         # the selected one. The panel stays model-free -- show_garrison() is
         # handed finished rows by the viewer, which owns the model.
@@ -540,7 +528,75 @@ class UnitsPanel(QWidget):
         self.inspector_area.setWidget(self.inspector_host)
         return self.inspector_area
 
+    def _build_unit_header(self) -> QWidget:
+        """GH #148, on the in-game editor's stats preview: the portrait on the
+        left; name, Unit ID and the stats as icon+value pairs on the right."""
+        self.unit_header = QWidget()
+        row = QHBoxLayout(self.unit_header)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.unit_portrait = QLabel()
+        self.unit_portrait.setFixedSize(PORTRAIT_PX, PORTRAIT_PX)
+        self.unit_portrait.setAlignment(Qt.AlignCenter)
+        row.addWidget(self.unit_portrait, 0, Qt.AlignTop)
+        # "icon" (the install's portrait), "sprite" (the map sprite) or None (hidden).
+        self.portrait_source: str | None = None
+        self._portrait_pixmap = None
+        self._portrait_key = object()
+
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
+        name = QLabel("")
+        font = name.font()
+        font.setBold(True)
+        name.setFont(font)
+        name.setWordWrap(True)
+        name.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.unit_field_labels["name"] = name
+        column.addWidget(name)
+        const_row = QHBoxLayout()
+        const_row.setContentsMargins(0, 0, 0, 0)
+        caption = QLabel(f"{unit_fields.FIELDS_BY_ID['unit_const'].label}:")
+        value = QLabel("")
+        value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        const_row.addWidget(caption)
+        const_row.addWidget(value, 1)
+        self.unit_field_captions["unit_const"] = caption
+        self.unit_field_labels["unit_const"] = value
+        column.addLayout(const_row)
+
+        # Derived reference data (empires2_x2_p1.dat, committed as
+        # unit_stats.json), never editable, so not in unit_fields.FIELDS.
+        # Hidden whole when unit_stats() has nothing for the const -- see _apply_stats.
+        self.unit_stats_grid = QWidget()
+        self.unit_stats_grid.setToolTip(_STATS_NOTE_FULL)
+        stats_grid = QGridLayout(self.unit_stats_grid)
+        stats_grid.setContentsMargins(0, 0, 0, 0)
+        # Packs the pairs to the left whatever the pane width.
+        stats_grid.setColumnStretch(2 * _STAT_PAIRS_PER_ROW, 1)
+        # Both labels per pair, not just the value: ~1,169 of 2,642 consts
+        # have no type_50 combat block at all (a tree, say), so a pair goes
+        # outright rather than leaving an icon with nothing beside it.
+        # _apply_stats places them; the caption becomes an icon once an install supplies one.
+        self.unit_stat_rows: dict[str, tuple[QLabel, QLabel]] = {}
+        for field_id, caption_text, _icon in _STAT_FIELDS:
+            cap_label = QLabel(f"{caption_text}:")
+            cap_label.setToolTip(caption_text)
+            cap_label.setAccessibleName(caption_text)
+            value_label = QLabel("")
+            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            # Room for a 4-digit value, so the second pair column lines up across rows.
+            value_label.setMinimumWidth(value_label.fontMetrics().horizontalAdvance("0000"))
+            self.unit_stat_rows[field_id] = (cap_label, value_label)
+        # The install the stat icons were loaded for; a sentinel until the first _apply_stats.
+        self._stat_icon_install = object()
+        column.addWidget(self.unit_stats_grid)
+        column.addStretch(1)
+        row.addLayout(column, 1)
+        return self.unit_header
+
     def _show_inspector_fields(self, visible: bool) -> None:
+        self.unit_header.setVisible(visible)
         self.unit_inspector_grid.setVisible(visible)
         if not visible:
             # Shown again only if _apply_conditional_fields() re-admits it
@@ -565,7 +621,9 @@ class UnitsPanel(QWidget):
             self._show_inspector_fields(False)
             for label in self.unit_field_labels.values():
                 label.setText("")
+            self.unit_field_labels["rotation"].setToolTip("")
             self._apply_stats(None)
+            self._apply_portrait(None)
             self.hide_garrison()
             self._fit_inspector_height()
             return
@@ -600,6 +658,7 @@ class UnitsPanel(QWidget):
         finally:
             self._populating = False
         self._apply_stats(unit.unit_const)
+        self._apply_portrait(unit.unit_const)
         self._show_inspector_fields(True)
         self._fit_inspector_height()
 
@@ -636,6 +695,8 @@ class UnitsPanel(QWidget):
         finally:
             self._populating = False
         self._apply_stats(common_const)
+        # Like the stats: only when every member shares one const.
+        self._apply_portrait(common_const)
         self._show_inspector_fields(True)
         for field_id in ("reference_id", "garrisoned_in_id"):
             self.unit_field_captions[field_id].setVisible(False)
@@ -656,7 +717,7 @@ class UnitsPanel(QWidget):
         for field_id in ("reference_id", "garrisoned_in_id"):
             self.unit_field_captions[field_id].setVisible(True)
             self.unit_field_labels[field_id].setVisible(True)
-        self.unit_rotation_note.setText(_ROTATION_TOOLTIP)
+        self.unit_rotation_note.setText("")
 
     def _set_group_owner(self, players: set[int]) -> None:
         combo = self.unit_field_editors["player"]
@@ -730,8 +791,8 @@ class UnitsPanel(QWidget):
         label for the selected unit(s) -- today only Rotation, whose rule is
         unit_variant.is_rotation_editable. The editor shows if ANY unit's const
         admits it, or if every selected unit is a gate (rotation_field_mode's
-        "gate" mode); unit_rotation_note shows if a typed value would skip any
-        unit, so the caveat appears exactly where it applies.
+        "gate" mode); for a group, unit_rotation_note shows if a typed value
+        would skip any member. A lone read-only unit gets a tooltip instead (GH #147).
 
         Only ever called with the populating guard already held: it sets an
         editor's value, and the resulting valueChanged must not record a
@@ -770,7 +831,10 @@ class UnitsPanel(QWidget):
             else:
                 writable = admitted
             skipped = len(units) - len(writable)
-            self.unit_rotation_note.setVisible(skipped > 0)
+            # GH #147: a lone read-only unit explains itself in a tooltip, not the inline note.
+            self.unit_rotation_note.setVisible(group and skipped > 0)
+            readonly_single = not group and not allowed
+            label.setToolTip(_readonly_rotation_tooltip(units[0].unit_const) if readonly_single else "")
             if group:
                 if mode == "variant":
                     turned = len(writable)
@@ -847,23 +911,70 @@ class UnitsPanel(QWidget):
         )
 
     def _apply_stats(self, unit_const: int | None) -> None:
-        """Shows/hides each Base stats row against key presence in
-        unit_stats(unit_const), and hides the whole block (header, grid,
-        note) when the dict is empty -- an unrecognized const (a modded
-        scenario), or a real one with no HP and no combat block at all
-        (roughly a fifth of the table: cliffs, rocks, other decoratives).
-        `unit_const=None` (no selection) is treated the same as "no stats"."""
+        """Shows each stat pair against key presence in unit_stats(unit_const),
+        re-packing the present ones _STAT_PAIRS_PER_ROW to a row, so a tree
+        shows one pair rather than a gap. Hides the whole grid when the dict is
+        empty -- an unrecognized const (a modded scenario), or a real one with
+        no HP and no combat block at all (roughly a fifth of the table:
+        cliffs, rocks, other decoratives). `unit_const=None` (no selection) is
+        treated the same as "no stats"."""
+        self._load_stat_icons()
         stats = unit_stats(unit_const) if unit_const is not None else {}
-        has_stats = bool(stats)
-        self.unit_stats_header.setVisible(has_stats)
-        self.unit_stats_grid.setVisible(has_stats)
-        self.unit_stats_note.setVisible(has_stats)
+        self.unit_stats_grid.setVisible(bool(stats))
+        grid = self.unit_stats_grid.layout()
+        placed = 0
         for field_id, (cap_label, value_label) in self.unit_stat_rows.items():
             present = field_id in stats
+            grid.removeWidget(cap_label)
+            grid.removeWidget(value_label)
+            if present:
+                row, pair = divmod(placed, _STAT_PAIRS_PER_ROW)
+                grid.addWidget(cap_label, row, 2 * pair)
+                grid.addWidget(value_label, row, 2 * pair + 1)
+                placed += 1
             cap_label.setVisible(present)
             value_label.setVisible(present)
             # :g so 4.0 renders as "4" -- a melee unit's range is 0, not "0.0".
             value_label.setText(f"{stats[field_id]:g}" if present else "")
+
+    def _load_stat_icons(self) -> None:
+        """Each stat caption as the install's icon at the font's line height,
+        or its text with no install. Reloads only when the install changes."""
+        install = asset_source.get_install_path()
+        if install == self._stat_icon_install:
+            return
+        self._stat_icon_install = install
+        for field_id, caption, icon_name in _STAT_FIELDS:
+            cap_label = self.unit_stat_rows[field_id][0]
+            arr = asset_source.get_stat_icon(icon_name)
+            if arr is None:
+                cap_label.setText(f"{caption}:")
+            else:
+                cap_label.setPixmap(pixmap_from_rgba(arr, cap_label.fontMetrics().height()))
+
+    def _apply_portrait(self, unit_const: int | None) -> None:
+        """The install's portrait (building-aware), else the map sprite, else
+        hidden; instruction_preview's icon pattern. Re-resolved only when the
+        const or the install changes."""
+        key = (unit_const, asset_source.get_install_path())
+        if key != self._portrait_key:
+            self._portrait_key = key
+            pixmap, source = None, None
+            if unit_const is not None:
+                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(unit_const))
+                if arr is not None:
+                    pixmap, source = pixmap_from_rgba(arr, PORTRAIT_PX), "icon"
+                else:
+                    sprite = preview_pixmap(unit_const)
+                    if sprite is not None:
+                        pixmap = sprite.scaled(PORTRAIT_PX, PORTRAIT_PX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        source = "sprite"
+            self._portrait_pixmap, self.portrait_source = pixmap, source
+        if self._portrait_pixmap is None:
+            self.unit_portrait.clear()
+        else:
+            self.unit_portrait.setPixmap(self._portrait_pixmap)
+        self.unit_portrait.setVisible(self._portrait_pixmap is not None)
 
     def clear(self) -> None:
         """Blanks the inspector with no count to report -- the mode-switch

@@ -179,10 +179,7 @@ def _assert_grid_current(cache) -> None:
     """Every current level's bystander grid against a full build of that
     level's own dict. Not a fresh cache: its wholesale walks would bump the
     _call_counts() this file's splice-fired checks read. Pixels cover the dict."""
-    if isinstance(cache, IsoChunkCache):
-        levels = [lvl for lvl in cache._levels.values() if lvl.gen == cache._source_gen]
-    else:
-        levels = [cache]
+    levels = [lvl for lvl in cache._levels.values() if lvl.gen == cache._source_gen]
     for lvl in levels:
         want = render.build_bystander_grid(lvl.building_bboxes, cache.chunk_px)
         assert grid_state(lvl.bystander_grid) == grid_state(want), "the patched grid differs from a full build"
@@ -367,8 +364,8 @@ def test_sprite_bearing_unit_move_splices_and_matches_a_fresh_render(style, spri
 
 
 def _sprite_layer(cache):
-    """The cache's live SpriteLayer -- per mip level on Stepped, one on Sloped."""
-    return cache._level(0).sprites if hasattr(cache, "_level") else cache.sprites
+    """Level 0's live SpriteLayer (both styles keep one per mip level)."""
+    return cache._level(0).sprites
 
 
 @pytest.fixture
@@ -1009,13 +1006,10 @@ def _unit_state(cache, spliced: bool):
     would silently rebuild a stale one and hide a fallback."""
     by_tile = {t: [(id(u), color) for u, color in bucket] for t, bucket in cache.units_by_tile.items()}
     levels = {}
-    if isinstance(cache, IsoChunkCache):
-        for mip in STATE_MIPS:
-            lvl = cache._levels[mip] if spliced else cache._level(mip)
-            assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale, so it was not spliced"
-            levels[mip] = (dict(lvl.building_bboxes), _layer_state(lvl.sprites))
-    else:
-        levels[0] = (dict(cache.building_bboxes), _layer_state(cache.sprites))
+    for mip in STATE_MIPS if isinstance(cache, IsoChunkCache) else (0,):
+        lvl = cache._levels[mip] if spliced else cache._level(mip)
+        assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale, so it was not spliced"
+        levels[mip] = (dict(lvl.building_bboxes), _layer_state(lvl.sprites))
     return by_tile, levels
 
 
@@ -1499,18 +1493,14 @@ def _assert_takes_the_membership_path(cache, scenario, batch: list[UnitSplice]) 
     return component
 
 
-def _source_gen(cache):
-    return cache._source_gen if isinstance(cache, IsoChunkCache) else None
-
-
 def _apply_and_check(style, cache, scenario, sprites, counts, batch) -> list[UnitSplice]:
     """One membership batch through invalidate_units(): no gen bump, no
     wholesale walk, every level equal to a fresh cache's."""
-    gen = _source_gen(cache)
+    gen = cache._source_gen
     component = _assert_takes_the_membership_path(cache, scenario, batch)
     counts.update(building_bboxes=0, sprites=0)
     _apply_batch(cache, batch)
-    assert _source_gen(cache) == gen, "the batch bumped _source_gen, so it went wholesale"
+    assert cache._source_gen == gen, "the batch bumped _source_gen, so it went wholesale"
     _assert_spliced_like_a_fresh_cache(style, cache, scenario, sprites, counts)
     return component
 
@@ -1626,7 +1616,7 @@ def test_a_membership_component_over_the_cap_falls_back(style, shared_art_instal
     _place(scenario, 3, MILL_CONST, *MILL_TILE)
     cache = _make_cache(style, scenario, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims(0)
-    gen = _source_gen(cache)
+    gen = cache._source_gen
     counts = _call_counts(monkeypatch)
     tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
     batch = [_add_splice(scenario, 0, tree)]
@@ -1640,7 +1630,7 @@ def test_a_membership_component_over_the_cap_falls_back(style, shared_art_instal
     _apply_batch(cache, batch)
     stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
 
-    assert gen is None or _source_gen(cache) != gen, "an over-cap component did not bump the gen"
+    assert cache._source_gen != gen, "an over-cap component did not bump the gen"
     assert counts["building_bboxes"] >= 1, "an over-cap component should have taken the wholesale fallback"
     assert np.array_equal(stitched, _oracle(style, scenario, sprites=True)[:canvas_h, :canvas_w])
 
@@ -1695,10 +1685,10 @@ def _apply_move_and_check(style, cache, scenario, sprites, counts, batch, unit_f
     assert render_cache._batch_splice_refusal(cache.units_by_tile, batch) == "const:move"
     plan, why = render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, cache.unit_filter, batch)
     assert plan is not None, f"the Move went wholesale: {why}"
-    gen = _source_gen(cache)
+    gen = cache._source_gen
     counts.update(building_bboxes=0, sprites=0)
     _apply_batch(cache, batch)
-    assert _source_gen(cache) == gen, "the Move bumped _source_gen, so it went wholesale"
+    assert cache._source_gen == gen, "the Move bumped _source_gen, so it went wholesale"
     _assert_spliced_like_a_fresh_cache(style, cache, scenario, sprites, counts, unit_filter)
     _assert_packs_like_a_fresh_cache(style, cache, scenario, sprites, unit_filter)
     return plan
@@ -1846,7 +1836,7 @@ def test_a_wall_neighbourhood_past_the_cap_falls_back(style, run_wall_install, m
     run = _walls(scenario, [(1, (x, 40)) for x in (38, 39, 40, 41, 42)], RUN_WALL_RADIAN)
     cache = _make_cache(style, scenario, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims(0)
-    gen = _source_gen(cache)
+    gen = cache._source_gen
     counts = _call_counts(monkeypatch)
     batch = _group_move(scenario, 1, [run[2]], 0.0, 4.0)
 
@@ -1859,7 +1849,7 @@ def test_a_wall_neighbourhood_past_the_cap_falls_back(style, run_wall_install, m
     _apply_batch(cache, batch)
     stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
 
-    assert gen is None or _source_gen(cache) != gen, "an over-cap neighbourhood did not bump the gen"
+    assert cache._source_gen != gen, "an over-cap neighbourhood did not bump the gen"
     assert counts["building_bboxes"] >= 1, "an over-cap neighbourhood should have taken the wholesale fallback"
     assert np.array_equal(stitched, _oracle(style, scenario, sprites=True)[:canvas_h, :canvas_w])
 
@@ -1961,22 +1951,21 @@ def _pre_edit_cache(style: str, scenario, batch: list[UnitSplice], flt: UnitFilt
 def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, monkeypatch):
     """A refused (cap) or skipped (splice_levels=False) membership batch patches
     units_by_tile in place, never walking every unit, to exactly a fresh
-    build's buckets, bumps _units_version, and (Stepped) the gen; the render
-    then equals a fresh cache's."""
+    build's buckets, bumps _units_version and the gen; the render then equals
+    a fresh cache's."""
     scenario = _scenario()
     batch, flt = _in_place_batch(case, scenario)
     cache = _pre_edit_cache(style, scenario, batch, flt)
     if via == "cap":
         monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 0)
-    version, gen = cache._units_version, getattr(cache, "_source_gen", None)
+    version, gen = cache._units_version, cache._source_gen
     walks = _count_units_by_tile(monkeypatch)
 
     cache.invalidate_units(batch, splice_levels=via != "skipped")
 
     assert not walks, "the batch walked every unit instead of updating in place"
     assert cache._units_version > version
-    if gen is not None:
-        assert cache._source_gen == gen + 1, "an in-place update must leave every level stale"
+    assert cache._source_gen == gen + 1, "an in-place update must leave every level stale"
     fresh = _make_cache(style, scenario, unit_filter=flt)
     assert _bucket_ids(cache.units_by_tile) == _bucket_ids(fresh.units_by_tile)
     cache.invalidate_region((0, 0, *cache.canvas_dims(0)))

@@ -526,14 +526,14 @@ def test_small_trees_survives_a_unit_splice(fake_trees) -> None:
     assert level.sprites.by_anchor[(6, 6)][0][0].rgba.shape[:2] == shrunk
 
 
-def test_small_trees_applies_at_every_mip_level_not_just_the_resident_one(fake_trees) -> None:
+@pytest.mark.parametrize("build", [_iso_cache, _sloped_cache], ids=["Stepped", "Sloped"])
+def test_small_trees_applies_at_every_mip_level_not_just_the_resident_one(fake_trees, build) -> None:
     """The factor multiplies into sprite_scale(half_w), so it has to follow
     the mip ladder rather than being applied once at level 0.
 
-    IsoChunkCache alone, the same builder set the textures mip test uses for
-    the same reason: SlopedChunkCache enumerates a single level, and Flat
-    does not reach this layer at all."""
-    cache = _iso_cache(_scenario(with_trees=True), sprites=True)
+    Stepped and Sloped, whose ladder is Stepped's coarser levels
+    (TASK-031.60); Flat does not reach this layer at all."""
+    cache = build(_scenario(with_trees=True), sprites=True)
     levels = sorted(cache._mip_tile_px)
     assert len(levels) > 1, f"enumerated only {levels} -- test would be vacuous"
     fine, coarse = min(levels), max(levels)

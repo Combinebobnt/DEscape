@@ -446,3 +446,128 @@ def test_prebuilt_terrain_on_a_v121_map_keeps_the_mood_relink() -> None:
     finally:
         library_compat.depoison()
     assert MapManager._link_list is pristine_mm
+
+
+# -- fix_structure(): the v1.41 Map override (TASK-061) ------------------------
+
+_FIXED_WIDTH = {"u8": 1, "s8": 1, "u16": 2, "s16": 2, "u32": 4, "s32": 4, "f32": 4, "f64": 8}
+
+
+def _library_structure(version: str) -> dict:
+    import json
+
+    return json.loads((library_compat.VERSIONS_DIR / f"v{version}" / "structure.json").read_text(encoding="utf-8"))
+
+
+def _map_names(structure: dict) -> list[str]:
+    return list(structure["Map"]["retrievers"])
+
+
+def _width(section: dict, definition: dict) -> int:
+    kind = definition["type"]
+    if kind.startswith("struct:"):
+        fields = section["structs"][kind.split(":", 1)[1]]["retrievers"].values()
+        one = sum(_FIXED_WIDTH[f["type"]] for f in fields)
+    else:
+        one = _FIXED_WIDTH[kind]
+    return one * definition.get("repeat", 1)
+
+
+def _run_width(structure: dict, first: str, stop: str) -> int:
+    """Bytes from `first` up to (not including) `stop` in Map's order."""
+    section = structure["Map"]
+    names = _map_names(structure)
+    return sum(_width(section, section["retrievers"][n]) for n in names[names.index(first) : names.index(stop)])
+
+
+def test_the_installed_library_still_misframes_v1_41_map() -> None:
+    """Fails once a pin bump fixes the library's own 1.41 order: the override
+    is then a no-op and can be removed."""
+    names = _map_names(_library_structure("1.41"))
+    at = names.index("script_name")
+    assert names[at + 1 : at + 6] == [
+        "block_humanity_team_change", "collide_and_correct", "villager_force_drop",
+        "initial_player_views", "player_1_camera_y",
+    ]
+    assert "lock_coop_alliances" not in names
+
+
+def test_fix_structure_moves_the_flag_after_the_views_as_lock_coop_alliances() -> None:
+    structure = _library_structure("1.41")
+    before_width = _run_width(structure, "block_humanity_team_change", "player_1_camera_y")
+    flag = structure["Map"]["retrievers"]["block_humanity_team_change"]
+    retrievers = structure["Map"]["retrievers"]
+    library_compat.fix_structure(structure, "1.41")
+    assert structure["Map"]["retrievers"] is retrievers, "rebuilt in place"
+    names = _map_names(structure)
+    at = names.index("script_name")
+    assert names[at + 1 : at + 6] == [
+        "collide_and_correct", "villager_force_drop", "initial_player_views",
+        "lock_coop_alliances", "player_1_camera_y",
+    ]
+    assert "block_humanity_team_change" not in names
+    assert retrievers["lock_coop_alliances"] == flag
+    assert _run_width(structure, "collide_and_correct", "player_1_camera_y") == before_width == 131
+    # Nothing else moved: the rest of Map keeps the library's order.
+    library = _map_names(_library_structure("1.41"))
+    assert [n for n in names if n != "lock_coop_alliances"] == [n for n in library if n != "block_humanity_team_change"]
+
+
+def test_fix_structure_twice_is_a_no_op() -> None:
+    once = _library_structure("1.41")
+    library_compat.fix_structure(once, "1.41")
+    twice = _library_structure("1.41")
+    library_compat.fix_structure(twice, "1.41")
+    library_compat.fix_structure(twice, "1.41")
+    assert _map_names(twice) == _map_names(once)
+    assert twice == once
+
+
+@pytest.mark.parametrize("version", ["1.40", "1.42", "1.58"])
+def test_fix_structure_leaves_other_versions_alone(version: str) -> None:
+    structure = _library_structure(version)
+    library_compat.fix_structure(structure, version)
+    assert structure == _library_structure(version)
+    assert _map_names(structure) == _map_names(_library_structure(version))
+
+
+def _synthetic_v141(names: list[str]) -> dict:
+    return {"Map": {"retrievers": {n: {"type": "u8", "default": 0} for n in names}, "structs": {}}}
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        # vfd before cc: neither known shape.
+        ["script_name", "block_humanity_team_change", "villager_force_drop", "collide_and_correct", "initial_player_views"],
+        # The flag already after the views, but still under its old name.
+        ["script_name", "collide_and_correct", "villager_force_drop", "initial_player_views", "block_humanity_team_change"],
+        # Both names at once.
+        ["script_name", "block_humanity_team_change", "collide_and_correct", "villager_force_drop",
+         "initial_player_views", "lock_coop_alliances"],
+        # No flag at all (1.40's shape).
+        ["script_name", "collide_and_correct", "villager_force_drop", "initial_player_views", "player_1_camera_y"],
+    ],
+)
+def test_fix_structure_refuses_a_third_v1_41_shape(names: list[str]) -> None:
+    with pytest.raises(ValueError):
+        library_compat.fix_structure(_synthetic_v141(names), "1.41")
+
+
+def test_the_map_load_routes_its_library_structure_through_fix_structure(monkeypatch) -> None:
+    """The wiring: deleting scenario_io's fix_structure() call fails this."""
+    from pathlib import Path
+
+    calls = []
+    real = library_compat.fix_structure
+
+    def counting(structure, scenario_version):
+        calls.append((structure, scenario_version))
+        real(structure, scenario_version)
+
+    monkeypatch.setattr(library_compat, "fix_structure", counting)
+    blank = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120x120.aoe2scenario"
+    loaded = load_map_and_units(blank)
+    assert len(calls) == 1
+    assert calls[0][0] is loaded._scenario.structure
+    assert calls[0][1] == "1.58"

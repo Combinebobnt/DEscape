@@ -230,6 +230,46 @@ def test_decoration_shell_walls_carry_their_flag_and_base_as_pieces(graphics):
             assert piece["frame_count"] == want_frames, (unit_const, piece["file_name"])
 
 
+# unit_const -> (graphic_id, _underwater body), read off the real .dat 2026-10-09.
+# The standing graphic is the surface splash, empty or a sliver at frame 0 (GH #178).
+FISH_BODIES = {
+    53: (1713, "a_fish_perch_underwater_x1"),
+    61: (2184, "a_fish_dolphin_underwater_x1"),
+    69: (3187, "a_fish_shore_underwater_x1"),
+    450: (2183, "a_fish_marlin1_underwater_x1"),
+    451: (2183, "a_fish_marlin1_underwater_x1"),
+    455: (2185, "a_fish_dorado_underwater_x1"),
+    456: (2190, "a_fish_salmon_underwater_x1"),
+    457: (2191, "a_fish_tuna_underwater_x1"),
+    458: (2192, "a_fish_snapper_underwater_x1"),
+    1141: (3192, "a_fish_boxturtles_underwater_x1"),
+    2625: (11398, "a_fish_whale_underwater_x1"),
+}
+
+
+def test_fish_resolve_to_their_underwater_body_not_the_splash(graphics):
+    for unit_const, (graphic_id, file_name) in FISH_BODIES.items():
+        entry = graphics[str(unit_const)]
+        assert (entry["graphic_id"], entry["file_name"]) == (graphic_id, file_name), unit_const
+        assert "pieces" not in entry, unit_const
+    # Dorado keeps its splash's two variants, so Cycle Variant's scope is unchanged.
+    dorado = graphics["455"]
+    assert (dorado["angle_count"], dorado.get("rotation_is_variant"), dorado.get("variant_count")) == (2, True, 2)
+
+
+def test_only_the_marlin_body_carries_a_frame_offset(graphics):
+    """Its frames 0-4 hold no ink and 5-6 a few px; every other body has a fish at frame 0."""
+    offsets = {int(k): e["frame_offset"] for k, e in graphics.items() if "frame_offset" in e}
+    assert offsets == {450: 7, 451: 7}
+
+
+def test_only_the_perch_body_carries_a_top_level_offset(graphics):
+    """Perch's `_underwater` delta sits at .dat offset (0, -30); every other
+    fish body's is (0, 0), so only 53 carries dx/dy (amendment 2026-10-09)."""
+    offsets = {int(k): (e["dx"], e["dy"]) for k, e in graphics.items() if "dx" in e or "dy" in e}
+    assert offsets == {53: (0, -30)}
+
+
 def test_farm_family_has_no_sld_entry(graphics):
     for unit_const in FARM_FAMILY_CONSTS:
         assert str(unit_const) not in graphics, (
@@ -254,10 +294,20 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
     assert graphics, "table is empty"
     for key, entry in graphics.items():
         assert key.isdigit(), f"key {key!r} is not a unit_const"
-        fields = set(entry) - {"pieces", "rotation_is_variant", "variant_count"}
+        fields = set(entry) - {"pieces", "rotation_is_variant", "variant_count", "frame_offset", "dx", "dy"}
         assert fields == set(FIELDS), f"unit_const {key} has fields {sorted(entry)}"
         for field, kind in FIELDS.items():
             assert isinstance(entry[field], kind), f"unit_const {key}.{field}"
+        if "frame_offset" in entry:
+            # Added to a dispatched frame run, so it must stay inside one run.
+            assert isinstance(entry["frame_offset"], int), key
+            assert 0 < entry["frame_offset"] < entry["frame_count"], key
+        if "dx" in entry or "dy" in entry:
+            # Both or neither, ints, never (0, 0), and never beside pieces, whose
+            # draw path would drop a top-level offset.
+            assert isinstance(entry.get("dx"), int) and isinstance(entry.get("dy"), int), key
+            assert (entry["dx"], entry["dy"]) != (0, 0), key
+            assert "pieces" not in entry, key
         if "rotation_is_variant" in entry:
             assert entry["rotation_is_variant"] is True, (
                 f"unit_const {key}: rotation_is_variant is omitted when false, "

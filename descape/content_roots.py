@@ -7,9 +7,10 @@ Profile and mods are optional by design. A missing, unreadable or
 undetectable profile or mods folder yields no roots of that kind, logged to
 debug_log only, never a dialog, so every consumer still works install-only.
 
-Strictly read-only: the profile sits under a Proton compatdata/ prefix on
-Linux, and the hard rule forbids writing there. tests/test_content_roots.py
-scans this module's source for write calls.
+Strictly read-only: this is a discovery module, and the mods/subscribed/
+folders it lists are re-synced by the game's mod manager, which the hard
+rule forbids writing to.
+tests/test_content_roots.py scans this module's source for write calls.
 
 Profile location, in priority order (the same shape as
 asset_source.get_install_path()):

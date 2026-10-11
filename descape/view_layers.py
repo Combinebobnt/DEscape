@@ -58,6 +58,7 @@ class LayerState:
     """
 
     terrain_textures: bool = True
+    terrain_blend: bool = True
     farm_overlay: bool = True
     small_trees: bool = False
     hero_glow: bool = True
@@ -91,6 +92,8 @@ class LayerSpec:
     styles: frozenset[str] | None
     requires_sprites: bool
     keybind_label: str
+    # Draws over the real textures, so greyed while Terrain Textures is off.
+    requires_textures: bool = False
 
 
 LAYERS: tuple[LayerSpec, ...] = (
@@ -107,6 +110,21 @@ LAYERS: tuple[LayerSpec, ...] = (
         styles=None,
         requires_sprites=False,
         keybind_label="Terrain Textures Layer",
+    ),
+    LayerSpec(
+        layer_id="terrain_blend",
+        label="Terrain &Blending",
+        tooltip=(
+            "Blend each tile into higher-priority neighbouring terrain through "
+            "the game's own transition masks, and draw a tile's second "
+            "(layered) terrain over it. Off, every tile is a hard-edged crop "
+            "of its own texture."
+        ),
+        default=True,
+        styles=None,
+        requires_sprites=False,
+        keybind_label="Terrain Blending Layer",
+        requires_textures=True,
     ),
     LayerSpec(
         layer_id="farm_overlay",
@@ -175,7 +193,7 @@ LAYERS: tuple[LayerSpec, ...] = (
 
 
 def availability(
-    spec: LayerSpec, *, style: str, sprites_enabled: bool, has_map: bool
+    spec: LayerSpec, *, style: str, sprites_enabled: bool, has_map: bool, terrain_textures: bool = True
 ) -> tuple[bool, str]:
     """Whether `spec`'s toggle is usable right now, plus the tooltip to show.
 
@@ -199,4 +217,6 @@ def availability(
         return False, f"Only drawn in {pretty} ({terrain_style.label_for(style)} has no such layer)"
     if spec.requires_sprites and not sprites_enabled:
         return False, "Needs View > Show sprites, which is what builds this layer"
+    if spec.requires_textures and not terrain_textures:
+        return False, "Needs View > Layers > Terrain Textures, which is what this blends"
     return True, spec.tooltip

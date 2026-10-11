@@ -32,9 +32,9 @@ _SECTIONS = {
         "perf drag set-elevation: 52 steps, 2400ms total, 46.2ms/step (max 152.7), wall 2018ms, untimed 44ms",
     ],
     "undo2": [
-        "Sloped view: 22455 tiles dirty, re-rendered full map instead of patching (prepared in 0.40s)",
+        "Sloped view: 22455 tiles dirty, refreshed the full map in place instead of patching (in 0.30s)",
         "Undo: Set elevation",
-        "perf op undo: 349ms | history_restore 6.7 re-render 330.1 untimed 1.0",
+        "perf op undo: 349ms | history_restore 6.7 refresh 300.1 untimed 1.0",
     ],
 }
 
@@ -51,9 +51,17 @@ def test_the_gates_line_reads_every_gate_from_its_own_section():
         "G3_steps": "52", "G3_ms_step": "46.2", "G3_max": "152.7",
         "G4_undo1_op": "427", "G4_undo1_next_paint": "503", "G4_undo1_total": "931", "G4_undo1_path": "patch",
         "G4_undo2_op": "349", "G4_undo2_next_paint": "487", "G4_undo2_total": "837",
-        "G4_undo2_path": "rerender:22455",
+        "G4_undo2_path": "refresh:22455",
         "G6_max_step": "152.7",
     }
+
+
+def test_a_log_from_before_the_in_place_refresh_reads_as_a_rerender():
+    """The A00 baselines (TASK-031.61) were logged before A5's refresh."""
+    old = "Sloped view: 22455 tiles dirty, re-rendered full map instead of patching (prepared in 0.40s)"
+    sections = {**_SECTIONS, "undo2": [old, *_SECTIONS["undo2"][1:]]}
+    stalls = dict.fromkeys(("draw", "undo1", "undo2"), (0.0, 0.0, 0.0))
+    assert " G4_undo2_path=rerender:22455 " in bench_gui_drag.gh180_gates(sections, stalls)
 
 
 def test_the_post_stroke_composite_is_the_first_after_the_drag_line_not_before():

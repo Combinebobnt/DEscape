@@ -722,12 +722,15 @@ def test_an_elevation_edit_with_outlines_off_is_outlined_at_the_new_height_once_
     try:
         view = window.map_view
         _place(window, _TOWN_CENTRE, (20, 20))
+        # The 4x4 snaps to a whole number (GH #206), so its own tile is int(x), int(y), not the clicked one.
+        (centre,) = [e.unit for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
+        own = (int(centre.x), int(centre.y))
         at_old_height = _expected_points(view)
         window.mode_combo.setCurrentText("Terrain")
         assert view._unit_index is not None
         window._on_tool_selected("elevation")
         window.on_edit_stroke_start()
-        window.on_edit_stroke_tile(20, 20, Qt.NoModifier)
+        window.on_edit_stroke_tile(*own, Qt.NoModifier)
         assert not view._footprint_refresh_pending, "a hidden overlay queued a rebuild"
         window.on_edit_stroke_end()
         QApplication.processEvents()

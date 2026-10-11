@@ -129,22 +129,10 @@ def test_every_spec_present_by_default() -> None:
     assert {s.field_id for s in specs_for(loaded)} == {s.field_id for s in player_fields._SPECS}
 
 
-def test_point_of_view_is_dropped_on_a_1_41_file() -> None:
-    """The one version check in specs_for(): 1.41's initial_player_views is
-    present but framed one byte early by the library, so the pair is hidden
-    rather than shown as garbage a typed value would patch at the wrong
-    offset. Everything else on the same file stays."""
-    loaded = _stub_loaded(scenario_version="1.41")
-    ids = {s.field_id for s in specs_for(loaded)}
-    assert player_fields.POV_X_FIELD not in ids
-    assert player_fields.POV_Y_FIELD not in ids
-    assert ids == {
-        s.field_id for s in player_fields._SPECS if s.field_id not in player_fields._POV_FIELD_IDS
-    }
-
-
-@pytest.mark.parametrize("version", ["1.40", "1.42", "1.54", "1.58"])
+@pytest.mark.parametrize("version", ["1.40", "1.41", "1.42", "1.54", "1.58"])
 def test_point_of_view_survives_every_other_version(version: str) -> None:
+    """1.41 included: library_compat.fix_structure() frames its views
+    correctly, so specs_for() has no version check left."""
     ids = {s.field_id for s in specs_for(_stub_loaded(scenario_version=version))}
     assert player_fields.POV_X_FIELD in ids
     assert player_fields.POV_Y_FIELD in ids
@@ -282,6 +270,90 @@ def test_current_value_raises_for_a_player_id_the_layout_has_no_slot_for() -> No
     spec = next(s for s in specs_for(loaded) if s.field_id == "tribe_name")  # NO_GAIA
     with pytest.raises(ValueError):
         current_value(loaded, spec, 0)
+
+
+# -- GAIA (GH #187) -------------------------------------------------------------
+
+
+def test_gaia_fields_are_the_in_game_editors_gaia_rows() -> None:
+    """Pinned by the plan's Step 0 (tester screenshots on GH #187): Food, Wood,
+    Stone, Gold, Pop Limit, Starting Age, Color, Civilization, Architecture,
+    Lock Civ and Lock Personality. No tribe name, name, Personality, AI type,
+    base priority or camera."""
+    expected = {
+        "civilization", "architecture", "lock_civilization", "lock_personality", "starting_age",
+        "food", "wood", "stone", "gold", "color", "pop_limit",
+    }
+    assert expected == player_fields.GAIA_FIELDS
+
+
+def test_every_gaia_field_but_pop_limit_has_a_gaia_slot_in_its_layout() -> None:
+    specs = {s.field_id: s for s in player_fields._SPECS}
+    for field_id in player_fields.GAIA_FIELDS - {"pop_limit"}:
+        assert specs[field_id].layout.index_for(0) == 8, field_id
+    assert specs["pop_limit"].layout is PlayerArrayLayout.NO_GAIA
+
+
+def test_gaia_pop_limit_reads_map_slot_8_never_player_data_4() -> None:
+    entries = [SimpleNamespace(retriever_map={"population_limit": SimpleNamespace(data=75.0)}) for _ in range(8)]
+    loaded = _stub_loaded({
+        ("Units", "player_data_4"): _StubRetriever(b"\x00" * 4, data=entries),
+        ("Map", "per_player_population_cap"): _StubRetriever(b"\x00" * 4, data=list(range(100, 116))),
+    })
+    spec = next(s for s in specs_for(loaded) if s.field_id == "pop_limit")
+    assert current_value(loaded, spec, 0) == 108
+    assert current_value(loaded, spec, 1) == 100
+
+
+def test_gaia_pop_limit_raises_without_the_map_array() -> None:
+    """Pre-1.44: player_data_4 has 8 entries and no GAIA copy, so there is nothing to read."""
+    entries = [SimpleNamespace(retriever_map={"population_limit": SimpleNamespace(data=75.0)}) for _ in range(8)]
+    loaded = _stub_loaded({
+        ("Map", "per_player_population_cap"): None,
+        ("Units", "player_data_4"): _StubRetriever(b"\x00" * 4, data=entries),
+    })
+    spec = next(s for s in specs_for(loaded) if s.field_id == "pop_limit")
+    assert current_value(loaded, spec, 1) == 75
+    with pytest.raises(ValueError):
+        current_value(loaded, spec, 0)
+
+
+def test_specs_for_player_on_the_blank_template() -> None:
+    loaded = scenario_io.load_map_and_units(scenario_io.BLANK_TEMPLATE_PATH)
+    assert {s.field_id for s in player_fields.specs_for_player(loaded, 0)} == player_fields.GAIA_FIELDS
+    for player_id in range(1, 9):
+        assert player_fields.specs_for_player(loaded, player_id) == specs_for(loaded)
+    for spec in player_fields.specs_for_player(loaded, 0):
+        assert isinstance(current_value(loaded, spec, 0), (int, str)), spec.field_id
+
+
+@pytest.mark.corpus
+def test_gaia_has_no_pop_limit_row_before_1_44() -> None:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "C2_ElCid_coop_1_v0_16.aoe2scenario"
+    if not path.exists():
+        pytest.skip("examples/ corpus not present")
+    loaded = scenario_io.load_map_and_units(path)
+    assert float(loaded.scenario_version) < 1.44
+    assert "pop_limit" in {s.field_id for s in specs_for(loaded)}  # P1..P8 read player_data_4
+    gaia_ids = {s.field_id for s in player_fields.specs_for_player(loaded, 0)}
+    assert "pop_limit" not in gaia_ids
+    assert gaia_ids <= player_fields.GAIA_FIELDS
+
+
+@pytest.mark.corpus
+def test_gaia_rows_resolve_on_the_corpus(scenario_path) -> None:
+    loaded = scenario_io.load_map_and_units(scenario_path)
+    gaia_specs = player_fields.specs_for_player(loaded, 0)
+    assert {s.field_id for s in gaia_specs} <= player_fields.GAIA_FIELDS
+    map_section = loaded._scenario.sections.get("Map")
+    has_map_cap = map_section is not None and bool(
+        getattr(map_section.retriever_map.get("per_player_population_cap"), "data", None)
+    )
+    assert ("pop_limit" in {s.field_id for s in gaia_specs}) == has_map_cap, scenario_path.name
+    for spec in gaia_specs:
+        assert isinstance(current_value(loaded, spec, 0), (int, str)), (scenario_path.name, spec.field_id)
 
 
 # -- against a real load -------------------------------------------------------

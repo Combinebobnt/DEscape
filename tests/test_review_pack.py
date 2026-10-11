@@ -37,6 +37,28 @@ def test_ground_texture_pack_check_passes() -> None:
     gen.check("ground_texture")
 
 
+@pytest.mark.corpus
+def test_sloped_mip_pack_check_passes() -> None:
+    """Needs examples/ and the real install: real maps, textures and sprites
+    stitched from SlopedChunkCache's coarser levels."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._sloped_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("sloped_mip")
+
+
+@pytest.mark.corpus
+def test_ground_borders_pack_check_passes() -> None:
+    """Needs examples/ and the real install's textures and blendomatic: terrain
+    blending never engages without them."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._border_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("ground_borders")
+
+
 # ------------------------------------------------------------ spec coupling
 
 

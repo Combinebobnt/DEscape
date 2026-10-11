@@ -104,8 +104,8 @@ class MapOptionsPanel(QWidget):
     _ABSENT_NOTE = "Settings this scenario version does not store are not listed."
     # A row can also be listed but not editable, which is a different
     # situation and needs saying here rather than only in the row's tooltip --
-    # a user looking at "villager_force_drop  90" on a 1.41 file has no other
-    # way to find out why it is not a checkbox. See _is_representable().
+    # a user looking at a flag row stored as 90 has no other way to find out
+    # why it is not a checkbox. See _is_representable().
     _AS_STORED_NOTE = (
         "{count} setting{s} hold{verb} a value no editor could show truthfully "
         "and {is_are} listed as stored -- hover for details."
@@ -495,13 +495,14 @@ class MapOptionsPanel(QWidget):
     def _is_representable(spec, value: int) -> bool:
         """Whether this row's normal editor can show `value` truthfully.
 
-        Both false cases are real corpus data, not hypotheticals, and both
-        would otherwise misreport the file rather than fail loudly:
+        Both false cases would otherwise misreport the file rather than fail
+        loudly:
 
-        - A checkbox off bool(value) shows 90, 119, 167 and 255 -- every value
-          villager_force_drop carries on the 1.41 files, where the byte exists
-          but was never a flag -- as an indistinguishable ticked box, which a
-          save would then write back as 1 over the stored byte.
+        - A checkbox off bool(value) would show a flag byte stored as, say,
+          90 as an indistinguishable ticked box, which a save would then
+          write back as 1 over the stored byte. No corpus file carries one
+          now; the 1.41 values that once did were a misframed read, fixed by
+          library_compat.fix_structure().
         - A spinbox raises OverflowError past int32 and *silently clamps*
           anything else outside its range. The instance that forced this rule
           was required_score_for_score_victory, 0xFFFFFFFF on five corpus

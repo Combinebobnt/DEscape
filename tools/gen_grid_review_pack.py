@@ -140,7 +140,7 @@ def _box(cache, style: str, tiles, pad):
         xs = [x for x, _y, _e in tiles]
         ys = [y for _x, y, _e in tiles]
         return (min(xs) - side) * px, (min(ys) - top) * px, (max(xs) + 1 + side) * px, (max(ys) + 1 + bottom) * px
-    proj = cache.proj if style == "sloped" else cache._levels[0].proj
+    proj = cache._levels[0].proj
     xs, ys = [], []
     for tx, ty, elev in tiles:
         sx, sy = grp.ig.tile_screen_origin(tx, ty, elev, proj)

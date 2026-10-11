@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifies File > Resize Map… (TASK-107, GH #45) by driving the real
+"""Verifies Map > Resize Map… (TASK-107, GH #45) by driving the real
 ViewerWindow headlessly (QT_QPA_PLATFORM=offscreen), the same technique
 tools/verify_copy_paste.py uses, so the action, the document replacement and
 Save As are exercised rather than only scenario_resize's pure functions.

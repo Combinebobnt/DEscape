@@ -602,7 +602,7 @@ SECTION_FILE = ROOT / "examples" / "F7_2_Dos Pilas (648).aoe2scenario"
 
 
 def _capture_section_states(out_dir: Path) -> list[Path]:
-    """Section management at MIN_USEFUL_WIDTH: the section row with a member
+    """Section management at MIN_USEFUL_WIDTH: the pane with a section member
     selected, the open Move to Section menu, the tree after a New Section,
     the disabled states with their tooltips, and the divider-free fixture
     grouped by its first New Section. Widths and tooltips are printed."""
@@ -620,11 +620,11 @@ def _capture_section_states(out_dir: Path) -> list[Path]:
         written.append(path)
 
     def state(panel, label: str) -> None:
-        print(f"  {label}: new={panel.section_new_button.isEnabled()} "
+        print(f"  {label}: new={panel.section_new_action.isEnabled()} "
               f"rename={panel.section_rename_action.isEnabled()} "
-              f"move={panel.section_move_button.isEnabled()} "
-              f"move tip={panel.section_move_button.toolTip()!r} "
-              f"new tip={panel.section_new_button.toolTip()!r}")
+              f"move={panel.section_move_action.isEnabled()} "
+              f"move tip={panel.section_move_action.toolTip()!r} "
+              f"new tip={panel.section_new_action.toolTip()!r}")
 
     window = _open_window(SECTION_FILE)
     panel = window.trigger_panel
@@ -637,8 +637,8 @@ def _capture_section_states(out_dir: Path) -> list[Path]:
         for label, widget in (
             ("move up", panel.trigger_move_up_button),
             ("move dn", panel.trigger_move_down_button),
-            ("new sec", panel.section_new_button),
-            ("move to", panel.section_move_button),
+            ("sec up", panel.section_up_button),
+            ("sec dn", panel.section_down_button),
         ):
             print(f"  {label:8s} x={widget.x():4d} width={widget.width():4d} hint={widget.sizeHint().width():4d}")
 
@@ -648,7 +648,7 @@ def _capture_section_states(out_dir: Path) -> list[Path]:
         shot(window, "section_member_selected.png")
 
         menu = panel.section_move_menu
-        menu.popup(panel.section_move_button.mapToGlobal(panel.section_move_button.rect().bottomLeft()))
+        menu.popup(panel.sections_button.mapToGlobal(panel.sections_button.rect().bottomLeft()))
         QApplication.processEvents()
         menu_path = out_dir / "section_move_menu.png"
         menu.grab().save(str(menu_path))

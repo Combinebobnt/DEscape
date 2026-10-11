@@ -90,7 +90,10 @@ from descape.viewer_common import (
 
 # Stroke tools _touch_tile gap-fills. Cliff too: each path tile feeds the chain walk
 # in order, so a fast drag lays the same run as a slow one.
-_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "cliff"})
+_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "eraser", "cliff"})
+
+# Units-mode brushes: a drag mutates, so they skip the selection click and hover cue.
+_UNIT_BRUSH_TOOLS = frozenset({"convert", "eraser"})
 
 
 def _add_closed_polygons(path, polygons) -> None:
@@ -160,6 +163,8 @@ class MapView(QGraphicsView):
     # per event, so wheelEvent() accumulates rather than treating every event
     # as a full zoom step. See wheelEvent's own docstring.
     WHEEL_NOTCH_UNITS = 120
+    # GH #172: Ctrl+wheel up turns the Place Unit ghost clockwise (+1, like "."). Its feel is a human check.
+    PLACE_WHEEL_DIRECTION = 1
     # Idle gap that ends a wheel GESTURE, so the next event starts a fresh
     # one with a fresh +/-1 mip budget; also the minimum time between two
     # mip crossings in one continuous roll. PROVISIONAL, in the same sense as
@@ -605,6 +610,14 @@ class MapView(QGraphicsView):
         # the last (scene pos, modifiers) the tool hovered on the map, for refreshes.
         self._on_place_preview: Callable[[QPointF, object], None] = lambda pos, modifiers: None
         self._place_hover: tuple[QPointF, object] | None = None
+        # GH #172: Ctrl+wheel turns that ghost. Set by set_place_ghost_query()/set_place_rotate();
+        # _place_wheel_accum is the sub-notch delta, dropped whenever the ghost goes.
+        self._place_ghost_query: Callable[[], bool] = lambda: False
+        self._on_place_rotate: Callable[[int], None] = lambda steps: None
+        self._place_wheel_accum = 0
+        # The Cliff tool's hover ghost, set by set_cliff_preview(): fn(tile) or fn(None) off the map.
+        self._on_cliff_preview: Callable[[tuple[int, int] | None], None] = lambda tile: None
+        self._cliff_hover: tuple[int, int] | None = None
         # GH #75's unit-drag hooks, set by set_unit_drag_hooks() for the same reason.
         self._on_unit_click_release: Callable[[tuple[int, int]], None] = lambda key: None
         self._is_group_drag: Callable[[tuple[int, int]], bool] = lambda key: False
@@ -1119,6 +1132,31 @@ class MapView(QGraphicsView):
         ghost and pushes it back through set_unit_ghost()."""
         self._on_place_preview = fn
 
+    def set_place_ghost_query(self, fn: Callable[[], bool]) -> None:
+        """GH #172: `fn()` says whether Place Unit's ghost is showing, so Ctrl+wheel turns it."""
+        self._place_ghost_query = fn
+
+    def set_place_rotate(self, fn: Callable[[int], None]) -> None:
+        """GH #172: `fn(steps)` turns the ghost, +1 per clockwise notch."""
+        self._on_place_rotate = fn
+
+    def reset_place_wheel(self) -> None:
+        """Drops a half-turned Ctrl+wheel notch (a catalog pick change)."""
+        self._place_wheel_accum = 0
+
+    def set_cliff_preview(self, fn: Callable[[tuple[int, int] | None], None]) -> None:
+        """`fn(tile)` resolves the Cliff tool's hover ghost for the piece a
+        click on `tile` would place, `fn(None)` clears it. Mid-stroke the
+        drag's own run is the ghost, pushed by the stroke handler instead."""
+        self._on_cliff_preview = fn
+
+    def refresh_cliff_ghost(self) -> None:
+        """Re-runs the Cliff hover preview at the last hovered tile, for a
+        picker change with no mouse move. A no-op unless Cliff is the active
+        tool, no stroke is open and the cursor is over the map."""
+        if self._cliff_hover is not None and self._tool == "cliff" and not self._stroke_active:
+            self._on_cliff_preview(self._cliff_hover)
+
     def refresh_place_ghost(self) -> None:
         """Re-runs the Place Unit hover preview at the last hovered point with
         no mouse move: refresh_highlight()'s analogue, for a catalog pick,
@@ -1201,6 +1239,7 @@ class MapView(QGraphicsView):
             self._unit_drag_press_pos = None
             self._clear_unit_ghost()
             self._place_hover = None
+            self._cliff_hover = None
             self._marquee_start_pos = None
             self._clear_marquee()
         # Defensive, mirroring the _unit_drag_key reset above: a mode
@@ -1793,6 +1832,8 @@ class MapView(QGraphicsView):
         self._clear_unit_ghost()
 
     def _clear_unit_ghost(self) -> None:
+        # Leave, tool and mode switches all land here, so a leftover half notch never fires later.
+        self._place_wheel_accum = 0
         if self._unit_ghost_item is not None:
             self.scene().removeItem(self._unit_ghost_item)
             self._unit_ghost_item = None
@@ -1892,6 +1933,10 @@ class MapView(QGraphicsView):
         # tool so a keyboard switch mid-drag keeps the drag's own ghost.
         if self._tool == "place_unit" and tool != "place_unit":
             self._place_hover = None
+            self._clear_unit_ghost()
+        # The Cliff tool's hover ghost likewise (its stroke closed just above).
+        if self._tool == "cliff" and tool != "cliff":
+            self._cliff_hover = None
             self._clear_unit_ghost()
         self._tool = tool
         # Whichever highlight belonged to the tool being left is no longer
@@ -2219,8 +2264,8 @@ class MapView(QGraphicsView):
         # Units mode's selection click, deliberately ABOVE the CLICK_TOOLS/
         # EDIT_TOOLS checks and independent of whatever tool is active (the
         # Ruler is handled above; Pan and Place Unit are the only other tools
-        # reachable in Units mode -- Convert (b2.5) is excluded below so it
-        # falls through to the generic stroke branch further down instead,
+        # reachable in Units mode -- Convert (b2.5) and the Eraser are excluded below so they
+        # fall through to the generic stroke branch further down instead,
         # since a Convert drag is a mutation with its own undo record, not a
         # selection gesture). Left button only: selection has no meaningful
         # right-button inverse, and phase 3 mutates nothing for one to undo.
@@ -2228,7 +2273,7 @@ class MapView(QGraphicsView):
             self._mode == "units"
             and event.button() == Qt.LeftButton
             and self._map_rect is not None
-            and self._tool != "convert"
+            and self._tool not in _UNIT_BRUSH_TOOLS
         ):
             pos = self.mapToScene(event.pos())
             # Place Unit (b1.4) is click_only, so it's in CLICK_TOOLS -- and
@@ -2763,6 +2808,7 @@ class MapView(QGraphicsView):
         # Place Unit's hover ghost (GH #128) goes with it, and its hover point.
         self._clear_unit_ghost()
         self._place_hover = None
+        self._cliff_hover = None
         # Defensive, same reasoning as the marquee above: cancelled outright,
         # not committed -- there is no natural release position to resolve
         # against. The committed region (if any) is untouched, exactly like
@@ -3836,6 +3882,7 @@ class MapView(QGraphicsView):
         # _clear_unit_ghost()'s removeItem() on the next drag exit would raise.
         self._unit_ghost_item = None
         self._place_hover = None
+        self._cliff_hover = None
         # Same hazard as the tick item above, and the same fix: forget the
         # destroyed items, and drop the measurement itself, since File > Close
         # leaves no map for it to refer to. Pinned rulers go too.
@@ -4228,6 +4275,7 @@ class MapView(QGraphicsView):
         self._unit_ghost_item = None
         # A hover point in the old scene's coordinates; the next move sets it again.
         self._place_hover = None
+        self._cliff_hover = None
         self._unit_drag_key = None
         self._unit_drag_press_pos = None
         self._unit_index = unit_index
@@ -5123,6 +5171,18 @@ class MapView(QGraphicsView):
         mip = self._mip_for_zoom_factor(factor)
         return mip is not None and abs(mip - start) > 1
 
+    def _place_wheel_rotate(self, delta: int) -> None:
+        """Ctrl+wheel over Place Unit's ghost (GH #172): one step per whole
+        WHEEL_NOTCH_UNITS, high-res deltas accumulated, a reversal dropping the
+        stale residual as the zoom does. Scroll up is PLACE_WHEEL_DIRECTION."""
+        total = self._place_wheel_accum + delta
+        if self._place_wheel_accum and (self._place_wheel_accum > 0) != (delta > 0):
+            total = delta
+        notches = int(total / self.WHEEL_NOTCH_UNITS)
+        self._place_wheel_accum = total - notches * self.WHEEL_NOTCH_UNITS
+        if notches:
+            self._on_place_rotate(notches * self.PLACE_WHEEL_DIRECTION)
+
     def wheelEvent(self, event):
         """Zooms by whole WHEEL_NOTCH_UNITS notches, at most one mip level
         per gesture.
@@ -5147,6 +5207,11 @@ class MapView(QGraphicsView):
         went idle, 2026-09-30 stress log)."""
         delta = event.angleDelta().y()
         if delta == 0:
+            return
+        # GH #172: before the gesture state, so turning the ghost spends no zoom budget.
+        if event.modifiers() & Qt.ControlModifier and self._tool == "place_unit" and self._place_ghost_query():
+            self._place_wheel_rotate(delta)
+            event.accept()
             return
         now = time.monotonic()
         # Direction is tracked separately from the residual, which is 0 after
@@ -5401,13 +5466,13 @@ class MapView(QGraphicsView):
         if self._mode == "units":
             self._clear_highlight()
             self._clear_pan_highlight()
-            # Convert (b2.5) is a mutating brush like Draw/Elevate, not a
+            # Convert (b2.5) and the Eraser are mutating brushes like Draw/Elevate, not a
             # selection gesture -- it gets their gold pulsing "about to
             # paint" cue via the same _update_highlight()/_touch_tile() pair
             # the generic EDIT_TOOLS branch below uses, just reached from
             # here since Convert lives in Units mode (mousePressEvent's own
             # units-branch exclusion is the other half of this routing).
-            if self._tool == "convert":
+            if self._tool in _UNIT_BRUSH_TOOLS:
                 self._clear_unit_hover()
                 if on_map:
                     with perf_trace.phase("highlight"):
@@ -5479,6 +5544,9 @@ class MapView(QGraphicsView):
                     self._touch_tile(*tile, event.modifiers())
             else:
                 self._clear_highlight()
+            if self._tool == "cliff" and not self._stroke_active:
+                self._cliff_hover = tile if on_map else None
+                self._on_cliff_preview(self._cliff_hover)
         else:
             self._clear_highlight()
             if on_map:

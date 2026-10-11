@@ -282,6 +282,44 @@ def test_a_unit_whose_own_tile_is_off_the_map_has_no_bounds():
     assert render.unit_tile_bounds(Unit(x=5.0, y=MAP_H + 1.0, unit_const=70), MAP_W, MAP_H) is None
 
 
+# -- snapped placement's anchor (GH #206) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tile", "point", "span", "expected"),
+    [
+        ((10, 20), (10.2, 20.3), (1, 1), (10.5, 20.5)),  # 1x1: the tile centre, as before
+        ((10, 20), (10.8, 20.2), (3, 3), (10.5, 20.5)),  # odd: the tile centre, whatever the point
+        ((10, 20), (10.2, 20.3), (2, 2), (10.0, 20.0)),  # even: the whole number nearest the cursor
+        ((10, 20), (10.8, 20.6), (2, 2), (11.0, 21.0)),
+        ((10, 20), (10.5, 20.5), (4, 4), (11.0, 21.0)),  # a tie rounds half up
+        ((10, 20), (10.3, 20.7), (4, 1), (10.0, 20.5)),  # per axis: a gate takes both branches
+        ((10, 20), None, (2, 2), (11.0, 21.0)),  # no point: tile + 1
+        ((10, 20), None, (3, 3), (10.5, 20.5)),
+        ((119, 119), (119.6, 119.9), (4, 4), (118.0, 118.0)),  # clamped to size - span/2
+        ((119, 119), None, (2, 2), (119.0, 119.0)),
+        ((0, 0), (0.2, 0.1), (4, 4), (2.0, 2.0)),  # and to span/2 at the low edge
+        ((0, 0), (0.2, 0.1), (2, 2), (1.0, 1.0)),
+    ],
+)
+def test_the_snapped_anchor_centres_an_even_span_on_the_cursor(tile, point, span, expected):
+    """Snapped placement lands on the game's grid, an odd span at tile + 0.5
+    and an even span on the whole number nearest the cursor, clamped so the
+    whole footprint stays on a 120x120 map."""
+    assert render.snapped_anchor(tile, point, span, 120, 120) == expected
+
+
+def test_the_snapped_anchors_edge_clamp_keeps_a_4x4_on_the_map():
+    """Unclamped, a 4x4 hovered at w - 0.5 anchors at x = w, an off-map unit
+    unit_tile_bounds drops; clamped, its four tiles end on the map's last."""
+    assert BUILDING_TILE_SPANS[82] == (4, 4)
+    x, y = render.snapped_anchor((119, 119), (119.6, 119.9), (4, 4), 120, 120)
+    assert render.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (116, 120, 116, 120)
+    assert render.unit_tile_bounds(Unit(x=120.0, y=120.0, unit_const=82), 120, 120) is None
+    x, y = render.snapped_anchor((0, 0), (0.2, 0.1), (4, 4), 120, 120)
+    assert render.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (0, 4, 0, 4)
+
+
 # -- against real placement data -----------------------------------------
 
 
@@ -347,6 +385,37 @@ def test_the_corpus_actually_exercises_off_grid_placement(corpus_files):
         "no off-parity building placement in this corpus -- "
         "test_real_buildings_span_their_real_footprints is not covering the off-grid case"
     )
+
+
+@pytest.mark.corpus
+def test_no_corpus_building_or_cliff_has_a_non_half_coordinate(corpus_files):
+    """Counts span > 1 axis values that are not a multiple of 0.5, per table.
+    Those are exactly the values whose owned tiles change if _span_start stops
+    working in half-tiles (TASK-193), so free building placement rests on it.
+    Buildings and cliffs must have none; blockers are only reported."""
+    from descape.scenario_io import load_map_and_units
+    from descape.terrain_palette import BLOCKER_TILE_SPANS
+
+    tables = {"buildings": BUILDING_TILE_SPANS, "cliffs": OBJECT_TILE_SPANS, "blockers": BLOCKER_TILE_SPANS}
+    counts = dict.fromkeys(tables, 0)
+    totals = dict.fromkeys(tables, 0)
+    for path in corpus_files:
+        scenario = load_map_and_units(str(path))
+        for player_units in scenario.unit_manager.units:
+            for unit in player_units:
+                for name, table in tables.items():
+                    span = table.get(unit.unit_const)
+                    if span is None:
+                        continue
+                    for coord, s in ((unit.x, span[0]), (unit.y, span[1])):
+                        if s > 1:
+                            totals[name] += 1
+                            counts[name] += (coord * 2) != int(coord * 2)
+
+    print("\nnon-half span>1 axis values: " + ", ".join(f"{n} {counts[n]}/{totals[n]}" for n in tables))
+    assert totals["buildings"] > 0 and totals["cliffs"] > 0, totals
+    assert counts["buildings"] == 0
+    assert counts["cliffs"] == 0
 
 
 # -- cliffs (2026-09-05 cliffs plan, Track A4) ---------------------------
@@ -460,6 +529,56 @@ def test_a_1x3_blocker_occupies_three_tiles_centred_on_its_own():
     assert set(render.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(3, 8), (3, 9), (3, 10)}
     unit = Unit(x=3.5, y=9.5, unit_const=2424)
     assert set(render.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(2, 9), (3, 9), (4, 9)}
+
+
+# -- deep-water fish (GH #178) --------------------------------------------
+
+# Hardcoded from the .dat's `outline_size` (1.0, or 1.5 for the Whale), doubled:
+# the in-game selection box. Shore Fish 69, Box Turtles 1141 and Oysters 2170
+# are 0.5, which is 1x1 already, so they stay off the list.
+REAL_FISH_SPANS = {
+    53: ("Perch", (2, 2)),
+    61: ("Dolphin", (2, 2)),
+    450: ("Marlin", (2, 2)),
+    455: ("Dorado", (2, 2)),
+    456: ("Salmon", (2, 2)),
+    457: ("Tuna", (2, 2)),
+    458: ("Snapper", (2, 2)),
+    2625: ("Whale", (3, 3)),
+}
+
+
+@pytest.mark.parametrize("unit_const", sorted(REAL_FISH_SPANS))
+def test_deep_fish_span_their_in_game_selection_box(unit_const):
+    """Every fish read as 1x1, where the in-game editor outlines about 2x2."""
+    name, expected = REAL_FISH_SPANS[unit_const]
+    assert unit_const not in BUILDING_TILE_SPANS, f"{name} must stay out of the is-a-building test"
+    assert unit_const not in OBJECT_TILE_SPANS, f"{name} must stay out of the 96-const cliff table"
+    assert span_of(32.0, 32.0, unit_const) == expected, name
+
+
+def test_the_fish_span_table_is_exactly_the_allowlist():
+    from descape import terrain_palette
+
+    table = terrain_palette.FISH_TILE_SPANS
+    assert table == {c: span for c, (_name, span) in REAL_FISH_SPANS.items()}
+    for small in (69, 1141, 2170):
+        assert span_of(32.5, 32.5, small) == (1, 1), small
+
+
+def test_a_dorado_on_a_whole_coordinate_centres_its_2x2_on_that_point():
+    """Where 1028/1049 corpus deep fish sit: an even span centres on a tile corner."""
+    x0, x1, y0, y1 = bounds(10.0, 12.0, 455)
+    assert (x0, x1, y0, y1) == (9, 11, 11, 13)
+    assert render.unit_paint_offset(Unit(x=10.0, y=12.0, unit_const=455)) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("frac", [0.0, 0.13, 0.5, 0.77, 0.99])
+def test_a_fishs_own_tile_stays_inside_its_bounds_at_any_coordinate(frac):
+    """21 corpus fish sit off the half-tile grid, unlike every building."""
+    for unit_const in sorted(REAL_FISH_SPANS):
+        x0, x1, y0, y1 = bounds(32.0 + frac, 20.0 + frac, unit_const)
+        assert x0 <= 32 < x1 and y0 <= 20 < y1, (unit_const, frac)
 
 
 def test_the_cliff_span_table_and_the_cliff_variant_set_cover_the_same_consts():

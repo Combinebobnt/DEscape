@@ -118,9 +118,12 @@ def _owner(window, ref) -> int:
 # -- wiring --------------------------------------------------------------------
 
 
-def test_action_is_rebindable_unbound_and_enabled_without_building_the_unit_model() -> None:
+def test_action_is_rebindable_unbound_and_enabled_without_building_the_unit_model(monkeypatch) -> None:
     from descape import settings
+    from descape.viewer import ViewerWindow
 
+    # The load's idle prebuild (TASK-031.61 A1) would build it; Find is what is under test.
+    monkeypatch.setattr(ViewerWindow, "_schedule_unit_model_prebuild", lambda self: None)
     window, _boxes = _window()
     try:
         row = next(r for r in settings.REBINDABLE_ACTIONS if r[0] == "edit_find_replace")
@@ -361,7 +364,7 @@ def test_double_click_centres_on_the_row(monkeypatch) -> None:
         _close(window)
 
 
-def test_export_csv_writes_checked_rows_and_refuses_compatdata(tmp_path) -> None:
+def test_export_csv_writes_checked_rows_and_refuses_mods_subscribed(tmp_path) -> None:
     window, boxes = _window()
     try:
         dialog = _dialog(window)
@@ -372,12 +375,12 @@ def test_export_csv_writes_checked_rows_and_refuses_compatdata(tmp_path) -> None
         tab.ask_csv_path = lambda: str(out)
         tab.export_button.click()
         assert len(out.read_text(encoding="utf-8").splitlines()) == 3
-        blocked = tmp_path / "compatdata" / "out.csv"
-        blocked.parent.mkdir()
+        blocked = tmp_path / "mods" / "subscribed" / "out.csv"
+        blocked.parent.mkdir(parents=True)
         tab.ask_csv_path = lambda: str(blocked)
         tab.export_button.click()
         assert not blocked.exists()
-        assert boxes.warned and "compatdata" in boxes.warned[-1][1]
+        assert boxes.warned and "mods/subscribed/" in boxes.warned[-1][1]
     finally:
         _close(window)
 

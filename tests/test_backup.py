@@ -17,7 +17,7 @@ from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 import descape.backup as backup_module
 from descape.backup import BackupFailedError, bak_path, make_backups, orig_path
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
-from descape.scenario_io import FORBIDDEN_WRITE_MARKER, TEMPLATE_DIR, load_map_and_units
+from descape.scenario_io import TEMPLATE_DIR, load_map_and_units, names_workshop_subscribed
 from descape.scenario_write import WriteBlockedError, write_scenario
 
 import conftest
@@ -141,12 +141,12 @@ def test_save_as_onto_an_existing_file_backs_up_that_file(tmp_path) -> None:
 def test_blocked_write_leaves_zero_backup_files(tmp_path) -> None:
     s = load_map_and_units(FIXTURE_PATH)
 
-    compatdata_target = tmp_path / "compatdata" / "map.aoe2scenario"
-    assert FORBIDDEN_WRITE_MARKER in str(compatdata_target)
+    subscribed_target = tmp_path / "mods" / "subscribed" / "12345" / "map.aoe2scenario"
+    assert names_workshop_subscribed(subscribed_target)
     with pytest.raises(WriteBlockedError):
-        write_scenario(s, compatdata_target)
-    assert not bak_path(compatdata_target).exists()
-    assert not orig_path(compatdata_target).exists()
+        write_scenario(s, subscribed_target)
+    assert not bak_path(subscribed_target).exists()
+    assert not orig_path(subscribed_target).exists()
 
     template_target = TEMPLATE_DIR / "blank_960x960.aoe2scenario"
     with pytest.raises(WriteBlockedError):
@@ -155,10 +155,28 @@ def test_blocked_write_leaves_zero_backup_files(tmp_path) -> None:
     assert not orig_path(template_target).exists()
 
 
-def _linked_proton_folder(tmp_path: Path) -> tuple[Path, Path]:
-    """(real, link): a scenario inside a Proton-style folder, and the same
-    file opened through a directory symlink whose own path lacks the marker."""
-    real_dir = tmp_path / FORBIDDEN_WRITE_MARKER / "813780"
+def test_a_compatdata_target_writes_with_its_backups(tmp_path) -> None:
+    """The game profile under a Proton prefix is writable; an overwrite there
+    backs up like anywhere else."""
+    real_dir = tmp_path / "compatdata" / "813780"
+    real_dir.mkdir(parents=True)
+    target = _copy_fixture(real_dir)
+    before = target.read_bytes()
+
+    s = load_map_and_units(target)
+    _flip_one_tile(s)
+    result = write_scenario(s, target)
+
+    assert result.wrote
+    assert target.read_bytes() != before
+    assert bak_path(target).read_bytes() == before
+    assert orig_path(target).read_bytes() == before
+
+
+def _linked_subscribed_folder(tmp_path: Path) -> tuple[Path, Path]:
+    """(real, link): a scenario inside a Workshop mods/subscribed/ folder, and
+    the same file opened through a directory symlink whose own path lacks it."""
+    real_dir = tmp_path / "mods" / "subscribed" / "12345"
     real_dir.mkdir(parents=True)
     real = _copy_fixture(real_dir)
     link_dir = tmp_path / "link"
@@ -166,13 +184,13 @@ def _linked_proton_folder(tmp_path: Path) -> tuple[Path, Path]:
     return real, link_dir / real.name
 
 
-def test_a_directory_symlink_into_the_proton_prefix_is_refused(tmp_path) -> None:
+def test_a_directory_symlink_into_a_subscribed_folder_is_refused(tmp_path) -> None:
     """The hard rule through a linked folder: the path as written carries no
-    marker, so only the resolved check can catch it."""
+    mods/subscribed/, so only the resolved check can catch it."""
     from descape import autosave
 
-    real, link_path = _linked_proton_folder(tmp_path)
-    assert FORBIDDEN_WRITE_MARKER not in str(link_path)  # else this passes without the resolve
+    real, link_path = _linked_subscribed_folder(tmp_path)
+    assert not names_workshop_subscribed(link_path)  # else this passes without the resolve
     before = real.read_bytes()
 
     s = load_map_and_units(link_path)
@@ -186,25 +204,25 @@ def test_a_directory_symlink_into_the_proton_prefix_is_refused(tmp_path) -> None
     assert sorted(p.name for p in real.parent.iterdir()) == [real.name]
 
 
-def test_a_file_symlink_into_the_proton_prefix_is_refused_not_replaced(tmp_path) -> None:
+def test_a_file_symlink_into_a_subscribed_folder_is_refused_not_replaced(tmp_path) -> None:
     """Before the resolved check, Save replaced such a link with a real file."""
-    real, _ = _linked_proton_folder(tmp_path)
+    real, _ = _linked_subscribed_folder(tmp_path)
     link_path = tmp_path / "linked.aoe2scenario"
     link_path.symlink_to(real)
-    assert FORBIDDEN_WRITE_MARKER not in str(link_path)
+    assert not names_workshop_subscribed(link_path)
 
     s = load_map_and_units(link_path)
     _flip_one_tile(s)
     with pytest.raises(WriteBlockedError):
         write_scenario(s, link_path)
     assert link_path.is_symlink()
-    assert sorted(p.name for p in tmp_path.iterdir()) == [FORBIDDEN_WRITE_MARKER, "link", link_path.name]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["link", link_path.name, "mods"]
     assert sorted(p.name for p in real.parent.iterdir()) == [real.name]
 
 
 def test_a_marked_path_is_blocked_before_resolve_can_fail(tmp_path, monkeypatch) -> None:
     """A symlink loop or unreadable parent makes resolve() raise; a path that
-    already names compatdata/ must still read "blocked", not "Save failed"."""
+    already names mods/subscribed/ must still read "blocked", not "Save failed"."""
     s = load_map_and_units(FIXTURE_PATH)
 
     def _raise(self, strict=False):
@@ -212,12 +230,12 @@ def test_a_marked_path_is_blocked_before_resolve_can_fail(tmp_path, monkeypatch)
 
     monkeypatch.setattr(Path, "resolve", _raise)
     with pytest.raises(WriteBlockedError):
-        write_scenario(s, tmp_path / FORBIDDEN_WRITE_MARKER / "map.aoe2scenario")
+        write_scenario(s, tmp_path / "Mods" / "Subscribed" / "map.aoe2scenario")  # case-folded, for Windows
 
 
 def test_a_looped_save_path_is_refused_with_zero_backups(tmp_path) -> None:
     """Fail closed: a path that can't be resolved can't be shown to be outside
-    a Proton prefix. Unrefused, the atomic write would replace the link."""
+    a mods/subscribed/ folder. Unrefused, the atomic write would replace the link."""
     a, b = tmp_path / "a.aoe2scenario", tmp_path / "b.aoe2scenario"
     a.symlink_to(b)
     b.symlink_to(a)

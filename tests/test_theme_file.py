@@ -11,7 +11,6 @@ import pytest
 import yaml
 
 from descape import settings, theme_file, themes
-from descape.scenario_io import FORBIDDEN_WRITE_MARKER
 
 import conftest
 
@@ -277,22 +276,29 @@ def test_export_never_writes_anchors_so_import_reads_it_back(tmp_path) -> None:
 # --- writing -----------------------------------------------------------------
 
 
-def test_a_compatdata_path_is_refused_with_nothing_written(tmp_path) -> None:
-    proton = tmp_path / FORBIDDEN_WRITE_MARKER / "813780"
-    proton.mkdir(parents=True)
+def test_a_subscribed_path_is_refused_with_nothing_written(tmp_path) -> None:
+    subscribed = tmp_path / "mods" / "subscribed" / "12345"
+    subscribed.mkdir(parents=True)
     with pytest.raises(theme_file.ThemeWriteBlockedError):
-        theme_file.write_theme_file(proton / "t.yaml", theme_file.build_document())
-    assert list(proton.iterdir()) == []
+        theme_file.write_theme_file(subscribed / "t.yaml", theme_file.build_document())
+    assert list(subscribed.iterdir()) == []
 
 
-def test_a_symlink_into_compatdata_is_refused_with_nothing_written(tmp_path) -> None:
-    proton = tmp_path / FORBIDDEN_WRITE_MARKER / "813780"
-    proton.mkdir(parents=True)
+def test_a_symlink_into_mods_subscribed_is_refused_with_nothing_written(tmp_path) -> None:
+    subscribed = tmp_path / "mods" / "subscribed" / "12345"
+    subscribed.mkdir(parents=True)
     link = tmp_path / "link"
-    link.symlink_to(proton, target_is_directory=True)
+    link.symlink_to(subscribed, target_is_directory=True)
     with pytest.raises(theme_file.ThemeWriteBlockedError):
         theme_file.write_theme_file(link / "t.yaml", theme_file.build_document())
-    assert list(proton.iterdir()) == []
+    assert list(subscribed.iterdir()) == []
+
+
+def test_a_compatdata_path_is_written(tmp_path) -> None:
+    proton = tmp_path / "compatdata" / "813780"
+    proton.mkdir(parents=True)
+    theme_file.write_theme_file(proton / "t.yaml", theme_file.build_document())
+    assert [p.name for p in proton.iterdir()] == ["t.yaml"]
 
 
 def test_the_written_file_is_not_mode_600_and_leaves_no_temp(tmp_path) -> None:
@@ -462,16 +468,17 @@ def test_export_asks_before_replacing_the_suffixed_file(tmp_path, monkeypatch, q
 
 
 @pytest.mark.gui
-def test_export_into_compatdata_is_blocked_and_reported(tmp_path, monkeypatch, qt_dialog) -> None:
+def test_export_into_mods_subscribed_is_blocked_and_reported(tmp_path, monkeypatch, qt_dialog) -> None:
     from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
-    proton = tmp_path / FORBIDDEN_WRITE_MARKER
-    proton.mkdir()
+    subscribed = tmp_path / "mods" / "subscribed"
+    subscribed.mkdir(parents=True)
     monkeypatch.setattr(
-        QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(proton / f"t{theme_file.FILE_SUFFIX}"), ""))
+        QFileDialog, "getSaveFileName",
+        staticmethod(lambda *a, **k: (str(subscribed / f"t{theme_file.FILE_SUFFIX}"), "")),
     )
     reported = []
     monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: reported.append(a)))
     qt_dialog.theme_export_button.click()
     assert len(reported) == 1 and reported[0][1] == "Export blocked"
-    assert list(proton.iterdir()) == []
+    assert list(subscribed.iterdir()) == []

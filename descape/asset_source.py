@@ -62,6 +62,16 @@ TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 # of room to pick varied non-repeating crop origins.
 LOADED_TEXTURE_SIZE = 512
 
+# TASK-143 terrain blending. blendomatic_x1.dat holds the neighbour-transition
+# alpha masks; terrain/masks/*.png the layer ("Layering Mode") overlay masks.
+BLENDOMATIC_SUBPATH = "resources/_common/dat/blendomatic_x1.dat"
+TERRAIN_MASK_SUBPATH = "resources/_common/terrain/masks"
+# Each blendomatic tile is a 97x49 diamond stored row by row, row r holding
+# 4*min(r, 48 - r) + 1 pixels centred in the 97 columns: 2353 in all.
+BLENDOMATIC_ROWS = 49
+BLENDOMATIC_WIDTH = 97
+BLENDOMATIC_TILE_SIZE = 2353
+
 # key-value-strings-utf8.txt is a flat "<int key> \"<value>\"" list per line
 # (comments and blank lines interspersed) -- the same key space
 # gen_object_catalog.py commits as string_id. Backslash-escaped quotes are
@@ -74,6 +84,10 @@ DEFAULT_LANGUAGE = "en"
 # GH #140: a unit's in-game portrait, by object_catalog.icon_for() index. Uncompressed RGBA or DXT5, 256 px.
 UNIT_ICON_DIR = "widgetui/textures/ingame/units"
 UNIT_ICON_NAME = "{icon:03d}_50730.dds"
+# GH #148: buildings index a separate set, named "{icon:03d}_<name>.dds" (007_castle.DDS).
+BUILDING_ICON_DIR = "widgetui/textures/ingame/buildings"
+# GH #148: the stat icons the game's editorbottomunitspanel.json uses, as plain 66 px RGBA PNGs.
+STAT_ICON_DIR = "widgetui/textures/ingame/staticons"
 
 _override_path: Path | None = None
 
@@ -150,9 +164,13 @@ def clear_install_caches() -> None:
     # the old swatch or texture.
     _terrain_thumbnail_for_path.cache_clear()
     _terrain_texture_for_path.cache_clear()
+    get_blendomatic.cache_clear()
+    get_blend_mask.cache_clear()
+    get_terrain_mask_array.cache_clear()
     _forget_prefetches()
     _string_table.cache_clear()
     get_unit_icon.cache_clear()
+    get_stat_icon.cache_clear()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
     # as sprites -- deliberately, since re-deriving one costs a whole file walk
@@ -171,6 +189,10 @@ def clear_install_caches() -> None:
     from descape import message_markup
 
     message_markup.clear_caches()
+    # Blended blocks are built from the textures and masks above.
+    from descape import terrain_blend
+
+    terrain_blend.clear_caches()
 
 
 def get_language() -> str:
@@ -221,24 +243,35 @@ def resource_string(key: int, lang: str | None = None) -> str | None:
     return _string_table(lang or get_language()).get(key)
 
 
-@lru_cache(maxsize=64)
-def get_unit_icon(icon: int | None):
-    """The install's portrait for this catalog icon index as a read-only
-    (h, w, 4) uint8 RGBA array, or None (no install, no file, a decode
-    failure). The file's extension case varies, so it is matched loosely."""
+def _find_file(folder: Path, match) -> Path | None:
+    try:
+        return next((p for p in sorted(folder.iterdir()) if match(p.name.lower())), None)
+    except OSError:
+        return None
+
+
+def unit_icon_path(icon: int | None, building: bool = False) -> Path | None:
+    """The portrait file for a catalog icon index, or None. A building looks
+    in BUILDING_ICON_DIR by its "NNN_" prefix first, then falls back to the
+    unit set. Extension case varies, so names are matched loosely."""
     install = get_install_path()
     if install is None or icon is None or icon < 0:
         return None
+    if building:
+        prefix = f"{icon:03d}_"
+        path = _find_file(install / BUILDING_ICON_DIR, lambda name: name.startswith(prefix) and name.endswith(".dds"))
+        if path is not None:
+            return path
     folder = install / UNIT_ICON_DIR
     wanted = UNIT_ICON_NAME.format(icon=icon)
     path = folder / wanted
-    if not path.is_file():
-        try:
-            path = next((p for p in folder.iterdir() if p.name.lower() == wanted), None)
-        except OSError:
-            return None
-        if path is None:
-            return None
+    return path if path.is_file() else _find_file(folder, lambda name: name == wanted)
+
+
+def _read_rgba(path: Path | None):
+    """path decoded as a read-only (h, w, 4) uint8 RGBA array, or None."""
+    if path is None:
+        return None
     import numpy as np
     from PIL import Image
 
@@ -249,6 +282,27 @@ def get_unit_icon(icon: int | None):
         return None
     arr.flags.writeable = False
     return arr
+
+
+@lru_cache(maxsize=64)
+def get_unit_icon(icon: int | None, building: bool = False):
+    """The install's portrait for this catalog icon index (unit_icon_path())
+    as a read-only (h, w, 4) uint8 RGBA array, or None (no install, no file,
+    a decode failure)."""
+    return _read_rgba(unit_icon_path(icon, building))
+
+
+@lru_cache(maxsize=16)
+def get_stat_icon(name: str):
+    """STAT_ICON_DIR/<name>.png ("hp", "damage", ...) as get_unit_icon()'s
+    read-only RGBA array, or None."""
+    install = get_install_path()
+    if install is None:
+        return None
+    folder = install / STAT_ICON_DIR
+    wanted = f"{name}.png".lower()
+    path = folder / f"{name}.png"
+    return _read_rgba(path if path.is_file() else _find_file(folder, lambda n: n == wanted))
 
 
 def write_config_file(path: Path, config: dict) -> None:
@@ -412,6 +466,126 @@ def _load_texture(path: Path):
     with Image.open(path) as img:
         rgb = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
         arr = np.array(rgb)
+    arr.flags.writeable = False
+    return arr
+
+
+def _parse_blendomatic(data: bytes):
+    """blendomatic.dat's per-pixel alpha bytes as a (modes, tiles,
+    BLENDOMATIC_TILE_SIZE) uint8 array, or None if the bytes do not parse
+    exactly to EOF or hold an alpha past 128. Layout (openage doc/media/blendomatic.md): a u32 mode
+    count and u32 tile count, then per mode a u32 tile size, one flag byte
+    per tile, 32 one-bit masks of tile_size bits, and one alpha byte per
+    pixel per tile. The bit masks are skipped: the alpha bytes carry them."""
+    import struct
+
+    import numpy as np
+
+    if len(data) < 8:
+        return None
+    n_modes, n_tiles = struct.unpack_from("<II", data, 0)
+    offset, modes = 8, []
+    for _ in range(n_modes):
+        if offset + 4 > len(data):
+            return None
+        (tile_size,) = struct.unpack_from("<I", data, offset)
+        if tile_size != BLENDOMATIC_TILE_SIZE:
+            return None
+        offset += 4 + n_tiles + 4 * tile_size
+        end = offset + n_tiles * tile_size
+        if end > len(data):
+            return None
+        modes.append(np.frombuffer(data, np.uint8, n_tiles * tile_size, offset).reshape(n_tiles, tile_size))
+        offset = end
+    if offset != len(data) or not modes:
+        return None
+    arr = np.stack(modes)
+    # terrain_blend's integer compose, numpy and native, is exact only for 0..128.
+    if int(arr.max()) > 128:
+        return None
+    arr.flags.writeable = False
+    return arr
+
+
+@lru_cache(maxsize=1)
+def get_blendomatic():
+    """The install's blendomatic_x1.dat (_parse_blendomatic()), alpha 0..128
+    per pixel, where the alpha is the tile's OWN weight and the bleeding
+    neighbour's is 128 - alpha (measured, see terrain_blend). None without an
+    install or when the file is missing or no longer parses."""
+    install = get_install_path()
+    if install is None:
+        return None
+    try:
+        data = (install / BLENDOMATIC_SUBPATH).read_bytes()
+    except OSError:
+        return None
+    return _parse_blendomatic(data)
+
+
+@lru_cache(maxsize=8)
+def blendomatic_square_gather(tile_px: int):
+    """(tile_px, tile_px) indices into one blendomatic tile's flat pixel list:
+    square texel (row b, column a) takes the diamond pixel nearest its centre,
+    mapped by iso_geometry.square_to_diamond_local() (the inverse of the
+    sampling Stepped and Sloped draw with). A point between two raster rows'
+    spans clamps to its own row's nearest pixel, so every texel is defined."""
+    import numpy as np
+
+    from descape import iso_geometry
+
+    widths = np.array([4 * min(r, BLENDOMATIC_ROWS - 1 - r) + 1 for r in range(BLENDOMATIC_ROWS)])
+    starts = (BLENDOMATIC_WIDTH - widths) // 2
+    row_offsets = np.concatenate([[0], np.cumsum(widths)[:-1]])
+    b, a = np.mgrid[0:tile_px, 0:tile_px]
+    u, v = iso_geometry.square_to_diamond_local((a + 0.5) / tile_px, (b + 0.5) / tile_px)
+    row = np.clip(np.floor((v + 1.0) / 2.0 * BLENDOMATIC_ROWS), 0, BLENDOMATIC_ROWS - 1).astype(np.int64)
+    col = np.floor((u + 1.0) / 2.0 * BLENDOMATIC_WIDTH).astype(np.int64)
+    col = np.clip(col, starts[row], starts[row] + widths[row] - 1)
+    gather = row_offsets[row] + col - starts[row]
+    gather.flags.writeable = False
+    return gather
+
+
+@lru_cache(maxsize=512)
+def get_blend_mask(mode: int, tile_index: int, tile_px: int):
+    """Blendomatic tile (mode, tile_index) resampled onto the square
+    tile_px x tile_px block every terrain style starts from, as a read-only
+    uint8 array of own-weight alpha 0..128, faded to 0 along its bleeding
+    edges (terrain_blend.fade_bleeding_edges()). None without get_blendomatic()."""
+    from descape import terrain_blend
+
+    tiles = get_blendomatic()
+    if tiles is None:
+        return None
+    mask = terrain_blend.fade_bleeding_edges(tiles[mode, tile_index][blendomatic_square_gather(tile_px)], tile_index)
+    mask.flags.writeable = False
+    return mask
+
+
+@lru_cache(maxsize=32)
+def get_terrain_mask_array(name: str):
+    """terrain/masks/<name>'s red channel as a read-only (LOADED_TEXTURE_SIZE,
+    LOADED_TEXTURE_SIZE) uint8 array, 0..255 = the layer terrain's weight, or
+    None. The files mix L and RGB modes, so they go through RGB first; they
+    are 512 px already, the same grid get_terrain_texture_array() crops."""
+    install = get_install_path()
+    if install is None or not name:
+        return None
+    path = install / TERRAIN_MASK_SUBPATH / name
+    if not path.is_file():
+        return None
+    import numpy as np
+    from PIL import Image
+
+    try:
+        with Image.open(path) as img:
+            rgb = img.convert("RGB")
+            if rgb.size != (LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE):
+                rgb = rgb.resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
+            arr = np.ascontiguousarray(np.array(rgb)[:, :, 0])
+    except (OSError, ValueError):
+        return None
     arr.flags.writeable = False
     return arr
 

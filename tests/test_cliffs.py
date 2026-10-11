@@ -251,13 +251,10 @@ def test_distinct_stored_indices_give_distinct_cliff_shapes():
 
 _OLD_VARIANT_CONSTS = unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIFF_VARIANT_CONSTS
 
-# a_fish_dorado_x1 (455, type 30): investigated directly (tools/
-# scan_tree_rotation.py's own development) and confirmed pre-existing --
-# frame 0, the OLD dispatch's own resolved frame for every one of this
-# const's 33 corpus placements, already has no MAIN layer (a sparse
-# decay/idle animation gap, not a Tier B regression). Excluded here so a
-# known, already-there gap doesn't mask a genuinely new one.
-_PRE_EXISTING_NO_SPRITE_CONSTS = frozenset({455})
+# Was {455}: a_fish_dorado_x1's frame 0 had no MAIN layer. That graphic was
+# the surface splash; since GH #178 Dorado draws its _underwater body, which
+# paints at both variants, so nothing is excluded any more.
+_PRE_EXISTING_NO_SPRITE_CONSTS: frozenset[int] = frozenset()
 
 
 @pytest.mark.corpus

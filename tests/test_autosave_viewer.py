@@ -280,21 +280,62 @@ def test_save_as_starts_beside_a_looped_source_unresolved(tmp_path) -> None:
         conftest.close_window(window)
 
 
+@pytest.mark.parametrize("action", ["save", "save_as"])
 @pytest.mark.parametrize("backups_enabled", [True, False])
-def test_the_backups_switch_gates_the_bak_and_orig_pair(tmp_path, backups_enabled: bool) -> None:
+def test_the_backups_switch_gates_the_bak_and_orig_pair(tmp_path, monkeypatch, backups_enabled: bool, action) -> None:
     """Guards the shipped, already-verified backup path in both directions:
     a one-way assertion would pass on a save() that simply stopped writing
-    backups at all."""
+    backups at all. save_as overwrites the open file, so it has one to back up."""
+    from PyQt5.QtWidgets import QFileDialog
+
     settings.set_backups_enabled(backups_enabled)
     window, target = _window_on(tmp_path)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
     try:
         _dirty(window)
-        window.save()
+        getattr(window, action)()
 
         produced = sorted(p.suffix for p in target.parent.iterdir() if p != target)
         assert (produced != []) is backups_enabled, produced
     finally:
         conftest.close_window(window)
+
+
+@pytest.mark.parametrize("profile", [("compatdata", "813780", "pfx"), ("Games", "Age of Empires 2 DE", "0")])
+@pytest.mark.parametrize("action", ["save", "save_as"])
+def test_a_save_into_the_game_profile_always_backs_up(tmp_path, monkeypatch, profile, action) -> None:
+    """With the switch off, the game's own scenario folder still gets .bak/.orig;
+    the switch-off cases above are the outside-the-profile half."""
+    from PyQt5.QtWidgets import QFileDialog
+
+    settings.set_backups_enabled(False)
+    profile_dir = tmp_path.joinpath(*profile, "scenario")
+    profile_dir.mkdir(parents=True)
+    target = profile_dir / "mymap.aoe2scenario"
+    shutil.copyfile(BLANK_FIXTURE, target)
+    window = conftest.blank_window(load=False)
+    try:
+        if action == "save":
+            window.load_scenario(target)
+        else:
+            window.load_scenario(_copy_elsewhere(tmp_path))
+            monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+        _dirty(window)
+        getattr(window, action)()
+
+        assert sorted(p.name for p in profile_dir.iterdir()) == [
+            "mymap.aoe2scenario", "mymap.aoe2scenario.bak", "mymap.aoe2scenario.orig"
+        ]
+    finally:
+        conftest.close_window(window)
+
+
+def _copy_elsewhere(tmp_path) -> Path:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    source = elsewhere / "mymap.aoe2scenario"
+    shutil.copyfile(BLANK_FIXTURE, source)
+    return source
 
 
 def test_the_saving_tab_controls_persist_and_re_arm_the_timer(tmp_path) -> None:
@@ -374,19 +415,19 @@ def test_browse_persists_the_folder_and_the_next_tick_writes_there(tmp_path, mon
         conftest.close_window(window)
 
 
-def test_a_compatdata_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypatch) -> None:
+def test_a_subscribed_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypatch) -> None:
     from descape.viewer import STATUS_ERROR_COLOR, SettingsDialog
 
-    proton = tmp_path / "steamapps" / "compatdata" / "813780"
-    proton.mkdir(parents=True)
+    subscribed = tmp_path / "mods" / "subscribed" / "12345"
+    subscribed.mkdir(parents=True)
     window = conftest.blank_window(load=False)
     dialog = SettingsDialog(window)
     try:
-        _pick_folder(monkeypatch, proton)
+        _pick_folder(monkeypatch, subscribed)
         dialog.autosave_dir_browse_button.click()
         assert settings.get_autosave_dir() == ""
         assert not (tmp_path / "config.yaml").exists() or "autosave_dir" not in (tmp_path / "config.yaml").read_text()
-        assert "compatdata" in dialog.autosave_dir_status_label.text()
+        assert "mods/subscribed/" in dialog.autosave_dir_status_label.text()
         assert STATUS_ERROR_COLOR in dialog.autosave_dir_status_label.styleSheet()
         assert "Autosave folder refused" in window.status_log.toPlainText()
     finally:
@@ -422,24 +463,24 @@ def _autosaved_count(window) -> int:
     return window.status_log.toPlainText().count("Autosaved to ")
 
 
-def test_a_custom_folder_relinked_into_compatdata_names_that_reason(tmp_path) -> None:
+def test_a_custom_folder_relinked_into_mods_subscribed_names_that_reason(tmp_path) -> None:
     """Refused at tick time, not missing: the line says why."""
     custom = tmp_path / "usb-stick"
     custom.mkdir()
     settings.set_autosave_dir(str(custom))
-    proton = tmp_path / "steamapps" / "compatdata" / "813780"
-    proton.mkdir(parents=True)
+    subscribed = tmp_path / "mods" / "subscribed" / "12345"
+    subscribed.mkdir(parents=True)
     custom.rmdir()
-    custom.symlink_to(proton, target_is_directory=True)
+    custom.symlink_to(subscribed, target_is_directory=True)
     window, _target = _window_on(tmp_path)
     try:
         _dirty(window)
         window._autosave_tick()
         assert len(_slots()) == 1
-        assert list(proton.iterdir()) == []
+        assert list(subscribed.iterdir()) == []
         lines = _fallback_lines(window)
         assert len(lines) == 1
-        assert "compatdata/ folder" in lines[0]
+        assert "(mods/subscribed/) folder" in lines[0]
         assert "not found" not in lines[0]
     finally:
         conftest.close_window(window)
@@ -461,13 +502,13 @@ def test_the_fallback_line_is_logged_once_while_the_folder_stays_refused(tmp_pat
         conftest.close_window(window)
 
 
-@pytest.mark.parametrize("kind", ["compatdata", "not_text"])
+@pytest.mark.parametrize("kind", ["subscribed", "not_text"])
 def test_a_saved_folder_refused_at_startup_is_logged_on_the_first_autosave(tmp_path, kind) -> None:
     """After a restart get_autosave_dir() reads a refused value as "", so the
     reason has to come from settings.get_autosave_dir_refusal()."""
-    proton = tmp_path / "steamapps" / "compatdata" / "813780"
-    proton.mkdir(parents=True)
-    raw = {"compatdata": f"'{proton}'", "not_text": "42"}[kind]
+    subscribed = tmp_path / "mods" / "subscribed" / "12345"
+    subscribed.mkdir(parents=True)
+    raw = {"subscribed": f"'{subscribed}'", "not_text": "42"}[kind]
     (tmp_path / "config.yaml").write_text(f"autosave_dir: {raw}\n")  # before anything reads it
     window, _target = _window_on(tmp_path)
     try:
@@ -479,7 +520,8 @@ def test_a_saved_folder_refused_at_startup_is_logged_on_the_first_autosave(tmp_p
         assert _slots()  # into the default folder
         lines = _fallback_lines(window)
         assert len(lines) == 1
-        expected = {"compatdata": f"Autosave folder {proton} can't hold autosaves: it is under a Proton compatdata/",
+        expected = {"subscribed": f"Autosave folder {subscribed} can't hold autosaves: it is in a subscribed-mods"
+                                  " (mods/subscribed/) folder",
                     "not_text": "Autosave folder 42 can't hold autosaves: the saved value is not a folder path"}[kind]
         assert expected in lines[0]
     finally:

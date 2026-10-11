@@ -24,6 +24,7 @@ import pytest
 
 from descape import iso_geometry as ig
 from descape import render
+from descape.render_cache import SlopedChunkCache
 from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from testkit.fakes import (
     FakeScenario,
@@ -70,6 +71,22 @@ def _diamond_pixel_nearest(tile_px: int, fx: float, fy: float) -> int:
     return int(np.argmin((pfx - fx) ** 2 + (pfy - fy) ** 2))
 
 
+LEVELS = [0, -1, -2]
+
+
+def _render_at(scn, mip: int):
+    """(img, elevations, corner_rise, proj) at cache level `mip`: the full
+    render at 0, else SlopedChunkCache's stitched level with its own
+    corner_rise and proj (TASK-031.60's coarser ladder)."""
+    if mip == 0:
+        return render.render_terrain_sloped_with_proj(scn)
+    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    cache = SlopedChunkCache(scn, elevations, corner_rise, proj, proj.tile_px)
+    lvl = cache._levels[mip]
+    img = cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+    return img, elevations, cache._level_corner_rise(lvl), lvl.proj
+
+
 def _ramp_corners(corner_rise, ux: int, uy: int):
     d_nw = int(corner_rise[uy, ux])
     d_ne = int(corner_rise[uy, ux + 1])
@@ -82,7 +99,8 @@ def _ramp_corners(corner_rise, ux: int, uy: int):
     return d_nw, d_ne, d_sw, d_se
 
 
-def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted() -> None:
+@pytest.mark.parametrize("mip", LEVELS)
+def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted(mip) -> None:
     """Track C6 superseded this test's original premise for a CENTRED 1x1
     unit: it does not sit at a sub-tile-dependent PIXEL RISE at all -- its
     marker paints through the exact same call as its own tile's terrain
@@ -100,11 +118,11 @@ def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted() ->
     map, which the test after it pins and which is the harder invariant of
     the two.
     """
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
     ux, uy = 9, 8
 
     scn = _ramp_scenario(ux + 0.5, uy + 0.5)
-    img, _elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn)
+    img, _elevations, corner_rise, proj = _render_at(scn, mip)
+    tile_px = proj.tile_px
     color = PLAYER_COLORS[_PLAYER % len(PLAYER_COLORS)]
     d_nw, d_ne, d_sw, d_se = _ramp_corners(corner_rise, ux, uy)
 
@@ -119,8 +137,9 @@ def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted() ->
     )
 
 
+@pytest.mark.parametrize("mip", LEVELS)
 @pytest.mark.parametrize("want_fx, want_fy", [(0.25, 0.75), (0.8, 0.6), (0.15, 0.2)])
-def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy) -> None:
+def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy, mip) -> None:
     """Free placement's Stage 1: the off-centre tail leaves C6's conforming
     quad and takes the plain diamond at its own continuous point.
 
@@ -139,7 +158,7 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy)
     where it can be made correctly -- against an ID plane that reproduces
     the depth walk -- in tests/test_free_placement.py.
     """
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H) >> -mip
     ux, uy = 9, 8
 
     i = _diamond_pixel_nearest(tile_px, want_fx, want_fy)
@@ -147,7 +166,8 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy)
     fx, fy = float(1 - fq[i]), float(fp[i])
 
     scn = _ramp_scenario(ux + fx, uy + fy)
-    img, _elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn)
+    img, _elevations, corner_rise, proj = _render_at(scn, mip)
+    assert proj.tile_px == tile_px
     color = PLAYER_COLORS[_PLAYER % len(PLAYER_COLORS)]
     d_nw, d_ne, d_sw, d_se = _ramp_corners(corner_rise, ux, uy)
 
@@ -196,12 +216,14 @@ def test_a_flat_map_places_sloped_units_exactly_where_stepped_does() -> None:
     assert np.array_equal(sloped, stepped)
 
 
-def test_the_bystander_headroom_covers_every_units_own_rise() -> None:
+@pytest.mark.parametrize("mip", LEVELS)
+def test_the_bystander_headroom_covers_every_units_own_rise(mip) -> None:
     """_unit_screen_bbox_iso's premise ("depends on proj + elevations,
     never on corner_rise") stops holding in Sloped once a unit sits at
     unit_rise_px. Under-covering there is a MISSED bystander paint, i.e. a
     stale pixel, not a no-op -- so this pins the bound itself rather than
-    waiting for a chunk-seam artefact to show up.
+    waiting for a chunk-seam artefact to show up. At each cache level, with
+    that level's own headroom, corner_rise and proj.
 
     Non-vacuous by assertion: the fixture must contain at least one unit
     whose interpolated rise genuinely exceeds its own tile's
@@ -220,7 +242,9 @@ def test_the_bystander_headroom_covers_every_units_own_rise() -> None:
     scn = FakeScenario(MAP_W, MAP_H, tiles, units)
 
     elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
-    headroom = render._unit_rise_headroom_px(corner_rise, elevations, proj)
+    cache = SlopedChunkCache(scn, elevations, corner_rise, proj, proj.tile_px)
+    lvl = cache._levels[mip]
+    corner_rise, proj, headroom = cache._level_corner_rise(lvl), lvl.proj, cache._level_extra_top(lvl)
 
     excesses = []
     for unit in scn.unit_manager.units[_PLAYER]:

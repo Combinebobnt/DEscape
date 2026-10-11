@@ -192,7 +192,9 @@ def test_mapview_delivers_the_gap_filled_path_per_event() -> None:
         _close(window)
 
 
-@pytest.mark.parametrize(("mode", "tool"), [("Terrain", "cliff"), ("Units", "convert")])
+@pytest.mark.parametrize(
+    ("mode", "tool"), [("Terrain", "cliff"), ("Units", "convert"), ("Units", "eraser"), ("Terrain", "eraser")]
+)
 def test_cliff_and_convert_get_the_gap_filled_path(mode: str, tool: str) -> None:
     window = _edit_window("draw")
     try:
@@ -257,6 +259,36 @@ def test_a_compressed_convert_drag_converts_what_a_tile_by_tile_drag_does() -> N
     assert len(player_1) == 3
     assert tile_by_tile == player_1, "the slow drag missed a unit, so the comparison is vacuous"
     assert run([start, end])[1] == tile_by_tile
+
+
+@pytest.mark.parametrize("button", ["left", "right"])
+@pytest.mark.parametrize("mode", ["Units", "Terrain"])
+def test_a_fast_eraser_drag_leaves_no_gap(mode: str, button: str) -> None:
+    """GH #184: Player 1's House, Archer and garrisoned Villager sit on
+    (10..12, 10), strictly inside the drag, so a two-event drag erases none of
+    them without gap-filling. The right button erases exactly like the left."""
+    from PyQt5.QtCore import Qt
+
+    start, end = (9, 10), (13, 10)
+    qt_button = Qt.LeftButton if button == "left" else Qt.RightButton
+
+    def run(tiles) -> set[int]:
+        window = _units_window(mode, "eraser")
+        try:
+            window.brush_size_spin.setValue(1)
+            units = window.scenario.unit_manager.units
+            _press(window.map_view, tiles[0], qt_button)
+            for tile in tiles[1:]:
+                _move(window.map_view, tile, qt_button)
+            _release(window.map_view, tiles[-1], qt_button)
+            assert len(window.edit_history.records) <= 1
+            return {u.reference_id for u in units[1]}
+        finally:
+            _close(window)
+
+    tile_by_tile = run([start, *line_tiles(*start, *end)])
+    assert tile_by_tile == set(), "the slow drag left a unit, so the comparison is vacuous"
+    assert run([start, end]) == tile_by_tile
 
 
 def test_a_right_button_path_lowers_every_tile() -> None:

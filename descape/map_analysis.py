@@ -25,12 +25,19 @@ INFO. Stranded-unit reachability is approximate: is_water() is a name
 match, only terrain is considered (not trees, buildings or cliffs, which
 are GAIA objects), and elevation is ignored.
 
+The off-grid checks were measured over the 21 loadable examples/ files: a
+building off the half-tile grid fires on 0/21 (WARNING), a building on the
+wrong parity for its span on 11/21 (INFO, the game writes those), and units
+off their tile centre on 6/21 (player) and 7/21 (GAIA), both INFO.
+Decorations, trees, fish and cliffs are left out on purpose.
+
 Nothing here constructs an edit model, and nothing may be named verify_* or
 *_supported (both already mean byte-layout trust elsewhere).
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -46,6 +53,8 @@ from descape.messages_fields import STRING_ID_UNSET
 from descape.player_fields import defined_player_ids
 from descape.render import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
+from descape.terrain_palette import BUILDING_TILE_SPANS
+from descape.unit_kind import mobile_unit_consts
 from descape.unit_references import all_units, build_reference_index, references_in
 
 Severity = Literal["error", "warning", "info"]
@@ -134,6 +143,102 @@ def check_off_map_units(loaded: LoadedScenario) -> CheckResult:
         if unit_tile_bounds(unit, mm.map_width, mm.map_height) is None
     ]
     return _capped(label, findings)
+
+
+def _on_half_grid(v: float) -> bool:
+    return (v * 2).is_integer()
+
+
+def _on_span_grid(v: float, span: int) -> bool:
+    # render.span_anchor()'s rule: tile + span/2, so odd spans end in .5 and even ones in .0.
+    return v - math.floor(v) == (span % 2) / 2
+
+
+def _owner(player_id: int) -> str:
+    return "GAIA" if player_id == 0 else f"Player {player_id}"
+
+
+def _parity(span: int) -> str:
+    return ".5" if span % 2 else ".0"
+
+
+def _wrong_parity_hint(wrong: list[tuple[str, int]]) -> str:
+    """'(x and y should end in .0)', or per axis when they expect different
+    endings (a 4x1 gate: '(x should end in .0, y in .5)')."""
+    endings = {_parity(span) for _axis, span in wrong}
+    if len(endings) == 1:
+        return f"({' and '.join(axis for axis, _span in wrong)} should end in {endings.pop()})"
+    (axis0, span0), (axis1, span1) = wrong
+    return f"({axis0} should end in {_parity(span0)}, {axis1} in {_parity(span1)})"
+
+
+def check_off_grid_buildings(loaded: LoadedScenario) -> CheckResult:
+    """WARNING off the half-tile grid (no shipping file has one; only a free
+    placement write makes it), INFO for the wrong parity, which the game
+    itself writes in 11 of 21 shipping files."""
+    label = "Off-grid buildings"
+    mm = loaded.map_manager
+    mobile = mobile_unit_consts()
+    findings = []
+    for player_id, unit in _all_units(loaded):
+        span = BUILDING_TILE_SPANS.get(unit.unit_const)
+        if span is None or unit.unit_const in mobile:
+            continue
+        if unit_tile_bounds(unit, mm.map_width, mm.map_height) is None:
+            continue
+        x, y = unit.x, unit.y
+        where = f"{_owner(player_id)} building {unit.unit_const} (id {unit.reference_id}) at ({x:g}, {y:g})"
+        if not (_on_half_grid(x) and _on_half_grid(y)):
+            message = f"{where} is off the half-tile grid; no game-made building sits there"
+            severity: Severity = "warning"
+        else:
+            wrong = [(axis, s) for axis, v, s in (("x", x, span[0]), ("y", y, span[1])) if not _on_span_grid(v, s)]
+            if not wrong:
+                continue
+            message = (
+                f"{where} is half a tile off the grid for a {span[0]}x{span[1]} footprint "
+                f"{_wrong_parity_hint(wrong)}"
+            )
+            severity = "info"
+        findings.append(Finding(message, severity, tile=(int(x), int(y)), unit_key=(player_id, unit.reference_id)))
+    findings.sort(key=lambda f: f.severity != "warning")  # stable: the cap never hides a warning behind info
+    return _capped(label, findings)
+
+
+def _off_centre_units(loaded: LoadedScenario, gaia: bool) -> list[Finding]:
+    """Mobile units not at a tile centre (.5), where snapped Place Unit puts
+    them. Garrisoned units are skipped (their stored spot is not where they
+    stand), and off-map ones belong to the off-map check."""
+    mm = loaded.map_manager
+    mobile = mobile_unit_consts()
+    findings = []
+    for player_id, unit in _all_units(loaded):
+        if (player_id == 0) != gaia or unit.unit_const not in mobile:
+            continue
+        if _read(unit, "garrisoned_in_id") not in (None, -1):
+            continue
+        if _on_span_grid(unit.x, 1) and _on_span_grid(unit.y, 1):
+            continue
+        if unit_tile_bounds(unit, mm.map_width, mm.map_height) is None:
+            continue
+        findings.append(
+            Finding(
+                f"{_owner(player_id)} unit {unit.unit_const} (id {unit.reference_id}) at "
+                f"({unit.x:g}, {unit.y:g}) is not at its tile's centre",
+                "info",
+                tile=(int(unit.x), int(unit.y)),
+                unit_key=(player_id, unit.reference_id),
+            )
+        )
+    return findings
+
+
+def check_off_grid_player_units(loaded: LoadedScenario) -> CheckResult:
+    return _capped("Off-grid player units (not at tile centre)", _off_centre_units(loaded, gaia=False))
+
+
+def check_off_grid_gaia_units(loaded: LoadedScenario) -> CheckResult:
+    return _capped("Off-grid GAIA units (not at tile centre)", _off_centre_units(loaded, gaia=True))
 
 
 def _elevation_grid(loaded: LoadedScenario) -> np.ndarray:
@@ -400,6 +505,9 @@ def check_stranded_units(loaded: LoadedScenario) -> CheckResult:
 CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("elevation", check_elevation),
     ("off_map_units", check_off_map_units),
+    ("off_grid_buildings", check_off_grid_buildings),
+    ("off_grid_player_units", check_off_grid_player_units),
+    ("off_grid_gaia_units", check_off_grid_gaia_units),
     ("trigger_display_order", check_trigger_display_order),
     ("trigger_references", check_trigger_references),
     ("unit_references", check_unit_references),

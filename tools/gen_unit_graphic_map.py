@@ -29,7 +29,15 @@ resolves to a named graphic:
                               -- The edit path's install-free cycle modulus
                               -- (descape.unit_variant); render still reads
                               -- the file itself.
-      "pieces": [            -- OPTIONAL. Present only for a multi-graphic
+      "frame_offset": int,   -- OPTIONAL, fish bodies only (_BODY_FRAME_OFFSETS):
+                              -- added to the dispatched frame, for a body whose
+                              -- frame 0 holds no fish. See "Fish bodies".
+      "dx": int, "dy": int,  -- OPTIONAL, fish bodies only, both or neither,
+                              -- omitted when (0, 0): the body delta's own
+                              -- native-pixel offset from the unit's anchor,
+                              -- which unit_sprites folds into the hotspot.
+                              -- Never beside "pieces". See "Fish bodies".
+      "pieces": [           -- OPTIONAL. Present only for a multi-graphic
                               -- composite building (town centres, pastures);
                               -- absent means "one graphic", same as today.
         {"unit_id": int,       -- the piece's OWN resolving unit_id (this
@@ -207,6 +215,26 @@ the body as their top-level graphic but also carry `pieces`: the shell's
 modern deltas in .dat list order at their own offsets, with the flag shell
 itself at its `graphic_id == -1` delta's slot and offset, and the body marked
 parent. See `_resolve_wall_pieces`.
+
+**Fish bodies (GH #178).** A fish's standing graphic is the surface SPLASH
+(e.g. Dorado 455 -> 2186 `a_fish_dorado_x1`, layer 11), and the fish itself
+is that graphic's `_underwater` delta (2185 `a_fish_dorado_underwater_x1`).
+Frame 0 of the splash is empty for Dorado, Snapper, Perch, Dolphin, Marlin and
+Whale, and a 17-229 px sliver for Salmon, Tuna, Shore Fish and Box Turtles,
+while every body but Marlin's has a 102-873 px fish at frame 0 (measured
+2026-10-09). So the `_UNDERWATER_BODY_CONSTS` entries point at the body, with
+its own angle/frame/variant fields, and the splash is not drawn, matching the
+in-game editor. Not `pieces`, and an explicit const list rather than "has any
+delta": birds, sea rocks and Oysters carry shadow/reflection deltas, and
+Flotsam 2577 and Driftwood 2741, whose standing graphic is the floating
+debris rather than an empty splash, keep it. The generator fails unless each
+listed splash has exactly one `_underwater` delta with the splash's own angle
+and frame counts. Marlin's body holds no fish until frame 7, so its entry
+carries `frame_offset` (`_BODY_FRAME_OFFSETS`), which
+`descape.unit_sprites._frame_for` adds. A body delta that sits off the anchor
+keeps its offset as the entry's top-level `dx`/`dy` (only Perch 53, at
+(0, -30), measured 2026-10-09), so the body draws where the .dat puts it
+rather than 30 native px low.
 """
 
 from __future__ import annotations
@@ -993,6 +1021,41 @@ _BODY_GRAPHIC_OVERRIDES: dict[int, int] = {
     788: 6595,  # Sea Wall             -> b_scen_wall_sea_x1
 }
 
+# Fish draw their `_underwater` body, never the standing splash; see the
+# module docstring's "Fish bodies" section. 451 is the hidden second Marlin.
+_UNDERWATER_BODY_CONSTS = frozenset({53, 61, 69, 450, 451, 455, 456, 457, 458, 1141, 2625})
+_UNDERWATER_SUFFIX = "_underwater_x1"
+# Body file_name -> first frame with the whole body in view (Marlin's frames 0-4
+# hold no ink, 5-6 a few px). Hand-measured, since this script decodes no .sld.
+_BODY_FRAME_OFFSETS: dict[str, int] = {"a_fish_marlin1_underwater_x1": 7}
+
+
+def _underwater_body(graphics: list, unit_const: int, splash):
+    """(body graphic, dx, dy): the one `_underwater` delta of a fish's splash
+    graphic and that delta's own offset, the body checked to keep the splash's
+    angle and frame layout so rotation and variants mean the same."""
+    deltas = [
+        d for d in splash.deltas
+        if d.graphic_id is not None and 0 <= d.graphic_id < len(graphics)
+        and graphics[d.graphic_id] is not None
+        and (graphics[d.graphic_id].file_name or "").endswith(_UNDERWATER_SUFFIX)
+    ]
+    bodies = [graphics[d.graphic_id] for d in deltas]
+    if len(bodies) != 1:
+        raise SystemExit(
+            f"fish {unit_const}'s splash {splash.file_name!r} has {len(bodies)} "
+            f"{_UNDERWATER_SUFFIX} deltas, expected exactly 1 -- re-verify "
+            f"_UNDERWATER_BODY_CONSTS against the .dat"
+        )
+    body = bodies[0]
+    if (body.angle_count, body.frame_count) != (splash.angle_count, splash.frame_count):
+        raise SystemExit(
+            f"fish {unit_const}'s body {body.file_name!r} has angle/frame counts "
+            f"{(body.angle_count, body.frame_count)}, its splash "
+            f"{(splash.angle_count, splash.frame_count)} -- variant structure changed"
+        )
+    return body, int(deltas[0].offset_x), int(deltas[0].offset_y)
+
 
 def _resolve_wall_pieces(
     graphics: list, unit_const: int, shell, body_id: int
@@ -1089,7 +1152,7 @@ def _entry_for(
 ) -> tuple[dict[str, object] | None, str]:
     """(entry, kind) for one const of one civ's unit table: the entry this
     script emits for it, or None with `kind` naming the skip reason. `kind` is
-    otherwise "gate", "tree", "override", "composite" or "plain". Run for
+    otherwise "gate", "tree", "override", "underwater", "composite" or "plain". Run for
     every civ (GH #48), so nothing in here may read a Gaia-only fact.
     `annex_upgrades` is `_annex_upgrades()`'s table, keyed by composite const."""
     unit = units[unit_const]
@@ -1154,6 +1217,7 @@ def _entry_for(
         return None, "no_file_name"
     position = body_positions.get(unit_const)
     wall_pieces = None
+    body_offset = (0, 0)
     if position is not None:
         body_id = graphic.deltas[position].graphic_id if position < len(graphic.deltas) else -1
         body = graphics[body_id] if 0 <= body_id < len(graphics) else None
@@ -1164,6 +1228,9 @@ def _entry_for(
             )
         wall_pieces = _resolve_wall_pieces(graphics, unit_const, graphic, body_id)
         graphic = body
+    elif unit_const in _UNDERWATER_BODY_CONSTS:
+        graphic, body_dx, body_dy = _underwater_body(graphics, unit_const, graphic)
+        body_offset = (body_dx, body_dy)
     elif not _looks_modern(graphic.file_name):
         resolved = _resolve_modern_graphic(graphics, graphic_id)
         if resolved is None:
@@ -1183,6 +1250,13 @@ def _entry_for(
         frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
         if frames is not None and graphic.frame_count > 0:
             entry["variant_count"] = frames // graphic.frame_count
+    if unit_const in _UNDERWATER_BODY_CONSTS:
+        offset = _BODY_FRAME_OFFSETS.get(graphic.file_name)
+        if offset is not None:
+            entry["frame_offset"] = offset
+        if body_offset != (0, 0):
+            entry["dx"], entry["dy"] = body_offset
+        return entry, "underwater"
     if wall_pieces is not None:
         entry["pieces"] = wall_pieces
         return entry, "override"
@@ -1449,6 +1523,7 @@ def main() -> None:
     composited: set[int] = set()
     gate_composited: set[int] = set()
     tree_composited: set[int] = set()
+    fish_bodies: dict[int, str] = {}
 
     for unit_const, unit in enumerate(units):
         if unit is not None:
@@ -1470,8 +1545,23 @@ def main() -> None:
         elif kind == "override":
             shell = graphics[unit.standing_graphic[0]]
             overridden[unit_const] = (shell.file_name, str(entry["file_name"]))
+        elif kind == "underwater":
+            fish_bodies[unit_const] = str(entry["file_name"])
+
+    missing_fish = sorted(_UNDERWATER_BODY_CONSTS - set(fish_bodies))
+    unused_offsets = sorted(set(_BODY_FRAME_OFFSETS) - set(fish_bodies.values()))
+    if missing_fish or unused_offsets:
+        raise SystemExit(
+            f"fish body overrides not applied: consts {missing_fish}, frame offsets "
+            f"{unused_offsets} -- re-verify against the .dat"
+        )
 
     for unit_const, entry in entries.items():
+        if "dx" in entry and "pieces" in entry:
+            raise SystemExit(
+                f"unit_const {unit_const} has a top-level dx/dy beside pieces -- "
+                f"sprite_pieces_for() would draw the pieces and drop the offset"
+            )
         parents = sum(1 for piece in entry.get("pieces", ()) if piece.get("parent"))
         if "pieces" in entry and parents != 1:
             raise SystemExit(
@@ -1506,6 +1596,11 @@ def main() -> None:
     print(f"  body-graphic overrides applied: {len(overridden)}/{len(_BODY_GRAPHIC_OVERRIDES)}")
     for const, (shell, body) in sorted(overridden.items()):
         print(f"    {const}: {shell} -> {body}")
+    print(f"  fish underwater bodies: {len(fish_bodies)}/{len(_UNDERWATER_BODY_CONSTS)}")
+    for const, body in sorted(fish_bodies.items()):
+        entry = entries[str(const)]
+        shift = f" at ({entry['dx']}, {entry['dy']})" if "dx" in entry else ""
+        print(f"    {const}: {body}{shift}")
     print(f"  standing_graphic[1]: {dict(sorted(secondary.items()))}")
     print(f"  composite (pieces) entries: {len(composited)}/{len(_COMPOSITE_SCOPE)} scoped consts")
     not_composited = sorted(_COMPOSITE_SCOPE - composited)

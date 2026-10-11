@@ -48,9 +48,9 @@ from typing import NamedTuple
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
 # render is already loaded by unit_model, so importing it here costs nothing.
-from descape.render import NON_BUILDING_SPAN, span_anchor, unit_tile_bounds
+from descape.render import NON_BUILDING_SPAN, snapped_anchor, span_anchor, unit_tile_bounds
 from descape.scenario_io import LoadedScenario
-from descape.terrain_palette import tile_span
+from descape.terrain_palette import BUILDING_TILE_SPANS, tile_span
 from descape.unit_model import UnitEditModel
 
 # Strictly below 0.5 so a jittered unit's int(x)/int(y) never leaves its tile.
@@ -209,7 +209,9 @@ def scatter_units(
     given). Consts are passed through unchecked, same as add().
 
     Units sit at tile centres (x + 0.5) unless `jitter` > 0 opts into
-    x + 0.5 +/- jitter, clamped to MAX_JITTER. z is always 0.0, never derived
+    x + 0.5 +/- jitter, clamped to MAX_JITTER. A building's multi-tile axis
+    takes render.snapped_anchor() instead, unjittered: `x + 1` on an even
+    span, so a Mill lands on the game's grid. z is always 0.0, never derived
     from terrain elevation. `min_spacing` is a Chebyshev tile distance,
     best-effort. `avoid_occupied` drops tiles under any existing unit's
     footprint (see occupied_tiles()).
@@ -248,10 +250,14 @@ def scatter_units(
         # Verbatim caller-supplied values only; see the module docstring.
         rotation = rng.choice(rotation_choices) if rotation_choices is not None else 0.0
         frame = rng.choice(animation_frames) if animation_frames is not None else 0
-        ux, uy = x + 0.5, y + 0.5
+        # A building's multi-tile axis sits on the game's grid, unjittered (GH #206). Deep fish keep the old rule.
+        span = BUILDING_TILE_SPANS.get(const, (1, 1))
+        ux, uy = snapped_anchor((x, y), None, span, mm.map_width, mm.map_height)
         if jitter:
-            ux += rng.uniform(-jitter, jitter)
-            uy += rng.uniform(-jitter, jitter)
+            # Both draws always happen, so a seeded scatter's stream is unchanged by a building in the mix.
+            jx, jy = rng.uniform(-jitter, jitter), rng.uniform(-jitter, jitter)
+            ux += jx if span[0] <= 1 else 0.0
+            uy += jy if span[1] <= 1 else 0.0
         specs.append(_Spec(ux, uy, const, rotation, frame))
 
     if not specs:

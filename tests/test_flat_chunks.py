@@ -53,7 +53,7 @@ import numpy as np
 import pytest
 
 from descape.edit_history import EditHistory
-from descape.render import _flat_unit_draws, composite_rect_flat, render_scenario, tile_pixels_for_map
+from descape.render import _flat_unit_draws, composite_rect_flat, flat_dirty_rects, render_scenario, tile_pixels_for_map
 from descape.render_cache import FlatChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
@@ -85,9 +85,10 @@ def _flat_scripted_ops(mm):
     return [("terrain paint A", op_paint_a), ("terrain paint B", op_paint_b)]
 
 
-def _dirty_rects(mm, dirty_indices, tile_px: int) -> list[tuple[int, int, int, int]]:
+def _dirty_rects(mm, dirty_indices, tile_px: int, layers) -> list[tuple[int, int, int, int]]:
+    """The viewer's own funnel, dilated to the neighbours while blending is effective."""
     coords = [(mm.terrain[i].x, mm.terrain[i].y) for i in dirty_indices]
-    return [(x * tile_px, y * tile_px, (x + 1) * tile_px, (y + 1) * tile_px) for x, y in coords]
+    return flat_dirty_rects(coords, mm.map_width, mm.map_height, tile_px, layers)
 
 
 def _overlapping_tile_count(bboxes: np.ndarray, tile_px: int) -> tuple[int, tuple[int, int] | None]:
@@ -200,7 +201,7 @@ def _check_patch_after_scripted_ops(files: list[Path]) -> tuple[bool, str]:
             if not dirty:
                 problems.append(f"{path.name} [{label}]: produced no dirty tiles -- expected a real change")
                 continue
-            cache.patch_rects(_dirty_rects(mm, dirty, tile_px))
+            cache.patch_rects(_dirty_rects(mm, dirty, tile_px, cache.layers))
             stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
             full = render_scenario(scenario, isometric=False)
             if not np.array_equal(stitched, full):
@@ -211,7 +212,7 @@ def _check_patch_after_scripted_ops(files: list[Path]) -> tuple[bool, str]:
             dirty = hist.undo(mm.terrain)
             if not dirty:
                 continue
-            cache.patch_rects(_dirty_rects(mm, dirty, tile_px))
+            cache.patch_rects(_dirty_rects(mm, dirty, tile_px, cache.layers))
 
         stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
         full = render_scenario(scenario, isometric=False)

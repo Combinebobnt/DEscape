@@ -49,6 +49,7 @@ from descape import (
     unit_references,
 )
 from descape.constant_picker import CatalogLineEdit
+from descape.facet_preview import FacetPreview
 from descape.instruction_preview import InstructionPreview
 from descape.scenario_io import (
     LoadedScenario,
@@ -590,6 +591,9 @@ class TriggerPanel(QWidget):
         self._player_colors = None
         # GH #140: the form's Display Instructions preview, or None.
         self._instruction_preview: InstructionPreview | None = None
+        # GH #167: the facet-direction preview and the field it sits under, or None and "".
+        self._facet_preview: FacetPreview | None = None
+        self._facet_preview_field = ""
         self._rows: list[tuple] = []
         # The (kind, index) refs the property form was last built for. None
         # means "holds nothing", so the next sync always repopulates.
@@ -709,13 +713,23 @@ class TriggerPanel(QWidget):
         self.tag_rename_button.setMenu(tag_menu)
         tag_row.addWidget(self.tag_rename_button)
 
-        # Collapse All / Expand All, then one jump per section. Shown only on a
-        # grouped tree; the section actions are rebuilt per show_scenario().
+        # The section verbs, Collapse All / Expand All, then one jump per
+        # section. The jump actions are rebuilt per show_scenario().
         self.sections_button = QToolButton()
         self.sections_button.setText("Sections")
-        self.sections_button.setToolTip("Collapse or expand every section, or jump to one")
+        self.sections_button.setToolTip("Add, rename or move to a section; collapse, expand or jump to one")
         self.sections_button.setPopupMode(QToolButton.InstantPopup)
         self.sections_menu = QMenu(self.sections_button)
+        # The disabled-reason suffixes live in the action tooltips.
+        self.sections_menu.setToolTipsVisible(True)
+        self.section_new_action = self.sections_menu.addAction("New Section…")
+        self.section_new_action.triggered.connect(lambda checked=False: self.request_new_section())
+        self.section_rename_action = self.sections_menu.addAction("Rename Section…")
+        self.section_rename_action.triggered.connect(lambda checked=False: self.request_section_rename())
+        self.section_move_menu = self.sections_menu.addMenu("Move to Section")
+        self.section_move_menu.aboutToShow.connect(self._populate_move_menu)
+        self.section_move_action = self.section_move_menu.menuAction()
+        self.sections_menu.addSeparator()
         self.collapse_all_action = self.sections_menu.addAction("Collapse All")
         self.collapse_all_action.triggered.connect(lambda checked=False: self.collapse_all_sections())
         self.expand_all_action = self.sections_menu.addAction("Expand All")
@@ -724,8 +738,7 @@ class TriggerPanel(QWidget):
         self.sections_menu.aboutToShow.connect(self._update_section_actions)
         self._section_actions: list = []
         self.sections_button.setMenu(self.sections_menu)
-        self.sections_button.setVisible(False)
-        # On the tag row: beside the filter at 340 px it left the text box 45 px.
+        # On the tag row, always shown: beside the filter at 340 px it left the text box 45 px.
         tag_row.addWidget(self.sections_button)
 
         self.sort_combo = QComboBox()
@@ -779,43 +792,35 @@ class TriggerPanel(QWidget):
         )
         pane_layout.addLayout(self.trigger_buttons)
 
-        # A second row rather than widening the first: the pane is ~340 px
-        # and three buttons already fill it (the reason Conditions/Effects
-        # share one New button in the entry row below). Move Up/Down are
-        # display-order-only (ids are never renumbered, see
-        # trigger_structural_edit()'s "move" op), so they are gated on the
-        # sort mode too, not just on a trigger being selected.
-        # Duplicate sits here (GH #27/#28): five buttons in the first row clip at 340 px.
-        self.reorder_buttons = self._build_button_row(
-            [
-                (
-                    "trigger_copy_button",
-                    "Duplicate",
-                    (
-                        "Duplicate the selected triggers in place (a collapsed section duplicates whole). "
-                        "Their trigger links still point at the originals; Copy + Paste re-links a block"
-                    ),
-                ),
-                ("trigger_move_up_button", "▲ Move Up", "Move the selected trigger up in display order"),
-                ("trigger_move_down_button", "▼ Move Down", "Move the selected trigger down in display order"),
-            ],
-            lambda op: (lambda checked=False: self._request_trigger_op(op)),
-            ("copy", "move_up", "move_down"),
+        # Glyph tool buttons beside Duplicate: with full labels this row needs ~560 px.
+        self.reorder_buttons = QHBoxLayout()
+        self.reorder_buttons.setContentsMargins(0, 0, 0, 0)
+        self.trigger_copy_button = QPushButton("Duplicate")
+        self.trigger_copy_button.setToolTip(
+            "Duplicate the selected triggers in place (a collapsed section duplicates whole). "
+            "Their trigger links still point at the originals; Copy + Paste re-links a block"
         )
+        self.trigger_copy_button.clicked.connect(lambda checked=False: self._request_trigger_op("copy"))
+        self.reorder_buttons.addWidget(self.trigger_copy_button, stretch=1)
+        for attribute, glyph, name, tip, op in (
+            ("trigger_move_up_button", "▲", "Move Up", self._MOVE_UP_TIP, "move_up"),
+            ("trigger_move_down_button", "▼", "Move Down", self._MOVE_DOWN_TIP, "move_down"),
+            ("section_up_button", "⇈", "Section Up", self._SECTION_UP_TIP, "section_up"),
+            ("section_down_button", "⇊", "Section Down", self._SECTION_DOWN_TIP, "section_down"),
+        ):
+            if op == "section_up":
+                self.reorder_buttons.addSpacing(6)
+            button = QToolButton()
+            button.setText(glyph)
+            # The glyph alone is no name for AT-SPI locators or screen readers.
+            button.setAccessibleName(name)
+            button.setToolTip(tip)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            button.clicked.connect(lambda checked=False, op=op: self._request_trigger_op(op))
+            setattr(self, attribute, button)
+            self.reorder_buttons.addWidget(button)
         pane_layout.addLayout(self.reorder_buttons)
-        # GH #133: a pair of its own, so ▲▼ keep moving a divider alone (how a
-        # user re-partitions sections).
-        self.section_reorder_buttons = self._build_button_row(
-            [
-                ("section_up_button", "⏫ Section Up", self._SECTION_UP_TIP),
-                ("section_down_button", "⏬ Section Down", self._SECTION_DOWN_TIP),
-            ],
-            lambda op: (lambda checked=False: self._request_trigger_op(op)),
-            ("section_up", "section_down"),
-        )
-        pane_layout.addLayout(self.section_reorder_buttons)
-        pane_layout.addLayout(self._build_section_row())
-        # GH #101: the selection's tag verbs. Own row: the tag and section rows are full at 340 px.
+        # GH #101: the selection's tag verbs. Own row: beside Duplicate's row they clip at 340 px.
         tag_select_row = QHBoxLayout()
         tag_select_row.setContentsMargins(0, 0, 0, 0)
         self.tag_add_button = QPushButton("Add Tag…")
@@ -830,30 +835,6 @@ class TriggerPanel(QWidget):
         tag_select_row.addWidget(self.tag_remove_selected_button)
         pane_layout.addLayout(tag_select_row)
         return pane
-
-    def _build_section_row(self) -> QHBoxLayout:
-        """New Section (Rename Section behind its arrow) and Move to Section.
-        A third row: beside Move Up/Down the four need ~490 px of a 340 px pane."""
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        self.section_new_button = QToolButton()
-        self.section_new_button.setText("New Section…")
-        self.section_new_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.section_new_button.clicked.connect(lambda checked=False: self.request_new_section())
-        new_menu = QMenu(self.section_new_button)
-        self.section_rename_action = new_menu.addAction("Rename Section…")
-        self.section_rename_action.triggered.connect(lambda checked=False: self.request_section_rename())
-        self.section_new_button.setMenu(new_menu)
-        self.section_move_button = QToolButton()
-        self.section_move_button.setText("Move to Section")
-        self.section_move_button.setPopupMode(QToolButton.InstantPopup)
-        self.section_move_menu = QMenu(self.section_move_button)
-        self.section_move_menu.aboutToShow.connect(self._populate_move_menu)
-        self.section_move_button.setMenu(self.section_move_menu)
-        for button in (self.section_new_button, self.section_move_button):
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            row.addWidget(button)
-        return row
 
     def _on_sort_mode_changed(self, combo_index: int) -> None:
         if self._populating:
@@ -1451,8 +1432,8 @@ class TriggerPanel(QWidget):
     _SECTION_LABEL_CHARS = 40
 
     def _populate_sections_menu(self, parts: list[trigger_organize.Section]) -> None:
-        """One jump action per section after the fixed Collapse/Expand All,
-        and the button shown only when there are sections at all."""
+        """One jump action per section after the fixed entries. A flat tree
+        gets none, and Collapse/Expand All are disabled."""
         for action in self._section_actions:
             self.sections_menu.removeAction(action)
             action.deleteLater()
@@ -1473,7 +1454,8 @@ class TriggerPanel(QWidget):
             action.setData(target)
             action.triggered.connect(lambda checked=False, i=target: self.reveal_trigger(i))
             self._section_actions.append(action)
-        self.sections_button.setVisible(bool(parts))
+        self.collapse_all_action.setEnabled(bool(parts))
+        self.expand_all_action.setEnabled(bool(parts))
 
     def _update_section_actions(self) -> None:
         """Disable jumps to a row the filter currently hides."""
@@ -1680,16 +1662,16 @@ class TriggerPanel(QWidget):
 
     def _update_section_buttons(self, can_edit: bool) -> None:
         view = self._section_view_reason()
-        self.section_new_button.setEnabled(can_edit and not view)
-        self.section_new_button.setToolTip(self._NEW_SECTION_TIP + view)
+        self.section_new_action.setEnabled(can_edit and not view)
+        self.section_new_action.setToolTip(self._NEW_SECTION_TIP + view)
         name = self._current_name() if can_edit and not view else None
         single = len(self.selected_trigger_indices()) == 1
         self.section_rename_action.setEnabled(
             single and name is not None and trigger_organize.split_divider(name) is not None
         )
         blocker = view or self._move_blocker()
-        self.section_move_button.setEnabled(can_edit and not blocker)
-        self.section_move_button.setToolTip(self._MOVE_TO_SECTION_TIP + blocker)
+        self.section_move_action.setEnabled(can_edit and not blocker)
+        self.section_move_action.setToolTip(self._MOVE_TO_SECTION_TIP + blocker)
 
     def _select_default_trigger(self) -> None:
         """topLevelItem(0), or its first child when that row is the synthetic
@@ -2272,6 +2254,10 @@ class TriggerPanel(QWidget):
         if self._instruction_preview is not None:
             self._instruction_preview.detach()
         self._instruction_preview = None
+        if self._facet_preview is not None:
+            self._facet_preview.detach()
+        self._facet_preview = None
+        self._facet_preview_field = ""
         while self.property_form.rowCount():
             row = self.property_form.takeRow(0)
             # A spanning addRow(widget) row fills only one of the two.
@@ -2460,9 +2446,21 @@ class TriggerPanel(QWidget):
                     if label is not None:
                         label.setToolTip(spec.tooltip)
                 self._rows.append((spec, kind, entry_index, widget))
+                if kind == "effect" and spec.name in self._FACET_UNITS and self._facet_preview is None:
+                    # GH #167: its own row directly under the facet field.
+                    self._facet_preview = FacetPreview()
+                    self._facet_preview_field = spec.name
+                    self.property_form.addRow(self._facet_preview)
                 if len(refs) == 1 and kind != "trigger":
                     self._add_group_row(spec, specs, refs)
             self._update_group_rows()
+            if self._facet_preview is not None:
+                fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
+                facet = self._facet_preview_field
+                single = _entry if len(entries) == 1 else None
+                self._facet_preview.bind(
+                    fields, facet, self._FACET_UNITS[facet], self._read, single, self._fit_property_height
+                )
             if len(entries) == 1 and kind == "effect" and self._read(_entry, "effect_type") == self._DISPLAY_INSTRUCTIONS:
                 self._add_instruction_preview(_entry)
         finally:
@@ -2472,6 +2470,8 @@ class TriggerPanel(QWidget):
     # The viewer's own _CREATE_OBJECT_EFFECT, which stamp_create_objects() checks.
     _CREATE_OBJECT_EFFECT = 11
     _DISPLAY_INSTRUCTIONS = 20
+    # GH #167: Create Object's facet and Replace Object's facet2, each with the unit it turns.
+    _FACET_UNITS: ClassVar[dict[str, str]] = {"facet": "object_list_unit_id", "facet2": "object_list_unit_id_2"}
 
     def _add_instruction_preview(self, entry) -> None:
         """GH #140: a full-width, observe-only preview row under the fields."""
@@ -3914,6 +3914,7 @@ class TriggerPanel(QWidget):
         self._update_reorder_buttons(can_edit and selected >= 1)
         self._update_section_move_buttons(can_edit and selected >= 1)
         self._update_section_buttons(can_edit)
+        self.sections_button.setEnabled(has_document)
 
         self.entry_new_button.setEnabled(can_edit and has_trigger and self._vocabulary is not None)
         # Copy and Delete act on the selection set (GH #60); Type… stays single.

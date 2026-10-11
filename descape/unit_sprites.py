@@ -513,6 +513,14 @@ def _entry_for_art(unit_const: int, art: tuple[int | None, int] | None) -> dict 
     return resolve_entry(unit_const, art[0], art[1])
 
 
+def _body_offset(entry: dict) -> tuple[int, int]:
+    """A single-graphic entry's own top-level (dx, dy) in native px, folded into
+    its hotspot by the single-graphic draw paths: a fish body's .dat delta
+    offset (GH #178; Perch 53's (0, -30)). Never pass a piece here, whose dx/dy
+    sprite_pieces_for() already applies as a SpritePiece offset."""
+    return int(entry.get("dx", 0)), int(entry.get("dy", 0))
+
+
 def angle_index(
     rotation: float, angle_count: int, offset_deg: float = ANGLE_ZERO_OFFSET_DEG
 ) -> int:
@@ -1176,7 +1184,19 @@ def _frame_for(
 
     A piece marked `"seeded"` (a pasture's posts and fences, GH #66) picks its
     variant from seeded_variant(seed, piece_index) instead of `rotation`, when
-    a seed is given; seed=None keeps the rotation dispatch below unchanged."""
+    a seed is given; seed=None keeps the rotation dispatch below unchanged.
+
+    An entry's optional `frame_offset` (a fish body whose frame 0 is empty,
+    GH #178) is added to whichever frame run the dispatch picked."""
+    return _dispatched_frame(
+        unit_const, entry, rotation, angle_offset_deg, seed, piece_index
+    ) + int(entry.get("frame_offset", 0))
+
+
+def _dispatched_frame(
+    unit_const: int, entry: dict, rotation: float, angle_offset_deg: float,
+    seed: int | None, piece_index: int,
+) -> int:
     angle_count = max(1, int(entry["angle_count"]))
     frame_count = max(1, int(entry["frame_count"]))
     if seed is not None and entry.get("seeded"):
@@ -1247,7 +1267,7 @@ def _with_glow(draw: SpriteDraw) -> SpriteDraw:
 def _draw_for_entry(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
     tree_scale: float = 1.0, seed: int | None = None, piece_index: int = 0,
-    hero_glow: bool = False,
+    hero_glow: bool = False, offset: tuple[int, int] = (0, 0),
 ) -> SpriteDraw | None:
     """The tinted, scaled sprite `entry` (one graphic_map() record) resolves
     to, or None on any of the failure paths sprite_for()'s docstring lists.
@@ -1274,7 +1294,11 @@ def _draw_for_entry(
 
     `hero_glow` (View > Layers > Hero Glow, GH #39) adds _with_glow()'s gold
     ring round the scaled sprite. The caller decides which consts it applies
-    to, as for tree_scale."""
+    to, as for tree_scale.
+
+    `offset` is a single-graphic entry's _body_offset(), native px, moved into
+    the hotspot before scaling. Pieces keep (0, 0): their dx/dy ride on the
+    SpritePiece instead."""
     index = _frame_for(unit_const, entry, rotation, seed=seed, piece_index=piece_index)
 
     scale = sprite_scale(half_w) * tree_scale
@@ -1286,7 +1310,9 @@ def _draw_for_entry(
     # process global shared across windows and tests, so without it full-size
     # art leaks into a shrunk render and vice versa.
     # hero_glow is keyed for the same reason: the ringed draw is a different image.
-    key = (entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow)
+    key = (
+        entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset
+    )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
@@ -1305,8 +1331,8 @@ def _draw_for_entry(
     small_pc = None if playercolor is None else _resize_rgba(playercolor, width, height)
     draw = SpriteDraw(
         rgba=_tinted(small_main, small_pc, team),
-        hotspot_x=round(hx * scale),
-        hotspot_y=round(hy * scale),
+        hotspot_x=round((hx - offset[0]) * scale),
+        hotspot_y=round((hy - offset[1]) * scale),
     )
     if hero_glow:
         draw = _with_glow(draw)
@@ -1372,7 +1398,9 @@ def sprite_for(
     entry = _entry_for_art(unit_const, art)
     if entry is None:
         return None
-    return _draw_for_entry(unit_const, entry, rotation, team_index, half_w)
+    return _draw_for_entry(
+        unit_const, entry, rotation, team_index, half_w, offset=_body_offset(entry)
+    )
 
 
 def sprite_pieces_for(
@@ -1427,7 +1455,8 @@ def sprite_pieces_for(
     pieces_data = entry.get("pieces")
     if not pieces_data:
         draw = _draw_for_entry(
-            unit_const, entry, rotation, team_index, half_w, tree_scale, hero_glow=hero_glow
+            unit_const, entry, rotation, team_index, half_w, tree_scale, hero_glow=hero_glow,
+            offset=_body_offset(entry),
         )
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
 
@@ -1524,7 +1553,11 @@ def _native_pieces_for(
     pieces_data = entry.get("pieces")
     if not pieces_data:
         native = _native_piece(unit_const, entry, rotation, angle_offset_deg)
-        return [] if native is None else [_NativePiece(*native, 0, 0)]
+        if native is None:
+            return []
+        main, playercolor, hx, hy = native
+        dx, dy = _body_offset(entry)
+        return [_NativePiece(main, playercolor, hx - dx, hy - dy, 0, 0)]
 
     result: list[_NativePiece] = []
     for index, piece in enumerate(pieces_data):

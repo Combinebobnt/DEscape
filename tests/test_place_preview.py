@@ -147,12 +147,43 @@ def test_a_free_ghost_is_exactly_the_unit_the_click_places() -> None:
         _close(window)
 
 
+_HOUSE_CONST = 70  # 2x2: the snapped anchor takes the whole number nearest the cursor
+
+
+@pytest.mark.parametrize(
+    ("free", "modifiers"),
+    [(False, Qt.NoModifier), (True, Qt.NoModifier), (False, Qt.AltModifier)],
+    ids=["snapped", "free", "alt"],
+)
+def test_a_house_ghost_is_exactly_the_house_the_click_places(free, modifiers) -> None:
+    """GH #206: the ghost and the click resolve one point for a building too."""
+    window = _window(const=_HOUSE_CONST)
+    try:
+        window.free_place_check.setChecked(free)
+        scene = _hover_scene(window, _scene_pos(window, 40.3, 40.7), modifiers)
+        item = window.map_view._unit_ghost_item
+        assert item is not None
+        ghost_polygons = _mark_polygons(item)
+
+        entry = _place_at(window, scene, modifiers)
+        tp = window.map_view._tile_pixels
+        if free or modifiers != Qt.NoModifier:
+            # The resolved scene pixel, which the zoomed-out viewport quantizes coarsely.
+            assert abs(entry.unit.x - scene.x() / tp) <= 1 / tp and abs(entry.unit.y - scene.y() / tp) <= 1 / tp
+            assert (entry.unit.x, entry.unit.y) != (40.0, 41.0), "free placement must not snap"
+        else:
+            assert (entry.unit.x, entry.unit.y) == (40.0, 41.0)
+        assert ghost_polygons == _expected_mark(window, entry)[0]
+    finally:
+        _close(window)
+
+
 def test_a_building_ghost_clamps_at_the_map_edge_like_the_placed_building() -> None:
     window = _window(const=_BUILDING_CONST)
     try:
         w = window.scenario.map_manager.map_width
         h = window.scenario.map_manager.map_height
-        scene = _hover_scene(window, _scene_pos(window, w - 0.5, h - 0.5))
+        scene = _hover_scene(window, _scene_pos(window, w - 0.2, h - 0.2))
         item = window.map_view._unit_ghost_item
         assert item is not None
         ghost_polygons = _mark_polygons(item)
@@ -161,6 +192,8 @@ def test_a_building_ghost_clamps_at_the_map_edge_like_the_placed_building() -> N
 
         entry = _place_at(window, scene)
         assert entry.unit.unit_const == _BUILDING_CONST
+        # The snapped 4x4 anchors on a whole number clamped to size - span/2 (GH #206).
+        assert (entry.unit.x, entry.unit.y) == (w - 2, h - 2)
         assert ghost_polygons == _expected_mark(window, entry)[0]
     finally:
         _close(window)
@@ -497,5 +530,339 @@ def test_hovering_builds_no_unit_model_adds_no_unit_and_invalidates_no_cache() -
         assert window.unit_edits is None
         assert [len(units) for units in window.scenario.unit_manager.units] == counts
         assert calls == {"units": 0, "region": 0}
+    finally:
+        _close(window)
+
+
+# --- GH #172: turning the ghost before placing ----------------------------------
+
+_OAK = 349  # cyclable, 42 variants
+_STONE_GATE = 64
+_HOUSE = 33  # INERT: angle_count 1
+
+
+@pytest.fixture
+def rotating_install(tmp_path, monkeypatch):
+    """A synthetic install where a turn is visible: the villager stores one
+    differently coloured frame per facing, the oak one per variant, and each
+    stone gate orientation its own colour. Warms _wall_consts first, for the
+    reason sprite_install records."""
+    from descape import viewer
+    from descape.gate_orientation import orientation_siblings
+
+    viewer._wall_consts.cache_clear()
+    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    table: dict[int, dict] = {}
+
+    def add(const, frames, colour_base=0, **extra):
+        name = f"t_rotate_{const}_x1"
+        # No team-colour mask: it would paint over the per-frame colour that tells frames apart.
+        art = build_sld(frames, canvas=16, colour_base=colour_base, playercolor=False)
+        (graphics / f"{name}.sld").write_bytes(art)
+        table[const] = {"graphic_id": const, "file_name": name, "angle_count": frames,
+                        "mirroring_mode": 0, "frame_count": 1, **extra}
+
+    add(_UNIT_CONST, 16)
+    add(_OAK, 42, colour_base=3, rotation_is_variant=True)
+    for i, const in enumerate(orientation_siblings(_STONE_GATE)):
+        add(const, 1, colour_base=5 * i + 1)
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield tmp_path
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def _sprite_window(const: int, owner: int = 1):
+    window = _window("Stepped", const=None)
+    window.show_sprites_action.setChecked(True)
+    assert window._sprites_enabled
+    window.units_panel.select_owner(owner)
+    window.units_panel._set_pending_object(const)
+    return window
+
+
+def _ghost_draws(view) -> list:
+    item = view._unit_ghost_item
+    assert item is not None
+    assert item._images and not item._marks, "the sprite must resolve, or this proves nothing"
+    return [(x, y, arr.shape, arr.tobytes()) for (_img, x, y), arr in zip(item._images, item._arrays, strict=True)]
+
+
+def _placed_draws(window, entry) -> list:
+    view = window.map_view
+    cache = view._sloped_cache()
+    draws = render.unit_sprite_draws_at(
+        window.scenario,
+        view._iso_proj,
+        view._iso_elevations,
+        None if cache is None else cache.corner_rise,
+        entry.player_id,
+        entry.unit,
+        tree_scale=window._layers.tree_scale,
+        hero_glow=window._layers.hero_glow,
+    )
+    out = []
+    for draw, ax, ay in draws:
+        rgba = np.ascontiguousarray(draw.rgba)
+        out.append((float(ax - draw.hotspot_x), float(ay - draw.hotspot_y), rgba.shape, rgba.tobytes()))
+    return out
+
+
+def _last_status(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]
+
+
+def test_a_turned_ghost_is_the_unit_the_click_places_and_the_turn_persists(rotating_install) -> None:
+    from descape import place_rotation
+
+    window = _sprite_window(_UNIT_CONST)
+    try:
+        view = window.map_view
+        scene = _hover_tile(window, 40, 40)
+        before = _ghost_draws(view)
+        window.rotate_place_ghost(steps=6)
+        ghost = _ghost_draws(view)
+        assert ghost != before, "the turn must change the ghost"
+        assert "facing 6/16" in _last_status(window)
+
+        entry = _place_at(window, scene)
+        want = place_rotation.rotation_for(window._place_rotation, _UNIT_CONST, 1)
+        assert entry.unit.rotation == want == pytest.approx(6 * 2 * 3.141592653589793 / 16)
+        assert ghost == _placed_draws(window, entry)
+        assert "facing 6/16" in _last_status(window)
+
+        scene = _hover_tile(window, 44, 44)
+        second = _place_at(window, scene)
+        assert second.unit.rotation == want, "the facing carries into the next placement"
+    finally:
+        _close(window)
+
+
+def test_a_cycled_tree_places_the_ghosts_variant_as_an_integer(rotating_install) -> None:
+    window = _sprite_window(_OAK, owner=0)
+    try:
+        view = window.map_view
+        scene = _hover_tile(window, 40, 40)
+        before = _ghost_draws(view)
+        window.rotate_place_ghost(steps=5)
+        ghost = _ghost_draws(view)
+        assert ghost != before
+        assert "variant 5/42" in _last_status(window)
+
+        entry = _place_at(window, scene)
+        assert entry.unit.rotation == 5.0 and entry.unit.rotation == int(entry.unit.rotation)
+        assert ghost == _placed_draws(window, entry)
+    finally:
+        _close(window)
+
+
+def test_a_gate_turn_changes_the_catalog_pick_and_the_placed_const(rotating_install) -> None:
+    from descape import gate_orientation
+
+    window = _sprite_window(_STONE_GATE)
+    try:
+        view = window.map_view
+        scene = _hover_tile(window, 40, 40)
+        before = _ghost_draws(view)
+        window.rotate_place_ghost(steps=1)
+        sibling = gate_orientation.cycle_const(_STONE_GATE, 1)
+        assert window.units_panel.selected_object_const() == sibling
+        ghost = _ghost_draws(view)
+        assert ghost != before
+
+        entry = _place_at(window, scene)
+        assert entry.unit.unit_const == sibling
+        assert entry.unit.rotation == 0.0
+        assert ghost == _placed_draws(window, entry)
+    finally:
+        _close(window)
+
+
+def test_a_gate_turn_clears_a_catalog_filter_hiding_its_sibling() -> None:
+    from descape import gate_orientation
+
+    window = _window(const=_STONE_GATE)
+    try:
+        _hover_tile(window, 40, 40)
+        catalog = window.units_panel.catalog_view
+        catalog.filter_edit.setText(window.units_panel.placing_label.toolTip())
+        assert window.units_panel.selected_object_const() == _STONE_GATE
+        window.rotate_place_ghost(steps=1)
+        sibling = gate_orientation.cycle_const(_STONE_GATE, 1)
+        assert window.units_panel.selected_object_const() == sibling
+        assert not catalog.filter_edit.text()
+        assert "cleared the catalog filter" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_an_inert_pick_does_not_turn_and_says_why() -> None:
+    window = _window(const=_HOUSE)
+    try:
+        scene = _hover_tile(window, 40, 40)
+        window.rotate_place_ghost(steps=1)
+        assert "has no facing or variant to rotate" in _last_status(window)
+        assert window._place_rotation == type(window._place_rotation)()
+        assert _place_at(window, scene).unit.rotation == 0.0
+    finally:
+        _close(window)
+
+
+def test_gaia_angle_does_not_turn_but_a_gaia_tree_still_cycles(rotating_install) -> None:
+    window = _sprite_window(_UNIT_CONST, owner=0)
+    try:
+        scene = _hover_tile(window, 40, 40)
+        window.rotate_place_ghost(steps=3)
+        assert "GAIA units have no facing" in _last_status(window)
+        assert _place_at(window, scene).unit.rotation == 0.0
+
+        window.units_panel._set_pending_object(_OAK)
+        scene = _hover_tile(window, 44, 44)
+        window.rotate_place_ghost(steps=2)
+        assert "variant 2/42" in _last_status(window)
+        assert _place_at(window, scene).unit.rotation == 2.0
+    finally:
+        _close(window)
+
+
+def test_loading_a_scenario_resets_the_pending_rotation() -> None:
+    window = _window()
+    try:
+        _hover_tile(window, 40, 40)
+        window.rotate_place_ghost(steps=3)
+        assert window._place_rotation.facing != 0.0
+        window.load_scenario(FIXTURE_PATH)
+        assert window._place_rotation == type(window._place_rotation)()
+    finally:
+        _close(window)
+
+
+# --- GH #172: the Rotate actions route to the ghost --------------------------------
+
+
+def test_a_rotate_key_over_the_ghost_turns_it_not_the_just_placed_unit() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        scene = _hover_tile(window, 40, 40)
+        entry = _place_at(window, scene)
+        assert window._selection, "the placed unit is selected"
+        records = len(window.edit_history.records)
+        assert view._unit_ghost_item is not None
+        assert window.rotate_cw_action.isEnabled()
+
+        window.rotate_cw_action.trigger()
+
+        assert entry.unit.rotation == 0.0
+        assert len(window.edit_history.records) == records, "no undo record"
+        assert "facing 1/16" in _last_status(window)
+        window.rotate_cw_coarse_action.trigger()
+        assert "facing 5/16" in _last_status(window)
+        assert entry.unit.rotation == 0.0
+    finally:
+        _close(window)
+
+
+def test_a_rotate_key_off_the_map_rotates_the_selection_as_before() -> None:
+    from descape import unit_rotation
+
+    window = _window()
+    try:
+        view = window.map_view
+        entry = _place_at(window, _hover_tile(window, 40, 40))
+        view.leaveEvent(QEvent(QEvent.Leave))
+        assert view._unit_ghost_item is None
+        records = len(window.edit_history.records)
+
+        window.rotate_cw_action.trigger()
+
+        assert entry.unit.rotation == pytest.approx(unit_rotation.rotate_step(0.0, 16, 1))
+        assert len(window.edit_history.records) == records + 1
+        assert window._place_rotation == type(window._place_rotation)()
+    finally:
+        _close(window)
+
+
+def test_the_rotate_actions_are_enabled_with_place_unit_armed_and_no_selection() -> None:
+    window = _window()
+    try:
+        assert not window._selection
+        actions = window._rotate_actions + window._rotate_toolbar_actions
+        assert all(a.isEnabled() for a in actions)
+        assert not any(a.isEnabled() for a in window._variant_actions), "Cycle Variant is out of scope"
+
+        window.rotate_cw_action.trigger()  # cursor never entered the map
+        assert "nothing to rotate" in _last_status(window)
+
+        window.units_panel._set_pending_object(_a_wall_const())
+        assert not any(a.isEnabled() for a in actions), "a wall pick has no ghost to turn"
+        window.units_panel._set_pending_object(_UNIT_CONST)
+        assert all(a.isEnabled() for a in actions)
+        window.pan_action.setChecked(True)
+        assert not any(a.isEnabled() for a in actions)
+    finally:
+        _close(window)
+
+
+def test_a_coarse_rotate_over_the_ghost_turns_a_quarter_of_the_picks_own_count() -> None:
+    """The coarse step comes from the pick, not from a selection: an oak's
+    quarter is 11 of its 42 variants."""
+    window = _window(const=_OAK)
+    try:
+        _hover_tile(window, 40, 40)
+        window.rotate_cw_coarse_action.trigger()
+        assert "variant 11/42" in _last_status(window)
+    finally:
+        _close(window)
+
+
+# --- TASK-288: a GAIA-only pick ghosts for GAIA ------------------------------
+
+_BERRY_BUSH = 59  # FORAG, GAIA-only whatever the owner combo says
+
+
+@pytest.fixture
+def bush_install(tmp_path, monkeypatch):
+    """The Forage Bush on a full team-colour mask, so the ghost's pixels are
+    its owner's colour. Warms _wall_consts first, for sprite_install's reason."""
+    from descape import viewer
+
+    viewer._wall_consts.cache_clear()
+    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(1, canvas=16))
+    table = {_BERRY_BUSH: {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 1,
+                           "mirroring_mode": 0, "frame_count": 1}}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield tmp_path
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def test_a_gaia_only_ghost_is_drawn_for_gaia_whatever_the_owner_combo(bush_install) -> None:
+    import dataclasses
+
+    from descape.unit_filter import GAIA_PLAYER_ID
+
+    window = _sprite_window(_BERRY_BUSH, owner=1)
+    try:
+        colors = window.scenario.player_colors
+        assert colors[GAIA_PLAYER_ID] != colors[1]
+        scene = _hover_tile(window, 40, 40)
+        ghost = _ghost_draws(window.map_view)
+
+        entry = _place_at(window, scene)
+        assert entry.player_id == GAIA_PLAYER_ID
+        assert ghost == _placed_draws(window, entry)
+        as_player_1 = _placed_draws(window, dataclasses.replace(entry, player_id=1))
+        assert ghost != as_player_1, "the team-colour mask must tell GAIA from Player 1"
+        assert window.units_panel.owner_id() == 1
     finally:
         _close(window)

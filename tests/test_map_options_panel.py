@@ -377,10 +377,10 @@ def test_a_value_its_editor_could_not_show_truthfully_is_shown_as_stored() -> No
     """Not cosmetic: this value rendered as an ordinary ticked checkbox that
     step 3 would have saved as 1, destroying the stored byte.
 
-    villager_force_drop carries 90/119/167/255 on the six 1.41 corpus files
-    -- but no shipped fixture does (both are 1.58), so end-to-end this only
-    runs in the corpus tier, which test_map_options_panel_populates_every_
-    corpus_file covers. The past-int32-spinbox counterpart of this test
+    A hypothetical stored flag byte of 90: no corpus file carries one since
+    library_compat.fix_structure() reframed the 1.41 files, whose misframed
+    villager_force_drop read 90/119/167/255. The past-int32-spinbox
+    counterpart of this test
     (max_number_of_teams overridden with 0xFFFFFFFF) moved to
     test_diplomacy_panel.py with the rest of the Teams group (step 5); the
     sentinel case (required_score_for_score_victory's 0xFFFFFFFF on five
@@ -1000,7 +1000,7 @@ def test_saving_after_an_exec_order_edit_writes_the_flag(tmp_path, monkeypatch) 
 def test_an_as_stored_row_is_never_editable() -> None:
     """A value no editor could show truthfully is a QLabel, which emits no
     signal -- so no write path can reach it. That is the containment, and it is
-    what keeps a save from writing 1 over villager_force_drop's stored 90."""
+    what keeps a save from writing 1 over a flag byte stored as 90."""
     from PyQt5.QtWidgets import QLabel
 
     from descape.scenario_io import load_map_and_units
@@ -1260,9 +1260,9 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
     """The tier that covers the absent-field branches at all.
 
     Both default-tier fixtures are 1.58/trigger-4.9, so every row is present
-    on them -- villager_force_drop (>= 1.37), lock_coop_alliances and
-    secondary_game_modes (>= 1.42), ai_map_type (absent on every 1.41 file)
-    and legacy_exec_order (needs trigger version >= 4.5) only ever go missing
+    on them -- villager_force_drop (>= 1.37), lock_coop_alliances (>= 1.41,
+    via library_compat.fix_structure()), secondary_game_modes (>= 1.42),
+    ai_map_type (absent on every 1.41 file) and legacy_exec_order (needs trigger version >= 4.5) only ever go missing
     out here. A file is allowed to be short of rows; it is not allowed to
     render a row whose widget disagrees with the value the file holds.
     """
@@ -1284,16 +1284,17 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
         # every version the corpus carries, so a file with fewer rows than
         # that has lost something rather than merely predating a field. The
         # rest are version-gated: villager_force_drop (>= 1.37),
-        # lock_coop_alliances / secondary_game_modes (>= 1.42), ai_map_type
-        # (absent on every 1.41 file) and legacy_exec_order (needs trigger
+        # lock_coop_alliances (>= 1.41), secondary_game_modes (>= 1.42),
+        # ai_map_type (absent on every 1.41 file) and legacy_exec_order (needs trigger
         # version >= 4.5). Diplomacy's four scalars moved to DiplomacyPanel
         # (step 5) and are no longer among panel._specs here at all -- see
         # tests/test_diplomacy_panel.py's own corpus coverage for them.
         # 7 is the measured minimum across examples/ (the 20-file corpus
-        # this environment carries), not a guess: the six C2_ElCid_coop_*
-        # files and 0_June_Event_Scenario lose all four version-gated rows
-        # at once (ai_map_type, lock_coop_alliances, secondary_game_modes,
-        # legacy_exec_order), landing at exactly 15 - 4 = 11.
+        # this environment carries), not a guess: 0_June_Event_Scenario
+        # loses all four version-gated rows at once (ai_map_type,
+        # lock_coop_alliances, secondary_game_modes, legacy_exec_order),
+        # landing at exactly 15 - 4 = 11. The six C2_ElCid_coop_* 1.41
+        # files keep lock_coop_alliances and lose the other three.
         assert len(panel._specs) >= 11, (
             f"{scenario_path.name} built only {len(panel._specs)} rows"
         )
@@ -1316,9 +1317,9 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
             )
             # Three states, not two: an as-stored row is a QLabel and is
             # read-only whatever the gate says, which is the containment
-            # itself. villager_force_drop on the 1.41 files is the live case --
-            # the byte verifies and packs, so the gate lists it as editable,
-            # and the label is what stops a save writing 1 over its stored 90.
+            # itself. A flag byte stored as, say, 90 would verify and pack, so
+            # the gate would list it as editable, and the label is what stops
+            # a save writing 1 over it.
             if isinstance(widget, QLabel):
                 continue
             expected_enabled = spec.field_id in panel._editable_fields

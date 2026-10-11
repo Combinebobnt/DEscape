@@ -300,18 +300,33 @@ def test_nothing_is_queued_with_sprites_off(mixed_scenario) -> None:
     assert not _warm(flat, [1]).is_active
 
 
-def test_sloped_has_nothing_to_warm(mixed_scenario) -> None:
-    """One mip level means no not-yet-visited level exists -- the base
-    class's None is Sloped's real answer, not an unimplemented stub."""
+def test_sloped_warms_a_coarser_level_the_visible_one_left_unbuilt(sprite_install, mixed_scenario) -> None:
+    """Sloped's ladder is Stepped's coarser levels (TASK-031.60), so a
+    non-visible level has a warm job until it is built, and a warm installs
+    it. Built from a headroom-0 Stepped proj, which must construct too: the
+    ladder derives its corner headroom from proj rather than assuming one step."""
     from descape import iso_geometry
     from descape.render_cache import SlopedChunkCache
 
     tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
     elevations, proj = render.elevations_and_proj(mixed_scenario)
+    assert proj.corner_headroom_px == 0
     corner_rise = iso_geometry.corner_rise_px(elevations, proj)
     cache = SlopedChunkCache(mixed_scenario, elevations, corner_rise, proj, tile_px, sprites=True)
-    assert cache.mip_levels() == [0]
+    assert cache.mip_levels() == [m for m in _iso_cache(mixed_scenario).mip_levels() if m <= 0]
+    assert -1 in cache.mip_levels()
+    assert cache.level_warm_job(0) is not None
+    cache.render_rect(0, 0, 64, 64, mip=0)
     assert cache.level_warm_job(0) is None
+    assert not cache.is_level_resident(-1)
+    assert cache.level_warm_job(-1) is not None
+
+    _warm(cache, [-1]).run_to_completion()
+
+    lvl = cache._levels[-1]
+    assert cache.is_level_resident(-1) and cache.level_warm_job(-1) is None
+    assert lvl.sprites is not None and lvl.sprites.by_anchor, "installed an empty layer -- vacuous"
+    assert lvl.heights is lvl.corner_rise is not cache.corner_rise
 
 
 @pytest.fixture
@@ -549,6 +564,41 @@ def test_a_load_queues_a_warm_and_it_installs(monkeypatch) -> None:
 
         assert not window._level_warmer.is_active
         assert all(cache._levels[mip].gen == cache._source_gen for mip in targets)
+    finally:
+        _close(window)
+
+
+@pytest.mark.gui
+def test_switching_to_sloped_re_arms_a_warm_of_its_coarser_neighbour(monkeypatch) -> None:
+    """Sloped's ladder has neighbours since TASK-031.60: the first viewport
+    fire on the new cache warms the fit level's, through the real
+    level_warm_job, and leaves level 0 unbuilt."""
+    import time
+
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = _shown_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        cache = window._cache
+        assert cache.style == "sloped"
+        deadline = time.perf_counter() + 5
+        while not window._level_warmer.is_active and time.perf_counter() < deadline:
+            QApplication.processEvents()
+        assert window._level_warmer.is_active, "no viewport fire re-armed the warm"
+        visible = window.map_view.viewport_chunk_target()[0]
+        targets = level_warm.neighbour_mips_of(cache, visible)
+        assert visible < 0 and targets, f"visible {visible}, neighbours {targets} -- vacuous"
+        assert any(cache._levels[mip].gen != cache._source_gen for mip in targets)
+
+        window._level_warmer.run_to_completion()
+
+        assert all(cache.is_level_resident(mip) for mip in targets)
+        if 0 not in targets:
+            assert cache._levels[0].gen == -1, "the warm built level 0"
     finally:
         _close(window)
 

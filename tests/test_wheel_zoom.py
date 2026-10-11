@@ -27,7 +27,7 @@ pytestmark = [
 ]
 
 
-def _wheel_units(view, units: int) -> None:
+def _wheel_units(view, units: int, modifiers=None) -> None:
     """One wheel event carrying `units` of vertical angleDelta. 120 is one
     ordinary detent, less is a high-resolution wheel's fraction of one, more
     is a flick coalesced into a single event. No gesture reset."""
@@ -41,7 +41,7 @@ def _wheel_units(view, units: int) -> None:
         QPoint(0, 0),
         QPoint(0, units),
         Qt.NoButton,
-        Qt.NoModifier,
+        Qt.NoModifier if modifiers is None else modifiers,
         Qt.NoScrollPhase,
         False,
     )
@@ -215,5 +215,148 @@ def test_a_direction_flip_drops_the_residual() -> None:
         assert _scale(view) == pytest.approx(before, rel=1e-9)
         _wheel_units(view, -120)
         assert _scale(view) == pytest.approx(before * 0.8, rel=1e-9)
+    finally:
+        conftest.close_window(window)
+
+
+# --- GH #172: Ctrl+wheel turns Place Unit's ghost --------------------------------
+
+_PLACE_CONST = 83  # a villager: ANGLE, 16 frames
+
+
+def _place_window(const: int = _PLACE_CONST):
+    """_window() with Place Unit armed on `const` and the cursor hovering the
+    viewport centre, where _wheel_units() points, so the ghost is showing."""
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    window = _window()
+    window.mode_combo.setCurrentText("Units")
+    window.units_panel._set_pending_object(const)
+    window.units_panel.select_owner(1)
+    window.place_unit_action.setChecked(True)
+    view = window.map_view
+    center = QPointF(view.viewport().rect().center())
+    view.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, center, Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+    return window
+
+
+def _ctrl():
+    from PyQt5.QtCore import Qt
+
+    return Qt.ControlModifier
+
+
+def _gesture(view) -> tuple:
+    return (view._wheel_accum, view._wheel_dir, view._wheel_gesture_mip, view._wheel_last_t, view._wheel_budget_t)
+
+
+def _facing(window) -> int:
+    from descape import place_rotation, unit_rotation
+
+    value = place_rotation.rotation_for(window._place_rotation, _PLACE_CONST, 1)
+    return unit_rotation.rotation_to_facing(value, 16)
+
+
+def test_ctrl_wheel_over_the_ghost_turns_it_and_leaves_the_zoom_alone() -> None:
+    window = _place_window()
+    try:
+        view = window.map_view
+        assert view._unit_ghost_item is not None
+        scale, gesture = _scale(view), _gesture(view)
+        _wheel_units(view, 120, _ctrl())
+        assert _facing(window) == 1, "scroll up is clockwise, like '.'"
+        _wheel_units(view, -240, _ctrl())
+        assert _facing(window) == 15
+        assert _scale(view) == scale
+        assert _gesture(view) == gesture, "a turn must not spend the zoom gesture's budget"
+    finally:
+        conftest.close_window(window)
+
+
+def test_two_half_notches_make_one_step() -> None:
+    window = _place_window()
+    try:
+        view = window.map_view
+        _wheel_units(view, 60, _ctrl())
+        assert _facing(window) == 0
+        _wheel_units(view, 60, _ctrl())
+        assert _facing(window) == 1
+    finally:
+        conftest.close_window(window)
+
+
+def test_plain_wheel_still_zooms_with_place_unit_armed() -> None:
+    window = _place_window()
+    try:
+        view = window.map_view
+        before = _scale(view)
+        _wheel_units(view, 120)
+        assert _scale(view) == pytest.approx(before * 1.25, rel=1e-9)
+        assert _facing(window) == 0
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("case", ["wall_pick", "off_map", "other_tool"])
+def test_ctrl_wheel_with_no_ghost_zooms(case) -> None:
+    from PyQt5.QtCore import QEvent
+
+    from descape.viewer import _wall_consts
+
+    window = _place_window()
+    try:
+        view = window.map_view
+        if case == "wall_pick":
+            window.units_panel._set_pending_object(min(_wall_consts()))
+        elif case == "off_map":
+            view.leaveEvent(QEvent(QEvent.Leave))
+        else:
+            window.pan_action.setChecked(True)
+        assert view._unit_ghost_item is None
+        before = _scale(view)
+        _wheel_units(view, 120, _ctrl())
+        assert _scale(view) == pytest.approx(before * 1.25, rel=1e-9)
+        assert window._place_rotation.facing == 0.0
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("case", ["leave", "tool_switch", "catalog_pick"])
+def test_a_leftover_half_notch_is_dropped_when_the_ghost_goes(case) -> None:
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    window = _place_window()
+    try:
+        view = window.map_view
+        _wheel_units(view, 60, _ctrl())
+        if case == "leave":
+            view.leaveEvent(QEvent(QEvent.Leave))
+        elif case == "tool_switch":
+            window.pan_action.setChecked(True)
+            window.place_unit_action.setChecked(True)
+        else:
+            window.units_panel._set_pending_object(4)  # an archer, then back
+            window.units_panel._set_pending_object(_PLACE_CONST)
+        center = QPointF(view.viewport().rect().center())
+        view.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, center, Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+        assert view._unit_ghost_item is not None
+        _wheel_units(view, 60, _ctrl())
+        assert _facing(window) == 0, "the first half notch must not have survived"
+        _wheel_units(view, 60, _ctrl())
+        assert _facing(window) == 1
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_reversed_ctrl_wheel_drops_the_stale_half_notch() -> None:
+    """+60 then -120 is one counter-clockwise step, the zoom's own flip rule."""
+    window = _place_window()
+    try:
+        view = window.map_view
+        _wheel_units(view, 60, _ctrl())
+        _wheel_units(view, -120, _ctrl())
+        assert _facing(window) == 15
     finally:
         conftest.close_window(window)

@@ -159,13 +159,18 @@ OBJECT_TILE_SPANS: dict[int, tuple[int, int]] = {
 BLOCKER_TILE_SPANS: dict[int, tuple[int, int]] = {
     int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("blocker_spans", {}).items()
 }
+# unit_const -> (span_x, span_y) for the eight deep-water fish (GH #178), an
+# explicit allowlist; see tools/gen_unit_render_data.py's "fish_spans" docs.
+FISH_TILE_SPANS: dict[int, tuple[int, int]] = {
+    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("fish_spans", {}).items()
+}
 
 def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     """The footprint span every render path should ask for. BUILDING_TILE_SPANS
     stays the is-a-building MEMBERSHIP test (render._unit_color reads it that
-    way); this answers how big something is, over all three tables. Their keys
-    are disjoint by construction -- a cliff's or blocker's `building` field is
-    None, which is exactly why each needed its own table.
+    way); this answers how big something is, over all four tables. Their keys
+    are disjoint by construction -- a cliff's, blocker's or fish's `building`
+    field is None, which is exactly why each needed its own table.
 
     **A function rather than a merged dict**, so it reads both tables live. A
     pre-merged snapshot would silently ignore a runtime `monkeypatch.setitem`
@@ -177,7 +182,10 @@ def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     span = OBJECT_TILE_SPANS.get(unit_const)
     if span is not None:
         return span
-    return BLOCKER_TILE_SPANS.get(unit_const, default)
+    span = BLOCKER_TILE_SPANS.get(unit_const)
+    if span is not None:
+        return span
+    return FISH_TILE_SPANS.get(unit_const, default)
 
 RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {
     int(uid): tuple(rgb) for uid, rgb in _UNIT_RENDER_DATA["resource_colors"].items()

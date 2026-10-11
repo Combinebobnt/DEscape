@@ -1,4 +1,4 @@
-"""File > Resize Map… (TASK-107, GH #45): the viewer's wiring around
+"""Map > Resize Map… (TASK-107, GH #45): the viewer's wiring around
 descape/scenario_resize.py. The resize itself is tests/test_scenario_resize.py's;
 this is the action, the prompts, and the document replacement.
 
@@ -86,6 +86,13 @@ def test_the_action_is_greyed_with_no_map() -> None:
     finally:
         w.edit_history.mark_saved()
         w.close()
+
+
+def test_the_action_sits_in_the_map_menu_not_file(window) -> None:
+    menus = {a.text(): a.menu() for a in window.menuBar().actions()}
+    assert window.resize_action in menus["&Map"].actions()
+    assert window.resize_action not in menus["&File"].actions()
+    assert window._keybind_actions["map_resize"] is window.resize_action
 
 
 def test_a_destructive_resize_confirms_then_replaces_the_document(window, monkeypatch) -> None:

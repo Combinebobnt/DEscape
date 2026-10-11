@@ -13,7 +13,7 @@ the reach fallback and the non-visible reach eviction are correct by
 construction too.
 
 Stepped runs at mip 0 and mip -1, so the level-to-reference conversion runs;
-Sloped has only mip 0.
+Sloped at mip 0, -1 and -2, its coarser ladder (TASK-031.60).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ TOWER_PIECE = 9001
 
 STROKE_TILES = [(20 + i, 30) for i in range(8)]
 SHIFTED_TILES = [(24 + i, 30) for i in range(8)]
-STYLE_MIPS = [("Stepped", 0), ("Stepped", -1), ("Sloped", 0)]
+STYLE_MIPS = [("Stepped", 0), ("Stepped", -1), ("Sloped", 0), ("Sloped", -1), ("Sloped", -2)]
 
 
 @pytest.fixture
@@ -254,7 +254,7 @@ def _place(window, monkeypatch, player: int, const: int, x: float, y: float):
     """Place Unit's real handler, with the click already resolved to (x, y)."""
     from PyQt5.QtCore import Qt
 
-    monkeypatch.setattr(window, "_placement_point", lambda _pos, _mods: (x, y))
+    monkeypatch.setattr(window, "_placement_point", lambda _pos, _mods, unit_const=None: (x, y))
     monkeypatch.setattr(window.units_panel, "selected_object_const", lambda: const)
     window.units_panel.select_owner(player)
     window.on_unit_place(None, Qt.NoModifier)

@@ -294,6 +294,17 @@ def _click(window, tile) -> None:
     _release(window.map_view, tile)
 
 
+def _click_point(window, x: float, y: float) -> None:
+    """A click at a continuous Flat map point, off a tile centre."""
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+
+    view = window.map_view
+    tp = view._tile_pixels
+    pos = QPointF(view.mapFromScene(QPointF(x * tp, y * tp)))
+    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+    view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+
+
 def _walls_on(window, tiles) -> list:
     wall_consts = {WALL, PALISADE, AQUEDUCT}
     return [
@@ -319,12 +330,14 @@ def test_a_gate_clicked_onto_a_run_replaces_the_walls_under_it():
         records = len(window.edit_history.records)
 
         _pick(window, GATE)
-        _click(window, (7, 5))
+        # Off the tile centre, which is the snapped anchor's tie on the 4-long
+        # axis: the whole number nearest x = 7.7 is 8, so tiles 6..9 (GH #206).
+        _click_point(window, 7.7, 5.4)
 
         assert _walls_on(window, footprint) == []
         assert _unit_count(window) == before - 3
         gate = window.scenario.unit_manager.units[PLAYER][-1]
-        assert gate.unit_const == GATE and (gate.x, gate.y) == (7.5, 5.5)
+        assert gate.unit_const == GATE and (gate.x, gate.y) == (8.0, 5.5)
         assert len(window.edit_history.records) == records + 1
         assert window._selection == [unit_pick.unit_key(PLAYER, gate)]
         last = window.status_log.toPlainText().splitlines()[-1]
@@ -344,6 +357,26 @@ def test_a_gate_clicked_onto_a_run_replaces_the_walls_under_it():
         _close(window)
 
 
+def test_a_gate_clicked_in_a_tiles_low_half_anchors_one_tile_lower():
+    """GH #206: x = 7.3 rounds to 7, so the 4-long axis covers tiles 5..8,
+    a removal set the old 7.5 anchor (tiles 6..9) never produced."""
+    window = _window()
+    try:
+        window.on_shape_commit([(x, 5) for x in range(3, 12)])
+        footprint = {(x, 5) for x in range(5, 9)}
+        assert len(_walls_on(window, footprint)) == 4
+
+        _pick(window, GATE)
+        _click_point(window, 7.3, 5.4)
+
+        gate = window.scenario.unit_manager.units[PLAYER][-1]
+        assert gate.unit_const == GATE and (gate.x, gate.y) == (7.0, 5.5)
+        assert _walls_on(window, footprint) == []
+        assert len(_walls_on(window, {(9, 5)})) == 1
+    finally:
+        _close(window)
+
+
 def test_a_gate_across_a_runs_end_reshapes_the_wall_it_now_touches():
     """The x run ends at the GAIA wall (7, 5); the gate takes (6, 5) and
     (7, 5) and its far end (9, 5) lands on a y run's tower end, which
@@ -356,7 +389,7 @@ def test_a_gate_across_a_runs_end_reshapes_the_wall_it_now_touches():
         assert top.rotation == 2.0
 
         _pick(window, GATE)
-        _click(window, (7, 5))
+        _click_point(window, 7.7, 5.4)  # gate x = 8.0, tiles 6..9, off the tie
 
         assert top.rotation == 1.0
         last = window.status_log.toPlainText().splitlines()[-1]

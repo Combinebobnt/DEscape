@@ -237,9 +237,12 @@ def test_inspector_populates_and_clears() -> None:
         assert window.units_panel.unit_field_editors["player"].currentData() == 1
         assert window.units_panel.unit_field_labels["unit_const"].text() == str(_BUILDING_CONST)
         assert window.units_panel.unit_field_labels["name"].text()
+        # GH #148: name and Unit ID live in the header, above the field grid.
+        assert window.units_panel.unit_header.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_header.isAncestorOf(window.units_panel.unit_field_labels["unit_const"])
         # _BUILDING_CONST has a full stats row (real ground truth, pinned
         # independently in tests/test_unit_stats_table.py).
-        assert window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_stats_grid.isVisibleTo(window.left_stack)
         _hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
         assert hp_value.isVisibleTo(window.left_stack)
         assert hp_value.text()
@@ -248,7 +251,8 @@ def test_inspector_populates_and_clears() -> None:
         assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
         assert window.units_panel.unit_field_labels["reference_id"].text() == ""
         # Clearing blanks the stat labels too, not just the scenario fields.
-        assert not window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
+        assert not window.units_panel.unit_header.isVisibleTo(window.left_stack)
+        assert not window.units_panel.unit_stats_grid.isVisibleTo(window.left_stack)
         assert hp_value.text() == ""
     finally:
         _close(window)
@@ -264,7 +268,7 @@ def test_a_tree_shows_only_hit_points_no_combat_rows() -> None:
         tree_entry = next(e for e in window.map_view._unit_index.entries if e.unit.unit_const == _TREE_CONST)
         window.units_panel.show_unit(tree_entry)
 
-        assert window.units_panel.unit_stats_header.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_stats_grid.isVisibleTo(window.left_stack)
         _hp_caption, hp_value = window.units_panel.unit_stat_rows["hp"]
         assert hp_value.isVisibleTo(window.left_stack)
         assert hp_value.text() == "20"
@@ -277,15 +281,15 @@ def test_a_tree_shows_only_hit_points_no_combat_rows() -> None:
 
 
 def test_stats_caveat_names_civ_bonuses_and_tech_upgrades() -> None:
-    """The one-line note stays short at MIN_USEFUL_WIDTH, but the full
-    caveat -- naming both civ bonuses and trigger effects -- is still one
-    hover away, same pattern as the Rotation caption's own tooltip."""
+    """GH #148: no visible note line, but the full caveat -- naming both civ
+    bonuses and trigger effects -- is one hover away on the stats grid, same
+    pattern as the Rotation caption's own tooltip."""
     window = _window()
     try:
         window.mode_combo.setCurrentText("Units")
         _select_first_unit(window)
-        assert "civ bonuses" in window.units_panel.unit_stats_note.toolTip()
-        assert "trigger effects" in window.units_panel.unit_stats_note.toolTip()
+        assert "civ bonuses" in window.units_panel.unit_stats_grid.toolTip()
+        assert "trigger effects" in window.units_panel.unit_stats_grid.toolTip()
     finally:
         _close(window)
 
@@ -305,7 +309,7 @@ def test_rotation_is_shown_raw_with_its_variant_index_warning() -> None:
     """A top-level AGENTS.md hard rule: for ~65% of GAIA objects `rotation`
     is a doodad graphic-variant index, not an angle. The panel is the first
     place that becomes user-visible, so it must show the raw value and say
-    so."""
+    so in the value's tooltip (GH #147: no longer an inline note)."""
     window = _window()
     try:
         window.mode_combo.setCurrentText("Units")
@@ -316,8 +320,8 @@ def test_rotation_is_shown_raw_with_its_variant_index_warning() -> None:
         gaia_entry.unit.rotation = 37
         window.units_panel.show_unit(gaia_entry)
         assert window.units_panel.unit_field_labels["rotation"].text() == "37"
-        assert "variant index" in window.units_panel.unit_rotation_note.text()
-        assert window.units_panel.unit_rotation_note.isVisibleTo(window.units_panel)
+        assert not window.units_panel.unit_rotation_note.isVisibleTo(window.units_panel)
+        assert "variant index" in window.units_panel.unit_field_labels["rotation"].toolTip()
         # The "stored in radians" half stays reachable regardless of
         # const, via the Rotation caption's own tooltip -- see
         # units_panel.py's _ROTATION_TOOLTIP.

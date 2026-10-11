@@ -55,9 +55,8 @@ from _fixture_bytes import GenerationVerificationError, _game_style_bytes
 
 from descape.scenario_io import (
     BLANK_TEMPLATE_PATH,
-    FORBIDDEN_WRITE_MARKER,
     LoadedScenario,
-    is_under_compatdata,
+    is_workshop_subscribed,
     load_map_and_units,
     load_map_and_units_from_bytes,
     parse_triggers,
@@ -233,8 +232,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=FIXTURE_PATH, help="Destination file")
     args = parser.parse_args()
 
-    if is_under_compatdata(args.out):
-        raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {args.out}")
+    if is_workshop_subscribed(args.out):
+        raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {args.out}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     data = build_fixture_bytes()
     args.out.write_bytes(data)

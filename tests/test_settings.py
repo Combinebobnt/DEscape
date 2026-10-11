@@ -632,6 +632,18 @@ def test_a_migrated_disables_binding_counts_as_customized_in_a_load_time_collisi
     assert settings.get_keybind("edit_undo") == ""
 
 
+def test_a_saved_file_resize_binding_loads_as_map_resize_and_is_then_dropped(tmp_path: Path) -> None:
+    """Resize Map… moved from the File menu to the Map menu, renaming its keybind id."""
+    import yaml
+
+    _write_config(tmp_path, "keybinds:\n  file_resize: F7\n")
+    assert settings.get_keybind("map_resize") == "F7"
+    assert "file_resize" not in settings._load_keybinds()
+    assert settings.set_keybind("tool_pan", "F8") is None
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text())["keybinds"]
+    assert saved["map_resize"] == "F7" and "file_resize" not in saved
+
+
 def test_a_saved_map_disables_binding_beats_a_stale_edit_disables_one(tmp_path: Path) -> None:
     _write_config(tmp_path, "keybinds:\n  edit_disables: F7\n  map_disables: F9\n")
     assert settings.get_keybind("map_disables") == "F9"
@@ -720,7 +732,7 @@ def test_a_hand_written_default_folder_reads_back_as_empty(tmp_path: Path) -> No
     assert settings.get_autosave_dir() == ""
 
 
-@pytest.mark.parametrize("kind", ["compatdata", "template", "relative"])
+@pytest.mark.parametrize("kind", ["subscribed", "template", "relative"])
 def test_the_autosave_folder_setter_refuses_and_keeps_the_stored_value(tmp_path: Path, kind: str) -> None:
     from descape.scenario_io import TEMPLATE_DIR
 
@@ -728,7 +740,7 @@ def test_the_autosave_folder_setter_refuses_and_keeps_the_stored_value(tmp_path:
     kept.mkdir()
     settings.set_autosave_dir(str(kept))
     bad = {
-        "compatdata": str(tmp_path / "steamapps" / "compatdata" / "813780" / "pfx"),
+        "subscribed": str(tmp_path / "mods" / "subscribed" / "12345"),
         "template": str(TEMPLATE_DIR),
         "relative": "autosaves/here",
     }[kind]
@@ -739,10 +751,16 @@ def test_the_autosave_folder_setter_refuses_and_keeps_the_stored_value(tmp_path:
     assert (tmp_path / "config.yaml").read_text() == before
 
 
-@pytest.mark.parametrize("raw", ["/x/compatdata/y", "relative/dir", "42", "''", "null", "[/tmp]"])
+@pytest.mark.parametrize("raw", ["/x/mods/subscribed/y", "relative/dir", "42", "''", "null", "[/tmp]"])
 def test_a_refused_or_malformed_autosave_folder_reads_back_as_default(tmp_path: Path, raw: str) -> None:
     _write_config(tmp_path, f"autosave_dir: {raw}\n")
     assert settings.get_autosave_dir() == ""
+
+
+def test_a_game_profile_autosave_folder_is_kept(tmp_path: Path) -> None:
+    profile = tmp_path / "steamapps" / "compatdata" / "813780" / "pfx"
+    settings.set_autosave_dir(str(profile))
+    assert settings.get_autosave_dir() == str(profile)
 
 
 def test_pan_speed_defaults_and_round_trips(tmp_path: Path) -> None:
@@ -777,7 +795,7 @@ def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> N
 
 
 @pytest.mark.parametrize("raw, expected", [
-    ("/x/compatdata/y", ("/x/compatdata/y", "compatdata/ folder")),
+    ("/x/mods/subscribed/y", ("/x/mods/subscribed/y", "(mods/subscribed/) folder")),
     ("relative/dir", ("relative/dir", "not an absolute path")),
     ("42", ("42", "not a folder path")),
     ("[/tmp]", ("['/tmp']", "not a folder path")),

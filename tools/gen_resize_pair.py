@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from descape import library_compat, object_catalog, trigger_geometry
 from descape.render import NON_BUILDING_SPAN
-from descape.scenario_io import FORBIDDEN_WRITE_MARKER, is_under_compatdata, load_map_and_units, parse_triggers
+from descape.scenario_io import is_workshop_subscribed, load_map_and_units, parse_triggers
 from descape.scenario_resize import Anchor, resize_scenario
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.terrain_palette import tile_span
@@ -69,8 +69,8 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=SOURCE, help="A square scenario to shrink")
     parser.add_argument("--out", type=Path, default=ROOT / "build" / "resize_pair", help="Output directory")
     args = parser.parse_args()
-    if is_under_compatdata(args.out):
-        raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {args.out}")
+    if is_workshop_subscribed(args.out):
+        raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {args.out}")
     if not args.source.is_file():
         print(f"missing source: {args.source}", file=sys.stderr)
         return 1

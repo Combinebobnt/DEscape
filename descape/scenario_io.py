@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import io
+import itertools
 import json
 import operator
 import struct
@@ -71,6 +72,7 @@ from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
 from descape import library_compat, unlinked_fields
+from descape.content_roots import PROFILE_FOLDER_NAME
 from descape.terrain_palette import resolve_player_colors
 
 # AoE2ScenarioParser prints its own "Parsing FileHeader... Gathering FileHeader
@@ -96,20 +98,49 @@ settings.PRINT_STATUS_UPDATES = False
 # every time it fires.
 settings.SHOW_SCENARIO_VERSION_WARNINGS = False
 
-# Never write into the Workshop-synced scenario folder under a Proton prefix -- it is
-# the user's only copy of these files. scenario_write.write_scenario() checks this.
-FORBIDDEN_WRITE_MARKER = "compatdata"
+# Never write into a subscribed-mods (mods/subscribed/) folder: the game's mod manager re-syncs it, so
+# an edit there is silently lost. scenario_write.write_scenario() checks this. The
+# game profile itself (under compatdata/ on Linux) is writable; Save backs up there.
+WORKSHOP_SUBSCRIBED_PARTS = ("mods", "subscribed")
 
 
-def is_under_compatdata(path: Path | str, resolved: Path | None = None) -> bool:
-    """True if the marker is in `path` as written or resolved through symlinks:
-    a linked folder or file into a Proton prefix carries it only once resolved.
-    `resolved` reuses a caller's own resolve(); resolve() errors propagate."""
-    if FORBIDDEN_WRITE_MARKER in str(path):
+def _has_consecutive_parts(path: Path | str, pair: tuple[str, str]) -> bool:
+    parts = [p.lower() for p in Path(path).parts]  # lowercased for Windows
+    first, second = pair[0].lower(), pair[1].lower()
+    return any(a == first and b == second for a, b in itertools.pairwise(parts))
+
+
+def names_workshop_subscribed(path: Path | str) -> bool:
+    """is_workshop_subscribed() on `path` as written only, without resolving."""
+    return _has_consecutive_parts(path, WORKSHOP_SUBSCRIBED_PARTS)
+
+
+def is_workshop_subscribed(path: Path | str, resolved: Path | None = None) -> bool:
+    """True if `path`, as written or resolved through symlinks, has the
+    consecutive parts mods/subscribed: a link into one carries them only once
+    resolved. `resolved` reuses a caller's own resolve(); resolve() errors propagate."""
+    if names_workshop_subscribed(path):
         return True
     if resolved is None:
         resolved = Path(path).resolve()
-    return FORBIDDEN_WRITE_MARKER in str(resolved)
+    return names_workshop_subscribed(resolved)
+
+
+def is_in_game_profile(path: Path | str) -> bool:
+    """True if `path`, raw or resolved, is under a Proton compatdata/ prefix or
+    a Games/Age of Empires 2 DE profile folder (Windows). An unresolvable path
+    counts as inside, so Save errs toward writing backups."""
+    def check(p: Path | str) -> bool:
+        return "compatdata" in (q.lower() for q in Path(p).parts) or _has_consecutive_parts(
+            p, ("Games", PROFILE_FOLDER_NAME)
+        )
+
+    if check(path):
+        return True
+    try:
+        return check(Path(path).resolve())
+    except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
+        return True
 
 # The donor blank map descape/scenario_new.py splices to build every File > New
 # Map size -- reused rather than built from AoE2ScenarioParser's own from_default(),
@@ -1139,6 +1170,8 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     repo_structure = _repo_structure_path(scenario_version)
     if repo_structure is None:
         scenario._load_structure()
+        # _get_structure() parses the JSON fresh per call, so this cannot leak across loads.
+        library_compat.fix_structure(scenario.structure, scenario_version)
         _initialise_version_dependencies(scenario.game_version, scenario.scenario_version)
     else:
         # Parsed fresh per load: the library mutates the structure dict it is

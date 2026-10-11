@@ -80,11 +80,13 @@ terrain_style: stepped
 
 # View > Layers, each row on (true) or off (false), remembered between
 # launches. Rows:
-# terrain_textures (Terrain Textures), farm_overlay (Farm Terrain Overlay),
-# small_trees (Small Trees), hero_glow (Hero Glow).
+# terrain_textures (Terrain Textures), terrain_blend (Terrain Blending),
+# farm_overlay (Farm Terrain Overlay), small_trees (Small Trees), hero_glow
+# (Hero Glow).
 # An unknown row or a non-true/false value keeps that row's default, shown here.
 view_layers:
   terrain_textures: true
+  terrain_blend: true
   farm_overlay: true
   small_trees: false
   hero_glow: true
@@ -204,7 +206,6 @@ window_size: [1280, 720]
 keybinds:
   file_new: Ctrl+N
   file_new_default: ''
-  file_resize: ''
   file_open: Ctrl+O
   file_close: Ctrl+W
   file_save: Ctrl+S
@@ -223,6 +224,7 @@ keybinds:
   edit_scatter_units: ''
   edit_find_replace: ''
   edit_settings: ''
+  map_resize: ''
   map_mirror: ''
   map_disables: ''
   view_isometric: Ctrl+Shift+I
@@ -239,6 +241,7 @@ keybinds:
   view_player_cameras: ''
   view_trigger_overlay: ''
   view_layer_terrain_textures: ''
+  view_layer_terrain_blend: ''
   view_layer_farm_overlay: ''
   view_layer_small_trees: ''
   view_layer_hero_glow: ''
@@ -302,6 +305,7 @@ keybinds:
   tool_place_unit: ''
   tool_wall_rect: ''
   tool_convert: ''
+  tool_eraser: X
   tool_create_objects: ''
   adjust_increment: ']'
   adjust_decrement: '['
@@ -400,12 +404,14 @@ autosave_retention: 3
 # Where autosave slots go: "central" (the autosave folder, autosave_dir
 # below) or "sidecar" (beside the scenario itself). Sidecar falls back to
 # the autosave folder for any document it cannot serve: an untitled one, a
-# Steam Workshop/Proton path, or a shipped template. Default: "central".
+# mods/subscribed/ path, one in the game's own profile folder, or a
+# shipped template. Default: "central".
 autosave_location: central
 
 # The autosave folder, as an absolute path. "" means the default, an
 # autosave/ folder beside this config file, which also always holds the
-# autosave index. A compatdata/ (Proton) path or a relative one is ignored.
+# autosave index. A subscribed-mods (mods/subscribed/) path or a relative
+# one is ignored.
 # If the folder is missing when an autosave runs, that slot goes to the
 # default folder instead; the folder is never created. Switching folders
 # leaves existing autosaves where they are, still listed in Recover.

@@ -5,7 +5,7 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Seven tables, six keyed by unit_const and one ("hero_glow") a sorted list of
+Eight tables, seven keyed by unit_const and one ("hero_glow") a sorted list of
 consts:
 
 - "buildings": [span_x, span_y] -- the footprint's real width and height in
@@ -131,6 +131,25 @@ consts:
   same tile. Its own key rather than more "object_spans" rows, which
   `tests/test_unit_footprints.py` pins to exactly the 96 cliffs.
 
+- "fish_spans": [span_x, span_y] -- the same shape, for exactly the eight
+  deep-water fish in `_FISH_SPAN_CONSTS` (Perch 53, Dolphin 61, Marlin 450,
+  Dorado 455, Salmon 456, Tuna 457, Snapper 458 and Whale 2625, GH #178).
+  Not buildings or cliffs, so they read as 1x1, where the in-game selection
+  box is about 2x2 (3x3 for the Whale). Sourced from `outline_size`, the
+  field the in-game selection box draws, doubled and floored by the same
+  `max(1, round(2 * v))` rule: 1.0 gives 2x2 and the Whale's 1.5 gives 3x3.
+  The generator asserts `clearance_size` agrees for every listed const, so a
+  .dat change fails loudly instead of silently picking one field.
+
+  An explicit allowlist, not a class rule: Shore Fish 69, Box Turtles 1141
+  and Oysters 2170 are 0.5, which is 1x1 already, and the other non-buildings
+  the .dat calls bigger than 1x1 are a separate task. A real span also
+  anchors newly placed fish where the corpus puts them: 1028 of 1049 corpus
+  deep-fish placements sit on whole coordinates (53 417/428, 450 13/13, 455
+  29/33, 456 480/482, 457 37/37, 458 52/56), which is where an even span
+  centres. The Whale (3x3, centred on .5) has no corpus placement. Its own
+  key for the same reason "blocker_spans" has one.
+
 - "hero_glow": [unit_const, ...] -- the heroes the game draws its golden glow
   around (GH #39). The rule is `(creatable.hero_mode & 0xff) & (1 | 64)` AND
   `creatable.hero_glow_graphic in 12218..12224`, which gives 260 consts.
@@ -194,6 +213,18 @@ _GATE_CLASS = 39
 _CLIFF_CLASS = 34
 # Class-14 blockers with a real multi-tile collision; see the "blocker_spans" docs.
 _BLOCKER_SPAN_CONSTS = (2423, 2424, 2429, 2430)
+# Deep-water fish sized like the in-game selection box; see the "fish_spans" docs.
+_FISH_SPAN_CONSTS = (53, 61, 450, 455, 456, 457, 458, 2625)
+
+
+def _fish_span(unit_const: int, unit) -> list[int]:
+    outline = (unit.outline_size_x, unit.outline_size_y)
+    if tuple(unit.clearance_size) != outline:
+        raise SystemExit(
+            f"fish {unit_const} outline_size {outline} != clearance_size "
+            f"{tuple(unit.clearance_size)} -- re-verify _FISH_SPAN_CONSTS against the .dat"
+        )
+    return [max(1, round(v * 2)) for v in outline]
 
 
 # The seven gold HeroGlow graphics; see the "hero_glow" docs above.
@@ -266,6 +297,7 @@ def main() -> None:
     building_tiles: dict[str, list[list[int]]] = {}
     object_spans: dict[str, list[int]] = {}
     blocker_spans: dict[str, list[int]] = {}
+    fish_spans: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
     foundation_terrain: dict[str, int] = {}
     hero_glow: list[int] = []
@@ -285,6 +317,8 @@ def main() -> None:
                 max(1, round(unit.collision_size_x * 2)),
                 max(1, round(unit.collision_size_y * 2)),
             ]
+        if unit_const in _FISH_SPAN_CONSTS:
+            fish_spans[str(unit_const)] = _fish_span(unit_const, unit)
         if unit.building is not None:
             cx, cy = unit.clearance_size
             span_x, span_y = max(1, round(cx * 2)), max(1, round(cy * 2))
@@ -317,6 +351,9 @@ def main() -> None:
                 "blocker_spans": dict(
                     sorted(blocker_spans.items(), key=lambda kv: int(kv[0]))
                 ),
+                "fish_spans": dict(
+                    sorted(fish_spans.items(), key=lambda kv: int(kv[0]))
+                ),
                 "resource_colors": dict(
                     sorted(resource_colors.items(), key=lambda kv: int(kv[0]))
                 ),
@@ -334,6 +371,7 @@ def main() -> None:
         f"{len(building_tiles)} sparse building_tiles, "
         f"{len(object_spans)} object_spans, "
         f"{len(blocker_spans)} blocker_spans, "
+        f"{len(fish_spans)} fish_spans, "
         f"{len(resource_colors)} resource colors, "
         f"{len(foundation_terrain)} foundation terrains and "
         f"{len(hero_glow)} glowing heroes to {out_path}"

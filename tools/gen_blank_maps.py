@@ -38,10 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from descape.scenario_io import (
     BLANK_TEMPLATE_PATH,
-    FORBIDDEN_WRITE_MARKER,
     TERRAIN_STRUCT_SIZE,
     LoadedScenario,
-    is_under_compatdata,
+    is_workshop_subscribed,
     load_map_and_units,
 )
 from descape.scenario_new import (
@@ -241,14 +240,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if is_under_compatdata(args.out):
-        raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {args.out}")
+    if is_workshop_subscribed(args.out):
+        raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {args.out}")
     args.out.mkdir(parents=True, exist_ok=True)
     donor = None
     for width, height in args.sizes:
         path = args.out / f"blank_{width}x{height}.aoe2scenario"
-        if is_under_compatdata(path):  # a per-file symlink inside --out
-            raise WriteBlockedError(f"Refusing to write under a Proton {FORBIDDEN_WRITE_MARKER}/ folder: {path}")
+        if is_workshop_subscribed(path):  # a per-file symlink inside --out
+            raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {path}")
         if width == height:
             data = blank_scenario_bytes(width)
             path.write_bytes(data)

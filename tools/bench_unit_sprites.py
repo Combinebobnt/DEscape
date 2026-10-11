@@ -43,8 +43,8 @@ _level() with the process-wide sprite caches kept, as a reopen or a zoom does.
 Each build reports its time, how many .sld files it walked and how many
 whole-file .sld reads it made (a walk plus any decode whose bytes were no
 longer cached). A Sloped row
-then builds level A cold and times Sloped's eager construction after it, the
-Stepped-to-Sloped switch.
+then builds level A cold and times Sloped's construction plus its level-0
+build after it, the Stepped-to-Sloped switch.
 
 `--ladder` replaces all of the above with the zoom-in row (see bench_ladder):
 one IsoChunkCache builds every Stepped level coarsest to finest through
@@ -373,9 +373,13 @@ def bench_cold_levels(path: Path, level_a: int | None) -> str:
         cache = stepped_cache()
         stepped = _time(lambda: cache._level(order[0]))
         s_walks, s_files, s_reads = counter.take()
-        sloped = _time(
-            lambda: SlopedChunkCache(scenario, sloped_elevations, corner_rise, sloped_proj, tile_px, sprites=True)
-        )
+        def sloped_build():
+            sloped_cache = SlopedChunkCache(scenario, sloped_elevations, corner_rise, sloped_proj, tile_px, sprites=True)
+            # Level 0 builds lazily since TASK-031.59; this is what the first paint pays.
+            if hasattr(sloped_cache, "_level"):
+                sloped_cache._level(0)
+
+        sloped = _time(sloped_build)
         walks, files, reads = counter.take()
         lines.append(
             f"    sloped after stepped mip {order[0]} cold ({_ms(stepped)}, {s_walks} walks over {s_files} files, "

@@ -368,12 +368,14 @@ autosave_retention: {settings.AUTOSAVE_RETENTION_DEFAULT}
 # Where autosave slots go: "central" (the autosave folder, autosave_dir
 # below) or "sidecar" (beside the scenario itself). Sidecar falls back to
 # the autosave folder for any document it cannot serve: an untitled one, a
-# Steam Workshop/Proton path, or a shipped template. Default: "{settings.AUTOSAVE_LOCATION_DEFAULT}".
+# mods/subscribed/ path, one in the game's own profile folder, or a
+# shipped template. Default: "{settings.AUTOSAVE_LOCATION_DEFAULT}".
 autosave_location: {settings.AUTOSAVE_LOCATION_DEFAULT}
 
 # The autosave folder, as an absolute path. "" means the default, an
 # autosave/ folder beside this config file, which also always holds the
-# autosave index. A compatdata/ (Proton) path or a relative one is ignored.
+# autosave index. A subscribed-mods (mods/subscribed/) path or a relative
+# one is ignored.
 # If the folder is missing when an autosave runs, that slot goes to the
 # default folder instead; the folder is never created. Switching folders
 # leaves existing autosaves where they are, still listed in Recover.

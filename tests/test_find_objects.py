@@ -209,17 +209,24 @@ def test_csv_round_trip(tmp_path) -> None:
     assert archer[12] == ""
 
 
-def test_csv_refuses_compatdata(tmp_path) -> None:
-    target = tmp_path / "compatdata" / "found.csv"
-    target.parent.mkdir()
+def test_csv_refuses_mods_subscribed(tmp_path) -> None:
+    target = tmp_path / "mods" / "subscribed" / "found.csv"
+    target.parent.mkdir(parents=True)
     with pytest.raises(WriteBlockedError):
         find_objects.rows_to_csv(_find(_scene()), target)
     assert not target.exists()
 
 
-def test_csv_refuses_a_symlink_into_compatdata(tmp_path) -> None:
-    real = tmp_path / "compatdata"
-    real.mkdir()
+def test_csv_writes_into_compatdata(tmp_path) -> None:
+    target = tmp_path / "compatdata" / "found.csv"
+    target.parent.mkdir()
+    assert find_objects.rows_to_csv(_find(_scene()), target) > 0
+    assert target.exists()
+
+
+def test_csv_refuses_a_symlink_into_mods_subscribed(tmp_path) -> None:
+    real = tmp_path / "mods" / "subscribed"
+    real.mkdir(parents=True)
     link = tmp_path / "exports"
     link.symlink_to(real)
     with pytest.raises(WriteBlockedError):

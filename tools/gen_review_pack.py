@@ -22,7 +22,10 @@ then hand build/review_pack/<pack>/REVIEW.md to a fresh agent, in its own
 call, with nothing else. See tools/REVIEW_PACK.md for the protocol and for
 what a verdict may not close. The ground_texture pack (TASK-201's iso
 texture continuity) renders a real examples/ map with the real install's
-textures, so it needs both; shadow_band needs neither.
+textures, so it needs both; shadow_band needs neither. So does sloped_mip
+(TASK-031.60's Sloped mip ladder), which stitches its frames from
+SlopedChunkCache.render_rect() at the coarser levels, sprites included. So does
+ground_borders (TASK-143's terrain blending), over two examples/ maps.
 
 Off-engine throughout (descape.render.composite_rect_iso, no PyQt5), unlike
 gen_seam_eyeball.py's main sweep: composite_rect_iso() is byte-identically
@@ -42,6 +45,7 @@ import argparse
 import hashlib
 import json
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,9 +56,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, native_composite, render
+from descape import asset_source, native_composite, render, terrain_blend
 from descape import iso_geometry as ig
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.view_layers import LayerState
 from testkit import review_pack as rp
 
 OUT_DIR = ROOT / "build" / "review_pack"
@@ -1018,7 +1023,938 @@ def _check_frames(spec: rp.PackSpec, check_id: str) -> tuple[str, ...]:
     return next(c.frames for c in spec.checks if c.id == check_id)
 
 
-PACKS = {"shadow_band": _shadow_band_spec, "ground_texture": _ground_texture_spec}
+# --------------------------------------------------------- sloped_mip pack
+
+
+SLOPED_MAPS = {"ground": GROUND_MAP, "farms": ROOT / "examples" / "old-allies-final-v2.aoe2scenario"}
+# Small chunks so every frame crosses several chunk edges; --check asserts the
+# clean frames are byte-identical to the app's DEFAULT_CHUNK_PX.
+SLOPED_CHUNK_PX = 64
+# One ground footprint per frame: this many level-0 pixels, so -1 and -2 frame the same tiles.
+_SLOPED_CROP_L0 = (768, 384)
+# frame id -> (map, mip, centre tile, units and sprites on). hill and forest are
+# ground_texture's two hillsides; farms is a plateau one level up with farms on
+# its edge, buildings a plateau with a player's buildings on it, level_ground
+# flat elevation 0 with a farm, a mill and buildings (the specificity frame).
+_SLOPED_FRAMES = {
+    "hill_a": ("ground", -1, (219, 152), False),
+    "hill_b": ("ground", -2, (219, 152), False),
+    "forest_a": ("ground", -1, (45, 142), True),
+    "forest_b": ("ground", -2, (45, 142), True),
+    "farms_a": ("farms", -1, (89, 215), True),
+    "farms_b": ("farms", -2, (89, 215), True),
+    "buildings_a": ("ground", -1, (22, 214), True),
+    "buildings_b": ("ground", -2, (22, 214), True),
+    "level_ground": ("farms", -2, (43, 133), True),
+}
+_SLOPED_SPECIFICITY = "level_ground"
+# The localized inject shifts one chunk in each of these frames.
+_SLOPED_ROW_SHIFT_FRAMES = ("hill_a", "hill_b", "forest_a", "forest_b")
+
+_SLOPED_SCENE: dict[tuple[str, bool], object] = {}
+
+
+class _PinnedSettings:
+    """Pins the two settings a full Sloped render depends on (vertical scale,
+    graphics quality) through settings' in-process cache, never set_*()."""
+
+    def __enter__(self):
+        from descape import settings
+
+        self.saved = (settings._elev_step_pct, settings._graphics_quality)
+        settings._elev_step_pct = ig.ELEV_STEP_DEFAULT_PCT
+        settings._graphics_quality = 3
+        return self
+
+    def __exit__(self, *exc):
+        from descape import settings
+
+        settings._elev_step_pct, settings._graphics_quality = self.saved
+
+
+def _sloped_cache(map_key: str, units: bool, chunk_px: int = SLOPED_CHUNK_PX):
+    """A fresh SlopedChunkCache over its own scenario load, so an inject's
+    patched builds never leak into another run. Scenario loads are memoized."""
+    from descape.render_cache import SlopedChunkCache
+
+    key = (map_key, units)
+    if key not in _SLOPED_SCENE:
+        _SLOPED_SCENE[key] = load_map_and_units(str(SLOPED_MAPS[map_key]))
+    scenario = _SLOPED_SCENE[key]
+    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    return SlopedChunkCache(
+        scenario, elevations, corner_rise, proj, proj.tile_px, chunk_px=chunk_px, with_units=units, sprites=units
+    )
+
+
+def _sloped_box(cache, mip: int, centre) -> tuple[int, int, int, int]:
+    """The level-`mip` pixel crop centred on a tile's own surface."""
+    lvl = cache._levels[mip]
+    cx, cy = centre
+    sx, sy = ig.tile_screen_origin(cx, cy, int(cache.elevations[cy, cx]), lvl.proj)
+    cw, ch = (n >> -mip for n in _SLOPED_CROP_L0)
+    x0, y0 = sx + lvl.proj.half_w - cw // 2, sy + lvl.proj.half_h - ch // 2
+    return x0, y0, x0 + cw, y0 + ch
+
+
+def _shift_chunk(cache, mip: int, box) -> tuple[int, int]:
+    """The level-`mip` chunk origin chunk-row-shift moves in this crop: of the
+    chunks whose left and right edges both fall inside the crop, the one where
+    the shift changes the most pixels inside it (the first in row order on a
+    tie). Measured on the clean cache through its own _composite_rect, which
+    the shift leaves untouched."""
+    x0, y0, x1, y1 = box
+    c = cache.chunk_px
+    best = None
+    for cy in range(y0 // c, (y1 - 1) // c + 1):
+        for cx in range(-(-x0 // c), (x1 - 1) // c):
+            if not (x0 < cx * c and (cx + 1) * c < x1):
+                continue
+            rect = cache._chunk_rect(mip, cx, cy)
+            clean = cache._composite_rect(mip, *rect)
+            probe = _SlopedInject("chunk-row-shift")
+            probe.shift_chunks.add((id(cache.scenario), cache._levels[mip].tile_px, rect[0], rect[1]))
+            with probe:
+                shifted = cache._composite_rect(mip, *rect)
+            ix0, iy0 = max(x0, rect[0]) - rect[0], max(y0, rect[1]) - rect[1]
+            ix1, iy1 = min(x1, rect[2]) - rect[0], min(y1, rect[3]) - rect[1]
+            changed = int(np.count_nonzero(rp.changed_pixels(clean[iy0:iy1, ix0:ix1], shifted[iy0:iy1, ix0:ix1])))
+            if best is None or changed > best[0]:
+                best = (changed, rect[0], rect[1])
+    return best[1], best[2]
+
+
+class _SlopedInject:
+    """Patches for one known ladder defect, applied around the cache builds and
+    renders of a whole run. `bound` is set only on the localized inject."""
+
+    def __init__(self, name: str, bound=None) -> None:
+        self.name = name
+        self.bound = bound
+        self.shift_chunks: set[tuple[int, int, int, int]] = set()  # (scenario id, tile_px, x0, y0)
+
+    def __enter__(self):
+        from descape.render_cache import SlopedChunkCache
+
+        self.saved = [(SlopedChunkCache, "_level_rise"), (render, "composite_rect_sloped")]
+        self.saved = [(obj, name, getattr(obj, name)) for obj, name in self.saved]
+        real_rise, real_composite = self.saved[0][2], self.saved[1][2]
+        if self.name == "level0-rise":
+            true_rise: dict[tuple, np.ndarray] = {}
+
+            def level_rise(cache, lvl):
+                lvl = real_rise(cache, lvl)
+                if lvl.tile_px * 4 == cache.tile_px:
+                    key = (id(cache.scenario), lvl.tile_px)
+                    if key not in true_rise:
+                        true_rise[key] = ig.corner_rise_px(cache.elevations, lvl.proj, rule=render.SLOPE_CORNER_RULE)
+                    # The coarsest level's unit layers read level 0's corner_rise as is, never recomputed.
+                    wrong = cache.corner_rise
+                    lvl.headroom = render._unit_rise_headroom_px(wrong, cache.elevations, lvl.proj)
+                    lvl.corner_rise = wrong
+                return lvl
+
+            def composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs):
+                # Its terrain keeps the level's own corner_rise, so only the objects move.
+                corner_rise = true_rise.get((id(scenario), proj.tile_px), corner_rise)
+                return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
+
+            SlopedChunkCache._level_rise = level_rise
+            render.composite_rect_sloped = composite
+        elif self.name == "chunk-row-shift":
+
+            def composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs):
+                if (id(scenario), proj.tile_px, x0, y0) in self.shift_chunks:
+                    # One chunk's terrain reads every corner's height from the row above.
+                    corner_rise = np.roll(corner_rise, 1, axis=0)
+                return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
+
+            render.composite_rect_sloped = composite
+        return self
+
+    def __exit__(self, *exc):
+        for obj, name, old in self.saved:
+            setattr(obj, name, old)
+
+
+SLOPED_INJECTS = {"level0-rise": None, "chunk-row-shift": "one-chunk"}
+SLOPED_COARSE_INJECT = "level0-rise"
+
+
+def _sloped_frame_images(inject: str | None, chunk_px: int = SLOPED_CHUNK_PX) -> dict[str, np.ndarray]:
+    """Every sloped_mip frame at 1:1, each stitched from a fresh cache's chunks
+    through SlopedChunkCache.render_rect(mip=...), never a direct render."""
+    images: dict[str, np.ndarray] = {}
+    with _PinnedSettings():
+        caches = {}
+        for _map, _mip, _centre, units in _SLOPED_FRAMES.values():
+            if (_map, units) not in caches:
+                caches[(_map, units)] = _sloped_cache(_map, units, chunk_px)
+        patch = _SlopedInject(inject, SLOPED_INJECTS[inject]) if inject else None
+        if inject == "chunk-row-shift":
+            # Measured on the clean caches; level0-rise must find its levels unbuilt instead.
+            for frame_id in _SLOPED_ROW_SHIFT_FRAMES:
+                map_key, mip, centre, units = _SLOPED_FRAMES[frame_id]
+                cache = caches[(map_key, units)]
+                x0, y0 = _shift_chunk(cache, mip, _sloped_box(cache, mip, centre))
+                patch.shift_chunks.add((id(cache.scenario), cache._levels[mip].tile_px, x0, y0))
+        if patch is not None:
+            patch.__enter__()
+        try:
+            for frame_id, (map_key, mip, centre, units) in _SLOPED_FRAMES.items():
+                cache = caches[(map_key, units)]
+                images[frame_id] = cache.render_rect(*_sloped_box(cache, mip, centre), mip=mip)
+        finally:
+            if patch is not None:
+                patch.__exit__(None, None, None)
+    return images
+
+
+def _sloped_mip_spec() -> rp.PackSpec:
+    """TASK-031.60's Sloped mip ladder: the coarser levels' stitched chunks on
+    hillsides, under trees, buildings and farm fields on slopes, and on level
+    ground. The `_a` frames are one level coarser than full detail, the `_b`
+    frames two; the reviewer is told only that both are zoomed out."""
+    captions = {
+        "hill_a": "Grassland on a hillside, zoomed out.",
+        "hill_b": "The same hillside, zoomed further out.",
+        "forest_a": "Forest and grassland on a hillside, with trees standing on it, zoomed out.",
+        "forest_b": "The same forest hillside, zoomed further out.",
+        "farms_a": "Farm fields and buildings at the edge of a raised plateau, zoomed out.",
+        "farms_b": "The same farm fields, zoomed further out.",
+        "buildings_a": "A group of buildings on and around a raised plateau, zoomed out.",
+        "buildings_b": "The same buildings, zoomed further out.",
+        "level_ground": "Buildings, a farm field and other objects on perfectly level ground, zoomed far out.",
+    }
+    frames = tuple(rp.Frame(fid, f"{fid}.png", "raw", caption=captions[fid]) for fid in _SLOPED_FRAMES)
+    checks = (
+        rp.Check(
+            id="ground_continuity",
+            question=(
+                "These four frames show bare and forested hillsides. The ground is a grid of diamond-shaped "
+                "map cells at different heights, drawn as one continuous sloping surface. First, in your own "
+                "words, describe how the ground runs across each frame: its slopes, its texture, and any place "
+                "where it looks interrupted.\n\n"
+                "Then the closed question, which is about the GROUND only. Is there a straight horizontal or "
+                "vertical line, running across the ground, where the ground on one side does not continue on "
+                "the other: its texture, shading or slope jumps, is offset up or down, or is cut off, or a "
+                "strip of black shows through? NOT such a line: (1) the border between grassland and forest "
+                "floor, which follows the diagonal cell grid and wanders; (2) a change of shading where the "
+                "slope bends, which also runs along the diagonal grid; (3) trees and anything else standing on "
+                "the ground, however they are placed; (4) the frame's own edges.\n\n"
+                "Answer BREAK if at least one such straight line is visible, CONTINUOUS if the ground carries "
+                "on across every frame."
+            ),
+            frames=("hill_a", "hill_b", "forest_a", "forest_b"),
+            answers=("BREAK", "CONTINUOUS", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="objects_on_ground",
+            question=(
+                "These frames show buildings, trees and other objects standing on sloping ground. First, in "
+                "your own words, describe how each kind of object meets the ground under it: where its base "
+                "is, and what ground shows around that base.\n\n"
+                "Then the closed question. Does any object look detached from the ground it stands on: "
+                "floating clear above it with ground or a gap showing under its base, or sitting well away "
+                "from the patch of ground it plainly belongs to, so it reads as pasted onto the wrong place? "
+                "NOT detached: (1) a tall object reaching up over the ground and objects behind it, which every "
+                "tall object does; (2) dark shadows beside objects; (3) objects too small to tell where their "
+                "base is.\n\n"
+                "Answer DETACHED if at least one object looks detached, SEATED if every judgeable object sits on "
+                "its ground."
+            ),
+            frames=("farms_a", "farms_b", "buildings_a", "buildings_b"),
+            answers=("DETACHED", "SEATED", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="fields_on_slope",
+            question=(
+                "Look at the farm fields: flat, ploughed or planted rectangular-looking patches laid on the "
+                "ground, some of them on the slope at the plateau's edge. First, in your own words, describe "
+                "each field: its outline, how it bends with the ground, and what its edges meet.\n\n"
+                "Then the closed question. Does every field lie on its own patch of ground, following the "
+                "ground's slope under it, with its edges meeting the surrounding ground? Or does any field sit "
+                "off its ground: raised above it or sunk into it, shifted across neighbouring cells, or bent "
+                "in a way the ground around it is not? NOT off the ground: buildings or other objects standing "
+                "on or in front of a field and hiding part of it.\n\n"
+                "Answer ON-GROUND if every field lies on its ground, OFF-GROUND if any field does not."
+            ),
+            frames=("farms_a", "farms_b"),
+            answers=("ON-GROUND", "OFF-GROUND", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="level_ground",
+            question=(
+                "This frame shows perfectly level ground with buildings, a farm field and other objects on it. "
+                "Is anything wrong with how it is drawn: any object or field detached from the ground under "
+                "it, or any straight horizontal or vertical line where the ground on one side is offset, cut "
+                "off or does not continue on the other? The border between two kinds of ground, which follows "
+                "the diagonal cell grid, does not count.\n\n"
+                "Answer FLAWS-PRESENT if you see any of these, NO-FLAWS if the frame shows none."
+            ),
+            frames=(_SLOPED_SPECIFICITY,),
+            answers=("FLAWS-PRESENT", "NO-FLAWS", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="sloped_mip",
+        title="Zoomed-out terrain review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders from a map editor for an isometric strategy game, zoomed out, so a map "
+            "cell is only a few pixels across before enlargement. Each frame is a crop, enlarged by a "
+            "whole-number factor with no smoothing, so a one-pixel feature in the original appears that many "
+            "pixels wide here. Judge only what you can actually see."
+        ),
+        injects=tuple(SLOPED_INJECTS),
+    )
+
+
+def _sloped_prerequisites() -> str | None:
+    """Why the sloped_mip pack cannot render here, or None."""
+    for path in SLOPED_MAPS.values():
+        if not path.is_file():
+            return f"needs {path.relative_to(ROOT)} (the gitignored examples/ corpus)"
+    if asset_source.get_install_path() is None:
+        return "needs a configured AoE2:DE install for the terrain textures and sprites"
+    return None
+
+
+def _check_sloped_mip() -> None:
+    """--check for sloped_mip: spec coupling, frame band, the clean frames
+    byte-identical at the app's chunk size, each inject's reach (printed), the
+    specificity frame untouched by both, level0-rise reaching only the
+    coarsest level's object frames, and chunk-row-shift one chunk-bounded
+    piece in each of its frames, under level0-rise's largest delta."""
+    from descape.render_cache import DEFAULT_CHUNK_PX
+
+    reason = _sloped_prerequisites()
+    if reason:
+        raise SystemExit(f"sloped_mip: {reason}")
+    failures: list[str] = []
+    spec = _sloped_mip_spec()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+
+    clean = _sloped_frame_images(None)
+    for frame in spec.frames:
+        try:
+            scaled, _factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+    app_chunks = _sloped_frame_images(None, DEFAULT_CHUNK_PX)
+    for frame_id, img in clean.items():
+        if not np.array_equal(img, app_chunks[frame_id]):
+            failures.append(f"frame {frame_id}: differs from the same crop stitched at chunk_px {DEFAULT_CHUNK_PX}")
+    # Real art, not marks: every object frame's level holds sprites, the farm frames farm drapes too.
+    with _PinnedSettings():
+        for frame_id, (map_key, mip, _centre, units) in _SLOPED_FRAMES.items():
+            if not units:
+                continue
+            lvl = _sloped_cache(map_key, units)._level(mip)
+            if not lvl.sprites or not lvl.sprites.by_anchor:
+                failures.append(f"frame {frame_id}: level {mip} built no sprites")
+            elif frame_id.startswith("farms") and not lvl.sprites.farm_by_tile:
+                failures.append(f"frame {frame_id}: level {mip} built no farm drape")
+
+    one_chunk = rp.LocalizedBound(max_changed_fraction=0.5, max_component_px=SLOPED_CHUNK_PX**2)
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    for name, bound in SLOPED_INJECTS.items():
+        injected = _sloped_frame_images(name)
+        touched = {}
+        for frame_id in _SLOPED_FRAMES:
+            mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
+            changed = int(np.count_nonzero(mask))
+            if changed:
+                touched[frame_id] = (changed, rp.largest_component_px(mask))
+            if bound and frame_id in _SLOPED_ROW_SHIFT_FRAMES:
+                failures += one_chunk.failures(mask, f"inject {name} on {frame_id}")
+        if _SLOPED_SPECIFICITY in touched:
+            failures.append(f"inject {name}: reached the specificity frame {_SLOPED_SPECIFICITY}")
+        if name == SLOPED_COARSE_INJECT:
+            want = {fid for fid, (_m, mip, _c, units) in _SLOPED_FRAMES.items() if mip == -2 and units}
+            want.discard(_SLOPED_SPECIFICITY)
+        else:
+            want = set(_SLOPED_ROW_SHIFT_FRAMES)
+        if missed := sorted(want - set(touched)):
+            failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        if stray := sorted(set(touched) - want):
+            failures.append(f"inject {name}: reached {', '.join(stray)}, outside its frames")
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+
+    coarse = reach[SLOPED_COARSE_INJECT]
+    for name, bound in SLOPED_INJECTS.items():
+        if bound is None:
+            continue
+        for frame_id, (_px, comp) in sorted(reach[name].items()):
+            if frame_id in coarse and comp >= coarse[frame_id][1]:
+                failures.append(
+                    f"inject {name} on {frame_id}: largest delta {comp} px is not under the coarse "
+                    f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
+                )
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: sloped_mip frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and match "
+        f"chunk_px {DEFAULT_CHUNK_PX}; {SLOPED_COARSE_INJECT} bites every coarsest-level object frame, "
+        f"chunk-row-shift one bounded chunk per hillside frame, and neither reaches {_SLOPED_SPECIFICITY}"
+    )
+
+
+# ------------------------------------------------------ ground_borders pack
+
+
+BORDER_MAPS = {
+    "river": ROOT / "examples" / "F7_2_Dos Pilas (648).aoe2scenario",
+    "island": ROOT / "examples" / "C2_ElCid_coop_6_v0_13.aoe2scenario",
+}
+BORDER_TILE_PX = 64
+# frame id -> (map, style, centre tile, crop px, blending on). river: grass, sand, water, shallows and
+# broken road meeting at elevation 0 with no layered tile. island: C2_ElCid_coop_6's island shore,
+# elevation 1 throughout, 53% of its tiles layered. forest_floor: oak forest floor no blend reaches.
+_BORDER_FRAMES = {
+    "river": ("river", "stepped", (54, 192), (640, 400), True),
+    "river_plain": ("river", "stepped", (54, 192), (640, 400), False),
+    "island_angled": ("island", "stepped", (125, 91), (720, 400), True),
+    "island_overhead": ("island", "flat", (125, 91), (704, 448), True),
+    "island_shore": ("island", "stepped", (125, 91), (720, 400), True),
+    "island_shore_overhead": ("island", "flat", (125, 91), (704, 448), True),
+    "forest_floor": ("river", "stepped", (405, 123), (384, 240), True),
+}
+# Rendered with every tile's layer cleared, so their edges are neighbour transitions alone.
+_BORDER_NO_LAYERS = ("island_shore", "island_shore_overhead")
+_BORDER_SPECIFICITY = "forest_floor"
+_BORDER_BLENDED = ("river", "island_angled", "island_overhead", *_BORDER_NO_LAYERS)
+# The spread checks' expected answers rest on these orders (terrain ids: water 1, sand 2, grass 0,
+# broken road 25, and the dirt 6, 11 and 3 that ring the road in the river frame).
+_BORDER_PRIORITY_ORDERS = ((1, 2), (2, 0), (25, 6), (25, 11), (25, 3))
+
+_BORDER_SCENE: dict[str, tuple] = {}
+
+
+def _border_scene(map_key: str):
+    """(scenario, elevations), loaded once per map."""
+    if map_key not in _BORDER_SCENE:
+        scenario = load_map_and_units(str(BORDER_MAPS[map_key]))
+        mm = scenario.map_manager
+        elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
+        for tile in mm.terrain:
+            elevations[tile.y, tile.x] = tile.elevation
+        _BORDER_SCENE[map_key] = (scenario, elevations)
+    return _BORDER_SCENE[map_key]
+
+
+def _border_origin(frame_id: str, style: str) -> tuple[int, int]:
+    """The crop's top-left canvas pixel, centred on the frame's centre tile."""
+    map_key, _style, (cx, cy), (cw, ch), _on = _BORDER_FRAMES[frame_id]
+    tp = BORDER_TILE_PX
+    if style == "flat":
+        return (2 * cx + 1) * tp // 2 - cw // 2, (2 * cy + 1) * tp // 2 - ch // 2
+    scenario, elevations = _border_scene(map_key)
+    proj = _border_proj(scenario)
+    sx, sy = ig.tile_screen_origin(cx, cy, int(elevations[cy, cx]), proj)
+    return sx + proj.half_w - cw // 2, sy + proj.half_h - ch // 2
+
+
+def _border_proj(scenario):
+    mm = scenario.map_manager
+    return ig.canvas_size_and_origin(
+        mm.map_width, mm.map_height, BORDER_TILE_PX, ig.MIN_ELEVATION, ig.MAX_ELEVATION,
+        elev_step_pct=ig.ELEV_STEP_DEFAULT_PCT, corner_headroom_steps=0,
+    )
+
+
+def _border_render(frame_id: str, blend: bool, style: str | None = None) -> np.ndarray:
+    """One frame at 1:1 through the app's own rect compositors, units off, tile_px and elev_step
+    explicit so no user setting moves a crop. `style` renders the frame's tiles in another style."""
+    map_key, frame_style, _centre, (cw, ch), _on = _BORDER_FRAMES[frame_id]
+    style = style or frame_style
+    scenario, elevations = _border_scene(map_key)
+    layers = LayerState(terrain_blend=blend)
+    x0, y0 = _border_origin(frame_id, style)
+    with _layers_cleared(scenario, frame_id in _BORDER_NO_LAYERS):
+        if style == "flat":
+            return render.composite_rect_flat(
+                scenario, x0, y0, x0 + cw, y0 + ch, BORDER_TILE_PX, with_units=False, layers=layers
+            )
+        return render.composite_rect_iso(
+            scenario, x0, y0, x0 + cw, y0 + ch, elevations, _border_proj(scenario), BORDER_TILE_PX, {}, {},
+            with_units=False, layers=layers,
+        )
+
+
+@contextmanager
+def _layers_cleared(scenario, on: bool):
+    """Every tile's layer set to -1 for the duration (when `on`), then restored."""
+    tiles = list(scenario.map_manager.terrain) if on else []
+    saved = [tile.layer for tile in tiles]
+    for tile in tiles:
+        tile.layer = -1
+    try:
+        yield
+    finally:
+        for tile, layer in zip(tiles, saved, strict=True):
+            tile.layer = layer
+
+
+def _one_tile_pick(map_key: str) -> tuple[int, int]:
+    """The tile one-tile-plain draws plainly on this map: of the tiles within 2 of its frames' shared
+    centre that a higher neighbour bleeds into and that carry no layer, the one whose blended block
+    differs from its plain crop in the most pixels (the first in row order on a tie)."""
+    scenario, _elevations = _border_scene(map_key)
+    mm = scenario.map_manager
+    cx, cy = next(c for fid, (m, _s, c, _z, _on) in _BORDER_FRAMES.items() if m == map_key and fid in _BORDER_BLENDED)
+    ys, xs = np.mgrid[cy - 2 : cy + 3, cx - 2 : cx + 3]
+    xs, ys = xs.ravel(), ys.ravel()
+    best = None
+    for x, y, key in zip(xs.tolist(), ys.tolist(), render._blend_keys(scenario, xs, ys), strict=True):
+        if key is None or key[1] >= 0 or not key[2]:
+            continue
+        tile = mm.terrain[y * mm.map_width + x]
+        blended = render._top_block(tile, BORDER_TILE_PX, blend=key)
+        changed = int(np.count_nonzero(rp.changed_pixels(blended, render._top_block(tile, BORDER_TILE_PX))))
+        if best is None or changed > best[0]:
+            best = (changed, x, y)
+    return best[1], best[2]
+
+
+def _flipped_blend_mask(real):
+    """A get_blend_mask stand-in serving 128 - alpha: the neighbour's weight read as the tile's own."""
+    flipped: dict[tuple, np.ndarray] = {}
+
+    def get(mode: int, tile_index: int, tile_px: int):
+        key = (mode, tile_index, tile_px)
+        if key not in flipped:
+            alpha = real(mode, tile_index, tile_px)
+            if alpha is None:
+                return None
+            out = (128 - alpha.astype(np.int16)).astype(alpha.dtype)
+            out.flags.writeable = False
+            flipped[key] = out
+        return flipped[key]
+
+    return get
+
+
+class _BorderInject:
+    """Patches for one known blending defect, around a whole run's renders. blend-off needs none:
+    the run renders every frame with the View > Layers row off."""
+
+    def __init__(self, name: str | None, plain_tiles: dict | None = None) -> None:
+        self.name = name
+        self.plain_tiles = plain_tiles or {}  # id(scenario) -> (x, y)
+        self.saved: list[tuple] = []
+
+    def _patch(self, obj, attr: str, new) -> None:
+        self.saved.append((obj, attr, getattr(obj, attr)))
+        setattr(obj, attr, new)
+
+    def __enter__(self):
+        asset_source.get_blend_mask.cache_clear()  # before polarity-flip swaps in an uncached stand-in
+        if self.name == "polarity-flip":
+            self._patch(asset_source, "get_blend_mask", _flipped_blend_mask(asset_source.get_blend_mask))
+        elif self.name == "priority-reversed":
+            # Every order between two terrains turned round; 1000 keeps them all non-negative.
+            table = {tid: e._replace(priority=1000 - e.priority) for tid, e in terrain_blend.BLEND_TABLE.items()}
+            self._patch(terrain_blend, "BLEND_TABLE", table)
+        elif self.name == "one-tile-plain":
+            real = render._blend_keys
+            plain = self.plain_tiles
+
+            def keys(scenario, xs, ys, terrain_ids=None, layer_ids=None):
+                out = real(scenario, xs, ys, terrain_ids, layer_ids)
+                if (drop := plain.get(id(scenario))) is not None:
+                    for i in np.flatnonzero((np.asarray(xs) == drop[0]) & (np.asarray(ys) == drop[1])).tolist():
+                        out[i] = None
+                return out
+
+            self._patch(render, "_blend_keys", keys)
+        elif self.name == "edge-residue":
+            # TASK-283's defect: blendomatic's own 4-24 of 128 kept along every bleeding edge.
+            self._patch(terrain_blend, "fade_bleeding_edges", lambda alpha, _tile: alpha)
+        terrain_blend.clear_caches()
+        return self
+
+    def __exit__(self, *exc):
+        for obj, attr, old in reversed(self.saved):
+            setattr(obj, attr, old)
+        asset_source.get_blend_mask.cache_clear()
+        terrain_blend.clear_caches()
+
+
+BORDER_INJECTS = {
+    "blend-off": None, "polarity-flip": None, "priority-reversed": None, "edge-residue": None, "one-tile-plain": "one-tile",
+}
+BORDER_COARSE_INJECT = "blend-off"
+
+
+def _border_frame_images(inject: str | None) -> dict[str, np.ndarray]:
+    plain_tiles = {}
+    if inject == "one-tile-plain":
+        plain_tiles = {id(_border_scene(m)[0]): _one_tile_pick(m) for m in BORDER_MAPS}
+    with _BorderInject(inject, plain_tiles):
+        return {
+            fid: _border_render(fid, blend=on and inject != "blend-off")
+            for fid, (*_rest, on) in _BORDER_FRAMES.items()
+        }
+
+
+def _ground_borders_spec() -> rp.PackSpec:
+    """TASK-143's terrain blending (GH #13): neighbour transitions on an unlayered river junction,
+    which ground spreads against a plain-cells control, and C2_ElCid_coop_6's heavily layered island
+    shore angled and overhead. Round 2 (TASK-283) splits the island: island_shore asks about
+    neighbour transitions on frames with every layer cleared, island_patches about the layered
+    frames' patches, whose oracle stays the in-game capture (round 1's island_edges could not tell
+    the two apart, since layer patches sit on the shoreline)."""
+    captions = {
+        "river": (
+            "Angled view: a river with sandy banks running through grassland, shallow water with plants at the "
+            "top, and a stretch of broken paved road on the right."
+        ),
+        "river_plain": (
+            "The same ground as the river frame, but with every map cell drawn plainly and wholly in its own "
+            "single kind of ground."
+        ),
+        "island_angled": "Angled view: a sandy island shore and the water around it, including shallows with plants.",
+        "island_overhead": "The same island shore seen straight from above; here each map cell is a square.",
+        "island_shore": "Angled view: an island shore and the water around it.",
+        "island_shore_overhead": "The shore frame's ground seen straight from above; here each map cell is a square.",
+        "forest_floor": "Angled view of a stretch of forest floor; the trees themselves are not drawn.",
+    }
+    frames = tuple(rp.Frame(fid, f"{fid}.png", "raw" if on else "control", caption=captions[fid])
+                   for fid, (*_rest, on) in _BORDER_FRAMES.items())
+    texture_features = (
+        "features inside one ground's own texture, such as the individual paving stones of the road and the bare "
+        "earth between them, ripples and darker or lighter areas in the water, or the plants in the shallows"
+    )
+    island_features = (
+        "features inside one ground's own texture, such as ripples and darker or lighter areas in the water, the "
+        "plants in the shallows, or rocks"
+    )
+
+    def spread(check_id: str, a: str, b: str, where: str, a_word: str, b_word: str) -> rp.Check:
+        return rp.Check(
+            id=check_id,
+            question=(
+                f"Compare the river frame with the plain-cells frame. In the plain-cells frame every map cell is "
+                f"drawn wholly in its own ground, so each border there runs exactly along the cell grid. Look at "
+                f"{where}. First, in your own words, describe how that border's position and shape differ between "
+                f"the two frames.\n\n"
+                f"Then the closed question. Relative to where that border runs in the plain-cells frame, which "
+                f"ground reaches across it in the river frame: does the {a} extend out over cells that are plain "
+                f"{b} in the plain-cells frame, or does the {b} extend over cells that are plain {a} there?\n\n"
+                f"Answer {a_word}-SPREADS or {b_word}-SPREADS, or NEITHER if the border sits where the plain-cells "
+                f"frame has it."
+            ),
+            frames=("river", "river_plain"),
+            answers=(f"{a_word}-SPREADS", f"{b_word}-SPREADS", "NEITHER", "CANNOT-TELL"),
+        )
+
+    checks = (
+        rp.Check(
+            id="river_borders",
+            question=(
+                "The river frame shows several kinds of ground meeting: water, sand, grassland, shallow water with "
+                "plants, and a broken paved road. The ground is a grid of diamond-shaped map cells; no grid lines "
+                "are drawn. First, in your own words, describe how each pair of grounds meets: what the meeting "
+                "line looks like, how wide any transition between them is, and whether its shape follows the cell "
+                "grid.\n\n"
+                "Then the closed question. Is any place where two different grounds meet drawn as a hard, sharp "
+                "edge: one ground stopping dead against the other along straight cell edges, so the grid's zigzag "
+                "or staircase shows along that line, even for a single cell? NOT such an edge: (1) the frame's own "
+                f"edges; (2) {texture_features}; (3) a sharp edge that wanders irregularly rather than following "
+                "the straight cell edges.\n\n"
+                "Answer HARD if at least one such edge is visible, SOFT if every meeting line is a gradual "
+                "transition."
+            ),
+            frames=("river",),
+            answers=("HARD", "SOFT", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="river_transitions",
+            question=(
+                "Same river frame. Follow each transition between two grounds along its length, cell after cell. "
+                "First, in your own words, describe how one of them (say, the water's edge) changes as you follow "
+                "it.\n\n"
+                "Then the closed question. Is any transition broken: does it stop, or jump sideways, at a straight "
+                "cell edge; change width abruptly from one cell to the next; or does a band or blob of one ground "
+                "sit detached inside the other, separated from the place where the two grounds meet by a strip of "
+                "the other ground? NOT broken: (1) a transition whose width or course varies gradually; "
+                f"(2) {texture_features}; (3) the frame's own edges.\n\n"
+                "Answer BROKEN if at least one transition is broken anywhere, CONTINUOUS if each runs on unbroken."
+            ),
+            frames=("river",),
+            answers=("BROKEN", "CONTINUOUS", "CANNOT-TELL"),
+        ),
+        spread("spread_shore", "water", "sand", "where the river's water meets its sand banks (not the shallows "
+               "with plants at the top)", "WATER", "SAND"),
+        spread("spread_banks", "sand", "grassland", "where the sand banks meet the grassland on either side",
+               "SAND", "GRASS"),
+        spread("spread_road", "road", "earth", "where the broken paved road on the right meets the cells of plain "
+               "orange-brown bare earth that surround it. Those earth cells are a ground of their own, distinct from "
+               "the bare earth between the road's paving stones; the plain-cells frame shows which cells are which",
+               "ROAD", "EARTH"),
+        rp.Check(
+            id="island_shore",
+            question=(
+                "The shore frame and the shore overhead frame show one stretch of ground: land meeting water, and "
+                "kinds of water meeting each other. First, in your own words, describe how each pair of grounds "
+                "meets: what the meeting line looks like, how wide any transition between them is, and whether "
+                "its shape follows the cell grid.\n\n"
+                "Then the closed question. Is any place where two different grounds meet drawn as a hard, sharp "
+                "edge that follows the straight cell edges (in the angled frame a zigzag or staircase of "
+                "diamond-cell edges, in the overhead frame straight horizontal and vertical square-cell edges), "
+                f"even for a single cell? NOT such an edge: (1) the frames' own edges; (2) {island_features}; (3) a "
+                "sharp edge that wanders irregularly rather than following the straight cell edges.\n\n"
+                "Answer HARD if at least one such edge is visible, SOFT if every meeting line is a gradual "
+                "transition."
+            ),
+            frames=("island_shore", "island_shore_overhead"),
+            answers=("HARD", "SOFT", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="island_patches",
+            question=(
+                "The two island frames (angled and overhead) show one shore. First, in your own words, describe "
+                "any shapes or patches of a different-looking ground you can see lying within the water or within "
+                "the land, away from the main line where land meets water, and what their outlines look like.\n\n"
+                "Then the closed question. Do such patches have hard, sharp outlines that follow the straight cell "
+                "edges (in the angled frame a zigzag or staircase of diamond-cell edges, in the overhead frame "
+                f"straight horizontal and vertical square-cell edges)? NOT such outlines: {island_features}, and "
+                "outlines that fade gradually or wander irregularly.\n\n"
+                "Answer GRID-OUTLINES if at least one patch has such an outline, SOFT-OUTLINES if patches exist "
+                "but none does, or NO-PATCHES if there are no such patches."
+            ),
+            frames=("island_angled", "island_overhead"),
+            answers=("GRID-OUTLINES", "SOFT-OUTLINES", "NO-PATCHES", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="forest_floor",
+            question=(
+                "The forest-floor frame shows one stretch of ground. Is there anywhere in it a place where one kind "
+                "of ground meets another, a patch of a different-looking ground, or a straight edge, line or seam "
+                "following a grid? The texture's own blotches, specks and darker or lighter areas do not count.\n\n"
+                "Answer PRESENT if you see any of these, NONE if the frame shows none."
+            ),
+            frames=(_BORDER_SPECIFICITY,),
+            answers=("PRESENT", "NONE", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="ground_borders",
+        title="Ground borders review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders of bare ground (no units or objects) from a map editor for an isometric "
+            "strategy game, at normal zoom. Each frame is a crop, enlarged by a whole-number factor with no "
+            "smoothing, so a one-pixel feature in the original appears that many pixels wide here. Judge only what "
+            "you can actually see."
+        ),
+        injects=tuple(BORDER_INJECTS),
+    )
+
+
+def _border_prerequisites() -> str | None:
+    """Why the ground_borders pack cannot render here, or None."""
+    for path in BORDER_MAPS.values():
+        if not path.is_file():
+            return f"needs {path.relative_to(ROOT)} (the gitignored examples/ corpus)"
+    if asset_source.get_install_path() is None:
+        return "needs a configured AoE2:DE install for the terrain textures"
+    if not render.blend_effective():
+        return "needs the install's blendomatic_x1.dat, or blending never engages"
+    return None
+
+
+def _border_tile_blocks(frame_id: str, style: str) -> dict[tuple[int, int], tuple[slice, slice]]:
+    """Flat only: each tile wholly inside the crop -> its block's slices in the frame."""
+    _m, _s, _c, (cw, ch), _on = _BORDER_FRAMES[frame_id]
+    x0, y0 = _border_origin(frame_id, style)
+    tp = BORDER_TILE_PX
+    out = {}
+    for ty in range(-(-y0 // tp), (y0 + ch) // tp):
+        for tx in range(-(-x0 // tp), (x0 + cw) // tp):
+            out[(tx, ty)] = (slice(ty * tp - y0, (ty + 1) * tp - y0), slice(tx * tp - x0, (tx + 1) * tp - x0))
+    return out
+
+
+def _border_interior_failures() -> tuple[list[str], str]:
+    """Overhead, where a tile's pixels are its own square: every tile with no blend key is
+    byte-identical with blending off, and some keyed tiles change. Both maps (the river's
+    tiles rendered overhead for this, not a frame)."""
+    failures, shown = [], []
+    for frame_id in ("river", "island_overhead"):
+        on, off = _border_render(frame_id, True, "flat"), _border_render(frame_id, False, "flat")
+        scenario = _border_scene(_BORDER_FRAMES[frame_id][0])[0]
+        blocks = _border_tile_blocks(frame_id, "flat")
+        xs, ys = (np.array(v) for v in zip(*blocks, strict=True))
+        plain = keyed = changed = 0
+        for (x, y), key in zip(blocks, render._blend_keys(scenario, xs, ys), strict=True):
+            same = np.array_equal(on[blocks[(x, y)]], off[blocks[(x, y)]])
+            if key is None:
+                plain += 1
+                if not same:
+                    failures.append(f"{frame_id}: tile ({x}, {y}) has no blend key but changes with blending on")
+            else:
+                # A keyed tile may still match: beach 2 and 79 (desert 13 and 14) share one texture.
+                keyed += 1
+                changed += not same
+        if not plain or not changed:
+            failures.append(f"{frame_id}: {plain} plain and {changed} changed keyed tiles, need both")
+        shown.append(f"{frame_id} {plain} plain/{changed} of {keyed} keyed changed")
+    return failures, ", ".join(shown)
+
+
+def _border_seam_residues(frame_id: str, blend: bool = True) -> list[tuple[float, tuple[int, int], tuple[int, int]]]:
+    """Overhead: (residue, tile, neighbour) for every edge-adjacent pair wholly in the crop where the
+    neighbour's terrain is the only one bleeding into the tile and neither is layered. The residue is
+    the mean summed-RGB difference between the tile's pixel line along that edge and the neighbour's
+    own texture on the same line (TASK-283). Measured against the texture, not the neighbour's pixels,
+    since a pair straddling the texture's wrap point steps 20-30 with no blending involved."""
+    img = _border_render(frame_id, blend, "flat").astype(np.int64)
+    scenario = _border_scene(_BORDER_FRAMES[frame_id][0])[0]
+    blocks = _border_tile_blocks(frame_id, "flat")
+    xs, ys = (np.array(v) for v in zip(*blocks, strict=True))
+    with _layers_cleared(scenario, frame_id in _BORDER_NO_LAYERS):
+        tids = render.tile_field_mirror(scenario, "terrain_id").reshape(-1)
+        layer_ids = render.tile_field_mirror(scenario, "layer").reshape(-1)
+        keys = dict(zip(blocks, render._blend_keys(scenario, xs, ys), strict=True))
+    width = scenario.map_manager.map_width
+    tp = BORDER_TILE_PX
+    edge_px = {(1, 0): np.s_[:, -1], (-1, 0): np.s_[:, 0], (0, 1): np.s_[-1, :], (0, -1): np.s_[0, :]}
+
+    out = []
+    for (x, y), key in keys.items():
+        if key is None or key[1] >= 0 or len({e[0] for e in key[2]}) != 1:
+            continue
+        n_tid = key[2][0][0]
+        for (dx, dy), line in edge_px.items():
+            n = (x + dx, y + dy)
+            n_layer = int(layer_ids[n[1] * width + n[0]])
+            if n not in blocks or int(tids[n[1] * width + n[0]]) != n_tid or n_layer not in (-1, n_tid):
+                continue
+            texture = asset_source.get_terrain_texture_array(n_tid)
+            ox, oy = render._crop_offset(x, y, texture.shape[0], tp)
+            own = img[blocks[(x, y)]][line].sum(axis=-1)
+            pure = texture[oy : oy + tp, ox : ox + tp].astype(np.int64)[line].sum(axis=-1)
+            out.append((float(np.abs(own - pure).mean()), (x, y), n))
+    return out
+
+
+# Alpha 0 composes to the neighbour's exact pixel. Unfaded blendomatic edges measured up to 28.8
+# on these maps, blend-off's plain cell edges 160-351.
+BORDER_SEAM_RESIDUE_MAX = 0.0
+
+
+def _check_ground_borders() -> None:
+    """--check for ground_borders: spec coupling, frame band, blending engaged, the spread checks'
+    priority orders, interior tiles unchanged (overhead, per tile), every single-neighbour bleeding
+    edge wholly the neighbour's (overhead), each inject's reach (printed), neither the control nor
+    the specificity frame reached by any inject, every coarse-class inject reaching every blended
+    frame, and one-tile-plain bounded to one tile's area per style under blend-off's delta."""
+    reason = _border_prerequisites()
+    if reason:
+        raise SystemExit(f"ground_borders: {reason}")
+    failures: list[str] = []
+    spec = _ground_borders_spec()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+    prio = {tid: e.priority for tid, e in terrain_blend.BLEND_TABLE.items()}
+    for high, low in _BORDER_PRIORITY_ORDERS:
+        if not prio[high] > prio[low]:
+            failures.append(f"terrain {high} no longer outranks {low}, so a spread check's expected answer moved")
+
+    clean = _border_frame_images(None)
+    for frame in spec.frames:
+        try:
+            scaled, _factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+    interior, interior_shown = _border_interior_failures()
+    failures += interior
+    print(f"interior (overhead tiles): {interior_shown}")
+    seams_shown = []
+    for frame_id in ("river", "island_overhead", "island_shore_overhead"):
+        residues = _border_seam_residues(frame_id)
+        worst = max(residues, default=None)
+        if not residues:
+            failures.append(f"{frame_id}: no single-neighbour bleeding edge to measure")
+        elif worst[0] > BORDER_SEAM_RESIDUE_MAX:
+            failures.append(
+                f"{frame_id}: tile {worst[1]}'s edge toward {worst[2]} keeps {worst[0]:.1f} summed RGB of its own "
+                f"ground, over {BORDER_SEAM_RESIDUE_MAX}"
+            )
+        seams_shown.append(f"{frame_id} {len(residues)} edges, max {worst[0] if worst else 0:.1f}")
+    print(f"bleeding-edge residue (overhead): {', '.join(seams_shown)}")
+
+    # One tile's own pixels per style: a 64 px square overhead, a 1024 px diamond angled.
+    tile_area = {"flat": BORDER_TILE_PX**2, "stepped": len(ig.diamond_indices(BORDER_TILE_PX)[0])}
+    one_tile = {
+        fid: rp.LocalizedBound(max_changed_fraction=0.02, max_component_px=tile_area[style])
+        for fid, (_m, style, *_rest) in _BORDER_FRAMES.items()
+    }
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    for name, bound in BORDER_INJECTS.items():
+        injected = _border_frame_images(name)
+        touched = {}
+        for frame_id in _BORDER_FRAMES:
+            mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
+            changed = int(np.count_nonzero(mask))
+            if changed:
+                touched[frame_id] = (changed, rp.largest_component_px(mask))
+            if bound and frame_id in _BORDER_BLENDED:
+                failures += one_tile[frame_id].failures(mask, f"inject {name} on {frame_id}")
+        if missed := [fid for fid in _BORDER_BLENDED if fid not in touched]:
+            failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        if stray := sorted(set(touched) - set(_BORDER_BLENDED)):
+            failures.append(f"inject {name}: reached {', '.join(stray)}, outside the blended frames")
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+    print(f"one-tile-plain tiles: {', '.join(f'{m} {_one_tile_pick(m)}' for m in BORDER_MAPS)}")
+
+    coarse = reach[BORDER_COARSE_INJECT]
+    for name, bound in BORDER_INJECTS.items():
+        if bound is None:
+            continue
+        for frame_id, (_px, comp) in sorted(reach[name].items()):
+            if frame_id in coarse and comp >= coarse[frame_id][1]:
+                failures.append(
+                    f"inject {name} on {frame_id}: largest delta {comp} px is not under the coarse "
+                    f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
+                )
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: ground_borders frames couple to its checks and land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px; "
+        f"unkeyed overhead tiles are unchanged by blending; every single-neighbour bleeding edge is wholly the "
+        f"neighbour's; all {len(BORDER_INJECTS)} injects bite every blended frame and none reaches "
+        f"{_BORDER_SPECIFICITY} or the plain-cells control; one-tile-plain stays within one tile's area"
+    )
+
+
+PACKS = {
+    "shadow_band": _shadow_band_spec,
+    "ground_texture": _ground_texture_spec,
+    "sloped_mip": _sloped_mip_spec,
+    "ground_borders": _ground_borders_spec,
+}
 
 
 # ---------------------------------------------------------------- rendering
@@ -1117,7 +2053,30 @@ def _run_token(pack_id: str, inject: str | None, replica: int = 0) -> str:
 
 
 def _pack_injects(pack_id: str) -> dict:
-    return GROUND_INJECTS if pack_id == "ground_texture" else INJECTS
+    return {"ground_texture": GROUND_INJECTS, "sloped_mip": SLOPED_INJECTS, "ground_borders": BORDER_INJECTS}.get(
+        pack_id, INJECTS
+    )
+
+
+def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
+    if pack_id == "ground_texture":
+        return _ground_frame_images(inject)
+    if pack_id == "sloped_mip":
+        return _sloped_frame_images(inject)
+    if pack_id == "ground_borders":
+        return _border_frame_images(inject)
+    return _frame_images(inject)
+
+
+def _frame_tile_px(pack_id: str, frame_id: str) -> int:
+    if pack_id == "ground_texture":
+        return _GROUND_FRAMES[frame_id][1]
+    if pack_id == "sloped_mip":
+        # Graphics quality 3 puts both 240x240 maps at 64 px per tile at level 0.
+        return 64 >> -_SLOPED_FRAMES[frame_id][1]
+    if pack_id == "ground_borders":
+        return BORDER_TILE_PX
+    return TILE_PX
 
 
 def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) -> list[Path]:
@@ -1128,11 +2087,15 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
         raise SystemExit(f"unknown inject {inject!r} for {pack_id}; choose from {', '.join(injects)}")
     if pack_id == "ground_texture" and (reason := _ground_prerequisites()):
         raise SystemExit(f"ground_texture: {reason}")
+    if pack_id == "sloped_mip" and (reason := _sloped_prerequisites()):
+        raise SystemExit(f"sloped_mip: {reason}")
+    if pack_id == "ground_borders" and (reason := _border_prerequisites()):
+        raise SystemExit(f"ground_borders: {reason}")
 
     pack_dir = out_dir / pack_id / _run_token(pack_id, inject, replica)
     pack_dir.mkdir(parents=True, exist_ok=True)
 
-    images = _ground_frame_images(inject) if pack_id == "ground_texture" else _frame_images(inject)
+    images = _pack_images(pack_id, inject)
     written: list[Path] = []
     rendered: dict[str, tuple[int, int, int]] = {}
     for frame in spec.frames:
@@ -1157,7 +2120,7 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
                 "id": f.id,
                 "file": f.filename,
                 "kind": f.kind,
-                "tile_px": _GROUND_FRAMES[f.id][1] if pack_id == "ground_texture" else TILE_PX,
+                "tile_px": _frame_tile_px(pack_id, f.id),
                 "width": rendered[f.id][0],
                 "height": rendered[f.id][1],
                 "upscale": rendered[f.id][2],
@@ -1186,6 +2149,10 @@ def check(pack_id: str = "shadow_band") -> None:
     """--check for one pack; see each pack's own check for what it asserts."""
     if pack_id == "ground_texture":
         _check_ground_texture()
+    elif pack_id == "sloped_mip":
+        _check_sloped_mip()
+    elif pack_id == "ground_borders":
+        _check_ground_borders()
     else:
         _check_shadow_band()
 
@@ -1288,7 +2255,9 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="Output directory")
     parser.add_argument("--pack", default="shadow_band", choices=sorted(PACKS), help="Which pack to render")
     parser.add_argument(
-        "--inject", choices=sorted({*INJECTS, *GROUND_INJECTS}), help="Render the pack with one known defect applied"
+        "--inject",
+        choices=sorted({*INJECTS, *GROUND_INJECTS, *SLOPED_INJECTS, *BORDER_INJECTS}),
+        help="Render the pack with one known defect applied",
     )
     parser.add_argument(
         "--replica", type=int, default=0, help="Replica number, for a second or third opaque directory of the same run"

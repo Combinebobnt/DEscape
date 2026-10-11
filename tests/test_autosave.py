@@ -81,30 +81,38 @@ def test_two_documents_rotate_independently():
     assert all(p.exists() for p in b_slots)
 
 
-@pytest.mark.parametrize("name", ["compatdata", "compatdata_link", "template", "untitled"])
+@pytest.mark.parametrize(
+    "name", ["subscribed", "subscribed_link", "compatdata", "compatdata_link", "windows_profile", "template", "untitled"]
+)
 def test_sidecar_falls_back_to_central_where_it_cannot_be_served(tmp_path, name):
-    """The AGENTS.md hard rule as a test for the first case: because the
-    slot never lands under compatdata/, write_scenario()'s own guard stays
-    the thing enforcing it and nothing here weakens it. compatdata_link opens
-    the file through a directory symlink, so only the resolved path has it."""
+    """subscribed is the AGENTS.md hard rule: write_scenario() refuses there.
+    The game-profile cases are writable but would list slots in the game's
+    own scenario list. A _link case opens the file through a directory
+    symlink, so only the resolved path has the telltale parts."""
     proton = tmp_path / "compatdata" / "1234"
     proton.mkdir(parents=True)
     (tmp_path / "link").symlink_to(proton, target_is_directory=True)
+    subscribed = tmp_path / "mods" / "subscribed" / "5678"
+    subscribed.mkdir(parents=True)
+    (tmp_path / "sublink").symlink_to(subscribed, target_is_directory=True)
     sources = {
+        "subscribed": subscribed / "map.aoe2scenario",
+        "subscribed_link": tmp_path / "sublink" / "map.aoe2scenario",
         "compatdata": proton / "map.aoe2scenario",
         "compatdata_link": tmp_path / "link" / "map.aoe2scenario",
+        "windows_profile": tmp_path / "Games" / "Age of Empires 2 DE" / "0" / "map.aoe2scenario",
         "template": TEMPLATE_DIR / "blank_120x120.aoe2scenario",
         "untitled": None,
     }
     source = sources[name]
-    if name == "compatdata_link":
-        assert "compatdata" not in str(source)  # else this passes without the resolve
+    if name.endswith("_link"):
+        assert "compatdata" not in str(source) and "subscribed" not in str(source)  # else no resolve needed
     key = autosave.doc_key(source, DOC_ID)
 
     slot = autosave.slot_path(key, "map.aoe2scenario", source, "sidecar")
 
     assert slot.parent == autosave.autosave_dir()
-    assert "compatdata" not in str(slot)
+    assert "compatdata" not in str(slot) and "subscribed" not in str(slot)
     assert slot.resolve().parent != TEMPLATE_DIR.resolve()
 
     # GH #127: a custom folder replaces "central" for sidecar's fallback too.
@@ -114,7 +122,7 @@ def test_sidecar_falls_back_to_central_where_it_cannot_be_served(tmp_path, name)
 
 
 def test_sidecar_falls_back_to_central_for_a_looped_source(tmp_path):
-    """An unresolvable source can't be shown to be outside a Proton prefix."""
+    """An unresolvable source can't be shown to be outside mods/subscribed/."""
     source = _symlink_loop(tmp_path) / "map.aoe2scenario"
     key = autosave.doc_key(None, DOC_ID)  # not the source's own key, which is doc_key()'s test
 
@@ -170,11 +178,14 @@ def test_switching_folders_keeps_every_slot_listed_rotated_and_discarded(tmp_pat
 def test_central_dir_falls_back_to_the_default_folder(tmp_path):
     custom = tmp_path / "custom"
     custom.mkdir()
-    refused = tmp_path / "compatdata" / "813780"
+    refused = tmp_path / "mods" / "subscribed" / "813780"
     refused.mkdir(parents=True)
+    profile = tmp_path / "compatdata" / "813780"
+    profile.mkdir(parents=True)
 
     assert autosave.central_dir("") == autosave.autosave_dir()
     assert autosave.central_dir(str(custom)) == custom
+    assert autosave.central_dir(str(profile)) == profile
     assert autosave.central_dir(str(tmp_path / "gone")) == autosave.autosave_dir()
     assert autosave.central_dir(str(refused)) == autosave.autosave_dir()
     assert autosave.central_dir("relative") == autosave.autosave_dir()
@@ -183,13 +194,16 @@ def test_central_dir_falls_back_to_the_default_folder(tmp_path):
 def test_autosave_dir_refusal(tmp_path):
     proton = tmp_path / "steamapps" / "compatdata" / "813780" / "pfx"
     proton.mkdir(parents=True)
+    subscribed = proton / "Games" / "Age of Empires 2 DE" / "0" / "mods" / "subscribed"
+    subscribed.mkdir(parents=True)
     link = tmp_path / "innocent-looking"
-    link.symlink_to(proton)
+    link.symlink_to(subscribed)
     plain = tmp_path / "plain"
     plain.mkdir()
 
     assert autosave.autosave_dir_refusal(Path("relative/dir")) is not None
-    assert autosave.autosave_dir_refusal(proton) is not None
+    assert autosave.autosave_dir_refusal(proton) is None
+    assert autosave.autosave_dir_refusal(subscribed) is not None
     assert autosave.autosave_dir_refusal(link) is not None
     assert autosave.autosave_dir_refusal(TEMPLATE_DIR) is not None
     assert autosave.autosave_dir_refusal(plain) is None

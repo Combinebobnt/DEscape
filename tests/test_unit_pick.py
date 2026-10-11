@@ -1697,6 +1697,34 @@ def test_merge_turns_a_3x1_blocker_into_one_ring() -> None:
     assert len(merged[0]) == 4
 
 
+_DORADO = 455
+_WHALE = 2625
+
+
+def test_a_dorados_flat_outline_is_2x2_centred_on_its_whole_coordinate() -> None:
+    """GH #178: fish outlined a 1-tile square, where the in-game box is about 2x2."""
+    _scn, entry = _one_unit_entry(_DORADO, 10.0, 10.0)
+    tp = _tile_px()
+    assert unit_polygons(entry, "flat", tp, MAP_W, MAP_H) == [
+        [(9 * tp, 9 * tp), (11 * tp, 9 * tp), (11 * tp, 11 * tp), (9 * tp, 11 * tp)]
+    ]
+
+
+@pytest.mark.parametrize(("const", "x", "span"), [(_DORADO, 10.0, 2), (_WHALE, 10.5, 3)])
+def test_a_deep_fishs_stepped_outline_is_one_ring_centred_on_the_fish(const, x, span) -> None:
+    polygons = _stepped_polygons(const, x, x)
+    assert len(polygons) == span * span
+    merged = unit_pick.merge_footprint_polygons(polygons)
+    _assert_one_ring_tracing(merged, polygons)
+    scn, _entry = _one_unit_entry(const, x, x)
+    _elevations, proj = render.elevations_and_proj(scn)
+    centre = iso_geometry.map_point_to_screen(x, x, 0, proj)
+    xs = [p[0] for p in merged[0]]
+    ys = [p[1] for p in merged[0]]
+    assert ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2) == pytest.approx(centre, abs=1)
+    assert (max(xs) - min(xs)) == pytest.approx(2 * proj.half_w * span)
+
+
 def test_merge_returns_disjoint_polygons_unchanged() -> None:
     polygons = [[(0, 0), (2, 0), (2, 2), (0, 2)], [(5, 5), (7, 5), (7, 7), (5, 7)]]
     assert unit_pick.merge_footprint_polygons(polygons) == polygons

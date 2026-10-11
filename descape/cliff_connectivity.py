@@ -16,19 +16,36 @@ the single most common suffix per dirset (a placement tool, unlike a corpus
 classifier, is allowed to pick one) and keeps the top-2 observed rotations
 as candidates, since a face is a real either-or rather than noise.
 
-Not consumed by any write path yet -- Stage 2's drag tool (which face to
-pick when both candidates are legal, how to resolve a dirset with no pinned
-entry) is unbuilt UI work the blocking measurement was a prerequisite for,
-not a part of it.
+**A drag run is resolved jointly, not node by node** (`resolve_chain()`).
+A corner's piece size is conditioned on the size of the straight it meets
+(s2 straights meet s4/s5 corners, s1 straights meet s6/s7), so per-node
+majorities compose into runs the corpus never contains. `resolve_chain()`
+scores a whole run's suffixes jointly over the generator's measured
+`transitions`, with a score that does not depend on which end the run was
+drawn from, then its rotations as a chain within each chosen suffix,
+and `offset()` says where each neighbour's footprint sits.
 """
 
 from __future__ import annotations
 
 import json
+import math
+from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
 
 Direction = tuple[int, int]
+Span = tuple[int, int]
+# (direction from the node to the fixed neighbour, its suffix, its own dirset)
+Contact = tuple[Direction, int, frozenset[Direction]]
+
+# Q3 of the 2026-09-20 cliff-chain plan: a suffix whose (dirset, suffix) count
+# is under this share of the dirset's best is not a candidate there.
+DOMINANCE_FLOOR = 0.10
+_SMOOTHING = 0.5
+# Score of a rotation that breaks the inherit-the-face rule across an
+# unattested pair: low enough that the rule wins unless every option breaks it.
+_BACKOFF_LOG = math.log(1e-3)
 
 _TABLE_PATH = Path(__file__).resolve().parent / "cliff_connectivity.json"
 
@@ -60,9 +77,9 @@ def resolve(dirset: frozenset[Direction]) -> tuple[int, tuple[int, ...]] | None:
     corpus to pin (see metadata()["min_n"]) -- a caller needs its own
     fallback for the unpinned ~5% of shapes, not provided here.
 
-    The rotations here are the MAJORITY SUFFIX's. A caller that pins one
-    piece size for a whole run wants rotations_for() below instead; see its
-    docstring for the measurement that makes the difference visible."""
+    The rotations here are the MAJORITY SUFFIX's. A caller that has a piece
+    size of its own wants rotations_for() below instead; see its docstring
+    for the measurement that makes the difference visible."""
     return _table().get(dirset)
 
 
@@ -81,7 +98,7 @@ def rotations_for(dirset: frozenset[Direction], suffix: int) -> tuple[int, ...] 
     SIZE, or None if that pair was too rare to pin (metadata()["min_suffix_n"]).
 
     Rotation is strongly conditioned on suffix and the two must not be
-    mixed: a {N, S} run at suffix 1 uses rotation 2 (192px of ink), the
+    mixed: a {N, S} node at suffix 1 uses rotation 2 (192px of ink), the
     same dirset at suffix 2 uses 8/7 (90px) -- a 1x3 footprint holds thin
     shapes and a 3x3 holds big ones. Borrowing resolve()'s majority-suffix
     rotations for a different suffix draws a wrong-scale piece, which is
@@ -89,6 +106,280 @@ def rotations_for(dirset: frozenset[Direction], suffix: int) -> tuple[int, ...] 
     caps. A caller must fall back to its own manual value on None rather
     than to resolve(), or it reintroduces that bug silently."""
     return _by_suffix().get((dirset, suffix))
+
+
+def _dirset_key(raw: list) -> frozenset[Direction]:
+    return frozenset(tuple(d) for d in raw)
+
+
+class ChainTables:
+    """The parsed projections `resolve_chain()` and `offset()` read. Built
+    from the shipped JSON by default; a probe can build one from an
+    in-memory document of the same shape (gate C's build half)."""
+
+    def __init__(self, data: dict) -> None:
+        self.floor: int = data["metadata"]["min_suffix_n"]
+        self.node_n: dict[tuple[frozenset[Direction], int], int] = {}
+        self.top_rotations: dict[tuple[frozenset[Direction], int], tuple[int, ...]] = {}
+        self.best_n: dict[frozenset[Direction], int] = {}
+        for entry in data["entries"]:
+            dirset = _dirset_key(entry["dirset"])
+            for suffix, value in entry.get("rotations_by_suffix", {}).items():
+                self.node_n[(dirset, int(suffix))] = value["n"]
+                self.top_rotations[(dirset, int(suffix))] = tuple(value["rotations"])
+                self.best_n[dirset] = max(self.best_n.get(dirset, 0), value["n"])
+
+        self.transitions: dict[tuple, Counter[int]] = defaultdict(Counter)
+        for t in data["transitions"]:
+            (da, sa), (db, sb) = t["a"], t["b"]
+            self.transitions[(_dirset_key(da), sa, tuple(t["d"]), _dirset_key(db))][sb] += t["n"]
+
+        self.rotation_transitions: dict[tuple, Counter[int]] = defaultdict(Counter)
+        self.rotation_prior: dict[tuple[frozenset[Direction], int], Counter[int]] = defaultdict(Counter)
+        for t in data["rotation_transitions"]:
+            (da, sa, ra), (db, sb, rb) = t["a"], t["b"]
+            a, b = _dirset_key(da), _dirset_key(db)
+            self.rotation_transitions[(a, sa, ra, tuple(t["d"]), b, sb)][rb] += t["n"]
+            self.rotation_prior[(a, sa)][ra] += t["n"]
+
+        self.offsets = {
+            (_dirset_key(o["a"][0]), tuple(o["a"][1]), tuple(o["d"]), _dirset_key(o["b"][0]), tuple(o["b"][1])): tuple(
+                o["offsets"][0][0]
+            )
+            for o in data["offsets"]
+        }
+        self.offsets_by_span = {
+            (tuple(o["a"]), tuple(o["d"]), tuple(o["b"])): tuple(o["offsets"][0][0]) for o in data["offsets_by_span"]
+        }
+        # A drag re-resolves its whole run per step, over a few hundred distinct contexts.
+        self._conditional_cache: dict[tuple, float] = {}
+
+    def conditional(self, rotations: bool, key: tuple, value: int, support: tuple[int, ...]) -> float:
+        """Memoized `_log_conditional()` over `transitions` (or
+        `rotation_transitions` when `rotations`) at `key`."""
+        cache_key = (rotations, key, value, support)
+        found = self._conditional_cache.get(cache_key)
+        if found is None:
+            table = self.rotation_transitions if rotations else self.transitions
+            found = _log_conditional(table.get(key, Counter()), value, support)
+            self._conditional_cache[cache_key] = found
+        return found
+
+    def joint(
+        self, key: tuple, a: int, b: int, support_a: tuple[int, ...], support_b: tuple[int, ...]
+    ) -> float:
+        """Memoized log P(s_i = a, s_j = b | edge) for `key` = (dirset_i, step,
+        dirset_j), add-0.5 smoothed and normalized over both nodes' supports."""
+        cache_key = ("joint", key, a, b, support_a, support_b)
+        found = self._conditional_cache.get(cache_key)
+        if found is None:
+            dirset_a, d, dirset_b = key
+            rows = {s: self.transitions.get((dirset_a, s, d, dirset_b), Counter()) for s in support_a}
+            total = sum(rows[s][t] for s in support_a for t in support_b) + _SMOOTHING * len(support_a) * len(support_b)
+            found = math.log((rows[a][b] + _SMOOTHING) / total)
+            self._conditional_cache[cache_key] = found
+        return found
+
+    def prior(self, dirset: frozenset[Direction], value: int, support: tuple[int, ...]) -> float:
+        """log P(s | dirset) over `node_n`, smoothed like `_log_conditional()`."""
+        return _log_conditional(Counter({s: self.node_n.get((dirset, s), 0) for s in support}), value, support)
+
+    def candidates(self, dirset: frozenset[Direction], allowed: frozenset[int]) -> list[int]:
+        best = self.best_n.get(dirset, 0)
+        return [
+            s
+            for s in sorted(allowed)
+            if best and self.node_n.get((dirset, s), 0) >= DOMINANCE_FLOOR * best
+        ]
+
+    def pair_n(self, dirset_a: frozenset[Direction], sa: int, d: Direction, dirset_b: frozenset[Direction], sb: int) -> int:
+        return self.transitions.get((dirset_a, sa, d, dirset_b), Counter())[sb]
+
+
+@lru_cache(maxsize=1)
+def chain_tables() -> ChainTables:
+    return ChainTables(_data())
+
+
+def _log_conditional(counts: Counter[int], value: int, support: list[int]) -> float:
+    """log P(value | context), add-0.5 smoothed and normalized over `support`."""
+    total = sum(counts[s] for s in support) + _SMOOTHING * len(support)
+    return math.log((counts[value] + _SMOOTHING) / total)
+
+
+def _viterbi(states: list[list[int]], unary, pairwise) -> list[int]:
+    """Best state per position for a chain score sum(unary) + sum(pairwise).
+    Ties go to the earliest state in each position's list."""
+    score = {s: unary(0, s) for s in states[0]}
+    back: list[dict[int, int]] = []
+    for j in range(1, len(states)):
+        new: dict[int, float] = {}
+        ptr: dict[int, int] = {}
+        for s in states[j]:
+            best_prev, best = None, -math.inf
+            for p in states[j - 1]:
+                value = score[p] + pairwise(j - 1, p, s)
+                if best_prev is None or value > best:
+                    best_prev, best = p, value
+            new[s] = best + unary(j, s)
+            ptr[s] = best_prev
+        score = new
+        back.append(ptr)
+    last = None
+    for s in states[-1]:
+        if last is None or score[s] > score[last]:
+            last = s
+    path = [last]
+    for ptr in reversed(back):
+        path.append(ptr[path[-1]])
+    return path[::-1]
+
+
+def _segments(ok: list[bool]) -> list[tuple[int, int]]:
+    """Half-open index ranges of consecutive True entries."""
+    out, start = [], None
+    for i, flag in enumerate([*ok, False]):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            out.append((start, i))
+            start = None
+    return out
+
+
+def resolve_chain(
+    dirsets: list[frozenset[Direction]],
+    steps: list[Direction],
+    *,
+    allowed_suffixes,
+    contacts: list[list[Contact]] | None = None,
+    tables: ChainTables | None = None,
+) -> list[tuple[int | None, int | None, bool]]:
+    """(suffix, rotation, resolved) per node of a drag run, scored jointly.
+
+    `steps[i]` is the cardinal from node i to node i+1. `contacts[i]` lists
+    fixed neighbours of node i (existing cliffs, non-adjacent stroke nodes).
+
+    Pass 1 picks suffixes maximizing sum log P(s_i, s_j | dirset_i, step,
+    dirset_j) per path edge, each normalized over both nodes' candidates,
+    plus log P(s_i | contact) per fixed contact, minus (degree - 1) log
+    P(s_i | dirset_i) per node, its degree counting path neighbours and
+    contacts (so a path interior pays its prior once and a lone node gains
+    it). That is the chain's joint written from pair joints, so the run
+    scores the same drawn from either end, and an edge the corpus never
+    shows costs its smoothed share of the whole pair table rather than
+    1/k of one row. Candidates per node are the allowed suffixes that clear
+    DOMINANCE_FLOOR; ties go to the lower suffix. Pass 2 runs the
+    same chain over rotations within each chosen suffix from
+    `rotation_transitions`; across a pair the corpus never shows, it falls
+    back to inherit-the-previous-face within `rotations_for()`'s top two.
+
+    A node with no surviving candidate gets (None, None, False) and splits
+    the run: the caller writes its picked piece and frame verbatim. A
+    resolved node is still flagged False when its (dirset, suffix) or a
+    chosen pair with either path neighbour is below the table's
+    `min_suffix_n` floor."""
+    t = tables or chain_tables()
+    n = len(dirsets)
+    if len(steps) != max(0, n - 1):
+        raise ValueError(f"{n} nodes need {max(0, n - 1)} steps, got {len(steps)}")
+    allowed = frozenset(allowed_suffixes)
+    contacts = contacts or [[] for _ in range(n)]
+    cands = [tuple(t.candidates(d, allowed)) for d in dirsets]
+
+    suffixes: list[int | None] = [None] * n
+    for lo, hi in _segments([bool(c) for c in cands]):
+
+        def unary(k: int, s: int, lo=lo, hi=hi) -> float:
+            i = lo + k
+            degree = (i > lo) + (i < hi - 1) + len(contacts[i])
+            score = (1 - degree) * t.prior(dirsets[i], s, cands[i])
+            for direction, cs, cdirset in contacts[i]:
+                back = (-direction[0], -direction[1])
+                score += t.conditional(False, (cdirset, cs, back, dirsets[i]), s, cands[i])
+            return score
+
+        def pairwise(k: int, a: int, b: int, lo=lo) -> float:
+            i = lo + k
+            return t.joint((dirsets[i], steps[i], dirsets[i + 1]), a, b, cands[i], cands[i + 1])
+
+        suffixes[lo:hi] = _viterbi(cands[lo:hi], unary, pairwise)
+
+    states: list[tuple[int, ...]] = []
+    for i, s in enumerate(suffixes):
+        if s is None:
+            states.append(())
+            continue
+        seen = t.rotation_prior.get((dirsets[i], s))
+        if seen:
+            states.append(tuple(sorted(seen)))
+        else:
+            states.append(tuple(t.top_rotations.get((dirsets[i], s), ())))
+    attested = [
+        suffixes[i] is not None
+        and suffixes[i + 1] is not None
+        and t.pair_n(dirsets[i], suffixes[i], steps[i], dirsets[i + 1], suffixes[i + 1]) > 0
+        for i in range(n - 1)
+    ]
+
+    rotations: list[int | None] = [None] * n
+    for lo, hi in _segments([bool(s) for s in states]):
+
+        def rot_unary(k: int, r: int, lo=lo) -> float:
+            if k:
+                return 0.0
+            i = lo + k
+            prior = t.rotation_prior.get((dirsets[i], suffixes[i]))
+            if not prior:
+                top = t.top_rotations.get((dirsets[i], suffixes[i]), ())
+                prior = Counter({rot: len(top) - rank for rank, rot in enumerate(top)})
+            return _log_conditional(prior, r, states[i])
+
+        def rot_pairwise(k: int, a: int, b: int, lo=lo) -> float:
+            i = lo + k
+            j = i + 1
+            if attested[i]:
+                key = (dirsets[i], suffixes[i], a, steps[i], dirsets[j], suffixes[j])
+                return t.conditional(True, key, b, states[j])
+            top = t.top_rotations.get((dirsets[j], suffixes[j]), ())
+            if not top:
+                return 0.0
+            target = a if a in top else top[0]
+            return 0.0 if b == target else _BACKOFF_LOG
+
+        rotations[lo:hi] = _viterbi(states[lo:hi], rot_unary, rot_pairwise)
+
+    out: list[tuple[int | None, int | None, bool]] = []
+    for i in range(n):
+        s, r = suffixes[i], rotations[i]
+        resolved = s is not None and r is not None and t.node_n.get((dirsets[i], s), 0) >= t.floor
+        for j in (i - 1, i + 1):
+            if not resolved or not 0 <= j < n:
+                continue
+            a, b = (j, i) if j < i else (i, j)
+            if suffixes[j] is None or t.pair_n(dirsets[a], suffixes[a], steps[a], dirsets[b], suffixes[b]) < t.floor:
+                resolved = False
+        out.append((s, r, resolved))
+    return out
+
+
+def offset(
+    dirset_a: frozenset[Direction],
+    span_a: Span,
+    d: Direction,
+    dirset_b: frozenset[Direction],
+    span_b: Span,
+    *,
+    tables: ChainTables | None = None,
+) -> tuple[int, int] | None:
+    """Modal offset of a `d`-neighbour's footprint low corner from this
+    node's, for these dirsets and realized spans; else the span-only modal;
+    else None (the caller centres nothing: cross-axis 0, resolved=False)."""
+    t = tables or chain_tables()
+    found = t.offsets.get((dirset_a, tuple(span_a), tuple(d), dirset_b, tuple(span_b)))
+    if found is None:
+        found = t.offsets_by_span.get((tuple(span_a), tuple(d), tuple(span_b)))
+    return found
 
 
 def adjacency_dir(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> Direction | None:

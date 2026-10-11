@@ -255,6 +255,32 @@ def test_a_real_drag_past_the_threshold_shows_a_ghost_at_the_destination() -> No
         _close(window)
 
 
+def test_a_snapped_4x4_drag_ghost_lands_on_whole_numbers() -> None:
+    """GH #206: an even-span building snaps to the whole number nearest the
+    cursor, in the ghost exactly as in the commit. Flat, so the ghost's rect
+    is its owned tiles' pixel box."""
+    window = _window()
+    try:
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [1]):
+            unit = model.add(1, _MULTI_TILE_CONST, 60.0, 60.0)
+        key = (1, unit.reference_id)
+        window._selection = [key]
+        window._refresh_selection_view()
+        tp = window.map_view._tile_pixels
+        pos = QPointF(64.3 * tp, 61.8 * tp)
+
+        window.on_unit_drag_preview(key, pos, Qt.NoModifier)
+        item = window.map_view._unit_ghost_item
+        assert item is not None
+        assert item.sceneBoundingRect() == QRectF(62 * tp, 60 * tp, 4 * tp, 4 * tp)
+
+        window.on_unit_move(key, pos, Qt.NoModifier)
+        assert (unit.x, unit.y) == (64.0, 62.0)
+    finally:
+        _close(window)
+
+
 def test_a_plain_click_never_flickers_a_ghost() -> None:
     """Below UNIT_DRAG_THRESHOLD_PX the gesture is still a selection click, so
     a ghost appearing on 1px of hand jitter would read as a flicker bug. The

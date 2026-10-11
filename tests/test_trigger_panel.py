@@ -4525,17 +4525,29 @@ def _expanded(panel) -> list[bool]:
     return [panel.tree.topLevelItem(i).isExpanded() for i in range(panel.tree.topLevelItemCount())]
 
 
-def test_the_sections_button_lists_every_section_and_hides_when_flat() -> None:
+def _flat_sections_menu(panel) -> None:
+    """Shown on a flat tree, with nothing to collapse, expand or jump to."""
+    assert not panel.sections_button.isHidden()
+    assert not panel.collapse_all_action.isEnabled()
+    assert not panel.expand_all_action.isEnabled()
+    assert panel._section_actions == []
+
+
+def test_the_sections_button_lists_every_section_and_stays_when_flat() -> None:
     window = _triggers_window()
     try:
         panel = window.trigger_panel
-        assert panel.sections_button.isHidden(), "a flat tree has nothing to collapse or jump to"
+        _flat_sections_menu(panel)
+        assert panel.sections_button.isEnabled()
+        assert panel.section_new_action.isEnabled(), "a flat tree can still gain its first section"
         window.close()
         window = _sectioned_window()
         panel = window.trigger_panel
         assert not panel.sections_button.isHidden()
+        assert panel.collapse_all_action.isEnabled() and panel.expand_all_action.isEnabled()
         texts = [a.text() for a in panel.sections_menu.actions() if not a.isSeparator()]
-        assert texts[:2] == ["Collapse All", "Expand All"]
+        assert texts[:5] == ["New Section…", "Rename Section…", "Move to Section", "Collapse All", "Expand All"]
+        assert panel.sections_menu.actions()[2].menu() is panel.section_move_menu
         assert _section_actions(panel) == [
             ("(before the first section)", 0),
             ("--RISK!!!--", 2),
@@ -4543,7 +4555,7 @@ def test_the_sections_button_lists_every_section_and_hides_when_flat() -> None:
             ("(unnamed section)", 6),
         ]
         panel.sort_combo.setCurrentIndex(1)  # File order
-        assert panel.sections_button.isHidden()
+        _flat_sections_menu(panel)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -4551,7 +4563,7 @@ def test_the_sections_button_lists_every_section_and_hides_when_flat() -> None:
 
 def _roomy_tree(panel) -> None:
     """Give the trigger tree pane 500 px of the vertical split. At the default
-    1500x900 split five button rows leave the tree ~3 rows, so a test that
+    1500x900 split three button rows leave the tree ~5 rows, so a test that
     clicks a real row position needs the room to see it."""
     from PyQt5.QtWidgets import QApplication
 
@@ -4594,10 +4606,10 @@ def test_renaming_the_only_divider_back_folds_the_tree_flat() -> None:
     try:
         panel = window.trigger_panel
         _rename(panel, 2, "--- Second ---")
-        assert not panel.sections_button.isHidden(), "fixture assumption: the rename grouped the tree"
+        assert panel.collapse_all_action.isEnabled(), "fixture assumption: the rename grouped the tree"
 
         _rename(panel, 2, "Fixture: references")
-        assert panel.sections_button.isHidden()
+        _flat_sections_menu(panel)
         assert all(panel.tree.topLevelItem(i).childCount() == 0 for i in range(panel.tree.topLevelItemCount()))
         assert _trigger_row_count(panel.tree) == panel.tree.topLevelItemCount() == 4
     finally:
@@ -4738,7 +4750,8 @@ def test_collapse_state_is_dropped_with_the_document() -> None:
         assert panel._collapsed_keys
         panel.clear_document()
         assert panel._collapsed_keys == set()
-        assert panel.sections_button.isHidden()
+        _flat_sections_menu(panel)
+        assert not panel.sections_button.isEnabled(), "no document"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -4994,29 +5007,30 @@ def test_section_verbs_are_gated_like_move_up_and_down() -> None:
     window = _divided_window()
     try:
         panel = window.trigger_panel
+        assert panel.sections_menu.toolTipsVisible(), "the disabled reasons live in the action tooltips"
         panel.select_trigger(0)
-        assert panel.section_new_button.isEnabled()
-        assert panel.section_move_button.isEnabled()
+        assert panel.section_new_action.isEnabled()
+        assert panel.section_move_action.isEnabled()
         assert not panel.section_rename_action.isEnabled(), "not a divider"
         panel.select_trigger(2)
         assert panel.section_rename_action.isEnabled()
-        assert not panel.section_move_button.isEnabled(), "a header does not move into a section"
-        assert "section header" in panel.section_move_button.toolTip()
+        assert not panel.section_move_action.isEnabled(), "a header does not move into a section"
+        assert "section header" in panel.section_move_action.toolTip()
 
         panel.select_trigger(0)
         panel.filter_edit.setText("a")
-        for enabled in (panel.section_new_button.isEnabled(), panel.section_move_button.isEnabled()):
+        for enabled in (panel.section_new_action.isEnabled(), panel.section_move_action.isEnabled()):
             assert not enabled
-        assert "clear the filter" in panel.section_new_button.toolTip()
+        assert "clear the filter" in panel.section_new_action.toolTip()
         panel.filter_edit.clear()
 
         panel.sort_combo.setCurrentIndex(1)
         panel.select_trigger(2)
-        assert not panel.section_new_button.isEnabled()
+        assert not panel.section_new_action.isEnabled()
         assert not panel.section_rename_action.isEnabled()
-        assert "Display order" in panel.section_move_button.toolTip()
+        assert "Display order" in panel.section_move_action.toolTip()
         panel.sort_combo.setCurrentIndex(0)
-        assert panel.section_new_button.isEnabled()
+        assert panel.section_new_action.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -5027,11 +5041,11 @@ def test_section_verbs_follow_the_tag_facet_and_a_single_section_file(tmp_path: 
     try:
         panel = window.trigger_panel
         panel.select_trigger(0)
-        assert panel.section_new_button.isEnabled()
-        assert not panel.section_move_button.isEnabled(), "one section: nowhere else to go"
-        assert "no other section" in panel.section_move_button.toolTip()
+        assert panel.section_new_action.isEnabled()
+        assert not panel.section_move_action.isEnabled(), "one section: nowhere else to go"
+        assert "no other section" in panel.section_move_action.toolTip()
         panel.set_tag_filter("D1")
-        assert not panel.section_new_button.isEnabled()
+        assert not panel.section_new_action.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -5043,6 +5057,125 @@ def test_rename_is_off_on_a_bare_run_divider() -> None:
         panel = window.trigger_panel
         panel.select_trigger(2)
         assert not panel.section_rename_action.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- TASK-212: three button rows below the tree ------------------------------
+
+
+def _bottom_rows(panel) -> list:
+    """The layout items after the tree in the trigger pane, in order."""
+    pane_layout = panel.tree.parentWidget().layout()
+    at = pane_layout.indexOf(panel.tree)
+    return [pane_layout.itemAt(i) for i in range(at + 1, pane_layout.count())]
+
+
+def _row_widgets(row) -> list:
+    return [row.itemAt(i).widget() for i in range(row.count()) if row.itemAt(i).widget() is not None]
+
+
+def test_three_button_rows_sit_below_the_trigger_tree() -> None:
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        rows = _bottom_rows(panel)
+        assert len(rows) == 3, "TASK-212: five rows left the tree ~3 rows tall"
+        assert [row.layout() for row in rows][:2] == [panel.trigger_buttons, panel.reorder_buttons]
+        reorder = [panel.trigger_copy_button, panel.trigger_move_up_button, panel.trigger_move_down_button,
+                   panel.section_up_button, panel.section_down_button]
+        assert _row_widgets(panel.reorder_buttons) == reorder
+        assert [b.text() for b in reorder[1:]] == ["▲", "▼", "⇈", "⇊"]
+        assert [b.accessibleName() for b in reorder[1:]] == ["Move Up", "Move Down", "Section Up", "Section Down"]
+        assert _row_widgets(rows[2].layout()) == [panel.tag_add_button, panel.tag_remove_selected_button]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_every_trigger_verb_is_still_reachable(monkeypatch) -> None:
+    """Each verb is a button in the pane or an action in the Sections or tag
+    menu, and triggering it reaches its slot."""
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        ops: list[str] = []
+        monkeypatch.setattr(panel, "_request_trigger_op", ops.append)
+        buttons = {
+            "new": panel.trigger_new_button,
+            "clipboard_copy": panel.trigger_clipboard_copy_button,
+            "paste": panel.trigger_paste_button,
+            "delete": panel.trigger_delete_button,
+            "copy": panel.trigger_copy_button,
+            "move_up": panel.trigger_move_up_button,
+            "move_down": panel.trigger_move_down_button,
+            "section_up": panel.section_up_button,
+            "section_down": panel.section_down_button,
+        }
+        pane = panel.tree.parentWidget()
+        for op, button in buttons.items():
+            assert pane.isAncestorOf(button), op
+            button.setEnabled(True)
+            button.click()
+            assert ops[-1] == op
+
+        called: list[str] = []
+        for slot in ("request_tag_add", "request_tag_remove_selected", "request_tag_rename", "request_tag_remove",
+                     "request_new_section", "request_section_rename", "collapse_all_sections",
+                     "expand_all_sections"):
+            monkeypatch.setattr(panel, slot, lambda slot=slot: called.append(slot))
+        for button in (panel.tag_add_button, panel.tag_remove_selected_button, panel.tag_rename_button):
+            assert pane.isAncestorOf(button)
+            button.setEnabled(True)
+            button.click()
+        menu_actions = panel.sections_menu.actions() + panel.tag_rename_button.menu().actions()
+        for action in (panel.tag_remove_action, panel.section_new_action, panel.section_rename_action,
+                       panel.collapse_all_action, panel.expand_all_action):
+            assert action in menu_actions, action.text()
+            action.setEnabled(True)
+            action.trigger()
+        assert called == ["request_tag_add", "request_tag_remove_selected", "request_tag_rename",
+                          "request_tag_remove", "request_new_section", "request_section_rename",
+                          "collapse_all_sections", "expand_all_sections"]
+
+        assert pane.isAncestorOf(panel.sections_button)
+        assert panel.sections_button.menu() is panel.sections_menu
+        assert panel.section_move_action in panel.sections_menu.actions()
+        assert panel.section_move_action.menu() is panel.section_move_menu
+        panel.select_trigger(0)
+        panel.section_move_menu.aboutToShow.emit()
+        assert panel.section_move_menu.actions(), "the submenu lists the sections"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_no_trigger_pane_button_clips_at_the_minimum_width() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.trigger_panel import TriggerPanel
+
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        total = sum(window.content_splitter.sizes())
+        window.content_splitter.setSizes([TriggerPanel.MIN_USEFUL_WIDTH, total - TriggerPanel.MIN_USEFUL_WIDTH])
+        QApplication.processEvents()
+        assert panel.width() <= TriggerPanel.MIN_USEFUL_WIDTH + 10, "fixture assumption: the pane is at its minimum"
+        tag_row = panel.tag_combo.parentWidget().layout().itemAt(1).layout()
+        widgets = [w for row in _bottom_rows(panel) for w in _row_widgets(row.layout())] + _row_widgets(tag_row)
+        assert len(widgets) == 14
+        for widget in widgets:
+            if widget is panel.tag_combo:
+                # Elides by design, but must keep a usable width (99 px measured).
+                assert widget.width() >= 90, f"the tag filter gets {widget.width()} px"
+                continue
+            assert widget.isVisible(), widget.text()
+            assert widget.width() >= widget.sizeHint().width(), (
+                f"{widget.text() or widget.accessibleName()!r} gets {widget.width()} px of "
+                f"its {widget.sizeHint().width()} at {panel.width()} px"
+            )
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -7053,6 +7186,33 @@ def test_an_install_supplies_the_string_the_icon_and_the_colours(tmp_path: Path)
         asset_source.set_install_path_override(None)
 
 
+def test_a_building_icon_comes_from_the_building_portraits(tmp_path: Path) -> None:
+    """GH #148: Castle (82, icon 7) shows buildings/007_castle, not unit portrait 007."""
+    from PIL import Image
+
+    from descape import asset_source
+
+    install = _preview_install(tmp_path)
+    ingame = install / "widgetui" / "textures" / "ingame"
+    (ingame / "buildings").mkdir()
+    Image.new("RGBA", (16, 16), (200, 10, 10, 255)).save(ingame / "units" / "007_50730.DDS", format="DDS")
+    Image.new("RGBA", (16, 16), (10, 200, 10, 255)).save(ingame / "buildings" / "007_castle.DDS", format="DDS")
+    asset_source.set_install_path_override(install)
+    try:
+        window = _instruction_window(object_list_unit_id=82)
+        try:
+            preview = _preview(window.trigger_panel)
+            assert preview.icon_source == "icon"
+            image = preview.icon_label.pixmap().toImage()
+            centre = image.pixelColor(image.width() // 2, image.height() // 2)
+            assert (centre.red(), centre.green(), centre.blue()) == (10, 200, 10)
+        finally:
+            window.edit_history.mark_saved()
+            window.close()
+    finally:
+        asset_source.set_install_path_override(None)
+
+
 def test_the_icon_frame_takes_the_source_players_colour_or_the_leading_tag_colour() -> None:
     from PyQt5.QtWidgets import QApplication
 
@@ -7126,6 +7286,184 @@ def test_the_preview_takes_no_focus() -> None:
         preview = _preview(window.trigger_panel)
         for widget in [preview, *preview.findChildren(QWidget)]:
             assert widget.focusPolicy() == Qt.NoFocus, widget
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #167: the facet direction preview -----------------------------------------
+
+_REPLACE_OBJECT = 43
+_CASTLE = 82
+
+
+def _facet_window(type_id: int, *per_entry):
+    """The trigger window with `type_id` effects appended to trigger 0, the
+    first one selected."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    indices = _appended_effects(window, type_id, list(per_entry))
+    # A rebuild: the last append left this same row's form up, built before its fields were set.
+    window.trigger_panel.refresh_entries(select=("effect", indices[0]))
+    QApplication.processEvents()
+    return window, indices
+
+
+def _facet_preview(panel):
+    preview = panel._facet_preview
+    assert preview is not None, "no facet preview on this form"
+    return preview
+
+
+def _form_row_of(form, widget) -> int:
+    row, _role = form.getWidgetPosition(widget)
+    assert row >= 0, f"{widget} is not in the form"
+    return row
+
+
+def test_a_create_object_facet_gets_an_arrow_row_under_it_that_hides_when_unset() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _ARCHER, "facet": 4})
+    try:
+        panel = window.trigger_panel
+        preview = _facet_preview(panel)
+        spin = _row_widget(panel, "facet")
+        form = panel.property_form
+        assert _form_row_of(form, preview) == _form_row_of(form, spin) + 1, "directly under the facet row"
+        assert not preview.isHidden() and preview.arrow_shown
+        assert preview.rotation == pytest.approx(4 * 3.141592653589793 / 8)
+        assert not preview.sprite_shown, "no install, no sprite"
+        _assert_form_rows_do_not_overlap(form)
+
+        spin.setValue(-1)
+        QApplication.processEvents()
+        assert _facet_preview(panel).isHidden(), "unset is randomized, so nothing to show"
+        spin = _row_widget(panel, "facet")
+        spin.setValue(6)
+        QApplication.processEvents()
+        preview = _facet_preview(panel)
+        assert not preview.isHidden() and preview.rotation == pytest.approx(6 * 3.141592653589793 / 8)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_unit_with_no_facing_gets_a_note_and_no_arrow() -> None:
+    window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _CASTLE, "facet": 0})
+    try:
+        preview = _facet_preview(window.trigger_panel)
+        assert not preview.isHidden()
+        assert not preview.arrow_shown
+        assert preview.note_label.text() == "Castle has no facing"
+        assert not preview.note_label.isHidden()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_unset_unit_still_gets_the_arrow() -> None:
+    window, _indices = _facet_window(_CREATE_OBJECT, {"facet": 2})
+    try:
+        preview = _facet_preview(window.trigger_panel)
+        assert preview.arrow_shown and preview.note_label.isHidden()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_replace_object_binds_facet2_to_its_second_unit() -> None:
+    """The first unit is an archer and the second a castle, so only a preview
+    reading object_list_unit_id_2 says the castle has no facing."""
+    window, _indices = _facet_window(
+        _REPLACE_OBJECT, {"object_list_unit_id": _ARCHER, "object_list_unit_id_2": _CASTLE, "facet2": 4}
+    )
+    try:
+        panel = window.trigger_panel
+        preview = _facet_preview(panel)
+        form = panel.property_form
+        assert _form_row_of(form, preview) == _form_row_of(form, _row_widget(panel, "facet2")) + 1
+        assert preview.note_label.text() == "Castle has no facing"
+        _row_widget(panel, "object_list_unit_id_2").set_value(_ARCHER)
+        _row_widget(panel, "object_list_unit_id_2").committed.emit(_ARCHER)
+        preview = _facet_preview(panel)
+        assert preview.arrow_shown and preview.note_label.isHidden()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_selection_whose_facets_differ_hides_the_preview() -> None:
+    window, indices = _facet_window(
+        _CREATE_OBJECT,
+        {"object_list_unit_id": _ARCHER, "facet": 4},
+        {"object_list_unit_id": _ARCHER, "facet": 8},
+        {"object_list_unit_id": _SCOUT, "facet": 4},
+    )
+    try:
+        panel = window.trigger_panel
+        _select_entries(panel, ("effect", indices[0]), ("effect", indices[1]))
+        assert _row_widget(panel, "facet").is_indeterminate()
+        assert _facet_preview(panel).isHidden()
+
+        _select_entries(panel, ("effect", indices[0]), ("effect", indices[2]))
+        preview = _facet_preview(panel)
+        assert not preview.isHidden() and preview.arrow_shown, "a shared facet shows, the differing unit drops to the arrow"
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_clearing_the_form_detaches_the_facet_preview() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _ARCHER, "facet": 4})
+    try:
+        panel = window.trigger_panel
+        first = _facet_preview(panel)
+        _select_entries(panel, ("effect", 0))
+        QApplication.processEvents()
+        assert panel._facet_preview is None
+        assert first._fields == {} and first._on_resize is None, "detached"
+        assert first.parent() is None, "unparented with its row"
+        _select_entries(panel, ("effect", _indices[0]))
+        assert panel._facet_preview is not first
+        assert panel.property_host.findChildren(type(first)) == [panel._facet_preview]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_sprite_comes_from_the_install_and_is_cached_per_facet(monkeypatch) -> None:
+    from PyQt5.QtGui import QPixmap
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import constant_picker
+
+    calls = []
+
+    def fake(unit, rotation):
+        calls.append((unit, rotation))
+        pixmap = QPixmap(8, 8)
+        pixmap.fill()
+        return pixmap
+
+    monkeypatch.setattr(constant_picker, "preview_pixmap", fake)
+    window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _ARCHER, "facet": 4})
+    try:
+        panel = window.trigger_panel
+        preview = _facet_preview(panel)
+        assert preview.sprite_shown
+        assert calls == [(_ARCHER, pytest.approx(4 * 3.141592653589793 / 8))]
+        for facet in (5, 4, 5):
+            preview._fields["facet"].blockSignals(True)
+            preview._fields["facet"].setValue(facet)
+            preview._fields["facet"].blockSignals(False)
+            preview.refresh()
+        QApplication.processEvents()
+        assert [unit for unit, _r in calls] == [_ARCHER, _ARCHER], "4 and 5 decode once each"
     finally:
         window.edit_history.mark_saved()
         window.close()

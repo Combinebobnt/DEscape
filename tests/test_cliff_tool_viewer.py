@@ -159,14 +159,109 @@ def test_a_drag_places_a_connected_chain_as_one_undo_record():
         units = window.scenario.unit_manager.units[GAIA_PLAYER_ID][-placed:]
         assert [u.y for u in units] == [11.5, 14.5, 17.5, 20.5, 23.5]
         assert all(u.x == 11.5 for u in units)
+        # A straight south run resolves to 3x3 s1 throughout (the {S} cap's
+        # prior, then size-keeping pairs), with the rotations the measured
+        # pairs give (test_cliff_chain.py's four-node run, one node longer).
         assert all(u.unit_const == _DEFAULT_CLIFF for u in units)
-        # Every node resolved through the measured table, so the run's ends
-        # differ from its interior rather than all sharing the picked frame.
-        assert len({u.rotation for u in units}) > 1
+        assert [u.rotation for u in units] == [18.0, 2.0, 1.0, 2.0, 19.0]
         assert all(u.rotation == u.initial_animation_frame for u in units)
 
         window.undo()
         assert _unit_count(window) == before
+    finally:
+        _close(window)
+
+
+def _mark_boxes(item, tile_px):
+    """Each Flat footprint mark's tile box (x0, x1, y0, y1)."""
+    out = []
+    for polygon, _brush, _pen in item._marks:
+        rect = polygon.boundingRect()
+        out.append(tuple(round(v / tile_px) for v in (rect.left(), rect.right(), rect.top(), rect.bottom())))
+    return sorted(out)
+
+
+def test_a_drag_previews_the_run_release_places_and_release_clears_it():
+    """GH #128's deferred half: mid-drag, the ghost is the whole run a
+    release would place right now (Flat draws each node as its footprint
+    mark), re-resolved per event; release places exactly that and clears it."""
+    window = _window()
+    try:
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        view = window.map_view
+        window.on_edit_stroke_start()
+        for y in range(10, 25):
+            window.on_edit_stroke_tile(10, y, Qt.NoModifier)
+        nodes = window._cliff_stroke.nodes()
+        assert len(nodes) == 5
+        assert _mark_boxes(view._unit_ghost_item, view._tile_pixels) == sorted(n.bounds for n in nodes)
+        # A turn re-resolves the run: the vertical leg's pieces change size.
+        for x in range(11, 20):
+            window.on_edit_stroke_tile(x, 24, Qt.NoModifier)
+        nodes = window._cliff_stroke.nodes()
+        assert _mark_boxes(view._unit_ghost_item, view._tile_pixels) == sorted(n.bounds for n in nodes)
+        window.on_edit_stroke_end()
+        assert view._unit_ghost_item is None
+        placed = window.scenario.unit_manager.units[GAIA_PLAYER_ID][-len(nodes):]
+        assert [(u.unit_const, u.x, u.y) for u in placed] == [(n.unit_const, n.x, n.y) for n in nodes]
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert last.startswith(f"Placed a run of {len(nodes)} cliffs, piece sizes chosen per junction"), last
+    finally:
+        _close(window)
+
+
+def _shown_window():
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    window.show()
+    QApplication.processEvents()
+    _select_piece(window, _DEFAULT_CLIFF)
+    window.cliff_frame_spin.setValue(3)
+    window.cliff_action.setChecked(True)
+    assert window.map_view._tool == "cliff"
+    return window
+
+
+def _hover_tile(window, tile_x: int, tile_y: int) -> None:
+    from PyQt5.QtCore import QEvent
+
+    view = window.map_view
+    pos = conftest.viewport_pos(view, tile_x, tile_y)
+    view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton))
+
+
+def test_hovering_ghosts_the_piece_a_click_places_and_a_tool_switch_clears_it():
+    window = _shown_window()
+    try:
+        view = window.map_view
+        _hover_tile(window, 30, 40)
+        assert _mark_boxes(view._unit_ghost_item, view._tile_pixels) == [(30, 33, 40, 43)]
+        # A picker change with no mouse move re-ghosts the new piece.
+        _select_piece(window, cliff_catalog.piece_for_suffix(_DEFAULT_CLIFF, 2))
+        assert _mark_boxes(view._unit_ghost_item, view._tile_pixels) == [(30, 31, 40, 43)]
+        window.pan_action.setChecked(True)
+        assert view._unit_ghost_item is None
+        view.refresh_cliff_ghost()
+        assert view._unit_ghost_item is None
+    finally:
+        _close(window)
+
+
+def test_the_hover_ghost_is_gone_off_the_map_edge_and_on_leaving_the_view():
+    """A piece that would not fit is not placed by a click, so it is not ghosted."""
+    from PyQt5.QtCore import QEvent
+
+    window = _shown_window()
+    try:
+        view = window.map_view
+        _hover_tile(window, 118, 40)  # a 3x3 at x=118 overhangs a 120-wide map
+        assert view._unit_ghost_item is None
+        _hover_tile(window, 40, 40)
+        assert view._unit_ghost_item is not None
+        view.leaveEvent(QEvent(QEvent.Leave))
+        assert view._unit_ghost_item is None
     finally:
         _close(window)
 

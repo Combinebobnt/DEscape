@@ -25,9 +25,9 @@ swaps class-level properties (e.g. Unit.caption_string_id) for every later scena
 the same process. A mixed-version sweep in one interpreter reports load order, not
 files. See tests/README.md's "Process-global hazard" note.
 
-Read-only, always. Much of the real corpus lives under a Proton prefix, which
-descape/scenario_io.py's FORBIDDEN_WRITE_MARKER exists to protect since it is the
-user's only copy. This script has no output path parameter at all.
+Read-only, always. Much of the real corpus lives under a Proton prefix, some of it
+in mods/subscribed/ folders the game's mod manager re-syncs. This script has no output
+path parameter at all.
 
 Usage:
     tools/map_structure_divergence.py --structure descape/versions/DE/v1.21/structure.json \

@@ -6,11 +6,19 @@ commands, and architecture.
 
 ## Hard rules
 
-- Never write to a path under a Proton `compatdata/` prefix — that's the user's
-  only copy of Workshop-synced scenario files. Every path that writes a
-  scenario file (Save, autosave, and the tools that write one directly)
-  refuses an output path containing `compatdata`, as written or resolved
-  through symlinks (`scenario_io.is_under_compatdata()`). A new one must too.
+- Never write into a subscribed-mods `mods/subscribed/` folder: the game's
+  mod manager re-syncs it, so an edit there is silently lost. Every path that writes a scenario
+  file (Save, autosave, and the tools that write one directly) and every
+  CSV/theme export refuses an output path with the consecutive parts
+  `mods`, `subscribed` (case-insensitive), as written or resolved through
+  symlinks (`scenario_io.is_workshop_subscribed()`). A new one must too.
+  The game profile itself (Proton `compatdata/` on Linux,
+  `Games/Age of Empires 2 DE` on Windows) is writable, but Save and Save As
+  there always write `.bak`/`.orig` (`scenario_io.is_in_game_profile()`),
+  even with backups switched off, and sidecar autosave puts no slot beside
+  a scenario there. Autosave's own `write_scenario(..., backup=False)`
+  stays as is. The template tools (`strip_units` and the generators) need
+  no backup there: they are developer tools, not part of the app.
 - GAIA units' `rotation` field is not an angle for ~65% of GAIA objects — it's a
   tree/doodad graphic-variant index (integer values well outside `[0, 2π)`, e.g.
   7..53). Every write path must pass it through verbatim, never normalize it.
@@ -90,6 +98,18 @@ commands, and architecture.
     `7.0` sentinel); verbatim for two cyclable consts when the old variant
     index exists in the new const, else `0.0`/`0`; `0.0`/`0` for every other
     pairing and for any target gate.
+  - *Place Unit's placement rotation* (GH #172: the hover ghost turned by
+    Ctrl+wheel or the Rotate actions before a click). The value a new unit
+    is `add()`ed with, and the ghost drawn with, comes only from
+    `place_rotation.rotation_for()`. A non-GAIA ANGLE const gets a facing on
+    its own frame grid (a GAIA one gets `0.0`, since GAIA creatables have no
+    facing to draw). A cyclable const gets a literal integer variant index,
+    inside the *Cycle Variant* scope above. A gate's orientation is a
+    different catalog const, picked before the click, so this is a new unit
+    and not a `set_unit_const()` case, the same as mirroring. Everything else
+    (walls, cliffs, INERT) keeps `add()`'s `0.0`. `add()` itself stays
+    unvalidated, as with mirroring and paste: the guard is `rotation_for()`,
+    pinned by `tests/test_place_rotation.py`.
 - Gates carry no rotation at all: all 24 visible gate consts (6 families × 4
   orientations) have `angle_count == 1`, so there is no second frame for a
   rotation to select, and across 300 corpus gate placements the field is only

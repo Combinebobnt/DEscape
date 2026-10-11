@@ -5,10 +5,10 @@ equality with a fresh cache. Modelled on test_convert_splice_corpus.py, whose
 state helpers (content-compared draws, unit pack rows) this reuses.
 
 Checked per round: each resident level's building_bboxes and sprite layer and
-the native unit pack's rows where the native backend is live. A Stepped round
-must not bump the source gen and a Sloped one must not rebuild its unit
-layers, except past the component cap or, on Sloped, when the raise moves the
-map-wide headroom (both fallbacks by design).
+the native unit pack's rows where the native backend is live. A round must
+not bump the source gen except past the component cap (the fallback by
+design); on Sloped a raise that moves the map-wide headroom still splices and
+rebuilds only the bbox layer.
 
 Needs AOE2DE_INSTALL_PATH, since conftest hides the configured install.
 """
@@ -24,7 +24,7 @@ from test_convert_splice_corpus import VIEW_PX, _assert_matches_fresh, _footprin
 from descape import asset_source, render, render_cache
 from descape.elevation_tools import set_tiles_elevation
 from descape.render import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
-from descape.render_cache import IsoChunkCache, SlopedChunkCache
+from descape.render_cache import IsoChunkCache
 from descape.scenario_io import load_map_and_units
 from descape.unit_filter import UnitFilter
 
@@ -83,11 +83,6 @@ def test_random_shared_tile_raises_splice_exactly_like_a_fresh_cache(name, style
         return out
 
     monkeypatch.setattr(render_cache, "_elevation_splices", recorded)
-    rebuilds = []
-    real_rebuild = SlopedChunkCache._rebuild_unit_layers
-    monkeypatch.setattr(
-        SlopedChunkCache, "_rebuild_unit_layers", lambda self, h: (rebuilds.append(h), real_rebuild(self, h))[1]
-    )
     stats = {"spliced": 0, "units": 0, "seeds": 0, "over_cap": 0, "headroom": 0}
 
     for r in range(ROUNDS):
@@ -109,35 +104,32 @@ def test_random_shared_tile_raises_splice_exactly_like_a_fresh_cache(name, style
             elevation_changed=changed,
         )
         assert changed, f"round {r}: the raise changed nothing"
-        gen = getattr(cache, "_source_gen", None)
-        headroom = getattr(cache, "_headroom", None)
+        gen = cache._source_gen
+        # Sloped's live headroom: reading the _headroom alias would force a build.
+        headroom = getattr(cache, "_target_headroom", None)
         calls.clear()
-        rebuilds.clear()
         cache.patch(bbox, elevation_changed=changed)
         cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
         tag = f"round {r}: brush {BRUSH} at ({cx}, {cy})"
 
         # A Sloped headroom change still splices; only the bbox layer rebuilds whole.
-        if style == "sloped" and cache._headroom != headroom:
+        if style == "sloped" and cache._target_headroom != headroom:
             stats["headroom"] += 1
         assert len(calls) == 1, f"{tag}: the elevation splice ran {len(calls)} times"
         tiles, out = calls[0]
         if out is None:
             assert _over_cap(scenario, cache, tiles), f"{tag}: fell back below the component cap"
+            assert cache._source_gen == gen + 1, f"{tag}: the refusal did not bump the gen"
             stats["over_cap"] += 1
-            if isinstance(cache, IsoChunkCache):
-                for mip in _mips(cache):
-                    cache.render_rect(0, 0, VIEW_PX, VIEW_PX, mip=mip)
+            for mip in _mips(cache):
+                cache.render_rect(0, 0, VIEW_PX, VIEW_PX, mip=mip)
         else:
             # The window's centre unit shares a tile, so the pre-component guard would have refused this.
             assert id(seed) in {id(s.unit) for s in out}, f"{tag}: the shared-tile seed was not spliced"
             stats["spliced"] += 1
             stats["units"] += len(out)
             stats["seeds"] += sum(1 for s in out if s.new_own_tile in tiles)
-            if isinstance(cache, IsoChunkCache):
-                assert cache._source_gen == gen, f"{tag}: the source gen bumped"
-            else:
-                assert not rebuilds, f"{tag}: the unit layers were rebuilt wholesale"
+            assert cache._source_gen == gen, f"{tag}: the source gen bumped"
         _assert_matches_fresh(cache, style, scenario, unit_filter, tag)
 
     print(f"{name} {style}: {stats}")

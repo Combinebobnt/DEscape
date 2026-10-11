@@ -90,8 +90,8 @@ def flood_fill_terrain(mm: MapManager, x: int, y: int, terrain_id: int) -> list[
     whose tiles carry a real second terrain via `layer` (true for roughly 1
     in 4 tiles in this project's real example files). The accepted
     consequence is that Paint Can will not normalize a stale `layer` on a
-    region that already has the selected terrain -- consistent with
-    terrain-blending being an explicit non-goal elsewhere in this tool."""
+    region that already has the selected terrain, which terrain blending
+    now draws (accepted, GH #13)."""
     width, height = mm.map_width, mm.map_height
     if not (0 <= x < width and 0 <= y < height):
         return []

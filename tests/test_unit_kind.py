@@ -253,6 +253,32 @@ def test_building_consts_overlaps_invisible_and_that_is_allowed() -> None:
     assert len(overlap) == 46
 
 
+def test_cliff_consts_matches_unit_sprites_cliff_consts() -> None:
+    """Re-derived from class 34 rather than imported, for the leaf rule below."""
+    from descape import unit_sprites
+
+    assert unit_kind.cliff_consts() == unit_sprites.cliff_consts()
+    assert len(unit_kind.cliff_consts()) == 96
+
+
+def test_mobile_unit_consts_is_the_eraser_units_target() -> None:
+    """GH #184's Units: creatable plus mobile siege, minus invisible, trees,
+    resources and relics. The counts are the 2026-10-08 plan's measurement."""
+    units = unit_kind.mobile_unit_consts()
+    objects = unit_kind._objects()
+    assert {83, 4} <= units  # Villager, Archer
+    assert units.isdisjoint({285, 66})  # Relic, Gold Mine
+    assert units.isdisjoint(unit_kind.building_consts() | unit_kind.wall_consts())
+    assert units.isdisjoint(unit_kind.invisible_consts() | TREE_UNIT_IDS | unit_kind.cliff_consts())
+    assert {c for c in units if objects[c].get("class") in unit_kind._MOBILE_SIEGE_CLASSES}
+    assert not {c for c in units if objects[c].get("class") in unit_kind._RESOURCE_CLASSES | {42}}
+    creatable = {
+        c for c, e in objects.items() if e.get("type") == 70 and c not in unit_kind.invisible_consts() | TREE_UNIT_IDS
+    }
+    by_class = {cls: sum(1 for c in creatable - units if objects[c].get("class") == cls) for cls in (40, 41, 42)}
+    assert by_class == {40: 6, 41: 4, 42: 12}
+
+
 def test_the_module_stays_a_stdlib_only_leaf() -> None:
     """unit_filter.py imports this, and view_layers.py:6-8 records that
     unit_filter staying a leaf is load-bearing. numpy or asset_source
@@ -400,3 +426,62 @@ def test_the_invisible_set_matches_its_measured_corpus_placements(corpus_files, 
     assert placed[1291] == 25 and files[1291] == 10
     assert placed[EMPTY_TC_ANNEX] == 10
     assert placed[FLARE4] == 230 and files[FLARE4] == 1
+
+
+# --- TASK-288: GAIA-only placement owner ---------------------------------------
+
+PILE1 = 254  # class 40, a hidden type-70 pile: never placed, carries no resource
+PGOLD = 252  # class 41, the same
+SHEEP = 594  # class 58, a herdable a player can own
+RELIC = 285
+RUBBLE = 863  # class 14 eye candy the corpus places for players
+
+
+def test_gaia_only_consts_holds_resources_and_trees_only() -> None:
+    gaia_only = unit_kind.gaia_only_consts()
+    tree = sorted(TREE_UNIT_IDS)[0]
+    # Forage, gold, stone, Perch (fish), shore fish, the two class-63 consts, a tree.
+    assert {BERRY_BUSH, GOLD_MINE, STONE_MINE, 53, 69, 2170, 2625, tree} <= gaia_only
+    assert gaia_only >= TREE_UNIT_IDS
+    assert gaia_only.isdisjoint({PILE1, PGOLD, SHEEP, RELIC, FLARE4, RUBBLE})
+
+
+def test_placement_owner_coerces_only_gaia_only_consts() -> None:
+    from descape.unit_filter import GAIA_PLAYER_ID
+
+    assert unit_kind._GAIA_PLAYER_ID == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(BERRY_BUSH, 1) == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(BERRY_BUSH, 8) == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(BERRY_BUSH, GAIA_PLAYER_ID) == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(sorted(TREE_UNIT_IDS)[0], 3) == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(83, 1) == 1  # Villager
+    assert unit_kind.placement_owner(SHEEP, 2) == 2
+    assert unit_kind.placement_owner(RUBBLE, 4) == 4
+    assert unit_kind.placement_owner(83, GAIA_PLAYER_ID) == GAIA_PLAYER_ID
+
+
+@pytest.mark.corpus
+def test_the_gaia_only_set_is_never_player_owned_in_the_corpus(corpus_files) -> None:
+    """Re-measures TASK-288's oracle (2026-10-11, 21 files): every resource
+    and tree placement is GAIA, so no member is ever in a player's list."""
+    from collections import Counter
+
+    from descape.scenario_io import load_map_and_units
+
+    gaia_only = unit_kind.gaia_only_consts()
+    on_gaia: Counter[int] = Counter()
+    on_player: Counter[tuple[int, int]] = Counter()
+    for path in corpus_files:
+        units = load_map_and_units(path).unit_manager.units
+        for player_id, player_units in enumerate(units):
+            for unit in player_units:
+                if unit.unit_const not in gaia_only:
+                    continue
+                if player_id == 0:
+                    on_gaia[unit.unit_const] += 1
+                else:
+                    on_player[(player_id, unit.unit_const)] += 1
+
+    assert not on_player, f"player-owned GAIA-only placements: {dict(on_player)}"
+    assert set(on_gaia) & TREE_UNIT_IDS, "no tree placements found; this test would prove nothing"
+    assert set(on_gaia) - TREE_UNIT_IDS, "no resource placements found; this test would prove nothing"

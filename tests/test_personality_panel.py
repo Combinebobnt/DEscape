@@ -103,7 +103,7 @@ def test_picking_none_then_undo_restores(fake_roots) -> None:
     window = _players_window()
     try:
         panel = window.players_panel
-        panel.player_combo.setCurrentIndex(2)
+        panel.select_player(3)
         _pick(window, ai_scripts.KEY_NONE)
         assert panel.shown_personality() == ai_scripts.KEY_NONE
         assert panel.widget_for("player_type").currentData() == 2

@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QFontMetricsF, QIcon, QPixmap, QValidator
+from PyQt5.QtGui import QColor, QFontMetricsF, QIcon, QImage, QPixmap, QValidator
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -148,6 +148,17 @@ def _swatch_icon(rgb: tuple[int, int, int]) -> QIcon:
 def _player_icon(pid: int, colors) -> QIcon:
     """pid's swatch, or a null icon when there are no colours (no document)."""
     return QIcon() if colors is None else _swatch_icon(colors[pid])
+
+
+def pixmap_from_rgba(arr, px: int) -> QPixmap:
+    """An (h, w, 4) uint8 RGBA array as a QPixmap scaled to fit px x px."""
+    import numpy as np
+
+    arr = np.ascontiguousarray(arr)
+    height, width = arr.shape[:2]
+    image = QImage(arr.data, width, height, 4 * width, QImage.Format_RGBA8888)
+    # fromImage copies, so the array may go out of scope.
+    return QPixmap.fromImage(image).scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
 def _set_player_item(combo: QComboBox, index: int, pid: int, labels, colors, suffix: str = "") -> None:

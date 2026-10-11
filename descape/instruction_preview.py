@@ -7,9 +7,8 @@ TriggerPanel._changed(). Sound is shown by name only, with no playback.
 
 from __future__ import annotations
 
-import numpy as np
 from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QColor, QImage, QPalette, QPixmap
+from PyQt5.QtGui import QColor, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -26,6 +25,7 @@ from PyQt5.QtWidgets import (
 
 from descape import asset_source, constant_picker, message_markup, object_catalog
 from descape.value_picker import ValueLineEdit
+from descape.viewer_common import pixmap_from_rgba
 
 UNSET = -1
 POSITIONS = ("TOP", "MIDDLE", "BOTTOM")
@@ -51,14 +51,6 @@ def _text_label() -> QLabel:
     label.setMinimumWidth(1)
     _no_focus(label)
     return label
-
-
-def _pixmap_from_rgba(arr) -> QPixmap:
-    arr = np.ascontiguousarray(arr)
-    height, width = arr.shape[:2]
-    image = QImage(arr.data, width, height, 4 * width, QImage.Format_RGBA8888)
-    # fromImage copies, so the array may go out of scope.
-    return QPixmap.fromImage(image).scaled(ICON_PX, ICON_PX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
 class _Screen(QWidget):
@@ -284,9 +276,9 @@ class InstructionPreview(QWidget):
             self._icon_key = unit_id
             self._icon_pixmap, self.icon_source = None, None
             if unit_id >= 0:
-                arr = asset_source.get_unit_icon(object_catalog.icon_for(unit_id))
+                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(unit_id))
                 if arr is not None:
-                    self._icon_pixmap, self.icon_source = _pixmap_from_rgba(arr), "icon"
+                    self._icon_pixmap, self.icon_source = pixmap_from_rgba(arr, ICON_PX), "icon"
                 else:
                     sprite = constant_picker.preview_pixmap(unit_id)
                     if sprite is not None:

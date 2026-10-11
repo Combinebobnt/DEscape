@@ -161,6 +161,53 @@ def test_unit_icon_matches_the_extension_case_insensitively_and_clears_with_the_
     assert asset_source.get_unit_icon(64) is None, "the icon cache outlived the install"
 
 
+def test_a_building_portrait_comes_from_buildings_then_falls_back_to_units(tmp_path, _no_install_env) -> None:
+    """GH #148: building icon indices point into a separate set; a missing one falls back to units/."""
+    from PIL import Image
+
+    ingame = tmp_path / "AoE2DE" / "widgetui" / "textures" / "ingame"
+    (ingame / "units").mkdir(parents=True)
+    (ingame / "buildings").mkdir(parents=True)
+    Image.new("RGBA", (4, 4), (200, 0, 0, 255)).save(ingame / "units" / "007_50730.DDS", format="DDS")
+    Image.new("RGBA", (4, 4), (200, 0, 0, 255)).save(ingame / "units" / "009_50730.dds", format="DDS")
+    Image.new("RGBA", (4, 4), (0, 200, 0, 255)).save(ingame / "buildings" / "007_castle.DDS", format="DDS")
+    asset_source.set_install_path_override(tmp_path / "AoE2DE")
+    try:
+        assert asset_source.unit_icon_path(7, building=True).name == "007_castle.DDS"
+        assert tuple(asset_source.get_unit_icon(7, building=True)[0, 0]) == (0, 200, 0, 255)
+        assert tuple(asset_source.get_unit_icon(7)[0, 0]) == (200, 0, 0, 255)
+        assert asset_source.unit_icon_path(9, building=True).parent.name == "units"
+        assert asset_source.unit_icon_path(10, building=True) is None
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+def test_portrait_for_follows_the_buildings_category() -> None:
+    from descape import object_catalog
+
+    assert object_catalog.portrait_for(82) == (7, True)  # Castle
+    assert object_catalog.portrait_for(4) == (17, False)  # Archer
+    assert object_catalog.portrait_for(1690) == (94, False)  # packed trebuchet: siege class 54, type 80
+    assert object_catalog.portrait_for(999999) == (None, False)
+
+
+def test_stat_icons_load_and_clear_with_the_install(tmp_path, _no_install_env) -> None:
+    from PIL import Image
+
+    staticons = tmp_path / "AoE2DE" / "widgetui" / "textures" / "ingame" / "staticons"
+    staticons.mkdir(parents=True)
+    Image.new("RGBA", (66, 66), (1, 2, 3, 255)).save(staticons / "hp.png")
+    assert asset_source.get_stat_icon("hp") is None
+    asset_source.set_install_path_override(tmp_path / "AoE2DE")
+    try:
+        icon = asset_source.get_stat_icon("hp")
+        assert icon is not None and icon.shape == (66, 66, 4) and not icon.flags.writeable
+        assert asset_source.get_stat_icon("damage") is None
+    finally:
+        asset_source.set_install_path_override(None)
+    assert asset_source.get_stat_icon("hp") is None, "the stat icon cache outlived the install"
+
+
 # -- install-backed (corpus tier) ---------------------------------------------
 
 
@@ -189,6 +236,33 @@ def test_instruction_preview_icon_for_scout_cavalry_decodes_from_the_install() -
     icon = asset_source.get_unit_icon(64)
     assert icon is not None
     assert icon.shape == (256, 256, 4)
+
+
+@pytest.mark.corpus
+def test_all_five_stat_icons_decode_from_the_install() -> None:
+    _require_install()
+    for name in ("hp", "damage", "armor", "range-armor", "range"):
+        icon = asset_source.get_stat_icon(name)
+        assert icon is not None, name
+        assert icon.shape[1] >= 66 and icon.shape[2] == 4, name
+
+
+@pytest.mark.corpus
+def test_building_portraits_resolve_against_the_install() -> None:
+    """GH #148: Castle gets buildings/007_castle, not unit portrait 007."""
+    _require_install()
+    from descape import object_catalog
+
+    castle = asset_source.unit_icon_path(*object_catalog.portrait_for(82))
+    assert castle.parent.name == "buildings" and castle.name.lower().startswith("007_castle")
+    archer = asset_source.unit_icon_path(*object_catalog.portrait_for(4))
+    assert archer.parent.name == "units" and archer.name.lower() == "017_50730.dds"
+    trebuchet = asset_source.unit_icon_path(*object_catalog.portrait_for(1690))  # packed: siege class
+    assert trebuchet.parent.name == "units"
+    shrine = asset_source.unit_icon_path(*object_catalog.portrait_for(1712))  # SHRINE2: no buildings/085 file
+    assert object_catalog.is_building(1712)
+    assert shrine.parent.name == "units" and shrine.name.lower() == "085_50730.dds"
+    assert asset_source.get_unit_icon(*object_catalog.portrait_for(82)) is not None
 
 
 @pytest.mark.corpus

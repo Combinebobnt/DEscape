@@ -235,6 +235,9 @@ def _all_on_caches(tile_px: int):
     s_elevations, corner_rise, s_proj = render.sloped_elevations_and_proj(s_scenario)
     sloped = SlopedChunkCache(s_scenario, s_elevations, corner_rise, s_proj, tile_px, sprites=True)
     sloped.set_grid(grid_bake(True, 60, 2))
+    # Both levels built up front, so a counted composite never pays a level build's .sld walk.
+    stepped._level(0)
+    sloped._level(0)
     return scenario, stepped, sloped
 
 
@@ -309,8 +312,8 @@ def _sloped_scenario():
 @pytest.mark.parametrize("tile_px", TILE_PX_LADDER)
 @pytest.mark.parametrize(("sprites", "grid", "textures"), [(True, True, True), (False, False, False)], ids=["all-on", "flat"])
 def test_sloped_every_tile_px(native_kernel, sprite_install, fake_farm, synthetic_textures, monkeypatch, tile_px, sprites, grid, textures):  # noqa: F811
-    """Sloped has one level per cache, so each tile_px on the Stepped ladder
-    gets its own cache."""
+    """Each tile_px on the Stepped ladder gets its own cache, checked at its
+    level 0, so every tile_px is covered whatever a cache's own ladder holds."""
     monkeypatch.setattr(render, "tile_pixels_for_map", lambda w, h: tile_px)
     scenario = _sloped_scenario()
     elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
@@ -370,7 +373,8 @@ def _assert_matches_fresh(cache, style: str, scenario, sprites: bool, what: str)
 
 
 def _pack_of(cache, style: str):
-    return cache._levels[0].unit_pack if style == "stepped" else cache._unit_pack
+    # Read off the level, not through Sloped's _unit_pack alias, which would build a stale level first.
+    return cache._levels[0].unit_pack
 
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
@@ -520,8 +524,7 @@ def test_worker_threads_warm_every_chunk_byte_identical(
 
         warm.install_chunk = install
         for mip in [m for m in warm.mip_levels() if m in (0, -1)]:
-            if style == "stepped":
-                warm._level(mip)
+            warm._level(mip)
             gw, gh = warm.canvas_dims(mip)
             keys = [(mip, cx, cy) for cy in range(-(-gh // warm.chunk_px)) for cx in range(-(-gw // warm.chunk_px))]
             warmer = margin_warm.MarginWarmer()
@@ -600,7 +603,7 @@ def test_a_shared_unit_pack_is_copied_before_it_is_written(native_kernel, sprite
         first = cache.prepare_chunk_job(*_chunk_of_tile(cache, EDIT_X, EDIT_Y))
         second_key = _chunk_of_tile(cache, FARM_X, FARM_Y)
         assert second_key != first.key, "both units share a chunk -- vacuous"
-        shared = first.args[-1]
+        shared = first.args[-2]  # the kernel's units tuple; blend follows it
         index, mask, rgb = shared[0], shared[4], shared[5]
         frozen = [a.copy() for a in (index, mask, rgb)]
 
@@ -668,8 +671,7 @@ def test_a_pack_warm_composites_byte_identical(
         cache = _edit_cache(style, scenario, sprites=True)
         lazy = _edit_cache(style, scenario, sprites=True)
         for m in _warm_mips(style, cache):
-            if style == "stepped":
-                cache._level(m)
+            cache._level(m)
             assert cache.pack_warm_job(m, after_level_warm=False) is not None
             _drain_pack_warm(cache, m)
             pack = cache._unit_pack_of(m, create=False)
@@ -700,8 +702,7 @@ def test_a_pack_warm_then_splices_matches_a_fresh_render(
     with composite_backend.use_backend("native"):
         cache = _edit_cache(style, scenario, sprites=True)
         for m in (0, -1) if style == "stepped" else (0,):
-            if style == "stepped":
-                cache._level(m)
+            cache._level(m)
             _drain_pack_warm(cache, m)
             cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
         pack = _pack_of(cache, style)
@@ -745,13 +746,12 @@ def test_a_pack_warm_stops_when_its_pack_is_replaced(native_kernel, sprite_insta
     """No _cancel_warms() (the second line of defence): a wholesale mutation
     between steps stops the walk without deriving into the stale pack. The
     rebuilt-level case is resident again by the next step, so only the pack
-    identity check can stop it; Sloped is always resident."""
+    identity check can stop it."""
     style = case.split("-")[0]
     scenario = _sloped_scenario()
     with composite_backend.use_backend("native"):
         cache = _edit_cache(style, scenario, sprites=True)
-        if style == "stepped":
-            cache._level(0)
+        cache._level(0)
         job, pack = _started_pack_warm(cache, 0)
         ready = pack.ready.copy()
 
@@ -786,6 +786,8 @@ def test_pack_warm_has_nothing_to_do(native_kernel, sprite_install, fake_farm, s
         assert FlatChunkCache(scenario, tile_px, sprites=True).pack_warm_job(0) is None
         s_elev, corner_rise, s_proj = render.sloped_elevations_and_proj(scenario)
         sloped = SlopedChunkCache(scenario, s_elev, corner_rise, s_proj, tile_px, sprites=True)
+        assert sloped.pack_warm_job(0) is None, "a standalone warm of a not-yet-built Sloped level"
+        sloped._level(0)
         _drain_pack_warm(sloped, 0)
         assert sloped.pack_warm_job(0) is None, "a fully derived Sloped level"
     with composite_backend.use_backend("numpy"):
@@ -975,27 +977,27 @@ def test_dense_unique_matches_np_unique(monkeypatch, dtype):
     assert np.array_equal(uniq[inv], cases["random"])
 
 
-def test_no_terrain_id_mirror_off_native(sprite_install, fake_farm, synthetic_textures):  # noqa: F811
-    """The numpy backend and Flat keep no mirror, and the numpy composite
-    reads live tiles even when a cache holds a wrong one, so it stays an
-    independent oracle for the native path."""
+def test_the_numpy_composite_reads_live_terrain_ids_not_the_mirror(sprite_install, fake_farm, synthetic_textures):  # noqa: F811
+    """Every cache keeps the terrain-id and layer mirrors on both backends
+    (Flat too: terrain blending reads them), but with blending off the
+    numpy composite takes its terrain ids from the live tiles even when a
+    cache holds a wrong mirror, so it stays an independent oracle for the
+    native path. Blend keys do read the mirror; chunk vs fresh full render
+    is what checks that."""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     with composite_backend.use_backend("numpy"):
         caches = {style: _mirror_cache(style, scenario) for style in ("stepped", "sloped")}
-        assert FlatChunkCache(scenario, tile_px)._terrain_ids is None
+        flat = FlatChunkCache(scenario, tile_px)
+        assert flat._terrain_ids is not None and flat._layer_ids is not None
         for style, cache in caches.items():
-            assert cache._terrain_ids is None, style
+            assert cache._terrain_ids is not None and cache._layer_ids is not None, style
             key = _chunk_of_tile(cache, EDIT_X, EDIT_Y)
             want = cache.get_chunk(*key).copy()
             cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
             cache._terrain_ids = np.full(mm.map_width * mm.map_height, NEW_TERRAIN_ID, dtype=np.int64)
             assert np.array_equal(cache.get_chunk(*key), want), f"{style}: the numpy path read the mirror"
-    if composite_backend.available():
-        with composite_backend.use_backend("native"):
-            assert FlatChunkCache(scenario, tile_px)._terrain_ids is None
-            assert _mirror_cache("stepped", scenario)._terrain_ids is not None
 
 
 # --- index-producer destination uniqueness --------------------------------

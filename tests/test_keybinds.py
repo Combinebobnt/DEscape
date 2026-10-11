@@ -223,6 +223,7 @@ _TOGGLE_ACTION_IDS = (
     "view_player_cameras",
     "view_trigger_overlay",
     "view_layer_terrain_textures",
+    "view_layer_terrain_blend",
     "view_layer_farm_overlay",
     "view_layer_small_trees",
     "view_layer_hero_glow",
@@ -408,7 +409,8 @@ def test_select_player_in_units_mode_sets_owner_combo_only() -> None:
         window.close()
 
 
-def test_select_player_gaia_in_players_mode_is_a_noop() -> None:
+def test_select_player_gaia_in_players_mode_selects_gaia() -> None:
+    """GH #187: GAIA has its own rows in Players mode now."""
     from pathlib import Path
 
     from descape.viewer import ViewerWindow
@@ -418,11 +420,12 @@ def test_select_player_gaia_in_players_mode_is_a_noop() -> None:
     try:
         window.load_scenario(Path(__file__).resolve().parent / "fixtures" / "golden_blank_120x120.aoe2scenario")
         window.mode_combo.setCurrentText("Players")
-        index_before = window.players_panel.player_combo.currentIndex()
+        assert window.players_panel.current_player_id() == 1
 
         window._select_player(0)
 
-        assert window.players_panel.player_combo.currentIndex() == index_before
+        assert window.players_panel.current_player_id() == 0
+        assert window.players_panel.player_combo.currentText() == "GAIA"
     finally:
         window.edit_history.mark_saved()
         window.close()

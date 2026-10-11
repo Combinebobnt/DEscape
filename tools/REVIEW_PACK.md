@@ -17,6 +17,8 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --replica 1   # 2nd clean copy
 .venv/bin/python3 tools/gen_review_pack.py --check      # deterministic, writes nothing
 .venv/bin/python3 tools/gen_review_pack.py --check --pack ground_texture   # needs examples/ + install
+.venv/bin/python3 tools/gen_review_pack.py --check --pack sloped_mip   # needs examples/ + install
+.venv/bin/python3 tools/gen_review_pack.py --check --pack ground_borders   # needs examples/ + install
 ```
 
 Each run prints the opaque directory it wrote to. Record that pairing somewhere

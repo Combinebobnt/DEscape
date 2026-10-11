@@ -800,7 +800,9 @@ def test_jumps_over_terrain_spans_repaint_like_a_fresh_render(style: str) -> Non
             assert np.array_equal(stitched, fresh_by_target[target]), f"stale pixels after jumping to {target}"
             # The clipboard is not history: no jump may take Paste away.
             assert window.paste_action.isEnabled()
-        assert "re-rendered full map" not in window.status_log.toPlainText()
+        log = window.status_log.toPlainText()
+        # Neither full branch: a jump unions spans, so it could cross the threshold (A5 keeps the cache there).
+        assert "re-rendered full map" not in log and "refreshed the full map in place" not in log
         assert cursors == {"paint": 1, "elevation": 2, "paint_b": 3, "paste": 4, "paste_drag": 5, "mirror": 6}
 
         # Step 11: back before the paste, a drag on the old block must not move it.

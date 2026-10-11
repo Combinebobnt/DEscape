@@ -77,6 +77,120 @@ def test_off_map_unit_is_reported_and_edge_unit_is_not() -> None:
     assert [f.unit_key for f in result.findings] == [(1, 201)]
 
 
+# -- off-grid buildings and units -----------------------------------------------
+
+_HOUSE, _BARRACKS, _WATCH_TOWER, _STONE_GATE_4X1, _TREBUCHET = 70, 12, 79, 64, 42
+_DEER, _DECORATION, _TREE = 65, 1033, 349
+
+
+def _place(loaded, reference_id: int, const: int, x: float, y: float) -> None:
+    unit = _unit(loaded, reference_id)
+    unit.unit_const, unit.x, unit.y = const, x, y
+
+
+def _building_findings(loaded) -> dict[tuple[int, int], tuple[str, str]]:
+    return {f.unit_key: (f.severity, f.message) for f in map_analysis.check_off_grid_buildings(loaded).findings}
+
+
+def test_the_fixture_house_is_the_one_untouched_off_grid_building() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    result = map_analysis.check_off_grid_buildings(loaded)
+    assert [(f.unit_key, f.severity, f.tile) for f in result.findings] == [((1, 200), "info", (10, 10))]
+    assert result.findings[0].message == (
+        "Player 1 building 70 (id 200) at (10.5, 10.5) is half a tile off the grid "
+        "for a 2x2 footprint (x and y should end in .0)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("const", "x", "y"),
+    [(_HOUSE, 10.0, 12.0), (_BARRACKS, 10.5, 12.5), (_WATCH_TOWER, 10.5, 12.5), (_STONE_GATE_4X1, 10.0, 12.5)],
+)
+def test_on_grid_buildings_are_clean(const, x, y) -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 200, const, x, y)
+    assert map_analysis.check_off_grid_buildings(loaded).is_clean
+
+
+@pytest.mark.parametrize(
+    ("const", "x", "y", "hint"),
+    [
+        (_BARRACKS, 10.0, 12.5, "for a 3x3 footprint (x should end in .5)"),
+        (_WATCH_TOWER, 10.0, 12.0, "for a 1x1 footprint (x and y should end in .5)"),
+        (_HOUSE, 10.0, 12.5, "for a 2x2 footprint (y should end in .0)"),
+        (_STONE_GATE_4X1, 10.5, 12.0, "for a 4x1 footprint (x should end in .0, y in .5)"),
+    ],
+)
+def test_wrong_parity_building_is_info(const, x, y, hint) -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 200, const, x, y)
+    severity, message = _building_findings(loaded)[(1, 200)]
+    assert severity == "info"
+    assert message.endswith(hint)
+
+
+def test_building_off_the_half_tile_grid_is_one_warning() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 200, _HOUSE, 10.3, 10.5)  # off the half grid on x, wrong parity on y
+    result = map_analysis.check_off_grid_buildings(loaded)
+    assert [(f.unit_key, f.severity) for f in result.findings] == [((1, 200), "warning")]
+    assert "is off the half-tile grid; no game-made building sits there" in result.findings[0].message
+
+
+def test_a_later_warning_survives_the_cap_ahead_of_info(monkeypatch) -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 201, _BARRACKS, 20.3, 20.5)
+    monkeypatch.setattr(map_analysis, "MAX_FINDINGS_PER_CHECK", 1)
+    result = map_analysis.check_off_grid_buildings(loaded)
+    assert [(f.unit_key, f.severity) for f in result.findings] == [((1, 201), "warning"), (None, "warning")]
+
+
+def test_trebuchet_and_off_map_buildings_are_not_building_findings() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 200, _TREBUCHET, 10.0, 10.0)
+    _place(loaded, 102, _HOUSE, -3.3, 5.5)  # GAIA wall turned into an off-map, off-grid house
+    assert map_analysis.check_off_grid_buildings(loaded).is_clean
+
+
+def _unit_keys(check, loaded) -> list[tuple[int, int]]:
+    return [f.unit_key for f in check(loaded).findings]
+
+
+def test_the_untouched_fixture_has_no_off_grid_units() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_off_grid_player_units(loaded).is_clean
+    assert map_analysis.check_off_grid_gaia_units(loaded).is_clean
+
+
+def test_off_centre_player_unit_lands_only_in_the_player_check() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _unit(loaded, 300).y = 30.1
+    result = map_analysis.check_off_grid_player_units(loaded)
+    assert [(f.unit_key, f.severity, f.tile) for f in result.findings] == [((2, 300), "info", (20, 30))]
+    assert result.findings[0].message == "Player 2 unit 4 (id 300) at (20.5, 30.1) is not at its tile's centre"
+    assert map_analysis.check_off_grid_gaia_units(loaded).is_clean
+
+
+def test_off_centre_gaia_animal_lands_only_in_the_gaia_check() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 100, _DEER, 5.0, 5.5)
+    result = map_analysis.check_off_grid_gaia_units(loaded)
+    assert [(f.unit_key, f.severity) for f in result.findings] == [((0, 100), "info")]
+    assert result.findings[0].message.startswith("GAIA unit 65 (id 100) at (5, 5.5)")
+    assert map_analysis.check_off_grid_player_units(loaded).is_clean
+
+
+def test_centred_garrisoned_off_map_and_non_unit_objects_are_not_off_grid_units() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 100, _DEER, 5.5, 5.5)  # centred
+    _place(loaded, 101, _DECORATION, 6.2, 5.7)
+    _place(loaded, 102, _TREE, 7.1, 5.9)
+    _unit(loaded, 203).x = 12.9  # garrisoned in house 200
+    _unit(loaded, 201).x = -3.2  # off-map
+    assert map_analysis.check_off_grid_player_units(loaded).is_clean
+    assert map_analysis.check_off_grid_gaia_units(loaded).is_clean
+
+
 # -- elevation ------------------------------------------------------------------
 
 
@@ -324,13 +438,13 @@ def test_unlocated_and_unit_only_findings_get_no_marker() -> None:
 
 def test_marker_anchors_from_a_real_elevation_violation() -> None:
     loaded = load_map_and_units(UNITS_FIXTURE)
-    _tile(loaded, 10, 10).elevation = 2
+    _tile(loaded, 40, 40).elevation = 2  # away from the fixture House's off-grid info finding at (10, 10)
     report = map_analysis.analyze(loaded)
     mm = loaded.map_manager
     anchors = map_analysis.marker_anchors(report, mm.map_width, mm.map_height)
     errors = {tile: count for tile, severity, count in anchors if severity == "error"}
-    # Each finding sits on its pair's "a" tile: (10, 10) for four of the eight pairs, a neighbour for the rest.
-    assert errors[(10, 10)] == 4
+    # Each finding sits on its pair's "a" tile: (40, 40) for four of the eight pairs, a neighbour for the rest.
+    assert errors[(40, 40)] == 4
     assert sum(errors.values()) == len(map_analysis.check_elevation(loaded).findings) == 8
 
 
@@ -343,3 +457,10 @@ def test_shipping_scenarios_have_no_error_findings(scenario_path: Path) -> None:
     report = map_analysis.analyze(loaded)
     errors = [f for r in report.results for f in r.findings if f.severity == "error"]
     assert errors == []
+
+
+@pytest.mark.corpus
+def test_shipping_scenarios_have_no_off_grid_building_warning(scenario_path: Path) -> None:
+    loaded = load_map_and_units(scenario_path)
+    findings = map_analysis.check_off_grid_buildings(loaded).findings
+    assert [f.message for f in findings if f.severity == "warning"] == []

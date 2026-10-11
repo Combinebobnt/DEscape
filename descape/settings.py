@@ -1589,6 +1589,12 @@ TOOLS: list[ToolDef] = [
         "convert", "Convert", stroke_label="Convert units", default_key="",
         param_widget="convert", supports_brush=True, modes=("units",),
     ),
+    # GH #184: a brush in both Terrain and Units mode, one undo record per
+    # drag, built on Convert's stroke shape. "X" was free in every default.
+    ToolDef(
+        "eraser", "Eraser", stroke_label="Erase", default_key="X",
+        param_widget="eraser", supports_brush=True, modes=("terrain", "units"),
+    ),
     # The Wall Run tool (2026-09-19 wall-runs plan) was folded into Place
     # Unit by GH #98: picking a wall const makes Place Unit drag a run. Its
     # saved keybind is dropped on load, see _RETIRED_KEYBINDS.
@@ -1619,8 +1625,6 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # unbound like view_distance_ticks below -- no default suggested by the
     # feature request that added this entry, just making it user-bindable.
     ("file_new_default", "New Map (Default Size)", ""),
-    # File > Resize Map…. Unbound, like file_new_default above.
-    ("file_resize", "Resize Map…", ""),
     ("file_open", "Open Map", "Ctrl+O"),
     ("file_close", "Close Map", "Ctrl+W"),
     ("file_save", "Save", "Ctrl+S"),
@@ -1666,6 +1670,9 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # view_distance_ticks below -- no default suggested, just user-bindable.
     # Kept here (between Edit and View) to match the menu bar's own
     # File -> Edit -> Map -> View order.
+    # Map > Resize Map…, unbound. Was file_resize until it moved from the File menu;
+    # _load_keybinds() migrates a saved binding.
+    ("map_resize", "Resize Map…", ""),
     ("map_mirror", "Mirror Map…", ""),
     # GH #57's Disabled Objects dialog, a dialog opener so unbound. Was edit_disables until it
     # moved to the Map menu; _load_keybinds() migrates a saved binding.
@@ -1899,10 +1906,10 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
 # Action ids of removed tools and renamed actions. A config written before the removal still
 # names them, and set_keybind()'s collision loop walks keybinds.items(), so a
 # phantom entry could be auto-cleared and reported in Settings.
-_RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run", "edit_disables")
+_RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run", "edit_disables", "file_resize")
 
 # Renamed action ids, old -> new. A saved old binding carries over unless the new id is saved too.
-_RENAMED_KEYBINDS: dict[str, str] = {"edit_disables": "map_disables"}
+_RENAMED_KEYBINDS: dict[str, str] = {"edit_disables": "map_disables", "file_resize": "map_resize"}
 
 
 def _load_keybinds() -> dict[str, str]:

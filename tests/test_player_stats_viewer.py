@@ -38,7 +38,8 @@ def _player_items(window) -> dict[tuple[str, str], object]:
 
     section = window._info_sections["Player"]
     items = {}
-    for i in range(section.childCount()):
+    # Child 0 is the combo's row.
+    for i in range(1, section.childCount()):
         top = section.child(i)
         items[("", top.data(0, Qt.UserRole))] = top
         for j in range(top.childCount()):
@@ -234,7 +235,7 @@ def test_closing_the_scenario_clears_the_combo() -> None:
         assert window.stats_player_combo.count() == 0
         assert not window.stats_player_combo.isEnabled()
         assert window.player_stats_rows == []
-        assert window._info_sections["Player"].childCount() == 0
+        assert window._info_sections["Player"].childCount() == 1  # only the combo's row
         assert window._info_sections["File"].childCount() == 0
     finally:
         conftest.close_window(window)
@@ -294,7 +295,7 @@ def test_the_sections_are_file_player_terrain_technical_in_order() -> None:
         tree = window.info_tree
         titles = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
         assert titles == ["File", "Player", "Terrain (top 8)", "Technical"]
-        assert tree.itemWidget(tree.topLevelItem(1), 1) is window.stats_player_combo
+        assert tree.itemWidget(tree.topLevelItem(1).child(0), 0) is window.stats_player_combo.parentWidget()
     finally:
         conftest.close_window(window)
 
@@ -322,8 +323,34 @@ def test_the_combo_survives_refreshes_as_the_player_headers_widget() -> None:
             window._update_info()
         assert window.stats_player_combo is combo
         assert window._info_sections["Player"] is header
-        assert window.info_tree.itemWidget(header, 1) is combo
+        assert window.info_tree.itemWidget(header.child(0), 0) is combo.parentWidget()
         assert combo.count() == 3
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_combo_is_wide_enough_for_a_long_player_label() -> None:
+    """At the default layout one column gave the combo ~90 px, clipping "P1 - <tribe name>".
+    Its own spanned row gives it the tree's width, and the Value column stays tight."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import player_fields
+
+    window = conftest.shown_window(1500, 900)
+    try:
+        window.load_scenario(UNITS_FIXTURE)
+        spec = {s.field_id: s for s in player_fields.specs_for(window.scenario)}["tribe_name"]
+        window.set_player_field(spec, 1, "Horde Army")
+        QApplication.processEvents()
+        combo = window.stats_player_combo
+        tree = window.info_tree
+        assert combo.currentText() == "P1 - Horde Army"
+        needed = combo.fontMetrics().horizontalAdvance(combo.currentText()) + combo.iconSize().width()
+        assert combo.width() >= needed, (combo.width(), needed)
+        assert combo.mapTo(tree.viewport(), combo.rect().topRight()).x() < tree.viewport().width()
+        assert tree.columnWidth(1) < combo.width()
+        window._stats_player_row.setSelected(True)
+        assert tree.selected_text() == "Player\tP1 - Horde Army"
     finally:
         conftest.close_window(window)
 

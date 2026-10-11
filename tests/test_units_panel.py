@@ -188,10 +188,23 @@ def test_gate_orientation_names_match_every_gate_graphics_direction_token() -> N
     assert checked == 48
 
 
+_STAT_CAPTIONS = {
+    "hp": "Hit points", "attack": "Attack", "melee_armour": "Melee armour",
+    "pierce_armour": "Pierce armour", "range": "Range",
+}
+
+
+def _stat_cell(panel, field_id: str) -> tuple[int, int] | None:
+    """(row, column) of a stat pair's icon in the stats grid, or None if it isn't placed."""
+    grid = panel.unit_stats_grid.layout()
+    index = grid.indexOf(panel.unit_stat_rows[field_id][0])
+    return None if index < 0 else grid.getItemPosition(index)[:2]
+
+
 def test_stats_block_shows_all_five_rows_for_a_full_combat_const() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
-    assert panel.unit_stats_header.isVisibleTo(panel)
+    assert panel.unit_stats_grid.isVisibleTo(panel)
     for field_id, expected in (
         ("hp", "30"), ("attack", "4"), ("melee_armour", "0"), ("pierce_armour", "0"), ("range", "4"),
     ):
@@ -199,12 +212,48 @@ def test_stats_block_shows_all_five_rows_for_a_full_combat_const() -> None:
         assert caption.isVisibleTo(panel)
         assert value.isVisibleTo(panel)
         assert value.text() == expected
+        assert caption.toolTip() == caption.accessibleName() == _STAT_CAPTIONS[field_id]
+
+
+def test_the_stats_pack_two_pairs_to_a_row() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    cells = {field_id: _stat_cell(panel, field_id) for field_id in _STAT_CAPTIONS}
+    assert cells == {"hp": (0, 0), "attack": (0, 2), "melee_armour": (1, 0), "pierce_armour": (1, 2), "range": (2, 0)}
+
+
+def test_a_tree_packs_to_one_pair_after_a_full_unit() -> None:
+    """GH #148: the present pairs re-pack, so a tree shows HP alone in the first cell, not a gap."""
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    panel.show_unit(_entry(unit_const=_TREE_CONST, rotation=7.0))
+    assert _stat_cell(panel, "hp") == (0, 0)
+    for field_id in ("attack", "melee_armour", "pierce_armour", "range"):
+        assert _stat_cell(panel, field_id) is None
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    assert _stat_cell(panel, "range") == (2, 0)
+
+
+def test_with_no_install_the_stat_captions_are_text(monkeypatch) -> None:
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    for field_id, caption_text in _STAT_CAPTIONS.items():
+        caption = panel.unit_stat_rows[field_id][0]
+        assert caption.text() == f"{caption_text}:"
+        assert caption.pixmap() is None or caption.pixmap().isNull()
+    assert panel.portrait_source in ("sprite", None)
+    if panel.portrait_source is None:
+        assert not panel.unit_portrait.isVisibleTo(panel)
 
 
 def test_stats_block_hides_combat_rows_for_an_hp_only_const() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_TREE_CONST))
-    assert panel.unit_stats_header.isVisibleTo(panel)
+    assert panel.unit_stats_grid.isVisibleTo(panel)
     _hp_caption, hp_value = panel.unit_stat_rows["hp"]
     assert hp_value.isVisibleTo(panel)
     assert hp_value.text() == "20"
@@ -217,18 +266,179 @@ def test_stats_block_hides_combat_rows_for_an_hp_only_const() -> None:
 def test_stats_block_hides_entirely_for_an_unknown_const() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=999999))
-    assert not panel.unit_stats_header.isVisibleTo(panel)
     assert not panel.unit_stats_grid.isVisibleTo(panel)
-    assert not panel.unit_stats_note.isVisibleTo(panel)
+    assert panel.unit_header.isVisibleTo(panel), "the name and Unit ID still show"
+    assert not panel.unit_portrait.isVisibleTo(panel)
 
 
 def test_stats_block_hides_and_blanks_on_show_unit_none() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
     panel.show_unit(None)
-    assert not panel.unit_stats_header.isVisibleTo(panel)
+    assert not panel.unit_stats_grid.isVisibleTo(panel)
+    assert not panel.unit_header.isVisibleTo(panel)
     _hp_caption, hp_value = panel.unit_stat_rows["hp"]
     assert hp_value.text() == ""
+
+
+def test_name_and_unit_id_sit_in_the_header_and_the_stats_note_is_a_tooltip() -> None:
+    """GH #148: no Name/Unit ID grid rows, no "Base stats" title, no visible note line."""
+    from PyQt5.QtWidgets import QLabel
+
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    for field_id in ("name", "unit_const"):
+        label = panel.unit_field_labels[field_id]
+        assert panel.unit_header.isAncestorOf(label)
+        assert not panel.unit_inspector_grid.isAncestorOf(label)
+    assert panel.unit_field_labels["name"].font().bold()
+    assert panel.unit_field_captions["unit_const"].text() == "Unit ID:"
+    assert panel.unit_stats_grid.isAncestorOf(panel.unit_stat_rows["hp"][1])
+    assert panel.unit_header.isAncestorOf(panel.unit_stats_grid)
+    assert "civ bonuses" in panel.unit_stats_grid.toolTip()
+    visible = [label.text() for label in panel.findChildren(QLabel) if label.isVisibleTo(panel)]
+    assert not [text for text in visible if "Base stats" in text or text.startswith("Base values")]
+
+
+# -- GH #148: portrait and stat icons from a fake install ----------------------
+
+_UNIT_RED = (200, 10, 10, 255)
+_BUILDING_GREEN = (10, 200, 10, 255)
+_STAT_ICON_FILES = ("hp", "damage", "armor", "range-armor", "range")
+
+
+def _fake_install(tmp_path):
+    """Archer's unit portrait (017), a Castle portrait in buildings/ (007) and,
+    as a trap, a unit portrait 007 too; plus the five stat icons at 66 px."""
+    from PIL import Image
+
+    ingame = tmp_path / "AoE2DE" / "widgetui" / "textures" / "ingame"
+    for folder in ("units", "buildings", "staticons"):
+        (ingame / folder).mkdir(parents=True)
+    Image.new("RGBA", (32, 32), _UNIT_RED).save(ingame / "units" / "017_50730.DDS", format="DDS")
+    Image.new("RGBA", (32, 32), _UNIT_RED).save(ingame / "units" / "007_50730.DDS", format="DDS")
+    Image.new("RGBA", (32, 32), _BUILDING_GREEN).save(ingame / "buildings" / "007_castle.DDS", format="DDS")
+    for name in _STAT_ICON_FILES:
+        Image.new("RGBA", (66, 66), (30, 60, 90, 255)).save(ingame / "staticons" / f"{name}.png")
+    return tmp_path / "AoE2DE"
+
+
+@pytest.fixture
+def fake_install(tmp_path):
+    from descape import asset_source
+
+    asset_source.set_install_path_override(_fake_install(tmp_path))
+    yield
+    asset_source.set_install_path_override(None)
+
+
+def _portrait_centre(panel) -> tuple[int, int, int, int]:
+    image = panel.unit_portrait.pixmap().toImage()
+    colour = image.pixelColor(image.width() // 2, image.height() // 2)
+    return colour.red(), colour.green(), colour.blue(), colour.alpha()
+
+
+def test_an_install_gives_the_archer_its_portrait_and_icon_captions(fake_install) -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    assert panel.portrait_source == "icon"
+    assert panel.unit_portrait.isVisibleTo(panel)
+    assert _portrait_centre(panel) == _UNIT_RED
+    for field_id, caption_text in _STAT_CAPTIONS.items():
+        caption = panel.unit_stat_rows[field_id][0]
+        assert caption.text() == ""
+        assert caption.pixmap().height() == caption.fontMetrics().height()
+        assert caption.toolTip() == caption.accessibleName() == caption_text
+
+
+def test_a_castle_takes_the_building_portrait_not_unit_007(fake_install) -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=82))
+    assert panel.portrait_source == "icon"
+    assert _portrait_centre(panel) == _BUILDING_GREEN
+
+
+def test_a_group_shows_the_portrait_only_for_one_shared_const(fake_install) -> None:
+    panel = _panel()
+    panel.show_group([_entry(reference_id=1), _entry(reference_id=2)])
+    assert panel.portrait_source == "icon"
+    assert panel.unit_portrait.isVisibleTo(panel)
+    panel.show_group([_entry(reference_id=1), _entry(unit_const=_TREE_CONST, reference_id=2)])
+    assert panel.unit_field_labels["name"].text() == "(mixed)"
+    assert panel.portrait_source is None
+    assert not panel.unit_portrait.isVisibleTo(panel)
+
+
+def test_the_icons_follow_an_install_change(tmp_path) -> None:
+    """Loaded once per install: dropping the install brings the text captions back."""
+    from descape import asset_source
+
+    panel = _panel()
+    asset_source.set_install_path_override(_fake_install(tmp_path))
+    try:
+        panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+        assert panel.unit_stat_rows["hp"][0].text() == ""
+        assert panel.portrait_source == "icon"
+    finally:
+        asset_source.set_install_path_override(None)
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    assert panel.unit_stat_rows["hp"][0].text() == "Hit points:"
+    assert panel.portrait_source != "icon"
+
+
+# Measured before GH #148 the same way, with an Archer at MIN_USEFUL_WIDTH and the test font: 475 px.
+_PRE_GH148_ARCHER_MIN_HEIGHT = 475
+
+
+def test_the_header_makes_the_inspector_shorter_than_before() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 900)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+        QApplication.processEvents()
+        assert panel.inspector_host.minimumHeight() < _PRE_GH148_ARCHER_MIN_HEIGHT
+    finally:
+        panel.close()
+
+
+@pytest.mark.font_sensitive
+@pytest.mark.parametrize("with_install", [False, True])
+def test_the_header_fits_the_floor(with_install, tmp_path, monkeypatch) -> None:
+    """Portrait plus two pair columns, icon or text captions, beside a scroll bar at MIN_USEFUL_WIDTH."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.set_install_path_override(_fake_install(tmp_path) if with_install else None)
+    try:
+        panel = _panel()
+        panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+        area = panel.inspector_area
+        margins = panel.inspector_layout.contentsMargins()
+        room = (
+            UnitsPanel.MIN_USEFUL_WIDTH - 2 * area.frameWidth() - area.verticalScrollBar().sizeHint().width()
+            - margins.left() - margins.right()
+        )
+        width = panel.unit_header.minimumSizeHint().width()
+        assert width <= room, f"header demands {width} px of {room}"
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+@pytest.mark.corpus
+def test_the_real_install_gives_an_archer_its_portrait() -> None:
+    from descape import asset_source
+
+    if asset_source.get_install_path() is None:
+        pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    assert panel.portrait_source == "icon"
+    assert not panel.unit_portrait.pixmap().isNull()
+    assert all(not panel.unit_stat_rows[field_id][0].pixmap().isNull() for field_id in _STAT_CAPTIONS)
 
 
 def test_on_unit_field_is_not_called_during_show_unit() -> None:
@@ -415,7 +625,7 @@ def test_show_group_shows_common_values_when_the_members_agree() -> None:
     assert panel.unit_field_editors["y"].text() == "(mixed)"
     assert panel.unit_field_editors["rotation"].text() == "3"  # 1.0 rad = 2.55 of 16
     assert panel.unit_field_editors["player"].currentData() == 1
-    assert panel.unit_stats_header.isVisibleTo(panel)
+    assert panel.unit_stats_grid.isVisibleTo(panel)
 
 
 def test_show_group_marks_disagreeing_fields_mixed() -> None:
@@ -438,7 +648,8 @@ def test_show_group_marks_disagreeing_fields_mixed() -> None:
     assert panel.unit_rotation_note.isVisibleTo(panel)
     assert panel.unit_rotation_note.text().startswith("Typing a Rotation turns the 2 selected units")
     assert "The other 1 of 3" in panel.unit_rotation_note.text()
-    assert not panel.unit_stats_header.isVisibleTo(panel)
+    assert not panel.unit_stats_grid.isVisibleTo(panel)
+    assert not panel.unit_portrait.isVisibleTo(panel)
 
 
 def test_group_rotation_compares_facings_not_raw_radians() -> None:
@@ -483,12 +694,54 @@ def test_show_unit_after_group_restores_single_unit_state() -> None:
     assert not panel.unit_inspector_empty.isVisibleTo(panel)
 
 
-def test_group_note_text_is_restored_for_a_single_variant_unit() -> None:
+def test_group_note_gives_way_to_a_tooltip_for_a_single_wall() -> None:
+    """GH #147: after a group, a lone wall hides the note and explains itself in the value's tooltip."""
     panel = _panel()
     panel.show_group([_entry(), _entry(unit_const=_WALL_CONST, rotation=2)])
+    assert panel.unit_rotation_note.isVisibleTo(panel)
     panel.show_unit(_entry(unit_const=_WALL_CONST, rotation=2))
-    assert panel.unit_rotation_note.text().startswith("Rotation is shown as a facing")
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
     assert panel.unit_field_labels["rotation"].text() == "2"
+    assert "variant index" in panel.unit_field_labels["rotation"].toolTip()
+
+
+_BARRACKS_CONST = 12  # INERT: a single-frame building
+_STATUE_B_CONST = 1280  # VARIANT with one real variant
+
+
+def test_a_single_frame_object_gets_a_tooltip_not_the_note() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_BARRACKS_CONST, rotation=7.0))
+    label = panel.unit_field_labels["rotation"]
+    assert label.isVisibleTo(panel.unit_inspector_grid)
+    assert label.text() == "7"
+    assert label.toolTip().startswith("Single-frame object")
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+
+
+def test_a_one_variant_object_gets_its_own_tooltip() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_STATUE_B_CONST, rotation=0.0))
+    assert panel.unit_field_labels["rotation"].toolTip().startswith("Only one graphic variant")
+    assert not panel.unit_rotation_note.isVisibleTo(panel)
+
+
+def test_the_readonly_rotation_tooltip_never_outlives_its_unit() -> None:
+    panel = _panel()
+    label = panel.unit_field_labels["rotation"]
+    panel.show_unit(_entry(unit_const=_WALL_CONST, rotation=2))
+    assert label.toolTip()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    assert label.toolTip() == ""
+    panel.show_unit(_entry(unit_const=_BARRACKS_CONST, rotation=7.0))
+    assert label.toolTip()
+    panel.show_group([_entry(unit_const=_GATE_CONST, rotation=7), _entry(unit_const=_WALL_CONST, rotation=2)])
+    assert label.text() == "(n/a)"
+    assert label.toolTip() == ""
+    panel.show_unit(_entry(unit_const=_WALL_CONST, rotation=2))
+    assert label.toolTip()
+    panel.show_unit(None)
+    assert label.toolTip() == ""
 
 
 def test_populating_across_single_group_transitions_reports_nothing() -> None:

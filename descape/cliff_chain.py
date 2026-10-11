@@ -1,33 +1,39 @@
-"""Track B Stage 2 of the 2026-09-02 cliffs plan: the auto-connecting chain
-drag's geometry and piece resolution.
+"""The Cliff tool's auto-connecting chain drag: the path a drag traces, and
+the pieces and positions that path resolves to.
 
 No Qt here, the same split `cliff_catalog` and `cliff_connectivity` already
-use -- `viewer.py` only feeds cursor tiles in and writes the resulting nodes
+use: `viewer.py` only feeds cursor tiles in and writes the resulting nodes
 out through `UnitEditModel`, so every rule below is testable headless.
 
-**Nodes step on a lattice, not on the cursor tile.** Once the first node's
-anchor and span are fixed, each subsequent node sits exactly one footprint
-away (`anchor + (dx * span_x, dy * span_y)`), stepping an axis only once the
-cursor has actually left the last footprint on that axis. Placing a node
-wherever the cursor happened to first leave the previous one instead would
-drift: on a diagonal drag with a 3x3 piece the cursor typically exits on one
-axis a tile or two before the other, so `cliff_connectivity.adjacency_dir()`
-would report a cardinal where a diagonal was drawn, and the dirsets would
-wander off the measured table's key space. The walk is a loop rather than a
-single step so a fast drag -- which skips whole tiles between mouse-move
-events -- still emits the intermediate nodes instead of leaving a gap.
+**The path is a list of cardinal steps.** Each node joins the next one by a
+shared footprint edge, never a corner, so a diagonal drag becomes a
+staircase. A step is taken when the cursor leaves the head node's realized
+footprint, widened to at least 3 tiles per axis so a 1-tile wobble beside a
+thin piece does not turn a corner. When the cursor is out on both axes the
+larger overshoot goes first. A step that would land on a node already in the
+path is not taken. The walk loops, so a fast drag that skips tiles between
+mouse-move events still emits every intermediate node.
 
-**One suffix (piece size) per stroke.** The plan's "Decisions" addendum says
-suffix inherits from an already-placed neighbouring node; since each node's
-own neighbour is the previous node in the same stroke, that resolves to a
-single size for the whole run, which is what makes the span -- and so the
-lattice above -- constant. The stroke's suffix is taken from an existing
-map cliff adjacent to the first node if there is one, else from the Piece
-picker.
+**Pieces are resolved jointly per junction, not one per stroke.** A corner's
+piece size is conditioned on the size of the straights it meets, so a
+zig-zag's legs can change size between turns. `cliff_connectivity.
+resolve_chain()` scores the whole path's suffixes and rotations over the
+measured transitions, then the layout walks from the press tile, placing
+each node's footprint where `cliff_connectivity.offset()` says the corpus
+puts that neighbour. The path re-resolves after every step, since a new step
+can change earlier nodes.
+
+**Contacts get one bounded pass.** After the first layout, a node whose
+footprint shares an edge with an existing cliff or a non-adjacent node of
+the same stroke takes that direction into its dirset and that neighbour as a
+fixed contact, and the path resolves and lays out once more. A node whose
+final neighbours still differ from the shape it was resolved for is flagged
+unresolved rather than chased further.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from descape import cliff_catalog, cliff_connectivity, unit_sprites
@@ -38,36 +44,40 @@ Bounds = tuple[int, int, int, int]
 Direction = tuple[int, int]
 
 _NON_CLIFF_SPAN = (1, 1)
+_CARDINALS: frozenset[Direction] = frozenset({(0, -1), (0, 1), (-1, 0), (1, 0)})
+# The step test's minimum box per axis around the head footprint.
+_MIN_STEP_BOX = 3
 
-# The lattice walk below advances one footprint per iteration, so this only
-# has to exceed the longest run a map allows: a 1-wide piece on the largest
-# corpus map is ~480 steps.
+# One walk call advances at most this many steps; the longest run a map
+# allows is a 1-wide piece across the largest corpus map, ~480 steps.
 _MAX_WALK_STEPS = 512
+_PLAN_CACHE_SIZE = 4
 
 
 @dataclass(frozen=True)
 class ChainNode:
-    """One resolved cliff the stroke will place. `rotation` doubles as
-    `initial_animation_frame` -- 18,232/18,232 corpus records agree, per the
-    plan's own Context section."""
+    """One cliff the stroke will place. `rotation` doubles as
+    `initial_animation_frame` (18,232/18,232 corpus records agree)."""
 
     unit_const: int
     rotation: int
     x: float
     y: float
     bounds: Bounds
-    # False when the node's neighbour shape wasn't in the measured table
-    # (an isolated node, or one of the ~5% of shapes too rare to pin) and
-    # `rotation` is the Frame picker's own value rather than a resolved
-    # one. Surfaced in the status bar so a run that silently kept one frame
-    # throughout is legible as a fallback, not as a resolution.
+    # False when the node's piece or position is not backed by the measured
+    # table: no candidate (it keeps the picked piece and frame), a pair or
+    # shape under the table's floor, a neighbour dropped next to it, or final
+    # neighbours that differ from the shape it was resolved for.
     resolved: bool
+    # The neighbour shape it was resolved for (path plus contacts), and its
+    # position on the path: a dropped node leaves a gap in `index`.
+    dirset: frozenset[Direction] = frozenset()
+    index: int = 0
 
 
 @dataclass(frozen=True)
 class ExistingCliff:
-    """A cliff already on the map: a neighbour for dirset purposes, a blocker
-    for placement, and the source the first node inherits its suffix from."""
+    """A cliff already on the map: a fixed contact and a placement blocker."""
 
     unit_const: int
     bounds: Bounds
@@ -99,15 +109,115 @@ def _overlap(a: Bounds, b: Bounds) -> bool:
     return ax0 < bx1 and bx0 < ax1 and ay0 < by1 and by0 < ay1
 
 
-class ChainStroke:
-    """Accumulates a Cliff drag without mutating anything, then resolves the
-    whole run at once in `nodes()`.
+def _opposite(d: Direction) -> Direction:
+    return -d[0], -d[1]
 
-    Deliberately accumulate-then-commit, the shape the Convert brush already
-    establishes and for the same reason: `UnitEditModel.begin_unit_edit()`
-    needs the complete touched-player set up front. A node's own piece is
-    also unknowable mid-drag -- its neighbour set isn't complete until the
-    drag ends, since the node after it hasn't been drawn yet.
+
+def _tiles(bounds: Bounds):
+    x0, x1, y0, y1 = bounds
+    for x in range(x0, x1):
+        for y in range(y0, y1):
+            yield x, y
+
+
+def _ring(bounds: Bounds):
+    """The tiles touching `bounds` by an edge or a corner, from outside."""
+    x0, x1, y0, y1 = bounds
+    for x in range(x0 - 1, x1 + 1):
+        yield x, y0 - 1
+        yield x, y1
+    for y in range(y0, y1):
+        yield x0 - 1, y
+        yield x1, y
+
+
+class _TileIndex:
+    """Tile -> owner keys, so neighbour and overlap probes cost a footprint's
+    ring rather than a scan over every other box."""
+
+    def __init__(self) -> None:
+        self._owners: dict[tuple[int, int], list] = {}
+
+    def add(self, key, bounds: Bounds) -> None:
+        for tile in _tiles(bounds):
+            self._owners.setdefault(tile, []).append(key)
+
+    def touching(self, bounds: Bounds) -> set:
+        out: set = set()
+        for tile in _ring(bounds):
+            out.update(self._owners.get(tile, ()))
+        return out
+
+    def overlapping(self, bounds: Bounds) -> set:
+        out: set = set()
+        for tile in _tiles(bounds):
+            out.update(self._owners.get(tile, ()))
+        return out
+
+
+def path_dirsets(steps: list[Direction]) -> list[frozenset[Direction]]:
+    """Each node's neighbour directions along the path alone: back to the
+    previous node and on to the next."""
+    n = len(steps) + 1
+    out = []
+    for i in range(n):
+        dirs = set()
+        if i > 0:
+            dirs.add(_opposite(steps[i - 1]))
+        if i < n - 1:
+            dirs.add(steps[i])
+        out.append(frozenset(dirs))
+    return out
+
+
+def _abut(step: Direction, span_a: tuple[int, int], span_b: tuple[int, int]) -> tuple[int, int]:
+    """Flush along `step`, cross-axis 0: the layout when no offset is measured."""
+    dx, dy = step
+    if dx:
+        return (span_a[0] if dx > 0 else -span_b[0]), 0
+    return 0, (span_a[1] if dy > 0 else -span_b[1])
+
+
+class _Layout:
+    """One resolve plus layout pass over a path. `bounds` covers every path
+    node, dropped or off-map ones included: the walk's step test reads the
+    head's."""
+
+    def __init__(self, press, steps, dirsets, resolved, picked_const, picked_frame) -> None:
+        self.dirsets = dirsets
+        self.consts: list[int] = []
+        self.rotations: list[int] = []
+        self.ok: list[bool] = []
+        self.suffixes: list[int] = []
+        for suffix, rotation, ok in resolved:
+            const = picked_const if suffix is None else cliff_catalog.piece_for_suffix(picked_const, suffix)
+            fallback = const is None or rotation is None
+            const = picked_const if const is None else const
+            self.consts.append(const)
+            self.suffixes.append(cliff_catalog.suffixes().get(const) if suffix is None else suffix)
+            self.rotations.append(picked_frame if rotation is None else rotation)
+            self.ok.append(ok and not fallback)
+        self.spans = [tile_span(c, _NON_CLIFF_SPAN) for c in self.consts]
+        lows = [press]
+        for i, step in enumerate(steps):
+            found = cliff_connectivity.offset(dirsets[i], self.spans[i], step, dirsets[i + 1], self.spans[i + 1])
+            if found is None:
+                found = _abut(step, self.spans[i], self.spans[i + 1])
+                self.ok[i] = self.ok[i + 1] = False
+            lows.append((lows[i][0] + found[0], lows[i][1] + found[1]))
+        self.lows = lows
+        self.bounds: list[Bounds] = [
+            (x, x + sx, y, y + sy) for (x, y), (sx, sy) in zip(lows, self.spans, strict=True)
+        ]
+
+
+class ChainStroke:
+    """Accumulates a Cliff drag without mutating anything; `nodes()` is what
+    a release would place right now, so a preview can show it mid-drag.
+
+    Accumulate-then-commit, the shape the Convert brush already establishes
+    and for the same reason: `UnitEditModel.begin_unit_edit()` needs the
+    complete touched-player set up front.
     """
 
     def __init__(
@@ -122,159 +232,190 @@ class ChainStroke:
         self._map_width = map_width
         self._map_height = map_height
         self._existing = existing
-        # The Piece/Frame picker's own values -- Stage 1's manual choice,
-        # which is what an unresolvable node falls back to (the plan's
-        # Decisions addendum, third rule).
+        # The Piece/Frame picker's values: a lone node's piece, the family
+        # every resolved suffix is drawn from, and the fallback for a node
+        # with no candidate.
         self._fallback_const = fallback_const
         self._fallback_frame = fallback_frame
-        self._unit_const = fallback_const
-        self._span = tile_span(fallback_const, _NON_CLIFF_SPAN)
-        self._anchors: list[tuple[int, int]] = []
-        # Lattice head: where the walk has reached, which is NOT always the
-        # last emitted anchor -- a node overlapping an existing cliff is
-        # skipped, but the run still has to continue past it.
-        self._walk: tuple[int, int] | None = None
+        self._allowed = frozenset(
+            s for s in range(1, 10) if cliff_catalog.piece_for_suffix(fallback_const, s) is not None
+        )
+        self._existing_index = _TileIndex()
+        for k, cliff in enumerate(existing):
+            self._existing_index.add(k, cliff.bounds)
+        self._press: tuple[int, int] | None = None
+        self._steps: list[Direction] = []
+        self._plans: OrderedDict[tuple[Direction, ...], _Layout] = OrderedDict()
+        self._nodes: tuple[tuple[Direction, ...], list[ChainNode]] | None = None
+
+    @property
+    def steps(self) -> list[Direction]:
+        return list(self._steps)
+
+    def set_path(self, press: tuple[int, int], steps: list[Direction]) -> None:
+        """Replaces the walk with an explicit path (tests and probes)."""
+        self._press = press
+        self._steps = list(steps)
 
     def add_cursor_tile(self, tile_x: int, tile_y: int) -> None:
-        if self._walk is None:
-            self._start(tile_x, tile_y)
+        if self._press is None:
+            span = tile_span(self._fallback_const, _NON_CLIFF_SPAN)
+            if self._fits((tile_x, tile_x + span[0], tile_y, tile_y + span[1])):
+                self._press = (tile_x, tile_y)
             return
-        ax, ay = self._walk
-        span_x, span_y = self._span
         for _ in range(_MAX_WALK_STEPS):
-            dx = 1 if tile_x >= ax + span_x else (-1 if tile_x < ax else 0)
-            dy = 1 if tile_y >= ay + span_y else (-1 if tile_y < ay else 0)
-            if dx == 0 and dy == 0:
+            options = self._step_options(self._plan().bounds[-1], tile_x, tile_y)
+            if not options or not any(self._try_step(d) for d in options):
                 break
-            ax, ay = ax + dx * span_x, ay + dy * span_y
-            if not self._fits(ax, ay):
-                break
-            self._walk = (ax, ay)
-            self._emit(ax, ay)
 
     def nodes(self) -> list[ChainNode]:
-        """The stroke's placements, resolved against the measured
-        `cliff_connectivity` table.
+        if self._press is None:
+            return []
+        key = tuple(self._steps)
+        if self._nodes is None or self._nodes[0] != key:
+            self._nodes = (key, self._finish(self._plan()))
+        return list(self._nodes[1])
 
-        Rotation follows the plan's Decisions addendum second rule --
-        inherit the previous node's face -- read as "keep it when this
-        node's own candidate set allows it, else take that set's first
-        candidate". Taken literally the rule would carry a straight run's
-        frame onto a corner, whose candidates are a disjoint set, writing a
-        shape that doesn't connect: the exact failure the tool exists to
-        avoid.
-        """
-        anchors = self._anchors
-        bounds = [self._bounds(tx, ty) for tx, ty in anchors]
-        suffix = cliff_catalog.piece_suffix(self._unit_const)
-        out: list[ChainNode] = []
-        previous_rotation: int | None = None
-        for i, (tile_x, tile_y) in enumerate(anchors):
-            dirset = self._dirset(i, bounds)
-            # The empty dirset deliberately never reaches the table, even
-            # though it has a row there: at 43% suffix purity it is the
-            # weakest entry by a wide margin, and overriding an explicit
-            # picker choice with it would regress Stage 1's own click.
-            #
-            # rotations_for(), never resolve(): the table's top-level
-            # rotations belong to whichever piece SIZE was that dirset's
-            # corpus majority, and this stroke pins one size of its own.
-            # Mixing the two draws a wrong-scale frame -- see
-            # rotations_for()'s own docstring for the measurement.
-            rotations = (
-                cliff_connectivity.rotations_for(dirset, suffix)
-                if dirset and suffix is not None
-                else None
+    def _step_options(self, head: Bounds, tile_x: int, tile_y: int) -> list[Direction]:
+        x0, x1, y0, y1 = self._widened(head)
+        over_x = tile_x - x0 if tile_x < x0 else (tile_x - x1 + 1 if tile_x >= x1 else 0)
+        over_y = tile_y - y0 if tile_y < y0 else (tile_y - y1 + 1 if tile_y >= y1 else 0)
+        # Larger overshoot first; a tie goes to x.
+        options = []
+        if over_x:
+            options.append((-abs(over_x), 0, (1 if over_x > 0 else -1, 0)))
+        if over_y:
+            options.append((-abs(over_y), 1, (0, 1 if over_y > 0 else -1)))
+        return [d for *_, d in sorted(options)]
+
+    @staticmethod
+    def _widened(bounds: Bounds) -> Bounds:
+        x0, x1, y0, y1 = bounds
+        grow_x = max(0, _MIN_STEP_BOX - (x1 - x0))
+        grow_y = max(0, _MIN_STEP_BOX - (y1 - y0))
+        return x0 - grow_x // 2, x1 + grow_x - grow_x // 2, y0 - grow_y // 2, y1 + grow_y - grow_y // 2
+
+    def _try_step(self, d: Direction) -> bool:
+        if self._steps and d == _opposite(self._steps[-1]):
+            return False
+        self._steps.append(d)
+        bounds = self._plan().bounds
+        head = bounds[-1]
+        if self._fits(head) and not any(_overlap(head, b) for b in bounds[:-1]):
+            return True
+        self._steps.pop()
+        return False
+
+    def _fits(self, bounds: Bounds) -> bool:
+        """Whole footprint on-map: `unit_tile_bounds()` would clamp a cliff
+        half off the edge into a box the adjacency math no longer matches."""
+        x0, x1, y0, y1 = bounds
+        return x0 >= 0 and y0 >= 0 and x1 <= self._map_width and y1 <= self._map_height
+
+    def _plan(self) -> _Layout:
+        key = tuple(self._steps)
+        plan = self._plans.get(key)
+        if plan is None:
+            plan = self._resolve()
+            self._plans[key] = plan
+            if len(self._plans) > _PLAN_CACHE_SIZE:
+                self._plans.popitem(last=False)
+        else:
+            self._plans.move_to_end(key)
+        return plan
+
+    def _resolve(self) -> _Layout:
+        dirsets = path_dirsets(self._steps)
+        layout = self._layout(dirsets, None)
+        contacts = self._contacts(layout)
+        if any(contacts):
+            augmented = [d | {c[0] for c in cs} for d, cs in zip(dirsets, contacts, strict=True)]
+            entries = [[self._contact_entry(c, layout, augmented) for c in cs] for cs in contacts]
+            layout = self._layout(augmented, entries)
+        return layout
+
+    def _layout(self, dirsets, contacts) -> _Layout:
+        if dirsets == [frozenset()]:
+            # A lone click never reaches the table's empty-dirset row (43%
+            # suffix purity, its weakest): the picked piece and frame stand.
+            resolved = [(None, None, False)]
+        else:
+            resolved = cliff_connectivity.resolve_chain(
+                dirsets, self._steps, allowed_suffixes=self._allowed, contacts=contacts
             )
-            if not rotations:
-                # No neighbours at all, a neighbour shape too rare to be
-                # pinned, or that shape never seen at this piece size. All
-                # take the picker's frame rather than a guess; the const
-                # stays the stroke's own so a run keeps one size throughout.
-                rotation = self._fallback_frame
-            else:
-                rotation = previous_rotation if previous_rotation in rotations else rotations[0]
-            x, y = span_anchor(tile_x, tile_y, *self._span)
-            out.append(
-                ChainNode(
-                    unit_const=self._unit_const,
-                    rotation=rotation,
-                    x=x,
-                    y=y,
-                    bounds=bounds[i],
-                    resolved=bool(rotations),
-                )
-            )
-            previous_rotation = rotation
+        return _Layout(self._press, self._steps, dirsets, resolved, self._fallback_const, self._fallback_frame)
+
+    def _contacts(self, layout: _Layout) -> list[list[tuple[Direction, tuple[str, int]]]]:
+        """Per node, (direction, owner) of every cardinal contact that is not
+        a path neighbour: an existing cliff or a non-adjacent stroke node."""
+        index = _TileIndex()
+        for i, b in enumerate(layout.bounds):
+            index.add(i, b)
+        out = []
+        for i, b in enumerate(layout.bounds):
+            found = []
+            for j in sorted(index.touching(b)):
+                if abs(j - i) > 1:
+                    d = cliff_connectivity.adjacency_dir(b, layout.bounds[j])
+                    if d in _CARDINALS:
+                        found.append((d, ("node", j)))
+            for k in sorted(self._existing_index.touching(b)):
+                d = cliff_connectivity.adjacency_dir(b, self._existing[k].bounds)
+                if d in _CARDINALS:
+                    found.append((d, ("existing", k)))
+            out.append(found)
         return out
 
-    def _start(self, tile_x: int, tile_y: int) -> None:
-        """Fixes the stroke's piece (and so its span) off the first node.
+    def _contact_entry(self, contact, layout: _Layout, augmented) -> cliff_connectivity.Contact:
+        d, (kind, j) = contact
+        if kind == "node":
+            return d, layout.suffixes[j], augmented[j]
+        cliff = self._existing[j]
+        dirs = {
+            cliff_connectivity.adjacency_dir(cliff.bounds, self._existing[k].bounds)
+            for k in self._existing_index.touching(cliff.bounds)
+            if k != j
+        }
+        dirs.add(_opposite(d))
+        dirs.discard(None)
+        return d, cliff_catalog.suffixes().get(cliff.unit_const), frozenset(dirs)
 
-        The suffix comes from an existing map cliff already touching this
-        node if there is one, else from the Piece picker. The table's own
-        pinned majority -- the plan's stated second fallback -- can't be
-        used here: a node's dirset isn't known until the drag ends, and the
-        empty-dirset row is the weakest in the table (43% suffix purity)
-        where an explicit picker choice is unambiguous.
-        """
-        probe = self._bounds(tile_x, tile_y, tile_span(self._fallback_const, _NON_CLIFF_SPAN))
-        for cliff in self._existing:
-            if cliff_connectivity.adjacency_dir(probe, cliff.bounds) is None:
+    def _finish(self, layout: _Layout) -> list[ChainNode]:
+        """Truncates at the first node off the map, drops a node overlapping
+        an existing cliff or an earlier kept node, then flags every node
+        whose final neighbours differ from the shape it was resolved for."""
+        ok = list(layout.ok)
+        kept: list[int] = []
+        index = _TileIndex()
+        for i, b in enumerate(layout.bounds):
+            if not self._fits(b):
+                break
+            if self._existing_index.overlapping(b) or index.overlapping(b):
+                for j in (i - 1, i + 1):
+                    if 0 <= j < len(ok):
+                        ok[j] = False
                 continue
-            suffix = cliff_catalog.piece_suffix(cliff.unit_const)
-            inherited = None if suffix is None else cliff_catalog.piece_for_suffix(self._fallback_const, suffix)
-            if inherited is not None:
-                self._unit_const = inherited
-                self._span = tile_span(inherited, _NON_CLIFF_SPAN)
-            break
-        if not self._fits(tile_x, tile_y):
-            return
-        self._walk = (tile_x, tile_y)
-        self._emit(tile_x, tile_y)
-
-    def _emit(self, tile_x: int, tile_y: int) -> None:
-        if (tile_x, tile_y) in self._anchors:
-            return
-        if any(_overlap(self._bounds(tile_x, tile_y), c.bounds) for c in self._existing):
-            return
-        self._anchors.append((tile_x, tile_y))
-
-    def _bounds(self, tile_x: int, tile_y: int, span: tuple[int, int] | None = None) -> Bounds:
-        """The tile box `render.unit_tile_bounds()` would report for a node
-        anchored here. `span_anchor` puts the footprint's lowest tile at the
-        anchor tile on both axes, so this is just the span read off it."""
-        span_x, span_y = self._span if span is None else span
-        return tile_x, tile_x + span_x, tile_y, tile_y + span_y
-
-    def _fits(self, tile_x: int, tile_y: int) -> bool:
-        """Whole footprint on-map, not merely the anchor tile: a cliff half
-        off the edge would be clamped by `unit_tile_bounds()` into a box
-        that no longer matches the lattice the adjacency math assumes."""
-        span_x, span_y = self._span
-        return (
-            tile_x >= 0
-            and tile_x + span_x <= self._map_width
-            and tile_y >= 0
-            and tile_y + span_y <= self._map_height
-        )
-
-    def _dirset(self, index: int, bounds: list[Bounds]) -> frozenset[Direction]:
-        """This node's neighbour directions, over both the stroke's own nodes
-        and the cliffs already on the map. Operand order matches
-        `tools/gen_cliff_connectivity.py`'s scan loop -- own box first, so a
-        direction reads self -> neighbour, the sense the pinned table's keys
-        were measured in."""
-        own = bounds[index]
-        dirset: set[Direction] = set()
-        for i, other in enumerate(bounds):
-            if i == index:
-                continue
-            direction = cliff_connectivity.adjacency_dir(own, other)
-            if direction is not None:
-                dirset.add(direction)
-        for cliff in self._existing:
-            direction = cliff_connectivity.adjacency_dir(own, cliff.bounds)
-            if direction is not None:
-                dirset.add(direction)
-        return frozenset(dirset)
+            kept.append(i)
+            index.add(i, b)
+        out = []
+        for i in kept:
+            b = layout.bounds[i]
+            realized = {cliff_connectivity.adjacency_dir(b, layout.bounds[j]) for j in index.touching(b) if j != i}
+            realized |= {
+                cliff_connectivity.adjacency_dir(b, self._existing[k].bounds) for k in self._existing_index.touching(b)
+            }
+            realized.discard(None)
+            x, y = span_anchor(*layout.lows[i], *layout.spans[i])
+            out.append(
+                ChainNode(
+                    unit_const=layout.consts[i],
+                    rotation=layout.rotations[i],
+                    x=x,
+                    y=y,
+                    bounds=b,
+                    resolved=ok[i] and realized == layout.dirsets[i],
+                    dirset=layout.dirsets[i],
+                    index=i,
+                )
+            )
+        return out

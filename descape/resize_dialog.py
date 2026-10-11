@@ -1,4 +1,4 @@
-"""File > Resize Map…: the size + anchor picker, with a live summary read
+"""Map > Resize Map…: the size + anchor picker, with a live summary read
 from scenario_resize.resize_plan(), so what the dialog says is exactly what
 the resize will do (how many objects go, whether trigger areas follow).
 

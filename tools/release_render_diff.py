@@ -53,6 +53,7 @@ has no native kernel; `--composite native` renders this checkout through it.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import subprocess
@@ -145,16 +146,20 @@ def _worker(spec: dict) -> None:
         _legacy_placement(render)
     style, sprites = spec["style"], spec["sprites"]
     meta: dict = {"removed_units": removed}
+    # Blending off where the tag has it, so this keeps guarding non-blend regressions against older tags.
+    nb = {"blend": False} if "blend" in inspect.signature(render.render_terrain).parameters else {}
     if style == "flat":
-        img = render.overlay_units(render.render_terrain(scenario), scenario, with_sprites=sprites)
+        img = render.overlay_units(render.render_terrain(scenario, **nb), scenario, with_sprites=sprites)
     elif style == "stepped":
-        img, elevations, proj = render.render_terrain_iso_with_proj(scenario, with_units=True, with_sprites=sprites)
+        img, elevations, proj = render.render_terrain_iso_with_proj(
+            scenario, with_units=True, with_sprites=sprites, **nb
+        )
         if spec.get("mask_out"):
             np.save(spec["mask_out"], _terrace_mask(iso_geometry, elevations, proj, img.shape[:2]))
         if sprites:
             meta["sprite_units"] = len(render.sprite_draws_by_anchor(scenario, proj, elevations).skip_ids)
     else:
-        img = render.render_terrain_sloped_with_proj(scenario, with_units=True, with_sprites=sprites)[0]
+        img = render.render_terrain_sloped_with_proj(scenario, with_units=True, with_sprites=sprites, **nb)[0]
     np.save(spec["out"], img)
     Path(spec["meta_out"]).write_text(json.dumps(meta))
 

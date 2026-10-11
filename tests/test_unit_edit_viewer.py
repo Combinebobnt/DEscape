@@ -330,6 +330,108 @@ def test_placing_with_no_object_chosen_is_a_no_op() -> None:
         _close(window)
 
 
+# --- TASK-288: GAIA-only objects place for GAIA ------------------------------
+
+_BERRY_BUSH = 59  # FORAG, GAIA in every corpus placement
+
+
+def test_placing_a_gaia_only_object_for_a_player_places_it_for_gaia() -> None:
+    window = _window()
+    try:
+        window.units_panel.select_object(_BERRY_BUSH)
+        window.units_panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        before_gaia = len(window.scenario.unit_manager.units[0])
+        before_p1 = len(window.scenario.unit_manager.units[1])
+
+        window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
+
+        assert len(window.scenario.unit_manager.units[0]) == before_gaia + 1
+        assert len(window.scenario.unit_manager.units[1]) == before_p1
+        assert window.scenario.unit_manager.units[0][-1].unit_const == _BERRY_BUSH
+        assert window._selection[0][0] == 0
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert "for GAIA" in status and status.endswith("(GAIA-only, so placed for GAIA)")
+        assert window.units_panel.owner_id() == 1, "the combo itself is left alone"
+
+        window.undo()
+        assert len(window.scenario.unit_manager.units[0]) == before_gaia
+    finally:
+        _close(window)
+
+
+def test_placing_a_villager_for_a_player_keeps_the_player() -> None:
+    window = _window()
+    try:
+        window.units_panel.select_object(_PLACE_CONST)
+        window.units_panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        before_p1 = len(window.scenario.unit_manager.units[1])
+
+        window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
+
+        assert len(window.scenario.unit_manager.units[1]) == before_p1 + 1
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert "for Player 1" in status and "GAIA-only" not in status
+    finally:
+        _close(window)
+
+
+def test_reassigning_a_gaia_only_object_to_a_player_goes_through_with_a_note() -> None:
+    window = _window()
+    try:
+        window.units_panel.select_object(_BERRY_BUSH)
+        window.units_panel.select_owner(0)
+        window.place_unit_action.setChecked(True)
+        window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
+        entry = window.map_view._unit_index.entry_for_key(window._selection[0])
+        assert entry.player_id == 0
+        window.units_panel.show_unit(entry)
+
+        combo = window.units_panel.unit_field_editors["player"]
+        combo.setCurrentIndex(combo.findData(1))
+
+        assert window._selection == [(1, entry.unit.reference_id)]
+        assert window.scenario.unit_manager.units[1][-1] is entry.unit
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status == "Reassigned unit to Player 1; 1 GAIA-only object(s) now player-owned"
+
+        combo.setCurrentIndex(combo.findData(0))
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status == "Reassigned unit to GAIA"
+    finally:
+        _close(window)
+
+
+def test_find_reassign_of_a_gaia_only_object_to_a_player_notes_it() -> None:
+    window = _window()
+    try:
+        window.units_panel.select_object(_BERRY_BUSH)
+        window.place_unit_action.setChecked(True)
+        window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
+        key = window._selection[0]
+        assert key[0] == 0
+
+        window._find_reassign_keys([key], 3)
+
+        assert window.scenario.unit_manager.units[3][-1].reference_id == key[1]
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status == "Reassigned 1 units to Player 3; 1 GAIA-only object(s) now player-owned"
+    finally:
+        _close(window)
+
+
+def test_the_gaia_only_owner_note_counts_only_members_handed_to_a_player() -> None:
+    from descape.viewer import _gaia_only_owner_note
+    from testkit import fakes
+
+    bush = fakes.SyntheticUnit(x=5.5, y=5.5, unit_const=_BERRY_BUSH)
+    villager = fakes.SyntheticUnit(x=6.5, y=5.5, unit_const=_PLACE_CONST)
+    assert _gaia_only_owner_note([bush, bush, villager], 2) == "; 2 GAIA-only object(s) now player-owned"
+    assert _gaia_only_owner_note([villager], 2) == ""
+    assert _gaia_only_owner_note([bush], 0) == ""
+
+
 # --- b1.5: move + nudge ------------------------------------------------------
 
 
@@ -479,10 +581,11 @@ def test_dragging_a_host_carries_its_hidden_garrison(monkeypatch) -> None:
         window._refresh_selection_view()
         records_before = len(window.edit_history.records)
 
-        window.on_unit_move(key, _pos_for_tile(window, 40, 44), Qt.NoModifier)
+        # The House is 2x2: a snapped move takes the whole number nearest the cursor (GH #206).
+        window.on_unit_move(key, _pos_in_tile(window, 40, 44, 0.3, 0.3), Qt.NoModifier)
 
-        assert (host.x, host.y) == (40.5, 44.5)
-        assert (occupant.x, occupant.y) == (40.5, 44.5)
+        assert (host.x, host.y) == (40.0, 44.0)
+        assert (occupant.x, occupant.y) == (40.0, 44.0)
         assert len(window.edit_history.records) == records_before + 1
 
         window.undo()
@@ -3306,6 +3409,31 @@ def test_a_convert_stroke_reassigns_live_and_records_one_undo_step() -> None:
         _close(window)
 
 
+def test_converting_a_gaia_only_object_to_a_player_notes_it() -> None:
+    """TASK-288: Convert still hands a GAIA bush to a player, with a warning."""
+    window = _window()
+    try:
+        tile = _empty_tile(window)
+        window.units_panel.select_object(_BERRY_BUSH)
+        window.place_unit_action.setChecked(True)
+        window.on_unit_place(_pos_for_tile(window, *tile), Qt.NoModifier)
+        bush = window.scenario.unit_manager.units[0][-1]
+        assert bush.unit_const == _BERRY_BUSH
+        window.units_panel.select_owner(2)
+        window.brush_size_spin.setValue(1)
+        window.convert_source_actions[0].setChecked(True)
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(*tile)
+        window._end_convert_stroke()
+
+        assert bush in window.scenario.unit_manager.units[2]
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status == "Converted 1 unit(s) to Player 2; 1 GAIA-only object(s) now player-owned"
+    finally:
+        _close(window)
+
+
 def test_an_unticked_source_owner_keeps_its_units() -> None:
     window = _window()
     try:
@@ -3455,8 +3583,9 @@ def _pos_in_tile(window, tile_x: int, tile_y: int, fx: float, fy: float) -> QPoi
     return QPointF((tile_x + fx) * tp, (tile_y + fy) * tp)
 
 
-def _place_at(window, pos, modifiers=Qt.NoModifier):
-    window.units_panel.select_object(_PLACE_CONST)
+def _place_at(window, pos, modifiers=Qt.NoModifier, const: int = _PLACE_CONST):
+    window.units_panel.select_object(const)
+    assert window.units_panel.selected_object_const() == const
     window.units_panel.select_owner(1)
     window.place_unit_action.setChecked(True)
     window.on_unit_place(pos, modifiers)
@@ -3611,6 +3740,92 @@ def test_a_successful_free_placement_stays_quiet() -> None:
         window.free_place_check.setChecked(True)
         _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
         assert FREE_PLACE_FALLBACK_MESSAGE not in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+# --- GH #206: snapped buildings land on the game's grid ----------------------
+
+_BARRACKS_CONST = 12  # 3x3
+_MARKET_CONST = 84  # 4x4
+
+
+def test_a_snapped_house_centres_on_the_whole_number_nearest_the_cursor() -> None:
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.2, 0.3), const=_HOUSE_CONST)
+        assert (entry.unit.x, entry.unit.y) == (tx, ty)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.8, 0.6), const=_HOUSE_CONST)
+        assert (entry.unit.x, entry.unit.y) == (tx + 1, ty + 1)
+    finally:
+        _close(window)
+
+
+def test_a_snapped_market_centres_its_4x4_footprint_on_the_cursor() -> None:
+    from descape.render import unit_tile_bounds
+
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        mm = window.scenario.map_manager
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.2, 0.3), const=_MARKET_CONST)
+        assert (entry.unit.x, entry.unit.y) == (tx, ty)
+        assert unit_tile_bounds(entry.unit, mm.map_width, mm.map_height) == (tx - 2, tx + 2, ty - 2, ty + 2)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.8, 0.6), const=_MARKET_CONST)
+        assert (entry.unit.x, entry.unit.y) == (tx + 1, ty + 1)
+    finally:
+        _close(window)
+
+
+def test_a_snapped_barracks_sits_on_its_tiles_centre() -> None:
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.8, 0.2), const=_BARRACKS_CONST)
+        assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
+    finally:
+        _close(window)
+
+
+def test_a_snapped_house_with_no_map_point_takes_the_far_corner_quietly(monkeypatch) -> None:
+    from descape.viewer import FREE_PLACE_FALLBACK_MESSAGE
+
+    window = _window()
+    try:
+        tx, ty = _empty_tile(window)
+        monkeypatch.setattr(window.map_view, "_pick_map_point", lambda pos: None)
+        entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.2, 0.3), const=_HOUSE_CONST)
+        assert (entry.unit.x, entry.unit.y) == (tx + 1, ty + 1)
+        assert FREE_PLACE_FALLBACK_MESSAGE not in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_snapped_move_puts_an_off_parity_house_on_the_grid() -> None:
+    window = _window()
+    try:
+        _free_tiles(window, [(63, 63), (64, 64)])
+        (key,) = _add_units(window, [(_HOUSE_CONST, 63.5, 63.5)])
+        window.on_unit_move(key, _pos_in_tile(window, 66, 66, 0.4, 0.7), Qt.NoModifier)
+        moved = window.map_view._unit_index.entry_for_key(key)
+        assert (moved.unit.x, moved.unit.y) == (66.0, 67.0)
+    finally:
+        _close(window)
+
+
+def test_a_snapped_group_move_keeps_an_off_parity_members_half() -> None:
+    window = _window()
+    try:
+        _free_tiles(window, [(63, 63), (64, 64), (66, 62)])
+        keys = _add_units(window, [(_HOUSE_CONST, 63.5, 63.5), (_PLACE_CONST, 66.5, 62.5)])
+        _select_keys(window, keys)
+        before = _positions(window, keys)
+
+        _gesture(window, (63, 63), (66, 65))
+
+        assert _positions(window, keys) == [(x + 3, y + 2) for x, y in before]
+        assert _positions(window, keys)[0] == (66.5, 65.5)
     finally:
         _close(window)
 
@@ -4093,6 +4308,35 @@ def test_scatter_pixels_appear_and_one_undo_restores_them(monkeypatch) -> None:
         window.undo()
         restored = window._cache.get_chunk(0, cx, cy)
         assert np.array_equal(before, restored)
+    finally:
+        _close(window)
+
+
+def test_scattering_a_gaia_only_object_for_a_player_places_it_for_gaia(monkeypatch) -> None:
+    """TASK-288: Scatter of a Forage Bush with Player 1 picked lands on GAIA."""
+    window = _window()
+    try:
+
+        def configure(dialog):
+            dialog.count_spin.setValue(12)
+            dialog.seed_spin.setValue(20261011)
+
+        _arm_scatter(window, monkeypatch, configure)
+        window.units_panel.select_object(_BERRY_BUSH)
+        window.units_panel.select_owner(1)
+        before = {p: len(units) for p, units in enumerate(window.scenario.unit_manager.units)}
+
+        window.scatter_units_in_region()
+
+        after = {p: len(units) for p, units in enumerate(window.scenario.unit_manager.units)}
+        assert after[0] == before[0] + 12
+        assert {p: n for p, n in after.items() if p} == {p: n for p, n in before.items() if p}
+        assert all(u.unit_const == _BERRY_BUSH for u in window.scenario.unit_manager.units[0][-12:])
+        assert {key[0] for key in window._selection} == {0}
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status.startswith("Scattered 12 x ")
+        assert "for GAIA" in status and status.endswith("(GAIA-only, so placed for GAIA)")
+        assert window.units_panel.owner_id() == 1
     finally:
         _close(window)
 

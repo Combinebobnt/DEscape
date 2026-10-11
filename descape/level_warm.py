@@ -69,8 +69,9 @@ def neighbour_mips_of(cache, mip: int) -> list[int]:
     predicates in render_cache's level_warm_job() drop a result the paint
     already built -- just wasteful.)
 
-    Empty for a single-level ladder, which is Sloped and any small map whose
-    tile_px has no exact power-of-two neighbour."""
+    Empty for a single-level ladder: any small map whose tile_px has no
+    exact power-of-two neighbour. Sloped's ladder stops at level 0
+    (TASK-031.60), so its level 0 has only the coarser neighbour."""
     levels = cache.mip_levels()
     return [m for m in (mip - 1, mip + 1) if levels[0] <= m <= levels[-1]]
 
@@ -434,3 +435,42 @@ class LevelWarmer(_IdleTimerDriver):
             # the event loop. FlatChunkCache's row-count assert is the real
             # candidate.
             debug_log.log(f"level warm: install failed ({exc!r})")
+
+
+class IdleCall(_IdleTimerDriver):
+    """One callable run on the first idle event-loop turn with no mouse
+    button held: the warms' pacing and held-button backoff for a single
+    unsliced step (TASK-031.61 A1's unit model prebuild). The deferred gc
+    collect waits for it like any warm (gc_hold.register)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._fn = None
+
+    @property
+    def is_active(self) -> bool:
+        return self._fn is not None
+
+    def start(self, fn) -> None:
+        """Queues `fn`, replacing any call not yet run."""
+        self._fn = fn
+        self._schedule()
+
+    def cancel(self) -> None:
+        self._fn = None
+        self._stop_timer()
+        gc_hold.idle_soon()
+
+    def tick(self) -> bool:
+        if self._fn is None:
+            self._stop_timer()
+            return False
+        if self._held_backoff():
+            return True
+        fn, self._fn = self._fn, None
+        self._stop_timer()
+        try:
+            fn()
+        finally:
+            gc_hold.idle_soon()
+        return False

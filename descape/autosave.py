@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from descape import asset_source
-from descape.scenario_io import FORBIDDEN_WRITE_MARKER, TEMPLATE_DIR, is_under_compatdata
+from descape.scenario_io import TEMPLATE_DIR, is_in_game_profile, is_workshop_subscribed
 
 AUTOSAVE_SUFFIX = ".autosave"
 AUTOSAVE_DIRNAME = "autosave"
@@ -64,9 +64,9 @@ def autosave_dir() -> Path:
 def autosave_dir_refusal(path: Path) -> str | None:
     """Why `path` can't be the autosave folder, or None if it can (GH #127).
 
-    Refused: a relative path, anything under a Proton compatdata/ prefix
-    (checked raw AND resolved, so a symlink into one is caught too), and the
-    shipped template folder. write_scenario()'s own guard stays the
+    Refused: a relative path, anything in a subscribed-mods (mods/subscribed/)
+    folder (checked raw AND resolved, so a symlink into one is caught too),
+    and the shipped template folder. write_scenario()'s own guard stays the
     structural enforcement of the AGENTS.md hard rule; this is the early,
     user-facing layer on top of it.
     """
@@ -76,8 +76,8 @@ def autosave_dir_refusal(path: Path) -> str | None:
         resolved = path.resolve()
     except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
         return f"it cannot be resolved ({e})"
-    if is_under_compatdata(path, resolved):
-        return f"it is under a Proton {FORBIDDEN_WRITE_MARKER}/ folder, which DEscape never writes to"
+    if is_workshop_subscribed(path, resolved):
+        return "it is in a subscribed-mods (mods/subscribed/) folder, which the game's mod manager re-syncs"
     if resolved == TEMPLATE_DIR.resolve():
         return "it is DEscape's own template folder"
     return None
@@ -130,26 +130,26 @@ def doc_key(path: Path | None, doc_id: str) -> str:
 
 
 def _falls_back_to_central(source: Path | None) -> bool:
-    """Three source paths cannot be served beside the file, so sidecar mode
+    """Four source paths are not served beside the file, so sidecar mode
     writes centrally for them instead of silently doing nothing:
 
     1. An untitled document, which has no path at all.
-    2. A compatdata/ path, as written or resolved through a symlink
-       (is_under_compatdata()) -- write_scenario() refuses any such out_path
-       (the AGENTS.md hard rule). These Workshop/Proton files are precisely
-       the ones the user has no second copy of, so falling back is the whole
-       point rather than a corner case.
-    3. A shipped template, which write_scenario() also refuses.
-
-    Because the slot path is then never under compatdata/, that hard rule
-    holds structurally: write_scenario()'s own guard is what enforces it, and
-    nothing here weakens it.
+    2. A mods/subscribed/ path, as written or resolved through a symlink --
+       write_scenario() refuses any such out_path (the AGENTS.md hard rule).
+    3. A path in the game profile (is_in_game_profile(), compatdata/ on
+       Linux): writable, but sidecar keeps its slot files out of the game's
+       own folder. A central folder the user picks there is still honoured.
+    4. A shipped template, which write_scenario() also refuses.
     """
     if source is None:
         return True
     try:
         resolved = source.resolve()
-        return is_under_compatdata(source, resolved) or resolved.parent == TEMPLATE_DIR.resolve()
+        return (
+            is_workshop_subscribed(source, resolved)
+            or is_in_game_profile(source)
+            or resolved.parent == TEMPLATE_DIR.resolve()
+        )
     except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
         return True
 

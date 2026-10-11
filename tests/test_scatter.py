@@ -112,6 +112,50 @@ def test_jitter_stays_inside_its_band_and_actually_moves_something() -> None:
     assert any(u.x % 1 != 0.5 for u in placed)
 
 
+_MILL = 68  # 2x2
+_MARKET = 84  # 4x4
+_BARRACKS = 12  # 3x3
+
+
+@pytest.mark.parametrize("jitter", [0.0, 0.4])
+def test_scattered_buildings_sit_on_the_games_grid(jitter) -> None:
+    """GH #206: an even span takes a whole number (tile + 1), an odd one the
+    tile centre, and neither is jittered."""
+    from descape.terrain_palette import BUILDING_TILE_SPANS
+
+    assert (BUILDING_TILE_SPANS[_MILL], BUILDING_TILE_SPANS[_MARKET], BUILDING_TILE_SPANS[_BARRACKS]) == (
+        (2, 2), (4, 4), (3, 3),
+    )
+    for const in (_MILL, _MARKET):
+        placed = scatter.scatter_units(
+            _fake_scenario(), _FakeModel(), [(5, 7)], const, count=1, seed=RNG_SEED, jitter=jitter
+        )
+        assert _positions(placed) == [(6.0, 8.0)]
+    placed = scatter.scatter_units(
+        _fake_scenario(), _FakeModel(), [(5, 7)], _BARRACKS, count=1, seed=RNG_SEED, jitter=jitter
+    )
+    assert _positions(placed) == [(5.5, 7.5)]
+
+
+def test_a_building_in_the_mix_leaves_the_jitter_stream_unchanged() -> None:
+    """Both jitter draws still happen for a building, so the fish after
+    it land exactly where an all-fish scatter with the same seed puts them."""
+    tiles = _all_tiles()
+    kwargs = {"count": 20, "seed": RNG_SEED, "jitter": 0.3, "weights": [1, 1]}
+    mixed = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_FISH_SALMON, _MILL], **kwargs)
+    plain = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_FISH_SALMON, _FISH_TUNA], **kwargs)
+    assert any(u.unit_const == _MILL for u in mixed)
+    for m, p in zip(mixed, plain, strict=True):
+        if m.unit_const != _MILL:
+            assert (m.x, m.y) == (p.x, p.y)
+
+
+def test_scattered_deep_fish_keep_the_tile_centre() -> None:
+    """GH #206 snaps buildings only: a 2x2 deep fish still lands at tile + 0.5."""
+    placed = scatter.scatter_units(_fake_scenario(), _FakeModel(), [(5, 7)], _FISH_SALMON, count=1, seed=RNG_SEED)
+    assert _positions(placed) == [(5.5, 7.5)]
+
+
 def test_oversized_jitter_is_clamped_inside_the_tile() -> None:
     tiles = {(7, 7)}
     for seed in range(200):
@@ -253,9 +297,10 @@ def test_garrison_riders_a_minus_one_host_holds_nothing_and_self_reference_is_no
 
 _HOUSE = 70  # 2x2
 _TOWN_CENTER = 109  # 4x4
+_SHORE_FISH = 69  # 1x1; deep-water fish are 2x2 since GH #178
 
 
-def _unit(const: int = _FISH_SALMON, x: float = 0.5, y: float = 0.5) -> SimpleNamespace:
+def _unit(const: int = _SHORE_FISH, x: float = 0.5, y: float = 0.5) -> SimpleNamespace:
     return SimpleNamespace(unit_const=const, x=x, y=y, rotation=7.0, z=1.25)
 
 
@@ -314,6 +359,12 @@ def test_existing_buildings_snap_to_their_span_and_never_overlap() -> None:
         covered += [(low[0] + dx, low[1] + dy) for dy in range(span) for dx in range(span)]
     assert set(covered) <= tiles
     assert len(covered) == len(set(covered)) == 6 * 4 + 30
+
+
+def test_existing_deep_fish_snap_to_whole_coordinates_like_the_corpus() -> None:
+    """Dorado is 2x2 since GH #178, so it lands where 1028/1049 corpus deep fish sit."""
+    plan = _existing([_unit(455, 3.37, 4.81) for _ in range(5)], {(x, y) for x in range(8) for y in range(8)})
+    assert all(p is not None and p[0] == int(p[0]) and p[1] == int(p[1]) for p in plan.positions)
 
 
 def test_existing_a_building_that_cannot_fit_stays_put() -> None:

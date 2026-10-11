@@ -21,8 +21,9 @@ _GRASS = 0
 _DIRT = 6
 
 # A GAIA fish, the motivating case, and a house-sized building whose
-# footprint covers more than its own tile.
-_FISH = 456
+# footprint covers more than its own tile. Shore Fish, because deep-water
+# fish are 2x2 since GH #178 and these tests want a 1x1 one.
+_FISH = 69
 _HOUSE = 70
 
 

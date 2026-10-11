@@ -113,7 +113,8 @@ list here, not a change of basis.
 
 **Known limitation:** wall_run.blocked_tiles() treats an obstacle as
 occupying only its 1x1 anchor tile, the footprint every non-building gets
-(tile_span(..., NON_BUILDING_SPAN)). About 25 of the 131 are bigger: 3x3
+(tile_span(..., NON_BUILDING_SPAN)) apart from the cliffs, blockers and
+deep-water fish that have span tables of their own. About 25 of the 131 are bigger: 3x3
 mountains, the 2.5-tile Theatre and Stonehenge, the 2x2 CastleRuins and MRKT,
 the 1.5-tile ruins and burned buildings. A wall run can pass through their
 outer tiles until obstacles get real spans (gen_unit_render_data.py's span
@@ -184,6 +185,19 @@ BUILDING_TILE_SPANS membership with walls as a sub-count: net of walls, the two
 differ by exactly the 10 mobile-siege consts plus 1192. GH #143's "exclude
 buildings" should reuse this set.
 
+## gaia_only_consts(): resources and trees (TASK-288)
+
+The consts a new placement (Place Unit, Scatter) always gives to GAIA,
+whatever the owner combo says, and whose reassignment to a player gets a
+status warning. Basis: _RESOURCE_CLASSES minus 40/41 (the hidden type-70
+PILE*/P* piles, which the corpus never places and which carry no resource),
+plus terrain_palette.TREE_UNIT_IDS. Measured 2026-10-11 over the 21-file
+examples/ corpus: all 4,099 placements of the resource classes (fish
+53/450-458, FORAG 59, GOLDM 66, FISHS 69, STONM 102) and all 117,582 tree
+placements are GAIA. The rule is by class, not "all type 10": player-owned
+eye candy does exist (FLARE4 697 x230, rubble 863/864/865/144/1497, STATUE
+1279, IMPALED 1315), so those stay out.
+
 ## Two documented non-changes
 
 - render.wall_variant_rotation_overrides is built over ALL units ignoring the
@@ -224,6 +238,10 @@ _EYE_CANDY_TYPE = 10
 # Ocean / deep-sea / shore fish, berry bush, stone mine, gold mine, ore mine,
 # salvage pile, resource pile, and DE's class 63 (Oysters/Whale).
 _RESOURCE_CLASSES = frozenset({5, 7, 8, 31, 32, 33, 40, 41, 48, 63})
+# Minus 40/41, the hidden PILE*/P* piles: never placed in the corpus, no resource.
+_GAIA_ONLY_CLASSES = _RESOURCE_CLASSES - {40, 41}
+# unit_filter.GAIA_PLAYER_ID, repeated so this module stays a leaf (test pins the two).
+_GAIA_PLAYER_ID = 0
 
 
 @lru_cache(maxsize=1)
@@ -320,3 +338,45 @@ def obstacle_consts() -> frozenset[int]:
 def passable_eye_candy_consts() -> frozenset[int]:
     """Every const Show Eye Candy hides: eye candy units can walk through."""
     return eye_candy_consts() - obstacle_consts()
+
+
+# The .dat's unit.type for creatable units (military, villagers, ships, animals).
+_CREATABLE_TYPE = 70
+_RELIC_CLASS = 42
+
+
+@lru_cache(maxsize=1)
+def mobile_unit_consts() -> frozenset[int]:
+    """The Eraser's Units target (GH #184): creatable consts plus mobile siege,
+    minus invisible objects, trees, resources (salvage and resource piles are
+    type 70) and relics. Disjoint from building_consts() and wall_consts()."""
+    excluded = invisible_consts() | TREE_UNIT_IDS
+    return frozenset(
+        const
+        for const, entry in _objects().items()
+        if (entry.get("type") == _CREATABLE_TYPE or entry.get("class") in _MOBILE_SIEGE_CLASSES)
+        and const not in excluded
+        and entry.get("class") not in _RESOURCE_CLASSES
+        and entry.get("class") != _RELIC_CLASS
+    )
+
+
+@lru_cache(maxsize=1)
+def gaia_only_consts() -> frozenset[int]:
+    """Every const a new placement gives to GAIA (TASK-288): the resource
+    classes minus the hidden piles, plus trees. See the module docstring."""
+    resources = {const for const, entry in _objects().items() if entry.get("class") in _GAIA_ONLY_CLASSES}
+    return frozenset(resources | TREE_UNIT_IDS)
+
+
+def placement_owner(unit_const: int, owner: int) -> int:
+    """The owner a new placement of `unit_const` gets: GAIA for a
+    gaia_only_consts() member, `owner` otherwise."""
+    return _GAIA_PLAYER_ID if unit_const in gaia_only_consts() else owner
+
+
+@lru_cache(maxsize=1)
+def cliff_consts() -> frozenset[int]:
+    """Every class-34 cliff const. Equal to unit_sprites.cliff_consts(), derived
+    here from the catalog so this module stays free of that one's imports."""
+    return frozenset(const for const, entry in _objects().items() if entry.get("class") == _CLIFF_CLASS)

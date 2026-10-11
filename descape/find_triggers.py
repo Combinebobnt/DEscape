@@ -534,7 +534,7 @@ CSV_COLUMNS = ("trigger_index", "trigger_name", "enabled", "kind", "entry_index"
 
 
 def hits_to_csv(hits: Iterable[TriggerHit], path: Path | str) -> int:
-    """find_objects.rows_to_csv()'s trigger counterpart, with the same compatdata refusal."""
+    """find_objects.rows_to_csv()'s trigger counterpart, with the same mods/subscribed/ refusal."""
     path = refuse_forbidden_path(path)
     hits = list(hits)
     with path.open("w", newline="", encoding="utf-8") as handle:

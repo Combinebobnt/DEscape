@@ -75,12 +75,11 @@ def _selectors(window, monkeypatch, pid: int = 2) -> dict[str, tuple]:
     combos = {
         "A": units.owner_combo,
         "B": units.unit_field_editors["player"],
+        "C": window.players_panel.player_combo,
         "I": window.stats_player_combo,
         "J": _scatter_dialog(window, monkeypatch).owner_combo,
     }
     out = {key: (c.itemText(_row_by_data(c, pid)), c.itemIcon(_row_by_data(c, pid))) for key, c in combos.items()}
-    players = window.players_panel.player_combo
-    out["C"] = (players.itemText(pid - 1), players.itemIcon(pid - 1))
     diplomacy = window.diplomacy_panel.player_combo
     d_index = window.diplomacy_panel._active_players.index(pid)
     out["D"] = (diplomacy.itemText(d_index), diplomacy.itemIcon(d_index))
@@ -168,8 +167,8 @@ def test_a_player_count_change_keeps_the_index_mapped_selectors_rows() -> None:
         assert spin.isEnabled()
         spin.setValue(spin.value() + 1)
         combo = window.players_panel.player_combo
-        assert combo.count() == 8
-        assert [combo.itemText(i) for i in range(3)] == ["P1", "P2", f"P3 - {_NAME}"]
+        assert combo.count() == 9
+        assert [combo.itemText(i) for i in range(4)] == ["GAIA", "P1", "P2", f"P3 - {_NAME}"]
         disables = window._build_disables_dialog().player_combo
         assert disables.count() == 8
         assert disables.itemText(2) == f"P3 - {_NAME}"

@@ -87,7 +87,8 @@ two levels off the map's most common one, Ctrl+Z. It prints the whole debug
 log (every perf line) and one `gh180 gates:` summary line: G1 Draw ms/step,
 G2 release handler plus the next paint, the post-stroke composite and mip,
 G3 Set elevation ms/step, G4 each undo plus its next paint (with the side
-of STEPPED_FULL_RERENDER_THRESHOLD it took), G5 the load's first-paint
+of STEPPED_FULL_RERENDER_THRESHOLD it took: patch, refresh, or rerender on
+a build before the in-place refresh or when the cache refused it), G5 the load's first-paint
 total, G6 the slowest single step. On old-allies-final-v2 the default
 --flow-draw-rows remove over UNIT_SPLICE_MAX_UNITS trees (the tester's
 wholesale stroke end) and undo below the 20k-tile re-render threshold, and
@@ -270,7 +271,8 @@ class _PatchProfile:
         for cls in (rc.IsoChunkCache, rc.SlopedChunkCache, rc.FlatChunkCache):
             self._wrap(cls, "_refresh_source_caches", refresh)
             self._wrap(cls, "_composite_rect", composite)
-        self._wrap(rc.IsoChunkCache, "_level", level)
+        # The shared base times Sloped's lazy build too; a pre-TASK-031.59 --root has only Iso's.
+        self._wrap(getattr(rc, "_LeveledChunkCache", rc.IsoChunkCache), "_level", level)
         gc.callbacks.append(self._on_gc)
 
     def take(self) -> list[str]:
@@ -724,10 +726,11 @@ def gh180_gates(sections: dict[str, list[str]], stalls: dict[str, tuple[float, f
         parts.append(f"G3_steps={head3[0]} G3_ms_step={head3[1]:.1f} G3_max={head3[2]:.1f}")
     for key in ("undo1", "undo2"):
         sec = section(key)
-        rerender = next((re.search(r"(\d+) tiles dirty, re-rendered", ln) for ln in sec if "re-rendered full map" in ln), None)
+        # The threshold branch: an in-place refresh since TASK-031.61 A5, a re-render before it or on a refusal.
+        full = next((m for ln in sec if (m := re.search(r"(\d+) tiles dirty, (re-rendered|refreshed)", ln))), None)
         op = next((re.search(r"perf op undo: (\d+)ms", ln) for ln in sec if "perf op undo:" in ln), None)
         handler, paint, total = stalls[key]
-        side = f"rerender:{rerender.group(1)}" if rerender else "patch"
+        side = f"{'rerender' if full.group(2) == 're-rendered' else 'refresh'}:{full.group(1)}" if full else "patch"
         parts.append(
             f"G4_{key}_op={op.group(1) if op else '?'} G4_{key}_next_paint={paint:.0f} G4_{key}_total={total:.0f}"
             f" G4_{key}_path={side}"

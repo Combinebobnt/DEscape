@@ -358,11 +358,13 @@
       "frame_count": 60
     },
     "53": {
-      "graphic_id": 1700,
-      "file_name": "a_fish_perch_x1",
+      "graphic_id": 1713,
+      "file_name": "a_fish_perch_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 90
+      "frame_count": 90,
+      "dx": 0,
+      "dy": -30
     },
     "54": {
       "graphic_id": 3402,
@@ -415,8 +417,8 @@
       "variant_count": 16
     },
     "61": {
-      "graphic_id": 2182,
-      "file_name": "a_fish_dolphin_x1",
+      "graphic_id": 2184,
+      "file_name": "a_fish_dolphin_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 90
@@ -604,8 +606,8 @@
       "frame_count": 180
     },
     "69": {
-      "graphic_id": 3138,
-      "file_name": "a_fish_shore_x1",
+      "graphic_id": 3187,
+      "file_name": "a_fish_shore_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 90
@@ -3562,18 +3564,20 @@
       "variant_count": 16
     },
     "450": {
-      "graphic_id": 2181,
-      "file_name": "a_fish_marlin1_x1",
+      "graphic_id": 2183,
+      "file_name": "a_fish_marlin1_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 60
+      "frame_count": 60,
+      "frame_offset": 7
     },
     "451": {
-      "graphic_id": 2181,
-      "file_name": "a_fish_marlin1_x1",
+      "graphic_id": 2183,
+      "file_name": "a_fish_marlin1_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 60
+      "frame_count": 60,
+      "frame_offset": 7
     },
     "452": {
       "graphic_id": 2183,
@@ -3599,8 +3603,8 @@
       "variant_count": 2
     },
     "455": {
-      "graphic_id": 2186,
-      "file_name": "a_fish_dorado_x1",
+      "graphic_id": 2185,
+      "file_name": "a_fish_dorado_underwater_x1",
       "angle_count": 2,
       "mirroring_mode": 0,
       "frame_count": 90,
@@ -3608,22 +3612,22 @@
       "variant_count": 2
     },
     "456": {
-      "graphic_id": 2187,
-      "file_name": "a_fish_salmon_x1",
+      "graphic_id": 2190,
+      "file_name": "a_fish_salmon_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 90
     },
     "457": {
-      "graphic_id": 2188,
-      "file_name": "a_fish_tuna_x1",
+      "graphic_id": 2191,
+      "file_name": "a_fish_tuna_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 90
     },
     "458": {
-      "graphic_id": 2189,
-      "file_name": "a_fish_snapper_x1",
+      "graphic_id": 2192,
+      "file_name": "a_fish_snapper_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 90
@@ -9453,8 +9457,8 @@
       "variant_count": 16
     },
     "1141": {
-      "graphic_id": 10203,
-      "file_name": "a_fish_boxturtles_x1",
+      "graphic_id": 3192,
+      "file_name": "a_fish_boxturtles_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 180
@@ -22190,8 +22194,8 @@
       "variant_count": 32
     },
     "2625": {
-      "graphic_id": 11397,
-      "file_name": "a_fish_whale_x1",
+      "graphic_id": 11398,
+      "file_name": "a_fish_whale_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
       "frame_count": 240

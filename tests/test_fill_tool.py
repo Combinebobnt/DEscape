@@ -344,11 +344,10 @@ def test_stepped_full_rerender_fallback_actually_fires(monkeypatch) -> None:
     in this module ever exercises it. Lowers the threshold instead of
     filling a 480x480 map here, to keep this test in the default tier.
 
-    Also confirms the wait cursor _apply_dirty's fallback pushes via
-    _render_current() (nested inside on_fill()'s own identical wrap --
-    Qt's override-cursor is a stack, so this should unwind cleanly) doesn't
-    leak: a stuck wait cursor would be a real, visible UI bug that nothing
-    else here would catch."""
+    Also confirms no wait cursor leaks (on_fill() pushes its own; the branch
+    pushed a nested one via _render_current() until TASK-031.61 A5 made it
+    an in-place refresh): a stuck wait cursor would be a real, visible UI
+    bug that nothing else here would catch."""
     from PyQt5.QtWidgets import QApplication
 
     import descape.viewer as viewer_module
@@ -360,7 +359,7 @@ def test_stepped_full_rerender_fallback_actually_fires(monkeypatch) -> None:
         window.terrain_style_combo.setCurrentText("Stepped")
         window.on_fill(0, 0, 0)  # fills all 14,400 tiles -- well past the patched threshold
 
-        assert "re-rendered full map instead of patching" in window.status_log.toPlainText()
+        assert "refreshed the full map in place instead of patching" in window.status_log.toPlainText()
         assert QApplication.overrideCursor() is None
     finally:
         window.edit_history.mark_saved()

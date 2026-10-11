@@ -96,7 +96,7 @@ def _cache(scn, style: str):
 
 
 def _box(cache, style: str, mip: int, tiles):
-    proj = cache.proj if style == "sloped" else cache._levels[mip].proj
+    proj = cache._levels[mip].proj
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, tiles, 0)
     # Sprites stand up to about two tiles above their anchor.
     return max(0, x0 - proj.half_w // 2), max(0, y0 - 4 * proj.half_h), x1 + proj.half_w // 2, y1 + proj.half_h // 2

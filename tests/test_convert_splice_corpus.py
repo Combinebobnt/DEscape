@@ -73,12 +73,9 @@ def _draw_key(keys: dict, rgba: np.ndarray, hx: int, hy: int) -> tuple:
 
 
 def _level_state(cache, mip: int, spliced: bool, keys: dict):
-    if isinstance(cache, IsoChunkCache):
-        lvl = cache._levels[mip] if spliced else cache._level(mip)
-        assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale"
-        building_bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
-    else:
-        building_bboxes, sprites, grid = cache.building_bboxes, cache.sprites, cache.bystander_grid
+    lvl = cache._levels[mip] if spliced else cache._level(mip)
+    assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale"
+    building_bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
     by_anchor = {
         k: [(_draw_key(keys, d.rgba, d.hotspot_x, d.hotspot_y), px, py) for d, px, py in v]
         for k, v in sprites.by_anchor.items()

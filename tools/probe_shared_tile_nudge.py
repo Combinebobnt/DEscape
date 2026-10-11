@@ -128,10 +128,9 @@ def _norm_draws(draws):
 def _visible_level(cache, window):
     target = window.map_view.viewport_chunk_target()
     mip = target[0] if target else 0
-    if hasattr(cache, "_levels"):
-        lvl = cache._level(mip)  # rebuilds if stale, so it reflects live scenario state
-        return mip, lvl.building_bboxes, lvl.sprites, lvl.proj, None, 0
-    return 0, cache.building_bboxes, cache.sprites, cache.proj, cache.corner_rise, cache._headroom
+    cache._level(mip)  # rebuilds if stale, so it reflects live scenario state
+    proj, sprites, building_bboxes, corner_rise, extra_top = cache._unit_level_state(mip)
+    return mip, building_bboxes, sprites, proj, corner_rise, extra_top
 
 
 def _analyse_splice_on_copies(window, entry) -> None:

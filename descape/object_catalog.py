@@ -116,6 +116,18 @@ def icon_for(object_id: int) -> int | None:
     return icon if isinstance(icon, int) and icon >= 0 else None
 
 
+def is_building(object_id: int) -> bool:
+    """derived_category()'s "Buildings" rule from the .dat row alone. GH #148:
+    which portrait set an icon index points into (the game's own rule is not in the data)."""
+    entry = _dat_entry("objects", object_id)
+    return entry is not None and derived_category(entry) == "Buildings"
+
+
+def portrait_for(object_id: int) -> tuple[int | None, bool]:
+    """(icon_for(), is_building()): asset_source.get_unit_icon()'s arguments."""
+    return icon_for(object_id), is_building(object_id)
+
+
 def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None) -> str:
     """install string -> library enum name -> .dat short code -> "UNKNOWN_
     <id>", each step falling through to the next. Degrades to library_name

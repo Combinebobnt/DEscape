@@ -24,7 +24,7 @@ from pathlib import Path
 import yaml
 
 from descape import grid_overlay, settings, themes
-from descape.scenario_io import FORBIDDEN_WRITE_MARKER, is_under_compatdata
+from descape.scenario_io import is_workshop_subscribed
 
 FORMAT_ID = "descape-theme"
 FORMAT_VERSION = 1
@@ -42,7 +42,8 @@ _OVERLAY_IDS = tuple(cid for cid, _label, _default in settings.OVERLAY_COLORS)
 
 
 class ThemeWriteBlockedError(ValueError):
-    """The export target is under a Proton compatdata/ prefix; nothing was written."""
+    """The export target is in a subscribed-mods (mods/subscribed/) folder, or
+    cannot be resolved; nothing was written."""
 
 
 class ThemeFileRefused(ValueError):
@@ -112,12 +113,19 @@ def build_document() -> dict:
 
 
 def write_theme_file(path: Path | str, doc: dict) -> None:
-    """Refuses a compatdata path, as written or resolved, and writes nothing.
-    Otherwise writes through a temp file in the target directory and
-    os.replace(), so an existing file is never truncated in place."""
+    """Refuses a mods/subscribed/ path, as written or resolved, or an
+    unresolvable one, and writes nothing. Otherwise writes through a temp file
+    in the target directory and os.replace(), so an existing file is never
+    truncated in place."""
     path = Path(path)
-    if is_under_compatdata(path):
-        raise ThemeWriteBlockedError(f"refusing to write a theme under a Proton '{FORBIDDEN_WRITE_MARKER}' folder: {path}")
+    try:
+        blocked = is_workshop_subscribed(path)
+    except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
+        raise ThemeWriteBlockedError(f"refusing to write a theme to a path that cannot be resolved ({e}): {path}") from e
+    if blocked:
+        raise ThemeWriteBlockedError(
+            f"refusing to write a theme into a subscribed-mods (mods/subscribed/) folder: {path}"
+        )
     text = yaml.dump(doc, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     tmp = Path(tmp_name)

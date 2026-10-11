@@ -161,6 +161,22 @@ def _make_cache(scenario, **kwargs) -> SlopedChunkCache:
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, **kwargs)
 
 
+# The cache levels the farm-drape checks run at (TASK-031.60's coarser ladder).
+LEVELS = [0, -1, -2]
+
+
+def _whole_level(cache, mip: int) -> np.ndarray:
+    return cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+
+
+def _full_at(scenario, tile_px: int) -> np.ndarray:
+    """A full sprite render with tile_pixels_for_map forced to tile_px, the patch scoped to this call."""
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(render, "tile_pixels_for_map", lambda _w, _h: tile_px)
+        img, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    return img
+
+
 def test_flat_map_byte_identical_with_sprites(sprite_install):
     """CONST here is never a farm const, so with_farms's default (True on
     both sides as of Track C6) never enters into it either way."""
@@ -233,7 +249,8 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
     assert implied_rise == mark_rise
 
 
-def test_farms_drape_as_terrain_in_sloped():
+@pytest.mark.parametrize("mip", LEVELS)
+def test_farms_drape_as_terrain_in_sloped(mip):
     """Track C6's replacement for the deferral this test used to pin
     (test_farms_stay_marks_in_sloped, retired -- Sloped now has a
     warped-outline path, sprite_draws_by_anchor's with_farms default flipped
@@ -241,11 +258,13 @@ def test_farms_drape_as_terrain_in_sloped():
     reverts). With sprites on, a farm must resolve into farm_by_tile (so
     render._paint_tile_and_units_sloped's drape branch actually runs) and
     into skip_ids (so it never also falls through to the plain-diamond mark
-    path)."""
+    path). Read off the cache's own level `mip` layer."""
     scenario = _flat_scenario_with_unit(elevation=0, ux=30.5, uy=30.5, unit_const=FARM_CONST)
-    elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
+    cache = _make_cache(scenario, sprites=True)
+    lvl = cache._level(mip)
+    elevations, corner_rise, proj = cache.elevations, cache._level_corner_rise(lvl), lvl.proj
 
-    sprites = render.sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
+    sprites = lvl.sprites
     assert sprites.farm_by_tile, "fixture is vacuous -- FARM_CONST never resolves a foundation terrain"
     assert sprites.skip_ids, "a draped farm must be skipped by the plain-mark path, not double-drawn"
 
@@ -259,7 +278,8 @@ def test_farms_drape_as_terrain_in_sloped():
     assert not sprites_off.skip_ids, "a farm's unit must not be skipped when it has no sprite path to replace its mark"
 
 
-def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_spot(sprite_install):
+@pytest.mark.parametrize("mip", LEVELS)
+def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_spot(sprite_install, mip):
     """Regression for the farm-drape plan's own named silent-failure trap:
     the perimeter stroke must use _render_tile_sloped's placement
     convention (elevation 0, corner_rise, -d_min folded into base_y), NOT
@@ -284,17 +304,19 @@ def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_
     proj)` (`_render_tile_iso`'s own elevation-based convention) shifts the
     checked pixels by 8px (one elev_step) and the assertion below goes red;
     an ordinary ramp fixture does NOT reproduce that, which is exactly why
-    this fixture replaced one."""
+    this fixture replaced one. Checked on the cache's own level `mip`
+    (TASK-031.60), with that level's corner_rise, proj and stitched chunks."""
     mm_w = mm_h = 20
     tiles = []
     for y in range(mm_h):
         tiles.extend(SyntheticTile(x=x, y=y, elevation=0 if (x, y) == (9, 9) else 1) for x in range(mm_w))
     scenario = FakeScenario(mm_w, mm_h, tiles, [[]] * 1 + [[Unit(10.5, 10.5, FARM_CONST)]] + [[]] * 7)
-    elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
-    tile_px = tile_pixels_for_map(mm_w, mm_h)
+    cache = _make_cache(scenario, sprites=True)
+    lvl = cache._level(mip)
+    elevations, corner_rise, proj, tile_px = cache.elevations, cache._level_corner_rise(lvl), lvl.proj, lvl.tile_px
     tx, ty = 9, 9  # the pit tile itself: the farm's own NW corner tile
 
-    sprites = render.sprite_draws_by_anchor(scenario, proj, elevations, corner_rise=corner_rise)
+    sprites = lvl.sprites
     assert (tx, ty) in sprites.farm_by_tile, "fixture painted nothing at the pit tile -- the farm never resolved there"
     _terrain_id, outline_color, edge_mask = sprites.farm_by_tile[(tx, ty)]
     assert edge_mask, "the pit tile must be on the farm's own perimeter (a nonzero edge_mask) or this proves nothing"
@@ -309,7 +331,7 @@ def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_
         "or the elevation-based mutation would coincidentally land in the same place"
     )
 
-    img, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    img = _whole_level(cache, mip)
     base_x, base_y, _dy, _dx, _sy, _sx, _uv = render._sloped_tile_quad(
         tx, ty, tile_px, proj, d_nw, d_ne, d_sw, d_se
     )
@@ -328,7 +350,8 @@ def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_
     assert checked > 0, "the pit tile's edge_mask had no set bits -- the check would be vacuous"
 
 
-def test_cache_construction_drapes_a_farm_on_a_ramp(sprite_install):
+@pytest.mark.parametrize("mip", LEVELS)
+def test_cache_construction_drapes_a_farm_on_a_ramp(sprite_install, mip):
     """SlopedChunkCache._refresh_source_caches's wholesale branch (construction,
     set_sprites_enabled, set_unit_filter) used to hardcode with_farms=False,
     unlike its patch-branch sibling which already defaulted True -- so a
@@ -336,49 +359,54 @@ def test_cache_construction_drapes_a_farm_on_a_ramp(sprite_install):
     elevation-changed patch() flipped them. Regression for that missed call
     site: the cache's own stitched render must already match a direct
     render_terrain_sloped_with_proj(with_sprites=True) call at construction,
-    with no edit in between."""
+    with no edit in between. At each cache level, against a full render at
+    that level's tile_px."""
     scenario = _ramped_scenario_with_unit(ux=20.5, uy=20.5, unit_const=FARM_CONST)
     cache = _make_cache(scenario, sprites=True)
-    assert cache.sprites is not None and cache.sprites.farm_by_tile, (
-        "fixture painted nothing -- the farm never resolved"
-    )
-    canvas_w, canvas_h = cache.canvas_dims()
-    stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
-    full, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    layer = cache._level(mip).sprites
+    assert layer is not None and layer.farm_by_tile, "fixture painted nothing -- the farm never resolved"
+    stitched = _whole_level(cache, mip)
+    canvas_h, canvas_w = stitched.shape[:2]
+    full = _full_at(scenario, cache.mip_tile_px(mip))
     assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
 
 
-def test_sprites_toggle_drapes_a_farm_on_a_ramp(sprite_install):
+@pytest.mark.parametrize("mip", LEVELS)
+def test_sprites_toggle_drapes_a_farm_on_a_ramp(sprite_install, mip):
     """The path a user actually hits from the menu: open with sprites off,
     then View > Show sprites. set_sprites_enabled() routes through the same
     wholesale branch as construction, so this is a distinct route to the
-    construction bug above, not a duplicate of it."""
+    construction bug above, not a duplicate of it. A coarser level is shown
+    before the toggle, so the toggle's eager warm is what rebuilds it; level 0
+    keeps the original nothing-resident path."""
     scenario = _ramped_scenario_with_unit(ux=20.5, uy=20.5, unit_const=FARM_CONST)
     cache = _make_cache(scenario, sprites=False)
+    if mip != 0:
+        _whole_level(cache, mip)
     cache.set_sprites_enabled(True)
-    assert cache.sprites is not None and cache.sprites.farm_by_tile, (
-        "fixture painted nothing -- the farm never resolved"
-    )
-    canvas_w, canvas_h = cache.canvas_dims()
-    stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
-    full, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
+    layer = cache._levels[mip].sprites
+    assert layer is not None and layer.farm_by_tile, "fixture painted nothing -- the farm never resolved"
+    stitched = _whole_level(cache, mip)
+    canvas_h, canvas_w = stitched.shape[:2]
+    full = _full_at(scenario, cache.mip_tile_px(mip))
     assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
 
 
-def test_patch_after_a_distant_edit_still_drapes_the_farm(sprite_install):
+@pytest.mark.parametrize("mip", LEVELS)
+def test_patch_after_a_distant_edit_still_drapes_the_farm(sprite_install, mip):
     """The bug's other half: a construction-path farm that starts undraped
     would "suddenly drape" the moment any elevation edit landed a non-empty
     elevation_changed on the ALREADY-correct patch branch. Pins the two
     branches agreeing: an edit far from the farm's own tiles (so its
     corner_rise is untouched) must not change how the farm looks, before or
-    after."""
+    after. Level `mip` is the one shown and patched."""
     scenario = _ramped_scenario_with_unit(ux=5.5, uy=5.5, unit_const=FARM_CONST)
     mm = scenario.map_manager
     cache = _make_cache(scenario, sprites=True)
-    canvas_w, canvas_h = cache.canvas_dims()
-    before = cache.render_rect(0, 0, canvas_w, canvas_h)
-    full_before, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
-    assert np.array_equal(before, full_before[:canvas_h, :canvas_w])
+    tile_px = cache.mip_tile_px(mip)
+    before = _whole_level(cache, mip)
+    canvas_h, canvas_w = before.shape[:2]
+    assert np.array_equal(before, _full_at(scenario, tile_px)[:canvas_h, :canvas_w])
 
     elevations, _corner_rise, proj = sloped_elevations_and_proj(scenario)
     cache.elevations = elevations
@@ -386,9 +414,8 @@ def test_patch_after_a_distant_edit_still_drapes_the_farm(sprite_install):
     bbox, elevation_changed = _edit_and_bbox(scenario, elevations, proj, ex, ey, 1)
     cache.patch(bbox, elevation_changed=elevation_changed)
 
-    after = cache.render_rect(0, 0, canvas_w, canvas_h)
-    full_after, _e2, _c2, _proj2 = render_terrain_sloped_with_proj(scenario, with_sprites=True)
-    assert np.array_equal(after, full_after[:canvas_h, :canvas_w])
+    after = _whole_level(cache, mip)
+    assert np.array_equal(after, _full_at(scenario, tile_px)[:canvas_h, :canvas_w])
 
 
 def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):

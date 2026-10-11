@@ -230,7 +230,7 @@ CSV_COLUMNS = (
 
 def rows_to_csv(rows: Iterable[FindRow], path: Path | str) -> int:
     """Writes `rows` as CSV with a header; returns the row count. Refuses
-    (scenario_write.WriteBlockedError) a compatdata path before opening anything."""
+    (scenario_write.WriteBlockedError) a mods/subscribed/ path before opening anything."""
     path = refuse_forbidden_path(path)
     rows = list(rows)
     with path.open("w", newline="", encoding="utf-8") as handle:

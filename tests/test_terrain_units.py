@@ -223,3 +223,39 @@ def test_eye_candy_off_leaves_existing_grass_doodads_alone():
     assert existing[(0, 0)] == [doodad]
     assert len(plan.adds) == 1
     assert plan.adds[0].unit_const == FOREST_OAK_CONST
+
+
+# --- GH #183: no auto-placement on cliff tiles ---
+
+
+def test_a_blocked_tile_gets_no_add_while_its_neighbour_does():
+    changes, tiles_by_index = _changes((DIRT_1, FOREST_OAK), (DIRT_1, FOREST_OAK))
+    plan = terrain_units.plan_terrain_units(
+        changes, tiles_by_index, {}, trees=True, doodads=True, rng=random.Random(0), blocked={(0, 0)}
+    )
+    assert [(int(a.x), int(a.y)) for a in plan.adds] == [(1, 0)]
+    assert plan.adds[0].unit_const == FOREST_OAK_CONST
+
+
+def test_an_existing_tree_on_a_blocked_changed_tile_is_still_removed():
+    changes, tiles_by_index = _changes((FOREST_PINE, FOREST_OAK))
+    tree = FakeUnit(FOREST_PINE_CONST)
+    existing = {(0, 0): [tree]}
+    plan = terrain_units.plan_terrain_units(
+        changes, tiles_by_index, existing, trees=True, doodads=True, rng=random.Random(0), blocked={(0, 0)}
+    )
+    assert plan.removes == [tree]
+    assert plan.adds == []
+    assert existing[(0, 0)] == []
+
+
+def test_the_default_blocked_set_plans_what_an_explicit_empty_one_does():
+    changes, tiles_by_index = _changes(*[(DIRT_1, GRASS_2)] * 200, (DIRT_1, FOREST_OAK))
+    default = terrain_units.plan_terrain_units(
+        changes, tiles_by_index, {}, trees=True, doodads=True, rng=random.Random(7)
+    )
+    explicit = terrain_units.plan_terrain_units(
+        changes, tiles_by_index, {}, trees=True, doodads=True, rng=random.Random(7), blocked=frozenset()
+    )
+    assert default.adds == explicit.adds
+    assert any(a.unit_const == FOREST_OAK_CONST for a in default.adds)

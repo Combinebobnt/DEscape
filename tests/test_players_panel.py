@@ -142,16 +142,19 @@ def test_closing_the_document_clears_the_panel() -> None:
 # --- the form ------------------------------------------------------------
 
 
-def test_player_selector_lists_p1_through_p8_with_swatches() -> None:
+def test_player_selector_lists_gaia_then_p1_through_p8_with_swatches() -> None:
+    """GH #187: GAIA first, as in the Units owner combo, with Player 1 the default."""
     window = _players_window()
     try:
         panel = window.players_panel
-        assert panel.player_combo.count() == 8
-        labels = [panel.player_combo.itemText(i) for i in range(8)]
-        assert labels == [f"P{n}" for n in range(1, 9)]
-        for i in range(8):
+        assert panel.player_combo.count() == 9
+        labels = [panel.player_combo.itemText(i) for i in range(9)]
+        assert labels == ["GAIA"] + [f"P{n}" for n in range(1, 9)]
+        assert [panel.player_combo.itemData(i) for i in range(9)] == list(range(9))
+        for i in range(9):
             assert not panel.player_combo.itemIcon(i).isNull()
-        assert panel.player_combo.currentIndex() == 0
+        assert panel.player_combo.currentData() == 1
+        assert panel.current_player_id() == 1
     finally:
         _close(window)
 
@@ -161,22 +164,91 @@ def test_select_player_happy_path() -> None:
     try:
         panel = window.players_panel
         assert panel.select_player(6) is True
-        assert panel.player_combo.currentIndex() == 5
+        assert panel.player_combo.currentData() == 6
 
         # Already-current player is a no-op that still reports success.
         assert panel.select_player(6) is True
-        assert panel.player_combo.currentIndex() == 5
+        assert panel.player_combo.currentData() == 6
     finally:
         _close(window)
 
 
-def test_select_player_rejects_gaia() -> None:
+def test_select_player_accepts_gaia() -> None:
     window = _players_window()
     try:
         panel = window.players_panel
-        index_before = panel.player_combo.currentIndex()
-        assert panel.select_player(0) is False
-        assert panel.player_combo.currentIndex() == index_before
+        assert panel.select_player(0) is True
+        assert panel.player_combo.currentData() == 0
+        assert panel.current_player_id() == 0
+        assert "for GAIA" in panel.status.text()
+    finally:
+        _close(window)
+
+
+def _visible_groups(panel) -> list[str]:
+    """A group box is only built for a group with rows, so building is what hides one."""
+    from PyQt5.QtWidgets import QGroupBox
+
+    return [box.title() for box in panel.host.findChildren(QGroupBox)]
+
+
+def test_gaia_rows_are_exactly_gaia_fields_and_empty_groups_are_hidden() -> None:
+    from descape.player_fields import GAIA_FIELDS
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        panel.select_player(0)
+        assert {s.field_id for s in panel._specs} == GAIA_FIELDS
+        assert set(panel.current_values()) == GAIA_FIELDS
+        assert _visible_groups(panel) == ["Identity", "Start"]
+        assert panel.set_view_button is None
+        for field_id in ("tribe_name", "personality", "player_type", "base_priority", "initial_view_x"):
+            assert panel.widget_for(field_id) is None, field_id
+
+        # Back to a real player: every group returns.
+        panel.select_player(1)
+        assert _visible_groups(panel) == ["Identity", "Start", "AI", "Point of View"]
+    finally:
+        _close(window)
+
+
+def test_gaia_rows_show_gaias_own_slot_and_are_editable() -> None:
+    """The blank fixture's GAIA colour is 8, outside ColorId's real colours: shown as stored."""
+    from descape.player_fields import current_value, specs_for_player
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        panel.select_player(0)
+        editable = window._editable_player_fields()
+        for spec in specs_for_player(window.scenario, 0):
+            raw = current_value(window.scenario, spec, 0)
+            assert str(_shown_value(panel, spec)) == str(raw), spec.field_id
+            assert panel.widget_for(spec.field_id).isEnabled() == (spec.field_id in editable), spec.field_id
+        assert panel.current_values()["color"] == 8
+        assert panel.widget_for("color").currentText() == "unknown (8)"
+    finally:
+        _close(window)
+
+
+def test_a_gaia_edit_round_trips_through_the_window_with_undo_redo() -> None:
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        panel.select_player(0)
+        widget = panel.widget_for("food")
+        widget.setValue(4321)
+        assert window.option_edits.current_value("player:food:0") == 4321
+        assert window.option_edits.current_value("player:food:1") == 0
+
+        window.undo()
+        assert panel.current_player_id() == 0
+        assert panel.current_values()["food"] == 0
+        assert not window.edit_history.is_dirty
+
+        window.redo()
+        assert panel.current_values()["food"] == 4321
     finally:
         _close(window)
 
@@ -306,8 +378,8 @@ def test_switching_player_repopulates_the_form_with_that_players_values() -> Non
     window = _players_window()
     try:
         panel = window.players_panel
-        for player_id in (1, 8):
-            panel.player_combo.setCurrentIndex(player_id - 1)
+        for player_id in (1, 8, 0):
+            panel.select_player(player_id)
             assert panel._player_id == player_id
             for spec in panel._specs:
                 raw = current_value(window.scenario, spec, player_id)
@@ -357,7 +429,7 @@ def test_browsing_every_row_leaves_the_document_clean() -> None:
     window = _players_window()
     try:
         panel = window.players_panel
-        for player_index in range(8):
+        for player_index in range(panel.player_combo.count()):
             panel.player_combo.setCurrentIndex(player_index)
             for spec in panel._specs:
                 widget = panel.widget_for(spec.field_id)
@@ -511,9 +583,9 @@ def test_switching_player_reports_edits_for_the_right_player() -> None:
     panel, reported = _editable_panel(loaded)
     try:
         spec = next(s for s in panel._specs if s.field_id == "base_priority")
-        panel.player_combo.setCurrentIndex(2)  # P3
+        panel.select_player(3)
         panel._changed(spec, panel.current_values()["base_priority"] + 1)
-        panel.player_combo.setCurrentIndex(4)  # P5
+        panel.select_player(5)
         panel._changed(spec, panel.current_values()["base_priority"] + 1)
         assert [player_id for _, player_id, _ in reported] == [3, 5]
     finally:
@@ -548,8 +620,9 @@ def _swatch_rgb(combo, index: int) -> tuple[int, int, int]:
 
 
 def test_a_colour_edit_reswatches_the_players_and_diplomacy_combos_and_undo_reverts() -> None:
-    """GH #81 steps 3 and 5. The combos carry no item data, so the selection
-    is read off currentText() and the swatch off the icon's own pixel."""
+    """GH #81 steps 3 and 5. The selection is read off currentText() and
+    the swatch off the icon's own pixel. The Players combo has GAIA at row 0,
+    so P2 is its row 2 and Diplomacy's row 1."""
     from descape.terrain_palette import PLAYER_COLOR_BY_ID
 
     window = _players_window()
@@ -560,10 +633,11 @@ def test_a_colour_edit_reswatches_the_players_and_diplomacy_combos_and_undo_reve
         panel = window.players_panel
         diplomacy = window.diplomacy_panel.player_combo
         assert diplomacy.itemText(1) == "P2"
-        panel.player_combo.setCurrentIndex(1)
+        assert panel.select_player(2)
         assert panel.player_combo.currentText() == "P2"
+        p2_row = panel.player_combo.currentIndex()
 
-        before = _swatch_rgb(panel.player_combo, 1)
+        before = _swatch_rgb(panel.player_combo, p2_row)
         assert _swatch_rgb(diplomacy, 1) == before
         widget = panel.widget_for("color")
         target = next(
@@ -574,12 +648,12 @@ def test_a_colour_edit_reswatches_the_players_and_diplomacy_combos_and_undo_reve
 
         widget.setCurrentIndex(target)
         assert window.edit_history.is_dirty
-        assert _swatch_rgb(panel.player_combo, 1) == after
+        assert _swatch_rgb(panel.player_combo, p2_row) == after
         assert _swatch_rgb(diplomacy, 1) == after
         assert panel.player_combo.currentText() == "P2"
 
         window.undo()
-        assert _swatch_rgb(panel.player_combo, 1) == before
+        assert _swatch_rgb(panel.player_combo, p2_row) == before
         assert _swatch_rgb(diplomacy, 1) == before
         assert panel.player_combo.currentText() == "P2"
     finally:
@@ -627,15 +701,15 @@ def test_switching_players_preserves_pending_edits_on_the_other_player() -> None
     try:
         panel = window.players_panel
         spec = next(s for s in panel._specs if s.field_id == "base_priority")
-        panel.player_combo.setCurrentIndex(2)  # P3
+        panel.select_player(3)
         widget = panel.widget_for("base_priority")
         before = panel.current_values()["base_priority"]
         widget.setValue(before + 7)
 
-        panel.player_combo.setCurrentIndex(0)  # P1 -- unedited
+        panel.select_player(1)  # unedited
         assert panel.current_values()["base_priority"] == current_value(window.scenario, spec, 1)
 
-        panel.player_combo.setCurrentIndex(2)  # back to P3
+        panel.select_player(3)  # back to P3
         assert panel.current_values()["base_priority"] == before + 7
     finally:
         _close(window)
@@ -725,7 +799,7 @@ def test_a_read_only_file_still_navigates_but_cannot_write() -> None:
 def test_each_button_reports_the_selected_player() -> None:
     panel, reported = _pov_panel(_loaded_blank())
     try:
-        panel.player_combo.setCurrentIndex(4)  # P5
+        panel.player_combo.setCurrentIndex(5)  # P5, after GAIA's row 0
         assert ("selected", 5) in reported
         panel.set_view_button.click()
         panel.reset_view_button.click()
@@ -742,27 +816,28 @@ def test_player_selected_fires_on_the_combo_and_on_select_player() -> None:
     the combo -- so one callback covers both paths."""
     panel, reported = _pov_panel(_loaded_blank())
     try:
-        panel.player_combo.setCurrentIndex(2)
+        panel.player_combo.setCurrentIndex(3)
         assert panel.select_player(7) is True
+        assert panel.select_player(0) is True
         assert [entry for entry in reported if entry[0] == "selected"] == [
             ("selected", 3),
             ("selected", 7),
+            ("selected", 0),
         ]
-        assert panel.current_player_id() == 7
+        assert panel.current_player_id() == 0
     finally:
         panel.deleteLater()
 
 
 def test_no_buttons_without_a_point_of_view_group() -> None:
-    """A file whose specs carry no Point of View pair -- pre-1.40, or a
-    1.41 one, whose mis-framed copy specs_for() drops -- gets the spinboxes
-    and the buttons removed together."""
+    """A file whose Map section has no initial_player_views (pre-1.40) gets
+    the spinboxes and the buttons removed together."""
     from descape import player_fields
     from descape.players_panel import PlayersPanel
 
     conftest.ensure_qapp()
     loaded = _loaded_blank()
-    loaded.scenario_version = player_fields._MISALIGNED_POV_VERSION
+    del loaded._scenario.sections["Map"].retriever_map["initial_player_views"]
     panel = PlayersPanel()
     try:
         panel.show_scenario(loaded)
@@ -861,10 +936,10 @@ def test_a_read_only_pov_row_keeps_its_gate_reason_tooltip() -> None:
 
 @pytest.mark.corpus
 def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
-    """The group and its buttons on every real file: absent on the six
-    C2_ElCid 1.41 scenarios (Point of View bytes framed one early) and on
-    the files predating initial_player_views (the 1.37 one among them),
-    present with all three buttons everywhere else."""
+    """The group and its buttons on every real file: absent on the files
+    predating initial_player_views (the 1.37 one among them), present with
+    all three buttons everywhere else, the six C2_ElCid 1.41 scenarios
+    included now that library_compat.fix_structure() frames them."""
     from descape import player_fields
     from descape.players_panel import PlayersPanel
     from descape.scenario_io import load_map_and_units
@@ -872,8 +947,7 @@ def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
     conftest.ensure_qapp()
     loaded = load_map_and_units(scenario_path)
     map_section = loaded._scenario.sections.get("Map")
-    stored = map_section is not None and "initial_player_views" in map_section.retriever_map
-    expected = stored and loaded.scenario_version != player_fields._MISALIGNED_POV_VERSION
+    expected = map_section is not None and "initial_player_views" in map_section.retriever_map
     panel = PlayersPanel()
     try:
         panel.show_scenario(loaded)
@@ -897,10 +971,8 @@ def test_players_panel_populates_every_corpus_file(scenario_path) -> None:
     predate per_player_population_cap (Pop Limit falls back to
     Units.player_data_4), 2 predate initial_player_views (Point of View
     group absent entirely), and 1 (the 1.37 file) has GAIA's
-    0xFFFFFFFF starting age -- irrelevant here since the panel never shows
-    player_id 0, but its presence is what makes P1..P8 on that same file
-    worth checking for real."""
-    from descape.player_fields import current_value
+    0xFFFFFFFF starting age, which GAIA's own row (GH #187) shows as stored."""
+    from descape.player_fields import current_value, specs_for_player
 
     window = _window()
     try:
@@ -908,10 +980,11 @@ def test_players_panel_populates_every_corpus_file(scenario_path) -> None:
         window.mode_combo.setCurrentText("Players")
         panel = window.players_panel
         assert panel._loaded is window.scenario
-        assert panel.player_combo.count() == 8
+        assert panel.player_combo.count() == 9
 
-        for player_id in (1, 8):
-            panel.player_combo.setCurrentIndex(player_id - 1)
+        for player_id in (1, 8, 0):
+            panel.select_player(player_id)
+            assert panel._specs == specs_for_player(window.scenario, player_id)
             for spec in panel._specs:
                 raw = current_value(window.scenario, spec, player_id)
                 shown = _shown_value(panel, spec)
@@ -935,7 +1008,7 @@ def test_browsing_players_leaves_the_document_clean(scenario_path, tmp_path) -> 
         window.load_scenario(scenario_path)
         window.mode_combo.setCurrentText("Players")
         panel = window.players_panel
-        for player_index in range(8):
+        for player_index in range(panel.player_combo.count()):
             panel.player_combo.setCurrentIndex(player_index)
             for spec in panel._specs:
                 panel.widget_for(spec.field_id).setFocus()

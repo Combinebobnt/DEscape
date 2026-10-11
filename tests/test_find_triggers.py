@@ -242,7 +242,7 @@ def test_follow_replace_of_both_archers_pairs_the_patrol() -> None:
 # -- CSV -----------------------------------------------------------------------------
 
 
-def test_hits_to_csv_round_trip_and_compatdata(tmp_path) -> None:
+def test_hits_to_csv_round_trip_and_mods_subscribed(tmp_path) -> None:
     hits = _find(_loaded(), text="bridge")
     out = tmp_path / "hits.csv"
     assert ft.hits_to_csv(hits, out) == len(hits)
@@ -250,8 +250,11 @@ def test_hits_to_csv_round_trip_and_compatdata(tmp_path) -> None:
         rows = list(csv.reader(handle))
     assert tuple(rows[0]) == ft.CSV_COLUMNS
     assert rows[1][1] == "[Find] Messages"
-    blocked = tmp_path / "compatdata" / "hits.csv"
-    blocked.parent.mkdir()
+    blocked = tmp_path / "mods" / "subscribed" / "hits.csv"
+    blocked.parent.mkdir(parents=True)
     with pytest.raises(WriteBlockedError):
         ft.hits_to_csv(hits, blocked)
     assert not blocked.exists()
+    allowed = tmp_path / "compatdata" / "hits.csv"
+    allowed.parent.mkdir()
+    assert ft.hits_to_csv(hits, allowed) == len(hits)

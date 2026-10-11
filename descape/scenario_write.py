@@ -120,10 +120,10 @@ from descape.options_model import (
 from descape.scenario_io import (
     _LAYER_OFFSET,
     _LAYER_STRUCT,
-    FORBIDDEN_WRITE_MARKER,
     TEMPLATE_DIR,
     LoadedScenario,
-    is_under_compatdata,
+    is_workshop_subscribed,
+    names_workshop_subscribed,
 )
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
@@ -146,7 +146,7 @@ _MAP_SIZE_STRUCT = struct.Struct("<ii")
 
 
 class WriteBlockedError(Exception):
-    """Raised instead of writing, e.g. for the compatdata guard or an
+    """Raised instead of writing, e.g. for the mods/subscribed/ guard or an
     unsupported (terrain_write_supported=False) file."""
 
 
@@ -613,10 +613,10 @@ def write_scenario(
     the real write; WriteResult.backups lists whichever were written.
 
     Raises:
-        WriteBlockedError: if out_path contains FORBIDDEN_WRITE_MARKER as
-            written or once resolved through symlinks (never write into a
-            Workshop/Proton compatdata folder -- the user's only copy of
-            these files; scenario_io.is_under_compatdata()), if out_path
+        WriteBlockedError: if out_path is in a subscribed-mods
+            (mods/subscribed/) folder as written or once resolved through
+            symlinks (the game's mod manager re-syncs those, so an edit there is silently lost;
+            scenario_io.is_workshop_subscribed()), if out_path
             cannot be resolved at all (a symlink loop, say: such a path can't
             be shown to be outside one, so it fails closed), if out_path's parent is
             TEMPLATE_DIR (never overwrite a shipped File > New template --
@@ -650,18 +650,18 @@ def write_scenario(
     out_path = Path(out_path)
     # The as-written check first, so a marked path whose resolve() raises is still "blocked".
     resolved = None
-    if FORBIDDEN_WRITE_MARKER not in str(out_path):
+    if not names_workshop_subscribed(out_path):
         try:
             resolved = out_path.resolve()
         except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
             raise WriteBlockedError(
                 f"Refusing to write to a path that cannot be resolved ({e}), so it can't be"
-                f" shown to be outside a {FORBIDDEN_WRITE_MARKER!r} folder: {out_path}"
+                f" shown to be outside a subscribed-mods (mods/subscribed/) folder: {out_path}"
             ) from e
-    if resolved is None or is_under_compatdata(out_path, resolved):
+    if resolved is None or is_workshop_subscribed(out_path, resolved):
         raise WriteBlockedError(
-            f"Refusing to write to a path containing {FORBIDDEN_WRITE_MARKER!r}"
-            f" (as written or through a symlink): {out_path}"
+            "Refusing to write into a subscribed-mods (mods/subscribed/) folder"
+            f" (as written or through a symlink; the game's mod manager re-syncs it): {out_path}"
         )
     if resolved.parent == TEMPLATE_DIR.resolve():
         raise WriteBlockedError(

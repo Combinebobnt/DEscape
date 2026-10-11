@@ -220,7 +220,11 @@ python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file 
 
 Saving (Ctrl+S or File > Save) leaves a `.bak` and, on the first save of a
 given file, a one-time `.orig` snapshot beside it, so the write path always
-has something to fall back to. Settings > Saving can switch that pair off.
+has something to fall back to. Settings > Saving can switch that pair off,
+except in the game's own profile folder (below), where Save always writes
+both. You can save straight into the game's scenario folder; a
+subscribed-mods `mods/subscribed/` folder is refused, because the game's
+mod manager re-syncs it and would silently undo the edit.
 
 Autosave (Settings > Saving, on by default) writes a recovery snapshot every
 few minutes to its own rotating slot. It never writes the file you have open,
@@ -228,9 +232,11 @@ and never clears the unsaved-changes marker. A tick is skipped while the
 document is clean, unchanged since its last autosave, or mid-stroke, so the
 write only ever lands on an idle map. Slots go in an `autosave/` folder
 beside `config.yaml` or a folder you pick in Settings > Saving, or beside the
-scenario itself if you pick that. Switching folders leaves existing autosaves
-where they are, still listed in Recover, and a `compatdata/` folder is
-refused. File > Recover from Autosave… lists them and opens one as a new untitled
+scenario itself if you pick that (except for a scenario in the game's
+profile folder: its slots go to the autosave folder, to keep them out of
+the game's own folder). Switching folders leaves existing
+autosaves where they are, still listed in Recover, and a `mods/subscribed/`
+folder is refused. File > Recover from Autosave… lists them and opens one as a new untitled
 document, so recovering can never overwrite the file you're comparing it
 against.
 
@@ -247,7 +253,7 @@ it replaces text or types, deletes, enables or disables the matches, and
 double-clicking jumps to the trigger. Replacing an object offers to retarget
 the trigger effects that select it by type, in the same undo step.
 
-**File > Resize Map…** grows or shrinks the open map, keeping any of nine
+**Map > Resize Map…** grows or shrinks the open map, keeping any of nine
 anchors in place (a corner, an edge's midpoint, or the centre). Terrain,
 elevation, objects and trigger areas and locations move with the map; new
 ground is plain grass at the height of the old edge beside it, so no cliff-like
@@ -309,7 +315,7 @@ in Terrain mode, then open the dialog from any mode. It filters the outlined
 region to eligible tiles (any tile, water only, or one terrain type),
 optionally skips tiles already under a unit, and places a count or a density of
 randomized copies as one undo step. The live "N eligible tiles" line is exactly
-what will be placed.
+what will be placed. Resources and trees always go to GAIA, whatever the owner.
 
 Its other mode, **Move the selected units**, takes the units selected in Units
 mode instead and moves each one to a random eligible tile of the region, one
@@ -370,6 +376,12 @@ at the OS-standard per-user config location, not in the repo checkout:
 - **macOS:** `~/Library/Application Support/DEscape/config.yaml`
 - **Windows:** `%APPDATA%\DEscape\config.yaml`
 
+With an install configured the map draws each terrain's real texture, blends
+each tile into higher-priority neighbouring terrain through the game's own
+transition masks, and draws a tile's second ("layered") terrain over it.
+View > Layers > Terrain Textures and Terrain Blending turn these off. The
+blending is a first pass and does not match the game exactly.
+
 No install configured, or a specific terrain missing from it, both fall back
 to the guessed palette automatically — this is optional, not a hard
 dependency.
@@ -377,7 +389,7 @@ dependency.
 DEscape can also read content from your AoE2:DE **profile folder** (the one
 holding a numeric folder per account, each with its own `resources/` and
 `mods/`), including your enabled subscribed and local mods. It is optional
-and only ever read, never written: without it, only the install's own
+and content lookup only reads it: without it, only the install's own
 content is offered. It is usually found on its own: on Windows at
 `%USERPROFILE%\Games\Age of Empires 2 DE`, and on Linux in the Proton prefix
 beside the install's Steam library
@@ -422,6 +434,11 @@ enum names. That distinction is not cosmetic — `BEACH_NON_NAVIGABLE` is
 classified as land, and `FOREST_MANGROVE` and the rice-farm terrains as
 shallows, both of which a name match gets backwards.
 
+`descape/terrain_blend_map.json` is the third (`tools/gen_terrain_blend_map.py`):
+each terrain's blend priority, blend type and layer mask file name, which
+terrain blending reads to decide which neighbour bleeds into which and through
+which of the install's masks.
+
 A related SLP-icon decoder (`descape/slp_decoder.py`) exists from investigating
 whether UI graphics could enhance the viewer too, parked rather than wired in.
 
@@ -446,7 +463,7 @@ distributed combination of this tool with its dependencies is GPL territory
 regardless.
 
 The committed game-derived data files (`descape/terrain_texture_map.json`,
-`terrain_classes.json`, `tree_unit_ids.json`, `unit_render_data.json`,
+`terrain_classes.json`, `terrain_blend_map.json`, `tree_unit_ids.json`, `unit_render_data.json`,
 `unit_graphic_map.json`, `unit_stats.json`, `object_catalog.json`) are factual id/name/filename correspondence tables, not
 game asset content. The four committed
 `.aoe2scenario` files (`descape/templates/blank_120x120.aoe2scenario` and the

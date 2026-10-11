@@ -298,7 +298,7 @@ def test_stepped_full_rerender_fallback_fires_for_mirror(monkeypatch) -> None:
         dirty = window.on_mirror(plan)
         assert dirty  # well past the patched threshold
 
-        assert "re-rendered full map instead of patching" in window.status_log.toPlainText()
+        assert "refreshed the full map in place instead of patching" in window.status_log.toPlainText()
         assert QApplication.overrideCursor() is None
     finally:
         window.edit_history.mark_saved()

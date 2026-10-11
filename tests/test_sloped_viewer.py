@@ -46,15 +46,14 @@ def _show_and_settle(window) -> None:
 
 def test_sloped_actually_composites_through_a_real_paint_cycle() -> None:
     """The gap the other tests here don't cover: none of them show the
-    window, so none of them would catch SlopedChunkCache's depth-1 mip
-    level set (_init_mip_levels({0: tile_px}), see that class's own
-    docstring) interacting badly with Track B-D-c/d's real LOD-selection
-    paint() path (aa885ee/5547904), which landed on viewer.py AFTER this
-    class was written and was never driven through a Sloped cache before.
-    Asserts the chunk cache actually gets populated (not just constructed)
-    by a real MapCanvasItem.paint() dispatch, at both the initial
-    fit-to-view scale and a zoomed-in scale that forces _select_mip() to
-    read the transform."""
+    window, so none of them would catch SlopedChunkCache's mip ladder (the
+    coarser levels only, TASK-031.60; see that class's own docstring)
+    interacting badly with Track B-D-c/d's real LOD-selection paint() path
+    (aa885ee/5547904). Asserts the chunk cache actually gets populated (not
+    just constructed) by a real MapCanvasItem.paint() dispatch: at the
+    initial fit-to-view scale, at a coarser level, and at a zoomed-in scale
+    that forces _select_mip() to read the transform, at level 0, the finest
+    level Sloped has."""
     from PyQt5.QtWidgets import QApplication
 
     window = conftest.terrain_edit_window()
@@ -62,10 +61,11 @@ def test_sloped_actually_composites_through_a_real_paint_cycle() -> None:
         window.terrain_style_combo.setCurrentText("Sloped")
         _show_and_settle(window)
         assert len(window._cache._cache) > 0, "fit-to-view paint composited no chunks"
+        assert min(key[0] for key in window._cache._cache) < 0, "fit-to-view paint stayed at level 0"
 
         window.map_view.scale(8.0, 8.0)
         QApplication.processEvents()
-        assert len(window._cache._cache) > 0, "zoomed-in paint composited no chunks"
+        assert any(key[0] == 0 for key in window._cache._cache), "zoomed-in paint composited no level-0 chunk"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -404,6 +404,77 @@ def test_sloped_highlight_rebuild_builds_only_shapes_it_has_not_seen(monkeypatch
         mv._update_highlight(41, 40)
         assert len(calls) - first == len(shapes(41, 40) - shapes(40, 40)), "a seen shape was rebuilt"
         assert mv._highlight_outline_item is not None and not mv._highlight_outline_item.path().isEmpty()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_scene_space_reads_stay_at_level_0_while_a_coarser_level_is_shown(monkeypatch) -> None:
+    """TASK-031.60: MapView's Sloped readers (tile outline, pick, continuous
+    pick, a unit's rise and outline) take scene-space geometry from level 0
+    while the view paints a coarser level, and none of them builds level 0.
+    The oracle is the same reads with _sloped_cache() swapped for a fresh
+    cache; a stand-in carrying the shown level's corner_rise must disagree."""
+    from types import SimpleNamespace
+
+    from PyQt5.QtCore import QPointF
+
+    from descape import render, unit_pick
+    from descape.render_cache import SlopedChunkCache
+
+    window = conftest.terrain_edit_window()
+    try:
+        mm = window.scenario.map_manager
+        for tile in mm.terrain:
+            tile.elevation = (tile.x // 2 + tile.y // 3) % 3
+        unit_tile = next((x, y) for y in range(50, 70) for x in range(50, 70) if mm.get_tile(x, y).elevation == 2)
+        window._ensure_unit_edits().add(1, 83, unit_tile[0] + 0.5, unit_tile[1] + 0.5)
+        window.terrain_style_combo.setCurrentText("Stepped")
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window._rebuild_unit_index()
+        _show_and_settle(window)
+        mv, cache = window.map_view, window._cache
+        visible = mv.viewport_chunk_target()[0]
+        assert visible < 0 and {key[0] for key in cache._cache} == {visible}, "the fit paint did not stay coarse"
+        builds: list[int] = []
+        real = cache._commit_level
+        monkeypatch.setattr(cache, "_commit_level", lambda mip, *a: (builds.append(mip), real(mip, *a))[1])
+
+        (entry,) = [e for e in mv._unit_index.entries if e.unit.unit_const == 83]
+        tiles = [(x, y) for y in range(unit_tile[1] - 3, unit_tile[1] + 4) for x in range(unit_tile[0] - 3, unit_tile[0] + 4)]
+
+        def reads():
+            polygons = {t: mv._tile_polygon(*t) for t in tiles}
+            points = [QPointF(p.boundingRect().center()) for p in polygons.values()]
+            return (
+                {t: [(q.x(), q.y()) for q in p] for t, p in polygons.items()},
+                [mv._pick_tile(p) for p in points],
+                [mv._pick_map_point(p) for p in points],
+                mv._range_ring_rise_px(entry),
+                [list(poly) for poly in (mv._unit_polygons_for(entry) or [])],
+            )
+
+        got = reads()
+        assert got[4] and None not in got[1], "no unit outline or an unpicked tile -- vacuous"
+        assert builds == [] and cache._levels[0].gen == -1, "a scene-space read built level 0"
+        assert 0 not in {key[0] for key in cache._cache}, "a scene-space read composited level 0"
+
+        elevations, corner_rise, proj = render.sloped_elevations_and_proj(window.scenario)
+        fresh = SlopedChunkCache(window.scenario, elevations, corner_rise, proj, proj.tile_px)
+
+        def stand_in(rise):
+            # Only what the readers touch, so no reader can reach a level of its own.
+            return SimpleNamespace(corner_rise=rise, pick_tile=fresh.pick_tile, with_units=True, sprites_enabled=False)
+
+        right = stand_in(fresh.corner_rise)
+        monkeypatch.setattr(mv, "_sloped_cache", lambda: right)
+        assert got == reads(), "a read differs from a fresh level-0 cache's"
+
+        shown_rise = cache._level_corner_rise(cache._levels[visible])
+        wrong = stand_in(shown_rise)
+        monkeypatch.setattr(mv, "_sloped_cache", lambda: wrong)
+        assert unit_pick.unit_rise_px_for(entry, shown_rise) != got[3], "the unit's rise is the same at both levels -- vacuous"
+        assert reads()[0] != got[0], "the shown level's corner_rise outlines the same -- vacuous"
     finally:
         window.edit_history.mark_saved()
         window.close()

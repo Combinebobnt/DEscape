@@ -807,3 +807,577 @@ def test_draw_stroke_record_is_covered_by_its_live_repaints(monkeypatch) -> None
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# --- GH #183: auto-placed trees skip cliff tiles ---
+
+CLIFF_3X2 = 269  # span (3, 2): anchor (11.5, 11.0) on tile (10, 10), so footprint and anchor tile differ
+CLIFF_3X3 = 264
+
+
+def _place_cliff(window, const: int, player: int, tile=(10, 10)):
+    from descape import render, terrain_palette
+
+    span = terrain_palette.tile_span(const, (1, 1))
+    x, y = render.span_anchor(tile[0], tile[1], *span)
+    model = window._ensure_unit_edits()
+    assert model is not None
+    with window._unit_edit(model, "Place cliff", [player]):
+        cliff = model.add(player, const, x, y)
+    mm = window.scenario.map_manager
+    footprint = set(render.unit_occupied_tiles(cliff, mm.map_width, mm.map_height))
+    assert len(footprint) == span[0] * span[1]
+    return footprint
+
+
+def _oak_tiles(window) -> list[tuple[int, int]]:
+    return [(int(u.x), int(u.y)) for u in window.scenario.unit_manager.units[0] if u.unit_const == FOREST_OAK_CONST]
+
+
+@pytest.mark.parametrize(("const", "player"), [(CLIFF_3X2, 0), (CLIFF_3X3, 1)])
+def test_drawing_forest_over_a_cliff_plants_no_tree_on_its_footprint(const: int, player: int) -> None:
+    window = _window("draw")
+    try:
+        window.paint_trees_check.setChecked(True)
+        window.paint_eye_candy_check.setChecked(False)
+        footprint = _place_cliff(window, const, player)
+        xs = [x for x, _y in footprint]
+        ys = [y for _x, y in footprint]
+        beyond = (max(xs) + 1, min(ys))
+        window.on_edit_stroke_start()
+        for tile in [*sorted(footprint), beyond]:
+            window.on_edit_stroke_tile(*tile, 0)
+        window.on_edit_stroke_end()
+
+        mm = window.scenario.map_manager
+        assert all(mm.get_tile(x, y).terrain_id == FOREST_OAK for x, y in footprint)  # terrain still painted
+        oaks = _oak_tiles(window)
+        assert not footprint & set(oaks)
+        assert oaks == [beyond]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_paint_can_forest_plants_no_tree_on_a_cliff_footprint(monkeypatch) -> None:
+    import descape.viewer as viewer_module
+
+    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
+    window = _window("fill")
+    try:
+        window.paint_trees_check.setChecked(True)
+        window.paint_eye_candy_check.setChecked(False)
+        footprint = _place_cliff(window, CLIFF_3X2, 0)
+        window.on_fill(0, 0, 0)
+
+        mm = window.scenario.map_manager
+        assert all(t.terrain_id == FOREST_OAK for t in mm.terrain)
+        oaks = set(_oak_tiles(window))
+        assert not footprint & oaks
+        assert len(oaks) == mm.map_width * mm.map_height - len(footprint)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- Over-cap stroke end (TASK-031.61 A2) ---
+
+OVER_CAP = 4  # UNIT_SPLICE_MAX_UNITS pinned under STROKE_TILES' 8 trees
+
+
+@pytest.fixture
+def tree_sprites(sprite_install, monkeypatch):  # noqa: F811 -- the imported fixture, requested by name
+    """sprite_install's synthetic sprite drawn for every tree const too, so
+    the trees a stroke plants or removes are real sprites in the oracle."""
+    from descape import terrain_units, unit_sprites
+
+    from test_unit_sprites import FILE_NAME
+
+    entry = {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 4, "mirroring_mode": 6, "frame_count": 1}
+    mapping = {CONST: entry, **dict.fromkeys(terrain_units.TREE_CONSTS, entry)}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: mapping)
+    unit_sprites.clear_caches()
+
+
+def _fresh_cache(window):
+    """A new cache of the window's style over its current scenario, with its settings."""
+    from descape import render
+    from descape.render_cache import IsoChunkCache, SlopedChunkCache
+
+    mm = window.scenario.map_manager
+    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    kwargs = {"unit_filter": window._unit_filter, "sprites": window._sprites_enabled, "layers": window._layers}
+    if isinstance(window._cache, IsoChunkCache):
+        elevations, proj = render.elevations_and_proj(window.scenario)
+        return IsoChunkCache(window.scenario, elevations, proj, tile_px, **kwargs)
+    elevations, corner_rise, proj = render.sloped_elevations_and_proj(window.scenario)
+    return SlopedChunkCache(window.scenario, elevations, corner_rise, proj, tile_px, **kwargs)
+
+
+def _ids_by_tile(by_tile: dict) -> dict:
+    return {tile: [(id(u), color) for u, color in entries] for tile, entries in by_tile.items() if entries}
+
+
+def _oracle_levels(window) -> tuple[int, ...]:
+    """The visible level (mip 0, pinned) and a second resident one (1, else
+    -1, the only one on Sloped's coarser ladder), then mip -1 too when both
+    exist (A4's terrain eviction)."""
+    levels = window._cache.mip_levels()
+    return (0, *(mip for mip in (1, -1) if mip in levels)) if len(levels) > 1 else (0,)
+
+
+def _render_levels(window) -> None:
+    """Every oracle level's whole canvas, all left resident (a chunk evicted
+    in between would redraw fresh and hide a stale one)."""
+    cache = window._cache
+    for mip in _oracle_levels(window):
+        cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+    for mip in _oracle_levels(window):
+        cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, 0, 0, *cache.canvas_dims(mip))
+        resident = sum(1 for m, _cx, _cy in cache._cache if m == mip)
+        assert resident == (cx1 - cx0 + 1) * (cy1 - cy0 + 1), f"mip {mip}: {resident} chunks resident"
+
+
+def _check_against_fresh(window, step: str) -> None:
+    from descape import render
+
+    cache = window._cache
+    fresh_units = render._units_by_tile(window.scenario, cache.unit_filter)
+    assert _ids_by_tile(cache.units_by_tile) == _ids_by_tile(fresh_units), f"{step}: units_by_tile is stale"
+    fresh = _fresh_cache(window)
+    for mip in _oracle_levels(window):
+        w, h = cache.canvas_dims(mip)
+        assert np.array_equal(cache.render_rect(0, 0, w, h, mip=mip), fresh.render_rect(0, 0, w, h, mip=mip)), (
+            f"{step}: mip {mip} differs from a fresh render"
+        )
+
+
+def _over_cap_window(style: str, monkeypatch):
+    """_styled_window() with sprites on, the cap pinned under a stroke's trees,
+    mip 0 shown (the whole canvas) and every oracle level resident."""
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    window = _styled_window(style)
+    window.show_sprites_action.setChecked(True)
+    assert window._cache.sprites_enabled
+    window._cache.max_bytes *= 8  # room for every oracle level at once
+    _cx0, _cy0, cx1, cy1 = window._cache.chunk_index_range(0, 0, 0, *window._cache.canvas_dims(0))
+    monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (0, 0, 0, cx1, cy1))
+    return window
+
+
+def _over_cap_strokes(window, before_step=None) -> None:
+    """Stroke A plants 8 oaks, stroke B replaces 4 of them with palms and adds
+    4 more: both past OVER_CAP. Every oracle level is re-rendered right before
+    each stroke, then checked against a fresh build, failing as `<step>: ...`."""
+    for step, terrain, tiles in (("stroke A", FOREST_OAK, STROKE_TILES), ("stroke B", FOREST_PALM, SHIFTED_TILES)):
+        _render_levels(window)
+        if before_step is not None:
+            before_step(step)
+        _draw(window, terrain, tiles)
+        _check_against_fresh(window, step)
+
+
+@pytest.mark.parametrize("repaint", ["patch", "evict"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_over_cap_stroke_end_takes_the_scoped_path_and_matches_a_fresh_render(
+    style, repaint, tree_sprites, monkeypatch
+) -> None:
+    """Past UNIT_SPLICE_MAX_UNITS the stroke end still hands its splices to
+    the scoped repaint; the cache refuses with `cap` and updates units_by_tile
+    in place. No whole-canvas eviction and no render._units_by_tile() walk."""
+    from descape import render
+
+    _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        calls = _spy(window, monkeypatch)
+        evictions = _spy_evictions(window, monkeypatch)
+        walks = []
+        real_walk = render._units_by_tile
+        monkeypatch.setattr(render, "_units_by_tile", lambda *a, **k: (walks.append(1), real_walk(*a, **k))[1])
+        canvas = (0, 0, *window._cache.canvas_dims(0))
+        for step, terrain, tiles in (("stroke A", FOREST_OAK, STROKE_TILES), ("stroke B", FOREST_PALM, SHIFTED_TILES)):
+            _render_levels(window)
+            del walks[:]
+            _draw(window, terrain, tiles)
+            changed = calls["changed"][-1]
+            assert changed and len(changed) > OVER_CAP, f"{step}: took {changed}"
+            assert walks == [], f"{step}: walked every unit"
+            assert canvas not in evictions, f"{step}: evicted the whole canvas"
+            assert bool(evictions) is (repaint == "evict"), f"{step}: {evictions}"
+            del evictions[:]
+        assert calls["in_place"] == 2 and calls["wholesale"] == 0
+        monkeypatch.setattr(render, "_units_by_tile", real_walk)
+        _check_against_fresh(window, "end")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_over_cap_strokes_match_a_fresh_render_on_every_resident_level(style, tree_sprites, monkeypatch) -> None:
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        _over_cap_strokes(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", ["stroke A", "stroke B"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_over_cap_check_names_the_one_stroke_whose_update_went_stale(
+    style, broken, tree_sprites, monkeypatch
+) -> None:
+    """Control (GOTCHAS: a step-k break fails naming step k): the in-place
+    units_by_tile update is skipped on stroke `broken` only, claiming success."""
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        cache = window._cache
+        real = cache._update_units_by_tile_in_place
+        current = {}
+
+        def update(changed):
+            if current.get("step") == broken:
+                cache._units_version += 1
+                return True
+            return real(changed)
+
+        monkeypatch.setattr(cache, "_update_units_by_tile_in_place", update)
+        with pytest.raises(AssertionError, match=f"{broken}: "):
+            _over_cap_strokes(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_over_cap_flat_stroke_end_stays_wholesale(monkeypatch) -> None:
+    """Flat keeps the cap: with its cost ratio off, only the cap sends it wholesale."""
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    _splice_any_batch(monkeypatch)
+    window = _styled_window("Flat")
+    try:
+        calls = _spy(window, monkeypatch)
+        _draw(window, FOREST_OAK)
+        assert calls["changed"] == [None]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", ["stroke A", "stroke B"])
+def test_the_over_cap_check_names_the_stroke_that_left_a_second_level_stale(
+    broken, tree_sprites, monkeypatch
+) -> None:
+    """Control for the second resident level: on stroke `broken` only, the
+    eviction of the non-visible levels is dropped, and the check must fail on
+    that level, naming the stroke."""
+    window = _over_cap_window("Stepped", monkeypatch)
+    try:
+        cache = window._cache
+        second = _oracle_levels(window)[1]
+        real_evict = cache.invalidate_region
+        current = {}
+
+        def evict(bbox, levels=None, **kwargs):
+            if current.get("step") == broken and levels is not None and 0 not in levels:
+                return None
+            return real_evict(bbox, levels=levels, **kwargs)
+
+        monkeypatch.setattr(cache, "invalidate_region", evict)
+        with pytest.raises(AssertionError, match=f"{broken}: mip {second} differs"):
+            _over_cap_strokes(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- Over-cap membership undo/redo (TASK-031.61 A3) ---
+
+# Starts left of STROKE_TILES, so its undo puts A's first 4 oaks back mid-list (not tail adds).
+EARLIER_TILES = [(16 + i, 30) for i in range(8)]
+HISTORY_STEPS = ("undo B", "undo A", "redo A", "redo B")
+
+
+def _enter_units(window) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window.mode_combo.setCurrentText("Units")
+    QApplication.processEvents()
+    assert window.mode == "units"
+
+
+def _check_index_and_selection(window, step: str, selected: list) -> list:
+    """The pick index equals a fresh build, and the selection is the previous
+    one minus the keys a fresh index no longer resolves, in order (a dropped
+    key never comes back). Returns that selection."""
+    from descape import unit_pick
+
+    index = window.map_view._unit_index
+    fresh = unit_pick.build_index(window.scenario, window._unit_filter)
+    assert index is not None and set(index.by_key) == set(fresh.by_key), f"{step}: the pick index is stale"
+    assert index.by_tile == fresh.by_tile, f"{step}: the pick index is stale"
+    expected = [k for k in selected if fresh.entry_for_key(k) is not None]
+    assert window._selection == expected, f"{step}: selection"
+    return expected
+
+
+def _over_cap_history(window, before_step=None, after_step=None) -> None:
+    """Strokes A (8 oaks) and B (8 palms over A's first 4 oaks), both past
+    OVER_CAP, then HISTORY_STEPS. Every oracle level is re-rendered right
+    before each step, then checked against a fresh build, failing as `<step>: ...`."""
+    _draw(window, FOREST_OAK, STROKE_TILES)
+    _draw(window, FOREST_PALM, EARLIER_TILES)
+    acts = {"undo": window.undo, "redo": window.redo}
+    for step in HISTORY_STEPS:
+        _render_levels(window)
+        if before_step is not None:
+            before_step(step)
+        acts[step.split()[0]]()
+        _check_against_fresh(window, step)
+        if after_step is not None:
+            after_step(step)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_undo_and_redo_of_over_cap_draws_keep_their_splices_and_match_a_fresh_render(
+    style, tree_sprites, monkeypatch
+) -> None:
+    """Past UNIT_SPLICE_MAX_UNITS a Draw's undo and redo still hand the scoped
+    repaint their splices (never the whole canvas); the cache picks in-place
+    or a units_by_tile rebuild. The pick index and selection follow, in Units mode."""
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        calls = _spy(window, monkeypatch)
+        evictions = _spy_evictions(window, monkeypatch)
+        canvas = (0, 0, *window._cache.canvas_dims(0))
+        state = {}
+
+        def before(step):
+            if step == HISTORY_STEPS[0]:
+                _enter_units(window)
+                window._selection = [(0, u.reference_id) for u in window.scenario.unit_manager.units[0]]
+                window._refresh_selection_view()
+                state["selected"] = list(window._selection)
+                assert len(state["selected"]) >= 12
+            del evictions[:]
+
+        def after(step):
+            changed = calls["changed"][-1]
+            assert changed and len(changed) > OVER_CAP, f"{step}: took {changed}"
+            assert canvas not in evictions, f"{step}: evicted the whole canvas"
+            state["selected"] = _check_index_and_selection(window, step, state["selected"])
+
+        _over_cap_history(window, before, after)
+        # undo B re-inserts mid-list (a units_by_tile rebuild); the other three update in place.
+        assert calls["in_place"] == 2 + 3, calls
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", ["undo B", "redo B"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_over_cap_history_check_names_the_one_step_whose_units_went_stale(
+    style, broken, tree_sprites, monkeypatch
+) -> None:
+    """Control (GOTCHAS: a step-k break fails naming step k): invalidate_units
+    does nothing on step `broken` only (a rebuild on undo B, in place on redo B)."""
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        cache = window._cache
+        real = cache.invalidate_units
+        current = {}
+
+        def invalidate(changed=None, splice_levels=True):
+            if current.get("step") == broken:
+                return None
+            return real(changed, splice_levels=splice_levels)
+
+        monkeypatch.setattr(cache, "invalidate_units", invalidate)
+        with pytest.raises(AssertionError, match=f"{broken}: "):
+            _over_cap_history(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
+def test_the_gaia_membership_diff_is_uncapped_except_on_flat(style, monkeypatch) -> None:
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    _splice_any_batch(monkeypatch)
+    window = _styled_window(style)
+    try:
+        _draw(window, FOREST_OAK)
+        calls = _spy(window, monkeypatch)
+        diff = window._membership_diff(window.edit_history.peek_undo(), undo=True)
+        window.undo()
+        if style == "Flat":
+            assert diff is None and calls["changed"] == [None]
+        else:
+            assert diff is not None and len(diff[0]) == len(STROKE_TILES)
+            assert calls["changed"][-1] and len(calls["changed"][-1]) > OVER_CAP
+            assert np.array_equal(_canvas(window), _fresh(window, style))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_undo_and_redo_of_an_over_cap_two_player_place_keep_their_splices(style, tree_sprites, monkeypatch) -> None:
+    """A3's _if_spliceable(cap=None) widens the paste shape too: one Place
+    record of 6 units across players 1 and 2 (past OVER_CAP) undoes and redoes
+    through its splices, in place, matching a fresh build."""
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Place", [1, 2]):
+            for i in range(3):
+                model.add(1, CONST, 40.5 + 3 * i, 40.5)
+                model.add(2, CONST, 40.5 + 3 * i, 46.5)
+        calls = _spy(window, monkeypatch)
+        for step, act in (("undo", window.undo), ("redo", window.redo)):
+            _render_levels(window)
+            act()
+            changed = calls["changed"][-1]
+            assert changed and len(changed) == 6, f"{step}: took {changed}"
+            assert {s.player_id for s in changed} == {1, 2}, step
+            _check_against_fresh(window, step)
+        assert calls["in_place"] == 2 and calls["wholesale"] == 0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- A terrain + unit history move composites once (TASK-031.61 A4) ---
+
+
+def _spy_composite_order(window, monkeypatch) -> list:
+    """Each cache patch(), patch_sources() and patch_composite() call, and each
+    unit step (_patch_unit_edit_cache), in order. patch() calls the two halves
+    through the instance, so its own halves are recorded after it."""
+    events = []
+    cache = window._cache
+    for name in ("patch", "patch_sources", "patch_composite"):
+        real = getattr(cache, name)
+        monkeypatch.setattr(cache, name, lambda *a, _n=name, _r=real, **k: (events.append(_n), _r(*a, **k))[1])
+    real_step = window._patch_unit_edit_cache
+    monkeypatch.setattr(
+        window, "_patch_unit_edit_cache", lambda *a, **k: (events.append("unit_step"), real_step(*a, **k))[1]
+    )
+    return events
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_draw_undo_and_redo_refresh_terrain_sources_only_before_the_unit_step(
+    style, tree_sprites, monkeypatch
+) -> None:
+    """Undo 1's shape: the tile patch runs only its source half, and the unit
+    step composites the terrain with its own bbox, so nothing is composited
+    first and evicted after. Every oracle level matches a fresh build."""
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        _draw(window, FOREST_OAK, STROKE_TILES)
+        events = _spy_composite_order(window, monkeypatch)
+        for step, act in (("undo", window.undo), ("redo", window.redo)):
+            _render_levels(window)
+            del events[:]
+            act()
+            assert "unit_step" in events, f"{step}: {events}"
+            assert events[: events.index("unit_step")] == ["patch_sources"], f"{step}: {events}"
+            _check_against_fresh(window, step)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _blocked_stroke_history(window, monkeypatch, before_step=None) -> None:
+    """A stroke over a 3x3 block the planner treats as a cliff's footprint
+    (terrain, no tree: GH #183; no cliff unit, whose mark would hide the
+    terrain) and STROKE_TILES (8 oaks), so the terrain bbox reaches well past
+    the unit one; then its undo and redo, each checked as `<step>: ...`."""
+    from types import SimpleNamespace
+
+    from descape import cliff_chain
+
+    block = [(x, y) for y in range(10, 13) for x in range(10, 13)]
+    monkeypatch.setattr(cliff_chain, "existing_cliffs", lambda *_a: [SimpleNamespace(bounds=(10, 13, 10, 13))])
+    _draw(window, FOREST_OAK, [*block, *STROKE_TILES])
+    assert len(window.scenario.unit_manager.units[0]) == len(STROKE_TILES)
+    for step, act in (("undo", window.undo), ("redo", window.redo)):
+        _render_levels(window)
+        if before_step is not None:
+            before_step(step)
+        act()
+        _check_against_fresh(window, step)
+
+
+@pytest.mark.parametrize("repaint", ["patch", "evict", "no_target"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_history_moves_terrain_past_its_units_is_repainted_with_them(style, repaint, tree_sprites, monkeypatch) -> None:
+    """Stepped checks mip 0 (visible), 1 and -1, all resident; Sloped, whose
+    ladder has no finer level (TASK-031.60), 0 and -1."""
+    _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        assert _oracle_levels(window) == ((0, 1, -1) if style == "Stepped" else (0, -1))
+        if repaint == "no_target":
+            monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: None)
+        _blocked_stroke_history(window, monkeypatch)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", ["undo", "redo"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_blocked_stroke_check_names_the_step_whose_terrain_bbox_was_dropped(
+    style, broken, tree_sprites, monkeypatch
+) -> None:
+    """Control: on step `broken` only, the unit step's repaint drops the
+    deferred terrain bbox, and the check must fail there."""
+    _pin_area_ratio(monkeypatch, float("inf"))
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        real = window._repaint_unit_edit_split
+        current = {}
+
+        def split(*args, terrain_bbox=None, **kwargs):
+            return real(*args, terrain_bbox=None if current.get("step") == broken else terrain_bbox, **kwargs)
+
+        monkeypatch.setattr(window, "_repaint_unit_edit_split", split)
+        with pytest.raises(AssertionError, match=f"{broken}: "):
+            _blocked_stroke_history(window, monkeypatch, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("splice", ["empty", "no_tiles"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_unit_step_that_repaints_nothing_still_composites_the_deferred_terrain(style, splice, monkeypatch) -> None:
+    """The unit step's early returns (no splices, or splices touching no tile:
+    here a no-op move of an off-map unit) composite the terrain bbox
+    _apply_dirty() deferred, as its patch would have."""
+    from descape.render_cache import UnitSplice
+
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [1]):
+            unit = model.add(1, CONST, -5.5, -5.5)
+        own, tiles = window._unit_footprint(unit)
+        assert tiles == ()
+        _render_levels(window)
+        mm = window.scenario.map_manager
+        dirty = [y * mm.map_width + x for x, y in STROKE_TILES]
+        for i in dirty:
+            mm.terrain[i].terrain_id = FOREST_PALM
+        deferred: list = []
+        assert window._apply_dirty(dirty, deferred=deferred) is False and len(deferred) == 1
+        changed = [] if splice == "empty" else [UnitSplice(1, 0, unit, own, own, (), ())]
+        window._after_unit_mutation(changed, batch=True, terrain_bbox=deferred[0])
+        _check_against_fresh(window, splice)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

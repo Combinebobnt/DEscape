@@ -93,11 +93,9 @@ def evict_levels(cache, bbox, mips) -> None:
 
 
 def _level_state(cache, mip: int):
-    """(proj, sprites, building_bboxes, corner_rise, extra_top_px) for one level."""
-    if cache.style == "sloped":
-        return cache.proj, cache.sprites, cache.building_bboxes, cache.corner_rise, cache._headroom
-    lvl = cache._levels[mip]
-    return lvl.proj, lvl.sprites, lvl.building_bboxes, None, 0
+    """(proj, sprites, building_bboxes, corner_rise, extra_top_px) for one level,
+    as installed: a stale level is read as is, like sprite_extent_before()."""
+    return cache._unit_level_state(mip)
 
 
 def pre_extent(cache, changed, levels):

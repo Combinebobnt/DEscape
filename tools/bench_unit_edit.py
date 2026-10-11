@@ -231,8 +231,9 @@ def _warm_resident(cache) -> None:
 
 def _settle(cache) -> None:
     """Forces the lazy source rebuild each style owes after invalidate_units(),
-    without compositing. Sloped rebuilds eagerly inside the call, so nothing."""
-    if cache.style == "stepped":
+    without compositing. Sloped is lazy too since TASK-031.59 (a --root before
+    it rebuilt eagerly inside the call, and has no _level)."""
+    if cache.style == "stepped" or (cache.style == "sloped" and hasattr(cache, "_level")):
         for mip in _resident_mips(cache):
             cache._level(mip)
     elif cache.style == "flat":

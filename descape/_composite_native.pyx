@@ -2,7 +2,8 @@
 """Native composite kernel. Built by tools/build_native.py; selected by
 descape/composite_backend.py, which falls back to numpy when this is missing
 or its KERNEL_ABI doesn't match. Every function must stay byte-identical to
-the numpy code it replaces (tests/test_native_composite.py, and
+the numpy code it replaces (tests/test_native_composite.py,
+tests/test_terrain_blend_render.py for blended top blocks, and
 tests/test_sld_native.py for the SLD walk and decode at the end).
 
 Arithmetic mirrors numpy's dtypes exactly: opaque scatters are uint8, darken
@@ -17,7 +18,7 @@ from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 5
+KERNEL_ABI = 6
 
 
 cdef inline bint _gather_scatter(
@@ -285,6 +286,21 @@ ctypedef struct Units:
     const uint8_t* farm_mask
     const uint8_t* farm_rgb
 
+# Terrain blending (TASK-143): per candidate a spec id or -1, each spec a run
+# of (kind, texture slot, mask id) ops in terrain_blend._compose's order.
+# block is the per-call scratch a blended top block is composed into.
+ctypedef struct Blend:
+    const int32_t* cand
+    const int64_t* start
+    const int32_t* ops
+    const uint8_t** masks
+    Py_ssize_t* mask_stride
+    uint8_t* block
+
+# Blend op kinds (native_composite.BLEND_LAYER/BLEND_NEIGHBOUR).
+DEF BLEND_LAYER = 0
+DEF BLEND_NEIGHBOUR = 1
+
 # Unit-pack row kinds (native_composite.UnitPack).
 DEF ROW_MARK = 0
 DEF ROW_CONFORM = 1
@@ -495,6 +511,124 @@ cdef void _farm_and_units(const Canvas* c, const Units* u, Py_ssize_t t, const O
                       (packed >> 16) & 255, (packed >> 8) & 255, packed & 255)
 
 
+cdef void _compose(const Blend* b, Py_ssize_t spec, Py_ssize_t px, const Src* own, const Src* srcs) noexcept nogil:
+    """terrain_blend._compose into b.block: the own crop, then each op. A
+    layer is (d*(256 - m) + t*m + 128) >> 8 with m cropped like the texture;
+    a neighbour (d*a + t*(128 - a) + 64) >> 7 with a the square-space alpha.
+    Every value stays in 0..255, so uint8 storage between ops is exact."""
+    cdef Py_ssize_t r, col, j, ch, slot, mid, stride, ms
+    cdef const uint8_t* trow
+    cdef const uint8_t* mrow
+    cdef uint8_t* d
+    cdef unsigned int a
+    for r in range(px):
+        memcpy(b.block + r * px * 3, own.tex + (own.oy + r) * own.stride + own.ox * 3, px * 3)
+    for j in range(b.start[spec], b.start[spec + 1]):
+        slot = b.ops[3 * j + 1]
+        mid = b.ops[3 * j + 2]
+        if mid < 0 or srcs[slot].tex == NULL:
+            continue
+        stride = srcs[slot].stride
+        ms = b.mask_stride[mid]
+        for r in range(px):
+            trow = srcs[slot].tex + (own.oy + r) * stride + own.ox * 3
+            d = b.block + r * px * 3
+            if b.ops[3 * j] == BLEND_LAYER:
+                mrow = b.masks[mid] + (own.oy + r) * ms + own.ox
+                for col in range(px):
+                    a = mrow[col]
+                    for ch in range(3):
+                        d[ch] = <uint8_t>((d[ch] * (256 - a) + trow[ch] * a + 128) >> 8)
+                    d += 3
+                    trow += 3
+            else:
+                mrow = b.masks[mid] + r * ms
+                for col in range(px):
+                    a = mrow[col]
+                    # a == 128 keeps d exactly.
+                    if a != 128:
+                        for ch in range(3):
+                            d[ch] = <uint8_t>((d[ch] * a + trow[ch] * (128 - a) + 64) >> 7)
+                    d += 3
+                    trow += 3
+
+
+cdef inline void _blend_src(Src* s, const Blend* b, Py_ssize_t k, Py_ssize_t px, const Src* srcs) noexcept nogil:
+    """Swaps a textured candidate's crop for its composed blend block."""
+    cdef Py_ssize_t spec
+    if b == NULL or s.tex == NULL:
+        return
+    spec = b.cand[k]
+    if spec < 0:
+        return
+    _compose(b, spec, px, s, srcs)
+    s.tex = b.block
+    s.stride = px * 3
+    s.ox = 0
+    s.oy = 0
+
+
+cdef int _blend_init(Blend* b, tuple blend, Py_ssize_t n, Py_ssize_t px, list textures,
+                     const int64_t[::1] tex_size) except -1:
+    """Fills b from (cand, start, ops, masks), validating the spec, slot
+    and mask indices and the mask shapes. Crop bounds rest on the caller's
+    tex_size and the tables' own checks, as for a plain crop. The caller
+    frees b with _blend_free even on error."""
+    cdef const int32_t[::1] cand = blend[0]
+    cdef const int64_t[::1] start = blend[1]
+    cdef const int32_t[::1] ops = blend[2]
+    cdef list masks = blend[3]
+    cdef const uint8_t[:, ::1] mv
+    cdef Py_ssize_t i, nops, nspec, nm = len(masks), nt = len(textures), size = 0, kind, slot, mid, need
+    if cand.shape[0] != n or ops.shape[0] % 3 or start.shape[0] < 1:
+        raise ValueError("blend tables malformed")
+    nops = ops.shape[0] // 3
+    nspec = start.shape[0] - 1
+    if start[0] != 0 or start[nspec] != nops:
+        raise ValueError("blend spec offsets do not cover the ops")
+    for i in range(nspec):
+        if start[i] > start[i + 1]:
+            raise ValueError("blend spec offsets decrease")
+    for i in range(n):
+        if cand[i] >= nspec:
+            raise ValueError("candidate blend spec out of range")
+    # Every crop is taken at the own texture's offset, so all must be one size.
+    for i in range(nt):
+        if tex_size[i]:
+            if size and tex_size[i] != size:
+                raise ValueError("blended textures differ in size")
+            size = tex_size[i]
+    shapes = [m.shape for m in masks]
+    for i in range(nops):
+        kind = ops[3 * i]
+        slot = ops[3 * i + 1]
+        mid = ops[3 * i + 2]
+        if kind != BLEND_LAYER and kind != BLEND_NEIGHBOUR or not 0 <= slot < nt or mid >= nm:
+            raise ValueError("blend op out of range")
+        need = size if kind == BLEND_LAYER else px
+        if mid >= 0 and need and shapes[mid] != (need, need):
+            raise ValueError("blend mask is the wrong size")
+    b.cand = _p32(cand)
+    b.start = &start[0]
+    b.ops = _p32(ops)
+    b.masks = <const uint8_t**>malloc(max(nm, 1) * sizeof(uint8_t*))
+    b.mask_stride = <Py_ssize_t*>malloc(max(nm, 1) * sizeof(Py_ssize_t))
+    b.block = <uint8_t*>malloc(max(px * px * 3, 1))
+    if b.masks == NULL or b.mask_stride == NULL or b.block == NULL:
+        raise MemoryError()
+    for i in range(nm):
+        mv = masks[i]
+        b.masks[i] = &mv[0, 0] if mv.shape[0] and mv.shape[1] else NULL
+        b.mask_stride[i] = mv.shape[1]
+    return 0
+
+
+cdef void _blend_free(Blend* b) noexcept:
+    free(b.masks)
+    free(b.mask_stride)
+    free(b.block)
+
+
 cdef inline const int32_t* _p32(const int32_t[::1] a):
     return &a[0] if a.shape[0] else NULL
 
@@ -569,17 +703,21 @@ cdef Src* _sources(list textures, const uint8_t[:, ::1] flat) except NULL:
     cdef Src* out = <Src*>malloc(max(n, 1) * sizeof(Src))
     if out == NULL:
         raise MemoryError()
-    for i in range(n):
-        out[i].flat = &flat[i, 0]
-        out[i].ox = 0
-        out[i].oy = 0
-        if textures[i] is None:
-            out[i].tex = NULL
-            out[i].stride = 0
-        else:
-            tv = textures[i]
-            out[i].tex = &tv[0, 0, 0]
-            out[i].stride = tv.shape[1] * 3
+    try:
+        for i in range(n):
+            out[i].flat = &flat[i, 0]
+            out[i].ox = 0
+            out[i].oy = 0
+            if textures[i] is None:
+                out[i].tex = NULL
+                out[i].stride = 0
+            else:
+                tv = textures[i]
+                out[i].tex = &tv[0, 0, 0]
+                out[i].stride = tv.shape[1] * 3
+    except BaseException:
+        free(out)
+        raise
     return out
 
 
@@ -587,11 +725,13 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                   const int64_t[::1] cand_x, const int64_t[::1] cand_y,
                   const int32_t[::1] cand_tex, const int32_t[::1] cand_grid,
                   const int64_t[:, :] elev, tuple geom, tuple tables, tuple textures,
-                  tuple stamps, tuple units):
+                  tuple stamps, tuple units, tuple blend):
     """composite_rect_iso's per-tile loop over the ordered candidates.
     geom is (origin_x, origin_y, half_w, half_h, elev_step, tile_px,
     max_rise). Returns False, having painted nothing, when a neighbour rise
-    is past the tables' max_rise; the caller then takes the per-tile path."""
+    is past the tables' max_rise; the caller then takes the per-tile path.
+    blend is native_composite._blend_tables()' tuple, or None: a blended
+    candidate's top block is composed here and painted in place of its crop."""
     cdef Py_ssize_t origin_x = geom[0], origin_y = geom[1], half_w = geom[2], half_h = geom[3]
     cdef Py_ssize_t step = geom[4], tile_px = geom[5], max_rise = geom[6]
     cdef Py_ssize_t n = cand_x.shape[0], mh = elev.shape[0], mw = elev.shape[1]
@@ -604,8 +744,10 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     cdef Stamps g
     cdef Units u
     cdef const Units* up = NULL
-    cdef Src* srcs
+    cdef Src* srcs = NULL
     cdef Src s
+    cdef Blend bl
+    cdef const Blend* bp = NULL
     if img.shape[2] != 3 or luts.shape[0] != 2 or luts.shape[1] != 256:
         raise ValueError("img must have 3 channels and luts shape (2, 256)")
     if not (cand_y.shape[0] == n and cand_tex.shape[0] == n and cand_grid.shape[0] == n):
@@ -618,8 +760,12 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     if units is not None:
         u = _units(units)
         up = &u
-    srcs = _sources(textures[0], textures[1])
+    memset(&bl, 0, sizeof(Blend))
     try:
+        if blend is not None:
+            _blend_init(&bl, blend, n, tile_px, textures[0], tex_size)
+            bp = &bl
+        srcs = _sources(textures[0], textures[1])
         with nogil:
             for k in range(n):
                 tx = cand_x[k]
@@ -649,6 +795,7 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                         tsize = tex_size[slot]
                         s.ox = (tx * tile_px) % tsize
                         s.oy = (ty * tile_px) % tsize
+                        _blend_src(&s, bp, k, tile_px, srcs)
                     if dl > 0:
                         _op_scatter(&c, &t, N_FIXED + (dl - 1) * PER_RISE + 0, by, bx, &s, &luts[0, 0])
                     if dr > 0:
@@ -673,6 +820,7 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                                     &t, OP_DIAMOND, NULL, 0, by, bx, off_x, off_y)
     finally:
         free(srcs)
+        _blend_free(&bl)
     return not bad
 
 
@@ -681,11 +829,12 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                      const int32_t[::1] cand_tex, const int32_t[::1] cand_grid,
                      const int32_t[::1] cand_shape, const int64_t[::1] cand_shade,
                      const int64_t[:, :] corner_rise, tuple geom, tuple quads, tuple edges,
-                     tuple diamond, const float[::1] shade, tuple textures, tuple stamps, tuple units):
+                     tuple diamond, const float[::1] shade, tuple textures, tuple stamps, tuple units,
+                     tuple blend):
     """composite_rect_sloped's per-tile loop. geom is (origin_x, origin_y,
     half_w, half_h, tile_px); cand_shape indexes quads (one op per shape) and
     edges (four per shape), cand_shade is each candidate's offset into
-    shade."""
+    shade. blend as composite_iso's."""
     cdef Py_ssize_t origin_x = geom[0], origin_y = geom[1], half_w = geom[2], half_h = geom[3]
     cdef Py_ssize_t tile_px = geom[4]
     cdef Py_ssize_t n = cand_x.shape[0], mw = corner_rise.shape[1] - 1
@@ -698,8 +847,10 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     cdef Stamps g
     cdef Units u
     cdef const Units* up = NULL
-    cdef Src* srcs
+    cdef Src* srcs = NULL
     cdef Src s
+    cdef Blend bl
+    cdef const Blend* bp = NULL
     if img.shape[2] != 3:
         raise ValueError("img must have 3 channels")
     if not (cand_y.shape[0] == n and cand_tex.shape[0] == n and cand_grid.shape[0] == n
@@ -713,8 +864,12 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     if units is not None:
         u = _units(units)
         up = &u
-    srcs = _sources(textures[0], textures[1])
+    memset(&bl, 0, sizeof(Blend))
     try:
+        if blend is not None:
+            _blend_init(&bl, blend, n, tile_px, textures[0], tex_size)
+            bp = &bl
+        srcs = _sources(textures[0], textures[1])
         with nogil:
             for k in range(n):
                 tx = cand_x[k]
@@ -732,12 +887,14 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                     tsize = tex_size[slot]
                     s.ox = (tx * tile_px) % tsize
                     s.oy = (ty * tile_px) % tsize
+                    _blend_src(&s, bp, k, tile_px, srcs)
                 shp = cand_shape[k]
                 _op_shade(&c, &q, shp, by, bx, &s, &shade[cand_shade[k]])
                 _farm_and_units(&c, up, ty * mw + tx, &e, 4 * shp, &g, cand_grid[k],
                                 &dm, 0, &q, shp, by, bx, off_x, off_y)
     finally:
         free(srcs)
+        _blend_free(&bl)
 
 
 # ---------------------------------------------------------------------------

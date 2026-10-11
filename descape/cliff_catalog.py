@@ -84,6 +84,14 @@ def _label_suffix(label: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+@lru_cache(maxsize=1)
+def suffixes() -> dict[int, int | None]:
+    """piece_suffix() for every cliff const, read off families()' labels: a
+    Cliff drag looks one up per contact per cursor event, and piece_suffix()
+    parses config.yaml each call (~10 ms)."""
+    return {p.unit_const: _label_suffix(p.label) for pieces in families().values() for p in pieces}
+
+
 def piece_for_suffix(unit_const: int, suffix: int) -> int | None:
     """The const carrying `suffix` within `unit_const`'s own family, or None
     if that family has no such piece.

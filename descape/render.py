@@ -12,10 +12,21 @@ import weakref
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from functools import lru_cache
+from itertools import repeat
+from operator import attrgetter
 
 import numpy as np
 
-from descape import asset_source, composite_backend, grid_overlay, iso_geometry, settings, terrain_style, unit_sprites
+from descape import (
+    asset_source,
+    composite_backend,
+    grid_overlay,
+    iso_geometry,
+    settings,
+    terrain_blend,
+    terrain_style,
+    unit_sprites,
+)
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
@@ -168,28 +179,123 @@ def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, 
     return (x * tile_px) % texture_size, (y * tile_px) % texture_size
 
 
-def _tile_block(tile, tile_px: int, textures: bool = True) -> np.ndarray:
-    """The tile_px x tile_px pixel content for one terrain tile -- a real
-    texture crop when an AoE2DE install is configured, else terrain_palette's
-    flat color. Split out of render_tile() (Phase B-E) so composite_rect_flat()
-    can reuse the exact same per-tile content without going through
-    render_tile()'s own img-mutating, tile.x/tile.y-derived placement -- the
-    caller picks where this block goes, not this function.
+def _top_block(
+    tile, tile_px: int, textures: bool = True, blend=None, terrain_override: int | None = None
+) -> np.ndarray:
+    """The square tile_px x tile_px top block every terrain style builds
+    first and only then places (Flat blits it, Stepped scatters it into the
+    diamond and samples skirts from it, Sloped warps it): a real texture
+    crop when an AoE2DE install is configured, else terrain_palette's flat
+    colour. The one place a tile's own terrain pixels come from, so
+    blending reaches all three styles, every level and every patch path
+    through here, and Stepped == Sloped on a flat map holds by construction.
+
+    blend: the tile's terrain_blend.influences() key, or None for today's
+    plain crop. A farm (terrain_override) never blends: its key describes
+    the raw terrain_id it covers, not the farm.
 
     textures=False (View > Layers) forces the flat-colour branch below. It
     adds no new rendering: it takes the exact path an unconfigured install
     already takes, which is what makes "textures off" provably equal to a
-    no-install render rather than a second, drifting code path."""
-    texture = asset_source.get_terrain_texture_array(tile.terrain_id) if textures else None
+    no-install render rather than a second, drifting code path. The
+    returned array may be a read-only view of a cached texture or block."""
+    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
+    texture = asset_source.get_terrain_texture_array(terrain_id) if textures else None
     if texture is not None:
         ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
+        # key[0] is the mirror's tid: a stale mirror keeps the live tile's plain crop.
+        if blend is not None and terrain_override is None and blend[0] == terrain_id:
+            block = terrain_blend.blended_block(blend, ox, oy, tile_px)
+            if block is not None:
+                return block
         return texture[oy : oy + tile_px, ox : ox + tile_px]
-    r, g, b = color_for_terrain_id(tile.terrain_id)
+    r, g, b = color_for_terrain_id(terrain_id)
     return np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
 
+def _tile_block(tile, tile_px: int, textures: bool = True, blend=None) -> np.ndarray:
+    """Flat's per-tile content: _top_block() with no farm override. Split
+    out of render_tile() (Phase B-E) so composite_rect_flat() can reuse the
+    exact same per-tile content without going through render_tile()'s own
+    img-mutating, tile.x/tile.y-derived placement."""
+    return _top_block(tile, tile_px, textures, blend)
+
+
+def blend_effective(layers: LayerState = DEFAULT_LAYERS, blend: bool = True) -> bool:
+    """Whether terrain blending changes any pixel: the View > Layers row and
+    the caller's blend flag on, textures on, and the install's blendomatic
+    readable. Off, every render and patch path is byte-identical to the
+    pre-blending renderer, and Flat's dirty rects need no dilation."""
+    return blend and layers.terrain_blend and layers.terrain_textures and asset_source.get_blendomatic() is not None
+
+
+def flat_dirty_rects(coords, map_w: int, map_h: int, tile_px: int, layers: LayerState) -> list:
+    """Flat's patch_rects() input for the dirty tiles `coords` ((x, y) pairs):
+    one tile rect each, dilated to the 8 neighbours (deduped) when blending
+    is effective, since a tile's blend reads them."""
+    if blend_effective(layers):
+        coords = sorted({
+            (nx, ny)
+            for x, y in coords
+            for nx in range(max(x - 1, 0), min(x + 2, map_w))
+            for ny in range(max(y - 1, 0), min(y + 2, map_h))
+        })
+    return [(x * tile_px, y * tile_px, (x + 1) * tile_px, (y + 1) * tile_px) for x, y in coords]
+
+
+def tile_field_mirror(scenario: LoadedScenario, field_name: str, idx: np.ndarray | None = None) -> np.ndarray:
+    """Flat int64 `terrain_id` or `layer` per tile index (y * w + x), over idx
+    or the whole map: the mirror a chunk cache keeps and blend keys read."""
+    terrain = scenario.map_manager.terrain
+    get = attrgetter(field_name)
+    if idx is None:
+        return np.fromiter(map(get, terrain), dtype=np.int64, count=len(terrain))
+    # list.__getitem__ skips UuidList's pure-Python override, halving the read.
+    tiles = map(list.__getitem__, repeat(terrain, idx.size), idx.tolist())
+    return np.fromiter(map(get, tiles), dtype=np.int64, count=idx.size)
+
+
+def _blend_keys(
+    scenario: LoadedScenario, xs, ys, terrain_ids: np.ndarray | None = None, layer_ids: np.ndarray | None = None
+) -> list:
+    """terrain_blend.influences() per tile (xs[i], ys[i]), from the caller's
+    whole-map flat mirrors, or from fresh ones read here when either is None
+    (the tools, tests and refresh_region_iso, which keep no mirror)."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    if terrain_ids is None or layer_ids is None:
+        terrain_ids = tile_field_mirror(scenario, "terrain_id")
+        layer_ids = tile_field_mirror(scenario, "layer")
+    return terrain_blend.influences(terrain_ids.reshape(h, w), layer_ids.reshape(h, w), xs, ys)
+
+
+def _full_blend_keys(scenario: LoadedScenario, blend: bool) -> list | None:
+    """_blend_keys() for every tile, indexed y * w + x, for the full-map
+    renderers; None when blending is off (blend_effective())."""
+    if not blend_effective(blend=blend):
+        return None
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    ys, xs = np.divmod(np.arange(w * h), w)
+    return _blend_keys(scenario, xs, ys)
+
+
+def _rect_blend_keys(scenario, candidates: np.ndarray, layers: LayerState, terrain_ids, layer_ids) -> list | None:
+    """_blend_keys() for a composite_rect_*'s candidates, or None when
+    blending is off or no candidate has a key (the plain path)."""
+    if not candidates.shape[0] or not blend_effective(layers):
+        return None
+    keys = _blend_keys(scenario, candidates[:, 0], candidates[:, 1], terrain_ids, layer_ids)
+    return keys if any(k is not None for k in keys) else None
+
+
 def render_tile(
-    img: np.ndarray, tile, tile_px: int, grid: GridBake = DEFAULT_GRID, map_dims: tuple[int, int] | None = None
+    img: np.ndarray,
+    tile,
+    tile_px: int,
+    grid: GridBake = DEFAULT_GRID,
+    map_dims: tuple[int, int] | None = None,
+    blend=None,
 ) -> None:
     """Paints one tile's tile_px x tile_px block into img, in place. The
     per-tile body shared by render_terrain() (full-map render) and
@@ -200,27 +306,30 @@ def render_tile(
     request (the "glowing" per-tile brightness hint was redundant once
     Stepped mode shows real per-tile Z-height displacement, and actively
     misleading in Flat mode, which has no other elevation cue at all).
-    Plain terrain color/texture only."""
+    Plain terrain color/texture only. blend: the tile's blend key
+    (_top_block())."""
     px0, py0 = tile.x * tile_px, tile.y * tile_px
-    img[py0 : py0 + tile_px, px0 : px0 + tile_px] = _tile_block(tile, tile_px)
+    img[py0 : py0 + tile_px, px0 : px0 + tile_px] = _tile_block(tile, tile_px, blend=blend)
     if grid.paints and map_dims is not None:
         _paint_grid_flat(img, tile.x, tile.y, tile_px, map_dims[0], map_dims[1], py0, px0, grid)
 
 
-def render_terrain(scenario: LoadedScenario, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
+def render_terrain(scenario: LoadedScenario, grid: GridBake = DEFAULT_GRID, blend: bool = True) -> np.ndarray:
     """Terrain rendered at tile_pixels_for_map()-per-tile resolution
     (adaptive on map size -- see that function). Uses a real per-tile
     texture crop when an AoE2DE install is configured
     (asset_source.get_terrain_texture_array), falling back to
     terrain_palette's flat color per tile otherwise. Returns an
-    (H*tile_px, W*tile_px, 3) uint8 array."""
+    (H*tile_px, W*tile_px, 3) uint8 array. blend=False keeps the
+    pre-blending render (blend_effective())."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
     img = np.zeros((h * tile_px, w * tile_px, 3), dtype=np.uint8)
 
+    keys = _full_blend_keys(scenario, blend)
     for tile in mm.terrain:
-        render_tile(img, tile, tile_px, grid, (w, h))
+        render_tile(img, tile, tile_px, grid, (w, h), None if keys is None else keys[tile.y * w + tile.x])
     return img
 
 
@@ -235,12 +344,10 @@ def refresh_tiles(
     resolution, see the module comment above) -- far too slow to call once per
     brush stroke, let alone per dragged tile.
 
-    dirty_indices needs no dilation to neighboring tiles: render_tile()'s
-    output depends only on the tile's own terrain_id (elevation isn't even
-    read anymore -- see render_tile()'s own docstring), with no neighbor
-    term (v1's known lack of real cliff geometry/cross-tile lighting, here
-    working in this function's favor) -- the exact diffed set is always the
-    exact set that needs repainting, nothing more."""
+    Matches render_terrain(blend=False) only: it paints no terrain blend, so
+    dirty_indices needs no dilation to neighboring tiles. With blending a
+    tile's pixels also depend on its 8 neighbours and its `layer`; the
+    viewer's Flat path dilates through flat_dirty_rects() instead."""
     terrain = scenario.map_manager.terrain
     for i in dirty_indices:
         render_tile(img, terrain[i], tile_px)
@@ -834,6 +941,7 @@ def _render_tile_iso(
     offset: tuple[int, int] = (0, 0),
     terrain_override: int | None = None,
     textures: bool = True,
+    blend=None,
 ) -> None:
     """Paints one tile's skirts (if it's higher than its "left" or "right"
     neighbor -- see iso_geometry.skirt_quad_indices' docstring for exactly
@@ -890,7 +998,9 @@ def _render_tile_iso(
     textures=False (View > Layers) skips the texture lookup and takes the
     flat-colour branch -- see _tile_block()'s own note. Skirts and the seam
     follow automatically, since they sample the top_block that branch
-    produces rather than fetching their own crop."""
+    produces rather than fetching their own crop. blend: the tile's blend
+    key (_top_block()); skirts sample the blended block, so a bleed reaches
+    the cliff faces too (accepted)."""
     off_x, off_y = offset
     # elevations[tile.y, tile.x], NOT tile.elevation, for every read below --
     # identical in every other mode (Risk #6's whole point is keeping them in
@@ -928,14 +1038,7 @@ def _render_tile_iso(
         if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
             return
 
-    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
-    texture = asset_source.get_terrain_texture_array(terrain_id) if textures else None
-    if texture is not None:
-        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
-        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
-    else:
-        r, g, b = color_for_terrain_id(terrain_id)
-        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
+    top_block = _top_block(tile, tile_px, textures, blend, terrain_override)
 
     # Every paint is collected first, in paint order, then run on one backend
     # below, so the gates stay shared and the native call is one per tile.
@@ -1050,7 +1153,9 @@ def _render_tile_iso(
         _clipped_darken(img, base_y, base_x, dst_y, dst_x, factors, extent=extent)
 
 
-def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
+def render_terrain_iso(
+    scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID, blend: bool = True
+) -> np.ndarray:
     """The Stepped-mode counterpart to render_terrain(): real per-tile
     vertical displacement via iso_geometry's projection primitives, instead
     of render_terrain()'s flat screen position (neither mode applies any
@@ -1071,7 +1176,7 @@ def render_terrain_iso(scenario: LoadedScenario, with_units: bool = True, grid: 
     for the version Phase 3's viewer uses, which also returns the elevations
     array and IsoProjection screen_to_tile() needs (Risk #6: those two must
     never drift from what actually got painted)."""
-    img, _elevations, _proj = render_terrain_iso_with_proj(scenario, with_units=with_units, grid=grid)
+    img, _elevations, _proj = render_terrain_iso_with_proj(scenario, with_units=with_units, grid=grid, blend=blend)
     return img
 
 
@@ -1102,7 +1207,11 @@ def elevations_and_proj(scenario: LoadedScenario) -> tuple[np.ndarray, iso_geome
 
 
 def render_terrain_iso_with_proj(
-    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False, grid: GridBake = DEFAULT_GRID
+    scenario: LoadedScenario,
+    with_units: bool = True,
+    with_sprites: bool = False,
+    grid: GridBake = DEFAULT_GRID,
+    blend: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_iso()'s real body, additionally returning the (h, w)
     elevations array and IsoProjection the render was actually computed
@@ -1113,7 +1222,8 @@ def render_terrain_iso_with_proj(
     projection and elevation snapshot that produced the pixels currently on
     screen (per Risk #6, IsoProjection is deliberately immutable and meant
     to be constructed once and threaded through, never rebuilt by a second
-    caller who could compute a subtly different one)."""
+    caller who could compute a subtly different one). blend=False keeps the
+    pre-blending render (blend_effective())."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
@@ -1146,9 +1256,11 @@ def render_terrain_iso_with_proj(
         if (with_units and with_sprites)
         else None
     )
+    keys = _full_blend_keys(scenario, blend)
     for x, y in iso_geometry.depth_order(w, h):
         _paint_tile_and_units_iso(
-            img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites, grid=grid
+            img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites, grid=grid,
+            blend=None if keys is None else keys[y * w + x],
         )
     return img, elevations, proj
 
@@ -1221,7 +1333,7 @@ def _building_bboxes_iso(
     return _drain(_building_bboxes_iso_sliced(scenario, w, h, proj, elevations, extra_top_px, unit_filter))
 
 
-# Units or keys per step of a sliced level assembly (IsoChunkCache._assemble_level).
+# Units or keys per step of a sliced level assembly (_LeveledChunkCache._assemble_level).
 ASSEMBLY_SLICE = 512
 
 
@@ -1781,7 +1893,7 @@ def dirty_screen_bbox_iso(
     # with_sprites is a PARAMETER as of P3-g's toggle, not a module global read
     # at call time: sprites are per-cache now, so this function cannot look the
     # answer up itself. The caller's obligation is therefore load-bearing --
-    # this must be passed the same value IsoChunkCache._level is deciding on,
+    # this must be passed the same value _LeveledChunkCache._level is deciding on,
     # i.e. that cache's own sprites_enabled. If the two ever disagree about
     # whether sprites are on, the under-repaint bug this widening exists to fix
     # comes straight back. ViewerWindow._apply_dirty is the only production
@@ -2072,7 +2184,7 @@ def prepare_rect_native(
     sloped: bool, scenario: LoadedScenario, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray,
     proj: iso_geometry.IsoProjection, tile_px: int, building_bboxes: dict, with_units: bool,
     bystander_grid: BystanderGrid | None, layers: LayerState, grid: GridBake, unit_pack,
-    terrain_ids: np.ndarray | None = None,
+    terrain_ids: np.ndarray | None = None, layer_ids: np.ndarray | None = None,
 ) -> tuple | None:
     """composite_rect_iso (heights = elevations) or composite_rect_sloped
     (heights = corner_rise) with every Python step done here and only the
@@ -2084,19 +2196,21 @@ def prepare_rect_native(
     args own snapshots of every input the GUI thread writes in place; holds
     keeps the unit pack alive, since the kernel reaches its sprite pixels
     through raw addresses the pack alone owns. terrain_ids: the calling
-    cache's per-tile mirror (native_composite's docstring), None reads live."""
+    cache's per-tile mirror (native_composite's docstring), None reads live.
+    Blend keys are read here, on the calling thread, from both mirrors."""
     native = composite_backend.native
     if native is None or unit_pack is None:
         return None
     candidates = _rect_candidates(scenario, x0, y0, x1, y1, proj, with_units, building_bboxes, bystander_grid)
     if not candidates.shape[0]:
         return None
+    keys = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids)
     from descape import native_composite
 
     prepare = native_composite.prepare_sloped if sloped else native_composite.prepare_iso
     args = prepare(
         scenario, x0, y0, candidates, heights, proj, tile_px, unit_pack if with_units else None,
-        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids,
+        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids, blend_keys=keys,
     )
     if args is None:
         return None
@@ -2122,6 +2236,7 @@ def composite_rect_iso(
     grid: GridBake = DEFAULT_GRID,
     unit_pack=None,
     terrain_ids: np.ndarray | None = None,
+    layer_ids: np.ndarray | None = None,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -2178,7 +2293,12 @@ def composite_rect_iso(
 
     terrain_ids: the calling cache's per-tile terrain-id mirror for that
     native call (see native_composite's docstring). None reads the tiles
-    live; the per-tile loop below always does."""
+    live; the per-tile loop below always does.
+
+    Blending (layers.terrain_blend, blend_effective()) reads its keys from
+    terrain_ids and layer_ids, the cache's whole-map mirrors (fresh ones
+    when either is None). The whole-rect kernel composes each blended top
+    block itself, byte-identical to terrain_blend.blended_block()."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -2204,6 +2324,7 @@ def composite_rect_iso(
     # check_full_coverage) would have painted there, units included.
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
+    keys = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids)
     native = composite_backend.native
     if native is not None and unit_pack is not None and candidates.shape[0]:
         from descape import native_composite
@@ -2211,15 +2332,17 @@ def composite_rect_iso(
         if native_composite.composite_iso(
             native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
             unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
+            blend_keys=keys,
         ):
             return scratch
     # .tolist() unboxes in C, and every candidate is already clamped on-map
     # (tiles_in_screen_rect + unit_occupied_tiles), so get_tile's checks can't fire.
-    for cx, cy in candidates.tolist():
+    for i, (cx, cy) in enumerate(candidates.tolist()):
         tile = mm.terrain[cy * w + cx]
         _paint_tile_and_units_iso(
             scratch, tile, units_by_tile, tile_px, proj, elevations, w, h,
             offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
+            blend=None if keys is None else keys[i],
         )
     return scratch
 
@@ -2364,6 +2487,7 @@ def _render_tile_sloped(
     offset: tuple[int, int] = (0, 0),
     terrain_override: int | None = None,
     textures: bool = True,
+    blend=None,
 ) -> None:
     """Sloped mode's counterpart to _render_tile_iso -- same texture-crop
     and offset/clip contract, but no skirt loop and no contact-shadow loop
@@ -2393,7 +2517,8 @@ def _render_tile_sloped(
 
     textures=False (View > Layers): same flat-colour branch _render_tile_iso
     documents. _slope_shade()'s multiplier still applies on top, so a
-    texture-less Sloped render keeps its slope shading."""
+    texture-less Sloped render keeps its slope shading. blend: the tile's
+    blend key, as _render_tile_iso's."""
     d_nw = int(corner_rise[tile.y, tile.x])
     d_ne = int(corner_rise[tile.y, tile.x + 1])
     d_sw = int(corner_rise[tile.y + 1, tile.x])
@@ -2414,14 +2539,7 @@ def _render_tile_sloped(
         if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
             return
 
-    terrain_id = tile.terrain_id if terrain_override is None else terrain_override
-    texture = asset_source.get_terrain_texture_array(terrain_id) if textures else None
-    if texture is not None:
-        ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
-        top_block = texture[oy : oy + tile_px, ox : ox + tile_px]
-    else:
-        r, g, b = color_for_terrain_id(terrain_id)
-        top_block = np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
+    top_block = _top_block(tile, tile_px, textures, blend, terrain_override)
 
     shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
     native = composite_backend.native
@@ -2646,6 +2764,7 @@ def _paint_tile_and_units_sloped(
     sprites: SpriteLayer | None = None,
     textures: bool = True,
     grid: GridBake = DEFAULT_GRID,
+    blend=None,
 ) -> None:
     """Sloped's counterpart to _paint_tile_and_units_iso -- same
     "terrain then this tile's own units, interleaved in depth_order" step
@@ -2723,7 +2842,7 @@ def _paint_tile_and_units_sloped(
     terrain_override = farm[0] if farm is not None else None
     _render_tile_sloped(
         img, tile, tile_px, proj, corner_rise, offset=offset,
-        terrain_override=terrain_override, textures=textures,
+        terrain_override=terrain_override, textures=textures, blend=blend,
     )
     if farm is not None:
         _, outline_color, edge_mask = farm
@@ -2824,7 +2943,11 @@ def sloped_elevations_and_proj(
 
 
 def render_terrain_sloped_with_proj(
-    scenario: LoadedScenario, with_units: bool = True, with_sprites: bool = False, grid: GridBake = DEFAULT_GRID
+    scenario: LoadedScenario,
+    with_units: bool = True,
+    with_sprites: bool = False,
+    grid: GridBake = DEFAULT_GRID,
+    blend: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_sloped()'s real body, additionally returning the
     (h, w) elevations array, the (h+1, w+1) corner_rise array, and the
@@ -2846,7 +2969,8 @@ def render_terrain_sloped_with_proj(
     stitched-chunk check a full-render ground truth to compare against.
     Farms drape (Track C6, with_farms's own default) whenever with_sprites
     is True, matching SlopedChunkCache's own call and Stepped parity -- see
-    sprite_draws_by_anchor()'s docstring."""
+    sprite_draws_by_anchor()'s docstring. blend: as
+    render_terrain_iso_with_proj()'s."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
@@ -2874,20 +2998,26 @@ def render_terrain_sloped_with_proj(
         if (with_units and with_sprites)
         else None
     )
+    keys = _full_blend_keys(scenario, blend)
     for x, y in iso_geometry.depth_order(w, h):
         _paint_tile_and_units_sloped(
-            img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid
+            img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid,
+            blend=None if keys is None else keys[y * w + x],
         )
     return img, elevations, corner_rise, proj
 
 
-def render_terrain_sloped(scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID) -> np.ndarray:
+def render_terrain_sloped(
+    scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID, blend: bool = True
+) -> np.ndarray:
     """Sloped mode's top-level renderer -- the Phase 6 counterpart to
     render_terrain_iso(). Thin wrapper around
     render_terrain_sloped_with_proj() for callers that only need the
     pixels (render_scenario(), tools/dump_scenario.py,
     tools/gen_elevation_reference.py's own reference renders)."""
-    img, _elevations, _corner_rise, _proj = render_terrain_sloped_with_proj(scenario, with_units=with_units, grid=grid)
+    img, _elevations, _corner_rise, _proj = render_terrain_sloped_with_proj(
+        scenario, with_units=with_units, grid=grid, blend=blend
+    )
     return img
 
 
@@ -2909,6 +3039,7 @@ def composite_rect_sloped(
     grid: GridBake = DEFAULT_GRID,
     unit_pack=None,
     terrain_ids: np.ndarray | None = None,
+    layer_ids: np.ndarray | None = None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -2936,7 +3067,8 @@ def composite_rect_sloped(
     terrain-textures half is applied here; the farm half is already baked
     into whatever `sprites` was built with.
 
-    unit_pack, terrain_ids: same N2 contract as composite_rect_iso()'s."""
+    unit_pack, terrain_ids: same N2 contract as composite_rect_iso()'s;
+    layer_ids and blending likewise."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -2944,6 +3076,7 @@ def composite_rect_sloped(
 
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
+    keys = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids)
     native = composite_backend.native
     if native is not None and unit_pack is not None and candidates.shape[0]:
         from descape import native_composite
@@ -2951,14 +3084,16 @@ def composite_rect_sloped(
         if native_composite.composite_sloped(
             native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
             unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
+            blend_keys=keys,
         ):
             return scratch
     # Same direct terrain index as composite_rect_iso, same clamping argument.
-    for cx, cy in candidates.tolist():
+    for i, (cx, cy) in enumerate(candidates.tolist()):
         tile = mm.terrain[cy * w + cx]
         _paint_tile_and_units_sloped(
             scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h,
             offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
+            blend=None if keys is None else keys[i],
         )
     return scratch
 
@@ -3226,6 +3361,8 @@ def composite_rect_flat(
     icons: dict[int, unit_sprites.SpriteDraw] | None = None,
     layers: LayerState = DEFAULT_LAYERS,
     grid: GridBake = DEFAULT_GRID,
+    terrain_ids: np.ndarray | None = None,
+    layer_ids: np.ndarray | None = None,
 ) -> np.ndarray:
     """Composites the half-open canvas rect [x0, x1) x [y0, y1) for Flat
     mode in isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8
@@ -3283,7 +3420,7 @@ def composite_rect_flat(
     no farm path at all (no SpriteLayer, so no farm_by_tile), which is why
     view_layers gives that row a styles= set excluding Flat rather than
     letting it be a silent no-op (set_sprites_enabled's own documented
-    trap).
+    trap). Blending reads terrain_ids/layer_ids as composite_rect_iso() does.
 
     Do NOT re-express render_terrain()/overlay_units() in terms of this
     function -- same reason Track B gives for composite_rect_iso(): the
@@ -3299,11 +3436,16 @@ def composite_rect_flat(
     tx1 = min(-(-x1 // tile_px), tile_w)  # ceil division, clipped to map bounds
     ty1 = min(-(-y1 // tile_px), tile_h)
     paint_grid = grid.paints
+    keys = None
+    if tx1 > tx0 and ty1 > ty0 and blend_effective(layers):
+        ys, xs = np.mgrid[ty0:ty1, tx0:tx1]
+        keys = _blend_keys(scenario, xs.ravel(), ys.ravel(), terrain_ids, layer_ids)
     for ty in range(ty0, ty1):
         for tx in range(tx0, tx1):
             tile = mm.get_tile(tx, ty)
+            key = None if keys is None else keys[(ty - ty0) * (tx1 - tx0) + tx - tx0]
             _blit_clipped(
-                out, _tile_block(tile, tile_px, layers.terrain_textures),
+                out, _tile_block(tile, tile_px, layers.terrain_textures, key),
                 tx * tile_px - x0, ty * tile_px - y0,
             )
             # Units are a separate pass below, so anywhere in this loop is
@@ -3417,7 +3559,9 @@ def _span_start(coord: float, span: int) -> int:
     implies a building, and building coordinates are always exact multiples of
     0.5 (measured: 27,320 axis values, fractional part 0.0 or 0.5, nothing
     else). Rounding half up rather than flooring is what keeps the own-tile
-    invariant on legal off-parity placements.
+    invariant on legal off-parity placements. Deep-water fish (GH #178) are
+    the exception: 21 of 1049 corpus fish sit off the half-tile grid and are
+    accepted as quantized, and the own-tile invariant holds for any float.
 
     Per axis, not per unit: a gate segment is (4, 1) and takes both branches.
     Applying the half-tile branch to a span-1 axis would move any unit whose
@@ -3498,6 +3642,33 @@ def span_anchor(tile_x: int, tile_y: int, span_x: int, span_y: int) -> tuple[flo
     sub-tile parity every corpus cliff placement already carries.
     """
     return tile_x + span_x / 2, tile_y + span_y / 2
+
+
+def snapped_anchor(
+    tile: tuple[int, int],
+    point: tuple[float, float] | None,
+    span: tuple[int, int],
+    map_w: int,
+    map_h: int,
+) -> tuple[float, float]:
+    """Snapped placement's (x, y) for a `span` footprint picked at `tile`, with
+    `point` the continuous cursor point or None (TASK-193, GH #206).
+
+    Per axis, on the game's grid and centred on the cursor: an odd span sits
+    at `tile + 0.5`; an even span at the whole number nearest the cursor,
+    `floor(point + 0.5)` (a tie rounds up), or `tile + 1` with no point. An
+    even anchor is clamped to `[span/2, size - span/2]`, so it stays whole and
+    the whole footprint stays on the map, as a group move keeps it.
+    """
+    out = []
+    for i, size in enumerate((map_w, map_h)):
+        if span[i] % 2:
+            out.append(tile[i] + 0.5)
+            continue
+        anchor = tile[i] + 1 if point is None else math.floor(point[i] + 0.5)
+        half = span[i] // 2
+        out.append(float(max(half, min(anchor, size - half))))
+    return out[0], out[1]
 
 
 def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int] | None:
@@ -4656,6 +4827,7 @@ def _paint_tile_and_units_iso(
     sprites: SpriteLayer | None = None,
     textures: bool = True,
     grid: GridBake = DEFAULT_GRID,
+    blend=None,
 ) -> None:
     """Terrain, then that tile's own units -- the single per-tile step both
     render_terrain_iso_with_proj()'s full loop and refresh_region_iso()'s
@@ -4691,7 +4863,7 @@ def _paint_tile_and_units_iso(
     terrain_override = farm[0] if farm is not None else None
     _render_tile_iso(
         img, tile, tile_px, proj, elevations, map_w, map_h,
-        offset=offset, terrain_override=terrain_override, textures=textures,
+        offset=offset, terrain_override=terrain_override, textures=textures, blend=blend,
     )
     if farm is not None:
         _, outline_color, edge_mask = farm
@@ -4909,6 +5081,7 @@ def render_scenario(
     isometric: bool = False,
     style: str | None = None,
     grid: GridBake = DEFAULT_GRID,
+    blend: bool = True,
 ) -> np.ndarray:
     """isometric=True renders Stepped mode (render_terrain_iso) instead of
     Flat (render_terrain). with_units applies in every mode now (Phase 5 for
@@ -4925,17 +5098,18 @@ def render_scenario(
     site: dump_scenario.py's --iso flag and save_png()'s own isometric
     passthrough both keep working exactly as before when style is left at
     its None default. isometric stays a valid way to select Stepped
-    (style="stepped" is equivalent, not required)."""
+    (style="stepped" is equivalent, not required). blend=False keeps the
+    pre-blending render in every style (blend_effective())."""
     if style is not None:
         if style not in terrain_style.TERRAIN_STYLES:
             expected = ", ".join(repr(s) for s in terrain_style.TERRAIN_STYLES)
             raise ValueError(f"style must be one of {expected}, got {style!r}")
         if style == "sloped":
-            return render_terrain_sloped(scenario, with_units=with_units, grid=grid)
+            return render_terrain_sloped(scenario, with_units=with_units, grid=grid, blend=blend)
         isometric = style == "stepped"
     if isometric:
-        return render_terrain_iso(scenario, with_units=with_units, grid=grid)
-    img = render_terrain(scenario, grid=grid)
+        return render_terrain_iso(scenario, with_units=with_units, grid=grid, blend=blend)
+    img = render_terrain(scenario, grid=grid, blend=blend)
     if with_units:
         img = overlay_units(img, scenario)
     return img

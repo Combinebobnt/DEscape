@@ -54,14 +54,17 @@ def test_write_targets_is_empty_until_verify_passes() -> None:
     # 16 Tier-1 field_ids * 8 players, on a file new enough to carry all of
     # them (the blank template is 1.58) -- civilization/architecture
     # included as of Step B, str16-coded on this file but still writable
-    # through the resizing splice.
+    # through the resizing splice. GAIA (0) only for GAIA_FIELDS (GH #187).
     field_ids = {key.split(":")[1] for key in targets}
     assert field_ids == {
         "tribe_name", "player_name_string_id", "lock_civilization", "lock_personality",
         "civilization", "architecture", "starting_age", "food", "wood", "stone", "gold",
         "pop_limit", "color", "base_priority", "initial_view_x", "initial_view_y",
     }
-    assert all(key.split(":")[2] in {str(p) for p in range(1, 9)} for key in targets)
+    for field_id in field_ids:
+        players = {int(key.split(":")[2]) for key in targets if key.split(":")[1] == field_id}
+        expected = set(range(9)) if field_id in pf.GAIA_FIELDS else set(range(1, 9))
+        assert players == expected, field_id
 
 
 def test_write_targets_never_includes_player_type_or_personality() -> None:
@@ -115,9 +118,9 @@ def test_every_players_target_offset_is_within_the_body_and_disjoint_per_player(
 
 
 def test_corrupting_the_gaia_sentinel_flips_verify_to_false() -> None:
-    """The GAIA (index 8) slot is deliberately never written, but is
-    checked for every P1_TO_P8_THEN_GAIA spec -- the cheapest real shift
-    detector, since P1..P8 alone can compare equal at a shifted offset."""
+    """The GAIA (index 8) slot is checked for every P1_TO_P8_THEN_GAIA spec
+    -- the cheapest real shift detector, since P1..P8 alone can compare
+    equal at a shifted offset. A written target since GH #187."""
     loaded = _loaded()
     spec = next(s for s in pf.specs_for(loaded) if s.field_id == "starting_age")
     gaia = pf._array_target(loaded, spec.section, spec.retriever, spec.struct_field, 8)
@@ -327,9 +330,11 @@ def test_write_targets_field_count_matches_specs_for_across_the_corpus(scenario_
     tier1_specs = {s.field_id for s in pf.specs_for(loaded) if s.field_id not in pf._NOT_BYTE_PATCHED}
     field_ids = {key.split(":")[1] for key in targets}
     assert field_ids == tier1_specs, scenario_path.name
+    gaia_ids = {s.field_id for s in pf.specs_for_player(loaded, 0)}
     for field_id in field_ids:
-        players = {key.split(":")[2] for key in targets if key.split(":")[1] == field_id}
-        assert players == {str(p) for p in range(1, 9)}, (scenario_path.name, field_id)
+        players = {int(key.split(":")[2]) for key in targets if key.split(":")[1] == field_id}
+        expected = set(range(9)) if field_id in gaia_ids else set(range(1, 9))
+        assert players == expected, (scenario_path.name, field_id)
 
 
 @pytest.mark.corpus
@@ -360,6 +365,221 @@ def test_reencoding_the_stored_civ_value_is_byte_identical_across_the_corpus(sce
             assert body[primary.offset : primary.offset + primary.length] == reencoded, (
                 scenario_path.name, field_id, player_id,
             )
+
+
+# -- GAIA (GH #187) -----------------------------------------------------------
+#
+# GAIA_FIELDS write GAIA's own slot: index 8 of every P1_TO_P8_THEN_GAIA
+# array, and Map.per_player_population_cap[8] for Pop Limit. No mirror.
+
+# A distinct value per field; None toggles a checkbox. HUN-CIV is shorter than
+# the template's RANDOM-CIV (a real resize); BRITON-CIV is the same length.
+_GAIA_EDITS = {
+    "civilization": "BRITON-CIV", "architecture": "HUN-CIV", "lock_civilization": None,
+    "lock_personality": None, "starting_age": 5, "food": 4321, "wood": 1234, "stone": 555,
+    "gold": 666, "color": 3, "pop_limit": 123,
+}
+
+
+def _written_body(path: Path) -> bytes:
+    from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
+
+    raw = path.read_bytes()
+    return _decompress_bytes(raw[len(load_map_and_units(path).header_bytes) :])
+
+
+def _gaia_new_value(model, field_id: str):
+    stored = model.original_value(pf.player_field_id(field_id, 0))
+    value = _GAIA_EDITS[field_id]
+    if value is None:
+        value = 1 - stored
+    assert value != stored, field_id
+    return value
+
+
+def test_gaia_fields_get_one_target_at_gaias_slot_and_no_mirror() -> None:
+    loaded = _loaded()
+    resolved = pf._resolve_all(loaded)
+    specs = {s.field_id: s for s in pf.specs_for(loaded)}
+    for field_id in pf.GAIA_FIELDS:
+        (gaia,) = resolved[pf.player_field_id(field_id, 0)]
+        spec = specs[field_id]
+        if field_id == "pop_limit":
+            expected = pf._array_target(loaded, "Map", "per_player_population_cap", None, 8)
+        elif field_id in ("civilization", "architecture"):
+            expected = pf._player_data_1_variable_target(loaded, spec.struct_field, 0)
+        else:
+            expected = pf._array_target(loaded, spec.section, spec.retriever, spec.struct_field, 8)
+        assert gaia.target == expected.target, field_id
+        assert gaia.parsed_value == pf.current_value(loaded, spec, 0), field_id
+    others = {s.field_id for s in pf.specs_for(loaded)} - pf.GAIA_FIELDS
+    assert not any(pf.player_field_id(f, 0) in resolved for f in others)
+
+
+def test_gaia_pop_limit_targets_the_map_array_not_player_data_4() -> None:
+    loaded = _loaded()
+    (target,) = pf.write_targets(loaded)["player:pop_limit:0"]
+    map_base = pf._map_bases(loaded)["per_player_population_cap"]
+    assert target.codec == "u32"
+    assert target.offset == map_base.offset + 8 * target.length
+    pd4 = pf._units_bases(loaded)["player_data_4"]
+    assert not pd4.offset <= target.offset < pd4.offset + pd4.length
+
+
+@pytest.mark.parametrize("field_id", sorted(pf.GAIA_FIELDS))
+def test_a_gaia_edit_changes_only_gaias_slot(field_id: str, tmp_path: Path) -> None:
+    """Every byte outside GAIA's own target is unchanged, which covers P1..P8,
+    Units.player_data_4 and Map's other pop-cap slots; then a reload reads it back."""
+    from descape.options_model import OptionsEditModel
+    from descape.scenario_write import write_scenario
+
+    loaded = _loaded()
+    key = pf.player_field_id(field_id, 0)
+    (target,) = pf.write_targets(loaded)[key]
+    base = tmp_path / "base.aoe2scenario"
+    write_scenario(loaded, base)
+
+    model = OptionsEditModel(loaded)
+    value = _gaia_new_value(model, field_id)
+    model.set_value(key, value)
+    edited = tmp_path / "edited.aoe2scenario"
+    write_scenario(loaded, edited, options=model)
+
+    before, after = _written_body(base), _written_body(edited)
+    assert before == loaded.decompressed_body
+    new_bytes = pf.encode_target(target, value)
+    end = target.offset + target.length
+    assert after[: target.offset] == before[: target.offset]
+    assert after[target.offset : target.offset + len(new_bytes)] == new_bytes
+    assert after[target.offset + len(new_bytes) :] == before[end:]
+    if target.codec != "str16":
+        assert len(new_bytes) == target.length
+
+    reloaded = load_map_and_units(edited)
+    assert pf.verify_player_block(reloaded)
+    spec = next(s for s in pf.specs_for(reloaded) if s.field_id == field_id)
+    assert pf.current_value(reloaded, spec, 0) == value
+    for player_id in range(1, 9):
+        assert pf.current_value(reloaded, spec, player_id) == model.original_value(
+            pf.player_field_id(field_id, player_id)
+        ), player_id
+    delta = len(after) - len(before)
+    pd4 = pf._units_bases(loaded)["player_data_4"]
+    assert after[pd4.offset + delta : pd4.offset + delta + pd4.length] == before[pd4.offset : pd4.offset + pd4.length]
+
+
+def test_corrupting_gaias_pop_limit_slot_flips_verify_to_false() -> None:
+    loaded = _loaded()
+    (target,) = pf.write_targets(loaded)["player:pop_limit:0"]
+    body = bytearray(loaded.decompressed_body)
+    body[target.offset] ^= 0xFF
+    loaded.decompressed_body = bytes(body)
+    assert not pf.verify_player_block(loaded)
+
+
+def test_verify_player_block_catches_a_shift_only_gaias_slot_can_see(monkeypatch) -> None:
+    """Every slot but GAIA's holds Dark Age, and so do the 4 bytes before the
+    array, so a walk shifted back one slot still matches P1..P8. Only GAIA's
+    own check can fail it."""
+    loaded = _loaded()
+    ages = loaded._scenario.sections["Options"].retriever_map["per_player_starting_age"]
+    base = pf._options_bases(loaded)["per_player_starting_age"]
+    stride = base.length // len(ages.data)
+    codec = pf.write_targets(loaded)["player:starting_age:1"][0].codec
+    dark, imperial = 2, 5
+    assert set(ages.data) == {dark}
+    body = bytearray(loaded.decompressed_body)
+    body[base.offset - stride : base.offset] = pf.encode_target(pf.PlayerWriteTarget(0, stride, codec), dark)
+    gaia_offset = base.offset + 8 * stride
+    body[gaia_offset : gaia_offset + stride] = pf.encode_target(pf.PlayerWriteTarget(0, stride, codec), imperial)
+    loaded.decompressed_body = bytes(body)
+    ages.data[8] = imperial
+    assert pf.verify_player_block(loaded), "the crafted file must verify unshifted"
+
+    real_bases = pf._options_bases
+
+    def shifted(arg):
+        bases = dict(real_bases(arg))
+        ages_base = bases["per_player_starting_age"]
+        bases["per_player_starting_age"] = pf.FieldOffset(ages_base.offset - stride, ages_base.length)
+        return bases
+
+    monkeypatch.setitem(pf._SECTION_BASES, "Options", shifted)
+    resolved = pf._resolve_all(loaded)
+    for player_id in range(1, 9):
+        (item,) = resolved[f"player:starting_age:{player_id}"]
+        t = item.target
+        assert loaded.decompressed_body[t.offset : t.offset + t.length] == pf.encode_target(t, item.parsed_value)
+    assert not pf.verify_player_block(loaded)
+
+
+def test_edit_gaia_save_edit_again_save_again(tmp_path: Path) -> None:
+    """Both saves patch a copy, so the open document keeps verifying and the
+    second save carries the second values (a str16 resize each time)."""
+    from descape.options_model import OptionsEditModel
+    from descape.scenario_write import write_scenario
+
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value("player:civilization:0", "BRITON-CIV")
+    model.set_value("player:food:0", 4321)
+    first = tmp_path / "first.aoe2scenario"
+    write_scenario(loaded, first, options=model)
+    assert pf.verify_player_block(loaded)
+
+    model.set_value("player:civilization:0", "HUN-CIV")
+    model.set_value("player:food:0", 999)
+    model.set_value("player:pop_limit:0", 123)
+    second = tmp_path / "second.aoe2scenario"
+    write_scenario(loaded, second, options=model)
+    assert pf.verify_player_block(loaded)
+
+    for path, expected in (
+        (first, {"civilization": "BRITON-CIV", "food": 4321, "pop_limit": 200}),
+        (second, {"civilization": "HUN-CIV", "food": 999, "pop_limit": 123}),
+    ):
+        reloaded = load_map_and_units(path)
+        assert pf.verify_player_block(reloaded), path.name
+        specs = {s.field_id: s for s in pf.specs_for(reloaded)}
+        for field_id, value in expected.items():
+            assert pf.current_value(reloaded, specs[field_id], 0) == value, (path.name, field_id)
+            assert pf.current_value(reloaded, specs[field_id], 1) == model.original_value(f"player:{field_id}:1")
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize("new_civ", ["BRITON-CIV", "HUN-CIV"])
+def test_a_gaia_civilization_splice_on_a_real_1_59_file(new_civ: str, tmp_path: Path) -> None:
+    """8tp3w9j's GAIA is ROMANS-CIV. BRITON-CIV is the same length; HUN-CIV is
+    3 bytes shorter, so every later offset moves."""
+    from descape.options_model import OptionsEditModel
+    from descape.scenario_write import write_scenario
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "8tp3w9j.aoe2scenario"
+    if not path.exists():
+        pytest.skip("examples/ corpus not present")
+    loaded = load_map_and_units(path)
+    (target,) = pf.write_targets(loaded)["player:civilization:0"]
+    assert target.codec == "str16"
+    model = OptionsEditModel(loaded)
+    assert model.original_value("player:civilization:0") == "ROMANS-CIV"
+    model.set_value("player:civilization:0", new_civ)
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model)
+
+    after = _written_body(out)
+    before = loaded.decompressed_body
+    new_bytes = pf.encode_target(target, new_civ)
+    assert (len(new_bytes) == target.length) == (new_civ == "BRITON-CIV")
+    assert after[: target.offset] == before[: target.offset]
+    assert after[target.offset : target.offset + len(new_bytes)] == new_bytes
+    assert after[target.offset + len(new_bytes) :] == before[target.offset + target.length :]
+    reloaded = load_map_and_units(out)
+    assert pf.verify_player_block(reloaded)
+    spec = next(s for s in pf.specs_for(reloaded) if s.field_id == "civilization")
+    assert pf.current_value(reloaded, spec, 0) == new_civ
+    assert [pf.current_value(reloaded, spec, p) for p in range(1, 9)] == [
+        model.original_value(f"player:civilization:{p}") for p in range(1, 9)
+    ]
 
 
 # -- Number of Players (step 3e) ---------------------------------------------
