@@ -3,8 +3,8 @@
 Drives tools/release_render_diff.py, which renders each file at the `v0.6` tag and
 at this checkout in Flat, Stepped and Sloped with sprites off and on, and diffs
 the full canvases. Its docstring lists what it neutralizes and why: sub-tile
-unit placement, the Stepped contact-shadow terrace band, and the units whose
-sprite art changed on purpose.
+unit placement, the Stepped contact-shadow terrace band, the units whose
+sprite art changed on purpose, and the sprites-on paint order (GH #107).
 
 The controls below are what make a pass mean something. A single retextured
 tile fails every comparison, and dropping any one neutralization fails exactly
@@ -71,6 +71,8 @@ def test_the_render_matches_v06_outside_the_intended_changes(scenario_path, tmp_
         ("no-exclusions", {(style, True) for style in tool.STYLES}),
         # GH #15 back-out: Stepped shadows equal v0.6 again, so the mask must be inert.
         ("no-mask", set()),
+        # GH #107: only the sprites-on iso composites run terrain first, then objects.
+        ("no-paint-order-patch", {("stepped", True), ("sloped", True)}),
     ],
 )
 def test_every_control_fails_exactly_where_it_should(inject, must_fail, tmp_path):

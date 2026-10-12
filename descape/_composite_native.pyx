@@ -18,7 +18,7 @@ from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 6
+KERNEL_ABI = 7
 
 
 cdef inline bint _gather_scatter(
@@ -241,7 +241,8 @@ def blit_rgba(uint8_t[:, :, :] img, Py_ssize_t base_y, Py_ssize_t base_x, const 
 # ---------------------------------------------------------------------------
 # N2: one call per rect. descape/native_composite.py builds every input; the
 # per-tile gates, paint order and arithmetic below mirror
-# render._paint_tile_and_units_iso/_sloped exactly.
+# render._paint_candidates_iso/_sloped exactly: one interleaved loop with
+# sprites off, terrain then objects (two_pass) with them on.
 
 ctypedef struct Canvas:
     uint8_t* p
@@ -301,10 +302,15 @@ ctypedef struct Blend:
 DEF BLEND_LAYER = 0
 DEF BLEND_NEIGHBOUR = 1
 
-# Unit-pack row kinds (native_composite.UnitPack).
+# Unit-pack rows (native_composite.UnitPack): ROW_W int32s, (kind, y, x,
+# slot or rgb, base rise).
 DEF ROW_MARK = 0
 DEF ROW_CONFORM = 1
 DEF ROW_SPRITE = 2
+DEF ROW_W = 5
+
+# render.INK_NONE: "no ink" in a two-pass ink plane, above every rise.
+DEF INK_NONE = 0x7FFFFFFF
 
 # Stepped op-table layout (native_composite.stepped_tables).
 DEF OP_DIAMOND = 0
@@ -393,6 +399,48 @@ cdef void _op_solid(const Canvas* c, const Ops* t, Py_ssize_t op, Py_ssize_t by,
         d[2] = b
 
 
+cdef void _op_solid_ink(const Canvas* c, const Ops* t, Py_ssize_t op, Py_ssize_t by, Py_ssize_t bx,
+                        uint8_t r, uint8_t g, uint8_t b, int32_t* ink, int32_t rise) noexcept nogil:
+    """_op_solid for a two-pass mark: every pixel also records `rise` in ink
+    (render._record_ink)."""
+    cdef int st = _clip_state(t.ext + 4 * op, by, bx, c)
+    cdef Py_ssize_t k, py, px
+    cdef uint8_t* d
+    if st == 0:
+        return
+    for k in range(t.start[op], t.start[op + 1]):
+        py = by + t.dy[k]
+        px = bx + t.dx[k]
+        if st == 2 and (py < 0 or py >= c.h or px < 0 or px >= c.w):
+            continue
+        d = c.p + (py * c.w + px) * 3
+        d[0] = r
+        d[1] = g
+        d[2] = b
+        ink[py * c.w + px] = rise
+
+
+cdef void _op_restore(const Canvas* c, const Ops* t, Py_ssize_t op, Py_ssize_t by, Py_ssize_t bx,
+                      const uint8_t* snap, int32_t* ink, int32_t height) noexcept nogil:
+    """render._restore_under over one coverage op: ink based below `height`
+    gives way to the terrain snapshot and is cleared."""
+    cdef int st = _clip_state(t.ext + 4 * op, by, bx, c)
+    cdef Py_ssize_t k, py, px, p
+    if st == 0:
+        return
+    for k in range(t.start[op], t.start[op + 1]):
+        py = by + t.dy[k]
+        px = bx + t.dx[k]
+        if st == 2 and (py < 0 or py >= c.h or px < 0 or px >= c.w):
+            continue
+        p = py * c.w + px
+        if ink[p] < height:
+            c.p[3 * p] = snap[3 * p]
+            c.p[3 * p + 1] = snap[3 * p + 1]
+            c.p[3 * p + 2] = snap[3 * p + 2]
+            ink[p] = INK_NONE
+
+
 cdef void _op_shade(const Canvas* c, const Ops* t, Py_ssize_t op, Py_ssize_t by, Py_ssize_t bx,
                     const Src* s, const float* shade) noexcept nogil:
     """render._render_tile_sloped's paint: float32 multiply, clip, truncate."""
@@ -472,17 +520,48 @@ cdef void _blit(const Canvas* c, const uint8_t* rgba, Py_ssize_t h, Py_ssize_t w
             d += 3
 
 
-cdef void _farm_and_units(const Canvas* c, const Units* u, Py_ssize_t t, const Ops* edges, Py_ssize_t edge0,
-                          const Stamps* g, Py_ssize_t sid, const Ops* marks, Py_ssize_t mark_op,
-                          const Ops* conform, Py_ssize_t conform_op,
-                          Py_ssize_t by, Py_ssize_t bx, Py_ssize_t off_x, Py_ssize_t off_y) noexcept nogil:
-    """Everything after a tile's terrain, in _paint_tile_and_units_*'s order:
-    farm outline, grid, marks, then sprites."""
-    cdef Py_ssize_t j, i, r0, slot
+cdef void _blit_ink(const Canvas* c, const uint8_t* rgba, Py_ssize_t h, Py_ssize_t w,
+                    Py_ssize_t base_y, Py_ssize_t base_x, int32_t* ink, int32_t rise) noexcept nogil:
+    """_blit for a two-pass sprite: every pixel with alpha > 0 also records
+    `rise` in ink (render._record_ink_rgba)."""
+    cdef Py_ssize_t sy0, sx0, sy1, sx1, y, x, ch
+    cdef const uint8_t* q
+    cdef uint8_t* d
+    cdef int32_t* m
+    cdef unsigned int a
+    sy0 = -base_y if base_y < 0 else 0
+    sx0 = -base_x if base_x < 0 else 0
+    sy1 = h if h < c.h - base_y else c.h - base_y
+    sx1 = w if w < c.w - base_x else c.w - base_x
+    if sy0 >= sy1 or sx0 >= sx1:
+        return
+    for y in range(sy0, sy1):
+        q = rgba + (y * w + sx0) * 4
+        d = c.p + ((base_y + y) * c.w + base_x + sx0) * 3
+        m = ink + (base_y + y) * c.w + base_x + sx0
+        for x in range(sx0, sx1):
+            a = q[3]
+            if a == 255:
+                d[0] = q[0]
+                d[1] = q[1]
+                d[2] = q[2]
+                m[0] = rise
+            elif a != 0:
+                for ch in range(3):
+                    d[ch] = <uint8_t>((q[ch] * a + d[ch] * (255 - a)) // 255)
+                m[0] = rise
+            q += 4
+            d += 3
+            m += 1
+
+
+cdef void _farm_and_grid(const Canvas* c, const Units* u, Py_ssize_t t, const Ops* edges, Py_ssize_t edge0,
+                         const Stamps* g, Py_ssize_t sid, Py_ssize_t by, Py_ssize_t bx) noexcept nogil:
+    """The rest of a tile's terrain half, in render._paint_terrain_*'s order:
+    farm outline, then grid."""
+    cdef Py_ssize_t j
     cdef uint8_t mask
     cdef const uint8_t* rgb
-    cdef const int32_t* row
-    cdef int32_t packed
     if u != NULL:
         mask = u.farm_mask[t]
         if mask:
@@ -492,23 +571,67 @@ cdef void _farm_and_units(const Canvas* c, const Units* u, Py_ssize_t t, const O
                     _op_solid(c, edges, edge0 + j, by, bx, rgb[0], rgb[1], rgb[2])
     if sid >= 0:
         _stamp(c, g, sid, by, bx)
+
+
+cdef void _unit_rows(const Canvas* c, const Units* u, Py_ssize_t t, const Ops* marks, Py_ssize_t mark_op,
+                     const Ops* conform, Py_ssize_t conform_op, Py_ssize_t by, Py_ssize_t bx,
+                     Py_ssize_t off_x, Py_ssize_t off_y, int32_t* ink) noexcept nogil:
+    """A tile's objects half, in render._paint_objects_*'s order: marks, then
+    sprites. ink, when not NULL, records each row's base rise under its pixels."""
+    cdef Py_ssize_t i, r0, slot
+    cdef const int32_t* row
+    cdef int32_t packed
+    cdef uint8_t r, g, b
     if u == NULL:
         return
     r0 = u.index[2 * t]
     for i in range(r0, r0 + u.index[2 * t + 1]):
-        row = u.rows + 4 * i
+        row = u.rows + ROW_W * i
         if row[0] == ROW_SPRITE:
             slot = row[3]
-            _blit(c, <const uint8_t*><uintptr_t>u.addrs[slot], u.dims[2 * slot], u.dims[2 * slot + 1],
-                  row[1] - off_y, row[2] - off_x)
+            if ink != NULL:
+                _blit_ink(c, <const uint8_t*><uintptr_t>u.addrs[slot], u.dims[2 * slot], u.dims[2 * slot + 1],
+                          row[1] - off_y, row[2] - off_x, ink, row[4])
+            else:
+                _blit(c, <const uint8_t*><uintptr_t>u.addrs[slot], u.dims[2 * slot], u.dims[2 * slot + 1],
+                      row[1] - off_y, row[2] - off_x)
             continue
         packed = row[3]
+        r = (packed >> 16) & 255
+        g = (packed >> 8) & 255
+        b = packed & 255
         if row[0] == ROW_CONFORM:
-            _op_solid(c, conform, conform_op, by, bx,
-                      (packed >> 16) & 255, (packed >> 8) & 255, packed & 255)
+            if ink != NULL:
+                _op_solid_ink(c, conform, conform_op, by, bx, r, g, b, ink, row[4])
+            else:
+                _op_solid(c, conform, conform_op, by, bx, r, g, b)
+        elif ink != NULL:
+            _op_solid_ink(c, marks, mark_op, row[1] - off_y, row[2] - off_x, r, g, b, ink, row[4])
         else:
-            _op_solid(c, marks, mark_op, row[1] - off_y, row[2] - off_x,
-                      (packed >> 16) & 255, (packed >> 8) & 255, packed & 255)
+            _op_solid(c, marks, mark_op, row[1] - off_y, row[2] - off_x, r, g, b)
+
+
+cdef inline void _row_floor(const Units* u, Py_ssize_t t, int32_t* floor) noexcept nogil:
+    """Lowers floor[0] to the lowest base rise among tile t's rows
+    (render._ink_floor)."""
+    cdef Py_ssize_t i, r0 = u.index[2 * t]
+    for i in range(r0, r0 + u.index[2 * t + 1]):
+        if u.rows[ROW_W * i + 4] < floor[0]:
+            floor[0] = u.rows[ROW_W * i + 4]
+
+
+cdef bint _two_pass_planes(const Canvas* c, uint8_t** snap, int32_t** ink) noexcept nogil:
+    """Allocates pass 2's terrain snapshot (a copy of the canvas as pass 1
+    left it) and its empty ink plane. False when out of memory."""
+    cdef Py_ssize_t i, n = c.h * c.w
+    snap[0] = <uint8_t*>malloc(max(n * 3, 1))
+    ink[0] = <int32_t*>malloc(max(n, 1) * sizeof(int32_t))
+    if snap[0] == NULL or ink[0] == NULL:
+        return False
+    memcpy(snap[0], c.p, n * 3)
+    for i in range(n):
+        ink[0][i] = INK_NONE
+    return True
 
 
 cdef void _compose(const Blend* b, Py_ssize_t spec, Py_ssize_t px, const Src* own, const Src* srcs) noexcept nogil:
@@ -725,18 +848,24 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                   const int64_t[::1] cand_x, const int64_t[::1] cand_y,
                   const int32_t[::1] cand_tex, const int32_t[::1] cand_grid,
                   const int64_t[:, :] elev, tuple geom, tuple tables, tuple textures,
-                  tuple stamps, tuple units, tuple blend):
-    """composite_rect_iso's per-tile loop over the ordered candidates.
+                  tuple stamps, tuple units, tuple blend, bint two_pass):
+    """render._paint_candidates_iso's loop over the ordered candidates.
     geom is (origin_x, origin_y, half_w, half_h, elev_step, tile_px,
     max_rise). Returns False, having painted nothing, when a neighbour rise
     is past the tables' max_rise; the caller then takes the per-tile path.
     blend is native_composite._blend_tables()' tuple, or None: a blended
-    candidate's top block is composed here and painted in place of its crop."""
+    candidate's top block is composed here and painted in place of its crop.
+    two_pass (sprites on): every terrain half, then every tile's objects,
+    with a higher nearer tile's terrain restored over lower ink first. The
+    snapshot and ink plane exist only when some tile is above some ink."""
     cdef Py_ssize_t origin_x = geom[0], origin_y = geom[1], half_w = geom[2], half_h = geom[3]
     cdef Py_ssize_t step = geom[4], tile_px = geom[5], max_rise = geom[6]
     cdef Py_ssize_t n = cand_x.shape[0], mh = elev.shape[0], mw = elev.shape[1]
-    cdef Py_ssize_t k, tx, ty, own, dl, dr, rul, rur, rdg, bx, by, slot, tsize
-    cdef bint seam, bad = False
+    cdef Py_ssize_t k, tx, ty, own, dl, dr, rul, rur, rdg, bx, by, slot, tsize, top = -INK_NONE
+    cdef int32_t floor = INK_NONE
+    cdef uint8_t* snap = NULL
+    cdef int32_t* ink = NULL
+    cdef bint seam, bad = False, oom = False
     cdef Canvas c
     cdef Ops t = _ops(tables[:9])
     cdef const uint8_t[:, ::1] luts = tables[9]
@@ -760,6 +889,8 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     if units is not None:
         u = _units(units)
         up = &u
+    else:
+        two_pass = False
     memset(&bl, 0, sizeof(Blend))
     try:
         if blend is not None:
@@ -816,11 +947,41 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                     if seam and rdg > 0:
                         _op_darken(&c, &t, N_FIXED + (rdg - 1) * PER_RISE + 4, by, bx)
 
-                    _farm_and_units(&c, up, ty * mw + tx, &t, OP_EDGE0, &g, cand_grid[k],
-                                    &t, OP_DIAMOND, NULL, 0, by, bx, off_x, off_y)
+                    _farm_and_grid(&c, up, ty * mw + tx, &t, OP_EDGE0, &g, cand_grid[k], by, bx)
+                    if two_pass:
+                        # The pre-scan, folded into pass 1: highest tile, lowest ink base.
+                        if own * step > top:
+                            top = own * step
+                        _row_floor(up, ty * mw + tx, &floor)
+                    else:
+                        _unit_rows(&c, up, ty * mw + tx, &t, OP_DIAMOND, NULL, 0, by, bx, off_x, off_y, NULL)
+                if two_pass:
+                    if top > floor and not _two_pass_planes(&c, &snap, &ink):
+                        oom = True
+                    else:
+                        for k in range(n):
+                            tx = cand_x[k]
+                            ty = cand_y[k]
+                            own = elev[ty, tx]
+                            bx = origin_x + (tx + ty) * half_w - off_x
+                            by = origin_y + (ty - tx) * half_h - own * step - off_y
+                            if ink != NULL and own * step > floor:
+                                # render._occlude_iso: both skirts, then the diamond.
+                                dl = max(own - elev[ty, tx - 1], 0) if tx > 0 else 0
+                                dr = max(own - elev[ty + 1, tx], 0) if ty + 1 < mh else 0
+                                if dl > 0:
+                                    _op_restore(&c, &t, N_FIXED + (dl - 1) * PER_RISE + 0, by, bx, snap, ink, own * step)
+                                if dr > 0:
+                                    _op_restore(&c, &t, N_FIXED + (dr - 1) * PER_RISE + 1, by, bx, snap, ink, own * step)
+                                _op_restore(&c, &t, OP_DIAMOND, by, bx, snap, ink, own * step)
+                            _unit_rows(&c, up, ty * mw + tx, &t, OP_DIAMOND, NULL, 0, by, bx, off_x, off_y, ink)
     finally:
         free(srcs)
         _blend_free(&bl)
+        free(snap)
+        free(ink)
+    if oom:
+        raise MemoryError()
     return not bad
 
 
@@ -830,15 +991,20 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                      const int32_t[::1] cand_shape, const int64_t[::1] cand_shade,
                      const int64_t[:, :] corner_rise, tuple geom, tuple quads, tuple edges,
                      tuple diamond, const float[::1] shade, tuple textures, tuple stamps, tuple units,
-                     tuple blend):
-    """composite_rect_sloped's per-tile loop. geom is (origin_x, origin_y,
+                     tuple blend, bint two_pass):
+    """render._paint_candidates_sloped's loop. geom is (origin_x, origin_y,
     half_w, half_h, tile_px); cand_shape indexes quads (one op per shape) and
     edges (four per shape), cand_shade is each candidate's offset into
-    shade. blend as composite_iso's."""
+    shade. blend and two_pass as composite_iso's; a tile's occluder height
+    is its lowest drawn corner and its coverage its quad."""
     cdef Py_ssize_t origin_x = geom[0], origin_y = geom[1], half_w = geom[2], half_h = geom[3]
     cdef Py_ssize_t tile_px = geom[4]
     cdef Py_ssize_t n = cand_x.shape[0], mw = corner_rise.shape[1] - 1
-    cdef Py_ssize_t k, tx, ty, d_nw, d_ne, d_sw, d_se, dmin, bx, by, slot, tsize, shp
+    cdef Py_ssize_t k, tx, ty, d_nw, d_ne, d_sw, d_se, dmin, bx, by, slot, tsize, shp, top = -INK_NONE
+    cdef int32_t floor = INK_NONE
+    cdef uint8_t* snap = NULL
+    cdef int32_t* ink = NULL
+    cdef bint oom = False
     cdef Canvas c
     cdef Ops q = _ops(quads)
     cdef Ops e = _ops(edges)
@@ -864,6 +1030,8 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     if units is not None:
         u = _units(units)
         up = &u
+    else:
+        two_pass = False
     memset(&bl, 0, sizeof(Blend))
     try:
         if blend is not None:
@@ -890,11 +1058,38 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
                     _blend_src(&s, bp, k, tile_px, srcs)
                 shp = cand_shape[k]
                 _op_shade(&c, &q, shp, by, bx, &s, &shade[cand_shade[k]])
-                _farm_and_units(&c, up, ty * mw + tx, &e, 4 * shp, &g, cand_grid[k],
-                                &dm, 0, &q, shp, by, bx, off_x, off_y)
+                _farm_and_grid(&c, up, ty * mw + tx, &e, 4 * shp, &g, cand_grid[k], by, bx)
+                if two_pass:
+                    if dmin > top:
+                        top = dmin
+                    _row_floor(up, ty * mw + tx, &floor)
+                else:
+                    _unit_rows(&c, up, ty * mw + tx, &dm, 0, &q, shp, by, bx, off_x, off_y, NULL)
+            if two_pass:
+                if top > floor and not _two_pass_planes(&c, &snap, &ink):
+                    oom = True
+                else:
+                    for k in range(n):
+                        tx = cand_x[k]
+                        ty = cand_y[k]
+                        d_nw = corner_rise[ty, tx]
+                        d_ne = corner_rise[ty, tx + 1]
+                        d_sw = corner_rise[ty + 1, tx]
+                        d_se = corner_rise[ty + 1, tx + 1]
+                        dmin = min(min(d_nw, d_ne), min(d_sw, d_se))
+                        bx = origin_x + (tx + ty) * half_w - off_x
+                        by = origin_y + (ty - tx) * half_h - off_y - dmin
+                        shp = cand_shape[k]
+                        if ink != NULL and dmin > floor:
+                            _op_restore(&c, &q, shp, by, bx, snap, ink, dmin)
+                        _unit_rows(&c, up, ty * mw + tx, &dm, 0, &q, shp, by, bx, off_x, off_y, ink)
     finally:
         free(srcs)
         _blend_free(&bl)
+        free(snap)
+        free(ink)
+    if oom:
+        raise MemoryError()
 
 
 # ---------------------------------------------------------------------------

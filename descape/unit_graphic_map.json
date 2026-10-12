@@ -117,7 +117,42 @@
       "file_name": "u_shp_trade_cog_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 17,
+          "file_name": "u_shp_trade_cog_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 17,
+          "file_name": "u_shp_sail_west_boat_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -23
+        },
+        {
+          "unit_id": 17,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -15
+        },
+        {
+          "unit_id": 17,
+          "file_name": "u_shp_sail_west_boat_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -23
+        }
+      ]
     },
     "18": {
       "graphic_id": 65,
@@ -145,7 +180,42 @@
       "file_name": "u_shp_war_galley_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 21,
+          "file_name": "u_shp_war_galley_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 21,
+          "file_name": "u_shp_sail_west_ship_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -30
+        },
+        {
+          "unit_id": 21,
+          "file_name": "u_shp_sail_west_ship_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -20
+        },
+        {
+          "unit_id": 21,
+          "file_name": "u_shp_sail_west_ship_8_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -30
+        }
+      ]
     },
     "23": {
       "graphic_id": 687,
@@ -1341,7 +1411,42 @@
       "file_name": "u_shp_heavy_demo_ship_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 114,
+          "file_name": "u_shp_heavy_demo_ship_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 114,
+          "file_name": "u_shp_sail_east_boat_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -32
+        },
+        {
+          "unit_id": 114,
+          "file_name": "u_shp_sail_east_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -12
+        },
+        {
+          "unit_id": 114,
+          "file_name": "u_shp_sail_east_boat_6_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -32
+        }
+      ]
     },
     "115": {
       "graphic_id": 973,
@@ -3379,7 +3484,42 @@
       "file_name": "u_shp_cannon_galleon_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 420,
+          "file_name": "u_shp_cannon_galleon_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 420,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 420,
+          "file_name": "u_shp_sail_west_ship_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 420,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        }
+      ]
     },
     "422": {
       "graphic_id": 1773,
@@ -3520,7 +3660,74 @@
       "file_name": "u_shp_galleon_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_galleon_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -40
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_6_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 442,
+          "file_name": "u_shp_sail_west_ship_8_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -40
+        }
+      ]
     },
     "444": {
       "graphic_id": 10469,
@@ -4338,21 +4545,118 @@
       "file_name": "u_shp_demo_ship_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 527,
+          "file_name": "u_shp_demo_ship_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 527,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -19
+        }
+      ]
     },
     "528": {
       "graphic_id": 3967,
       "file_name": "u_shp_heavy_demo_ship_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 528,
+          "file_name": "u_shp_heavy_demo_ship_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 528,
+          "file_name": "u_shp_sail_west_boat_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -32
+        },
+        {
+          "unit_id": 528,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -12
+        },
+        {
+          "unit_id": 528,
+          "file_name": "u_shp_sail_west_boat_6_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -32
+        }
+      ]
     },
     "529": {
       "graphic_id": 4005,
       "file_name": "u_shp_fire_ship_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 529,
+          "file_name": "u_shp_fire_ship_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 529,
+          "file_name": "u_shp_sail_west_ship_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -28
+        },
+        {
+          "unit_id": 529,
+          "file_name": "u_shp_sail_west_ship_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -20
+        },
+        {
+          "unit_id": 529,
+          "file_name": "u_shp_sail_west_ship_6_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -20
+        },
+        {
+          "unit_id": 529,
+          "file_name": "u_shp_sail_west_ship_8_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -28
+        }
+      ]
     },
     "530": {
       "graphic_id": 1544,
@@ -4373,7 +4677,66 @@
       "file_name": "u_shp_fast_fire_ship_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_fast_fire_ship_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_sail_west_ship_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -28
+        },
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -14
+        },
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_sail_west_ship_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -20
+        },
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_sail_west_ship_6_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -20
+        },
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -14
+        },
+        {
+          "unit_id": 532,
+          "file_name": "u_shp_sail_west_ship_8_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -28
+        }
+      ]
     },
     "533": {
       "graphic_id": 2872,
@@ -4394,14 +4757,52 @@
       "file_name": "u_shp_galley_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 535,
+          "file_name": "u_shp_galley_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 535,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -13
+        }
+      ]
     },
     "536": {
       "graphic_id": 4057,
       "file_name": "u_shp_galley_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 536,
+          "file_name": "u_shp_galley_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 536,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -13
+        }
+      ]
     },
     "537": {
       "graphic_id": 3401,
@@ -4422,7 +4823,26 @@
       "file_name": "u_shp_galley_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 539,
+          "file_name": "u_shp_galley_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 539,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -13
+        }
+      ]
     },
     "540": {
       "graphic_id": 3378,
@@ -4463,7 +4883,50 @@
       "file_name": "u_shp_transport_ship_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 545,
+          "file_name": "u_shp_transport_ship_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 545,
+          "file_name": "u_shp_sail_west_ship_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -28
+        },
+        {
+          "unit_id": 545,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -18
+        },
+        {
+          "unit_id": 545,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -18
+        },
+        {
+          "unit_id": 545,
+          "file_name": "u_shp_sail_west_ship_8_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -28
+        }
+      ]
     },
     "546": {
       "graphic_id": 2804,
@@ -6051,7 +6514,42 @@
       "file_name": "u_shp_elite_cannon_galleon_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 691,
+          "file_name": "u_shp_elite_cannon_galleon_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 691,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 691,
+          "file_name": "u_shp_sail_west_ship_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 691,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        }
+      ]
     },
     "692": {
       "graphic_id": 4241,
@@ -9175,14 +9673,76 @@
       "file_name": "u_shp_fire_galley_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 1103,
+          "file_name": "u_shp_fire_galley_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 1103,
+          "file_name": "u_shp_sail_west_boat_2_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        },
+        {
+          "unit_id": 1103,
+          "file_name": "u_shp_sail_west_boat_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        },
+        {
+          "unit_id": 1103,
+          "file_name": "u_shp_sail_west_boat_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        },
+        {
+          "unit_id": 1103,
+          "file_name": "u_shp_sail_west_boat_6_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        }
+      ]
     },
     "1104": {
       "graphic_id": 9300,
       "file_name": "u_shp_demo_raft_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 1104,
+          "file_name": "u_shp_demo_raft_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 1104,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -6
+        }
+      ]
     },
     "1105": {
       "graphic_id": 9294,
@@ -14036,6 +14596,33 @@
       "frame_count": 30,
       "rotation_is_variant": true,
       "variant_count": 16
+    },
+    "1608": {
+      "graphic_id": 12300,
+      "file_name": "butterflies_1_low",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
+    },
+    "1609": {
+      "graphic_id": 12301,
+      "file_name": "butterflies_2_low",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
+    },
+    "1610": {
+      "graphic_id": 12302,
+      "file_name": "butterflies_3_low",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
     },
     "1615": {
       "graphic_id": 2959,
@@ -22205,21 +22792,126 @@
       "file_name": "u_shp_holk_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 2626,
+          "file_name": "u_shp_holk_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 2626,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -10
+        }
+      ]
     },
     "2627": {
       "graphic_id": 11252,
       "file_name": "u_shp_war_holk_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 2627,
+          "file_name": "u_shp_war_holk_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 2627,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -18
+        },
+        {
+          "unit_id": 2627,
+          "file_name": "u_shp_sail_west_boat_4_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -13
+        },
+        {
+          "unit_id": 2627,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -18
+        }
+      ]
     },
     "2628": {
       "graphic_id": 11298,
       "file_name": "u_shp_carrack_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 2628,
+          "file_name": "u_shp_carrack_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 2628,
+          "file_name": "u_shp_sail_west_boat_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -40
+        },
+        {
+          "unit_id": 2628,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 2628,
+          "file_name": "u_shp_sail_west_ship_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 2628,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -22
+        },
+        {
+          "unit_id": 2628,
+          "file_name": "u_shp_sail_west_boat_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -40
+        }
+      ]
     },
     "2630": {
       "graphic_id": 803,
@@ -22251,7 +22943,42 @@
       "file_name": "u_shp_catapult_galleon_idle_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 2633,
+          "file_name": "u_shp_catapult_galleon_idle_x1",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 2633,
+          "file_name": "u_shp_sail_west_ship_3_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 2633,
+          "file_name": "u_shp_sail_west_ship_5_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        },
+        {
+          "unit_id": 2633,
+          "file_name": "u_shp_sail_west_ship_7_x1",
+          "angle_count": 16,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -25
+        }
+      ]
     },
     "2635": {
       "graphic_id": 9622,

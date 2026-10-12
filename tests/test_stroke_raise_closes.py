@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+from descape import terrain_target
+
 import conftest
 
 pytestmark = [
@@ -104,6 +106,39 @@ def test_a_raise_inside_a_shape_commit_closes_the_stroke(monkeypatch) -> None:
         assert _terrain_at(mm, 8, 8) == _TERRAIN
         assert len(window.edit_history.records) == 1
         _assert_next_stroke_works(window, monkeypatch, real, 20, 20)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_raise_inside_a_fill_closes_the_stroke(monkeypatch) -> None:
+    window = _draw_window()
+    try:
+        mm = window.scenario.map_manager
+        window._on_tool_selected("fill")
+        real = terrain_target.write_tile
+        calls = {"n": 0}
+
+        def write_tile(tile, target, terrain_id):
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise ValueError("terrain id out of range")
+            real(tile, target, terrain_id)
+
+        monkeypatch.setattr(terrain_target, "write_tile", write_tile)
+        with pytest.raises(ValueError):
+            window.on_fill(8, 8, 0)
+
+        assert not window.edit_history.in_stroke
+        assert not window._busy and window.isEnabled()
+        assert len(window.edit_history.records) == 1, "the tiles filled before the raise were not recorded"
+        assert sum(tile.terrain_id == _TERRAIN for tile in mm.terrain) == 3
+
+        monkeypatch.setattr(terrain_target, "write_tile", real)
+        window.undo()
+        assert not any(tile.terrain_id == _TERRAIN for tile in mm.terrain)
+        window._on_tool_selected("draw")
+        _assert_next_stroke_works(window, monkeypatch, mm.get_tile, 20, 20)
     finally:
         window.edit_history.mark_saved()
         window.close()

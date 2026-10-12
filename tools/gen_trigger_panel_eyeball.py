@@ -151,7 +151,7 @@ def _capture_navigation_states(prefix: str, filename: str, out_dir: Path) -> lis
             ("filter", panel.filter_edit),
             ("sort", panel.sort_combo),
             ("tag", panel.tag_combo),
-            ("rename", panel.tag_rename_button),
+            ("tags", panel.tags_button),
             ("sections", panel.sections_button),
         ):
             print(f"  {label:8s} x={widget.x():4d} width={widget.width():4d} hint={widget.sizeHint().width():4d}")
@@ -546,8 +546,8 @@ TAG_FILE = ROOT / "examples" / "C2_ElCid_coop_1_v0_16.aoe2scenario"
 
 
 def _capture_tag_states(out_dir: Path) -> list[Path]:
-    """Tag management: Rename tag… disabled on "All tags", enabled on a
-    chosen tag, and the tree after renaming it (facet follows). The filter
+    """Tag management: the Tags menu's Rename Tag… disabled on "All tags",
+    enabled on a chosen tag, and the tree after renaming it (facet follows). The filter
     row's widget widths are printed, not eyeballed."""
     from PyQt5.QtWidgets import QApplication
 
@@ -566,13 +566,13 @@ def _capture_tag_states(out_dir: Path) -> list[Path]:
         path = out_dir / "tag_all_tags_disabled.png"
         _grab(window, path)
         written.append(path)
-        print(f"tag: All tags -> enabled={panel.tag_rename_button.isEnabled()} "
-              f"tooltip={panel.tag_rename_button.toolTip()!r}")
+        print(f"tag: All tags -> enabled={panel.tag_rename_action.isEnabled()} "
+              f"tooltip={panel.tag_rename_action.toolTip()!r}")
         print(f"filter row at {panel.tree.width()} px (MIN_USEFUL_WIDTH is {panel.MIN_USEFUL_WIDTH}):")
         for label, widget in (
             ("filter", panel.filter_edit),
             ("tag", panel.tag_combo),
-            ("rename", panel.tag_rename_button),
+            ("tags", panel.tags_button),
             ("sort", panel.sort_combo),
         ):
             print(f"  {label:7s} x={widget.x():4d} width={widget.width():4d} hint={widget.sizeHint().width():4d}")
@@ -582,8 +582,8 @@ def _capture_tag_states(out_dir: Path) -> list[Path]:
         path = out_dir / "tag_d1_rename_enabled.png"
         _grab(window, path)
         written.append(path)
-        print(f"tag: D1 -> enabled={panel.tag_rename_button.isEnabled()} "
-              f"tooltip={panel.tag_rename_button.toolTip()!r}")
+        print(f"tag: D1 -> enabled={panel.tag_rename_action.isEnabled()} "
+              f"tooltip={panel.tag_rename_action.toolTip()!r}")
 
         window.rename_trigger_tag("D1", "Intro")
         QApplication.processEvents()

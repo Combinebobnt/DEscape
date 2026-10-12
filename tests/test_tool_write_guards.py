@@ -70,7 +70,9 @@ def test_a_fixture_generator_writes_into_a_compatdata_folder(tmp_path, monkeypat
     assert [p.name for p in profile.iterdir()] == ["f.aoe2scenario"]
 
 
-@pytest.mark.parametrize("tool", ["gen_building_place_pair", "gen_gh206_pair", "gen_gh187_pair"])
+@pytest.mark.parametrize(
+    "tool", ["gen_building_place_pair", "gen_gh206_pair", "gen_gh187_pair", "gen_ship_sails_pair"]
+)
 def test_a_building_pair_generator_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch, tool) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module(tool)

@@ -317,7 +317,9 @@ def _edit_scenario():
 
 def _draw(cache, scn) -> None:
     mm = scn.map_manager
-    tiles = [(UNIT_TILE[0] + dx, UNIT_TILE[1]) for dx in (-1, 0, 1)]
+    # A run through the unit's tile and out past its sprite on both sides: the
+    # sprite's opaque square hides the ground under it (GH #107), four tiles each way.
+    tiles = [(UNIT_TILE[0] + dx, UNIT_TILE[1]) for dx in range(-6, 7)]
     dirty = [i for i, t in enumerate(mm.terrain) if (t.x, t.y) in tiles]
     for i in dirty:
         mm.terrain[i].terrain_id = BLACK

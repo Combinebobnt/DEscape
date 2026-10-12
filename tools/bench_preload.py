@@ -43,6 +43,11 @@ the chunk figures include first-touch derivation instead.
 `--grid` bakes View > Grid (default blend and thickness) into the Stepped and
 Sloped caches for `--per-chunk`/`--per-tick`, so the grid-on chunk cost comes
 from the same rows as the grid-off one. Flat is left as is.
+
+`--blend on|off` sets View > Layers > Terrain Blending on every cache in every
+mode (TASK-143's perf gate compares the two, interleaved). `on` is the app's
+default; `--per-chunk`/`--per-tick` refuse a map with no blend-keyed tile
+under it, since nothing blended would be timed.
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +64,7 @@ sys.path.insert(0, str(ROOT))
 from descape import asset_source, composite_backend, grid_overlay, margin_warm, perf_trace, render, unit_sprites
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
+from descape.view_layers import DEFAULT_LAYERS
 
 SAMPLE_PX = 512
 
@@ -72,24 +79,38 @@ def _time(fn) -> float:
     return time.perf_counter() - start
 
 
+# --blend off: View > Layers > Terrain Blending off on every cache built here.
+BLEND = True
+
+
+def _layers():
+    return replace(DEFAULT_LAYERS, terrain_blend=BLEND)
+
+
+def _keyed_share(scenario) -> float:
+    """Share of the map's tiles carrying a blend key (0 with blending off)."""
+    keys = render._full_blend_keys(scenario, BLEND)
+    return sum(k is not None for k in keys) / len(keys) if keys else 0.0
+
+
 def _stepped_cache(scenario) -> IsoChunkCache:
     mm = scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     _img, elevations, proj = render.render_terrain_iso_with_proj(scenario)
-    return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
+    return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True, layers=_layers())
 
 
 def _flat_cache(scenario) -> FlatChunkCache:
     mm = scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    return FlatChunkCache(scenario, tile_px, sprites=True)
+    return FlatChunkCache(scenario, tile_px, sprites=True, layers=_layers())
 
 
 def _sloped_cache(scenario) -> SlopedChunkCache:
     mm = scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
-    return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True)
+    return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True, layers=_layers())
 
 
 # --lazy-pack: skip the unit-pack pre-derive, so first-touch chunks derive
@@ -369,7 +390,13 @@ def _bench_per_tick(scenario, style: str, repeats: int, mip: int = 0) -> list[st
 def bench_file_per_chunk(path: Path, styles: list[str], repeats: int, mip: int = 0, per_tick: bool = False) -> str:
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
-    lines = [f"  {path.name} ({mm.map_width}x{mm.map_height}){', grid on' if GRID else ''}"]
+    keyed = _keyed_share(scenario)
+    if BLEND and not keyed:
+        raise SystemExit(f"--blend on, but {path.name} has no blend-keyed tile: nothing blended would be timed")
+    lines = [
+        f"  {path.name} ({mm.map_width}x{mm.map_height}){', grid on' if GRID else ''}, "
+        + (f"terrain blending on ({keyed:.0%} of tiles keyed)" if BLEND else "terrain blending off")
+    ]
     bench =_bench_per_tick if per_tick else _bench_per_chunk
     for style in styles:
         lines.extend(bench(scenario, style, repeats, mip))
@@ -423,11 +450,16 @@ def main() -> None:
         "--grid", action="store_true",
         help="Bake View > Grid (default blend and thickness) into Stepped/Sloped for --per-chunk/--per-tick",
     )
+    parser.add_argument(
+        "--blend", choices=("on", "off"), default="on",
+        help="View > Layers > Terrain Blending on every cache, all modes (default on, the app's)",
+    )
     args = parser.parse_args()
     margin_warm.WORKERS = args.workers
-    global LAZY_PACK, GRID
+    global LAZY_PACK, GRID, BLEND
     LAZY_PACK = args.lazy_pack
     GRID = args.grid
+    BLEND = args.blend == "on"
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     unknown = [s for s in styles if s not in _PER_CHUNK_STYLES]
     if unknown:
@@ -440,6 +472,9 @@ def main() -> None:
             "No AoE2:DE install configured -- every unit would fall back to a "
             "coloured mark and every number here would be zero. Pass --install."
         )
+
+    if BLEND and not render.blend_effective():
+        raise SystemExit("--blend on: the install has no readable blendomatic. Pass --blend off.")
 
     files = args.scenarios
     if not files:

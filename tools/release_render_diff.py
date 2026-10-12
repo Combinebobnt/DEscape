@@ -33,6 +33,12 @@ What is neutralized or masked, and why. Everything else must match exactly.
   slots (town centres, pastures; GH #66). Their look is judged by their own
   review packs (tools/REVIEW_PACK.md); `--frames-dir` writes v0.6 / HEAD /
   amplified-diff crops of them for a side-by-side look.
+- **Sprites-on paint order** (GH #107: all terrain first, then objects, so
+  nearer ground no longer cuts a sprite's or a mark's overhanging ink, and a
+  contact shadow darkens ground only). This checkout renders Stepped and
+  Sloped with the pre-fix loop put back, terrain and objects interleaved per
+  tile (`render._paint_candidates_iso/_sloped`). Only this checkout is
+  patched. Sprites-off renders never left that loop.
 
 Sprites-off runs keep every unit. Each Stepped sprites-on run also asserts that
 both sides resolve the same number of units to sprite art, and at least one, so
@@ -76,9 +82,9 @@ QUICK_CORPUS = (
     "C2_ElCid_coop_1_v0_16.aoe2scenario",
     "F7_2_Dos Pilas (648).aoe2scenario",
 )
-# Controls: each must make the comparison fail. The last three drop one neutralization each, proving it is load-bearing.
+# Controls: each must make the comparison fail. The last four drop one neutralization each, proving it is load-bearing.
 # Exception: no-mask passes while Stepped shadows match v0.6 (GH #15 back-out); a failure there means the mask matters again.
-INJECTS = ("repaint-tile", "no-placement-patch", "no-exclusions", "no-mask")
+INJECTS = ("repaint-tile", "no-placement-patch", "no-exclusions", "no-mask", "no-paint-order-patch")
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).
 CROP_W, CROP_H, UPSCALE = 240, 180, 5
@@ -96,6 +102,25 @@ def _legacy_placement(render) -> None:
             raise SystemExit(f"render.{name} is gone: update _legacy_placement() to match the refactor")
     render.unit_paint_offset = lambda unit: (0.0, 0.0)
     render._sprite_axis_centre = lambda coord, span: render._span_start(coord, span) + span / 2
+
+
+def _legacy_paint_order(render) -> None:
+    """Put the pre-GH #107 composite back: terrain and objects interleaved per tile, sprites on or off."""
+    names = ("_paint_candidates_iso", "_paint_candidates_sloped", "_paint_tile_and_units_iso", "_paint_tile_and_units_sloped")
+    for name in names:
+        if not hasattr(render, name):
+            raise SystemExit(f"render.{name} is gone: update _legacy_paint_order() to match the refactor")
+
+    def interleaved(per_tile):
+        def paint(img, tiles, keys, units_by_tile, tile_px, proj, heights, map_w, map_h, **kwargs):
+            for i, tile in enumerate(tiles):
+                blend = None if keys is None else keys[i]
+                per_tile(img, tile, units_by_tile, tile_px, proj, heights, map_w, map_h, blend=blend, **kwargs)
+
+        return paint
+
+    render._paint_candidates_iso = interleaved(render._paint_tile_and_units_iso)
+    render._paint_candidates_sloped = interleaved(render._paint_tile_and_units_sloped)
 
 
 def _terrace_mask(iso_geometry, elevations: np.ndarray, proj, shape: tuple[int, int]) -> np.ndarray:
@@ -144,6 +169,8 @@ def _worker(spec: dict) -> None:
         units[:] = kept
     if spec["legacy_placement"]:
         _legacy_placement(render)
+    if spec["legacy_paint_order"]:
+        _legacy_paint_order(render)
     style, sprites = spec["style"], spec["sprites"]
     meta: dict = {"removed_units": removed}
     # Blending off where the tag has it, so this keeps guarding non-blend regressions against older tags.
@@ -361,6 +388,7 @@ def run(
                 "sprites": job.sprites,
                 "exclude": excluded,
                 "legacy_placement": side == "b" and inject != "no-placement-patch",
+                "legacy_paint_order": side == "b" and inject != "no-paint-order-patch",
                 "repaint_tile": side == "b" and inject == "repaint-tile",
                 "out": str(out / f"{job.key}_{side}.npy"),
                 "meta_out": str(out / f"{job.key}_{side}.json"),

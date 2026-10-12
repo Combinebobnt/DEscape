@@ -103,6 +103,7 @@ class EraseStroke:
     refused: int = 0
     reference_ids: list[int] = field(default_factory=list)
     layer_cleared: int = 0
+    pending_layer_tiles: list[int] = field(default_factory=list)  # cleared tile indices, not yet repainted
     pending_splices: list = field(default_factory=list)  # render_cache.UnitSplice, not yet repainted
 
 

@@ -241,3 +241,21 @@ def set_terrain(tile: TerrainTile, terrain_id: int) -> None:
     applies per-click)."""
     tile.terrain_id = terrain_id
     tile.layer = -1
+
+
+def set_layer(tile: TerrainTile, terrain_id: int | None) -> None:
+    """Sets tile's layered terrain (`layer`, the second terrain drawn over
+    terrain_id) and leaves terrain_id alone. None removes it. An id equal to
+    the tile's own terrain_id also removes it: a layer matching its base
+    draws as none and no real file stores one. Raises ValueError, writing
+    nothing, for an id outside 0..255.
+
+    Call it after set_terrain(), which still clears the layer. A file whose
+    terrain has no layer field (LoadedScenario.terrain_has_layer False)
+    never saves the value; this takes a tile, so it cannot check that."""
+    if terrain_id is None:
+        tile.layer = -1
+        return
+    if not 0 <= terrain_id <= 255:
+        raise ValueError(f"layer terrain id {terrain_id} is outside 0..255")
+    tile.layer = -1 if terrain_id == tile.terrain_id else terrain_id

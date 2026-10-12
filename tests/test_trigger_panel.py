@@ -3964,7 +3964,7 @@ def test_edit_copy_and_paste_dispatch_on_mode() -> None:
         window.close()
 
 
-# -- tag management: Rename tag… and its Remove tag… menu --------------------
+# -- tag management: the Tags menu's Rename Tag… and Remove Tag Everywhere ----
 
 _TAGGED_NAMES = ["[D1] setup", "[d1]armour split", "[P1][D1] references", "[D1]: variable"]
 
@@ -4021,23 +4021,63 @@ def test_rename_tag_is_offered_only_on_a_chosen_tag_of_a_writable_file(tmp_path:
     try:
         panel = window.trigger_panel
         assert panel.current_tag() is None
-        assert not panel.tag_rename_button.isEnabled()
+        assert not panel.tag_rename_action.isEnabled()
         assert not panel.tag_remove_action.isEnabled()
-        assert panel.tag_rename_button.toolTip() == "Pick a tag to rename"
+        assert panel.tag_rename_action.toolTip() == "Pick a tag in the tag filter first"
 
         panel.set_tag_filter("D1")
-        assert panel.tag_rename_button.isEnabled()
+        assert panel.tag_rename_action.isEnabled()
         assert panel.tag_remove_action.isEnabled()
         # Not gated on the text filter or the sort mode.
         panel.filter_edit.setText("setup")
         panel.sort_combo.setCurrentIndex(1)
-        assert panel.tag_rename_button.isEnabled()
+        assert panel.tag_rename_action.isEnabled()
 
         window.scenario.trigger_write_supported = False
         panel.show_scenario(window.scenario)
         assert panel.current_tag() == "D1"
-        assert not panel.tag_rename_button.isEnabled()
+        assert not panel.tag_rename_action.isEnabled()
         assert not panel.tag_remove_action.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_disabled_tags_actions_say_why(tmp_path: Path) -> None:
+    """TASK-330: the four tag verbs live in the Tags menu, and a disabled one
+    carries its reason in the tooltip."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        actions = (panel.tag_add_action, panel.tag_remove_selected_action, panel.tag_rename_action,
+                   panel.tag_remove_action)
+        assert panel.tags_menu.toolTipsVisible()
+        panel.tree.clearSelection()
+        assert panel.current_tag() is None
+        assert panel.tags_button.isEnabled(), "the menu opens with nothing to act on, to say why"
+        assert [a.isEnabled() for a in actions] == [False] * 4
+        assert [a.toolTip() for a in actions] == [
+            "Select a trigger to tag",
+            "The selected triggers carry no tag",
+            "Pick a tag in the tag filter first",
+            "Pick a tag in the tag filter first",
+        ]
+
+        panel.set_tag_filter("D1")
+        _ctrl_select(panel, 0)
+        assert [a.isEnabled() for a in actions] == [True] * 4
+        assert [a.toolTip() for a in actions] == [
+            "Add a tag to every selected trigger that lacks it",
+            "Remove a tag from the selected triggers only",
+            panel._TAG_RENAME_TIP,
+            panel._TAG_REMOVE_ALL_TIP,
+        ]
+        assert "arrow" not in panel._TAG_RENAME_TIP
+
+        window.scenario.trigger_write_supported = False
+        panel.show_scenario(window.scenario)
+        assert not panel.tags_button.isEnabled(), "read-only: nothing in the menu could run"
+        assert [a.isEnabled() for a in actions] == [False] * 4
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -4072,7 +4112,7 @@ def test_renaming_the_facets_tag_keeps_the_facet_on_it(tmp_path: Path, monkeypat
         panel = window.trigger_panel
         panel.set_tag_filter("D1")
         assert _visible_ids(panel) == [0, 2, 3], "D1 chained second on [P1][D1] counts too"
-        panel.tag_rename_button.click()
+        panel.tag_rename_action.trigger()
         assert asked["getText"] == [('Rename tag "D1"', "3 triggers carry this tag. New tag:", "D1")]
         assert asked["question"] == []
         assert _names(window) == ["[Intro] setup", "[d1]armour split", "[P1][Intro] references", "[Intro]: variable"]
@@ -4187,11 +4227,11 @@ def test_add_tag_tags_the_selected_triggers_lacking_it_in_one_step(monkeypatch) 
     try:
         panel = window.trigger_panel
         panel.tree.clearSelection()
-        assert not panel.tag_add_button.isEnabled(), "nothing selected"
+        assert not panel.tag_add_action.isEnabled(), "nothing selected"
         _ctrl_select(panel, 0, 2)
-        assert panel.tag_add_button.isEnabled()
+        assert panel.tag_add_action.isEnabled()
         asked = _answer_item(monkeypatch, text="  Intro ")
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert asked == [("Add tag", "Add a tag to 2 selected triggers:", [], True)]
         assert _names(window) == [
             "[Intro] Fixture: setup", "Fixture: armour split", "[Intro] Fixture: references", "Fixture: variable",
@@ -4205,7 +4245,7 @@ def test_add_tag_tags_the_selected_triggers_lacking_it_in_one_step(monkeypatch) 
 
         _ctrl_select(panel, 0, 1)
         asked = _answer_item(monkeypatch, text="Intro")
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert asked[0][2] == ["Intro"], "existing tags are offered"
         assert _names(window)[:2] == ["[Intro] Fixture: setup", "[Intro] Fixture: armour split"]
         assert len(window.edit_history.records) == 2
@@ -4229,15 +4269,15 @@ def test_add_tag_chains_onto_another_tag_and_refuses_a_closer(tmp_path: Path, mo
         panel = window.trigger_panel
         _ctrl_select(panel, 1)
         _answer_item(monkeypatch, text="a]b")
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert len(warnings) == 1 and '"a]b"' in warnings[0]
         assert window.edit_history.records == []
 
         _answer_item(monkeypatch, text="New")
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert _names(window)[1] == "[New] [d1]armour split"
         _answer_item(monkeypatch)  # cancelled
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert len(window.edit_history.records) == 1
     finally:
         window.edit_history.mark_saved()
@@ -4252,13 +4292,13 @@ def test_add_tag_skips_a_trigger_carrying_it_anywhere_in_the_chain(tmp_path: Pat
         panel = window.trigger_panel
         _ctrl_select(panel, 2)
         _answer_item(monkeypatch, text="D1")
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert _names(window) == _TAGGED_NAMES
         assert window.edit_history.records == []
 
         _ctrl_select(panel, 1, 2)
         _answer_item(monkeypatch, text="D1")
-        panel.tag_add_button.click()
+        panel.tag_add_action.trigger()
         assert _names(window) == ["[D1] setup", "[D1] [d1]armour split", "[P1][D1] references", "[D1]: variable"]
         assert len(window.edit_history.records) == 1
         record = window.edit_history.records[-1]
@@ -4277,9 +4317,9 @@ def test_remove_tag_on_a_selection_strips_only_the_selected_carriers(tmp_path: P
     try:
         panel = window.trigger_panel
         _ctrl_select(panel, 0, 2)
-        assert panel.tag_remove_selected_button.isEnabled()
+        assert panel.tag_remove_selected_action.isEnabled()
         asked = _answer_item(monkeypatch, text="D1")
-        panel.tag_remove_selected_button.click()
+        panel.tag_remove_selected_action.trigger()
         assert asked == [("Remove tag", "Remove a tag from 2 selected triggers:", ["D1", "P1"], False)]
         assert asked.defaults == ["D1"], "the first selected row's leading tag"
         assert _names(window) == ["setup", "[d1]armour split", "[P1] references", "[D1]: variable"]
@@ -4290,7 +4330,7 @@ def test_remove_tag_on_a_selection_strips_only_the_selected_carriers(tmp_path: P
 
         _ctrl_select(panel, 2)
         asked = _answer_item(monkeypatch, text="D1")
-        panel.tag_remove_selected_button.click()
+        panel.tag_remove_selected_action.trigger()
         assert asked == [("Remove tag", "Remove a tag from 1 selected trigger:", ["D1", "P1"], False)]
         assert asked.defaults == ["P1"], "pre-selects the leading tag, not the sorted-first chained one"
         assert _names(window)[2] == "[P1] references", "the chained second tag, stripped in place"
@@ -4299,7 +4339,7 @@ def test_remove_tag_on_a_selection_strips_only_the_selected_carriers(tmp_path: P
 
         _ctrl_select(panel, 0)
         asked = _answer_item(monkeypatch, text="unused")
-        panel.tag_remove_selected_button.click()
+        panel.tag_remove_selected_action.trigger()
         assert asked == [], "one tag in the selection: nothing to choose"
         assert _names(window)[0] == "setup"
         window.undo()
@@ -4307,7 +4347,7 @@ def test_remove_tag_on_a_selection_strips_only_the_selected_carriers(tmp_path: P
         _ctrl_select(panel, 0)
         window.trigger_structural_edit("new", [])
         _ctrl_select(panel, 4)
-        assert not panel.tag_remove_selected_button.isEnabled(), "an untagged selection has nothing to remove"
+        assert not panel.tag_remove_selected_action.isEnabled(), "an untagged selection has nothing to remove"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -4389,7 +4429,7 @@ def test_rename_tag_retags_a_chained_tag_in_place_in_one_undo_step(tmp_path: Pat
     try:
         panel = window.trigger_panel
         panel.set_tag_filter("New")
-        panel.tag_rename_button.click()
+        panel.tag_rename_action.trigger()
         assert asked["getText"] == [('Rename tag "New"', "2 triggers carry this tag. New tag:", "New")]
         assert _names(window) == ["[Newer] setup", "[Old] [Newer] x", "[Old] solo", "plain"]
         record = window.edit_history.records[-1]
@@ -4457,7 +4497,7 @@ def test_remove_selected_offers_every_tag_in_the_chain(tmp_path: Path, monkeypat
         panel = window.trigger_panel
         _ctrl_select(panel, 1)
         asked = _answer_item(monkeypatch, text="New")
-        panel.tag_remove_selected_button.click()
+        panel.tag_remove_selected_action.trigger()
         assert asked == [("Remove tag", "Remove a tag from 1 selected trigger:", ["New", "Old"], False)]
         assert _names(window) == ["[New] setup", "[Old] x", "[Old] solo", "plain"]
         assert window.edit_history.records[-1].touched == [1]
@@ -4563,7 +4603,7 @@ def test_the_sections_button_lists_every_section_and_stays_when_flat() -> None:
 
 def _roomy_tree(panel) -> None:
     """Give the trigger tree pane 500 px of the vertical split. At the default
-    1500x900 split three button rows leave the tree ~5 rows, so a test that
+    1500x900 split two button rows leave the tree ~6 rows, so a test that
     clicks a real row position needs the room to see it."""
     from PyQt5.QtWidgets import QApplication
 
@@ -5062,7 +5102,7 @@ def test_rename_is_off_on_a_bare_run_divider() -> None:
         window.close()
 
 
-# -- TASK-212: three button rows below the tree ------------------------------
+# -- TASK-212, TASK-330: two button rows below the tree -----------------------
 
 
 def _bottom_rows(panel) -> list:
@@ -5076,26 +5116,25 @@ def _row_widgets(row) -> list:
     return [row.itemAt(i).widget() for i in range(row.count()) if row.itemAt(i).widget() is not None]
 
 
-def test_three_button_rows_sit_below_the_trigger_tree() -> None:
+def test_two_button_rows_sit_below_the_trigger_tree() -> None:
     window = _sectioned_window()
     try:
         panel = window.trigger_panel
         rows = _bottom_rows(panel)
-        assert len(rows) == 3, "TASK-212: five rows left the tree ~3 rows tall"
-        assert [row.layout() for row in rows][:2] == [panel.trigger_buttons, panel.reorder_buttons]
+        assert len(rows) == 2, "TASK-212: five rows left the tree ~3 rows tall"
+        assert [row.layout() for row in rows] == [panel.trigger_buttons, panel.reorder_buttons]
         reorder = [panel.trigger_copy_button, panel.trigger_move_up_button, panel.trigger_move_down_button,
                    panel.section_up_button, panel.section_down_button]
         assert _row_widgets(panel.reorder_buttons) == reorder
         assert [b.text() for b in reorder[1:]] == ["▲", "▼", "⇈", "⇊"]
         assert [b.accessibleName() for b in reorder[1:]] == ["Move Up", "Move Down", "Section Up", "Section Down"]
-        assert _row_widgets(rows[2].layout()) == [panel.tag_add_button, panel.tag_remove_selected_button]
     finally:
         window.edit_history.mark_saved()
         window.close()
 
 
 def test_every_trigger_verb_is_still_reachable(monkeypatch) -> None:
-    """Each verb is a button in the pane or an action in the Sections or tag
+    """Each verb is a button in the pane or an action in the Sections or Tags
     menu, and triggering it reaches its slot."""
     window = _sectioned_window()
     try:
@@ -5125,12 +5164,14 @@ def test_every_trigger_verb_is_still_reachable(monkeypatch) -> None:
                      "request_new_section", "request_section_rename", "collapse_all_sections",
                      "expand_all_sections"):
             monkeypatch.setattr(panel, slot, lambda slot=slot: called.append(slot))
-        for button in (panel.tag_add_button, panel.tag_remove_selected_button, panel.tag_rename_button):
-            assert pane.isAncestorOf(button)
-            button.setEnabled(True)
-            button.click()
-        menu_actions = panel.sections_menu.actions() + panel.tag_rename_button.menu().actions()
-        for action in (panel.tag_remove_action, panel.section_new_action, panel.section_rename_action,
+        assert pane.isAncestorOf(panel.tags_button)
+        assert panel.tags_button.menu() is panel.tags_menu
+        assert [a.text() for a in panel.tags_menu.actions() if not a.isSeparator()] == [
+            "Add Tag to Selection…", "Remove Tag from Selection…", "Rename Tag…", "Remove Tag Everywhere",
+        ]
+        menu_actions = panel.sections_menu.actions() + panel.tags_menu.actions()
+        for action in (panel.tag_add_action, panel.tag_remove_selected_action, panel.tag_rename_action,
+                       panel.tag_remove_action, panel.section_new_action, panel.section_rename_action,
                        panel.collapse_all_action, panel.expand_all_action):
             assert action in menu_actions, action.text()
             action.setEnabled(True)
@@ -5165,17 +5206,32 @@ def test_no_trigger_pane_button_clips_at_the_minimum_width() -> None:
         assert panel.width() <= TriggerPanel.MIN_USEFUL_WIDTH + 10, "fixture assumption: the pane is at its minimum"
         tag_row = panel.tag_combo.parentWidget().layout().itemAt(1).layout()
         widgets = [w for row in _bottom_rows(panel) for w in _row_widgets(row.layout())] + _row_widgets(tag_row)
-        assert len(widgets) == 14
+        assert len(widgets) == 12
         for widget in widgets:
             if widget is panel.tag_combo:
-                # Elides by design, but must keep a usable width (99 px measured).
-                assert widget.width() >= 90, f"the tag filter gets {widget.width()} px"
+                # Elides by design, but must keep a usable width (188 px measured).
+                assert widget.width() >= 170, f"the tag filter gets {widget.width()} px"
                 continue
             assert widget.isVisible(), widget.text()
             assert widget.width() >= widget.sizeHint().width(), (
                 f"{widget.text() or widget.accessibleName()!r} gets {widget.width()} px of "
                 f"its {widget.sizeHint().width()} at {panel.width()} px"
             )
+
+        # GH #213: the entry row. Its push buttons sit below Fusion's 80 px hint
+        # on purpose, so the bar is their own fitted minimum, and the label inside it.
+        entry_row = [*_row_widgets(panel.entry_buttons), panel.entry_move_up_button, panel.entry_move_down_button]
+        assert [w.text() for w in entry_row] == ["New", "Duplicate", "Delete", "Type…", "▲", "▼"]
+        right = 0
+        for widget in entry_row:
+            assert widget.isVisible(), widget.text()
+            needed = widget.minimumSizeHint().width()
+            assert widget.width() >= needed, f"{widget.text()!r} gets {widget.width()} px of its {needed}"
+            assert widget.width() > widget.fontMetrics().horizontalAdvance(widget.text()), widget.text()
+            left = widget.mapTo(panel, widget.rect().topLeft()).x()
+            assert left >= right, f"{widget.text()!r} overlaps the button before it"
+            right = left + widget.width()
+        assert right <= panel.width(), f"the entry row runs to {right} px in a {panel.width()} px pane"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -6578,7 +6634,7 @@ def test_gh137_the_entry_menu_offers_cut_copy_paste_with_its_own_clipboard() -> 
         panel.select_trigger(3)
         _select_entries(panel, ("effect", 1), ("effect", 2))
         menu = panel.entry_context_menu(panel._entry_item_for("effect", 1))
-        assert _texts(menu) == ["Cut", "Copy", "Paste", "", "Select Same Type"]
+        assert _texts(menu) == ["Cut", "Copy", "Paste", "Move Up", "Move Down", "", "Select Same Type"]
         assert menu.toolTipsVisible()
         assert _action(menu, "Cut").isEnabled() and _action(menu, "Copy").isEnabled()
         assert not _action(menu, "Paste").isEnabled(), "nothing to paste yet"
@@ -8284,6 +8340,436 @@ def test_a_trigger_count_change_reevaluates_an_unedited_trigger_naming_a_trigger
         window.undo()
         assert dangling in panel.status_of(2).trigger.reasons
         assert _evaluated_indices(panel, calls) == {2}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #213: conditions and effects in display order ---------------------------
+#
+# The shipped fixture holds identity condition and effect orders, so every
+# test above is blind to a tree that lists entries in storage order.
+
+
+def _ordered_window(tmp_path: Path):
+    """Triggers mode on the fixture resaved with trigger 3 under non-identity
+    condition and effect orders (test_trigger_write_path.ENTRY_ORDERS), that
+    trigger current. Returns (window, the saved file)."""
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER, write_entry_order_fixture
+
+    base = write_entry_order_fixture(tmp_path)
+    window = _window()
+    window.load_scenario(base)
+    window.mode_combo.setCurrentText("Triggers")
+    window.trigger_panel.select_trigger(ENTRY_ORDER_TRIGGER)
+    return window, base
+
+
+def _entry_rows(panel, kind: str) -> list[int]:
+    """The list index each row of one group carries, top to bottom."""
+    from PyQt5.QtCore import Qt
+
+    group = _group(panel, kind)
+    return [group.child(row).data(0, Qt.UserRole)[1] for row in range(group.childCount())]
+
+
+def test_gh213_entry_rows_follow_the_display_order_and_carry_the_list_index(tmp_path: Path) -> None:
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER, ENTRY_ORDERS
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        trigger = panel._manager().triggers[ENTRY_ORDER_TRIGGER]
+        for kind, order in ENTRY_ORDERS.items():
+            assert _entry_rows(panel, kind) == order
+            group = _group(panel, kind)
+            entries = getattr(trigger, f"{kind}s")
+            for row, index in enumerate(order):
+                item = group.child(row)
+                assert (item.text(0), item.text(1)) == tuple(panel._describe(kind, entries[index])), (kind, row)
+                assert panel._entry_item_for(kind, index) is item, (kind, row)
+        assert panel._entry_item_for("effect", 7) is None
+
+        # A trigger that never used the feature lists as it always did.
+        panel.select_trigger(_ARMOUR_TRIGGER)
+        assert _entry_rows(panel, "effect") == [0, 1]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_a_joiner_stored_last_is_listed_between_its_operands(tmp_path: Path) -> None:
+    """The report's own case (examples/8tp3w9j, trigger 2): stored `A, B, OR`
+    under order [0, 2, 1] is `A, OR, B` in the game editor, and was listed
+    `A, B, OR` here."""
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+    from descape.trigger_model import TriggerEditModel, set_entry_order
+
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    model = TriggerEditModel(loaded)
+    trigger = model.manager().triggers[0]
+    trigger._add_condition(5)  # objects in area
+    trigger._add_condition(29)  # OR
+    assert [c.condition_type for c in trigger.conditions] == [10, 5, 29], "fixture assumption: one timer to start"
+    set_entry_order(trigger, "condition", [0, 2, 1])
+    model.mark_dirty(0)
+    base = tmp_path / "joiner.aoe2scenario"
+    write_scenario(loaded, base, triggers=model)
+
+    window = _window()
+    try:
+        window.load_scenario(base)
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        group = _group(panel, "condition")
+        assert [group.child(row).text(0) for row in range(group.childCount())] == ["timer", "or", "objects in area"]
+        assert _entry_rows(panel, "condition") == [0, 2, 1]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_selection_reads_in_display_order_and_selects_by_list_index(tmp_path: Path) -> None:
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        trigger = panel._manager().triggers[ENTRY_ORDER_TRIGGER]
+        _select_entries(panel, ("effect", 0), ("effect", 4), ("condition", 1), ("condition", 2))
+        # Conditions show as 2, 0, 3, 1 and effects as 4, 0, 6, 2, 5, 1, 3.
+        assert panel.selected_entry_refs() == [("condition", 2), ("condition", 1), ("effect", 4), ("effect", 0)]
+        assert panel.current_entry_ref() == ("effect", 0), "the first ref is the current row"
+        assert panel.entry_tree.currentItem() is _group(panel, "effect").child(1)
+
+        panel.select_entry("condition", 3)
+        assert panel.entry_tree.currentItem() is _group(panel, "condition").child(2)
+        assert panel._current_entry()[2] is trigger.conditions[3], "the form shows the row's own entry"
+
+        # Conditions 2 and 3 are the two destroy_object ones: rows 0 and 2.
+        panel.select_same_type_as(panel._entry_item_for("condition", 3))
+        assert panel.selected_entry_refs() == [("condition", 2), ("condition", 3)]
+        assert panel.current_entry_ref() == ("condition", 3)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_status_reasons_count_display_rows(tmp_path: Path) -> None:
+    """"effect 3" is the third row of the Effects group, not list index 2, and
+    the reasons read top to bottom as the rows do."""
+    import re
+
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER
+
+    from descape.trigger_status import Status
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        rollup = panel.status_of(ENTRY_ORDER_TRIGGER).trigger.reasons
+        # List indices: condition 3, effect 6 (patrol) and effect 3 (kill object).
+        assert rollup == (
+            "condition 3 (destroy object): unit 999 (unit object) is not placed on the map",
+            "effect 3 (patrol): missing location",
+            "effect 7 (kill object): area is only partly set",
+        )
+        for kind in ("condition", "effect"):
+            group = _group(panel, kind)
+            reasons = group.data(0, panel._STATUS_ROLE).reasons
+            assert reasons == tuple(reason for reason in rollup if reason.startswith(kind))
+            flagged = {int(re.match(rf"{kind} (\d+) ", reason).group(1)) - 1 for reason in reasons}
+            for row in range(group.childCount()):
+                status = group.child(row).data(0, panel._STATUS_ROLE).status
+                assert (status is Status.PROBLEM) == (row in flagged), (kind, row)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_browsing_a_non_identity_file_changes_nothing_and_an_edit_keeps_its_orders(tmp_path: Path) -> None:
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER, ENTRY_ORDERS
+
+    from descape import trigger_fields
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window, base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _walk_every_row(panel)
+        assert window.trigger_edits is None, "browsing must not build an edit model"
+        assert not window.edit_history.is_dirty, "browsing must record no undo step"
+        trigger = panel._manager().triggers[ENTRY_ORDER_TRIGGER]
+        # The raw arrays, not the healing getters.
+        assert trigger._condition_order == ENTRY_ORDERS["condition"]
+        assert trigger._effect_order == ENTRY_ORDERS["effect"]
+        browsed = tmp_path / "browsed.aoe2scenario"
+        write_scenario(window.scenario, browsed, triggers=window.trigger_edits)
+        assert browsed.read_bytes() == base.read_bytes()
+
+        # One field edit re-serializes the trigger, and the orders ride along.
+        panel.select_trigger(ENTRY_ORDER_TRIGGER)
+        spec = trigger_fields.FieldSpec("timer", trigger_fields.INT)
+        window.set_entry_field(ENTRY_ORDER_TRIGGER, "condition", 0, spec, 9)
+        for kind, order in ENTRY_ORDERS.items():
+            assert _entry_rows(panel, kind) == order
+        edited = tmp_path / "edited.aoe2scenario"
+        write_scenario(window.scenario, edited, triggers=window.trigger_edits)
+
+        window.undo()
+        for kind, order in ENTRY_ORDERS.items():
+            assert _entry_rows(panel, kind) == order, "an undo swaps in a deepcopy, which must keep the order"
+        undone = tmp_path / "undone.aoe2scenario"
+        write_scenario(window.scenario, undone, triggers=window.trigger_edits)
+        assert undone.read_bytes() == base.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+    reloaded_scenario = load_map_and_units(edited)  # kept alive: the library's store is weak
+    reloaded = parse_triggers(reloaded_scenario)
+    assert reloaded is not None
+    after = reloaded.triggers[ENTRY_ORDER_TRIGGER]
+    assert after.conditions[0].timer == 9
+    assert {kind: list(getattr(after, f"{kind}_order")) for kind in ENTRY_ORDERS} == ENTRY_ORDERS
+
+
+# -- GH #213: Move Up / Move Down for conditions and effects --------------------
+
+
+def _entry_move_states(panel) -> tuple[bool, bool]:
+    return (panel.entry_move_up_button.isEnabled(), panel.entry_move_down_button.isEnabled())
+
+
+def _entry_menu_move_states(panel, ref) -> tuple[bool, bool]:
+    menu = panel.entry_context_menu(panel._entry_item_for(*ref))
+    return (_action(menu, "Move Up").isEnabled(), _action(menu, "Move Down").isEnabled())
+
+
+def test_gh213_the_entry_row_ends_in_a_named_glyph_pair() -> None:
+    from PyQt5.QtWidgets import QToolButton
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        row = panel.entry_buttons
+        assert [w.text() for w in _row_widgets(row)] == ["New", "Duplicate", "Delete", "Type…"]
+        moves = row.itemAt(row.count() - 1).layout()
+        assert _row_widgets(moves) == [panel.entry_move_up_button, panel.entry_move_down_button]
+        assert moves.spacing() == 2
+        for button, glyph, name in (
+            (panel.entry_move_up_button, "▲", "Move Entry Up"),
+            (panel.entry_move_down_button, "▼", "Move Entry Down"),
+        ):
+            assert isinstance(button, QToolButton)
+            assert (button.text(), button.accessibleName()) == (glyph, name)
+        # Apart from the trigger row's pair, which an AT-SPI locator finds by name.
+        assert panel.trigger_move_up_button.accessibleName() == "Move Up"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_the_entry_button_row_needs_no_more_width_than_before() -> None:
+    """Pre-registered: 343 px (the four-button row's minimum before ▲▼ joined
+    it), 347 at most. Measured 340, offscreen Qt 5.15.19, DejaVu Sans 12pt at
+    96 dpi: the four push buttons give up Fusion's 80 px floor for the room."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        assert panel.entry_buttons.minimumSize().width() <= 347
+        for button in _row_widgets(panel.entry_buttons):
+            text = button.fontMetrics().horizontalAdvance(button.text())
+            assert text < button.minimumSizeHint().width() <= button.sizeHint().width(), button.text()
+
+        # The minimum follows a live UI font change (Settings > Appearance), with no refit step.
+        button = panel.entry_new_button
+        before = button.minimumSizeHint().width()
+        font = button.font()
+        font.setPointSize(font.pointSize() * 2)
+        button.setFont(font)
+        assert button.minimumSizeHint().width() > max(before, button.fontMetrics().horizontalAdvance("New"))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_the_entry_move_buttons_and_menu_follow_the_selection(tmp_path: Path) -> None:
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        up, down = panel.entry_move_up_button, panel.entry_move_down_button
+
+        # The trigger row is current: no entry to move.
+        assert _entry_move_states(panel) == (False, False)
+        assert up.toolTip() == panel._ENTRY_MOVE_UP_TIP + " (select a condition or effect)"
+        panel.entry_tree.setCurrentItem(_group(panel, "effect"))
+        assert _entry_move_states(panel) == (False, False)
+
+        # Conditions show as 2, 0, 3, 1 and effects as 4, 0, 6, 2, 5, 1, 3.
+        cases = [
+            ([("condition", 2)], (False, True)),  # the first row
+            ([("condition", 1)], (True, False)),  # the last row
+            ([("condition", 0)], (True, True)),
+            ([("condition", 2), ("condition", 3)], (True, True)),  # rows 1 and 3: the lower one closes up
+            ([("condition", 2), ("condition", 0)], (False, True)),  # a block against the top
+            ([("condition", 3), ("condition", 1)], (True, False)),  # a block against the bottom
+            ([("condition", i) for i in range(4)], (False, False)),  # the whole list
+            ([("condition", 2), ("effect", 3)], (True, True)),  # first of one list, last of the other
+            ([("condition", 2), ("effect", 4)], (False, True)),  # first of both
+        ]
+        for refs, expected in cases:
+            _select_entries(panel, *refs)
+            assert _entry_move_states(panel) == expected, refs
+            assert _entry_menu_move_states(panel, refs[0]) == expected, refs
+        _select_entries(panel, ("condition", 2))
+        assert up.toolTip() == panel._ENTRY_MOVE_UP_TIP + " (already first)"
+        assert down.toolTip() == panel._ENTRY_MOVE_DOWN_TIP
+        _select_entries(panel, ("condition", 1))
+        assert down.toolTip() == panel._ENTRY_MOVE_DOWN_TIP + " (already last)"
+        menu = panel.entry_context_menu(panel._entry_item_for("condition", 1))
+        assert _action(menu, "Move Down").toolTip() == down.toolTip()
+
+        # The type picker takes the lower pane, and the entry verbs with it.
+        _select_entries(panel, ("condition", 0))
+        panel._request_entry_op("new")
+        assert _entry_move_states(panel) == (False, False)
+        assert "close the type picker" in up.toolTip()
+        panel._close_picker()
+        assert _entry_move_states(panel) == (True, True)
+
+        # Several triggers selected: the entry tree shows none of them.
+        _ctrl_select(panel, 2, ENTRY_ORDER_TRIGGER)
+        assert _entry_move_states(panel) == (False, False)
+        assert "select a single trigger" in up.toolTip()
+
+        # A file that cannot be written back.
+        window.scenario.trigger_write_supported = False
+        panel.show_scenario(window.scenario)
+        panel.select_trigger(ENTRY_ORDER_TRIGGER)
+        _select_entries(panel, ("condition", 0))
+        assert _entry_move_states(panel) == (False, False)
+        assert _entry_menu_move_states(panel, ("condition", 0)) == (False, False)
+        assert "cannot be edited" in up.toolTip()
+        panel._request_entry_op("move_up")
+        assert window.trigger_edits is None, "a gated panel must not reach the model"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_move_up_moves_the_row_keeps_it_selected_and_undoes(tmp_path: Path) -> None:
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        listed = _types_of(window, ENTRY_ORDER_TRIGGER, "condition")
+        _select_entries(panel, ("condition", 0))  # the second row
+        records = _record_count(window)
+
+        panel.entry_move_up_button.click()
+
+        assert _entry_rows(panel, "condition") == [0, 2, 3, 1]
+        assert _types_of(window, ENTRY_ORDER_TRIGGER, "condition") == listed, "a move permutes the order, never the list"
+        assert panel.selected_entry_refs() == [("condition", 0)]
+        assert panel.current_entry_ref() == ("condition", 0)
+        assert panel.entry_tree.currentItem() is _group(panel, "condition").child(0)
+        assert window.windowTitle().startswith("*")
+        assert _record_count(window) == records + 1
+        assert window.edit_history.records[-1].label == "Move condition up"
+        assert _entry_move_states(panel) == (False, True), "it is the first row now"
+
+        window.undo()
+        assert _entry_rows(panel, "condition") == [2, 0, 3, 1]
+        assert not window.windowTitle().startswith("*")
+
+        # The menu's verb, on a selection across both lists, is one record too.
+        _select_entries(panel, ("effect", 0), ("effect", 6), ("condition", 3))
+        _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Move Down").trigger()
+        assert _entry_rows(panel, "effect") == [4, 2, 0, 6, 5, 1, 3]
+        assert _entry_rows(panel, "condition") == [2, 0, 1, 3]
+        assert panel.selected_entry_refs() == [("condition", 3), ("effect", 0), ("effect", 6)]
+        assert window.edit_history.records[-1].label == "Move 3 entries down"
+        window.undo()
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == (
+            [2, 0, 3, 1], [4, 0, 6, 2, 5, 1, 3],
+        ), "one undo takes both lists back"
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_a_move_that_changes_nothing_records_nothing(tmp_path: Path) -> None:
+    """commit_trigger_edit() pushes unconditionally, so the funnel must not
+    open an edit for a row already at the end it is sent to."""
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER
+
+    from descape.scenario_write import write_scenario
+
+    window, base = _ordered_window(tmp_path)
+    try:
+        records = _record_count(window)
+        window.entry_move(ENTRY_ORDER_TRIGGER, [("condition", 2)], -1)  # the first row, up
+        assert _record_count(window) == records
+        window.entry_move(ENTRY_ORDER_TRIGGER, [("effect", 3)], 1)  # the last row, down
+        window.entry_move(ENTRY_ORDER_TRIGGER, [("condition", 9)], 1)  # a stale ref
+        window.entry_move(9, [("condition", 0)], 1)  # no such trigger
+        assert _record_count(window) == records
+        assert not window.edit_history.is_dirty
+        assert not window.windowTitle().startswith("*")
+        out = tmp_path / "unmoved.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        assert out.read_bytes() == base.read_bytes()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh213_repeated_moves_keep_the_scroll_and_the_moved_row_in_view() -> None:
+    """Each move rebuilds the entry tree, which leaves it scrolled to the top."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import brush
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        panel.select_entry("effect", 2)  # the fixture's Create Object
+        window.brush_size_spin.setValue(5)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(brush.BRUSH_SHAPE_SQUARE))
+        window.stamp_create_objects(50, 50)
+        QApplication.processEvents()
+        bar = panel.entry_tree.verticalScrollBar()
+        viewport = panel.entry_tree.viewport().height()
+        panel.select_entry("effect", 20)
+        QApplication.processEvents()
+        start = bar.value()
+        assert start > 0, "fixture assumption: the entries overflow the tree, and this row sits below the fold"
+
+        def in_view() -> bool:
+            rect = panel.entry_tree.visualItemRect(panel._entry_item_for("effect", 20))
+            return rect.top() >= 0 and rect.bottom() <= viewport
+
+        for click in range(5):
+            panel.entry_move_down_button.click()
+            QApplication.processEvents()
+            assert bar.value() >= start, f"click {click}: the list jumped up to {bar.value()}"
+            assert in_view(), f"click {click}"
+        down = bar.value()
+        for click in range(10):
+            panel.entry_move_up_button.click()
+            QApplication.processEvents()
+            assert down - (click + 1) <= bar.value() <= down, f"click {click}: scrolled to {bar.value()}"
+            assert in_view(), f"click {click}"
+        assert panel.selected_entry_refs() == [("effect", 20)]
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -141,7 +141,10 @@ def _draw_key(draw):
 
 def _layer_key(layer):
     return (
-        {anchor: [(_draw_key(draw), px, py) for draw, px, py in slot] for anchor, slot in layer.by_anchor.items()},
+        {
+            anchor: [(_draw_key(draw), px, py, rise) for draw, px, py, rise in slot]
+            for anchor, slot in layer.by_anchor.items()
+        },
         layer.bboxes,
         layer.skip_ids,
         layer.farm_by_tile,

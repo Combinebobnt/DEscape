@@ -43,6 +43,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from descape import render, settings
 from descape.edit_history import EditHistory
 from descape.fill_tools import flood_fill_terrain
 from descape.scenario_io import BLANK_TEMPLATE_PATH
@@ -162,7 +163,12 @@ def _run_cases() -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.parse_args()
+    parser.add_argument(
+        "--blend", choices=("on", "off"), default="on",
+        help="View > Layers > Terrain Blending. A full-map fill leaves one terrain, so no tile blends: "
+        "on prices what blending adds around the composite (Flat's dilated rects, the per-rect keys)",
+    )
+    args = parser.parse_args()
 
     # The QApplication lives in testkit's module global, so it outlives every
     # ViewerWindow; see testkit/qt_window.py for why a dropped app aborts.
@@ -172,7 +178,11 @@ def main() -> None:
     settings_isolation.pin_install_path()
     with tempfile.TemporaryDirectory(prefix="bench_fill_latency_") as tmp:
         settings_isolation.isolate_settings(Path(tmp))
+        # Before any window: ViewerWindow reads its layers from settings at construction.
+        settings.set_view_layer("terrain_blend", args.blend == "on")
+        effective = render.blend_effective(settings.get_view_layers())
         output = _run_cases()
+    print(f"terrain blending {args.blend} (effective: {effective})")
     print("\n".join(output))
 
 

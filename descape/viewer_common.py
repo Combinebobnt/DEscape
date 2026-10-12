@@ -17,9 +17,11 @@ import math
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFontMetricsF, QIcon, QImage, QPixmap, QValidator
 from PyQt5.QtWidgets import (
+    QAction,
     QApplication,
     QComboBox,
     QDoubleSpinBox,
+    QMenu,
     QSpinBox,
 )
 
@@ -250,6 +252,66 @@ class IndeterminateSpinBox(_IndeterminateMixin, QSpinBox):
 
 class IndeterminateDoubleSpinBox(_IndeterminateMixin, QDoubleSpinBox):
     pass
+
+
+class KeepOpenMenu(QMenu):
+    """A menu of toggles that stays open after a pick (GH #205): a click or Space
+    on a checkable row, or on one opted in with keep_open(), triggers it in place."""
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        self._armed = False
+        self._extra: set[QAction] = set()
+
+    def keep_open(self, action: QAction) -> None:
+        """Opt a non-checkable row (a bulk "All"/"None" row) in."""
+        self._extra.add(action)
+
+    def _keeps_open(self, action: QAction | None) -> bool:
+        return (
+            action is not None
+            and action.isEnabled()
+            and action.menu() is None
+            and not action.isSeparator()
+            and (action.isCheckable() or action in self._extra)
+        )
+
+    def showEvent(self, event) -> None:  # Qt override
+        self._armed = False
+        super().showEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # Qt override
+        self._armed = True
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # Qt override
+        if event.buttons():  # press on the menu bar, drag onto a row, release
+            self._armed = True
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # Qt override
+        # Unarmed: the release of the click that opened an InstantPopup menu.
+        armed, self._armed = self._armed, False
+        action = self.actionAt(event.pos())
+        if armed and self._keeps_open(action):
+            # Qt still has to see the release to clear its own press state;
+            # a disabled row makes it decline to activate (and so to close).
+            action.setEnabled(False)
+            try:
+                super().mouseReleaseEvent(event)
+            finally:
+                action.setEnabled(True)
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # Qt override
+        action = self.activeAction()
+        if event.key() == Qt.Key_Space and self._keeps_open(action):
+            action.trigger()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def _make_spinbox(

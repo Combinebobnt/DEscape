@@ -88,6 +88,8 @@ UNIT_ICON_NAME = "{icon:03d}_50730.dds"
 BUILDING_ICON_DIR = "widgetui/textures/ingame/buildings"
 # GH #148: the stat icons the game's editorbottomunitspanel.json uses, as plain 66 px RGBA PNGs.
 STAT_ICON_DIR = "widgetui/textures/ingame/staticons"
+# GH #20: particle effects, one <name>.json each. An effect's AtlasFile is relative to this folder.
+PARTICLE_SUBPATH = "resources/_common/particles"
 
 _override_path: Path | None = None
 

@@ -761,7 +761,13 @@ def _viewer_standin(cache, scenario, style: str, target):
         _patch_unit_edit_cache = ViewerWindow._patch_unit_edit_cache
         _repaint_unit_edit_split = ViewerWindow._repaint_unit_edit_split
         _unit_edit_bbox = ViewerWindow._unit_edit_bbox
+        _unit_tiles_bbox = ViewerWindow._unit_tiles_bbox
+        _with_sprite_extents = ViewerWindow._with_sprite_extents
         _patch_area_exceeds_viewport = ViewerWindow._patch_area_exceeds_viewport
+        # A batch caller's helpers (the Stepped per-chunk rects); the group move here is not one.
+        _unit_edit_blocks = ViewerWindow._unit_edit_blocks
+        _block_sprite_extents = ViewerWindow._block_sprite_extents
+        _unit_edit_chunk_rects = ViewerWindow._unit_edit_chunk_rects
 
     standin = _Standin()
     standin._cache, standin.scenario, standin.map_view = cache, scenario, _MapView()

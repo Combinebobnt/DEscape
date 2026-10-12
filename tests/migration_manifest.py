@@ -1,4 +1,4 @@
-"""Tracks all 45 verify_*.py checks through the pytest migration. Keyed
+"""Tracks all 46 verify_*.py checks through the pytest migration. Keyed
 on nodeids once migrated, not on original_module/
 original_check_name -- see Phase 4's coverage guard for why: those two
 fields point at files/functions that stop existing once Phase 3 deletes
@@ -24,6 +24,9 @@ check_unit_edit_not_persisted into check_raw_unit_mutation_does_not_persist
 (renamed, same check) and check_unit_edit_persists_through_the_model (new)
 once units gained a real write path -- the old check's docstring ("save()
 does not persist unit edits") stopped being true unconditionally.
+
+45 -> 46: batch_api.set_layer (the layered-terrain write) added
+verify_batch_api.py's check_set_layer_persists.
 
 `family` is this file's own bookkeeping for tests/conftest.py's Phase 1
 adapter dispatch (which fixtures a generated test needs) -- not part of
@@ -142,6 +145,13 @@ MANIFEST: list[ManifestEntry] = [
         "Recolor every DIRT_2 tile bordering water to BEACH, save, reload: every recolored tile "
         "really did border water and is now BEACH with layer reset, and re-running detection "
         "against the reloaded file finds nothing left to recolor.",
+    ),
+    ManifestEntry(
+        "verify_batch_api", "check_set_layer_persists", "path_tmp", ("corpus",), "",
+        "set_layer on a real file: a layered terrain set on three unlayered tiles, one "
+        "existing layer removed, one layer equal to its tile's own base (reads back as none); "
+        "save, reload, every tile's layer and terrain_id is exactly as expected. Skips on a "
+        "file whose terrain has no layer field.",
     ),
     ManifestEntry(
         "verify_batch_api", "check_is_water_classification", "none", (), "",
@@ -330,7 +340,7 @@ MANIFEST: list[ManifestEntry] = [
         "verify_copy_paste", "check_file", "path", ("corpus", "gui"), "",
         "Rewritten for phase 2.8's region Select/Copy/Paste. Drives a real ViewerWindow "
         "headlessly: Copy/Paste disabled with no region/clipboard regardless of the active tool; "
-        "terrain region round trip with layer reset; elevation region round trip with FORCED "
+        "terrain region round trip carrying one layered source tile; elevation region round trip with FORCED "
         "neighbor propagation (source set far enough from the destination's neighbor to trigger "
         "MapManager._elevation_tile_recursion); units region round trip (rotation passed through "
         "verbatim, multi-owner undo); one undo step for a terrain+elevation+units paste "
@@ -343,4 +353,4 @@ MANIFEST: list[ManifestEntry] = [
     ),
 ]
 
-assert len(MANIFEST) == 45, f"expected 45 manifest entries, got {len(MANIFEST)}"
+assert len(MANIFEST) == 46, f"expected 46 manifest entries, got {len(MANIFEST)}"

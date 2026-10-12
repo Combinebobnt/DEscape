@@ -23,6 +23,13 @@ the per-splice guard rejects). Then B and A are undone, each timed the same
 way, which also puts the map back for the next case. The planner's rng is
 seeded per stroke so runs are comparable.
 
+--strokes rows is GH #180's drag instead of one line: --rows screen-horizontal
+rows joined into one serpentine stroke, whose union bbox is most of the view
+at fit zoom while the tiles it changes are thin strips. --terrains picks what
+A and B paint: 109,13 makes A remove the trees under it and plant none, as
+that drag does, and its undo put them back with the terrain. A stroke that
+pushes no record has no undo row.
+
 --resident viewport (default) leaves only what the view has painted
 resident. --resident canvas renders the whole mip-0 canvas first, the worst
 case for patch(bbox)'s eager recomposite of every resident chunk.
@@ -41,6 +48,10 @@ render_cache.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover.
 --area-ratio overrides viewer._TIGHT_PATCH_AREA_RATIO and, on an older build
 that still has it, the retired _SCOPED_PATCH_AREA_RATIO, for every style (inf:
 always patch the bbox eagerly, 0: always evict it), for finding the crossover.
+--rect-ratio overrides viewer._RECT_PATCH_AREA_RATIO, Stepped's second choice
+once a batch is past --area-ratio: patch one rect per visible-level chunk
+(inf: always, 0: never, i.e. evict as before the rects existed). With
+--area-ratio 0 every batch reaches that choice, whatever its bbox.
 
 --styles takes stepped, sloped, flat (the default Flat + Isometric View, an
 IsoChunkCache) and flat2d (Isometric View off: FlatChunkCache).
@@ -56,10 +67,12 @@ leaving a second level resident.
 Columns:
   path       lazy: the handler evicted the whole canvas (the next paint
              recomposites the viewport); evict: it evicted only a bbox's
-             chunks at the visible level; otherwise splice or scoped
+             chunks at the visible level; rects: it patched one rect per
+             visible-level chunk instead (Stepped, past --area-ratio and
+             within --rect-ratio); otherwise splice or scoped
              (invalidate_units() spliced, or rebuilt its sources: a
              _refresh_source_caches() call from inside it) with the bbox
-             patched eagerly. An evict row's invalidate_units() may have
+             patched eagerly. An evict or rects row's invalidate_units() may have
              spliced or rebuilt. Suffix for a unit edit: :T the tight split
              ran; :R-<why> the reach bbox did (wall, visible: no resident
              chunks at the visible mip, unbuilt, off: sprites off, flat:
@@ -73,7 +86,11 @@ Columns:
              alone; rebuild_in_patch the stale Stepped level rebuild inside
              it), then rebuild_in_paint (the same inside the next paint), evict_others (evictions of non-visible levels only),
              and `area` when the viewer priced a batch patch: patch_area() over
-             the visible chunks' area, the ratio _patch_area_exceeds_viewport() tests
+             the visible chunks' area, the ratio _patch_area_exceeds_viewport() tests;
+             `rect_area` the same for the per-chunk rects it priced (`rects` of them),
+             whether it then patched them (path rects) or evicted; rect_bbox the
+             sizing of the block rects behind them, rect_patch the
+             patch_composite_rects() time, also inside unit_patch
   bbox line  (Stepped/Sloped unit edits) tight / reach: dims, patch_area()
              over every resident level and resident chunks per level
              (mip:count) each would touch; sub: whether tight lies inside
@@ -119,8 +136,15 @@ _WINDOW_TIMERS = (
     ("index", "_rebuild_unit_index"),
     ("refs", "_on_unit_references_moved"),
     ("stats", "_repopulate_stats_players"),
+    # The block-rect sizing behind Stepped's per-chunk rects; absent on a build without them.
+    ("rect_bbox", "_unit_edit_chunk_rects"),
 )
-_CACHE_TIMERS = (("invalidate_units", "invalidate_units"), ("patch", "patch"), ("patch_rects", "patch_rects"))
+_CACHE_TIMERS = (
+    ("invalidate_units", "invalidate_units"), ("patch", "patch"), ("patch_rects", "patch_rects"),
+    ("rect_patch", "patch_composite_rects"),
+)
+# Cache calls whose time inside _patch_unit_edit_cache() is also summed as unit_patch.
+_UNIT_PATCH_ATTRS = ("patch", "patch_composite_rects")
 
 
 def _pump(seconds: float) -> None:
@@ -184,6 +208,10 @@ class _Timers:
         self.evict = 0
         self.evict_others = 0
         self.area: float | None = None
+        # The per-chunk rects the viewer priced (Stepped): their area ratio, count, and whether it patched them.
+        self.rect_area: float | None = None
+        self.rect_count = 0
+        self.rects = 0
         self.unit_edits = 0
         self.tight_ran = 0
         self.fallback: str | None = None
@@ -191,6 +219,7 @@ class _Timers:
         # Bench diagnostics only (bbox descriptions, the comparison reach bbox), excluded from handler.
         self.probe_ms = 0.0
         self._in_unit_edit = False
+        self._pricing_rects = False
         self._level_depth = 0
         self.rebuild_in_paint = 0.0
         # (owner, attr, the instance attribute it replaced or _MISSING), in install order.
@@ -227,7 +256,8 @@ class _Timers:
             *parents, attr = path.split(".")
             for p in parents:
                 owner = getattr(owner, p)
-            self._wrap(owner, attr, label)
+            if hasattr(owner, attr):
+                self._wrap(owner, attr, label)
         self.install_cache(window._cache, window.map_view)
         self._install_unit_edit_probe(window)
 
@@ -283,6 +313,30 @@ class _Timers:
 
             self._replace(window, "_repaint_unit_edit_split", repaint_split)
 
+        inner_exceeds = getattr(window, "_patch_area_exceeds_viewport", None)
+        if inner_exceeds is not None:
+            def exceeds(bbox, *args, **kwargs):
+                rects = kwargs.get("rects")
+                if not self.armed or rects is None:
+                    return inner_exceeds(bbox, *args, **kwargs)
+                # The rects are priced one patch_area() call each: keep `area` the bbox's.
+                self._pricing_rects = True
+                try:
+                    result = inner_exceeds(bbox, *args, **kwargs)
+                finally:
+                    self._pricing_rects = False
+                t0 = time.perf_counter()
+                target = window.map_view.viewport_chunk_target()
+                if target is not None:
+                    mip, cx0, cy0, cx1, cy1 = target
+                    area = sum(type(cache).patch_area(cache, rect, (mip,)) for rect in rects)
+                    self.rect_area = area / ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) * cache.chunk_px**2)
+                    self.rect_count = len(rects)
+                self.probe_ms += (time.perf_counter() - t0) * 1000
+                return result
+
+            self._replace(window, "_patch_area_exceeds_viewport", exceeds)
+
         for attr in ("sprite_extent_before", "sprite_extent_after"):
             inner_extent = getattr(cache, attr, None)
             if inner_extent is None:
@@ -305,7 +359,15 @@ class _Timers:
     def install_cache(self, cache, view) -> None:
         for label, attr in _CACHE_TIMERS:
             if hasattr(cache, attr):
-                self._wrap(cache, attr, label, unit_label="unit_patch" if attr == "patch" else None)
+                self._wrap(cache, attr, label, unit_label="unit_patch" if attr in _UNIT_PATCH_ATTRS else None)
+        inner_rects = getattr(cache, "patch_composite_rects", None)
+        if inner_rects is not None:
+            # Over the timer just installed, so the count is outside its time.
+            def patch_rects(*args, **kwargs):
+                self.rects += self.armed
+                return inner_rects(*args, **kwargs)
+
+            self._replace(cache, "patch_composite_rects", patch_rects)
         # Wholesale = a source rebuild from inside invalidate_units(); patch()
         # and Flat's patch_rects() call _refresh_source_caches() too.
         inner_refresh, inner_invalidate = cache._refresh_source_caches, cache.invalidate_units
@@ -351,7 +413,7 @@ class _Timers:
         def area(bbox, *args, **kwargs):
             result = inner_area(bbox, *args, **kwargs)
             target = view.viewport_chunk_target()
-            if self.armed and target is not None:
+            if self.armed and target is not None and not self._pricing_rects:
                 _mip, cx0, cy0, cx1, cy1 = target
                 self.area = result / ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) * cache.chunk_px**2)
             return result
@@ -395,6 +457,9 @@ class _Timers:
         self.evict = 0
         self.evict_others = 0
         self.area = None
+        self.rect_area = None
+        self.rect_count = 0
+        self.rects = 0
         self.unit_edits = 0
         self.tight_ran = 0
         self.fallback = None
@@ -417,11 +482,37 @@ class _Timers:
         return ":R-base" if self.fallback is None else ":R-nobbox"
 
 
-def _stroke_tiles(kind: str, w: int, h: int) -> list[tuple[int, int]]:
+def _serpentine_tiles(w: int, h: int, n_rows: int) -> list[tuple[int, int]]:
+    """GH #180's Draw drag (bench_gui_drag.py --flow gh180) in tile space:
+    n_rows screen-horizontal rows (the tiles of one y - x), spread over +-0.6
+    of the map diamond's half height and 90% of its width there, joined end to
+    end into one drag that alternates direction. Its union bbox is most of the
+    view while the tiles it changes are a few thin strips."""
+    from descape import brush
+
+    path: list[tuple[int, int]] = []
+    for r in range(n_rows):
+        frac = -0.6 + 1.2 * r / max(1, n_rows - 1)
+        d = round(frac * (min(w, h) - 1))
+        lo, hi = max(0, -d), min(w, h - d) - 1
+        inset = (hi - lo) // 20
+        xs = list(range(lo + inset, hi - inset + 1))
+        if r % 2:
+            xs.reverse()
+        row = [(x, x + d) for x in xs]
+        if path:
+            path.extend(brush.line_tiles(*path[-1], *row[0])[:-1])
+        path.extend(row)
+    return path
+
+
+def _stroke_tiles(kind: str, w: int, h: int, rows: int = 4) -> list[tuple[int, int]]:
     cx, cy = w // 2, h // 2
     if kind == "short":
         half = SHORT_STEPS // 2
         return [(cx - half + i, cy) for i in range(SHORT_STEPS)]
+    if kind == "rows":
+        return _serpentine_tiles(w, h, rows)
     half = LONG_STEPS // 2
     return [
         (x, y) for i in range(LONG_STEPS)
@@ -446,7 +537,10 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
     handler_ms = (time.perf_counter() - t0) * 1000 - timers.probe_ms
     timers.armed = False
     _pump_until_quiet(paints)
-    path = "lazy" if timers.lazy else "evict" if timers.evict else "scoped" if timers.wholesale else "splice"
+    path = (
+        "lazy" if timers.lazy else "evict" if timers.evict else "rects" if timers.rects
+        else "scoped" if timers.wholesale else "splice"
+    )
     path += timers.bbox_kind(window._cache)
     ms = dict(timers.ms)
     if timers.rebuild_in_paint:
@@ -455,6 +549,9 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
         ms["evict_others"] = timers.evict_others
     if timers.area is not None:
         ms["area"] = timers.area
+    if timers.rect_area is not None:
+        ms["rect_area"] = timers.rect_area
+        ms["rects"] = timers.rect_count
     if timers.bbox_lines:
         ms["probe"] = timers.probe_ms
     return handler_ms, sum(paints), len(paints), ms, path, list(timers.bbox_lines)
@@ -463,7 +560,8 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
 def _row(label: str, result, before: int, after: int) -> str:
     handler_ms, paint_ms, n_paints, ms, path, bbox_lines = result
     subs = " ".join(
-        f"{k} {v:.2f}" if k == "area" else f"{k} {v}" if k == "evict_others" else f"{k} {v:.1f}"
+        f"{k} {v:.2f}" if k in ("area", "rect_area") else f"{k} {v}" if k in ("evict_others", "rects")
+        else f"{k} {v:.1f}"
         for k, v in ms.items()
     )
     line = (
@@ -474,18 +572,24 @@ def _row(label: str, result, before: int, after: int) -> str:
     return "\n".join([line, *(f"        bbox {b}" for b in bbox_lines)])
 
 
-def _run_case(window, timers: _Timers, paints: list, kind: str, brush: int, seed: int) -> list[str]:
+def _run_case(
+    window, timers: _Timers, paints: list, kind: str, brush: int, seed: int, rows: int = 4,
+    terrains: tuple[int, int] = (FOREST_A, FOREST_B),
+) -> list[str]:
     from PyQt5.QtCore import Qt
 
     from descape import perf_trace, terrain_units
 
     mm = window.scenario.map_manager
-    tiles = _stroke_tiles(kind, mm.map_width, mm.map_height)
+    tiles = _stroke_tiles(kind, mm.map_width, mm.map_height, rows)
     window.brush_size_spin.setValue(brush)
     lines = []
     real_plan = terrain_units.plan_terrain_units
-    for stroke_label, terrain_id, stroke_seed in (("A", FOREST_A, seed), ("B", FOREST_B, seed + 1)):
+    # Strokes that pushed a record, newest last: a stroke that changed nothing has no undo.
+    pushed = []
+    for stroke_label, terrain_id, stroke_seed in (("A", terrains[0], seed), ("B", terrains[1], seed + 1)):
         window.terrain_panel.set_terrain(terrain_id)
+        cursor = window.edit_history.cursor
         window.on_edit_stroke_start()
         for tile in tiles:
             window.on_edit_stroke_tiles([tile], Qt.NoModifier)
@@ -502,10 +606,12 @@ def _run_case(window, timers: _Timers, paints: list, kind: str, brush: int, seed
             lines.append(_row(f"stroke {stroke_label}", result, before, _unit_count(window)))
         finally:
             terrain_units.plan_terrain_units = real_plan
-    for undo_label in ("undo B", "undo A"):
+        if window.edit_history.cursor != cursor:
+            pushed.append(stroke_label)
+    for stroke_label in reversed(pushed):
         before = _unit_count(window)
         result = _timed(window, timers, paints, window.undo)
-        lines.append(_row(undo_label, result, before, _unit_count(window)))
+        lines.append(_row(f"undo {stroke_label}", result, before, _unit_count(window)))
     return lines
 
 
@@ -581,7 +687,8 @@ def _zoom_cycle(window) -> None:
 
 def _bench_file(
     path: Path, styles, brushes, kinds, sprite_modes, resident: str, force_wholesale: bool, tool: str = "draw",
-    force_reach: bool = False, zoom_cycle: bool = False, fit: bool = False,
+    force_reach: bool = False, zoom_cycle: bool = False, fit: bool = False, rows: int = 4,
+    terrains: tuple[int, int] = (FOREST_A, FOREST_B),
 ) -> list[str]:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QTransform
@@ -664,8 +771,11 @@ def _bench_file(
                             emit(line)
                     for kind in kinds if tool == "draw" else ():
                         for brush in brushes:
-                            emit(f"     {kind} brush={brush}")
-                            for line in _run_case(window, timers, paints, kind, brush, seed=1000 * brush + len(kind)):
+                            emit(f"     {kind} brush={brush}" + (f" rows={rows}" if kind == "rows" else ""))
+                            for line in _run_case(
+                                window, timers, paints, kind, brush, seed=1000 * brush + len(kind), rows=rows,
+                                terrains=terrains,
+                            ):
                                 emit(line)
                 finally:
                     timers.uninstall()
@@ -682,13 +792,22 @@ def main() -> None:
     parser.add_argument("--files", help="Comma-separated file names, overriding the built-in list")
     parser.add_argument("--styles", default="stepped,sloped,flat")
     parser.add_argument("--brush", default="1,9", help="Comma-separated brush sizes")
-    parser.add_argument("--strokes", default="short,long", help="Comma-separated: short,long")
+    parser.add_argument("--strokes", default="short,long", help="Comma-separated: short,long,rows")
+    parser.add_argument("--rows", type=int, default=4, help="Rows in a `rows` stroke (GH #180's drag has 4)")
+    parser.add_argument(
+        "--terrains", default=f"{FOREST_A},{FOREST_B}",
+        help="Terrain ids strokes A and B paint (109,13: A only removes trees, as GH #180's drag does)",
+    )
     parser.add_argument("--sprites", default="on,off", help="Comma-separated: on,off")
     parser.add_argument("--resident", choices=("viewport", "canvas"), default="viewport")
     parser.add_argument("--tool", choices=("draw", "fill"), default="draw")
     parser.add_argument("--force-wholesale", action="store_true")
     parser.add_argument("--cap", type=int, help="Override render_cache.UNIT_SPLICE_MAX_UNITS")
     parser.add_argument("--area-ratio", type=float, help="Override viewer._TIGHT_PATCH_AREA_RATIO")
+    parser.add_argument(
+        "--rect-ratio", type=float,
+        help="Override viewer._RECT_PATCH_AREA_RATIO (Stepped's per-chunk rects; 0: never, inf: always)",
+    )
     parser.add_argument(
         "--bbox", choices=("auto", "reach"), default="auto",
         help="auto: whatever the viewer picks; reach: force the reach-padded fallback",
@@ -702,6 +821,12 @@ def main() -> None:
         for name in ("_TIGHT_PATCH_AREA_RATIO", "_SCOPED_PATCH_AREA_RATIO"):
             if hasattr(viewer, name):
                 setattr(viewer, name, dict.fromkeys(getattr(viewer, name), args.area_ratio))
+    if args.rect_ratio is not None:
+        from descape import viewer
+
+        # Absent on a build without the rects, where every over-ratio batch evicts.
+        if hasattr(viewer, "_RECT_PATCH_AREA_RATIO"):
+            viewer._RECT_PATCH_AREA_RATIO = args.rect_ratio
     if args.cap is not None:
         from descape import render_cache
 
@@ -714,6 +839,7 @@ def main() -> None:
     brushes = [int(b) for b in args.brush.split(",")]
     kinds = [k.strip() for k in args.strokes.split(",")]
     sprite_modes = [s.strip() == "on" for s in args.sprites.split(",")]
+    terrain_a, terrain_b = (int(t) for t in args.terrains.split(","))
 
     qt_window.ensure_qapp()
     settings_isolation.pin_install_path()
@@ -727,7 +853,8 @@ def main() -> None:
                 continue
             _bench_file(
                 path, styles, brushes, kinds, sprite_modes, args.resident, args.force_wholesale, args.tool,
-                force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle, fit=args.fit,
+                force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle, fit=args.fit, rows=args.rows,
+                terrains=(terrain_a, terrain_b),
             )
 
 

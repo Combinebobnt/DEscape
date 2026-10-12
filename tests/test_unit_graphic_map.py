@@ -294,10 +294,19 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
     assert graphics, "table is empty"
     for key, entry in graphics.items():
         assert key.isdigit(), f"key {key!r} is not a unit_const"
-        fields = set(entry) - {"pieces", "rotation_is_variant", "variant_count", "frame_offset", "dx", "dy"}
+        fields = set(entry) - {
+            "pieces", "rotation_is_variant", "variant_count", "frame_offset", "dx", "dy",
+            "particle", "art_scale",
+        }
         assert fields == set(FIELDS), f"unit_const {key} has fields {sorted(entry)}"
         for field, kind in FIELDS.items():
             assert isinstance(entry[field], kind), f"unit_const {key}.{field}"
+        if "particle" in entry or "art_scale" in entry:
+            # Both or neither, on a single graphic drawn from frame 0 only.
+            assert entry.get("particle") is True, key
+            assert isinstance(entry.get("art_scale"), float) and entry["art_scale"] > 0, key
+            assert (entry["angle_count"], entry["frame_count"]) == (1, 1), key
+            assert not {"pieces", "dx", "rotation_is_variant", "frame_offset"} & set(entry), key
         if "frame_offset" in entry:
             # Added to a dispatched frame run, so it must stay inside one run.
             assert isinstance(entry["frame_offset"], int), key
@@ -640,9 +649,88 @@ def test_non_gate_composite_scope_is_unaffected_by_the_gate_rule(graphics):
     legacy-shell resolution): the class-39 "every modern delta" rule must
     stay scoped to class 39 and never leak a "pieces" key onto an unrelated
     single-graphic entry. `pieces` outside class 39 is exactly the town
-    centre/pasture scope plus the three decoration-shell walls."""
+    centre/pasture scope plus the three decoration-shell walls, and since
+    GH #20 the 20 sailing ships (SHIP_SAIL_CONSTS)."""
     assert "pieces" not in graphics["45"]  # Dock, resolved via its own shell delta
     non_gate = {
         int(k) for k, e in graphics.items() if "pieces" in e and "_gate_" not in e["file_name"]
     }
-    assert non_gate == SLOTTED_CONSTS | set(KNOWN_WALL_PIECES)
+    assert non_gate == SLOTTED_CONSTS | set(KNOWN_WALL_PIECES) | SHIP_SAIL_CONSTS
+
+
+# GH #20: every const whose standing graphic is a legacy shell with two or more
+# direct modern deltas, read off the real .dat 2026-10-12. All are ships.
+SHIP_SAIL_CONSTS = frozenset({
+    17, 21, 114, 420, 442, 527, 528, 529, 532, 535, 536, 539, 545, 691, 1103, 1104,
+    2626, 2627, 2628, 2633,
+})
+
+# unit_const -> (file_name, dx, dy) per piece in .dat delta order, hull first.
+# Galleon's five sails at (0, -25) are why this rule has no offset dedupe.
+KNOWN_SHIP_PIECES = {
+    442: [
+        ("u_shp_galleon_x1", 0, 0),
+        ("u_shp_sail_west_ship_2_x1", 0, -40),
+        ("u_shp_sail_west_ship_3_x1", 0, -25),
+        ("u_shp_sail_west_ship_4_x1", 0, -25),
+        ("u_shp_sail_west_ship_5_x1", 0, -25),
+        ("u_shp_sail_west_ship_6_x1", 0, -25),
+        ("u_shp_sail_west_ship_7_x1", 0, -25),
+        ("u_shp_sail_west_ship_8_x1", 0, -40),
+    ],
+    539: [("u_shp_galley_x1", 0, 0), ("u_shp_sail_west_boat_4_x1", 0, -13)],
+}
+
+# Single-graphic ships: Fishing Ship, Longship, Turtle Ship, Dragon Ship, Dromon, Lou Chuan.
+PLAIN_SHIP_CONSTS = (13, 250, 831, 938, 1795, 1948)
+
+
+def test_exactly_the_sailing_ships_carry_shell_delta_pieces(graphics):
+    """The rule is "legacy shell with several direct modern deltas", not a const
+    list, so the set it hits is pinned here: a .dat change that widens it to a
+    non-ship would draw that const from pieces nobody looked at."""
+    found = {int(k) for k, e in graphics.items() if e["file_name"].startswith("u_shp_") and "pieces" in e}
+    assert found == SHIP_SAIL_CONSTS
+    for unit_const in PLAIN_SHIP_CONSTS:
+        assert "pieces" not in graphics[str(unit_const)], unit_const
+
+
+def test_ship_pieces_are_the_hull_then_every_sail_in_dat_order(graphics):
+    for unit_const, expected in KNOWN_SHIP_PIECES.items():
+        got = [(p["file_name"], p["dx"], p["dy"]) for p in graphics[str(unit_const)]["pieces"]]
+        assert got == expected, f"unit_const {unit_const}: {got}"
+    for unit_const in SHIP_SAIL_CONSTS:
+        entry = graphics[str(unit_const)]
+        hull, *sails = entry["pieces"]
+        # The hull stays the entry's own graphic and the piece whose failure drops the ship.
+        assert hull.get("parent") is True and hull["file_name"] == entry["file_name"], unit_const
+        assert (hull["dx"], hull["dy"], hull["frame_count"]) == (0, 0, 1), unit_const
+        assert "rotation_is_variant" not in entry, unit_const
+        for piece in entry["pieces"]:
+            # The ship's own id on every piece: one facing dispatch for hull and sails.
+            assert piece["unit_id"] == unit_const, (unit_const, piece["file_name"])
+            assert piece["angle_count"] == 16, (unit_const, piece["file_name"])
+        for sail in sails:
+            assert "_sail_" in sail["file_name"] and sail["frame_count"] == 30, (unit_const, sail)
+            assert sail["dx"] == 0 and sail["dy"] < 0, (unit_const, sail)
+
+
+# GH #20: unit_const -> (graphic_id, particle effect stem), read off the real
+# .dat 2026-10-12. Their standing graphic has file_name "None".
+PARTICLE_ENTRIES = {
+    1608: (12300, "butterflies_1_low"),
+    1609: (12301, "butterflies_2_low"),
+    1610: (12302, "butterflies_3_low"),
+}
+
+
+def test_only_the_butterflies_are_particle_entries(graphics):
+    found = {int(k): (e["graphic_id"], e["file_name"]) for k, e in graphics.items() if e.get("particle")}
+    assert found == PARTICLE_ENTRIES
+    for unit_const in PARTICLE_ENTRIES:
+        entry = graphics[str(unit_const)]
+        assert entry == {
+            "graphic_id": entry["graphic_id"], "file_name": entry["file_name"],
+            "angle_count": 1, "mirroring_mode": 0, "frame_count": 1,
+            "particle": True, "art_scale": 0.5,
+        }, unit_const

@@ -19,7 +19,9 @@ import sys
 
 import numpy as np
 import pytest
+from test_clipped_sprites import INK_H, INK_W, MARK_CONST, UX, UY, chunk_cache, ink_sprite, scenario_map  # noqa: F401
 from test_farm_terrain import FAKE_FARM_CONST, fake_farm  # noqa: F401 -- fake_farm is a fixture
+from test_sprite_chunks import CHUNK, MAP_H, MAP_W
 from test_sprite_edit_bbox import CONST, EDIT_X, EDIT_Y, Unit, _fixture_scenario, sprite_install  # noqa: F401
 
 from descape import asset_source, composite_backend, iso_geometry, native_composite, render, settings
@@ -295,13 +297,19 @@ def test_a_rise_past_the_tables_falls_back_per_tile(native_kernel, sprite_instal
         native_composite.stepped_tables.cache_clear()
 
 
+# The hill's summit, four tiles in front of the sprite unit: the tiles there
+# stand above its base and cover the lower part of its ink (GH #107's rule).
+# With the summit under the unit its opaque black square hid every centre rect.
+SUMMIT_X, SUMMIT_Y = EDIT_X - 4, EDIT_Y + 4
+
+
 def _sloped_scenario():
     """A +-1 hill on the template (Sloped's legal shape), with the same
     terrain patchwork and units as the Stepped fixture."""
     scenario = _fixture_scenario()
     mm = scenario.map_manager
     for tile in mm.terrain:
-        d = max(abs(tile.x - EDIT_X), abs(tile.y - EDIT_Y))
+        d = max(abs(tile.x - SUMMIT_X), abs(tile.y - SUMMIT_Y))
         tile.elevation = max(0, iso_geometry.MAX_ELEVATION - d // 2)
         tile.terrain_id = TERRAIN_IDS[(tile.x // 3 + tile.y // 5) % len(TERRAIN_IDS)]
     scenario.unit_manager.units[1].append(Unit(float(EDIT_X - 8), float(EDIT_Y + 5), PLAIN_UNIT_CONST))
@@ -324,6 +332,110 @@ def test_sloped_every_tile_px(native_kernel, sprite_install, fake_farm, syntheti
         cache.set_grid(grid_bake(True, 60, 2))
     anchors = _anchor_origins(proj, elevations, [(EDIT_X, EDIT_Y), (FARM_X, FARM_Y), *_corner_tiles(scenario.map_manager)])
     _assert_backends_agree(lambda *r: cache._composite_rect(0, *r), _rects(cache, 0, anchors))
+
+
+# --- two-pass compositing, sprites on (GH #107) ------------------------------
+#
+# tests/test_clipped_sprites.py holds each backend to an independent expected
+# image. These hold the kernel to the numpy path rect by rect, on that
+# module's map and soft-edged sprite, whose ink crosses several chunk seams.
+
+_STEP = {(x, y): 2 for x in range(MAP_W) for y in range(MAP_H) if y - x >= 2}
+_RAMP = {(x, y): min(3, max(0, y - x)) for x in range(MAP_W) for y in range(MAP_H)}
+# name -> (heights, base level, the styles in which some tile covers some ink)
+TWO_PASS_CASES = {
+    "step": (_STEP, 0, ("stepped", "sloped")),
+    "ramp": (_RAMP, 0, ("stepped", "sloped")),
+    # Sloped draws a pit at its neighbours' level, sprite included: nothing stands above it.
+    "pit": ({(UX, UY): 0}, 1, ("stepped",)),
+    "flat": ({}, 2, ()),
+}
+
+
+def _count_restored(monkeypatch) -> list[int]:
+    """Ink pixels each render._restore_under call gave back to the terrain,
+    one entry per call: empty when the pre-scan skipped the occlusion pass."""
+    restored: list[int] = []
+    real = render._restore_under
+
+    def counted(img, terrain, ink, *args, **kwargs):
+        before = int((ink != render.INK_NONE).sum())
+        real(img, terrain, ink, *args, **kwargs)
+        restored.append(before - int((ink != render.INK_NONE).sum()))
+
+    monkeypatch.setattr(render, "_restore_under", counted)
+    return restored
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("case", list(TWO_PASS_CASES))
+def test_two_pass_backends_agree(native_kernel, ink_sprite, synthetic_textures, monkeypatch, style, case):  # noqa: F811
+    """Stepped step, ramp, pit and flat ground, in both styles: every chunk
+    the sprite's ink touches, and one rect across all their seams."""
+    heights, base, occluding = TWO_PASS_CASES[case]
+    cache = chunk_cache(style, scenario_map(heights, base=base, marks=((UX - 2, UY + 1), (UX + 2, UY - 2))))
+    ((draw, ax, ay, _rise),) = cache._level(0).sprites.by_anchor[(UX, UY)]
+    x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
+    x1, y1 = x0 + INK_W, y0 + INK_H
+    rects = [
+        (cx, cy, cx + CHUNK, cy + CHUNK)
+        for cy in range(y0 // CHUNK * CHUNK, y1, CHUNK) for cx in range(x0 // CHUNK * CHUNK, x1, CHUNK)
+    ]
+    assert len(rects) >= 4, "the ink sits inside one chunk -- no seam crossed"
+    rects.append((x0 - 5, y0 + 3, x1 + 11, y1 - 7))
+
+    restored = _count_restored(monkeypatch)
+    _assert_backends_agree(lambda *r: cache._composite_rect(0, *r), rects)
+    if style in occluding:
+        assert sum(restored) > 0, "no tile covered any ink -- the occlusion step ran over nothing"
+    else:
+        assert not restored, "the pre-scan did not skip the occlusion pass"
+
+    with composite_backend.use_backend("native"):
+        counter = _CountingKernel(composite_backend.native)
+        composite_backend.native = counter  # use_backend restores it on exit
+        for rect in rects:
+            cache._composite_rect(0, *rect)
+    assert counter.calls.keys() == {"composite_iso" if style == "stepped" else "composite_sloped"}, counter.calls
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_unit_pack_rows_carry_each_units_base_rise(ink_sprite, style):  # noqa: F811
+    """The fifth row column is the rise the numpy path records in its ink
+    plane: a sprite's own, a mark's, and for a Sloped mark conforming to its
+    tile that tile's lowest corner."""
+    centred, off_centre = (UX - 1, UY + 1), (UX - 2, UY)  # both on the ramp's slope
+    scn = scenario_map(_RAMP, marks=(centred,))
+    off_unit = Unit(off_centre[0] + 0.25, off_centre[1] + 0.75, MARK_CONST)
+    scn.unit_manager.units[1].append(off_unit)
+    cache = chunk_cache(style, scn)
+    lvl = cache._level(0)
+    heights = cache.corner_rise if style == "sloped" else cache.elevations
+    pack = native_composite.UnitPack(style == "sloped", MAP_W, MAP_H, lvl.proj, cache.units_by_tile, lvl.sprites, 0, heights)
+    pack.ensure(np.arange(MAP_W * MAP_H))
+    assert pack.rows.shape[1] == native_composite.ROW_W == 5
+    rows = {(t % MAP_W, t // MAP_W): r for t, r in _pack_rows(pack).items()}
+
+    ((_draw, _ax, _ay, sprite_rise),) = lvl.sprites.by_anchor[(UX, UY)]
+    ((kind, *_rest, rise),) = rows[(UX, UY)]
+    assert (kind, rise) == (native_composite.ROW_SPRITE, sprite_rise)
+    if style == "stepped":
+        step = lvl.proj.elev_step
+        want = {
+            tile: (native_composite.ROW_MARK, int(cache.elevations[tile[1], tile[0]]) * step)
+            for tile in (centred, off_centre)
+        }
+    else:
+        floor = render._sloped_tile_floor(cache.corner_rise, *off_centre)
+        want = {
+            centred: (native_composite.ROW_CONFORM, render._sloped_tile_floor(cache.corner_rise, *centred)),
+            off_centre: (native_composite.ROW_MARK, render._sloped_mark_rise(off_unit, cache.corner_rise)),
+        }
+        assert want[off_centre][1] != floor, "the off-centre mark sits on its tile's floor -- pick a steeper tile"
+    for tile, (want_kind, want_rise) in want.items():
+        ((kind, *_rest, rise),) = rows[tile]
+        assert (kind, rise) == (want_kind, want_rise), tile
+    assert len({r[-1] for tile_rows in rows.values() for r in tile_rows}) > 1, "every row has one rise -- vacuous"
 
 
 # --- N2 invalidation: edits through the real funnels ------------------------
@@ -603,7 +715,7 @@ def test_a_shared_unit_pack_is_copied_before_it_is_written(native_kernel, sprite
         first = cache.prepare_chunk_job(*_chunk_of_tile(cache, EDIT_X, EDIT_Y))
         second_key = _chunk_of_tile(cache, FARM_X, FARM_Y)
         assert second_key != first.key, "both units share a chunk -- vacuous"
-        shared = first.args[-2]  # the kernel's units tuple; blend follows it
+        shared = first.args[-3]  # the kernel's units tuple; blend and two_pass follow it
         index, mask, rgb = shared[0], shared[4], shared[5]
         frozen = [a.copy() for a in (index, mask, rgb)]
 

@@ -122,7 +122,10 @@ def _nudges(window, n: int, mode: str) -> list[float]:
 
 
 def _norm_draws(draws):
-    return [(getattr(o, "name", None) or getattr(o, "file_name", None) or type(o).__name__, x, y) for o, x, y in draws]
+    return [
+        (getattr(o, "name", None) or getattr(o, "file_name", None) or type(o).__name__, x, y, rise)
+        for o, x, y, rise in draws
+    ]
 
 
 def _visible_level(cache, window):

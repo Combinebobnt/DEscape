@@ -53,6 +53,7 @@ from AoE2ScenarioParser.datasets.effects import EffectId
 from . import trigger_fields, trigger_geometry, trigger_organize, unit_references
 from .library_compat import TriggerVocabulary, VocabularyEntry
 from .trigger_fields import FieldSpec
+from .trigger_model import entry_display_order
 
 CONDITION = trigger_geometry.ENTRY_CONDITION
 EFFECT = trigger_geometry.ENTRY_EFFECT
@@ -221,7 +222,8 @@ def definition_for(kind: str, entry: Any, vocabulary: TriggerVocabulary | None) 
 
 def entry_label(kind: str, index: int, entry: Any, vocabulary: TriggerVocabulary | None) -> str:
     """`effect 3 (create object)`: the 1-based position and type name a
-    trigger rollup prefixes each child reason with."""
+    trigger rollup prefixes each child reason with. `index` is the entry's
+    display slot (GH #213), so the number matches its row in the entry tree."""
     definition = definition_for(kind, entry, vocabulary)
     if definition is None:
         name = f"type {read_value(entry, _TYPE_ATTRIBUTE[kind])}"
@@ -421,14 +423,13 @@ def evaluate_trigger(trigger: Any, context: StatusContext) -> TriggerStatuses:
         return TriggerStatuses(rollup, (UNCHECKED,) * len(conditions), (UNCHECKED,) * len(effects))
     condition_statuses = tuple(entry_status(CONDITION, c, context) for c in conditions)
     effect_statuses = tuple(entry_status(EFFECT, e, context) for e in effects)
+    # GH #213: numbered and listed by display slot, the order the entry tree shows.
     labelled = [
-        *(
-            (entry_label(CONDITION, i, c, context.vocabulary), s)
-            for i, (c, s) in enumerate(zip(conditions, condition_statuses, strict=True))
-        ),
-        *(
-            (entry_label(EFFECT, i, e, context.vocabulary), s)
-            for i, (e, s) in enumerate(zip(effects, effect_statuses, strict=True))
-        ),
+        (entry_label(kind, slot, entries[index], context.vocabulary), statuses[index])
+        for kind, entries, statuses in (
+            (CONDITION, conditions, condition_statuses),
+            (EFFECT, effects, effect_statuses),
+        )
+        for slot, index in enumerate(entry_display_order(trigger, kind) if entries else ())
     ]
     return TriggerStatuses(trigger_status(trigger, labelled), condition_statuses, effect_statuses)

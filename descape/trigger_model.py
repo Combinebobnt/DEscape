@@ -41,6 +41,7 @@ Two invariants worth stating outright, because breaking either is silent:
 
 from __future__ import annotations
 
+import bisect
 import copy
 import struct
 from collections import Counter
@@ -443,9 +444,13 @@ def moved_section_display_order(
 
 
 def moved_display_order_block(order: Sequence[int], indices: Sequence[int], delta: int) -> list[int]:
-    """A new trigger_display_order with every trigger at list `indices` moved
-    one display slot by `delta` (+1 = Move Down, -1 = Move Up), keeping their
+    """A new display order with every member at list `indices` moved one
+    display slot by `delta` (+1 = Move Down, -1 = Move Up), keeping their
     relative order. The selection may be non-contiguous.
+
+    Generic over a permutation: `order` is trigger_display_order for the
+    trigger list, or one trigger's condition_order / effect_order
+    (move_entries(), GH #213).
 
     Members are visited front-to-back for -1 and back-to-front for +1. One
     whose neighbour in that direction is also selected and did not move, or
@@ -457,7 +462,7 @@ def moved_display_order_block(order: Sequence[int], indices: Sequence[int], delt
     wanted = set(indices)
     for index in wanted:
         if index not in moved:
-            raise IndexError(f"trigger {index} is not in the display order")
+            raise IndexError(f"index {index} is not in the display order")
     slots = sorted(moved.index(index) for index in wanted)
     if delta > 0:
         slots.reverse()
@@ -509,6 +514,139 @@ def display_order_with_block_inserted(
     at = len(order) if anchor_index is None else order.index(anchor_index) + 1
     order[at:at] = list(new_indices)
     return order
+
+
+# -- condition and effect display order (GH #213) ------------------------------
+
+ENTRY_KINDS = ("condition", "effect")
+
+
+def entry_display_order(trigger, kind: str) -> list[int]:
+    """The list indices of a trigger's conditions or effects (`kind`) in
+    display order, as a fresh list: condition_order / effect_order, where
+    order[slot] = list index, the order the game editor lists them in.
+
+    Identity when the trigger carries no order array (a test or census stand-in)
+    or one that is not a permutation of its entries.
+    """
+    identity = list(range(len(getattr(trigger, f"{kind}s", None) or ())))
+    order = getattr(trigger, f"{kind}_order", None)
+    if order is None:
+        return identity
+    order = list(order)
+    return order if sorted(order) == identity else identity
+
+
+def entry_order_after_removal(order: Sequence[int], removed: Sequence[int]) -> list[int]:
+    """`order` once the entries at list indices `removed` are gone: they drop
+    out, and each survivor is renumbered down by the removed indices below it,
+    so the survivors keep their relative display order."""
+    gone = set(removed)
+    below = sorted(gone)
+    return [index - bisect.bisect_left(below, index) for index in order if index not in gone]
+
+
+def entry_order_after_insert(order: Sequence[int], at: int, count: int, slot: int) -> list[int]:
+    """`order` once `count` entries are inserted at list index `at`: every
+    index >= `at` shifts up by `count`, and the new indices `at..at+count-1`
+    go in, in that order, at display `slot` (in pre-insert coordinates).
+    Raises IndexError for an `at` or `slot` outside 0..len(order)."""
+    if not 0 <= at <= len(order) or not 0 <= slot <= len(order):
+        raise IndexError(f"list index {at} or display slot {slot} is outside 0..{len(order)}")
+    shifted = [index + count if index >= at else index for index in order]
+    shifted[slot:slot] = range(at, at + count)
+    return shifted
+
+
+def set_entry_order(trigger, kind: str, order: Sequence[int]) -> None:
+    """Assign a trigger's condition or effect display order, as a fresh list.
+    Raises ValueError unless it is a permutation of the entries' list indices.
+
+    Safe straight after a list mutation: the library's getter re-heals only on
+    a length mismatch, so at equal length it leaves this value alone.
+    """
+    order = list(order)
+    count = len(getattr(trigger, f"{kind}s"))
+    if sorted(order) != list(range(count)):
+        raise ValueError(f"{kind} order {order} is not a permutation of 0..{count - 1}")
+    setattr(trigger, f"{kind}_order", order)
+
+
+def remove_entries(trigger, refs: Sequence[tuple[str, int]]) -> tuple[str, int] | None:
+    """Remove the conditions and effects at `refs`, ((kind, list index), ...),
+    keeping the survivors' display order. An identity order stays identity.
+
+    The library's own heal on a length change only drops values >= n, which is
+    right for an identity order alone: on [0, 3, 1, 4, 2], removing list index
+    0 leaves [0, 3, 1, 2] and the survivors change places. So the order is
+    read before the removal and set again after it.
+
+    Returns the (kind, index) now at the lowest removed display slot of the
+    first ref's kind, clamped to the last one, or None when that list is empty.
+    Raises IndexError, before removing anything, for a ref that names no entry.
+    """
+    removed = {kind: sorted({index for ref_kind, index in refs if ref_kind == kind}) for kind in ENTRY_KINDS}
+    for kind, indices in removed.items():
+        count = len(getattr(trigger, f"{kind}s"))
+        if any(not 0 <= index < count for index in indices):
+            raise IndexError(f"no {kind} at one of {indices} (have {count})")
+    # Read first: remove_condition() heals the live array in place (restore()'s Trap 6).
+    before = {kind: entry_display_order(trigger, kind) for kind in ENTRY_KINDS}
+    for kind, indices in removed.items():
+        # Descending, so every index still to be removed stays valid.
+        for index in reversed(indices):
+            if kind == "condition":
+                trigger.remove_condition(condition_index=index)
+            else:
+                trigger.remove_effect(effect_index=index)
+        if indices:
+            set_entry_order(trigger, kind, entry_order_after_removal(before[kind], indices))
+    if not refs:
+        return None
+    first_kind = refs[0][0]
+    after = entry_display_order(trigger, first_kind)
+    if not after:
+        return None
+    gone = set(removed[first_kind])
+    lowest = min(slot for slot, index in enumerate(before[first_kind]) if index in gone)
+    return (first_kind, after[min(lowest, len(after) - 1)])
+
+
+def _moved_entry_orders(trigger, refs: Sequence[tuple[str, int]], delta: int) -> dict[str, list[int]]:
+    """The order each kind would get from move_entries(), for the kinds it changes."""
+    moved = {}
+    for kind in ENTRY_KINDS:
+        indices = [index for ref_kind, index in refs if ref_kind == kind]
+        if not indices:
+            continue
+        order = entry_display_order(trigger, kind)
+        target = moved_display_order_block(order, indices, delta)
+        if target != order:
+            moved[kind] = target
+    return moved
+
+
+def would_move_entries(trigger, refs: Sequence[tuple[str, int]], delta: int) -> bool:
+    """Whether move_entries() would change anything: the gate for the Move
+    buttons, and for opening an undo record at all. False for a stale ref."""
+    try:
+        return bool(_moved_entry_orders(trigger, refs, delta))
+    except IndexError:
+        return False
+
+
+def move_entries(trigger, refs: Sequence[tuple[str, int]], delta: int) -> bool:
+    """Move the conditions and effects at `refs` one display slot up (`delta`
+    -1) or down (+1), each kind as a block inside its own list
+    (moved_display_order_block()). Returns whether anything moved.
+
+    Permutes condition_order / effect_order only, never the lists, as the game
+    editor does: a list index keeps naming the same entry.
+    """
+    moved = _moved_entry_orders(trigger, refs, delta)
+    for kind, order in moved.items():
+        set_entry_order(trigger, kind, order)
+    return bool(moved)
 
 
 class TriggerEditModel:

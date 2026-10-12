@@ -143,6 +143,84 @@ def test_one_undo_step_reverts_a_terrain_elevation_units_paste() -> None:
         window.close()
 
 
+def _layered_clipboard(window) -> dict[tuple[int, int], tuple[int, int]]:
+    """Paints a 2x2 patch at the origin, gives it asymmetric layers and
+    copies it. Returns the (terrain_id, layer) pair per block offset."""
+    _make_region(window, 0, 0, 2, 2, _TERRAIN_A, elevation=0)
+    mm = window.scenario.map_manager
+    layers = {(0, 0): 9, (1, 0): -1, (0, 1): -1, (1, 1): 11}
+    for (x, y), layer in layers.items():
+        mm.terrain[y * mm.map_width + x].layer = layer
+    window.on_region_selected((0, 0, 2, 2))
+    window.copy_region()
+    return {offset: (_TERRAIN_A, layer) for offset, layer in layers.items()}
+
+
+def _pairs_at(window, x0: int, y0: int) -> dict[tuple[int, int], tuple[int, int]]:
+    mm = window.scenario.map_manager
+    out = {}
+    for dy in range(2):
+        for dx in range(2):
+            tile = mm.terrain[(y0 + dy) * mm.map_width + x0 + dx]
+            out[(dx, dy)] = (tile.terrain_id, tile.layer)
+    return out
+
+
+def test_a_paste_carries_the_copied_layered_terrain_and_undoes_it() -> None:
+    window = _window()
+    try:
+        pairs = _layered_clipboard(window)
+        mm = window.scenario.map_manager
+        # The destination has its own layer, so a carried -1 is visible too.
+        for dy in range(2):
+            for dx in range(2):
+                mm.terrain[(20 + dy) * mm.map_width + 20 + dx].layer = 3
+        before = _pairs_at(window, 20, 20)
+        records_before = len(window.edit_history.records)
+
+        window.on_hover((20, 20))
+        window.paste_region()
+        assert _pairs_at(window, 20, 20) == pairs
+        assert len(window.edit_history.records) == records_before + 1
+
+        window.undo()
+        assert _pairs_at(window, 20, 20) == before
+        window.redo()
+        assert _pairs_at(window, 20, 20) == pairs
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_paste_into_a_file_with_no_layer_field_writes_no_layer() -> None:
+    window = _window()
+    try:
+        pairs = _layered_clipboard(window)
+        # As a v1.21 document: its terrain struct has no layer to save one in.
+        window.scenario.terrain_has_layer = False
+        window.on_hover((20, 20))
+        window.paste_region()
+        assert _pairs_at(window, 20, 20) == {offset: (terrain_id, -1) for offset, (terrain_id, _l) in pairs.items()}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_elevation_only_paste_leaves_the_destinations_layers() -> None:
+    window = _window()
+    try:
+        _layered_clipboard(window)
+        mm = window.scenario.map_manager
+        mm.terrain[20 * mm.map_width + 20].layer = 3
+        window.paste_terrain_check.setChecked(False)
+        window.on_hover((20, 20))
+        window.paste_region()
+        assert _pairs_at(window, 20, 20) == {(0, 0): (0, 3), (1, 0): (0, -1), (0, 1): (0, -1), (1, 1): (0, -1)}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_all_unchecked_paste_pushes_nothing() -> None:
     window = _window()
     try:

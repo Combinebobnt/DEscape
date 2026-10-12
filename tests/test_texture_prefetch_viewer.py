@@ -20,6 +20,7 @@ UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.ao
 _FARM = 50  # draws as terrain 7 under the farm overlay
 _FARM_TERRAIN = 7
 _OTHER_TERRAIN = 10
+_LAYER_ONLY = 21  # a terrain no tile has as its base
 
 
 @pytest.fixture
@@ -57,6 +58,34 @@ def test_a_re_render_adds_the_farm_overlays_terrain_only_while_that_layer_draws(
     window._on_layer_toggled("farm_overlay", False)
     window._render_current(reset_view=False)
     assert events[0] == ("prefetch", {0, _OTHER_TERRAIN}), events
+
+
+def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(recorded, monkeypatch):
+    from descape import asset_source, render
+
+    _events, window = recorded
+    terrain = window.scenario.map_manager.terrain
+    terrain[5].layer = _OTHER_TERRAIN
+    terrain[9].layer = _LAYER_ONLY
+    terrain[11].layer = _LAYER_ONLY
+    # No install here, so no blendomatic: a layer does not draw and is not fetched.
+    assert not render.blend_effective(window._layers)
+    assert sorted(window._texture_prefetch_ids()) == [0]
+
+    # Read only by blend_effective() below: nothing renders while it is set.
+    blendomatic = {"value": None}
+    fake = lambda: blendomatic["value"]  # noqa: E731
+    fake.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_blendomatic", fake)
+    blendomatic["value"] = object()
+    assert render.blend_effective(window._layers)
+    assert sorted(window._texture_prefetch_ids()) == [0, _OTHER_TERRAIN, _LAYER_ONLY]  # no -1, no duplicate
+
+    blendomatic["value"] = None
+    window._on_layer_toggled("terrain_blend", False)
+    blendomatic["value"] = object()
+    assert sorted(window._texture_prefetch_ids()) == [0]  # the Terrain Blending row is off
+    blendomatic["value"] = None
 
 
 def test_terrain_textures_off_prefetches_nothing(recorded):

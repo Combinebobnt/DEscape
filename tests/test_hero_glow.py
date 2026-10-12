@@ -204,7 +204,7 @@ def test_the_render_default_is_byte_identical_to_passing_false(install):
     passed = render.sprite_draws_by_anchor(scn, proj, elevations, hero_glow=False)
     assert omitted.bboxes == passed.bboxes
     for tile, draws in omitted.by_anchor.items():
-        for (draw, px, py), (pdraw, ppx, ppy) in zip(draws, passed.by_anchor[tile], strict=True):
+        for (draw, px, py, _rise), (pdraw, ppx, ppy, _prise) in zip(draws, passed.by_anchor[tile], strict=True):
             assert (px, py) == (ppx, ppy)
             assert np.array_equal(draw.rgba, pdraw.rgba)
 
@@ -291,7 +291,7 @@ def test_a_sprite_in_front_hides_the_ring(install):
     off = _whole_canvas(cache).copy()
 
     layer = cache._level(0).sprites
-    (draw, px, py), = layer.by_anchor[(6, 6)]
+    (draw, px, py, _rise), = layer.by_anchor[(6, 6)]
     x0, y0 = px - draw.hotspot_x, py - draw.hotspot_y
     h, w = draw.rgba.shape[:2]
     cover = draw.rgba[..., 3] == 255
@@ -302,7 +302,7 @@ def test_a_sprite_in_front_hides_the_ring(install):
     front = np.zeros(on.shape[:2], dtype=bool)
     front[y0:y0 + h, x0:x0 + w] = cover
     cache.set_layers(LayerState())
-    (hero, hpx, hpy), = cache._level(0).sprites.by_anchor[(5, 5)]
+    (hero, hpx, hpy, _rise), = cache._level(0).sprites.by_anchor[(5, 5)]
     hh, hw = hero.rgba.shape[:2]
     ring = np.all(hero.rgba[..., :3] == HERO_GLOW_GOLD, axis=2) & (hero.rgba[..., 3] > 0)
     hx0, hy0 = hpx - hero.hotspot_x, hpy - hero.hotspot_y

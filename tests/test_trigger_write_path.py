@@ -24,7 +24,10 @@ from real-world scale and version spread.
 
 from __future__ import annotations
 
+import copy
+import itertools
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
@@ -38,10 +41,17 @@ from descape.trigger_model import (
     display_order_with_block_inserted,
     display_order_with_copies_inserted,
     display_order_with_copy_inserted,
+    entry_display_order,
+    entry_order_after_insert,
+    entry_order_after_removal,
+    move_entries,
     moved_display_order,
     moved_display_order_block,
     moved_section_display_order,
     paste_anchor,
+    remove_entries,
+    set_entry_order,
+    would_move_entries,
 )
 from descape.trigger_organize import parse_tag, sections, tag_chain
 
@@ -1700,6 +1710,478 @@ def test_a_pasted_block_round_trips_field_for_field_and_keeps_a_custom_display_o
     assert after[:4] == sources
     assert after[4][1:] == sources[1][1:] and after[5][1:] == sources[0][1:]
     assert [t.name for t in reloaded.triggers[4:]] == ["Fixture: armour split (copy)", "Fixture: setup (copy)"]
+
+
+# -- GH #213: condition and effect display order -------------------------------
+
+# The library's own heal, measured on this order: removing list index 0 gives
+# [0, 3, 1, 2], which shows the four survivors in a different order.
+_ORDER = [0, 3, 1, 4, 2]
+
+# Trigger 3 is the fixture's only one with several conditions (4) and effects (7).
+ENTRY_ORDER_TRIGGER = 3
+ENTRY_ORDERS = {"condition": [2, 0, 3, 1], "effect": [4, 0, 6, 2, 5, 1, 3]}
+
+
+def write_entry_order_fixture(tmp_path: Path) -> Path:
+    """The fixture with trigger 3 saved under ENTRY_ORDERS, as a real file: the
+    shipped one holds identity orders only, and an order assigned in memory
+    never reaches a clean trigger's spliced blob."""
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    trigger = model.manager().triggers[ENTRY_ORDER_TRIGGER]
+    for kind, order in ENTRY_ORDERS.items():
+        set_entry_order(trigger, kind, order)
+    model.mark_dirty(ENTRY_ORDER_TRIGGER)
+    out = tmp_path / "entry_order.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+    return out
+
+
+def _ordered_trigger():
+    """Fixture trigger 3 under ENTRY_ORDERS, in memory, and the scenario that
+    keeps it alive (the library's scenario store is weak)."""
+    loaded = load_map_and_units(FIXTURE_PATH)
+    manager = parse_triggers(loaded)
+    assert manager is not None
+    trigger = manager.triggers[ENTRY_ORDER_TRIGGER]
+    for kind, order in ENTRY_ORDERS.items():
+        set_entry_order(trigger, kind, order)
+    return trigger, loaded
+
+
+def _shown(entries, order) -> list:
+    return [entries[index] for index in order]
+
+
+def _shown_ids(trigger, kind: str) -> list[int]:
+    """id() of each entry in display order, read off the raw order array."""
+    return [id(entry) for entry in _shown(getattr(trigger, f"{kind}s"), getattr(trigger, f"{kind}_order"))]
+
+
+def test_entry_order_after_removal_keeps_the_survivors_display_order() -> None:
+    entries = list("abcde")
+    assert entry_order_after_removal(_ORDER, [0]) == [2, 0, 3, 1]
+    for size in range(6):
+        for removed in itertools.combinations(range(5), size):
+            order = entry_order_after_removal(_ORDER, removed)
+            kept = [entry for index, entry in enumerate(entries) if index not in removed]
+            assert sorted(order) == list(range(len(kept))), removed
+            assert _shown(kept, order) == [entry for entry in _shown(entries, _ORDER) if entry in kept], removed
+
+
+def test_entry_order_after_insert_keeps_the_others_and_lands_the_block_at_its_slot() -> None:
+    entries = list("abcde")
+    for at, slot, count in itertools.product(range(6), range(6), (1, 2)):
+        new = ["X", "Y"][:count]
+        order = entry_order_after_insert(_ORDER, at, count, slot)
+        after = entries[:at] + new + entries[at:]
+        shown = _shown(after, order)
+        assert sorted(order) == list(range(5 + count)), (at, slot, count)
+        assert shown[slot : slot + count] == new, (at, slot, count)
+        assert [entry for entry in shown if entry not in new] == _shown(entries, _ORDER), (at, slot, count)
+
+
+def test_an_identity_entry_order_stays_identity() -> None:
+    """No churn in a file that never used the feature."""
+    identity = list(range(5))
+    for size in range(6):
+        for removed in itertools.combinations(range(5), size):
+            assert entry_order_after_removal(identity, removed) == list(range(5 - size))
+    # A paste below a row: on an identity order the list index is the display slot.
+    for at in range(6):
+        assert entry_order_after_insert(identity, at, 2, at) == list(range(7))
+
+
+def test_the_entry_order_helpers_refuse_bad_input() -> None:
+    with pytest.raises(IndexError):
+        entry_order_after_insert([0, 1, 2], 4, 1, 0)
+    with pytest.raises(IndexError):
+        entry_order_after_insert([0, 1, 2], 0, 1, 4)
+    trigger, _keep = _ordered_trigger()
+    for bad in ([0, 1, 2], [0, 1, 2, 2], [0, 1, 2, 4], [0, 1, 2, 3, 4]):
+        with pytest.raises(ValueError, match="not a permutation"):
+            set_entry_order(trigger, "condition", bad)
+    assert list(trigger.condition_order) == ENTRY_ORDERS["condition"], "a refused order must not be assigned"
+
+
+def test_entry_display_order_falls_back_to_identity() -> None:
+    """A stand-in with no order array (tests, the census tool), and an array
+    that is not a permutation, both read as list order."""
+    assert entry_display_order(SimpleNamespace(conditions=[7, 8, 9], effects=[]), "condition") == [0, 1, 2]
+    assert entry_display_order(SimpleNamespace(conditions=[7, 8, 9], condition_order=[0, 0, 1]), "condition") == [0, 1, 2]
+    assert entry_display_order(SimpleNamespace(conditions=[7, 8, 9], condition_order=[0, 1]), "condition") == [0, 1, 2]
+    assert entry_display_order(SimpleNamespace(conditions=[7, 8, 9], condition_order=[2, 0, 1]), "condition") == [2, 0, 1]
+    assert entry_display_order(SimpleNamespace(), "effect") == []
+
+
+def test_the_entry_order_read_and_the_one_assigned_are_never_the_live_list() -> None:
+    """The library heals its array in place (restore()'s Trap 6), so a "before"
+    order that aliased it would be rewritten by the very removal it describes."""
+    trigger, _keep = _ordered_trigger()
+    before = entry_display_order(trigger, "condition")
+    assert before == ENTRY_ORDERS["condition"] and before is not trigger.condition_order
+    trigger.remove_condition(condition_index=0)
+    assert list(trigger.condition_order) != before, "fixture assumption: the heal rewrote the live array"
+    assert before == ENTRY_ORDERS["condition"]
+
+    mine = [1, 0, 2]
+    set_entry_order(trigger, "condition", mine)
+    trigger.conditions.append(copy.deepcopy(trigger.conditions[0]))
+    assert list(trigger.condition_order) == [1, 0, 2, 3], "an append lands last in display"
+    assert mine == [1, 0, 2]
+
+
+def test_the_librarys_own_heal_reorders_the_survivors() -> None:
+    """The premise of remove_entries(). If this fails the library changed, and
+    the order helpers may no longer be needed."""
+    trigger, _keep = _ordered_trigger()
+    before = _shown_ids(trigger, "condition")
+    victim = id(trigger.conditions[0])
+    trigger.remove_condition(condition_index=0)
+    assert _shown_ids(trigger, "condition") != [entry for entry in before if entry != victim]
+
+
+@pytest.mark.parametrize("kind", ["condition", "effect"])
+def test_remove_entries_keeps_the_survivors_display_order_for_every_subset(kind: str) -> None:
+    base, _keep = _ordered_trigger()
+    other = "effect" if kind == "condition" else "condition"
+    count = len(ENTRY_ORDERS[kind])
+    for size in range(1, count + 1):
+        for removed in itertools.combinations(range(count), size):
+            trigger = copy.deepcopy(base)
+            entries = getattr(trigger, f"{kind}s")
+            before = _shown_ids(trigger, kind)
+            gone = {id(entries[index]) for index in removed}
+            other_before = _shown_ids(trigger, other)
+
+            landing = remove_entries(trigger, [(kind, index) for index in removed])
+
+            after = _shown_ids(trigger, kind)
+            assert after == [entry for entry in before if entry not in gone], removed
+            assert sorted(getattr(trigger, f"{kind}_order")) == list(range(count - size)), removed
+            assert _shown_ids(trigger, other) == other_before, removed
+            # The row that followed the first removed one, else the last row left.
+            first_gone = min(slot for slot, entry in enumerate(before) if entry in gone)
+            following = [entry for entry in before[first_gone:] if entry not in gone]
+            expected = following[0] if following else (after[-1] if after else None)
+            landed = None if landing is None else id(getattr(trigger, f"{landing[0]}s")[landing[1]])
+            assert (landing is None or landing[0] == kind) and landed == expected, removed
+
+
+def test_remove_entries_takes_both_kinds_and_lands_on_the_first_refs_kind() -> None:
+    trigger, _keep = _ordered_trigger()
+    conditions, effects = _shown_ids(trigger, "condition"), _shown_ids(trigger, "effect")
+    gone = {id(trigger.conditions[3]), id(trigger.effects[0]), id(trigger.effects[6])}
+    # Effect order [4, 0, 6, 2, 5, 1, 3]: 0 and 6 sit at slots 1 and 2, so slot 1 now holds old 2 (new 1).
+    assert remove_entries(trigger, [("effect", 6), ("condition", 3), ("effect", 0)]) == ("effect", 1)
+    assert _shown_ids(trigger, "condition") == [entry for entry in conditions if entry not in gone]
+    assert _shown_ids(trigger, "effect") == [entry for entry in effects if entry not in gone]
+    assert remove_entries(trigger, []) is None
+
+
+def test_remove_entries_refuses_a_bad_ref_before_removing_anything() -> None:
+    trigger, _keep = _ordered_trigger()
+    with pytest.raises(IndexError):
+        remove_entries(trigger, [("condition", 0), ("effect", 7)])
+    assert (len(trigger.conditions), len(trigger.effects)) == (4, 7)
+    assert {kind: list(getattr(trigger, f"{kind}_order")) for kind in ENTRY_ORDERS} == ENTRY_ORDERS
+
+
+def test_move_entries_permutes_the_order_and_never_the_list() -> None:
+    trigger, _keep = _ordered_trigger()
+    listed = [id(entry) for entry in (*trigger.conditions, *trigger.effects)]
+
+    # Condition order [2, 0, 3, 1]: list index 0 sits at slot 1.
+    assert would_move_entries(trigger, [("condition", 0)], -1)
+    assert list(trigger.condition_order) == ENTRY_ORDERS["condition"], "the gate must not write"
+    assert move_entries(trigger, [("condition", 0)], -1)
+    assert list(trigger.condition_order) == [0, 2, 3, 1]
+    assert list(trigger.effect_order) == ENTRY_ORDERS["effect"]
+
+    # At the top: nothing to do, and nothing written.
+    assert not would_move_entries(trigger, [("condition", 0)], -1)
+    assert not move_entries(trigger, [("condition", 0)], -1)
+    assert list(trigger.condition_order) == [0, 2, 3, 1]
+
+    # Both kinds, each inside its own list. Effect 4 is already first and stays.
+    assert move_entries(trigger, [("condition", 3), ("effect", 4)], -1)
+    assert list(trigger.condition_order) == [0, 3, 2, 1]
+    assert list(trigger.effect_order) == ENTRY_ORDERS["effect"]
+    assert move_entries(trigger, [("condition", 2), ("effect", 0)], 1)
+    assert list(trigger.condition_order) == [0, 3, 1, 2]
+    assert list(trigger.effect_order) == [4, 6, 0, 2, 5, 1, 3]
+
+    # A block pressed against the end closes up and then stops.
+    assert move_entries(trigger, [("effect", 5), ("effect", 3)], 1)
+    assert list(trigger.effect_order) == [4, 6, 0, 2, 1, 5, 3]
+    assert not would_move_entries(trigger, [("effect", 5), ("effect", 3)], 1)
+    assert not would_move_entries(trigger, [("condition", 2), ("effect", 3)], 1)
+
+    assert [id(entry) for entry in (*trigger.conditions, *trigger.effects)] == listed, "a move reordered a list"
+
+
+def test_a_stale_entry_ref_moves_nothing() -> None:
+    trigger, _keep = _ordered_trigger()
+    assert not would_move_entries(trigger, [("condition", 9)], 1)
+    assert not would_move_entries(trigger, [], 1)
+    with pytest.raises(IndexError):
+        move_entries(trigger, [("condition", 9)], 1)
+    assert list(trigger.condition_order) == ENTRY_ORDERS["condition"]
+
+
+def test_a_non_identity_entry_order_survives_the_write_path(tmp_path: Path) -> None:
+    base = write_entry_order_fixture(tmp_path)
+    loaded = load_map_and_units(base)
+    manager = parse_triggers(loaded)
+    assert manager is not None
+    for index, trigger in enumerate(manager.triggers):
+        for kind, custom in ENTRY_ORDERS.items():
+            order = list(getattr(trigger, f"{kind}_order"))
+            assert order == (custom if index == ENTRY_ORDER_TRIGGER else sorted(order)), (index, kind)
+
+    out = tmp_path / "resaved.aoe2scenario"
+    write_scenario(loaded, out, triggers=TriggerEditModel(loaded))
+    assert out.read_bytes() == base.read_bytes()
+
+
+def test_a_move_and_a_removal_reload_and_leave_the_other_triggers_bytes_alone(tmp_path: Path) -> None:
+    base = write_entry_order_fixture(tmp_path)
+    loaded = load_map_and_units(base)
+    model = TriggerEditModel(loaded)
+    trigger = model.manager().triggers[ENTRY_ORDER_TRIGGER]
+    condition_types = [c.condition_type for c in trigger.conditions]
+    effect_types = [e.effect_type for e in trigger.effects]
+
+    assert move_entries(trigger, [("effect", 0)], 1)
+    assert remove_entries(trigger, [("condition", 0)]) == ("condition", 2)
+    model.mark_dirty(ENTRY_ORDER_TRIGGER)
+    out = tmp_path / "edited.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+
+    reloaded_scenario = load_map_and_units(out)  # kept alive: the library's store is weak
+    reloaded = parse_triggers(reloaded_scenario)
+    assert reloaded is not None
+    after = reloaded.triggers[ENTRY_ORDER_TRIGGER]
+    assert list(after.effect_order) == [4, 6, 0, 2, 5, 1, 3]
+    assert [e.effect_type for e in after.effects] == effect_types
+    # Shown as 2, 0, 3, 1; without 0 that is 2, 3, 1, renumbered 1, 2, 0.
+    assert list(after.condition_order) == [1, 2, 0]
+    assert [c.condition_type for c in after.conditions] == condition_types[1:]
+    assert _saved_blobs(out)[:ENTRY_ORDER_TRIGGER] == _saved_blobs(base)[:ENTRY_ORDER_TRIGGER]
+
+
+# The same, through the viewer's funnels, since that is what the buttons call.
+
+
+def _entry_types(trigger) -> dict[str, list[int]]:
+    return {kind: [getattr(entry, f"{kind}_type") for entry in getattr(trigger, f"{kind}s")] for kind in ENTRY_ORDERS}
+
+
+def _entry_orders(trigger) -> dict[str, list[int]]:
+    return {kind: list(getattr(trigger, f"{kind}_order")) for kind in ENTRY_ORDERS}
+
+
+def _shown_fields(trigger) -> dict[str, list[tuple]]:
+    """Each kind's entries as their fields, in display order."""
+    return {
+        kind: [_object_fields(getattr(trigger, f"{kind}s")[index]) for index in getattr(trigger, f"{kind}_order")]
+        for kind in ENTRY_ORDERS
+    }
+
+
+def _funnel_edit_and_reload(tmp_path: Path, operate):
+    """Run `operate(window)` with the ENTRY_ORDERS fixture's trigger 3 current,
+    save and reparse. Returns that trigger's _shown_fields() before and after,
+    and its reloaded types and orders, checked against the live ones."""
+    import conftest
+
+    base = write_entry_order_fixture(tmp_path)
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(base)
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_panel.select_trigger(ENTRY_ORDER_TRIGGER)
+        before = _shown_fields(window.trigger_panel._manager().triggers[ENTRY_ORDER_TRIGGER])
+        operate(window)
+        assert window.trigger_edits is not None, "the edit never reached the model"
+        live = window.trigger_edits.manager().triggers[ENTRY_ORDER_TRIGGER]
+        after, types, orders = _shown_fields(live), _entry_types(live), _entry_orders(live)
+        out = tmp_path / "funnel.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    reloaded_scenario = load_map_and_units(out)  # kept alive: the library's store is weak
+    reloaded = parse_triggers(reloaded_scenario)
+    assert reloaded is not None
+    trigger = reloaded.triggers[ENTRY_ORDER_TRIGGER]
+    assert (_entry_types(trigger), _entry_orders(trigger)) == (types, orders), "the edit did not survive the write path"
+    assert _saved_blobs(out)[:ENTRY_ORDER_TRIGGER] == _saved_blobs(base)[:ENTRY_ORDER_TRIGGER]
+    return before, after, types, orders
+
+
+@pytest.mark.parametrize("op", ["delete", "cut"])
+def test_a_delete_or_cut_through_the_funnel_keeps_the_survivors_display_order(tmp_path: Path, op: str) -> None:
+    refs = [("effect", 0), ("condition", 3), ("effect", 4)]
+    blocks = []
+
+    def operate(window) -> None:
+        window.entry_structural_edit(op, ENTRY_ORDER_TRIGGER, "effect", refs, -1)
+        blocks.append(window._entry_clipboard)
+
+    before, after, _types, orders = _funnel_edit_and_reload(tmp_path, operate)
+    for kind, order in ENTRY_ORDERS.items():
+        gone = {index for ref_kind, index in refs if ref_kind == kind}
+        assert after[kind] == [fields for fields, index in zip(before[kind], order, strict=True) if index not in gone]
+    # Effects showed as 4, 0, 6, 2, 5, 1, 3; the heal alone gives [4, 0, 2, 1, 3].
+    assert orders == {"condition": [2, 0, 1], "effect": [4, 1, 3, 0, 2]}
+    if op == "cut":
+        # The clipboard holds them as they were shown: effect 4 above effect 0.
+        assert [e.effect_type for e in blocks[0].effects] == [15, 56]
+    else:
+        assert blocks[0] is None
+
+
+def test_a_move_through_the_funnel_reloads_and_leaves_the_lists_alone(tmp_path: Path) -> None:
+    """Move Up/Down's funnel. The helper also checks that triggers 0 to 2,
+    which the move never names, keep their bytes."""
+    refs = [("effect", 0), ("effect", 6), ("condition", 3)]
+    before, after, types, orders = _funnel_edit_and_reload(
+        tmp_path, lambda w: w.entry_move(ENTRY_ORDER_TRIGGER, refs, 1)
+    )
+    assert orders == {"condition": [2, 0, 1, 3], "effect": [4, 2, 0, 6, 5, 1, 3]}
+    assert types == {"condition": [10, 5, 6, 6], "effect": [56, 19, 11, 14, 15, 12, 19]}, "the lists never move"
+    for kind, order in ENTRY_ORDERS.items():
+        assert after[kind] == [before[kind][order.index(index)] for index in orders[kind]]
+
+
+def test_a_paste_through_the_funnel_lands_below_the_clicked_row(tmp_path: Path) -> None:
+    from descape import trigger_clipboard
+
+    def operate(window) -> None:
+        block = trigger_clipboard.copy_entries(
+            window.trigger_panel._manager(),
+            2,
+            [("effect", 0), ("effect", 1)],
+            doc_id=window._doc_id,
+            scenario_version=window.scenario.scenario_version,
+        )
+        window.entry_structural_edit("paste", ENTRY_ORDER_TRIGGER, "effect", [], -1, block=block, anchor=("effect", 0))
+
+    before, after, types, orders = _funnel_edit_and_reload(tmp_path, operate)
+    assert after["condition"] == before["condition"]
+    # Effect 0 is the second row, so the two pasted ones are rows 3 and 4.
+    assert after["effect"][:2] == before["effect"][:2] and after["effect"][4:] == before["effect"][2:]
+    assert types["effect"] == [56, 8, 9, 19, 11, 14, 15, 12, 19], "and below index 0 in the list"
+    assert orders["effect"] == [6, 0, 1, 2, 8, 4, 7, 3, 5]
+    assert [types["effect"][index] for index in orders["effect"][2:4]] == [8, 9]
+
+
+def _stamp_create_objects(window) -> None:
+    from descape import brush
+
+    window.trigger_panel.select_entry("effect", 2)  # the fixture's Create Object
+    window.brush_size_spin.setValue(3)
+    window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(brush.BRUSH_SHAPE_SQUARE))
+    window.stamp_create_objects(50, 50)
+
+
+_APPENDS = [
+    ("new condition", lambda w: w.entry_structural_edit("new", ENTRY_ORDER_TRIGGER, "condition", -1, 3), (1, 0)),
+    ("new effect", lambda w: w.entry_structural_edit("new", ENTRY_ORDER_TRIGGER, "effect", -1, 55), (0, 1)),
+    (
+        "duplicate",
+        lambda w: w.entry_structural_edit(
+            "copy", ENTRY_ORDER_TRIGGER, "effect", [("condition", 2), ("effect", 4), ("effect", 0)], -1
+        ),
+        (1, 2),
+    ),
+    ("create objects stamp", _stamp_create_objects, (0, 9)),
+]
+
+
+@pytest.mark.parametrize("label,operate,added", _APPENDS, ids=[label for label, _, _ in _APPENDS])
+def test_an_append_through_the_funnel_lands_last_in_display(tmp_path: Path, label, operate, added) -> None:
+    """New, Duplicate and the Create Objects stamp only append, which the
+    library's own heal gets right: the rows above keep their order."""
+    before, after, _types, orders = _funnel_edit_and_reload(tmp_path, operate)
+    for (kind, order), count in zip(ENTRY_ORDERS.items(), added, strict=True):
+        assert orders[kind] == [*order, *range(len(order), len(order) + count)], label
+        assert after[kind][: len(order)] == before[kind], label
+
+
+def test_a_duplicate_lands_in_the_order_the_rows_were_given(tmp_path: Path) -> None:
+    refs = [("effect", 4), ("effect", 0)]
+    before, after, _types, _orders = _funnel_edit_and_reload(
+        tmp_path, lambda w: w.entry_structural_edit("copy", ENTRY_ORDER_TRIGGER, "effect", refs, -1)
+    )
+    # Effect 4 is the first row and effect 0 the second.
+    assert after["effect"][-2:] == before["effect"][:2]
+
+
+def test_a_retype_through_the_funnel_keeps_its_row(tmp_path: Path) -> None:
+    """Type… appends, pops and replaces at the same index, so the order stands."""
+    before, after, types, orders = _funnel_edit_and_reload(
+        tmp_path, lambda w: w.entry_structural_edit("retype", ENTRY_ORDER_TRIGGER, "effect", 0, 3)
+    )
+    assert orders == ENTRY_ORDERS
+    assert types["effect"] == [3, 19, 11, 14, 15, 12, 19]
+    # Effect 0 is the second row: only that one changed.
+    assert [a == b for a, b in zip(after["effect"], before["effect"], strict=True)] == [
+        True, False, True, True, True, True, True,
+    ]
+
+
+def _check_removals_keep_display_order(scenario_path: Path) -> int:
+    """Every trigger of one file with a non-identity condition or effect order,
+    each of its entries removed in turn. Returns how many orders were checked."""
+    loaded = load_map_and_units(scenario_path)
+    manager = parse_triggers(loaded)
+    if manager is None:
+        pytest.skip(f"{scenario_path.name}: Triggers section does not parse")
+    checked = 0
+    for index, live in enumerate(manager.triggers):
+        for kind in ENTRY_ORDERS:
+            order = list(getattr(live, f"{kind}_order"))
+            assert sorted(order) == list(range(len(getattr(live, f"{kind}s")))), (
+                f"{scenario_path.name}: trigger {index}'s {kind} order is not a permutation"
+            )
+            if order == sorted(order):
+                continue
+            trigger = copy.deepcopy(live)
+            entries = getattr(trigger, f"{kind}s")
+            for victim in range(len(entries)):
+                before = _shown_ids(trigger, kind)
+                entry = entries[victim]
+                remove_entries(trigger, [(kind, victim)])
+                assert _shown_ids(trigger, kind) == [shown for shown in before if shown != id(entry)], (
+                    f"{scenario_path.name}: trigger {index}, removing {kind} {victim}"
+                )
+                # Put it back for the next round, cheaper than a deepcopy per entry.
+                entries.insert(victim, entry)
+                set_entry_order(trigger, kind, order)
+            checked += 1
+    return checked
+
+
+@pytest.mark.corpus
+def test_removing_any_entry_keeps_the_survivors_display_order_across_the_corpus(scenario_path: Path) -> None:
+    if not _check_removals_keep_display_order(scenario_path):
+        pytest.skip(f"{scenario_path.name}: every condition and effect order is identity")
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize(
+    "name", ["8tp3w9j", "C2_ElCid_coop_3_v0_12", "atilla_1_scn_resaved", "old-allies-final-v2"]
+)
+def test_removing_any_entry_keeps_the_survivors_display_order_on_a_non_identity_file(name: str) -> None:
+    """The quick corpus subset holds identity orders only, so the four
+    examples/ files that do not are named here."""
+    path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
+    if not path.exists():
+        pytest.skip(f"{path.name} is not in this corpus")
+    assert _check_removals_keep_display_order(path), "corpus assumption: a non-identity entry order"
 
 
 # -- tag management: rename and remove a tag across its carriers ---------------

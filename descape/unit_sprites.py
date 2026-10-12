@@ -55,7 +55,15 @@ from typing import NamedTuple
 
 import numpy as np
 
-from descape import asset_source, debug_log, editor_markers, gate_orientation, terrain_palette, unit_kind
+from descape import (
+    asset_source,
+    debug_log,
+    editor_markers,
+    gate_orientation,
+    particle_art,
+    terrain_palette,
+    unit_kind,
+)
 from descape.sld_decoder import LayerKind, SLDError, load_sld
 
 GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
@@ -429,6 +437,8 @@ def clear_caches() -> None:
     sld_frame_count.cache_clear()
     wall_connector_consts.cache_clear()
     building_art.cache_clear()
+    _particle_stems.cache_clear()
+    particle_art.clear_caches()
     # The revealer marker reads the game's own icon from the install.
     marker_for.cache_clear()
     rect_marker_for.cache_clear()
@@ -441,6 +451,14 @@ def graphic_map() -> dict[int, dict]:
     frame_count}, from the committed table."""
     data = json.loads(GRAPHIC_MAP_PATH.read_text())["graphics"]
     return {int(k): v for k, v in data.items()}
+
+
+@lru_cache(maxsize=1)
+def _particle_stems() -> frozenset[str]:
+    """The file_names that are particle effects, not .sld stems (GH #20):
+    _native_frame() reads those through particle_art. Cleared by
+    clear_caches(), so a test that swaps graphic_map() must call that too."""
+    return frozenset(e["file_name"] for e in graphic_map().values() if e.get("particle"))
 
 
 class BuildingArt(NamedTuple):
@@ -478,7 +496,9 @@ def _art_excluded(unit_const: int) -> bool:
     """GH #48: consts that keep today's art whatever their owner: composites
     other than town centres, walls and gates, i.e. the architecture-neutral
     pastures. Walls and gates vary by art only; their const-keyed logic (wall
-    connectivity, gate siblings) is civ-invariant, which the generator asserts."""
+    connectivity, gate siblings) is civ-invariant, which the generator asserts.
+    The sailing ships (GH #20) carry pieces too and land here harmlessly: they
+    are not buildings, so neither building_art table has an entry for them."""
     entry = graphic_map().get(unit_const)
     return (
         entry is not None and "pieces" in entry
@@ -519,6 +539,14 @@ def _body_offset(entry: dict) -> tuple[int, int]:
     offset (GH #178; Perch 53's (0, -30)). Never pass a piece here, whose dx/dy
     sprite_pieces_for() already applies as a SpritePiece offset."""
     return int(entry.get("dx", 0)), int(entry.get("dy", 0))
+
+
+def _art_scale(entry: dict) -> float:
+    """An entry's own art scale against x1 art, 1.0 unless it says otherwise:
+    a particle effect's Scale (GH #20; the butterflies' 0.5). Multiplied into
+    sprite_scale() wherever an entry's native frame or offset is scaled, so
+    the frame is resampled once. Flat's icon_for() contain-fits and needs none."""
+    return float(entry.get("art_scale", 1.0))
 
 
 def angle_index(
@@ -1038,6 +1066,12 @@ def _native_frame(file_name: str, frame_index: int):
         # (file_name, frame_index). Costs nothing to re-derive either --
         # get_install_path() is itself lru_cached.
         return None
+    if file_name in _particle_stems():
+        # A particle effect has no .sld: its frame is cut from the effect's atlas.
+        frame = particle_art.native_frame(file_name, frame_index)
+        value = None if frame is None else _cropped_to_ink(*frame)
+        _native_cache.put(key, _MISS if value is None else value)
+        return value
     sld = _sld_index(file_name)
     if sld is None:
         _native_cache.put(key, _MISS)
@@ -1298,10 +1332,14 @@ def _draw_for_entry(
 
     `offset` is a single-graphic entry's _body_offset(), native px, moved into
     the hotspot before scaling. Pieces keep (0, 0): their dx/dy ride on the
-    SpritePiece instead."""
+    SpritePiece instead.
+
+    An entry's `art_scale` (_art_scale(), a particle effect's own Scale) joins
+    the same product, for the same one-resample reason as tree_scale."""
     index = _frame_for(unit_const, entry, rotation, seed=seed, piece_index=piece_index)
 
-    scale = sprite_scale(half_w) * tree_scale
+    art_scale = _art_scale(entry)
+    scale = sprite_scale(half_w) * tree_scale * art_scale
     team = TEAM_COLORS[team_index % len(TEAM_COLORS)]
     # Keyed on team_index, not player_id: two scenarios' player 1 can resolve
     # to different stored colors, and this cache is a process-global LRU that
@@ -1310,8 +1348,10 @@ def _draw_for_entry(
     # process global shared across windows and tests, so without it full-size
     # art leaks into a shrunk render and vice versa.
     # hero_glow is keyed for the same reason: the ringed draw is a different image.
+    # art_scale too: it comes from the entry, and two entries can share a file.
     key = (
-        entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset
+        entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset,
+        art_scale,
     )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
@@ -1474,10 +1514,12 @@ def sprite_pieces_for(
                 return []
             continue
         slot = piece.get("slot")
+        # The piece's own art_scale, the factor _draw_for_entry() scaled its art by.
+        piece_scale = scale * _art_scale(piece)
         result.append(SpritePiece(
             draw=draw,
-            dx=round(piece["dx"] * scale),
-            dy=round(piece["dy"] * scale),
+            dx=round(piece["dx"] * piece_scale),
+            dy=round(piece["dy"] * piece_scale),
             slot=None if slot is None else (int(slot[0]), int(slot[1])),
         ))
     return result
@@ -1787,9 +1829,10 @@ def sprite_anchor_tile(tiles: list[tuple[int, int]]) -> tuple[int, int]:
     tests/test_unit_pick.py's ID-plane oracle cannot catch -- picking still goes
     through the diamond path and is unaffected by sprites.
 
-    Painting last within the footprint means every footprint tile's terrain is
-    already down, while terrain nearer than the building still paints over the
-    sprite, exactly as it does for diamonds today.
+    The anchor fixes the sprite's place among other sprites and marks only.
+    Terrain is all down before any sprite (render._paint_candidates_iso), and
+    a tile nearer than the anchor covers the sprite's ink only where it stands
+    strictly higher than the unit's base (GH #107).
     """
     best = None
     for tx, ty in tiles:

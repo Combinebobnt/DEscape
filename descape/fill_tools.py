@@ -22,8 +22,9 @@ constructing a real AoE2ScenarioParser MapManager -- the same fake-friendly
 contract descape/edit_history.py documents for its own tile parameter.
 
 descape/batch_api.py must not import this module back -- a scriptable fill
-is reached directly as descape.fill_tools.flood_fill_terrain, the same way
-elevation_tools is used standalone.
+is reached directly as descape.fill_tools.flood_fill_terrain (or flood_fill
+with a terrain_target target), the same way elevation_tools is used
+standalone.
 """
 
 from __future__ import annotations
@@ -32,20 +33,25 @@ from collections.abc import Callable
 
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 
-from descape.batch_api import _ORTHOGONAL_OFFSETS, set_terrain
+from descape.batch_api import _ORTHOGONAL_OFFSETS
+from descape.terrain_target import CLEAR, LAYER, TERRAIN, write_tile
 
 
-def contiguous_region(mm: MapManager, x: int, y: int) -> list[int]:
+def contiguous_region(mm: MapManager, x: int, y: int, *, match_layer: bool = False) -> list[int]:
     """Flat indices (mm.terrain's own row-major indexing, y * map_width + x)
     of the 4-connected region of tiles sharing (x, y)'s terrain_id, including
     (x, y) itself. [] if (x, y) is off-map. Reads mm.terrain but mutates
-    nothing -- safe to call as a pure query."""
+    nothing -- safe to call as a pure query.
+
+    match_layer=True bounds the region by the (terrain_id, layer) pair
+    instead, so it stops at a base boundary and at a different layer."""
     width, height = mm.map_width, mm.map_height
     if not (0 <= x < width and 0 <= y < height):
         return []
     terrain = mm.terrain
     start = y * width + x
     source_id = terrain[start].terrain_id
+    source_layer = terrain[start].layer
 
     visited = bytearray(width * height)
     visited[start] = 1
@@ -67,7 +73,10 @@ def contiguous_region(mm: MapManager, x: int, y: int) -> list[int]:
             j = ny * width + nx
             if visited[j]:
                 continue
-            if terrain[j].terrain_id != source_id:
+            tile = terrain[j]
+            if tile.terrain_id != source_id:
+                continue
+            if match_layer and tile.layer != source_layer:
                 continue
             # Marked visited at push, not at pop -- each index can enter the
             # stack at most once, which is what bounds it at width * height
@@ -77,32 +86,63 @@ def contiguous_region(mm: MapManager, x: int, y: int) -> list[int]:
     return region
 
 
-def flood_fill_terrain(mm: MapManager, x: int, y: int, terrain_id: int) -> list[int]:
-    """Paints terrain_id over contiguous_region(mm, x, y) via
-    batch_api.set_terrain (terrain_id + layer reset to -1, same as every
-    other terrain-write path in this tool). Returns the flat indices
-    written, in traversal order.
+def fill_indices(mm: MapManager, x: int, y: int, target: str, terrain_id: int) -> list[int]:
+    """Exactly the flat indices a Paint Can click at (x, y) would change for
+    `target` (terrain_target.TERRAIN, LAYER or CLEAR), in traversal order.
+    [] for a click that changes nothing, and for an off-map one. A pure
+    query: reads mm.terrain, mutates nothing.
 
-    Returns [] and writes nothing if (x, y) is off-map, or if the region
-    already has terrain_id -- a deliberate early-out, not just an
-    optimization: without it, set_terrain's layer = -1 would still produce
-    real dirty tiles (and a phantom undo record) on any same-terrain region
-    whose tiles carry a real second terrain via `layer` (true for roughly 1
-    in 4 tiles in this project's real example files). The accepted
-    consequence is that Paint Can will not normalize a stale `layer` on a
-    region that already has the selected terrain, which terrain blending
-    now draws (accepted, GH #13)."""
+    TERRAIN: the clicked terrain_id region. When that region already has
+    terrain_id, only its tiles carrying a layered terrain, which a terrain
+    write clears.
+    LAYER: the region sharing the clicked (terrain_id, layer) pair, so a fill
+    never crosses a base boundary or overwrites a different layer. [] when
+    the clicked tile already has the layer this would write.
+    CLEAR: that same pair region, [] when the clicked tile has no layer."""
+    if target not in (TERRAIN, LAYER, CLEAR):
+        raise ValueError(f"unknown terrain target {target!r}")
     width, height = mm.map_width, mm.map_height
     if not (0 <= x < width and 0 <= y < height):
         return []
-    if mm.terrain[y * width + x].terrain_id == terrain_id:
+    clicked = mm.terrain[y * width + x]
+    if target == TERRAIN:
+        region = contiguous_region(mm, x, y)
+        if clicked.terrain_id != terrain_id:
+            return region
+        # One pass over mm.terrain: per-index reads go through UuidList's slow __getitem__.
+        layers = [tile.layer for tile in mm.terrain]
+        return [i for i in region if layers[i] != -1]
+    if target == LAYER:
+        # batch_api.set_layer's rule: a layer equal to the base is none.
+        value = -1 if terrain_id == clicked.terrain_id else terrain_id
+        if clicked.layer == value:
+            return []
+    elif clicked.layer == -1:
         return []
+    return contiguous_region(mm, x, y, match_layer=True)
 
-    region = contiguous_region(mm, x, y)
+
+def flood_fill(mm: MapManager, x: int, y: int, target: str, terrain_id: int) -> list[int]:
+    """Paint Can's write: terrain_target.write_tile() over
+    fill_indices(mm, x, y, target, terrain_id). Returns the flat indices
+    written, in traversal order, [] when nothing changed."""
+    region = fill_indices(mm, x, y, target, terrain_id)
     terrain = mm.terrain
     for i in region:
-        set_terrain(terrain[i], terrain_id)
+        write_tile(terrain[i], target, terrain_id)
     return region
+
+
+def flood_fill_terrain(mm: MapManager, x: int, y: int, terrain_id: int) -> list[int]:
+    """flood_fill() on the Terrain target: paints terrain_id over the clicked
+    region and clears its layered terrain, as every terrain write does.
+    Returns the flat indices written, in traversal order.
+
+    On a region that already has terrain_id it writes only the tiles that
+    carry a layered terrain, clearing it, and returns [] when there are
+    none (or (x, y) is off-map), so a no-op fill leaves no dirty tile and no
+    undo record."""
+    return flood_fill(mm, x, y, TERRAIN, terrain_id)
 
 
 def connected_regions(mm: MapManager, passable: Callable[[int], bool]) -> list[list[int]]:

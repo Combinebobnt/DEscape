@@ -106,7 +106,7 @@ def _only_draw(scn):
     sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
     draws = [d for v in sprites.by_anchor.values() for d in v]
     assert len(draws) == 1, f"fixture resolved {len(draws)} draws, not 1"
-    return draws[0]
+    return draws[0][:3]
 
 
 def test_a_sub_tile_offset_moves_a_span_1_sprite(sprite_install):

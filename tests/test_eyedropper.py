@@ -229,3 +229,87 @@ def test_one_pick_sets_both_widgets() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- the Target combo ---------------------------------------------------------
+
+_LAYER_TERRAIN = 2  # BEACH, distinct from _PICK_TERRAIN and the template's 0
+
+
+def _layered_tile(window):
+    tile = window.scenario.map_manager.terrain[0]
+    tile.terrain_id = _PICK_TERRAIN
+    tile.layer = _LAYER_TERRAIN
+    tile.elevation = _PICK_ELEVATION
+    return tile
+
+
+def test_layer_target_picks_the_layered_terrain_of_a_layered_tile() -> None:
+    from descape.terrain_palette import name_for_terrain_id
+
+    window = _edit_window()
+    try:
+        tile = _layered_tile(window)
+        window.terrain_target_combo.setCurrentIndex(1)
+        assert window._terrain_target() == "layer"
+
+        window.pick_tile_value(0, 0, 0)
+
+        assert window.terrain_panel.terrain_id() == _LAYER_TERRAIN
+        assert window.elevation_level_spin.value() == _PICK_ELEVATION
+        assert (tile.terrain_id, tile.layer) == (_PICK_TERRAIN, _LAYER_TERRAIN)  # a pick mutates nothing
+        last = window.status_log.toPlainText().splitlines()[-1]
+        assert (
+            f"Picked layer {name_for_terrain_id(_LAYER_TERRAIN)} (over {name_for_terrain_id(_PICK_TERRAIN)}), "
+            f"elevation {_PICK_ELEVATION} from (0, 0)"
+        ) in last
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_layer_target_picks_the_base_terrain_of_an_unlayered_tile() -> None:
+    window = _edit_window()
+    try:
+        tile = window.scenario.map_manager.terrain[0]
+        tile.terrain_id = _PICK_TERRAIN
+        window.terrain_target_combo.setCurrentIndex(1)
+
+        window.pick_tile_value(0, 0, 0)
+
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert "Picked layer" not in window.status_log.toPlainText()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("index", [0, 2])
+def test_terrain_and_clear_targets_pick_the_base_terrain_of_a_layered_tile(index: int) -> None:
+    window = _edit_window()
+    try:
+        _layered_tile(window)
+        window.terrain_target_combo.setCurrentIndex(index)
+
+        window.pick_tile_value(0, 0, 0)
+
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert "Picked layer" not in window.status_log.toPlainText()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_layer_target_on_a_file_with_no_layer_field_picks_the_base_terrain() -> None:
+    window = _edit_window()
+    try:
+        _layered_tile(window)
+        window.terrain_target_combo.setCurrentIndex(1)
+        window.scenario.terrain_has_layer = False  # as a v1.21 document
+
+        window.pick_tile_value(0, 0, 0)
+
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

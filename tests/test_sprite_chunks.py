@@ -313,15 +313,37 @@ def test_a_walls_per_variant_composite_bbox_stitches_at_every_variant(wall_compo
 
 
 def test_an_unresolvable_unit_keeps_its_coloured_mark(sprite_install):
-    """The fallback is what makes the sprite path strictly additive."""
-    scn = _scenario([[], [Unit(4.0, 4.0, CONST + 1)]])
+    """The fallback is what makes the sprite path strictly additive: a unit
+    with no art draws the mark the sprites-off render draws.
+
+    One deliberate difference since GH #107. With sprites on a mark is an
+    object like any sprite, painted after all terrain, so its whole diamond
+    shows. Sprites off it stays interleaved, and the tile in front repaints
+    its quarter of this corner-centred mark."""
+    unit = Unit(4.0, 4.0, CONST + 1)
+    scn = _scenario([[], [unit]])
     _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
     sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
     assert not sprites.skip_ids and not sprites.by_anchor
 
     with_sprites, _, _ = render.render_terrain_iso_with_proj(scn, with_sprites=True)
     without, _, _ = render.render_terrain_iso_with_proj(scn, with_sprites=False)
-    assert np.array_equal(with_sprites, without)
+    bare, _, _ = render.render_terrain_iso_with_proj(scn, with_units=False)
+
+    def diamond(base_y: int, base_x: int) -> np.ndarray:
+        dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render.tile_pixels_for_map(MAP_W, MAP_H))
+        mask = np.zeros(bare.shape[:2], dtype=bool)
+        mask[base_y + dst_y, base_x + dst_x] = True
+        return mask
+
+    whole = diamond(*render._unit_mark_base_iso(unit, 4, 4, proj, elevations))
+    # (3, 4) is the one tile under the mark that comes after (4, 4) in depth order.
+    front_x, front_y = iso_geometry.tile_screen_origin(3, 4, 0, proj)
+    front = diamond(front_y, front_x)
+    assert (whole & front).any(), "the mark does not reach the tile in front -- vacuous"
+    assert np.array_equal(np.any(with_sprites != bare, axis=-1), whole)
+    assert np.array_equal(np.any(without != bare, axis=-1), whole & ~front)
+    assert np.array_equal(with_sprites[~front], without[~front])
 
 
 @pytest.mark.parametrize("span", [(1, 1), (3, 3), (5, 5)])
@@ -350,7 +372,8 @@ def test_an_odd_span_sprite_anchors_on_its_tiles_ground_centre(sprite_install, m
 
     layer = render.sprite_draws_by_anchor(scn, proj, elevations)
     assert layer.by_anchor, "no sprite resolved -- this test would assert nothing"
-    _draw, ax, ay = next(iter(layer.by_anchor.values()))[0]
+    _draw, ax, ay, rise = next(iter(layer.by_anchor.values()))[0]
+    assert rise == 3 * proj.elev_step
 
     sx, sy = iso_geometry.tile_screen_origin(tx, ty, 3, proj)
     centre = (sx + proj.half_w, sy + proj.half_h)

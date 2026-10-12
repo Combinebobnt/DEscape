@@ -430,3 +430,77 @@ def test_copying_a_trigger_through_the_window_preserves_a_custom_display_order()
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- 6. GH #213: an entry edit and its undo keep the display order -------------
+#
+# The shipped fixture holds identity condition and effect orders, so the
+# entry cases in _OPERATIONS cannot see an order that is not restored. These
+# run on the fixture resaved with trigger 3 under non-identity orders.
+
+
+def _entry_state(manager) -> tuple:
+    """Trigger 3's conditions and effects, each as (fields in list order, the
+    raw display order)."""
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER, ENTRY_ORDERS, _object_fields
+
+    trigger = manager.triggers[ENTRY_ORDER_TRIGGER]
+    return tuple(
+        ([_object_fields(entry) for entry in getattr(trigger, f"{kind}s")], list(getattr(trigger, f"{kind}_order")))
+        for kind in ENTRY_ORDERS
+    )
+
+
+def _paste_two_effects(window) -> None:
+    from descape import trigger_clipboard
+
+    block = trigger_clipboard.copy_entries(
+        window.trigger_panel._manager(),
+        2,
+        [("effect", 0), ("effect", 1)],
+        doc_id=window._doc_id,
+        scenario_version=window.scenario.scenario_version,
+    )
+    window.entry_structural_edit("paste", 3, "effect", [], -1, block=block, anchor=("effect", 0))
+
+
+_ENTRY_REFS = [("effect", 0), ("condition", 3), ("effect", 4)]
+_ENTRY_OPERATIONS = [
+    ("delete", lambda w: w.entry_structural_edit("delete", 3, "effect", _ENTRY_REFS, -1), ([2, 0, 1], [4, 1, 3, 0, 2])),
+    ("cut", lambda w: w.entry_structural_edit("cut", 3, "effect", _ENTRY_REFS, -1), ([2, 0, 1], [4, 1, 3, 0, 2])),
+    ("paste", _paste_two_effects, ([2, 0, 3, 1], [6, 0, 1, 2, 8, 4, 7, 3, 5])),
+    ("move down", lambda w: w.entry_move(3, _ENTRY_REFS, 1), ([2, 0, 1, 3], [6, 4, 0, 2, 5, 1, 3])),
+    ("move up", lambda w: w.entry_move(3, _ENTRY_REFS, -1), ([2, 3, 0, 1], [4, 0, 6, 2, 5, 1, 3])),
+]
+
+
+@pytest.mark.parametrize("label,operate,orders", _ENTRY_OPERATIONS, ids=[label for label, _, _ in _ENTRY_OPERATIONS])
+def test_an_entry_edit_on_a_non_identity_order_undoes_and_redoes(tmp_path: Path, label, operate, orders) -> None:
+    from test_trigger_write_path import write_entry_order_fixture
+
+    from descape.scenario_write import write_scenario
+
+    base = write_entry_order_fixture(tmp_path)
+    window = conftest.shown_window()
+    try:
+        window.load_scenario(base)
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_panel.select_trigger(3)
+        before = _entry_state(window.trigger_panel._manager())
+
+        operate(window)
+        after = _entry_state(window.trigger_edits.manager())
+        assert [order for _fields, order in after] == list(orders), f"{label} left the wrong display order"
+
+        window.undo()
+        assert _entry_state(window.trigger_edits.manager()) == before, f"undoing {label} lost the list or the order"
+        assert not window.edit_history.is_dirty
+        out = tmp_path / "undone.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        assert out.read_bytes() == base.read_bytes(), f"{label} did not restore byte-for-byte through its undo"
+
+        window.redo()
+        assert _entry_state(window.trigger_edits.manager()) == after, f"redoing {label} lost the list or the order"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

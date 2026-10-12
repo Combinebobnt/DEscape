@@ -325,8 +325,9 @@ going forward.
 
 - Steps 0-3 done: pytest scaffolding, Phase 1 adapter (`conftest.py` +
   `test_legacy_adapter.py` + `migration_manifest.py`) wrapping all 44 (now
-  45 -- phase 3.5a split one `verify_batch_api.py` check into two, see
-  `migration_manifest.py`'s own docstring) checks with zero edits to the
+  46 -- phase 3.5a split one `verify_batch_api.py` check into two and
+  `set_layer` added one, see `migration_manifest.py`'s own docstring) checks
+  with zero edits to the
   verify scripts, new tests #1-3 (`test_private_api_guard.py`,
   `test_edit_history.py`, `test_settings.py`).
 - Step 4 done: `generate_reference_pngs`/the two benches extracted into

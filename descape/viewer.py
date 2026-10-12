@@ -33,7 +33,7 @@ from uuid import uuid4
 
 import numpy as np
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
-from PyQt5.QtCore import QEvent, QPointF, QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer
 from PyQt5.QtGui import (
     QColor,
     QFont,
@@ -129,6 +129,7 @@ from descape import (
     scatter,
     settings,
     terrain_classes,
+    terrain_target,
     terrain_units,
     theme_file,
     themes,
@@ -150,7 +151,6 @@ from descape import (
 )
 from descape.analysis_dialog import AnalysisDialog
 from descape.autosave_dialog import RecoverAutosaveDialog
-from descape.batch_api import set_terrain
 from descape.beach_edges import apply_beach_ring
 from descape.clipboard_dialog import ClipboardHistoryDialog
 from descape.constant_picker import CatalogBrowseDialog, preview_pixmap
@@ -167,7 +167,7 @@ from descape.edit_history import (
     UnitDiffRecord,
 )
 from descape.elevation_tools import set_tiles_elevation
-from descape.fill_tools import contiguous_region, flood_fill_terrain
+from descape.fill_tools import fill_indices
 from descape.find_dialog import FindCallbacks, FindDialog, confirm_with_choices
 from descape.history_dialog import EditHistoryDialog
 from descape.map_options_panel import MapOptionsPanel
@@ -199,6 +199,7 @@ from descape.render import (
     NON_BUILDING_SPAN,
     dirty_screen_bbox_iso,
     dirty_screen_bbox_sloped,
+    dirty_screen_bboxes_iso_grouped,
     elevations_and_proj,
     flat_dirty_rects,
     occupied_tiles_for,
@@ -262,10 +263,13 @@ from descape.trigger_model import (
     display_order_with_copies_inserted,
     exec_order_value,
     exec_order_write_supported,
+    move_entries,
     moved_display_order_block,
     moved_section_display_order,
     paste_anchor,
+    remove_entries,
     resolve_exec_mode,
+    would_move_entries,
 )
 from descape.trigger_panel import GROUP_AREA, GROUP_OBJECTS, PICK_POINT, PICK_RECT, StatusStyle, TriggerPanel
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID, UnitFilter
@@ -287,6 +291,7 @@ from descape.viewer_common import (
     FREE_PLACE_TOOLS,
     SKIP_OCCUPIED_TOOLS,
     FontScaledWidth,
+    KeepOpenMenu,
     _set_player_item,
     brush_applicable,
     tool_applicable,
@@ -559,6 +564,26 @@ _SPLICE_COST_RATIO = 16
 # since 2026-09-30, the reach-padded one too. Measured with tools/bench_stroke_end.py
 # --area-ratio: see _patch_area_exceeds_viewport().
 _TIGHT_PATCH_AREA_RATIO = {"stepped": 0.3, "sloped": 1.0}
+
+# Stepped only (TASK-031.61 C1). A batch past the ratio above patches one rect per visible-level
+# chunk, sized from 16x16-tile blocks of the edit, while those rects recomposite at most this
+# multiple of the visible chunks' area; past it, it evicts. Measured with tools/bench_stroke_end.py
+# --rect-ratio: see _patch_area_exceeds_viewport().
+_RECT_PATCH_AREA_RATIO = 0.25
+_UNIT_RECT_BLOCK_TILES = 16
+
+
+@dataclasses.dataclass
+class _UnitEditBlock:
+    """One block of a Stepped batch unit edit (ViewerWindow._unit_edit_blocks()):
+    its splices and what they paint at the visible level before and after
+    the edit, reference bboxes or None (cache.sprite_extent_before()/after())."""
+
+    key: tuple[int, int] | None
+    splices: list
+    before: tuple[int, int, int, int] | None = None
+    after: tuple[int, int, int, int] | None = None
+
 
 # Help > About's library credit (GH #113). Static: the frozen build ships no dist-info, and
 # tests/test_about_credit.py checks it against the installed one.
@@ -2766,6 +2791,8 @@ class ViewerWindow(QMainWindow):
         self._convert_refresh_timer = QTimer(self)
         self._convert_refresh_timer.setSingleShot(True)
         self._convert_refresh_timer.timeout.connect(self._flush_convert_refresh)
+        # The open Draw stroke's Target, snapshotted at its start (_init_stroke_state).
+        self._stroke_target = terrain_target.TERRAIN
         # GH #184's Eraser: the open drag's state (None outside one) and its repaint throttle.
         self._erase: eraser.EraseStroke | None = None
         self._erase_refresh_timer = QTimer(self)
@@ -2835,6 +2862,7 @@ class ViewerWindow(QMainWindow):
             on_entry_field=self.set_entry_fields,
             on_trigger_structural=self.trigger_structural_edit,
             on_entry_structural=self.entry_structural_edit,
+            on_entry_move=self.entry_move,
             on_variable_structural=self.variable_structural_edit,
             on_selection_changed=self._on_trigger_selection_changed,
             on_tag_rename=self.rename_trigger_tag,
@@ -3313,7 +3341,8 @@ class ViewerWindow(QMainWindow):
         self.disables_action.triggered.connect(self._show_disables_dialog)
         map_menu.addAction(self.disables_action)
 
-        view_menu = menu_bar.addMenu("&View")
+        view_menu = KeepOpenMenu("&View", menu_bar)
+        menu_bar.addMenu(view_menu)
         self.iso_action = QAction("&Isometric View (game-style)", self)
         self.iso_action.setCheckable(True)
         self.iso_action.setToolTip(
@@ -3427,7 +3456,8 @@ class ViewerWindow(QMainWindow):
         # above: it needs only the map dimensions plus, for the iso styles,
         # the projection, so there is nothing to grey and nothing to explain
         # in a greyed tooltip.
-        ticks_menu = view_menu.addMenu("&Distance Ticks")
+        ticks_menu = KeepOpenMenu("&Distance Ticks", view_menu)
+        view_menu.addMenu(ticks_menu)
         ticks_menu.menuAction().setToolTip("Tile-count tick marks along the map border, and how far apart they are")
         self.distance_ticks_action = QAction(
             "&Show", self, checkable=True, checked=settings.get_distance_ticks()
@@ -3471,7 +3501,8 @@ class ViewerWindow(QMainWindow):
 
         # Not gated by mode or terrain style, like Distance Ticks. Connected
         # after checked= settles, for the same config-write reason.
-        grid_menu = view_menu.addMenu("&Grid")
+        grid_menu = KeepOpenMenu("&Grid", view_menu)
+        view_menu.addMenu(grid_menu)
         grid_menu.menuAction().setToolTip("Tile grid lines over the map")
         self.grid_action = QAction("&Show", self, checkable=True, checked=settings.get_grid_overlay())
         self.grid_action.setToolTip(
@@ -3493,7 +3524,8 @@ class ViewerWindow(QMainWindow):
         # Same two persisted halves as Distance Ticks, so the same submenu
         # shape. Not gated by mode or style either: MapView already holds
         # everything it needs.
-        footprint_menu = view_menu.addMenu("&Footprint Outlines")
+        footprint_menu = KeepOpenMenu("&Footprint Outlines", view_menu)
+        view_menu.addMenu(footprint_menu)
         footprint_menu.menuAction().setToolTip("Outlines of the tiles units occupy, and which units get one")
         self.footprint_action = QAction(
             "&Show", self, checkable=True, checked=settings.get_footprint_outlines()
@@ -3577,7 +3609,8 @@ class ViewerWindow(QMainWindow):
         # style switch and file open, so something outside it has to remember
         # the choice. _render_current() re-applies it.
         self._layers = settings.get_view_layers()
-        layers_menu = view_menu.addMenu("&Layers")
+        layers_menu = KeepOpenMenu("&Layers", view_menu)
+        view_menu.addMenu(layers_menu)
         layers_menu.menuAction().setToolTip("Show or hide whole kinds of things the map draws")
         self.layer_actions: dict[str, QAction] = {}
         for spec in view_layers.LAYERS:
@@ -4348,7 +4381,7 @@ class ViewerWindow(QMainWindow):
         )
         self.filters_button.setEnabled(False)  # re-gated by _update_tool_enabled()
 
-        menu = QMenu(self.filters_button)
+        menu = KeepOpenMenu(self.filters_button)
         self.show_gaia_action = QAction("Show GAIA", self, checkable=True, checked=True)
         self.show_gaia_action.setToolTip("GAIA owns cliffs, gold and stone as well as trees")
         self.show_gaia_action.toggled.connect(self._on_filter_changed)
@@ -4444,6 +4477,13 @@ class ViewerWindow(QMainWindow):
         )
         self.filter_hide_all_action.triggered.connect(lambda: self._set_all_filters(False))
         menu.addAction(self.filter_hide_all_action)
+        for bulk_action in (
+            self.filter_all_players_action,
+            self.filter_no_players_action,
+            self.filter_show_all_action,
+            self.filter_hide_all_action,
+        ):
+            menu.keep_open(bulk_action)
 
         self.filters_button.setMenu(menu)
         toolbar.addWidget(self.filters_button)
@@ -6682,8 +6722,9 @@ class ViewerWindow(QMainWindow):
             self.setEnabled(True)
         label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
         self._log_status(f"{label}: {'on' if on else 'off'} (applied in {elapsed:.2f}s)")
-        if layer_id == "terrain_textures":
-            self._update_tool_enabled()  # Terrain Blending greys with it
+        if layer_id in ("terrain_textures", "terrain_blend"):
+            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
+            self._update_tool_enabled()
 
     def _filter_summary(self) -> str:
         if self._unit_filter.is_default:
@@ -6891,7 +6932,8 @@ class ViewerWindow(QMainWindow):
         self.draw_action.setCheckable(True)
         self.draw_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.draw_action.setToolTip(
-            "Paint the selected terrain type over the brush footprint (Terrain mode) -- drag to paint a trail"
+            "Paint the selected terrain type over the brush footprint (Terrain mode). Drag to paint a trail. "
+            "Target chooses the base terrain or the layered terrain"
         )
         self.draw_action.toggled.connect(lambda on: on and self._on_tool_selected("draw"))
         tool_group.addAction(self.draw_action)
@@ -6902,7 +6944,9 @@ class ViewerWindow(QMainWindow):
         self.fill_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.fill_action.setToolTip(
             "Flood-fill the connected region of matching terrain with the selected "
-            "terrain type (Terrain mode) -- one click, no drag"
+            "terrain type (Terrain mode). One click, no drag. Clicking a region that already "
+            "has that terrain clears its layered terrain. Target chooses the base terrain or "
+            "the layered terrain"
         )
         self.fill_action.toggled.connect(lambda on: on and self._on_tool_selected("fill"))
         tool_group.addAction(self.fill_action)
@@ -6939,7 +6983,8 @@ class ViewerWindow(QMainWindow):
         self.draw_line_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.draw_line_action.setToolTip(
             "Drag to paint a straight line of the chosen terrain (Terrain mode). "
-            "Hold Shift to snap the line to one of 16 directions"
+            "Hold Shift to snap the line to one of 16 directions. "
+            "Target chooses the base terrain or the layered terrain"
         )
         self.draw_line_action.toggled.connect(lambda on: on and self._on_tool_selected("draw_line"))
         tool_group.addAction(self.draw_line_action)
@@ -6950,7 +6995,8 @@ class ViewerWindow(QMainWindow):
         self.draw_rect_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.draw_rect_action.setToolTip(
             "Drag to paint a rectangle of the chosen terrain (Terrain mode), filled "
-            "or outlined. Hold Shift to square it"
+            "or outlined. Hold Shift to square it. "
+            "Target chooses the base terrain or the layered terrain"
         )
         self.draw_rect_action.toggled.connect(lambda on: on and self._on_tool_selected("draw_rect"))
         tool_group.addAction(self.draw_rect_action)
@@ -6980,7 +7026,8 @@ class ViewerWindow(QMainWindow):
         self.eyedropper_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.eyedropper_action.setToolTip(
             "Click a tile to load its terrain and elevation into the toolbar "
-            "params (Terrain mode)"
+            "params (Terrain mode). With Target on Layer it loads the tile's layered "
+            "terrain where there is one"
         )
         self.eyedropper_action.toggled.connect(lambda on: on and self._on_tool_selected("eyedropper"))
         tool_group.addAction(self.eyedropper_action)
@@ -7153,6 +7200,17 @@ class ViewerWindow(QMainWindow):
         # Wired here, once this row exists: auto beach below re-gates on a water-family pick.
         self.terrain_panel.terrain_changed.connect(self._on_terrain_changed)
 
+        # Which of a tile's two terrains the terrain tools write: its base, or
+        # the layered terrain drawn over it. Session-only, starts on Terrain.
+        self.terrain_target_label_action = param_toolbar.addWidget(QLabel(" Target: "))
+        self.terrain_target_combo = QComboBox()
+        self.terrain_target_combo.addItem("Terrain", terrain_target.TERRAIN)
+        self.terrain_target_combo.addItem("Layer", terrain_target.LAYER)
+        self.terrain_target_combo.addItem("Clear layer", terrain_target.CLEAR)
+        self.terrain_target_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.terrain_target_combo.currentIndexChanged.connect(self._on_terrain_target_changed)
+        self.terrain_target_param_action = param_toolbar.addWidget(self.terrain_target_combo)
+
         # Auto beach (2026-08-31 plan). A checkbox on Draw rather than a
         # separate Water tool -- the user's call, and it costs no ToolDef,
         # no QAction and no keybind audit. Session-only, never persisted,
@@ -7271,7 +7329,7 @@ class ViewerWindow(QMainWindow):
         self.convert_sources_button.setPopupMode(QToolButton.InstantPopup)
         self.convert_sources_button.setToolTip("Which owners' units this brush reassigns")
         self.convert_sources_button.setEnabled(False)  # re-gated by _update_tool_enabled()
-        sources_menu = QMenu(self.convert_sources_button)
+        sources_menu = KeepOpenMenu(self.convert_sources_button)
         self.convert_source_actions: dict[int, QAction] = {}
         for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
             action = QAction(self._player_labels.text[player_id], self, checkable=True, checked=True)
@@ -7288,11 +7346,12 @@ class ViewerWindow(QMainWindow):
         self.eraser_targets_button.setPopupMode(QToolButton.InstantPopup)
         self.eraser_targets_button.setToolTip("Which objects this brush erases")
         self.eraser_targets_button.setEnabled(False)  # re-gated by _update_tool_enabled()
-        targets_menu = QMenu(self.eraser_targets_button)
+        targets_menu = KeepOpenMenu(self.eraser_targets_button)
         targets_menu.setToolTipsVisible(True)
         everything_action = targets_menu.addAction("Everything")
         everything_action.setToolTip("Tick every target except Cliffs")
         everything_action.triggered.connect(self._tick_every_erase_target)
+        targets_menu.keep_open(everything_action)
         targets_menu.addSeparator()
         defaults = eraser.EraseTargets()
         self.eraser_target_actions: dict[str, QAction] = {}
@@ -7302,7 +7361,7 @@ class ViewerWindow(QMainWindow):
             action = QAction(label, self, checkable=True, checked=getattr(defaults, name))
             targets_menu.addAction(action)
             self.eraser_target_actions[name] = action
-        self.eraser_target_actions["overlay"].setToolTip("Clear the layered (double) terrain on every brush tile")
+        self.eraser_target_actions["overlay"].setToolTip("Clear the layered terrain on every brush tile")
         self.eraser_target_actions["cliffs"].setToolTip(
             "Off, no other target erases a cliff: erasing one piece breaks its chain"
         )
@@ -9700,15 +9759,34 @@ class ViewerWindow(QMainWindow):
             current_action is not None and current_action.isEnabled()
         )
         # terrain_param_ok gates no picker of its own (the sidebar page stays live throughout
-        # Terrain mode); it still gates Trees, Eye candy and auto beach below.
+        # Terrain mode); it still gates the Target combo, and Trees, Eye candy and auto beach below.
+        # The Target combo needs a file that stores a layer; without one it resets to Terrain.
+        layer_ok = self._layer_write_ok()
+        if not layer_ok and self.terrain_target_combo.currentIndex() != 0:
+            with QSignalBlocker(self.terrain_target_combo):
+                self.terrain_target_combo.setCurrentIndex(0)
+        target_param_ok = terrain_param_ok and layer_ok
+        self.terrain_target_label_action.setVisible(target_param_ok)
+        self.terrain_target_param_action.setVisible(target_param_ok)
+        self.terrain_target_combo.setEnabled(target_param_ok)
+        # Only while the combo shows: the note can read the install's blend masks.
+        visibility_note = self._layer_visibility_note() if target_param_ok else ""
+        self.terrain_target_combo.setToolTip(
+            "Which terrain the tool writes. Terrain: the tile's base terrain, which also clears "
+            "its layered terrain. Layer: the layered terrain drawn over the base. Clear layer: "
+            "remove the layered terrain"
+            + (f". Right now layered terrain is {visibility_note}" if visibility_note else "")
+        )
+        # Auto beach, Trees and Eye candy read a base-terrain edit only, so they hide off Terrain.
+        base_param_ok = terrain_param_ok and self._terrain_target() == terrain_target.TERRAIN
         # Auto beach. The tool term is load-bearing: Paint Can shares
         # param_widget="terrain" but lays no ring, so the box must not show for it.
         auto_beach_ok = (
-            terrain_param_ok
+            base_param_ok
             and self._current_tool in _AUTO_BEACH_TOOLS
             and terrain_classes.is_water_family(self.terrain_panel.terrain_id())
         )
-        self.auto_beach_param_action.setVisible(terrain_param_ok and self._current_tool in _AUTO_BEACH_TOOLS)
+        self.auto_beach_param_action.setVisible(base_param_ok and self._current_tool in _AUTO_BEACH_TOOLS)
         self.auto_beach_check.setEnabled(auto_beach_ok)
         self.auto_beach_check.setToolTip(
             "Paint a beach shoreline around the water this stroke, line or rectangle lays down"
@@ -9722,10 +9800,10 @@ class ViewerWindow(QMainWindow):
         self.beach_combo.setEnabled(beach_param_ok)
         self.beach_width_param_action.setVisible(beach_param_ok)
         self.beach_width_spin.setEnabled(beach_param_ok)
-        self.paint_trees_param_action.setVisible(terrain_param_ok)
-        self.paint_trees_check.setEnabled(terrain_param_ok)
-        self.paint_eye_candy_param_action.setVisible(terrain_param_ok)
-        self.paint_eye_candy_check.setEnabled(terrain_param_ok)
+        self.paint_trees_param_action.setVisible(base_param_ok)
+        self.paint_trees_check.setEnabled(base_param_ok)
+        self.paint_eye_candy_param_action.setVisible(base_param_ok)
+        self.paint_eye_candy_check.setEnabled(base_param_ok)
         self.level_param_label_action.setVisible(level_param_ok)
         self.level_param_spin_action.setVisible(level_param_ok)
         self.elevation_level_spin.setEnabled(level_param_ok)
@@ -9856,6 +9934,52 @@ class ViewerWindow(QMainWindow):
         attribute so the combo stays the single source of truth -- nothing
         mirrors it into a field that could drift."""
         return bool(self.rect_fill_combo.currentData())
+
+    def _layer_write_ok(self) -> bool:
+        """Whether a layered terrain can be written: the file stores `layer` and its terrain is writable."""
+        scenario = self.scenario
+        return scenario is not None and scenario.terrain_has_layer and scenario.terrain_write_supported
+
+    def _terrain_target(self) -> str:
+        """The Target combo's state (a terrain_target constant). Always
+        TERRAIN on a file with no layer field, where a layer would never save."""
+        if not self._layer_write_ok():
+            return terrain_target.TERRAIN
+        return self.terrain_target_combo.currentData()
+
+    def _layer_visibility_note(self) -> str:
+        """Why a layered terrain does not draw right now, as a short clause
+        ("not drawn while ..."), or "" when it does. A layer edit made while
+        this is non-empty changes the file and no pixel."""
+        from descape import render
+
+        if render.blend_effective(self._layers):
+            return ""
+        if not self._layers.terrain_textures:
+            return "not drawn while View > Layers > Terrain Textures is off"
+        if not self._layers.terrain_blend:
+            return "not drawn while View > Layers > Terrain Blending is off"
+        return "not drawn without an AoE2:DE install configured"
+
+    def _layer_edit_status(self, label: str, target: str, terrain_id: int, changed: int, total: int | None) -> str:
+        """The status line for a Draw, line or rectangle edit off the Terrain
+        target: what was done to how many tiles, plus the visibility note."""
+        count = f"{changed} tiles" if total is None else f"{changed} of {total} tiles"
+        if target == terrain_target.LAYER:
+            line = f"{label}: {name_for_terrain_id(terrain_id)} layered on {count}"
+        else:
+            line = f"{label}: cleared layered terrain on {count}"
+        note = self._layer_visibility_note()
+        return f"{line} ({note})" if note else line
+
+    def _on_terrain_target_changed(self) -> None:
+        # Re-gates the row: Auto beach, Trees and Eye candy show for the Terrain target only.
+        self._update_tool_enabled()
+        line = f"Target: {self.terrain_target_combo.currentText()}"
+        note = self._layer_visibility_note()
+        if note and self._terrain_target() != terrain_target.TERRAIN:
+            line += f" (layered terrain is {note})"
+        self._log_status(line)
 
     def _on_rect_fill_changed(self) -> None:
         # Toggling Filled/Outline changes whether the brush applies at all,
@@ -10045,9 +10169,13 @@ class ViewerWindow(QMainWindow):
         # reading them inside on_edit_stroke_tile would half-apply a
         # mid-stroke change across one undo record. A separate Water tool
         # would not have had this problem; the checkbox does.
+        # The Target is snapshotted the same way and for the same reason.
+        self._stroke_target = self._terrain_target() if self._current_tool == "draw" else terrain_target.TERRAIN
         self._stroke_auto_beach = (
             (
-                self.auto_beach_check.isEnabled() and self.auto_beach_check.isChecked(),
+                self._stroke_target == terrain_target.TERRAIN
+                and self.auto_beach_check.isEnabled()
+                and self.auto_beach_check.isChecked(),
                 self.beach_combo.currentData(),
                 self.beach_width_spin.value(),
             )
@@ -10085,7 +10213,9 @@ class ViewerWindow(QMainWindow):
         # Closed early by a raise below: the rest of this drag writes nothing.
         if not self.edit_history.in_stroke:
             return
-        label = _STROKE_LABELS.get(self._current_tool, "Edit")
+        label = terrain_target.stroke_label(
+            self._current_tool, self._stroke_target, _STROKE_LABELS.get(self._current_tool, "Edit")
+        )
         with self._close_stroke_on_error(label):
             touched: set[int] = set()
             for x, y in tiles:
@@ -10116,6 +10246,7 @@ class ViewerWindow(QMainWindow):
                 self._stroke_painted = set()
                 self._stroke_written = set()
                 self._stroke_auto_beach = (False, None, 0)
+                self._stroke_target = terrain_target.TERRAIN
                 self._update_edit_actions()
                 self._update_title()
                 # The repaint can hit the same fault; the original exception is the one to report.
@@ -10162,12 +10293,11 @@ class ViewerWindow(QMainWindow):
         if self._current_tool == "draw":
             terrain_id = self.terrain_panel.terrain_id()
             width = mm.map_width
+            # The stroke's own Target, never the live combo. On Terrain this also clears
+            # the layer, which the game and terrain blending draw over terrain_id.
+            target = self._stroke_target
             for tx, ty in footprint:
-                tile = mm.get_tile(tx, ty)
-                tile.terrain_id = terrain_id
-                # Clear a stale double-terrain layer: the game and terrain blending
-                # both draw it over terrain_id, so it would keep showing the old terrain.
-                tile.layer = -1
+                terrain_target.write_tile(mm.get_tile(tx, ty), target, terrain_id)
             touched = {ty * width + tx for tx, ty in footprint}
             # The shoreline, laid AFTER the core so a tile this touch just
             # made water can never be beached. Its ring indices must be in
@@ -10246,7 +10376,9 @@ class ViewerWindow(QMainWindow):
         # _close_stroke_on_error() already committed it; MapView still sends the release.
         if not self.edit_history.in_stroke:
             return
-        label = _STROKE_LABELS.get(self._current_tool, "Edit")
+        base_label = _STROKE_LABELS.get(self._current_tool, "Edit")
+        target = self._stroke_target
+        label = terrain_target.stroke_label(self._current_tool, target, base_label)
         mm = self.scenario.map_manager
         if self._current_tool == "draw":
             # Not commit_stroke(): terrain_units needs the built-but-unpushed
@@ -10254,8 +10386,16 @@ class ViewerWindow(QMainWindow):
             # CompositeDiffRecord with the trees/eye-candy it triggers.
             with perf_trace.phase("stroke_record"):
                 tile_record = self.edit_history.build_stroke_record(label, mm.terrain, self._stroke_written)
-            with perf_trace.phase("unit_plan"):
-                record, splices = self._apply_terrain_unit_plan(tile_record, mm, with_splices=True)
+            if target == terrain_target.TERRAIN:
+                with perf_trace.phase("unit_plan"):
+                    record, splices = self._apply_terrain_unit_plan(tile_record, mm, with_splices=True)
+            else:
+                # A layer-only stroke changes no terrain_id, so there is nothing to plant or remove.
+                record, splices = tile_record, None
+                changed = len(tile_record.changes) if tile_record is not None else 0
+                self._log_status(
+                    self._layer_edit_status(label, target, self.terrain_panel.terrain_id(), changed, None)
+                )
             # Every tile in the record was already repainted live, step by step.
             self._push_terrain_unit_record(record, splices, live_painted=True)
         else:
@@ -10266,10 +10406,12 @@ class ViewerWindow(QMainWindow):
         self._stroke_painted = set()
         self._stroke_written = set()
         self._stroke_auto_beach = (False, None, 0)
+        self._stroke_target = terrain_target.TERRAIN
         with perf_trace.phase("edit_actions"):
             self._update_edit_actions()
             self._update_title()
-        perf_trace.flush(label.lower().replace(" ", "-"))
+        # The tool's own label whatever the Target: tools/bench_gui_drag.py parses it.
+        perf_trace.flush(base_label.lower().replace(" ", "-"))
 
     def on_shape_commit(self, tiles) -> None:
         """Draw Line / Draw Rectangle: one undo record per drag, applied at
@@ -10296,13 +10438,17 @@ class ViewerWindow(QMainWindow):
             return
         mm = self.scenario.map_manager
         terrain_id = self.terrain_panel.terrain_id()
-        label = _STROKE_LABELS.get(self._current_tool, "Edit")
+        # Read once, before the busy guard: one drag is one Target.
+        target = self._terrain_target()
+        on_base = target == terrain_target.TERRAIN
+        label = terrain_target.stroke_label(self._current_tool, target, _STROKE_LABELS.get(self._current_tool, "Edit"))
 
         # Same pre-write size guard as on_fill's -- sized before anything is
         # written, so Cancel leaves the map untouched. Draw is exempt there
         # because a stroke's count is bounded by brush size x drag length; a
         # filled rectangle has no such bound, so it needs the guard.
-        paints_units = self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked()
+        # Off the Terrain target nothing is planted, so there is nothing to ask about.
+        paints_units = on_base and (self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked())
         if paints_units and len(tiles) > TERRAIN_UNIT_CONFIRM_THRESHOLD:
             reply = QMessageBox.question(
                 self,
@@ -10316,7 +10462,7 @@ class ViewerWindow(QMainWindow):
                 return
 
         # GH #88: read before the busy guard disables the window (and with it the box).
-        beach_on = self.auto_beach_check.isEnabled() and self.auto_beach_check.isChecked()
+        beach_on = on_base and self.auto_beach_check.isEnabled() and self.auto_beach_check.isChecked()
         beach_id, beach_width = self.beach_combo.currentData(), self.beach_width_spin.value()
         self._busy = True
         self.setEnabled(False)
@@ -10326,11 +10472,15 @@ class ViewerWindow(QMainWindow):
             self.edit_history.begin_stroke(mm.terrain)
             with self._close_stroke_on_error(label):
                 for tx, ty in tiles:
-                    set_terrain(mm.get_tile(tx, ty), terrain_id)
+                    terrain_target.write_tile(mm.get_tile(tx, ty), target, terrain_id)
                 if beach_on:
                     apply_beach_ring(mm, _shape_shore(tiles), terrain_id, beach_id, beach_width)
             tile_record = self.edit_history.build_stroke_record(label, mm.terrain)
-            record, _splices = self._apply_terrain_unit_plan(tile_record, mm)
+            if on_base:
+                record, _splices = self._apply_terrain_unit_plan(tile_record, mm)
+            else:
+                # A layer-only edit changes no terrain_id: nothing to plant or remove.
+                record = tile_record
             self._push_terrain_unit_record(record)
             if isinstance(record, TileDiffRecord):
                 # No CompositeDiffRecord, so _push_terrain_unit_record skipped
@@ -10345,9 +10495,11 @@ class ViewerWindow(QMainWindow):
         self._update_title()
         # Logged even when nothing changed, same reasoning as on_fill's: a
         # silent no-op reads as a broken tool.
-        self._log_status(
-            f"{label}: {len(tiles)} tiles set to {name_for_terrain_id(terrain_id)}"
-        )
+        if on_base:
+            self._log_status(f"{label}: {len(tiles)} tiles set to {name_for_terrain_id(terrain_id)}")
+        else:
+            changed = len(tile_record.changes) if tile_record is not None else 0
+            self._log_status(self._layer_edit_status(label, target, terrain_id, changed, len(tiles)))
 
     def _apply_terrain_unit_plan(
         self, tile_record: TileDiffRecord | None, mm, with_splices: bool = False
@@ -10466,7 +10618,9 @@ class ViewerWindow(QMainWindow):
         live_painted: Draw's stroke end, whose tiles were all repainted
         during the drag, so only the units' own footprints need patching,
         via `splices`. Paint Can and the shapes pass False and keep the
-        whole-record repaint plus the wholesale unit invalidation.
+        whole-record repaint plus the wholesale unit invalidation. Each of
+        those live repaints also re-read both terrain mirrors, so the unit
+        step is told the terrain is current (_after_unit_mutation()).
         """
         if record is None:
             return
@@ -10476,7 +10630,10 @@ class ViewerWindow(QMainWindow):
                 self._apply_dirty(record.touched_indices())
                 splices = None
             # Draw is a Terrain tool; if it ever reaches here in Units mode, no index patch matched the splices.
-            self._after_unit_mutation(self._if_spliceable(splices), rebuild_index=self.mode == "units", batch=True)
+            self._after_unit_mutation(
+                self._if_spliceable(splices), rebuild_index=self.mode == "units", batch=True,
+                terrain_current=live_painted,
+            )
         else:
             self.edit_history.push_tile_record(record)
 
@@ -10617,9 +10774,8 @@ class ViewerWindow(QMainWindow):
     # CompositeDiffRecord when both changed.
 
     def _erase_overlay_ok(self) -> bool:
-        """Whether Terrain Overlay applies: the file stores `layer` and its terrain is writable."""
-        scenario = self.scenario
-        return scenario is not None and scenario.terrain_has_layer and scenario.terrain_write_supported
+        """Whether Terrain Overlay applies: the same gate as every layered-terrain write."""
+        return self._layer_write_ok()
 
     def _erase_targets(self) -> eraser.EraseTargets:
         """The ticked targets, with Overlay dropped where it can't apply."""
@@ -10677,6 +10833,7 @@ class ViewerWindow(QMainWindow):
                     self.edit_history.stroke_capture(terrain, i)
                     terrain[i].layer = -1
                     stroke.layer_cleared += 1
+                    stroke.pending_layer_tiles.append(i)
 
     def _erase_units(self, stroke: eraser.EraseStroke, hits) -> None:
         """Removes `hits` and their garrisons live, queueing one removal splice each."""
@@ -10704,11 +10861,24 @@ class ViewerWindow(QMainWindow):
 
     def _flush_erase_refresh(self) -> None:
         """The mid-stroke repaint: cache and canvas only, the pick index left
-        for the stroke end, as _flush_convert_refresh()."""
+        for the stroke end, as _flush_convert_refresh(). Terrain Overlay's
+        tiles cleared since the last flush follow the unit step, which
+        repaints only what its erased units reached. Units first: the tile
+        patch can rebuild a stale visible level, and the unit step has to
+        read its erased sprites' extents from that level before it does.
+
+        Only an erased unit arms the flush (_erase_units()), so a tile
+        cleared with no unit erased since still waits for the next flush or
+        the release."""
         stroke = self._erase
-        if stroke is not None and stroke.pending_splices:
+        if stroke is None:
+            return
+        if stroke.pending_splices:
             pending, stroke.pending_splices = stroke.pending_splices, []
             self._after_unit_mutation(changed=self._if_spliceable(pending), defer_index=True, batch=True)
+        if stroke.pending_layer_tiles:
+            cleared, stroke.pending_layer_tiles = stroke.pending_layer_tiles, []
+            self._apply_dirty(cleared)
 
     def _end_erase_stroke(self) -> None:
         self._erase_refresh_timer.stop()
@@ -11156,7 +11326,10 @@ class ViewerWindow(QMainWindow):
                 history.begin_stroke(mm.terrain, indices=rect)
                 with self._close_stroke_on_error("Paste Region"):
                     if do_terrain:
-                        region_clipboard.paste_terrain(mm, block, tx0, ty0)
+                        # A file with no layer field would draw a pasted layer and never save it.
+                        region_clipboard.paste_terrain(
+                            mm, block, tx0, ty0, carry_layer=self.scenario.terrain_has_layer
+                        )
                         parts.append("terrain")
                     if do_elevation:
                         targets = region_clipboard.elevation_targets(block, tx0, ty0, mm.map_width, mm.map_height)
@@ -11285,29 +11458,61 @@ class ViewerWindow(QMainWindow):
         if not (0 <= x < mm.map_width and 0 <= y < mm.map_height):
             return
         terrain_id = self.terrain_panel.terrain_id()
+        name = name_for_terrain_id(terrain_id)
+        target = self._terrain_target()
+        on_base = target == terrain_target.TERRAIN
+        clicked = mm.terrain[y * mm.map_width + x]
+        same_base = clicked.terrain_id == terrain_id
+        # Exactly the tiles this click changes. Empty is a no-op, logged (a
+        # silent one reads as a broken keybind) before any snapshot or dialog.
+        region = fill_indices(mm, x, y, target, terrain_id)
+        if not region:
+            if on_base:
+                reason = f"already {name}"
+            elif target == terrain_target.CLEAR:
+                reason = "no layered terrain here"
+            elif same_base:
+                reason = f"{name} is the base terrain here and it has no layered terrain"
+            else:
+                reason = f"the layered terrain is already {name}"
+            self._log_status(f"Fill at ({x}, {y}): {reason} (no change)")
+            return
+        # A fill of a terrain over itself changes no terrain_id on either
+        # target: it only clears the region's layered terrain.
+        clears_layers = target == terrain_target.CLEAR or same_base
+        # Only a base-terrain change plants or removes trees and eye candy.
+        paints_units = on_base and not same_base
 
-        # Large-operation guard (terrain_units plan, §8): sized BEFORE
-        # anything is written, so Cancel leaves the map untouched. Paint Can
-        # only -- Draw's counts are bounded by brush size x drag length (see
-        # TERRAIN_UNIT_CONFIRM_THRESHOLD's own comment), and skipped
-        # entirely when neither checkbox is on, since a terrain-only fill
-        # has no per-tile unit cost to warn about.
-        if self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked():
-            region_size = len(contiguous_region(mm, x, y))
-            if region_size > TERRAIN_UNIT_CONFIRM_THRESHOLD:
-                # Its own phase, so the user's think time isn't read as untimed fill work.
-                with perf_trace.phase("confirm_dialog"):
-                    reply = QMessageBox.question(
-                        self,
-                        "Large fill",
-                        f"This fill covers {region_size} tiles and can place a large number of "
-                        f"trees/eye candy units, which may take a while. Continue?",
-                        QMessageBox.Yes | QMessageBox.Cancel,
-                        QMessageBox.Cancel,
-                    )
-                if reply != QMessageBox.Yes:
-                    return
+        # Large-operation guards, sized BEFORE anything is written, so Cancel
+        # leaves the map untouched. Paint Can only -- Draw's counts are
+        # bounded by brush size x drag length (see
+        # TERRAIN_UNIT_CONFIRM_THRESHOLD's own comment). The Layer and Clear
+        # layer targets never ask: the click names one patch and plants nothing.
+        question = None
+        if on_base and len(region) > TERRAIN_UNIT_CONFIRM_THRESHOLD:
+            if same_base:
+                question = (
+                    f"This area is already {name}. Filling it clears the layered terrain on "
+                    f"{len(region)} tiles. Continue?"
+                )
+            elif self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked():
+                # Skipped when neither box is on: a terrain-only fill has no per-tile unit cost.
+                question = (
+                    f"This fill covers {len(region)} tiles and can place a large number of "
+                    f"trees/eye candy units, which may take a while. Continue?"
+                )
+        if question is not None:
+            # Its own phase, so the user's think time isn't read as untimed fill work.
+            with perf_trace.phase("confirm_dialog"):
+                reply = QMessageBox.question(
+                    self, "Large fill", question, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel
+                )
+            if reply != QMessageBox.Yes:
+                return
 
+        # A Layer fill of the region's own base only clears, so History says so.
+        label_target = terrain_target.CLEAR if clears_layers and not on_base else target
+        label = terrain_target.stroke_label("fill", label_target, _STROKE_LABELS["fill"])
         self._busy = True
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -11315,9 +11520,15 @@ class ViewerWindow(QMainWindow):
         try:
             t0 = time.perf_counter()
             self.edit_history.begin_stroke(mm.terrain)
-            flood_fill_terrain(mm, x, y, terrain_id)
-            tile_record = self.edit_history.build_stroke_record(_STROKE_LABELS["fill"], mm.terrain)
-            record, _splices = self._apply_terrain_unit_plan(tile_record, mm)
+            terrain = mm.terrain
+            with self._close_stroke_on_error(label):
+                for i in region:
+                    terrain_target.write_tile(terrain[i], target, terrain_id)
+            tile_record = self.edit_history.build_stroke_record(label, mm.terrain)
+            if paints_units:
+                record, _splices = self._apply_terrain_unit_plan(tile_record, mm)
+            else:
+                record = tile_record
             self._push_terrain_unit_record(record)
             dirty = record.touched_indices() if record is not None else []
             if isinstance(record, TileDiffRecord):
@@ -11333,15 +11544,16 @@ class ViewerWindow(QMainWindow):
             self._busy = False
         self._update_edit_actions()
         self._update_title()
-        name = name_for_terrain_id(terrain_id)
-        # Always log, including the no-op case, same reasoning as
-        # paste_region()'s own comment above -- a silent no-op reads as a
-        # broken keybind, and a click that can rewrite the whole map
-        # deserves a record either way.
-        if dirty:
-            self._log_status(f"Filled {len(dirty)} tiles with {name} from ({x}, {y}) applied in {elapsed:.2f}s")
+        if clears_layers:
+            line = f"Cleared layered terrain on {len(dirty)} tiles from ({x}, {y})"
+        elif on_base:
+            line = f"Filled {len(dirty)} tiles with {name} from ({x}, {y})"
         else:
-            self._log_status(f"Fill at ({x}, {y}): already {name} (no change)")
+            line = f"Filled {len(dirty)} tiles with layer {name} from ({x}, {y})"
+        line += f" applied in {elapsed:.2f}s"
+        # A layer-only edit changes no pixel while layered terrain is not drawn: say so.
+        note = self._layer_visibility_note() if (clears_layers or not on_base) else ""
+        self._log_status(f"{line} ({note})" if note else line)
 
     def on_click_edit(self, x: int, y: int, modifiers) -> None:
         """MapView's CLICK_TOOLS destination -- dispatches to whichever
@@ -11370,13 +11582,17 @@ class ViewerWindow(QMainWindow):
         if not (0 <= x < mm.map_width and 0 <= y < mm.map_height):
             return
         tile = mm.terrain[y * mm.map_width + x]
-        terrain_id = tile.terrain_id
+        # On the Layer target a layered tile gives its layered terrain, the one a Layer stroke writes.
+        picks_layer = self._terrain_target() == terrain_target.LAYER and tile.layer != -1
+        terrain_id = tile.layer if picks_layer else tile.terrain_id
         elevation = tile.elevation
 
         if self.terrain_panel.set_terrain(terrain_id):
             terrain_part = name_for_terrain_id(terrain_id)
         else:
             terrain_part = f"{name_for_terrain_id(terrain_id)} (not in the terrain picker, unchanged)"
+        if picks_layer:
+            terrain_part = f"layer {terrain_part} (over {name_for_terrain_id(tile.terrain_id)})"
 
         if 0 <= elevation <= ELEVATION_LEVEL_MAX:
             self.elevation_level_spin.setValue(elevation)
@@ -12836,8 +13052,8 @@ class ViewerWindow(QMainWindow):
 
         `new` and `retype` take one `entry_index`. `copy`, `delete` and `cut`
         also take a sequence of (kind, index) refs there, so a selection
-        spanning both lists is one undo record (GH #60): delete removes in
-        descending index order, copy appends in the order given.
+        spanning both lists is one undo record (GH #60): delete goes through
+        trigger_model.remove_entries(), copy appends in the order given.
 
         GH #137: `cut` is the entry clipboard filled, then `delete`, in one
         record; the block reaches the clipboard only if the rows really went.
@@ -12853,12 +13069,16 @@ class ViewerWindow(QMainWindow):
         without it the pre-edit bytes splice straight back over the new
         condition on save, with no error anywhere.
 
-        Nothing here touches `condition_order` / `effect_order`, and that is
-        not an oversight: both are lazily regenerated by their own getter, which
-        checks the list against a stored hash and rebuilds the array when it has
-        changed. serialize() commits through the library, which reads the
-        property, so the order heals before it is ever written. Verified by
-        write-and-reload, not assumed.
+        `condition_order` / `effect_order` (GH #213), the order the game editor
+        lists a trigger's entries in: the library's getter heals the array on
+        a length change by dropping values past the end or appending. That is
+        right for an append (`new` and `copy` land last in display; `retype`
+        appends, pops and replaces at the same index, so nothing heals) and
+        for an identity order, and for nothing else. On [0, 3, 1, 4, 2],
+        removing list index 0 leaves [0, 3, 1, 2] and the survivors change
+        places. So `delete` and `cut` go through remove_entries() and `paste`
+        through trigger_clipboard.paste_entries(), which read the order first
+        and set it again. Verified by write-and-reload, not assumed.
         """
         model = self._ensure_trigger_edits()
         if model is None:
@@ -12926,17 +13146,9 @@ class ViewerWindow(QMainWindow):
                     siblings.append(copy.deepcopy(siblings[ref_index]))
                     select.append((ref_kind, len(siblings) - 1))
             else:
-                # Descending, so every index still to be removed stays valid.
-                for ref_kind, ref_index in sorted(refs, key=lambda ref: ref[1], reverse=True):
-                    if ref_kind == "condition":
-                        trigger.remove_condition(condition_index=ref_index)
-                    else:
-                        trigger.remove_effect(effect_index=ref_index)
-                # The first ref's list, at the lowest removed slot, clamped.
-                first_kind = refs[0][0]
-                lowest = min(i for k, i in refs if k == first_kind)
-                landing = min(lowest, len(_entries_of(trigger, first_kind)) - 1)
-                select = [(first_kind, landing)] if landing >= 0 else []
+                # The first ref's list, at the lowest removed display slot, clamped.
+                landing = remove_entries(trigger, refs)
+                select = [] if landing is None else [landing]
 
         if cut_block is not None:
             # Only once the rows really went: _trigger_edit reports a raise, it does not re-raise.
@@ -12950,6 +13162,35 @@ class ViewerWindow(QMainWindow):
             self.trigger_panel.select_entries(select)
         if report and select:
             self._log_status(report)
+
+    def entry_move(self, index: int, refs: Sequence[tuple[str, int]], delta: int) -> None:
+        """Move the conditions and effects at `refs` one display slot up
+        (`delta` -1) or down (+1) inside trigger `index`, as one undo record
+        (GH #213).
+
+        Permutes `condition_order` / `effect_order` only, through
+        trigger_model.move_entries(), as the game editor does and as trigger
+        Move Up/Down does with trigger_display_order: the lists stay as they
+        are, so every (kind, index) ref keeps naming the same entry. A move
+        that would change nothing opens no edit, since a commit always pushes.
+        """
+        model = self._ensure_trigger_edits()
+        if model is None:
+            return
+        manager = model.manager()
+        if not 0 <= index < len(manager.triggers):
+            return
+        refs = [(str(kind), int(entry_index)) for kind, entry_index in refs]
+        if not would_move_entries(manager.triggers[index], refs, delta):
+            return
+        what = refs[0][0] if len(refs) == 1 else f"{len(refs)} entries"
+        label = f"Move {what} {'up' if delta < 0 else 'down'}"
+        # Read before the rebuild, which leaves the entry tree scrolled to its top.
+        scroll = self.trigger_panel.entry_tree.verticalScrollBar().value()
+        with self._trigger_edit(model, label, content_touched=[index], refresh="entries") as m:
+            move_entries(m.manager().triggers[index], refs, delta)
+        if self.mode == "triggers":
+            self.trigger_panel.reselect_moved_entries(refs, delta, scroll)
 
     def _paste_entries_into(self, model, index: int, block, anchor) -> None:
         """entry_structural_edit()'s "paste" (GH #137)."""
@@ -13235,7 +13476,12 @@ class ViewerWindow(QMainWindow):
         membership mutators UnitEditModel refuses to run inside a
         fields_only edit, so only the pure set_position/set_rotation/
         set_unit_const callers (Move/Nudge/Rotate/Set field/gate
-        orientation) may pass it."""
+        orientation) may pass it.
+
+        terrain_current: no caller of this method writes a tile, so the tail
+        is told the terrain mirrors are current (_after_unit_mutation()),
+        except inside an open Erase stroke, whose Terrain Overlay writes are
+        not in the mirrors until it ends."""
         with perf_trace.op(label):
             model.begin_unit_edit(players, fields_only=fields_only)
             try:
@@ -13250,7 +13496,8 @@ class ViewerWindow(QMainWindow):
             model.commit_unit_edit(label, self.edit_history)
             if splices is not None:
                 assert splices, "a splice-tracking _unit_edit exited with no UnitSplice recorded"
-            self._after_unit_mutation(splices)
+            # An open Erase stroke's Terrain Overlay writes are not in the terrain mirrors yet.
+            self._after_unit_mutation(splices, terrain_current=self._erase is None)
             self._update_title()
             self._update_edit_actions()
             self._log_status(label)
@@ -13339,6 +13586,8 @@ class ViewerWindow(QMainWindow):
         batch: bool = False,
         sources_refreshed: bool = False,
         terrain_bbox: tuple[int, int, int, int] | None = None,
+        terrain_current: bool = False,
+        terrain_tiles=None,
     ) -> None:
         """Shared invalidation tail for every unit mutation, whether driven
         by a tool (_unit_edit's own commit, above) or by undo/redo
@@ -13404,6 +13653,18 @@ class ViewerWindow(QMainWindow):
         refreshed but which is not yet composited (TASK-031.61 A4, see
         _refresh_after_history_move()). _patch_unit_edit_cache() repaints it
         with the unit bbox on every exit.
+
+        terrain_current: with `changed`, the caller's promise that the cache's
+        terrain mirrors already match every tile, so the scoped repaint's
+        evictions skip their re-read (TASK-031.61 C0, about 10 ms each on a
+        near-canvas bbox). Only Draw's stroke end, a splice-carrying history
+        move and _unit_edit() pass it. False (the default) keeps the re-read:
+        an Erase stroke's Terrain Overlay writes reach the mirrors only at
+        its next flush or its end, after that call's own unit step.
+
+        terrain_tiles: with terrain_bbox, the tile indices that bbox was sized
+        from (TASK-031.61 C1), so the scoped repaint can size the terrain per
+        block of tiles too. None with a terrain_bbox keeps the union bbox.
         """
         # A third invalidation, on the same terms as the two below: an
         # in-flight warm is walking the unit list this edit just changed.
@@ -13414,7 +13675,7 @@ class ViewerWindow(QMainWindow):
         self._stack_cycle = None
         if self._cache is not None:
             if changed is not None:
-                self._patch_unit_edit_cache(changed, batch, terrain_bbox)
+                self._patch_unit_edit_cache(changed, batch, terrain_bbox, terrain_current, terrain_tiles)
             else:
                 if not sources_refreshed:
                     with perf_trace.phase("unit_sources"):
@@ -13460,7 +13721,8 @@ class ViewerWindow(QMainWindow):
             self._refresh_selection_view()
 
     def _patch_unit_edit_cache(
-        self, changed: list[UnitSplice], batch: bool = False, terrain_bbox: tuple[int, int, int, int] | None = None
+        self, changed: list[UnitSplice], batch: bool = False, terrain_bbox: tuple[int, int, int, int] | None = None,
+        terrain_current: bool = False, terrain_tiles=None,
     ) -> None:
         """The scoped branch of _after_unit_mutation() (Batch D's D5):
         splices self._cache's unit-derived sources (D4's own invalidate_
@@ -13515,19 +13777,38 @@ class ViewerWindow(QMainWindow):
         terrain bbox, sources refreshed but not composited. The split repaints
         and evicts its union with the unit bboxes; the no-target patch covers
         it too; the whole-canvas fallback already does; the early returns
-        composite it alone, as the tile patch would have."""
+        composite it alone, as the tile patch would have.
+
+        terrain_current (Stepped/Sloped, TASK-031.61 C0): passed to the split,
+        whose evictions then skip the terrain mirror re-read. The whole-canvas
+        fallback keeps its re-read, and the eager patches always re-read.
+
+        Stepped `batch` edits (TASK-031.61 C1) read both extents per 16x16-tile
+        block of `changed` (_unit_edit_blocks()), the batch extent being their
+        union. The tight split may then patch one rect per chunk from those
+        blocks instead of evicting (_unit_edit_chunk_rects()). terrain_tiles
+        are the tiles behind terrain_bbox, sized block by block with the
+        units; a terrain_bbox without them keeps the union bbox alone."""
         # Convert's stroke end can drain an empty list; Flat would treat [] as wholesale.
         if not changed:
             self._composite_deferred_terrain(terrain_bbox)
             return
         pre = post = REACH_FALLBACK
         visible_mip = None
+        blocks = None
         if self._render_style != "flat":
             target = self.map_view.viewport_chunk_target()
             visible_mip = None if target is None else target[0]
             if self._cache.sprites_enabled:
                 with perf_trace.phase("sprite_extent"):
-                    pre = self._cache.sprite_extent_before(changed, visible_mip)
+                    if (
+                        batch and self._render_style == "stepped" and visible_mip is not None
+                        and (terrain_bbox is None or terrain_tiles is not None)
+                    ):
+                        blocks = self._unit_edit_blocks(changed)
+                        pre = self._block_sprite_extents(blocks, "before", visible_mip)
+                    else:
+                        pre = self._cache.sprite_extent_before(changed, visible_mip)
         with perf_trace.phase("unit_sources"):
             self._cache.invalidate_units(changed)
         old_tiles = {t for s in changed for t in s.old_tiles}
@@ -13547,13 +13828,17 @@ class ViewerWindow(QMainWindow):
             return
         if pre is not REACH_FALLBACK:
             with perf_trace.phase("sprite_extent"):
-                post = self._cache.sprite_extent_after(changed, visible_mip)
+                if blocks is not None:
+                    post = self._block_sprite_extents(blocks, "after", visible_mip)
+                else:
+                    post = self._cache.sprite_extent_after(changed, visible_mip)
         if post is not REACH_FALLBACK:
             with perf_trace.phase("unit_bbox"):
                 bbox, elevation_changed = self._unit_edit_bbox(changed, pre, post)
             if bbox is not None:
                 self._repaint_unit_edit_split(
-                    changed, bbox, elevation_changed, visible_mip, batch, terrain_bbox=terrain_bbox
+                    changed, bbox, elevation_changed, visible_mip, batch, terrain_bbox=terrain_bbox,
+                    terrain_current=terrain_current, blocks=blocks, terrain_tiles=terrain_tiles,
                 )
                 return
         with perf_trace.phase("unit_bbox"):
@@ -13568,7 +13853,8 @@ class ViewerWindow(QMainWindow):
             return
         if visible_mip is not None:
             self._repaint_unit_edit_split(
-                changed, bbox, elevation_changed, visible_mip, batch, reach=bbox, terrain_bbox=terrain_bbox
+                changed, bbox, elevation_changed, visible_mip, batch, reach=bbox, terrain_bbox=terrain_bbox,
+                terrain_current=terrain_current,
             )
             return
         # No viewport target, so no visible area to price an eviction against: patch.
@@ -13590,7 +13876,8 @@ class ViewerWindow(QMainWindow):
     def _repaint_unit_edit_split(
         self, changed: list[UnitSplice], bbox: tuple[int, int, int, int], elevation_changed: set,
         visible_mip: int, batch: bool, reach: tuple[int, int, int, int] | None = None,
-        terrain_bbox: tuple[int, int, int, int] | None = None,
+        terrain_bbox: tuple[int, int, int, int] | None = None, terrain_current: bool = False,
+        blocks: list[_UnitEditBlock] | None = None, terrain_tiles=None,
     ) -> None:
         """_patch_unit_edit_cache()'s visible-level repaint, tight or reach: the
         visible level patches or evicts `bbox` by the usual area rule, priced
@@ -13598,7 +13885,22 @@ class ViewerWindow(QMainWindow):
         resident level evicts today's reach-padded bbox, which costs nothing
         until it is shown. `reach` is that bbox when the caller already holds
         it (the reach branch, where it is `bbox`), else derived here. A
-        deferred terrain_bbox (A4) is unioned into both."""
+        deferred terrain_bbox (A4) is unioned into both.
+
+        terrain_current (TASK-031.61 C0): both evictions skip the terrain
+        mirror re-read (invalidate_region()'s terrain_changed=False), the
+        caller having vouched that both mirrors match the tiles. The eager
+        patch re-reads its bbox either way.
+
+        blocks (Stepped, TASK-031.61 C1): given, a batch past the area rule
+        does not evict the visible level. It patches one rect per chunk there
+        (_unit_edit_chunk_rects(), which sizes terrain_tiles too), each
+        inside `bbox`, unless those rects are past their own ratio or cannot
+        be sized; then it evicts as before, having paid for the sizing
+        (1-19 ms on the 2026-10-12 sweep). A visible level the batch left
+        stale (an over-cap gen bump) then rebuilds here, inside the first
+        rect, not at the next paint. The other levels' eviction and the
+        region Qt repaints do not change."""
         others = [mip for mip in self._cache.resident_levels() if mip != visible_mip]
         if others and reach is None:
             with perf_trace.phase("unit_bbox"):
@@ -13610,23 +13912,139 @@ class ViewerWindow(QMainWindow):
             reach = render_cache._union_bbox(reach, terrain_bbox) if reach is not None else None
         visible = (visible_mip,)
         evict = batch and self._patch_area_exceeds_viewport(bbox, levels=visible)
+        rects = None
+        if evict and blocks is not None and _RECT_PATCH_AREA_RATIO > 0:
+            # Only here: a batch that patches its bbox never needs the block rects sized.
+            with perf_trace.phase("unit_bbox"):
+                rects = self._unit_edit_chunk_rects(blocks, terrain_tiles, visible_mip)
+            if rects is not None and self._patch_area_exceeds_viewport(bbox, levels=visible, rects=rects):
+                rects = None
         # Sizing stays outside the phase, as in the reach branch, so unit_patch times cache work only.
         with perf_trace.phase("unit_patch"):
             if others:
-                self._cache.invalidate_region(reach, levels=others)
-            if evict:
-                self._cache.invalidate_region(bbox, levels=visible)
+                self._cache.invalidate_region(reach, levels=others, terrain_changed=not terrain_current)
+            if rects is not None:
+                self._cache.patch_composite_rects(
+                    rects, levels=visible, rebuild_levels=visible, terrain_current=terrain_current
+                )
+            elif evict:
+                self._cache.invalidate_region(bbox, levels=visible, terrain_changed=not terrain_current)
             else:
                 self._cache.patch(bbox, elevation_changed=elevation_changed, levels=visible)
         self.map_view.invalidate_region(bbox)
 
-    def _patch_area_exceeds_viewport(self, bbox: tuple[int, int, int, int], levels) -> bool:
+    def _unit_edit_blocks(self, changed: list[UnitSplice]) -> list[_UnitEditBlock]:
+        """`changed` split by the _UNIT_RECT_BLOCK_TILES-square block of tiles
+        its own tile is in (the new one, else the old), for the per-chunk
+        rects (TASK-031.61 C1). Every splice is in exactly one block, so the
+        blocks' extents union to the batch's."""
+        size = _UNIT_RECT_BLOCK_TILES
+        by_key: dict = {}
+        for s in changed:
+            own = s.new_own_tile if s.new_own_tile is not None else s.old_own_tile
+            key = None if own is None else (own[0] // size, own[1] // size)
+            block = by_key.get(key)
+            if block is None:
+                block = by_key[key] = _UnitEditBlock(key, [])
+            block.splices.append(s)
+        return list(by_key.values())
+
+    def _block_sprite_extents(self, blocks: list[_UnitEditBlock], side: str, mip: int):
+        """cache.sprite_extent_before()/after() (`side`) read per block and
+        kept on it. Returns their union, which is the batch call's own answer,
+        or REACH_FALLBACK as soon as one block gives it (the batch call would
+        too: its only per-splice test is an any())."""
+        extent = getattr(self._cache, f"sprite_extent_{side}")
+        union = None
+        for block in blocks:
+            box = extent(block.splices, mip)
+            if box is REACH_FALLBACK:
+                return REACH_FALLBACK
+            setattr(block, side, box)
+            union = render_cache._union_bbox(union, box)
+        return union
+
+    def _unit_edit_chunk_rects(
+        self, blocks: list[_UnitEditBlock], terrain_tiles, visible_mip: int
+    ) -> list[tuple[int, int, int, int]] | None:
+        """One reference-canvas rect per visible-level chunk a Stepped batch
+        unit edit changes (TASK-031.61 C1), for cache.patch_composite_rects().
+
+        Each block's rect is _unit_tiles_bbox()'s answer for its splices, its
+        own extents and the terrain_tiles (a history move's deferred tile
+        indices, A4) in the same block of tiles: dirty_screen_bbox_iso() over
+        that block's tiles. The tiles go in as they are, since that call
+        already dilates its dirty set by one tile, which terrain blending
+        needs and _apply_dirty() relies on. Every block is sized in one pass
+        (dirty_screen_bboxes_iso_grouped()), the per-block calls being what a
+        large undo spent 8-89 ms on; they still run when that pass declines
+        (a tile whose elevation moved, which no caller hands over today).
+        cache.chunk_rects() then keeps one rect per chunk, the bbox of the
+        block rects clipped to it: block rects overlap, and patched one by
+        one they cost more than evicting.
+
+        None, for the caller to evict as before, when a bbox call declines
+        (see _patch_unit_edit_cache()'s own defensive branch)."""
+        size = _UNIT_RECT_BLOCK_TILES
+        width = self.scenario.map_manager.map_width
+        terrain_by_block: dict = {}
+        if terrain_tiles is not None and len(terrain_tiles):
+            idx = np.fromiter(terrain_tiles, dtype=np.int64, count=len(terrain_tiles))
+            columns = width // size + 1
+            keys = (idx // width // size) * columns + (idx % width) // size
+            order = np.argsort(keys, kind="stable")
+            idx, keys = idx[order], keys[order]
+            starts = np.flatnonzero(np.diff(keys, prepend=keys[0] - 1))
+            for key, tiles in zip(keys[starts].tolist(), np.split(idx, starts[1:]), strict=True):
+                terrain_by_block[(key % columns, key // columns)] = tiles.tolist()
+        rects = []
+        # (splices, before, after, terrain tile indices) per rect that has a tile term.
+        jobs: list = []
+        for block in blocks:
+            terrain = terrain_by_block.pop(block.key, ())
+            if not terrain and not any(s.old_tiles or s.new_tiles for s in block.splices):
+                # No tile on the map, so no tile term: its extents alone (None, in practice).
+                rect = render_cache._union_bbox(block.before, block.after)
+                if rect is not None:
+                    rects.append(rect)
+                continue
+            jobs.append((block.splices, block.before, block.after, terrain))
+        jobs.extend(([], None, None, terrain) for terrain in terrain_by_block.values())
+        groups = []
+        for splices, _before, _after, terrain in jobs:
+            touched = {t for s in splices for t in s.old_tiles}
+            touched.update(t for s in splices for t in s.new_tiles)
+            group = [y * width + x for x, y in touched]
+            group.extend(terrain)
+            groups.append(group)
+        tile_boxes = dirty_screen_bboxes_iso_grouped(
+            self.scenario, groups, self._iso_elevations, self._iso_proj,
+            flatten_elevations=(self._terrain_style == "flat"),
+        )
+        for i, (splices, before, after, terrain) in enumerate(jobs):
+            if tile_boxes is None:
+                rect, _ = self._unit_tiles_bbox(splices, before, after, terrain)
+            else:
+                rect = tile_boxes[i] and self._with_sprite_extents(tile_boxes[i], before, after)
+            if rect is None:
+                return None
+            rects.append(rect)
+        return self._cache.chunk_rects(rects, visible_mip)
+
+    def _patch_area_exceeds_viewport(self, bbox: tuple[int, int, int, int], levels, rects=None) -> bool:
         """Whether patch(bbox, levels=levels) would recomposite more than
         _TIGHT_PATCH_AREA_RATIO of the visible chunks' area. Past that,
         patching eagerly costs more than evicting the bbox's chunks and
         recompositing the visible ones whole at the next paint. Only the
         visible-level split (_repaint_unit_edit_split(), levels=(visible,))
         asks; with no viewport target this answers False.
+
+        rects (Stepped, TASK-031.61 C1): the per-chunk rects that would be
+        patched in place of an over-ratio bbox. Their summed patch_area() is
+        priced instead, against _RECT_PATCH_AREA_RATIO: whether
+        cache.patch_composite_rects(rects) would recomposite more than that.
+        Past it the split evicts the bbox as before. That eviction is not
+        free of the rects: they were sized to be priced.
 
         Measured 2026-09-27 on old-allies and Joan 1, sprites on
         (tools/bench_stroke_end.py --area-ratio): the split patches cheaper
@@ -13646,6 +14064,28 @@ class ViewerWindow(QMainWindow):
         instead of the next paint (+34/+51 ms). The crossover lies past
         what fit zoom reaches, so Sloped keeps 1.0.
 
+        Measured 2026-10-11 for Stepped's per-chunk rects (TASK-031.61 C1),
+        same view and map, terrain blending on (--strokes rows, GH #180's
+        drag, --terrains 109,13, --rect-ratio 0 against inf x3 interleaved,
+        2-12 rows at brush 9 and 8 at brush 5): the rects priced 0.20-0.43
+        under union bboxes of 0.42-0.57, handler plus next paint compared.
+        At 0.20-0.24 patching them beat evicting on all 5 rows, by 28-61 ms.
+        Past that it depends on the batch. A stroke end that only removes
+        trees still wins at 0.27-0.34 (by ~21 ms) and breaks even at
+        0.36-0.39. A 10k-tree stroke end, its undo and an undo that carries
+        terrain tiles are within noise at 0.30 (-6/-10/+16 ms) and lose
+        11-94 ms from 0.34, their per-block bbox calls (26-89 ms) tipping
+        it. So the rects take 0.25, the top of the range every row won in.
+        An over-cap batch's level rebuild then runs in the handler, not the
+        next paint; both are in the totals compared.
+
+        2026-10-12: the blocks are sized in one array pass
+        (render.dirty_screen_bboxes_iso_grouped()), 1-19 ms on those rows
+        where the per-block calls took 8-89, with the same rects and so the
+        same priced areas. That is what a batch past 0.25 now pays before it
+        evicts. The ratio was not re-derived: the rect side of every row
+        above is cheaper by the difference, so 0.25 is conservative.
+
         A retired second ratio (Stepped 0.05) priced a patch of every
         resident level, which also paid each stale level's rebuild in the
         patch (~100 ms vs ~47 ms with one level, old-allies). Since
@@ -13655,6 +14095,9 @@ class ViewerWindow(QMainWindow):
             return False
         _mip, cx0, cy0, cx1, cy1 = target
         visible = (cx1 - cx0 + 1) * (cy1 - cy0 + 1) * self._cache.chunk_px**2
+        if rects is not None:
+            area = sum(self._cache.patch_area(rect, levels=levels) for rect in rects)
+            return area > _RECT_PATCH_AREA_RATIO * visible
         return self._cache.patch_area(bbox, levels=levels) > _TIGHT_PATCH_AREA_RATIO[self._render_style] * visible
 
     def _unit_edit_bbox(
@@ -13671,12 +14114,22 @@ class ViewerWindow(QMainWindow):
         reach, unioned with both and clamped to the reference canvas. Either
         way, dirty_screen_bbox_*() writes the touched tiles' elevations back
         into the shared array, a no-op for a unit edit."""
+        return self._unit_tiles_bbox(changed, pre, post)
+
+    def _unit_tiles_bbox(
+        self, changed: list[UnitSplice], pre, post, terrain_tiles=()
+    ) -> tuple[tuple[int, int, int, int] | None, set]:
+        """_unit_edit_bbox()'s body, which also sizes one block of a batch
+        (_unit_edit_chunk_rects()): terrain_tiles are tile indices that go
+        into the same dirty set as `changed`'s footprints, so one
+        dirty_screen_bbox_*() call dilates and sweeps both."""
         tight = pre is not REACH_FALLBACK and post is not REACH_FALLBACK
         with_sprites = self._cache.sprites_enabled and not tight
         old_tiles = {t for s in changed for t in s.old_tiles}
         touched = old_tiles | {t for s in changed for t in s.new_tiles}
         width = self.scenario.map_manager.map_width
         dirty_indices = [y * width + x for x, y in touched]
+        dirty_indices.extend(terrain_tiles)
         elevation_changed: set = set()
         if self._render_style == "stepped":
             bbox = dirty_screen_bbox_iso(
@@ -13692,14 +14145,19 @@ class ViewerWindow(QMainWindow):
                 extra_anchor_tiles=old_tiles, units_changed=True,
             )
         if tight and bbox is not None:
-            x0, y0, x1, y1 = bbox
-            for extent in (pre, post):
-                if extent is not None:
-                    x0, y0 = min(x0, extent[0]), min(y0, extent[1])
-                    x1, y1 = max(x1, extent[2]), max(y1, extent[3])
-            canvas_w, canvas_h = self._cache.canvas_dims(0)
-            bbox = (max(0, x0), max(0, y0), min(canvas_w, x1), min(canvas_h, y1))
+            bbox = self._with_sprite_extents(bbox, pre, post)
         return bbox, elevation_changed
+
+    def _with_sprite_extents(self, bbox: tuple[int, int, int, int], pre, post) -> tuple[int, int, int, int]:
+        """A tight tile-term bbox unioned with the cache's sprite extents
+        (reference bboxes or None) and clamped to the reference canvas."""
+        x0, y0, x1, y1 = bbox
+        for extent in (pre, post):
+            if extent is not None:
+                x0, y0 = min(x0, extent[0]), min(y0, extent[1])
+                x1, y1 = max(x1, extent[2]), max(y1, extent[3])
+        canvas_w, canvas_h = self._cache.canvas_dims(0)
+        return (max(0, x0), max(0, y0), min(canvas_w, x1), min(canvas_h, y1))
 
     def _update_edit_actions(self) -> None:
         self._refresh_paste_move_validity()
@@ -14018,6 +14476,16 @@ class ViewerWindow(QMainWindow):
         its source half (_apply_dirty()'s `deferred`) and the unit step
         repaints the union of the terrain bbox and its own. Patching the
         terrain first would recomposite chunks the unit step then evicts.
+        `dirty` goes with the bbox as terrain_tiles (TASK-031.61 C1), so
+        Stepped's per-chunk rects can size the terrain by block of tiles.
+
+        terrain_current: that scoped unit step is told the terrain mirrors
+        are current (_after_unit_mutation()). Every tile the move restored is
+        in `dirty`, and _apply_dirty() re-read the mirrors over it on each
+        branch that leaves the splices standing (patch(), or A4's
+        patch_sources()); a full branch runs the unit step wholesale. Not
+        inside an open Erase stroke, whose Terrain Overlay writes are not in
+        the mirrors until it ends.
         """
         # Undo/redo rewrites what the armed field and its form show.
         self.disarm_unit_picker()
@@ -14056,7 +14524,11 @@ class ViewerWindow(QMainWindow):
                 if self.mode == "units":
                     with perf_trace.phase("unit_index"):
                         self._rebuild_unit_index()
-                self._after_unit_mutation(splices, batch=batch, terrain_bbox=deferred[0] if deferred else None)
+                # _apply_dirty() above re-read the mirrors over `dirty`; an open Erase stroke's writes are not in them.
+                self._after_unit_mutation(
+                    splices, batch=batch, terrain_bbox=deferred[0] if deferred else None,
+                    terrain_current=self._erase is None, terrain_tiles=dirty if deferred else None,
+                )
             else:
                 self._after_unit_mutation()
         if "trigger" in kinds and self.mode == "triggers":
@@ -15187,12 +15659,17 @@ class ViewerWindow(QMainWindow):
 
     def _texture_prefetch_ids(self) -> list[int]:
         """The terrain ids a render of self.scenario textures: every tile's,
-        plus the farm overlay's where it draws (sprites on, not Flat)."""
+        every layered terrain's while blending draws them, plus the farm
+        overlay's where it draws (sprites on, not Flat)."""
         from descape import native_composite, render
 
         mm = self.scenario.map_manager
         tiles = np.arange(mm.map_width * mm.map_height)
         ids = np.unique(native_composite._terrain_ids(self.scenario, tiles)).tolist()
+        if render.blend_effective(self._layers):
+            # A terrain used only as a layer has no base tile to list it above.
+            layer_ids = np.unique(render.tile_field_mirror(self.scenario, "layer"))
+            ids.extend(layer_ids[layer_ids >= 0].tolist())
         if self._sprites_enabled and self._layers.farm_overlay and self._render_style != "flat":
             consts = {unit.unit_const for units in self.scenario.unit_manager.units for unit in units}
             ids.extend(tid for tid in map(render._terrain_overlay_for, consts) if tid is not None)
@@ -16062,8 +16539,10 @@ class ViewerWindow(QMainWindow):
             return
         # Flat indexing, not get_tile_safe(): that returns None for every tile of a non-square map.
         tile = mm.terrain[y * mm.map_width + x]
+        # Before elevation: the Terrain page's copy elides on the right.
+        layer_part = f"  layer={name_for_terrain_id(tile.layer)}" if tile.layer != -1 else ""
         self._set_hover_text(
-            f"({x}, {y})  {name_for_terrain_id(tile.terrain_id)}  elevation={tile.elevation}"
+            f"({x}, {y})  {name_for_terrain_id(tile.terrain_id)}{layer_part}  elevation={tile.elevation}"
         )
 
 

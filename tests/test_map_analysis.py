@@ -191,6 +191,46 @@ def test_centred_garrisoned_off_map_and_non_unit_objects_are_not_off_grid_units(
     assert map_analysis.check_off_grid_gaia_units(loaded).is_clean
 
 
+# -- GAIA-only objects owned by a player ------------------------------------------
+
+_FORAGE_BUSH, _FLARE4 = 59, 697
+
+
+def test_player_owned_forage_bush_is_one_warning() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 300, _FORAGE_BUSH, 20.5, 30.5)
+    result = map_analysis.check_gaia_only_ownership(loaded)
+    assert [(f.unit_key, f.severity, f.tile) for f in result.findings] == [((2, 300), "warning", (20, 30))]
+    assert result.findings[0].message == (
+        "Player 2 object 59 (id 300) at (20.5, 30.5) is a resource or tree; game-made files only give those to GAIA"
+    )
+
+
+def test_player_owned_tree_is_reported() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 300, _TREE, 20.5, 30.5)
+    assert _unit_keys(map_analysis.check_gaia_only_ownership, loaded) == [(2, 300)]
+
+
+def test_gaia_owned_forage_bush_is_clean() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 100, _FORAGE_BUSH, 5.5, 5.5)
+    assert map_analysis.check_gaia_only_ownership(loaded).is_clean
+
+
+def test_the_untouched_fixture_and_player_owned_eye_candy_are_clean() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_gaia_only_ownership(loaded).is_clean
+    _place(loaded, 300, _FLARE4, 20.5, 30.5)
+    assert map_analysis.check_gaia_only_ownership(loaded).is_clean
+
+
+def test_off_map_player_owned_forage_bush_is_still_reported() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 300, _FORAGE_BUSH, -3.5, 30.5)
+    assert _unit_keys(map_analysis.check_gaia_only_ownership, loaded) == [(2, 300)]
+
+
 # -- elevation ------------------------------------------------------------------
 
 
@@ -464,3 +504,9 @@ def test_shipping_scenarios_have_no_off_grid_building_warning(scenario_path: Pat
     loaded = load_map_and_units(scenario_path)
     findings = map_analysis.check_off_grid_buildings(loaded).findings
     assert [f.message for f in findings if f.severity == "warning"] == []
+
+
+@pytest.mark.corpus
+def test_shipping_scenarios_have_no_player_owned_gaia_only_object(scenario_path: Path) -> None:
+    loaded = load_map_and_units(scenario_path)
+    assert [f.message for f in map_analysis.check_gaia_only_ownership(loaded).findings] == []

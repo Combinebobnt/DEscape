@@ -207,6 +207,36 @@ def test_escape_mid_move_writes_nothing_and_restores_the_overlay() -> None:
         window.close()
 
 
+def test_a_region_move_keeps_the_blocks_layered_terrain() -> None:
+    """A move replays the paste from the same block, so it shares the layer
+    carry: the layers travel with the block and the old site gets its own back."""
+    window = _select_window()
+    try:
+        mm = window.scenario.map_manager
+        width = mm.map_width
+        _paint(window, 0, 0, 2, 2, _TERRAIN_A)
+        layers = {(0, 0): 9, (1, 0): -1, (0, 1): -1, (1, 1): 11}
+        for (x, y), layer in layers.items():
+            mm.terrain[y * width + x].layer = layer
+        mm.terrain[20 * width + 21].layer = 3  # the paste site's own layer
+        window.on_region_selected((0, 0, 2, 2))
+        window.copy_region()
+        window.on_hover((20, 20))
+        window.paste_region()
+
+        def layers_at(x0, y0):
+            return {(dx, dy): mm.terrain[(y0 + dy) * width + x0 + dx].layer for dy in range(2) for dx in range(2)}
+
+        assert layers_at(20, 20) == layers
+        _drag_region(window, (20, 20), (24, 23))
+        assert layers_at(24, 23) == layers
+        assert all(_terrain_at(window, 24 + dx, 23 + dy) == _TERRAIN_A for dx in range(2) for dy in range(2))
+        assert layers_at(20, 20) == {(0, 0): -1, (1, 0): 3, (0, 1): -1, (1, 1): -1}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_block_dragged_off_the_map_and_back_lands_whole() -> None:
     """The property that says the snapshot-plus-unclipped-anchor model is
     right: it fails on any design that re-reads the map between steps."""

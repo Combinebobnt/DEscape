@@ -8,6 +8,10 @@ tables (_blend_tables()). The numpy path in render.py stays the
 byte-identity oracle (tests/test_native_composite.py; blended rects in
 tests/test_terrain_blend_render.py).
 
+Paint order lives in three places that must change together, with a
+KERNEL_ABI bump: render._paint_candidates_iso/_sloped (the reference), the
+kernel's composite_iso/composite_sloped loops, and UnitPack's row order.
+
 What is read live on every call, never cached here, so nothing can go stale
 under an edit: elevations and corner_rise, the textures and blend masks
 (from asset_source's own lru, held only for the call), and every factor,
@@ -21,6 +25,12 @@ Terrain ids are read live too, unless the caller passes `terrain_ids`: a flat
 per-tile mirror its owning chunk cache keeps and refreshes in patch() and
 invalidate_region(). Scattered live reads cost ~1 ms a heavy chunk in cache
 misses; a gather from the mirror costs microseconds.
+
+Blend keys are the one input that IS memoized across calls, though not here:
+they arrive as a terrain_blend.RectKeys whose KeyMap the owning chunk cache
+keeps beside that mirror and invalidates in the mirror's only writer
+(render_cache._refresh_terrain_ids). The op and mask tables built from them
+are still per call.
 """
 
 from __future__ import annotations
@@ -39,7 +49,10 @@ N_FIXED = 8
 PER_RISE = 5
 MAX_RISE = iso_geometry.MAX_ELEVATION - iso_geometry.MIN_ELEVATION
 
+# Unit-pack rows are (kind, y, x, slot or rgb, base rise), mirrored by DEF
+# constants in _composite_native.pyx.
 ROW_MARK, ROW_CONFORM, ROW_SPRITE = 0, 1, 2
+ROW_W = 5
 
 # What a with_units=False cache passes as composite_rect_*'s unit_pack: take
 # the whole-rect path, with nothing to draw after the terrain.
@@ -228,10 +241,11 @@ def sloped_shapes(tile_px: int) -> SlopedShapes:
 
 class UnitPack:
     """One level's marks, sprite draws and farm tiles as flat arrays the
-    kernel walks per candidate, in _paint_tile_and_units_*'s own order: a
+    kernel walks per candidate, in render._paint_objects_*'s own order: a
     tile's marks (units_by_tile order, minus sprites.skip_ids), then its
-    sprites (by_anchor order). Farm override ids feed the texture choice in
-    Python; the outline mask and colour go to the kernel.
+    sprites (by_anchor order). Each row ends in its unit's base rise, the
+    value the Python path records in its ink plane. Farm override ids feed
+    the texture choice in Python; the outline mask and colour go to the kernel.
 
     Rows live in an append-only arena: index[t] = (start, count). A tile is
     derived lazily, the first time a composite's candidates include it
@@ -254,7 +268,7 @@ class UnitPack:
         self.w, self.h = w, h
         self.proj = proj
         self.index = np.zeros(h * w * 2, dtype=np.int32)
-        self.rows = np.zeros((1024, 4), dtype=np.int32)
+        self.rows = np.zeros((1024, ROW_W), dtype=np.int32)
         self.n = 0
         self.garbage = 0
         self.farm_tid = np.full(h * w, -1, dtype=np.int32)
@@ -347,20 +361,21 @@ class UnitPack:
                 continue
             packed = (int(color[0]) << 16) | (int(color[1]) << 8) | int(color[2])
             if self.sloped:
-                base = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights)
+                base, rise = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights)
             else:
                 base = render._unit_mark_base_iso(unit, key[0], key[1], self.proj, self._heights)
+                rise = render._unit_mark_rise_iso(unit, self.proj, self._heights)
             if base is None:
-                rows.append((ROW_CONFORM, 0, 0, packed))
+                rows.append((ROW_CONFORM, 0, 0, packed, rise))
             else:
-                rows.append((ROW_MARK, base[0], base[1], packed))
+                rows.append((ROW_MARK, base[0], base[1], packed, rise))
         slot_of = self._slots.get
-        for draw, ax, ay in anchor_get(key, ()):
+        for draw, ax, ay, rise in anchor_get(key, ()):
             rgba = draw.rgba
             slot = slot_of(id(rgba))
             if slot is None:
                 slot = self._slot(rgba)
-            rows.append((ROW_SPRITE, ay - draw.hotspot_y, ax - draw.hotspot_x, slot))
+            rows.append((ROW_SPRITE, ay - draw.hotspot_y, ax - draw.hotspot_x, slot, rise))
 
     def _write_tiles(self, tiles) -> None:
         sprites = self._sprites
@@ -373,7 +388,7 @@ class UnitPack:
         # not repeat a tile.
         ts: list[int] = []
         counts: list[int] = []
-        rows: list[tuple[int, int, int, int]] = []
+        rows: list[tuple[int, int, int, int, int]] = []
         farm_ts: list[int] = []
         farm_vals: list[tuple] = []
         ubt_get, anchor_get, farm_get, tile_rows = self._ubt.get, by_anchor.get, farms.get, self._tile_rows
@@ -400,7 +415,7 @@ class UnitPack:
         np.cumsum(c_arr[:-1], out=starts[1:])
         need = self.n + len(rows)
         if need > self.rows.shape[0]:
-            grown = np.zeros((max(need, 2 * self.rows.shape[0]), 4), dtype=np.int32)
+            grown = np.zeros((max(need, 2 * self.rows.shape[0]), ROW_W), dtype=np.int32)
             grown[: self.n] = self.rows[: self.n]
             self.rows = grown
         if rows:
@@ -427,10 +442,16 @@ class UnitPack:
         new_starts = np.zeros(live.size, dtype=np.int64)
         np.cumsum(counts[live][:-1], out=new_starts[1:])
         src = np.repeat(starts[live] - new_starts, counts[live]) + np.arange(total)
-        self.rows = np.ascontiguousarray(self.rows[src]) if total else np.zeros((1024, 4), dtype=np.int32)
+        self.rows = np.ascontiguousarray(self.rows[src]) if total else np.zeros((1024, ROW_W), dtype=np.int32)
         self.index[2 * live] = new_starts
         self.n = total
         self.garbage = 0
+
+    @property
+    def two_pass(self) -> bool:
+        """Whether a composite over this pack runs terrain then objects (sprites
+        on), as render._paint_candidates_* decides it: from the sprite layer."""
+        return self._sprites is not None
 
     def _unshare(self) -> None:
         """Copy-on-write for the arrays rewritten in place. rows needs none:
@@ -517,21 +538,32 @@ BLEND_LAYER, BLEND_NEIGHBOUR = 0, 1
 UNCOMPOSABLE = object()
 
 
-def _blend_tables(keys, base_tids: np.ndarray, overridden: np.ndarray | None, tile_px: int,
-                  tex_tables: tuple, uniq: np.ndarray):
+def _blend_tables(blend: terrain_blend.RectKeys, base_tids: np.ndarray, overridden: np.ndarray | None,
+                  tile_px: int, tex_tables: tuple, uniq: np.ndarray):
     """The kernel's blend input for render's per-candidate blend keys: (per
     candidate spec id or -1, spec start offsets, (kind, texture slot, mask
     id) op triples, masks). A candidate composes only where render._top_block
     would: a key, no farm override, and the key's own tid equal to the tid
-    its plain crop reads. The kernel skips an op whose texture slot is a
+    its plain crop reads. The ops are built once per distinct key among
+    those candidates, and the spec ids here number that subset (not the
+    KeyMap's own). The kernel skips an op whose texture slot is a
     flat colour or whose mask id is -1, as terrain_blend._compose skips a
     missing texture or mask. None when no candidate blends; UNCOMPOSABLE
     (take the numpy path) when a texture or mask is not the one size every
     crop needs."""
     sizes = tex_tables[2]
     size = {int(s) for s in sizes if s}
+    ids, table = blend
+    valid = ids >= 0
+    # Never own[-1]: a keyless candidate reads spec 0's tid and stays invalid.
+    valid &= table.own[np.where(valid, ids, 0)] == base_tids
+    if overridden is not None:
+        valid &= ~overridden
+    specs, inverse = np.unique(ids[valid], return_inverse=True)
+    if not specs.size:
+        return None
     cand = np.full(base_tids.size, -1, dtype=np.int32)
-    spec_of: dict = {}
+    cand[valid] = inverse.reshape(-1)
     ops: list[tuple[int, int, int]] = []
     starts = [0]
     masks: list[np.ndarray] = []
@@ -547,24 +579,15 @@ def _blend_tables(keys, base_tids: np.ndarray, overridden: np.ndarray | None, ti
             masks.append(np.ascontiguousarray(arr, dtype=np.uint8))
         return mid
 
-    base = base_tids.tolist()
-    farm = overridden.tolist() if overridden is not None else None
-    for i, key in enumerate(keys):
-        if key is None or key[0] != base[i] or (farm is not None and farm[i]):
-            continue
-        sid = spec_of.get(key)
-        if sid is None:
-            _own, layer_tid, entries = key
-            if layer_tid >= 0:
-                name = terrain_blend.layer_mask_name(layer_tid)
-                ops.append((BLEND_LAYER, slot_of[layer_tid], mask_id(("layer", name), asset_source.get_terrain_mask_array(name))))
-            for n_tid, mode, tile in entries:
-                ops.append((BLEND_NEIGHBOUR, slot_of[n_tid], mask_id((mode, tile), asset_source.get_blend_mask(mode, tile, tile_px))))
-            sid = spec_of[key] = len(starts) - 1
-            starts.append(len(ops))
-        cand[i] = sid
-    if not spec_of:
-        return None
+    keys = table.keys
+    for sid in specs.tolist():
+        _own, layer_tid, entries = keys[sid]
+        if layer_tid >= 0:
+            name = terrain_blend.layer_mask_name(layer_tid)
+            ops.append((BLEND_LAYER, slot_of[layer_tid], mask_id(("layer", name), asset_source.get_terrain_mask_array(name))))
+        for n_tid, mode, tile in entries:
+            ops.append((BLEND_NEIGHBOUR, slot_of[n_tid], mask_id((mode, tile), asset_source.get_blend_mask(mode, tile, tile_px))))
+        starts.append(len(ops))
     if len(size) > 1:
         return UNCOMPOSABLE
     if size:
@@ -579,14 +602,15 @@ def _blend_tables(keys, base_tids: np.ndarray, overridden: np.ndarray | None, ti
     )
 
 
-def _blend_extra_tids(keys) -> list[int]:
-    """Every layer and neighbour terrain id the keys name, for _textures()."""
+def _blend_extra_tids(blend: terrain_blend.RectKeys | None) -> list[int]:
+    """Every layer and neighbour terrain id the candidates' keys name
+    (farm-overridden candidates included), for _textures()."""
+    if blend is None:
+        return []
+    ids, table = blend
     extra: set[int] = set()
-    for key in keys or ():
-        if key is not None:
-            if key[1] >= 0:
-                extra.add(key[1])
-            extra.update(e[0] for e in key[2])
+    for sid in np.unique(ids[ids >= 0]).tolist():
+        extra.update(table.extra[sid])
     return sorted(extra)
 
 
@@ -672,52 +696,55 @@ def _tex_ids(scenario, idx, pack: UnitPack | None, terrain_ids: np.ndarray | Non
     return base, base, None
 
 
-def _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px: int, textures: bool, blend_keys):
+def _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px: int, textures: bool,
+                    blend: terrain_blend.RectKeys | None):
     """(slots, texture tables, blend tables or None), or None for a texture
     the kernel can't crop or a blend it can't compose (the caller's numpy
     path)."""
     tids, base, overridden = _tex_ids(scenario, idx, pack, terrain_ids)
-    tex = _textures(tids, tile_px, textures, _blend_extra_tids(blend_keys))
+    tex = _textures(tids, tile_px, textures, _blend_extra_tids(blend))
     if tex is None:
         return None
     slots, tex_tables, uniq = tex
-    blend = None
-    if blend_keys is not None and textures:
-        blend = _blend_tables(blend_keys, base, overridden, tile_px, tex_tables, uniq)
-        if blend is UNCOMPOSABLE:
+    tables = None
+    if blend is not None and textures:
+        tables = _blend_tables(blend, base, overridden, tile_px, tex_tables, uniq)
+        if tables is UNCOMPOSABLE:
             return None
-    return slots, tex_tables, blend
+    return slots, tex_tables, tables
 
 
 def composite_iso(native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
                   pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None,
-                  blend_keys: list | None = None) -> bool:
+                  blend: terrain_blend.RectKeys | None = None) -> bool:
     """render.composite_rect_iso's loop, natively. False (nothing painted)
     means the caller must take the per-tile path."""
     args = prepare_iso(
         scenario, x0, y0, candidates, elevations, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
-        blend_keys=blend_keys,
+        blend=blend,
     )
     return args is not None and native.composite_iso(scratch, *args)
 
 
 def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: UnitPack | None,
                 textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None,
-                blend_keys: list | None = None) -> tuple | None:
+                blend: terrain_blend.RectKeys | None = None) -> tuple | None:
     """native.composite_iso's arguments after the scratch, or None for the
     per-tile path. share=True is for a call on another thread: elevations is
     copied and the pack is marked shared (UnitPack.kernel_units). terrain_ids
     is the owning cache's per-tile mirror, None to read the tiles live.
-    blend_keys: render's terrain_blend key per candidate, or None; the kernel
-    composes each blended top block itself (_blend_tables())."""
+    blend: render's terrain_blend.RectKeys for the candidates (spec ids into
+    the caller's KeyMap, read on this thread before any worker runs), or None;
+    the kernel composes each blended top block itself (_blend_tables()). The last
+    argument is the pack's two_pass: terrain then objects, when sprites are on."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     pack = _units_of(pack)
     cx, cy, idx = _candidate_arrays(candidates, w)
-    terrain = _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px, textures, blend_keys)
+    terrain = _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px, textures, blend)
     if terrain is None:
         return None
-    slots, tex_tables, blend = terrain
+    slots, tex_tables, blend_tables = terrain
     stamps = None
     cand_grid = np.full(cx.size, -1, dtype=np.int32)
     if grid.paints:
@@ -731,17 +758,18 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
     elev = elevations.copy() if share else elevations
     return (
         x0, y0, cx, cy, slots, cand_grid, elev, geom, tables.kernel_tables(), tex_tables,
-        stamps, pack.kernel_units(share) if pack is not None else None, blend,
+        stamps, pack.kernel_units(share) if pack is not None else None, blend_tables,
+        pack is not None and pack.two_pass,
     )
 
 
 def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
                      pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None,
-                     blend_keys: list | None = None) -> bool:
+                     blend: terrain_blend.RectKeys | None = None) -> bool:
     """render.composite_rect_sloped's loop, natively; same False contract."""
     args = prepare_sloped(
         scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
-        blend_keys=blend_keys,
+        blend=blend,
     )
     if args is None:
         return False
@@ -751,17 +779,17 @@ def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise,
 
 def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack: UnitPack | None,
                    textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None,
-                   blend_keys: list | None = None) -> tuple | None:
+                   blend: terrain_blend.RectKeys | None = None) -> tuple | None:
     """prepare_iso() for native.composite_sloped. corner_rise needs no copy:
     SlopedChunkCache replaces it on every refresh, never writes it in place."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     pack = _units_of(pack)
     cx, cy, idx = _candidate_arrays(candidates, w)
-    terrain = _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px, textures, blend_keys)
+    terrain = _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px, textures, blend)
     if terrain is None:
         return None
-    slots, tex_tables, blend = terrain
+    slots, tex_tables, blend_tables = terrain
 
     nw, ne = corner_rise[cy, cx], corner_rise[cy, cx + 1]
     sw, se = corner_rise[cy + 1, cx], corner_rise[cy + 1, cx + 1]
@@ -799,5 +827,6 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
     return (
         x0, y0, cx, cy, slots, cand_grid, cand_shape, cand_shade, corner_rise, geom,
         quads, edges, registry.diamond, shade, tex_tables, stamps,
-        pack.kernel_units(share) if pack is not None else None, blend,
+        pack.kernel_units(share) if pack is not None else None, blend_tables,
+        pack is not None and pack.two_pass,
     )

@@ -77,7 +77,7 @@ def _level_state(cache, mip: int, spliced: bool, keys: dict):
     assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale"
     building_bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
     by_anchor = {
-        k: [(_draw_key(keys, d.rgba, d.hotspot_x, d.hotspot_y), px, py) for d, px, py in v]
+        k: [(_draw_key(keys, d.rgba, d.hotspot_x, d.hotspot_y), px, py, rise) for d, px, py, rise in v]
         for k, v in sprites.by_anchor.items()
     }
     return (
@@ -94,8 +94,8 @@ def _pack_state(pack, keys: dict):
         if not n:
             continue
         out[t] = [
-            (kind, a, b, _draw_key(keys, pack._rgbas[c][0], 0, 0) if kind == ROW_SPRITE else c)
-            for kind, a, b, c in pack.rows[start : start + n].tolist()
+            (kind, a, b, _draw_key(keys, pack._rgbas[c][0], 0, 0) if kind == ROW_SPRITE else c, rise)
+            for kind, a, b, c, rise in pack.rows[start : start + n].tolist()
         ]
     return out, pack.farm_tid.tobytes(), pack.farm_mask.tobytes(), pack.farm_rgb.tobytes()
 

@@ -236,6 +236,117 @@ def test_repeat_fill_at_same_tile_is_a_logged_no_op() -> None:
         window.close()
 
 
+def _layer_tiles(window, layers: dict[tuple[int, int], int]) -> None:
+    """Gives the named tiles a layered terrain directly, as a loaded file would."""
+    mm = window.scenario.map_manager
+    for (x, y), layer_id in layers.items():
+        mm.terrain[y * mm.map_width + x].layer = layer_id
+
+
+def _layers(window) -> dict[tuple[int, int], int]:
+    mm = window.scenario.map_manager
+    width = mm.map_width
+    return {(i % width, i // width): t.layer for i, t in enumerate(mm.terrain) if t.layer != -1}
+
+
+def test_same_terrain_fill_clears_the_regions_layers_in_one_undo_step(monkeypatch) -> None:
+    import descape.viewer as viewer_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("a small layer clear must not ask")
+
+    window = _edit_window("fill")
+    try:
+        mm = window.scenario.map_manager
+        window.on_fill(0, 0, 0)  # the whole map is _FILL_TERRAIN now
+        layered = {(3, 5): 9, (4, 5): 9, (40, 41): 11}
+        _layer_tiles(window, layered)
+        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+        # Trees on: a layer clear changes no terrain_id, so the unit plan must not even run.
+        window.paint_trees_check.setChecked(True)
+        monkeypatch.setattr(window, "_apply_terrain_unit_plan", fail_if_called)
+
+        window.on_fill(60, 60, 0)
+
+        assert _layers(window) == {}
+        assert all(t.terrain_id == _FILL_TERRAIN for t in mm.terrain)
+        assert len(window.edit_history.records) == 2
+        record = window.edit_history.records[-1]
+        assert record.label == "Fill terrain"
+        assert len(record.changes) == 3
+        assert "Cleared layered terrain on 3 tiles from (60, 60)" in window.status_log.toPlainText()
+
+        window.undo()
+        assert _layers(window) == layered
+        assert all(t.terrain_id == _FILL_TERRAIN for t in mm.terrain)
+        window.redo()
+        assert _layers(window) == {}
+
+        window.on_fill(60, 60, 0)  # nothing left to clear
+        assert len(window.edit_history.records) == 2
+        assert "no change" in window.status_log.toPlainText().splitlines()[-1]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_large_same_terrain_fill_asks_and_cancel_leaves_everything(monkeypatch) -> None:
+    from PyQt5.QtWidgets import QMessageBox
+
+    import descape.viewer as viewer_module
+
+    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    window = _edit_window("fill")
+    try:
+        mm = window.scenario.map_manager
+        window.on_fill(0, 0, 0)  # trees and eye candy are off, so this one does not ask
+        layered = {(x, 7): 9 for x in range(20, 31)}  # 11 tiles, one past the threshold
+        _layer_tiles(window, layered)
+        calls = []
+
+        def cancel(*args, **kwargs):
+            calls.append(args)
+            return QMessageBox.Cancel
+
+        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(cancel))
+        window.on_fill(60, 60, 0)
+
+        assert len(calls) == 1
+        assert "layered terrain on 11 tiles" in calls[0][2]
+        assert _layers(window) == layered
+        assert len(window.edit_history.records) == 1
+        assert not window._busy
+
+        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+        window.on_fill(60, 60, 0)
+        assert _layers(window) == {}
+        assert len(window.edit_history.records) == 2
+        assert all(t.terrain_id == _FILL_TERRAIN for t in mm.terrain)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_same_terrain_fill_at_the_threshold_does_not_ask(monkeypatch) -> None:
+    import descape.viewer as viewer_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("a clear of exactly the threshold must not ask")
+
+    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    window = _edit_window("fill")
+    try:
+        window.on_fill(0, 0, 0)
+        _layer_tiles(window, {(x, 7): 9 for x in range(20, 30)})  # exactly 10
+        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+        window.on_fill(60, 60, 0)
+        assert _layers(window) == {}
+        assert len(window.edit_history.records) == 2
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_mid_drag_tool_switch_to_fill_does_not_wedge_history() -> None:
     """Regression guard for the stroke-chain shape this feature deliberately
     avoided (see MapView.mousePressEvent's own comment): if Paint Can were

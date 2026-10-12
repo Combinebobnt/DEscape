@@ -996,7 +996,7 @@ def _layer_state(sprites):
     compare by identity: both caches get them from unit_sprites' own memo."""
     if sprites is None:
         return None
-    by_anchor = {k: [(id(d), px, py) for d, px, py in v] for k, v in sprites.by_anchor.items()}
+    by_anchor = {k: [(id(d), px, py, rise) for d, px, py, rise in v] for k, v in sprites.by_anchor.items()}
     return by_anchor, dict(sprites.bboxes), sprites.skip_ids, dict(sprites.farm_by_tile)
 
 

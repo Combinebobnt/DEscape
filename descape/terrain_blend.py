@@ -1,6 +1,8 @@
 """Terrain blending (TASK-143, GH #13): which neighbours bleed into a tile,
-and the blended square block that results. Pure, no Qt; render.py's
-_top_block() is the only intended consumer.
+and the blended square block that results. Pure, no Qt. Consumers:
+render.py's _top_block() for the blocks, and for the keys the full-map
+renderers (influences() directly, the byte-identity oracle) and the chunk
+composites (through a KeyMap, which render_cache owns and invalidates).
 
 Two mechanisms, both applied to the square tile_px x tile_px top block every
 terrain style builds first:
@@ -231,6 +233,108 @@ def influences(tid_mirror: np.ndarray, layer_mirror: np.ndarray, xs, ys) -> list
             entries.extend((n_tid, mode, tile) for tile in tile_indices(by_terrain[n_tid], int(xs[i]), int(ys[i])))
         keys[i] = (own_tid, int(layer[i]), tuple(entries))
     return keys
+
+
+# KeyMap.ids values that are not a spec id: no key, and not derived yet.
+NO_KEY = -1
+UNKNOWN = -2
+# Past this many interned keys a KeyMap starts over (lookup()).
+KEY_MAP_MAX_SPECS = 1 << 16
+# A tile and its 8 neighbours, as (dy, dx) offsets.
+_RING_DY, _RING_DX = (a.ravel() for a in np.mgrid[-1:2, -1:2])
+
+
+class KeyMap:
+    """influences() per tile of one map, memoized: `ids` holds a spec id per
+    tile index (y * map_w + x), NO_KEY, or UNKNOWN until a lookup() derives
+    it. A spec id indexes `keys` (the influences() key), `own` (its own tid)
+    and `extra` (the sorted layer and neighbour tids it names).
+
+    The map equals influences() over its sources only while every write to
+    them is followed by invalidate() of the tiles whose terrain id or layer
+    changed, and every replaced source by bind(). Not thread-safe: one
+    thread reads and writes it (the GUI thread, for a chunk cache's)."""
+
+    def __init__(self, map_w: int, map_h: int):
+        self.w, self.h = map_w, map_h
+        self._sources: tuple = ()
+        self.reset()
+
+    def reset(self) -> None:
+        """Forgets every key. Spec ids handed out before this are void."""
+        self.ids = np.full(self.w * self.h, UNKNOWN, dtype=np.int32)
+        self.keys: list = []
+        self.own = np.zeros(64, dtype=np.int64)
+        self.extra: list[tuple[int, ...]] = []
+        self._id_of: dict = {}
+
+    def bind(self, sources: tuple) -> None:
+        """Names what the keys were derived from. The objects are held and
+        compared by identity (never id(), which a freed object's can reuse);
+        any element replaced resets the map. An in-place change to one is the
+        caller's to invalidate()."""
+        if len(sources) != len(self._sources) or any(a is not b for a, b in zip(sources, self._sources, strict=True)):
+            self.reset()
+            self._sources = sources
+
+    def _intern(self, key) -> int:
+        sid = self._id_of.get(key)
+        if sid is None:
+            sid = self._id_of[key] = len(self.keys)
+            self.keys.append(key)
+            if sid >= self.own.size:
+                self.own = np.concatenate([self.own, np.zeros_like(self.own)])
+            self.own[sid] = key[0]
+            named = {entry[0] for entry in key[2]}
+            if key[1] >= 0:
+                named.add(key[1])
+            self.extra.append(tuple(sorted(named)))
+        return sid
+
+    def lookup(self, idx: np.ndarray, derive) -> np.ndarray:
+        """The spec id (or NO_KEY) of each tile index in idx, int32.
+        derive(xs, ys) returns the influences() keys of the tiles this map
+        has not derived yet. Resets first once past KEY_MAP_MAX_SPECS, so no
+        id read in this call outlives its table."""
+        if len(self.keys) > KEY_MAP_MAX_SPECS:
+            self.reset()
+        ids = self.ids[idx]
+        missing = ids == UNKNOWN
+        if missing.any():
+            miss = np.unique(idx[missing])
+            ys, xs = np.divmod(miss, self.w)
+            intern = self._intern
+            self.ids[miss] = [NO_KEY if key is None else intern(key) for key in derive(xs, ys)]
+            ids = self.ids[idx]
+        return ids
+
+    def invalidate(self, idx) -> None:
+        """Marks each tile index in idx and its 8 neighbours UNKNOWN, clipped
+        to the map. A key reads its own tid and layer and the 8 neighbours'
+        tids, so the ring is exact for a tid change and conservative for a
+        layer-only one."""
+        idx = np.asarray(idx, dtype=np.int64)
+        if idx.size == 0:
+            return
+        ys, xs = np.divmod(idx, self.w)
+        ny = ys[:, None] + _RING_DY
+        nx = xs[:, None] + _RING_DX
+        inside = (nx >= 0) & (nx < self.w) & (ny >= 0) & (ny < self.h)
+        self.ids[(ny * self.w + nx)[inside]] = UNKNOWN
+
+
+class RectKeys(NamedTuple):
+    """One composite's blend keys: a KeyMap spec id (or NO_KEY) per
+    candidate, and the KeyMap they index. Valid until that map's next
+    lookup(), which may reset it."""
+
+    ids: np.ndarray
+    table: KeyMap
+
+    def as_list(self) -> list:
+        """The influences() key or None per candidate, for the per-tile paths."""
+        keys = self.table.keys
+        return [keys[i] if i >= 0 else None for i in self.ids.tolist()]
 
 
 def layer_mask_name(layer_tid: int) -> str:

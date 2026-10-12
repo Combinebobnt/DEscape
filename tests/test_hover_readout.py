@@ -31,7 +31,8 @@ class _NonSquareMapManager:
         self.map_width = width
         self.map_height = height
         self.terrain = [
-            SimpleNamespace(x=i % width, y=i // width, terrain_id=0, elevation=0) for i in range(width * height)
+            SimpleNamespace(x=i % width, y=i // width, terrain_id=0, elevation=0, layer=-1)
+            for i in range(width * height)
         ]
 
     def get_tile_safe(self, x: int, y: int):
@@ -65,6 +66,36 @@ def test_hover_readout_updates_on_non_square_map() -> None:
 
     assert window.hover_label.text.startswith("(5, 2)  ")
     assert window.hover_label.text.endswith("elevation=4")
+
+
+def test_hover_readout_names_a_layered_terrain_before_the_elevation() -> None:
+    from descape.terrain_palette import name_for_terrain_id
+    from descape.viewer import ViewerWindow
+
+    mm = _NonSquareMapManager(width=6, height=3)
+    target = mm.terrain[2 * 6 + 5]
+    target.terrain_id, target.layer, target.elevation = 15, 2, 4
+    window = _stub_window(mm)
+
+    ViewerWindow.on_hover(window, (5, 2))
+    # The Terrain page elides this line on the right, so the layer sits before the elevation.
+    assert window.hover_label.text == (
+        f"(5, 2)  {name_for_terrain_id(15)}  layer={name_for_terrain_id(2)}  elevation=4"
+    )
+    assert name_for_terrain_id(2) != name_for_terrain_id(15)
+
+
+def test_hover_readout_omits_the_layer_on_an_unlayered_tile() -> None:
+    from descape.terrain_palette import name_for_terrain_id
+    from descape.viewer import ViewerWindow
+
+    mm = _NonSquareMapManager(width=6, height=3)
+    mm.terrain[1].terrain_id = 15
+    window = _stub_window(mm)
+
+    ViewerWindow.on_hover(window, (1, 0))
+    assert window.hover_label.text == f"(1, 0)  {name_for_terrain_id(15)}  elevation=0"
+    assert "layer" not in window.hover_label.text
 
 
 def test_hover_readout_off_map_on_non_square_map_shows_idle_text() -> None:

@@ -14,7 +14,10 @@ a cause instead of guessed at:
                     wrote (the viewer's own call, O(touched))
   bbox             dirty_screen_bbox_iso/_sloped (Flat: a bare tile-rect
                     union, no elevation term, so this phase is ~0 there)
-  refresh_sources  cache._refresh_source_caches(), fed the elevation-changed
+  refresh_sources  patch_sources()'s two steps: the terrain mirror re-read
+                    over the bbox (cache._refresh_terrain_ids(), which the
+                    native composite and the blend keys read), then
+                    cache._refresh_source_caches(), fed the elevation-changed
                     subset of this step's own edit (empty for a pure
                     terrain-paint step, which is what this bench's own
                     strokes are) -- so this reflects whatever that method
@@ -35,7 +38,16 @@ a cause instead of guessed at:
 --styles takes stepped, sloped, flat (top-down, FlatChunkCache) and flat-iso
 (Flat with Isometric View on: an IsoChunkCache on an all-zero elevation
 array, bbox'd with flatten_elevations=True, built the way the viewer's
-_render_current() builds it).
+_render_current() builds it). Flat patches render.flat_dirty_rects()' rects
+in patch_rects()' two passes, as the viewer does: with blending on that is
+each dirty tile and its 8 neighbours.
+
+--blend on|off sets View > Layers > Terrain Blending on every cache (TASK-143's
+perf gate compares the two, interleaved). `on` needs the game install's
+blendomatic and fails without it. blend-keyed is the mean per step of tiles
+carrying a blend key among the step's dirty tiles and their 8 neighbours,
+counted outside every timer; an `on` row that never saw one measured no
+blending, and the run exits non-zero naming it.
 
 --edit elevation swaps the terrain-paint stroke for Elevate's +1 raise
 (elevation_tools.set_tiles_elevation, propagation included), square maps
@@ -63,6 +75,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -84,6 +97,7 @@ from descape.render import (
 )
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
+from descape.view_layers import DEFAULT_LAYERS
 
 FILES = [
     "0_June_Event_Scenario.aoe2scenario",
@@ -117,35 +131,37 @@ def _bystander_scan_ms(candidates, building_bboxes, grid, x0, y0, x1, y1, w) -> 
     return _ms(time.perf_counter() - t0)
 
 
-def _make_cache(style: str, scenario, sprites: bool):
+def _make_cache(style: str, scenario, sprites: bool, blend: bool = True):
     mm = scenario.map_manager
     tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+    layers = replace(DEFAULT_LAYERS, terrain_blend=blend)
     if style == "stepped":
         elevations, proj = elevations_and_proj(scenario)
-        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites, layers=layers)
         cache.set_sprites_enabled(sprites)
         return cache, elevations, proj, tile_px
     if style == "sloped":
         elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
-        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites)
+        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites, layers=layers)
         cache.set_sprites_enabled(sprites)
         return cache, elevations, proj, tile_px
     if style == "flat-iso":
         elevations, proj = elevations_and_proj(scenario)
         elevations = np.zeros_like(elevations)
-        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites, layers=layers)
         return cache, elevations, proj, tile_px
     if style == "flat":
-        cache = FlatChunkCache(scenario, tile_px, sprites=sprites)
+        cache = FlatChunkCache(scenario, tile_px, sprites=sprites, layers=layers)
         return cache, None, None, tile_px
     raise ValueError(style)
 
 
 def _patch_phased(cache, style: str, bbox, elevation_changed: set | None = None) -> dict[str, float]:
-    """Reimplements _ChunkCacheBase.patch()'s own loop, timed phase by
-    phase -- see this module's docstring for what each phase means. Never
-    changes what gets drawn: same chunk lookup, same _composite_rect() call,
-    same in-place chunk write patch() itself does.
+    """Reimplements _ChunkCacheBase.patch() (patch_sources(), then
+    patch_composite()'s own loop), timed phase by phase -- see this module's
+    docstring for what each phase means. Never changes what gets drawn: same
+    mirror re-read, same chunk lookup, same _composite_rect() call, same
+    in-place chunk write patch() itself does.
 
     elevation_changed is threaded straight into _refresh_source_caches(),
     same as the real patch() does -- omitting this would always measure the
@@ -154,16 +170,31 @@ def _patch_phased(cache, style: str, bbox, elevation_changed: set | None = None)
     passes an EMPTY set, not None -- None means "unknown, assume the
     worst", which a real caller that already knows nothing elevation-related
     changed should never pass."""
-    phases = {"refresh_sources": 0.0, "level_rebuild": 0.0, "bystander_scan": 0.0, "composite": 0.0}
+    phases = _new_phases()
+    if _sources_phased(cache, bbox, elevation_changed, phases):
+        _composite_phased(cache, style, bbox, phases)
+    return phases
 
-    t0 = time.perf_counter()
-    cache._refresh_source_caches(elevation_changed)
-    phases["refresh_sources"] = _ms(time.perf_counter() - t0)
 
+def _new_phases() -> dict[str, float]:
+    return {"refresh_sources": 0.0, "level_rebuild": 0.0, "bystander_scan": 0.0, "composite": 0.0}
+
+
+def _sources_phased(cache, bbox, elevation_changed: set | None, phases: dict[str, float]) -> bool:
+    """patch_sources(), timed into refresh_sources. False for an empty bbox."""
     px0, py0, px1, py1 = bbox
+    cache._mutation_epoch += 1
     if px1 <= px0 or py1 <= py0:
-        return phases
+        return False
+    t0 = time.perf_counter()
+    cache._refresh_terrain_ids(bbox)
+    cache._refresh_source_caches(elevation_changed)
+    phases["refresh_sources"] += _ms(time.perf_counter() - t0)
+    return True
 
+
+def _composite_phased(cache, style: str, bbox, phases: dict[str, float]) -> None:
+    """patch_composite()'s loop over the resident levels, timed per phase."""
     for mip in sorted({key[0] for key in cache._cache}):
         lx0, ly0, lx1, ly1 = cache._bbox_to_level(mip, bbox)
         if lx1 <= lx0 or ly1 <= ly0:
@@ -204,7 +235,24 @@ def _patch_phased(cache, style: str, bbox, elevation_changed: set | None = None)
                 patched = cache._composite_rect(mip, ix0, iy0, ix1, iy1)
                 phases["composite"] += _ms(time.perf_counter() - t0)
                 chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
-    return phases
+
+
+def _keyed_count(cache, coords) -> int:
+    """How many of `coords` ((x, y) tiles) and their 8 neighbours carry a blend
+    key right now, read from the cache's own mirrors."""
+    mm = cache.scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    ring = sorted({
+        (nx, ny)
+        for x, y in coords
+        for nx in range(max(x - 1, 0), min(x + 2, w))
+        for ny in range(max(y - 1, 0), min(y + 2, h))
+    })
+    if not ring:
+        return 0
+    xs, ys = np.array(ring).T
+    keys = render._blend_keys(cache.scenario, xs, ys, cache._terrain_ids, cache._layer_ids)
+    return sum(k is not None for k in keys)
 
 
 def _diff_y_extent(before, after) -> int:
@@ -219,13 +267,16 @@ def _changed_px(before, after) -> int:
 
 
 def _run_stroke(
-    path: Path, style: str, brush_size: int, sprites: bool, edit: str = "paint", beach_width: int = 0
-) -> str:
+    path: Path, style: str, brush_size: int, sprites: bool, edit: str = "paint", beach_width: int = 0,
+    blend: bool = True,
+) -> tuple[str, int]:
+    """One stroke's report line, and how many blend-keyed tiles its steps saw
+    (always 0 with blend off)."""
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
     if edit == "elevation" and mm.map_width != mm.map_height:
-        return f"  {path.name:32s} style={style:8s} skipped (elevation mode needs a square map)"
-    cache, elevations, proj, tile_px = _make_cache(style, scenario, sprites)
+        return f"  {path.name:32s} style={style:8s} skipped (elevation mode needs a square map)", -1
+    cache, elevations, proj, tile_px = _make_cache(style, scenario, sprites, blend)
     # Flat + Isometric View patches exactly like Stepped, just on a zeroed array.
     patch_style = "stepped" if style == "flat-iso" else style
     diff = edit == "elevation"
@@ -243,6 +294,7 @@ def _run_stroke(
 
     scan_ms, bbox_ms, dirty_counts, bbox_areas = [], [], [], []
     bbox_ws, bbox_hs, floor_hs = [], [], []
+    keyed: list[int] = []
     changed_px = 0
     phase_totals = {"refresh_sources": [], "level_rebuild": [], "bystander_scan": [], "composite": []}
 
@@ -285,17 +337,18 @@ def _run_stroke(
         if style == "flat":
             t0 = time.perf_counter()
             coords = [(mm.terrain[i].x, mm.terrain[i].y) for i in new_dirty]
-            rects = [(px * tile_px, py * tile_px, (px + 1) * tile_px, (py + 1) * tile_px) for px, py in coords]
+            rects = render.flat_dirty_rects(coords, mm.map_width, mm.map_height, tile_px, cache.layers)
             bbox_ms.append(_ms(time.perf_counter() - t0))
             bbox_areas.append(sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects))
-            phases = dict.fromkeys(phase_totals, 0.0)
-            for rect in rects:
-                before = cache.render_rect(*rect, mip=0).copy() if diff else None
-                step_phases = _patch_phased(cache, style, rect)
-                if before is not None:
-                    changed_px += _changed_px(before, cache.render_rect(*rect, mip=0))
-                for k in phase_totals:
-                    phases[k] += step_phases[k]
+            phases = _new_phases()
+            befores = [cache.render_rect(*rect, mip=0).copy() for rect in rects] if diff else []
+            # patch_rects()' two passes: every rect's sources before any composite.
+            live = [rect for rect in rects if _sources_phased(cache, rect, None, phases)]
+            for rect in live:
+                _composite_phased(cache, style, rect, phases)
+            # Empty unless diffing; zip stops there.
+            for rect, before in zip(rects, befores, strict=False):
+                changed_px += _changed_px(before, cache.render_rect(*rect, mip=0))
         else:
             elevation_changed: set = set()
             t0 = time.perf_counter()
@@ -327,6 +380,8 @@ def _run_stroke(
 
         for k, totals in phase_totals.items():
             totals.append(phases[k])
+        if blend:
+            keyed.append(_keyed_count(cache, [(mm.terrain[i].x, mm.terrain[i].y) for i in new_dirty]))
 
     n = len(scan_ms)
 
@@ -342,12 +397,13 @@ def _run_stroke(
     mean_step = mean(scan_ms) + mean(bbox_ms) + mean(total_patch)
     ms_per_tile = mean_step / mean_dirty if mean_dirty else 0.0
 
-    return (
+    line = (
         f"  {path.name:32s} style={style:8s} brush={brush_size} sprites={sprites!s:5s} "
         f"ms/step={mean_step:7.2f} ms/dirty-tile={ms_per_tile:6.3f} dirty-tiles={mean_dirty:5.1f} "
         f"bbox-px={mean(bbox_areas):9.0f} bbox-w={mean(bbox_ws):6.0f} bbox-h={mean(bbox_hs):6.0f} "
         + (f"diff-floor-h={mean(floor_hs):6.0f} " if diff and style != "flat" else "")
         + (f"changed-px={changed_px:8d} " if diff else "")
+        + (f"blend-keyed={mean(keyed):6.1f} " if blend else "")
         + "| "
         f"dirty={mean(scan_ms):5.2f} bbox={mean(bbox_ms):5.2f} "
         f"refresh_sources={mean(phase_totals['refresh_sources']):6.2f} "
@@ -355,6 +411,7 @@ def _run_stroke(
         f"bystander_scan={mean(phase_totals['bystander_scan']):5.2f} "
         f"composite={mean(phase_totals['composite']):6.2f}"
     )
+    return line, sum(keyed)
 
 
 def main() -> None:
@@ -375,11 +432,20 @@ def main() -> None:
         help="Auto-beach ring width (0 = plain Draw, the baseline to compare against)",
     )
     parser.add_argument("--files", help="Comma-separated file names, overriding the built-in list")
+    parser.add_argument(
+        "--blend", choices=("on", "off"), default="on",
+        help="View > Layers > Terrain Blending on every cache (on needs the game install)",
+    )
     args = parser.parse_args()
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
+    blend = args.blend == "on"
+    if blend and not render.blend_effective():
+        raise SystemExit("--blend on: no blendomatic readable (no AoE2:DE install configured). Pass --blend off.")
 
     names = [n.strip() for n in args.files.split(",")] if args.files else FILES
     print(composite_backend.describe())
+    print(f"terrain blending {args.blend}")
+    unblended: list[str] = []
     for name in names:
         path = args.scenario_dir / name
         if not path.exists():
@@ -388,10 +454,13 @@ def main() -> None:
         for brush_size in BRUSH_SIZES:
             for sprites in (False, True):
                 for style in styles:
-                    print(
-                        _run_stroke(path, style, brush_size, sprites, args.edit, args.beach_width),
-                        flush=True,
-                    )
+                    line, keyed = _run_stroke(path, style, brush_size, sprites, args.edit, args.beach_width, blend)
+                    print(line, flush=True)
+                    # An Elevate stroke changes no terrain, so a blank map has nothing to key.
+                    if blend and keyed == 0 and args.edit == "paint":
+                        unblended.append(f"{name} {style} brush={brush_size} sprites={sprites}")
+    if unblended:
+        raise SystemExit("--blend on, but no blend-keyed tile in: " + "; ".join(unblended))
 
 
 if __name__ == "__main__":

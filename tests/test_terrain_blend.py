@@ -354,3 +354,131 @@ def test_clear_install_caches_drops_the_blend_loaders(tmp_path, monkeypatch):
 def test_blocks_are_read_only(synthetic):
     block = terrain_blend.blended_block((LOW, -1, ((HIGH, 2, 0),)), 0, 0, 16)
     assert not block.flags.writeable
+
+
+# --- KeyMap ---
+
+KEY_TIDS = (LOW, HIGH, HIGHER, LAYER, 99)
+KEY_LAYERS = (-1, -1, -1, LAYER, LOW, HIGH)
+
+
+def _random_grid(rng, w: int, h: int) -> tuple[np.ndarray, np.ndarray]:
+    return rng.choice(KEY_TIDS, size=(h, w)).astype(np.int64), rng.choice(KEY_LAYERS, size=(h, w)).astype(np.int64)
+
+
+def _derive(tids, layers):
+    return lambda xs, ys: influences(tids, layers, xs, ys)
+
+
+def _decode(key_map, ids) -> list:
+    return terrain_blend.RectKeys(ids, key_map).as_list()
+
+
+def _edit_round(rng, tids, layers) -> np.ndarray:
+    """Rewrites about 1 tile in 8 of both grids in place (some writes keep the
+    old value) and returns the flat indices whose tid or layer changed."""
+    h, w = tids.shape
+    idx = rng.choice(w * h, size=max(w * h // 8, 1), replace=False)
+    ys, xs = np.divmod(idx, w)
+    old = tids[ys, xs].copy(), layers[ys, xs].copy()
+    tids[ys, xs] = rng.choice(KEY_TIDS, size=idx.size)
+    layers[ys, xs] = rng.choice(KEY_LAYERS, size=idx.size)
+    return idx[(tids[ys, xs] != old[0]) | (layers[ys, xs] != old[1])]
+
+
+def _run_rounds(key_map, invalidate: bool, rounds: int = 12, seed: int = 20261012) -> list[bool]:
+    """Per round, whether the map decoded to influences() of the live grids."""
+    rng = np.random.default_rng(seed)
+    w, h = key_map.w, key_map.h
+    tids, layers = _random_grid(rng, w, h)
+    key_map.bind((tids, layers))
+    agreed = []
+    for _ in range(rounds):
+        idx = rng.integers(0, w * h, size=3 * w * h // 2)  # duplicates, and most of the map
+        ys, xs = np.divmod(idx, w)
+        got = _decode(key_map, key_map.lookup(idx, _derive(tids, layers)))
+        agreed.append(got == influences(tids, layers, xs, ys))
+        changed = _edit_round(rng, tids, layers)
+        assert changed.size, "the round changed nothing (vacuous)"
+        if invalidate:
+            key_map.invalidate(changed)
+    return agreed
+
+
+def test_a_key_map_decodes_to_influences_across_edits(synthetic):
+    """T1: lookup() through `keys` equals influences() on random grids and
+    duplicated indices, over rounds of in-place edits each followed by
+    invalidate() of the tiles that changed."""
+    key_map = terrain_blend.KeyMap(11, 7)
+    agreed = _run_rounds(key_map, invalidate=True)
+    assert all(agreed), agreed
+    assert len(key_map.keys) > 8, "too few distinct keys to mean anything"
+    assert (key_map.ids == terrain_blend.NO_KEY).any() and (key_map.ids >= 0).any()
+    for sid, key in enumerate(key_map.keys):
+        assert key_map.own[sid] == key[0]
+        assert key_map.extra[sid] == tuple(sorted({e[0] for e in key[2]} | ({key[1]} - {-1})))
+
+
+def test_a_key_map_past_its_spec_cap_resets_and_still_decodes(synthetic, monkeypatch):
+    """T1, second leg: with the cap at 4 specs the rounds cross the reset
+    several times, and every lookup still decodes to influences()."""
+    monkeypatch.setattr(terrain_blend, "KEY_MAP_MAX_SPECS", 4)
+    key_map = terrain_blend.KeyMap(11, 7)
+    resets = []
+    real = key_map.reset
+    monkeypatch.setattr(key_map, "reset", lambda: (resets.append(1), real())[1])
+    assert all(_run_rounds(key_map, invalidate=True))
+    assert len(resets) >= 3, resets
+
+
+def test_a_key_map_without_invalidate_goes_stale(synthetic):
+    """T2, the teeth of T1: the same rounds with no invalidate() decode to
+    something influences() no longer says."""
+    agreed = _run_rounds(terrain_blend.KeyMap(11, 7), invalidate=False)
+    assert agreed[0] and not all(agreed), agreed
+
+
+def test_binding_a_replaced_source_resets_and_the_same_sources_keep_every_id(synthetic, monkeypatch):
+    """T3."""
+    rng = np.random.default_rng(3)
+    tids, layers = _random_grid(rng, 6, 5)
+    derive = _derive(tids, layers)
+    table = terrain_blend.BLEND_TABLE
+    key_map = terrain_blend.KeyMap(6, 5)
+    everything = np.arange(30)
+
+    def fill(sources) -> np.ndarray:
+        key_map.bind(sources)
+        key_map.lookup(everything, derive)
+        return key_map.ids
+
+    ids = fill((tids, layers, table, derive))
+    assert not (ids == terrain_blend.UNKNOWN).any()
+    assert fill((tids, layers, table, derive)) is ids, "rebinding the same objects reset the map"
+    swaps = (
+        (tids.copy(), layers, table, derive),
+        (tids, layers.copy(), table, derive),
+        (tids, layers, dict(table), derive),
+        (tids, layers, table, _derive(tids, layers)),
+    )
+    for i, sources in enumerate(swaps):
+        key_map.bind(sources)
+        assert (key_map.ids == terrain_blend.UNKNOWN).all() and not key_map.keys, f"source {i} replaced, map kept"
+        fill(sources)
+        assert key_map.ids is fill(sources)
+
+
+@pytest.mark.parametrize("x", [0, 3, 6])
+@pytest.mark.parametrize("y", [0, 2, 4])
+def test_invalidate_marks_exactly_the_clipped_3x3(x, y):
+    """T4: every corner, edge and the interior of a 7x5 map."""
+    w, h = 7, 5
+    key_map = terrain_blend.KeyMap(w, h)
+    key_map.ids[:] = terrain_blend.NO_KEY
+    key_map.invalidate([y * w + x])
+    unknown = (key_map.ids == terrain_blend.UNKNOWN).reshape(h, w)
+    want = np.zeros((h, w), dtype=bool)
+    want[max(y - 1, 0) : y + 2, max(x - 1, 0) : x + 2] = True
+    assert np.array_equal(unknown, want)
+    key_map.invalidate(np.zeros(0, dtype=np.int64))
+    assert np.array_equal((key_map.ids == terrain_blend.UNKNOWN).reshape(h, w), want)

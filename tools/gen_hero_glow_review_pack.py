@@ -154,7 +154,7 @@ def _inject_unoccluded():
         by_anchor = {k: list(v) for k, v in layer.by_anchor.items()}
         bboxes = dict(layer.bboxes)
         for key in order:
-            for draw, px, py in layer.by_anchor[key]:
+            for draw, px, py, rise in layer.by_anchor[key]:
                 # The opaque inner ring only: re-painting the half-alpha one would darken it everywhere.
                 gold = np.all(draw.rgba[..., :3] == unit_sprites.HERO_GLOW_GOLD, axis=2) & (draw.rgba[..., 3] == 255)
                 if not gold.any():
@@ -162,7 +162,7 @@ def _inject_unoccluded():
                 ring = draw.rgba.copy()
                 ring[~gold] = 0
                 last = order[-1]
-                by_anchor[last].append((unit_sprites.SpriteDraw(ring, draw.hotspot_x, draw.hotspot_y), px, py))
+                by_anchor[last].append((unit_sprites.SpriteDraw(ring, draw.hotspot_x, draw.hotspot_y), px, py, rise))
                 bx = bboxes[key]
                 lb = bboxes[last]
                 bboxes[last] = (min(lb[0], bx[0]), min(lb[1], bx[1]), max(lb[2], bx[2]), max(lb[3], bx[3]))

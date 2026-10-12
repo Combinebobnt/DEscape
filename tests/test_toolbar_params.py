@@ -207,6 +207,47 @@ def test_tool_params_hidden_in_view_mode() -> None:
         window.close()
 
 
+def test_the_target_combo_shows_for_the_terrain_tools_and_the_eyedropper() -> None:
+    """The Target combo rides the terrain param group: Draw, Paint Can, Draw
+    Line and Draw Rectangle, plus the Eyedropper, whose pick depends on it."""
+    window = conftest.terrain_edit_window()
+    try:
+        for tool, param in _EXPECTED_PARAM.items():
+            window._on_tool_selected(tool)
+            shows = param == "terrain"
+            assert window.terrain_target_param_action.isVisible() == shows, tool
+            assert window.terrain_target_label_action.isVisible() == shows, tool
+            assert window.terrain_target_combo.isEnabled() == shows, tool
+        assert {t for t, p in _EXPECTED_PARAM.items() if p == "terrain"} == {"draw", "fill", "draw_line", "draw_rect"}
+
+        window.eyedropper_action.setChecked(True)
+        assert window._current_tool == "eyedropper"
+        assert window.terrain_target_param_action.isVisible()
+        assert window.terrain_target_combo.isEnabled()
+
+        window.mode_combo.setCurrentText("View")
+        assert not window.terrain_target_param_action.isVisible()
+        assert not window.terrain_target_label_action.isVisible()
+        assert not window.terrain_target_combo.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_target_combo_is_hidden_before_a_map_is_loaded() -> None:
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        assert not window.terrain_target_param_action.isVisible()
+        assert not window.terrain_target_label_action.isVisible()
+        assert not window.terrain_target_combo.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_rectangle_fill_toggle_shows_only_for_draw_rectangle() -> None:
     """Not covered by the parametrization above, which asserts on the two
     single-valued params and the brush group only."""

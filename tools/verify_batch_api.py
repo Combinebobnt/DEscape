@@ -45,6 +45,10 @@ directory of .aoe2scenario files:
    `save(..., units=units)`, confirming the reloaded unit's player changed.
    The two checks together are what proves persistence is opt-in per edit,
    not per script.
+10. set_layer persists: set a layered terrain on three unlayered tiles,
+   remove one existing layer, and write one layer equal to its tile's own
+   base (which must read back as none); save, reload, and confirm every
+   tile's layer and terrain_id is exactly as expected.
 
 Checks 1-3 use a real building already in the scenario (via
 _find_probe_building), never UnitManager.add_unit()/clone_unit() -- seen
@@ -243,6 +247,55 @@ def check_recolor_dirt_near_water(path: Path, tmp_dir: Path) -> tuple[bool, str]
     return True, f"OK ({len(expected_xys)} tile(s) recolored, 0 remain after reload)"
 
 
+def check_set_layer_persists(path: Path, tmp_dir: Path) -> tuple[bool, str]:
+    """set_layer on a real file: a new layer on unlayered tiles, a removed
+    one, and a layer equal to the tile's own base (which must read back as
+    none), saved and reloaded. Every other tile's layer and every terrain_id
+    must come back unchanged."""
+    s = load_map_and_units(path)
+    if not s.terrain_has_layer:
+        return None, "this file's terrain has no layer field -- skipped"
+    if not s.terrain_write_supported:
+        return None, "terrain is not writable on this file -- skipped"
+
+    terrain = s.map_manager.terrain
+    expected_ids = [t.terrain_id for t in terrain]
+    expected_layers = [t.layer for t in terrain]
+    unlayered = [i for i, layer in enumerate(expected_layers) if layer == -1]
+    layered = [i for i, layer in enumerate(expected_layers) if layer != -1]
+    if len(unlayered) < 4:
+        return None, "fewer than 4 unlayered tiles -- skipped"
+
+    # Three new layers at uneven spacing, so a shifted or mirrored write cannot pass.
+    for i in (unlayered[0], unlayered[len(unlayered) // 3], unlayered[-1]):
+        new_layer = TerrainId.BEACH if expected_ids[i] != TerrainId.BEACH else TerrainId.DIRT_2
+        batch_api.set_layer(terrain[i], new_layer)
+        expected_layers[i] = int(new_layer)
+    same_as_base = unlayered[len(unlayered) // 2]
+    batch_api.set_layer(terrain[same_as_base], expected_ids[same_as_base])
+    cleared = 0
+    if layered:
+        batch_api.set_layer(terrain[layered[len(layered) // 2]], None)
+        expected_layers[layered[len(layered) // 2]] = -1
+        cleared = 1
+
+    out = tmp_dir / f"{path.stem}.batch_layer{path.suffix}"
+    batch_api.save(s, out)
+    reloaded = load_map_and_units(out).map_manager.terrain
+
+    got_layers = [t.layer for t in reloaded]
+    if got_layers != expected_layers:
+        wrong = [i for i, (a, b) in enumerate(zip(got_layers, expected_layers, strict=True)) if a != b]
+        i = wrong[0]
+        return False, (
+            f"{len(wrong)} tile(s) reloaded with the wrong layer, first at index {i}: "
+            f"expected {expected_layers[i]}, got {got_layers[i]}"
+        )
+    if [t.terrain_id for t in reloaded] != expected_ids:
+        return False, "set_layer changed a terrain_id"
+    return True, f"OK (3 layers set, 1 equal to its base left unlayered, {cleared} cleared)"
+
+
 def check_is_water_classification() -> tuple[bool, str]:
     # No scenario file needed -- this is a pure function of TerrainId.
     expect_water = [
@@ -393,6 +446,7 @@ def main() -> None:
         ("raise_elevation_under_buildings", check_raise_elevation_under_buildings),
         ("raise_elevation clamp", check_raise_elevation_clamp),
         ("recolor_dirt_near_water", check_recolor_dirt_near_water),
+        ("set_layer persists", check_set_layer_persists),
         ("raise_elevation_under_many", check_raise_elevation_under_many),
         ("raw unit mutation does not persist", check_raw_unit_mutation_does_not_persist),
         ("unit edit persists through the model", check_unit_edit_persists_through_the_model),

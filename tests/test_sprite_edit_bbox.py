@@ -195,7 +195,7 @@ def _sprite_rect(scenario, proj, elevation: int) -> tuple[int, int, int, int]:
     elevations = np.full((mm.map_height, mm.map_width), elevation, dtype=np.int64)
     layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
     assert len(layer.by_anchor) == 1, f"expected exactly one sprite, got {layer.by_anchor.keys()}"
-    draw, ax, ay = next(iter(layer.by_anchor.values()))[0]
+    draw, ax, ay, _rise = next(iter(layer.by_anchor.values()))[0]
     h, w = draw.rgba.shape[:2]
     x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
     return x0, y0, x0 + w, y0 + h

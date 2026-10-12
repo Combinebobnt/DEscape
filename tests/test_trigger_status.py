@@ -364,6 +364,34 @@ def test_a_child_problem_propagates_with_its_prefix() -> None:
         Status.PROBLEM, ("effect 2 (create object): missing location",))
 
 
+def test_rollup_reasons_are_numbered_and_listed_by_display_slot() -> None:
+    """GH #213: the entry tree lists conditions and effects in display order,
+    so "effect 1" is its first row, whatever list index that entry has."""
+    context = _context(_effects_table(create_object=Requirement(all=("location",))))
+    trigger = _trigger(
+        conditions=[SimpleNamespace(condition_type=0), _condition(_OWN_OBJECTS)],
+        effects=[SimpleNamespace(effect_type=0), _effect(_SEND_CHAT), _effect(_CREATE_OBJECT)],
+    )
+    trigger.condition_order = [1, 0]
+    trigger.effect_order = [2, 1, 0]
+    result = trigger_status.evaluate_trigger(trigger, context)
+    # The per-entry statuses stay keyed by list index.
+    assert [s.status for s in result.conditions] == [Status.PROBLEM, Status.OK]
+    assert [s.status for s in result.effects] == [Status.PROBLEM, Status.OK, Status.PROBLEM]
+    assert result.trigger.reasons == (
+        "condition 2 (none): no condition type chosen",
+        "effect 1 (create object): missing location",
+        "effect 3 (none): no effect type chosen",
+    )
+
+    # An array that is not a permutation of the entries reads as list order.
+    trigger.effect_order = [0, 0, 1]
+    assert trigger_status.evaluate_trigger(trigger, context).trigger.reasons[1:] == (
+        "effect 1 (none): no effect type chosen",
+        "effect 3 (create object): missing location",
+    )
+
+
 def test_a_clean_trigger_is_ok_and_enabled_is_ignored() -> None:
     trigger = _trigger(effects=[_effect(_SEND_CHAT)], enabled=False)
     assert trigger_status.evaluate_trigger(trigger, _context()).trigger.status is Status.OK

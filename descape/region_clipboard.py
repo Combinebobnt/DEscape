@@ -76,11 +76,9 @@ class RegionBlock:
     height: int
     terrain_ids: tuple[int, ...]  # row-major, len == width * height
     elevations: tuple[int, ...]  # row-major, len == width * height
-    layers: tuple[int, ...]  # row-major, len == width * height -- captured for
-    # symmetry with terrain_ids/elevations, but never written back on paste:
-    # paste_terrain() always resets layer to -1, matching every other
-    # terrain-write path in this tool (batch_api.set_terrain,
-    # on_edit_stroke_tile).
+    # Row-major, len == width * height. Each tile's layered terrain (-1 = none),
+    # which paste_terrain() writes back verbatim beside terrain_ids.
+    layers: tuple[int, ...]
     units: tuple[RegionUnit, ...]
 
 
@@ -200,17 +198,19 @@ def clipped_indices(block: RegionBlock, tx0: int, ty0: int, map_width: int, map_
     return [y * map_width + x for y in range(y0, y1) for x in range(x0, x1)]
 
 
-def paste_terrain(mm: MapManager, block: RegionBlock, tx0: int, ty0: int) -> None:
-    """Writes block's terrain_ids into the map anchored at (tx0, ty0),
-    clipped to the map's bounds. Always resets layer to -1 -- see
-    RegionBlock.layers' own comment."""
+def paste_terrain(mm: MapManager, block: RegionBlock, tx0: int, ty0: int, *, carry_layer: bool = True) -> None:
+    """Writes block's terrain_ids and layers into the map anchored at
+    (tx0, ty0), clipped to the map's bounds. Each (terrain_id, layer) pair is
+    copied verbatim, never normalised. carry_layer=False writes every layer
+    as -1 instead: for a file whose terrain has no layer field, where a
+    pasted layer would draw and never save."""
     x0, y0, x1, y1 = _clipped_bounds(block, tx0, ty0, mm.map_width, mm.map_height)
     for y in range(y0, y1):
         row = (y - ty0) * block.width
         for x in range(x0, x1):
             tile = mm.terrain[y * mm.map_width + x]
             tile.terrain_id = block.terrain_ids[row + (x - tx0)]
-            tile.layer = -1
+            tile.layer = block.layers[row + (x - tx0)] if carry_layer else -1
 
 
 def elevation_targets(

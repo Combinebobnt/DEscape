@@ -114,7 +114,8 @@ content, link the doc instead of summarizing it.
 - **Gates take a typed Rotation in the Units inspector** (GH #61): 0 to 3
   picks the orientation in the order Rotate steps (SW to NE, W to E, NW to
   SE, N to S). One undo step, and a group of gates can be set together.
-- **Triggers: Add Tag… and Remove Tag…** (GH #101) tag or untag the
+- **Triggers: Add Tag to Selection… and Remove Tag from Selection…** (GH
+  #101), in the new Tags menu beside the tag filter, tag or untag the
   selected triggers, one undo step each. Add Tag skips a trigger that
   already carries the tag anywhere in its leading tags.
 - **Triggers: selecting a Create Object effect shows a hint** naming the
@@ -173,16 +174,36 @@ content, link the doc instead of summarizing it.
 - **Map Analysis checks off-grid placement**: buildings off the half-tile
   grid (warning) or half a tile off their footprint's grid (info), and
   player and GAIA units not at their tile's centre (info, one row each).
+- **Map Analysis flags resources and trees owned by a player** (warning,
+  GH #206): game-made files only give those to GAIA.
 - **Players mode lists GAIA** (GH #187), with the settings the in-game
   editor offers for it: civilization, architecture, the two locks, starting
   age, resources, colour and pop limit.
+- **Terrain Target option**: in Terrain mode, a Target choice on the Tool
+  Options row sets which terrain Draw, Draw Line, Draw Rectangle and Paint
+  Can edit. Terrain paints the base terrain, Layer paints the layered
+  terrain drawn over it, and Clear layer removes it. It matches the in-game
+  editor's Layering Mode, and is hidden for files that store no layered
+  terrain. With Target on Layer, the Eyedropper picks a tile's layered
+  terrain.
+- **The hover readout names a tile's layered terrain** (`layer=<name>`).
+- **`batch_api.set_layer(tile, terrain_id)`** sets or removes a tile's
+  layered terrain from a script.
+- **Move Up and Move Down for conditions and effects** (GH #213), as ▲ ▼
+  buttons at the end of the entry button row and in the right-click menu.
+  They change the display order, as the in-game editor's arrows do, and
+  work on a multi-selection. The button row needs no more width than
+  before.
 
 ### Changed
 
 - **Trigger pane buttons are more compact**: Move Up/Down are now ▲ ▼
   beside Duplicate, next to the new ⇈ ⇊ Section Up/Down. New Section…,
   Rename Section… and Move to Section moved from their own row into the
-  Sections menu, which is now always shown.
+  Sections menu, which is now always shown. Rename tag… and its Remove tag…
+  moved into a new Tags menu beside it, as Rename Tag… and Remove Tag
+  Everywhere, so two button rows sit under the trigger list instead of
+  five. A disabled Tags entry's tooltip says what it needs.
 - **Sloped view renders at coarser levels when zoomed out** (GH #180), as
   Elevation view already did: at fit zoom on a large map, stroke ends, undo
   and first paint are about twice as fast, and an elevation paste or its
@@ -191,6 +212,13 @@ content, link the doc instead of summarizing it.
   or Eye candy Draw stroke past 1000 tree changes, and its undo and redo,
   repaint only the stroke's area, and an edit or undo past 20,000 tiles
   refreshes the map in place instead of rebuilding it.
+- **Faster large Trees strokes and undos in Stepped** (GH #180): a Trees or
+  Eye candy Draw stroke past 1000 tree changes, and its undo and redo,
+  repaint only the rectangles around the changed trees while those cover
+  under a quarter of the visible map, instead of every chunk they touch.
+- **Faster terrain repaints with Terrain Blending on** (GH #180): in
+  Elevation and Sloped view the stall after a large stroke or undo is up to
+  a quarter shorter, and a large Flat-view edit repaints about twice as fast.
 
 - **Save into the game's own scenario folder works**: the Proton
   `compatdata/` profile is no longer refused, and a save into the game
@@ -265,7 +293,8 @@ content, link the doc instead of summarizing it.
 - **Triggers: every tag in a name's leading run counts, not only the first**
   (GH #101). `[Old] [New] x` is listed under New in the tag dropdown, its
   count, the filter and Select Tag, and Rename tag / Remove tag change New in
-  place. Remove Tag… on a selection carrying several tags asks which one.
+  place. Remove Tag from Selection… on a selection carrying several tags
+  asks which one.
 - **Adding, removing and clearing rulers are undo steps** that never mark
   the scenario as modified (GH #108). A ruler drawn while there are undone
   scenario edits to redo is not added to Undo, so the redo is kept; the status
@@ -319,9 +348,41 @@ content, link the doc instead of summarizing it.
   gold, stone, berry bushes, fish and trees always go to GAIA, whatever the
   owner picker says, and the status line says so. Reassigning one to a player
   (Owner, Convert, Find > Reassign) still works but warns.
+- **The Filters, View, Sources and Targets menus stay open while you tick
+  options** (GH #205). Space toggles the highlighted option, Enter toggles
+  and closes.
+- **Paint Can on a region that already has the picked terrain clears that
+  region's layered terrain** instead of doing nothing. It is one undo step
+  and asks first above 2000 layered tiles.
+- **Paste Region, and moving a pasted region, carry the copied layered
+  terrain** instead of dropping it.
 
 ### Fixed
 
+- **Conditions and effects are listed in the order the in-game editor shows
+  them** (GH #213), the file's display order, not the order they are stored
+  in. A trigger whose OR or AND row is stored last now shows it between the
+  conditions it joins, as the game does. This affects files where an author
+  reordered entries in the game editor. "condition N" and "effect N" in a
+  status tooltip count the rows as listed.
+- **Delete, Cut and Paste of conditions and effects no longer reorder the
+  entries that remain** (GH #213). On a trigger with a reordered list,
+  removing or pasting an entry could shuffle the others and Save wrote the
+  result, which could move an OR/AND row to a different place. Copy and Cut
+  now take entries in the order shown, and Paste lands below the clicked
+  row as shown.
+- **Big objects no longer lose their lower half to the ground in front of
+  them** (GH #107): in Stepped and Sloped with sprites on, mountains, ruins
+  and other art wider than its tile was cut along a staircase of tile edges.
+  Sprites and unit marks now draw over nearer ground unless that ground
+  stands higher than the object's base, so a raised step still hides what is
+  behind it. Step shadows no longer darken an object standing behind the
+  step. From source, the fast renderer rebuilds itself once on the next
+  launch.
+- **Ships draw their sails and their owner's colour, and Butterflies draw as
+  butterflies** (GH #20): most sailing ships showed a bare hull, several
+  with no player colour at all, and the three Butterflies doodads showed a
+  coloured mark.
 - **View stats no longer clips the Player selector's tribe names**: the
   selector sits on its own full-width row.
 - **Buildings with an even size (House, Mill, Market, Town Center, Castle,

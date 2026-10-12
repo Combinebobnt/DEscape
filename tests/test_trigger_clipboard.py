@@ -11,6 +11,7 @@ from pathlib import Path
 
 from descape import trigger_clipboard
 from descape.scenario_io import load_map_and_units, parse_triggers
+from descape.trigger_model import set_entry_order
 from descape.trigger_organize import is_divider
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
@@ -380,7 +381,7 @@ def test_copied_effects_paste_into_another_trigger_below_the_anchor() -> None:
     manager = _manager()
     variable = manager.triggers[3]
     block = trigger_clipboard.copy_entries(manager, 3, [("effect", 2), ("effect", 1)])
-    assert _types(block.effects) == [19, 11], "list order, whatever order the refs came in"
+    assert _types(block.effects) == [19, 11], "display order, whatever order the refs came in"
     assert block.label == "2 effects"
     result = trigger_clipboard.paste_entries(manager, 2, block, ("effect", 0))
     assert _types(manager.triggers[2].effects) == [8, 19, 11, 9]
@@ -401,6 +402,94 @@ def test_conditions_land_below_a_condition_anchor_and_effects_at_the_end() -> No
     trigger_clipboard.paste_entries(manager, 2, block, None)
     assert _types(manager.triggers[2].conditions, "condition_type") == [10, 5]
     assert _types(manager.triggers[2].effects) == [8, 9, 56]
+
+
+# GH #213: the fixture holds identity orders only, where display order and
+# list order are the same thing. Trigger 3 has 4 conditions and 7 effects.
+_ORDERS = {"condition": [2, 0, 3, 1], "effect": [4, 0, 6, 2, 5, 1, 3]}
+
+
+def _ordered_manager():
+    manager = _manager()
+    for kind, order in _ORDERS.items():
+        set_entry_order(manager.triggers[3], kind, order)
+    return manager
+
+
+def _shown(trigger, kind: str) -> list:
+    """One kind's live entries in display order."""
+    entries = getattr(trigger, f"{kind}s")
+    return [entries[index] for index in getattr(trigger, f"{kind}_order")]
+
+
+def _same(entries, expected) -> bool:
+    """The same objects in the same order; entries have no value equality."""
+    return [id(entry) for entry in entries] == [id(entry) for entry in expected]
+
+
+def test_copied_entries_are_taken_in_display_order() -> None:
+    manager = _ordered_manager()
+    refs = [("effect", 0), ("effect", 3), ("effect", 4), ("condition", 1), ("condition", 2)]
+    block = trigger_clipboard.copy_entries(manager, 3, refs)
+    # Shown as 4, 0, 6, 2, 5, 1, 3 and 2, 0, 3, 1; list order would be [56, 14, 15] and [5, 6].
+    assert _types(block.effects) == [15, 56, 14]
+    assert _types(block.conditions, "condition_type") == [6, 5]
+
+
+def test_a_copied_trigger_link_follows_its_entry_through_the_display_order() -> None:
+    """trigger_targets counts positions in the block, so it has to follow the
+    order the block was taken in."""
+    manager = _manager()
+    references, setup, armour = manager.triggers[2], manager.triggers[0], manager.triggers[1]
+    set_entry_order(references, "effect", [1, 0])
+    block = trigger_clipboard.copy_entries(manager, 2, [("effect", 0), ("effect", 1)])
+    assert _types(block.effects) == [9, 8]
+    assert block.trigger_targets == (("effect", 0, armour), ("effect", 1, setup))
+    trigger_clipboard.paste_entries(manager, 3, block)
+    pasted = manager.triggers[3].effects[-2:]
+    assert [(e.effect_type, e.trigger_id) for e in pasted] == [(9, 1), (8, 0)]
+
+
+def test_a_paste_lands_below_the_anchors_display_slot_for_every_anchor() -> None:
+    for anchor_index in range(7):
+        manager = _ordered_manager()
+        trigger = manager.triggers[3]
+        block = trigger_clipboard.copy_entries(manager, 2, [("effect", 0), ("effect", 1)])
+        before = _shown(trigger, "effect")
+        listed = list(trigger.effects)
+        conditions = _shown(trigger, "condition")
+
+        result = trigger_clipboard.paste_entries(manager, 3, block, ("effect", anchor_index))
+
+        assert result.refs == [("effect", anchor_index + 1), ("effect", anchor_index + 2)]
+        pasted = [trigger.effects[index] for _kind, index in result.refs]
+        assert _types(pasted) == [8, 9]
+        slot = _ORDERS["effect"].index(anchor_index) + 1
+        assert _same(_shown(trigger, "effect"), before[:slot] + pasted + before[slot:]), anchor_index
+        assert _same(trigger.effects, listed[: anchor_index + 1] + pasted + listed[anchor_index + 1 :])
+        assert _same(_shown(trigger, "condition"), conditions)
+        assert list(trigger.condition_order) == _ORDERS["condition"]
+
+
+def test_a_paste_with_no_anchor_of_its_kind_lands_last_in_both_orders() -> None:
+    for anchor in (None, ("condition", 0)):
+        manager = _ordered_manager()
+        trigger = manager.triggers[3]
+        block = trigger_clipboard.copy_entries(manager, 2, [("effect", 0), ("effect", 1)])
+        before = _shown(trigger, "effect")
+        result = trigger_clipboard.paste_entries(manager, 3, block, anchor)
+        assert result.refs == [("effect", 7), ("effect", 8)]
+        assert _same(_shown(trigger, "effect"), before + list(trigger.effects[7:]))
+
+
+def test_a_mid_list_paste_leaves_an_identity_order_identity() -> None:
+    manager = _manager()
+    block = trigger_clipboard.copy_entries(manager, 3, [("effect", 2), ("effect", 1), ("condition", 1)])
+    trigger_clipboard.paste_entries(manager, 3, block, ("effect", 0))
+    trigger_clipboard.paste_entries(manager, 3, block, ("condition", 2))
+    trigger = manager.triggers[3]
+    assert list(trigger.effect_order) == list(range(11))
+    assert list(trigger.condition_order) == list(range(6))
 
 
 def test_a_pasted_entrys_trigger_link_follows_its_target_by_identity() -> None:

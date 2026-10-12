@@ -46,11 +46,17 @@ reach shifted by its offset -- a piece sitting 192px to one side needs that
 192px added to its own intrinsic reach on that side, or an edit near it could
 under-widen and leave a stale fragment. Town centre pieces net (0, 0) (finding
 5's cancellation) so this is a no-op for them; pastures are the real case.
+
+**Particle entries (GH #20, the butterflies) have no .sld.** Their one drawn
+frame is measured from the effect's atlas instead, scaled by the entry's
+art_scale: _sprite_reach_px multiplies these constants by sprite_scale() alone,
+so a particle's reach has to be stated in the x1 px that product assumes.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -94,6 +100,27 @@ def frame_reach(frame, dx: int = 0, dy: int = 0) -> tuple[int, int, int, int] | 
     )
 
 
+def particle_scales() -> dict[str, float]:
+    """file_name -> art_scale for unit_graphic_map.json's particle entries (GH #20)."""
+    return {
+        entry["file_name"]: float(entry["art_scale"])
+        for entry in unit_sprites.graphic_map().values() if entry.get("particle")
+    }
+
+
+def particle_reach(name: str, art_scale: float) -> tuple[int, int, int, int] | None:
+    """frame_reach() for a particle entry: the ink box of the one frame it
+    draws, in the x1 native px the constants are in, so its own art_scale is
+    applied here (rounded up). None when the install lacks the effect. A
+    particle has no .sld, so it is read through the configured install."""
+    native = unit_sprites._native_frame(name, 0)
+    if native is None:
+        return None
+    main, _playercolor, hx, hy = native
+    box = (hx, hy, main.shape[1] - hx, main.shape[0] - hy)
+    return tuple(math.ceil(side * art_scale) for side in box)
+
+
 def scan(graphics_dir: Path, entries: list[tuple[str, int, int]]):
     """(maxima, worst_files, readable, unreadable) over every named .sld.
 
@@ -108,14 +135,21 @@ def scan(graphics_dir: Path, entries: list[tuple[str, int, int]]):
     maxima = [0, 0, 0, 0]
     worst = ["", "", "", ""]
     readable = unreadable = 0
+    scales = particle_scales()
     for name, dx, dy in entries:
-        sld = load_sld(graphics_dir / f"{name}.sld")
-        if sld is None:
-            unreadable += 1
-            continue
+        if name in scales:
+            reaches = [particle_reach(name, scales[name])]
+            if reaches[0] is None:
+                unreadable += 1
+                continue
+        else:
+            sld = load_sld(graphics_dir / f"{name}.sld")
+            if sld is None:
+                unreadable += 1
+                continue
+            reaches = [frame_reach(frame, dx, dy) for frame in sld.frames]
         readable += 1
-        for frame in sld.frames:
-            reach = frame_reach(frame, dx, dy)
+        for reach in reaches:
             if reach is None:
                 continue
             for i in range(4):

@@ -7,7 +7,7 @@ import contextlib
 import dataclasses
 from typing import ClassVar
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, QPointF, Qt, QTimer
+from PyQt5.QtCore import QItemSelection, QItemSelectionModel, QPointF, QSize, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -30,6 +30,8 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QStyle,
+    QStyleOptionButton,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -62,8 +64,10 @@ from descape.trigger_model import (
     EXEC_MODE_DISPLAY,
     EXEC_MODE_LEGACY,
     EXEC_MODE_UNKNOWN,
+    entry_display_order,
     exec_order_value,
     resolve_exec_mode,
+    would_move_entries,
 )
 from descape.trigger_status import EntryStatus, Status
 from descape.value_picker import PickerItem, ValueLineEdit, _HScrollStableTreeWidget
@@ -345,6 +349,29 @@ class _TriggerTree(_HScrollStableTreeWidget):
         self._select_all()
 
 
+class _LabelFitButton(QPushButton):
+    """A push button that may shrink to its own label (GH #213). Fusion
+    floors a labelled button's size hint at 80 px, which the entry row cannot
+    spare beside its ▲▼ pair. The hint stays; only the minimum drops, to what
+    the style gives the same label without that floor. Read off the live font
+    and style on every query, so a UI font change needs no refit."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        # Shrinkable: under QPushButton's own Minimum policy the layout takes sizeHint() as the floor.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = self.sizeHint()
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        label = self.fontMetrics().size(Qt.TextShowMnemonic, self.text())
+        # The style applies its floor only to an option that carries text; frame and margins are the same.
+        option.text = ""
+        fitted = self.style().sizeFromContents(QStyle.CT_PushButton, option, label, self).width()
+        return QSize(min(fitted, hint.width()), hint.height())
+
+
 class TriggerPanel(QWidget):
     """Trigger browser and property editor (phases 4a.3 and 4b.6).
 
@@ -486,6 +513,7 @@ class TriggerPanel(QWidget):
         on_cut_triggers=None,
         on_copy_entries=None,
         on_entry_field_group=None,
+        on_entry_move=None,
     ):
         super().__init__()
         # Callbacks, exactly as MapView takes them. All are no-ops by default
@@ -496,6 +524,8 @@ class TriggerPanel(QWidget):
         self._on_entry_field_group = on_entry_field_group or (lambda *args: None)
         self._on_trigger_structural = on_trigger_structural or (lambda *args: None)
         self._on_entry_structural = on_entry_structural or (lambda *args, **kwargs: None)
+        # GH #213: (trigger_index, refs, delta), a display-order move of the selected entries.
+        self._on_entry_move = on_entry_move or (lambda *args: None)
         self._on_variable_structural = on_variable_structural or (lambda *args: None)
         # Fired when the trigger selection set changes, so the window can
         # re-gate actions that follow it (Edit > Copy Triggers).
@@ -508,7 +538,7 @@ class TriggerPanel(QWidget):
         self._on_cut_triggers = on_cut_triggers or (lambda *args: None)
         # GH #137's entry clipboard Copy: read-only, the window reads the selection.
         self._on_copy_entries = on_copy_entries or (lambda *args: None)
-        # GH #101: (indices, tag) for Add Tag… and Remove Tag… on the selection.
+        # GH #101: (indices, tag) for the Tags menu's Add and Remove on the selection.
         self._on_tag_add = on_tag_add or (lambda *args: None)
         self._on_tag_remove_selected = on_tag_remove_selected or (lambda *args: None)
         # GH #41: fired after each entry-form sync, which a trigger change reaches too. Assigned by the window.
@@ -598,6 +628,8 @@ class TriggerPanel(QWidget):
         # The (kind, index) refs the property form was last built for. None
         # means "holds nothing", so the next sync always repopulates.
         self._form_refs: tuple[tuple[str, int], ...] | None = None
+        # (kind, list index) -> entry-tree row, rebuilt per populate: rows sit in display order.
+        self._entry_items: dict[tuple[str, int], QTreeWidgetItem] = {}
         # "display" (trigger_display_order, the in-game order -- default) or
         # "index" (raw list order, the pre-reordering-work behaviour). Pure
         # view state, session-only: sorting is a view concern, decoupled from
@@ -698,20 +730,31 @@ class TriggerPanel(QWidget):
         self.tag_combo.currentIndexChanged.connect(lambda *_: self._update_buttons())
 
         # Own row: beside the filter and sort at 340 px, every label elided.
-        # One button, Remove behind its arrow. Acts on the facet's tag
-        # whatever the text filter hides.
+        # One menu holds the four tag verbs (GH #101's two act on the selection).
+        # The other two act on the facet's tag whatever the text filter hides.
         tag_row = QHBoxLayout()
         tag_row.setContentsMargins(0, 0, 0, 0)
         tag_row.addWidget(self.tag_combo, stretch=1)
-        self.tag_rename_button = QToolButton()
-        self.tag_rename_button.setText("Rename tag…")
-        self.tag_rename_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.tag_rename_button.clicked.connect(lambda checked=False: self.request_tag_rename())
-        tag_menu = QMenu(self.tag_rename_button)
-        self.tag_remove_action = tag_menu.addAction("Remove tag…")
+        self.tags_button = QToolButton()
+        self.tags_button.setText("Tags")
+        self.tags_button.setToolTip(
+            "Tag or untag the selected triggers; rename or remove the filter's tag on every trigger"
+        )
+        self.tags_button.setPopupMode(QToolButton.InstantPopup)
+        self.tags_menu = QMenu(self.tags_button)
+        # The disabled reasons live in the action tooltips.
+        self.tags_menu.setToolTipsVisible(True)
+        self.tag_add_action = self.tags_menu.addAction("Add Tag to Selection…")
+        self.tag_add_action.triggered.connect(lambda checked=False: self.request_tag_add())
+        self.tag_remove_selected_action = self.tags_menu.addAction("Remove Tag from Selection…")
+        self.tag_remove_selected_action.triggered.connect(lambda checked=False: self.request_tag_remove_selected())
+        self.tags_menu.addSeparator()
+        self.tag_rename_action = self.tags_menu.addAction("Rename Tag…")
+        self.tag_rename_action.triggered.connect(lambda checked=False: self.request_tag_rename())
+        self.tag_remove_action = self.tags_menu.addAction("Remove Tag Everywhere")
         self.tag_remove_action.triggered.connect(lambda checked=False: self.request_tag_remove())
-        self.tag_rename_button.setMenu(tag_menu)
-        tag_row.addWidget(self.tag_rename_button)
+        self.tags_button.setMenu(self.tags_menu)
+        tag_row.addWidget(self.tags_button)
 
         # The section verbs, Collapse All / Expand All, then one jump per
         # section. The jump actions are rebuilt per show_scenario().
@@ -820,20 +863,6 @@ class TriggerPanel(QWidget):
             setattr(self, attribute, button)
             self.reorder_buttons.addWidget(button)
         pane_layout.addLayout(self.reorder_buttons)
-        # GH #101: the selection's tag verbs. Own row: beside Duplicate's row they clip at 340 px.
-        tag_select_row = QHBoxLayout()
-        tag_select_row.setContentsMargins(0, 0, 0, 0)
-        self.tag_add_button = QPushButton("Add Tag…")
-        self.tag_add_button.setToolTip("Add a tag to every selected trigger that lacks it")
-        self.tag_add_button.clicked.connect(lambda checked=False: self.request_tag_add())
-        self.tag_remove_selected_button = QPushButton("Remove Tag…")
-        self.tag_remove_selected_button.setToolTip(
-            "Remove a tag from the selected triggers only (the tag filter's Remove tag… takes it off every trigger)"
-        )
-        self.tag_remove_selected_button.clicked.connect(lambda checked=False: self.request_tag_remove_selected())
-        tag_select_row.addWidget(self.tag_add_button)
-        tag_select_row.addWidget(self.tag_remove_selected_button)
-        pane_layout.addLayout(tag_select_row)
         return pane
 
     def _on_sort_mode_changed(self, combo_index: int) -> None:
@@ -883,7 +912,26 @@ class TriggerPanel(QWidget):
             ],
             lambda op: (lambda checked=False: self._request_entry_op(op)),
             ("new", "copy", "delete", "retype"),
+            # GH #213: the four give up Fusion's 80 px floor, which is the room ▲▼ take.
+            button_class=_LabelFitButton,
         )
+        moves = QHBoxLayout()
+        moves.setContentsMargins(0, 0, 0, 0)
+        moves.setSpacing(2)
+        for attribute, glyph, name, tip, op in (
+            ("entry_move_up_button", "▲", "Move Entry Up", self._ENTRY_MOVE_UP_TIP, "move_up"),
+            ("entry_move_down_button", "▼", "Move Entry Down", self._ENTRY_MOVE_DOWN_TIP, "move_down"),
+        ):
+            button = QToolButton()
+            button.setText(glyph)
+            # Named apart from the trigger row's pair, for AT-SPI locators.
+            button.setAccessibleName(name)
+            button.setToolTip(tip)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            button.clicked.connect(lambda checked=False, op=op: self._request_entry_op(op))
+            setattr(self, attribute, button)
+            moves.addWidget(button)
+        self.entry_buttons.addLayout(moves)
         pane_layout.addLayout(self.entry_buttons)
 
         # The property form and the vocabulary picker are two pages of one
@@ -899,12 +947,12 @@ class TriggerPanel(QWidget):
         pane_layout.addWidget(self.detail_stack, stretch=1)
         return pane
 
-    def _build_button_row(self, buttons, slot_for, ops) -> QHBoxLayout:
+    def _build_button_row(self, buttons, slot_for, ops, button_class=QPushButton) -> QHBoxLayout:
         """One row of equally-weighted push buttons, stored on self by name."""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         for (attribute, label, tip), op in zip(buttons, ops, strict=True):
-            button = QPushButton(label)
+            button = button_class(label)
             button.setToolTip(tip)
             # checked=False first: QPushButton.clicked passes a positional bool,
             # the same trap the mode actions document a few hundred lines down.
@@ -1041,7 +1089,7 @@ class TriggerPanel(QWidget):
         """Empty both trees, the property form and the picker. Callers hold
         the _populating guard, since clearing a tree emits selection changes."""
         self.tree.clear()
-        self.entry_tree.clear()
+        self._clear_entry_tree()
         self._clear_property_form()
         self._close_picker()
 
@@ -1250,11 +1298,13 @@ class TriggerPanel(QWidget):
             self._apply_filter()
         self._update_buttons()
 
-    _TAG_RENAME_TIP = (
-        "Rename the chosen tag on every trigger carrying it, including ones the "
-        "text filter hides. The arrow offers Remove tag."
-    )
-    _TAG_PICK_TIP = "Pick a tag to rename"
+    _TAG_ADD_TIP = "Add a tag to every selected trigger that lacks it"
+    _TAG_ADD_NONE_TIP = "Select a trigger to tag"
+    _TAG_REMOVE_SELECTED_TIP = "Remove a tag from the selected triggers only"
+    _TAG_REMOVE_SELECTED_NONE_TIP = "The selected triggers carry no tag"
+    _TAG_RENAME_TIP = "Rename the chosen tag on every trigger carrying it, including ones the text filter hides"
+    _TAG_REMOVE_ALL_TIP = "Remove the chosen tag from every trigger carrying it, including ones the text filter hides"
+    _TAG_PICK_TIP = "Pick a tag in the tag filter first"
 
     def _tag_count(self, tag: str) -> int:
         """How many triggers carry `tag` anywhere in their tag chain, read off raw names."""
@@ -1938,16 +1988,21 @@ class TriggerPanel(QWidget):
         self.multi_label.setText(f"{count} triggers selected")
         self._populating = True
         try:
-            self.entry_tree.clear()
+            self._clear_entry_tree()
             self._clear_property_form()
         finally:
             self._populating = False
         self.detail_stack.setCurrentIndex(self._DETAIL_MULTI)
 
+    def _clear_entry_tree(self) -> None:
+        # Together, or _entry_item_for() hands back a deleted row.
+        self._entry_items = {}
+        self.entry_tree.clear()
+
     def _populate_entry_tree(self) -> None:
         self._populating = True
         try:
-            self.entry_tree.clear()
+            self._clear_entry_tree()
             self._clear_property_form()
             manager = self._manager()
             index = self.current_trigger_index()
@@ -1969,10 +2024,12 @@ class TriggerPanel(QWidget):
                 # the tree grows a row.
                 group.setData(0, Qt.UserRole, ("group", kind))
                 self.entry_tree.addTopLevelItem(group)
-                for entry_index, entry in enumerate(entries):
-                    child = QTreeWidgetItem(list(self._describe(kind, entry)))
+                # GH #213: rows in the game's display order; UserRole stays the list index.
+                for entry_index in entry_display_order(trigger, kind) if entries else ():
+                    child = QTreeWidgetItem(list(self._describe(kind, entries[entry_index])))
                     child.setData(0, Qt.UserRole, (kind, entry_index))
                     group.addChild(child)
+                    self._entry_items[(kind, entry_index)] = child
                 group.setExpanded(True)
             self._style_entry_tree(manager, index)
             self._fit_entry_columns()
@@ -2130,9 +2187,12 @@ class TriggerPanel(QWidget):
         groups = {}
         for kind, entry_statuses in (("condition", statuses.conditions), ("effect", statuses.effects)):
             entries = list(self._read(trigger, f"{kind}s") or [])
+            # GH #213: numbered and listed by display slot, as the rows are.
+            order = entry_display_order(trigger, kind) if entries else []
             groups[kind] = trigger_status.group_status(
-                (trigger_status.entry_label(kind, i, entry, self._vocabulary), status)
-                for i, (entry, status) in enumerate(zip(entries, entry_statuses, strict=False))
+                (trigger_status.entry_label(kind, slot, entries[i], self._vocabulary), entry_statuses[i])
+                for slot, i in enumerate(order)
+                if i < len(entry_statuses)
             )
         if not statuses.effects and trigger_status.needs_effects(trigger):
             groups["effect"] = EntryStatus(Status.PROBLEM, ("has no effects",))
@@ -2322,7 +2382,7 @@ class TriggerPanel(QWidget):
 
     def selected_entry_refs(self) -> list[tuple[str, int]]:
         """(kind, index) for every selected condition or effect, in tree
-        order: conditions then effects, each in list order.
+        order: conditions then effects, each in display order (GH #213).
 
         Drops the trigger row, the group headings and hidden rows (_picked()'s
         guard), so a row the user cannot see is never swept into a bulk verb.
@@ -3399,6 +3459,18 @@ class TriggerPanel(QWidget):
         paste.triggered.connect(lambda _=False, a=anchor, t=trigger_index: self._on_entry_structural(
             "paste", t, "effect", [], -1, anchor=a
         ))
+        # GH #213: the ▲▼ buttons' verbs, on the selection, under the same gate.
+        for text, tip, op, reason in zip(
+            ("Move Up", "Move Down"),
+            (self._ENTRY_MOVE_UP_TIP, self._ENTRY_MOVE_DOWN_TIP),
+            ("move_up", "move_down"),
+            self._entry_move_reasons(),
+            strict=True,
+        ):
+            move = menu.addAction(text)
+            move.setToolTip(tip + reason)
+            move.setEnabled(not reason)
+            move.triggered.connect(lambda _=False, op=op: self._request_entry_op(op))
         menu.addSeparator()
         same = menu.addAction("Select Same Type")
         same.setToolTip("Select every condition or effect of this one's type in this trigger")
@@ -3582,6 +3654,18 @@ class TriggerPanel(QWidget):
         for item in items[1:]:
             item.setSelected(True)
 
+    def reselect_moved_entries(self, refs, delta: int, scroll: int) -> None:
+        """After a Move Up/Down rebuilt the entry tree (GH #213): the same
+        rows selected, the tree back at vertical scroll value `scroll`, and
+        the block's leading row in view, so a repeated click never jumps the
+        list. Selection only."""
+        self.select_entries(refs)
+        self.entry_tree.verticalScrollBar().setValue(scroll)
+        moved = self.selected_entry_refs()
+        if moved:
+            lead = self._entry_item_for(*(moved[0] if delta < 0 else moved[-1]))
+            self.entry_tree.scrollToItem(lead)
+
     def _set_current_entry_item(self, item) -> None:
         """_set_current_trigger_item() for the entry tree: an explicit
         ClearAndSelect, so a held Ctrl cannot turn it into a toggle."""
@@ -3591,13 +3675,9 @@ class TriggerPanel(QWidget):
         self.entry_tree.setCurrentItem(item, 0, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
 
     def _entry_item_for(self, kind: str, entry_index: int):
-        """The entry-tree row for one (kind, index) ref, or None."""
-        for i in range(self.entry_tree.topLevelItemCount()):
-            top = self.entry_tree.topLevelItem(i)
-            if top.data(0, Qt.UserRole) != ("group", kind):
-                continue
-            return top.child(entry_index) if 0 <= entry_index < top.childCount() else None
-        return None
+        """The entry-tree row for one (kind, list index) ref, or None. Never
+        by row: the rows sit in display order (GH #213)."""
+        return self._entry_items.get((kind, entry_index))
 
     def current_entry_ref(self) -> tuple[str, int] | None:
         """Public (kind, index) of the current condition or effect, so the
@@ -3721,6 +3801,9 @@ class TriggerPanel(QWidget):
             return
         # The whole set, as one undo record (GH #60).
         refs = [(kind, entry_index) for kind, entry_index, _entry in entries]
+        if op in ("move_up", "move_down"):
+            self._on_entry_move(trigger_index, refs, -1 if op == "move_up" else 1)
+            return
         self._on_entry_structural(op, trigger_index, refs[0][0], refs, -1)
 
     # -- the vocabulary picker -----------------------------------------------
@@ -3924,24 +4007,61 @@ class TriggerPanel(QWidget):
         self.entry_retype_button.setEnabled(
             can_edit and entries == 1 and self._vocabulary is not None
         )
+        for button, tip, reason in zip(
+            (self.entry_move_up_button, self.entry_move_down_button),
+            (self._ENTRY_MOVE_UP_TIP, self._ENTRY_MOVE_DOWN_TIP),
+            self._entry_move_reasons(),
+            strict=True,
+        ):
+            button.setEnabled(not reason)
+            button.setToolTip(tip + reason)
 
         self.picker_add_button.setEnabled(picking and self._picked() is not None)
 
         has_tag = self.tag_combo.currentData() is not None
-        self.tag_rename_button.setEnabled(can_edit and has_tag)
+        self.tags_button.setEnabled(can_edit)
+        # A disabled action's tooltip carries the reason, as the Sections actions do.
+        self.tag_add_action.setEnabled(can_edit and selected >= 1)
+        self.tag_add_action.setToolTip(self._TAG_ADD_TIP if selected >= 1 else self._TAG_ADD_NONE_TIP)
+        has_selected_tag = bool(self._selected_tags(self.selected_trigger_indices()))
+        self.tag_remove_selected_action.setEnabled(can_edit and has_selected_tag)
+        self.tag_remove_selected_action.setToolTip(
+            self._TAG_REMOVE_SELECTED_TIP if has_selected_tag else self._TAG_REMOVE_SELECTED_NONE_TIP
+        )
+        self.tag_rename_action.setEnabled(can_edit and has_tag)
+        self.tag_rename_action.setToolTip(self._TAG_RENAME_TIP if has_tag else self._TAG_PICK_TIP)
         self.tag_remove_action.setEnabled(can_edit and has_tag)
-        self.tag_rename_button.setToolTip(
-            self._TAG_RENAME_TIP if has_tag else self._TAG_PICK_TIP
-        )
-        self.tag_add_button.setEnabled(can_edit and selected >= 1)
-        self.tag_remove_selected_button.setEnabled(
-            can_edit and bool(self._selected_tags(self.selected_trigger_indices()))
-        )
+        self.tag_remove_action.setToolTip(self._TAG_REMOVE_ALL_TIP if has_tag else self._TAG_PICK_TIP)
 
         # On has_document, not on can_edit: the variable list is worth reading
         # on a read-only file, and the dialog gates its own Add/Remove on the
         # editable flag it is handed.
         self.variables_button.setEnabled(has_document)
+
+    _ENTRY_MOVE_UP_TIP = "Move the selected conditions and effects up in display order"
+    _ENTRY_MOVE_DOWN_TIP = "Move the selected conditions and effects down in display order"
+
+    def _entry_move_reasons(self) -> tuple[str, str]:
+        """Why Move Entry Up and Move Entry Down are each off, "" when on (GH
+        #213). The entry verbs' gate (an editable file, the picker closed, one
+        trigger), then an entry row selected that would_move_entries() that way."""
+        if not self._editable or self._loaded is None:
+            reason = " (this file's triggers cannot be edited)"
+        elif self.detail_stack.currentIndex() == self._DETAIL_PICKER:
+            reason = " (close the type picker first)"
+        elif self.current_trigger_index() is None or len(self.selected_trigger_indices()) > 1:
+            reason = " (select a single trigger)"
+        else:
+            refs = self.selected_entry_refs()
+            # Only with rows selected: this runs on every selection change.
+            trigger = self._entries_for([("trigger", -1)]) if refs else []
+            if trigger:
+                return (
+                    "" if would_move_entries(trigger[0][2], refs, -1) else " (already first)",
+                    "" if would_move_entries(trigger[0][2], refs, 1) else " (already last)",
+                )
+            reason = " (select a condition or effect)"
+        return (reason, reason)
 
     _MOVE_UP_TIP = "Move the selected trigger up in display order"
     _MOVE_DOWN_TIP = "Move the selected trigger down in display order"

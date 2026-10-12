@@ -21,12 +21,12 @@ them entirely, so there is nothing to copy/paste):
    tool (Pan) -- phase 2.8 retired the old per-tool clipboard-kind gating in
    favour of one keyed on self._region/self._region_clipboard alone.
 2. Terrain region copy/paste round trip -- paint a known terrain_id over a
-   source region through the real Draw tool stroke path, select + copy it,
-   give the destination region a stale non--1 `layer` (simulating a leftover
-   double-terrain blend), paste, and confirm every destination tile's
-   terrain_id matches the source AND `layer` was reset to -1 -- the
-   layer-reset decision RegionBlock.layers' own comment documents, matching
-   every other terrain-write path in this tool.
+   source region through the real Draw tool stroke path, give one source
+   tile a layered terrain (`layer`), select + copy it, give every
+   destination tile a different layer of its own, paste, and confirm every
+   destination tile's terrain_id AND `layer` match the source: the one
+   layered tile carried across, the other three -1. On a file whose terrain
+   has no layer field every pasted layer must be -1 instead.
 3. Elevation region copy/paste, *with real neighbor propagation* -- built via
    real Set Elevation strokes (not a hand-authored elevation matrix, which
    can encode a jump the in-game editor could never produce -- see
@@ -148,8 +148,16 @@ def _check_terrain_round_trip(window: ViewerWindow, mm, problems: list[str]) -> 
                 problems.append("test setup failed: source region didn't take the painted terrain_id")
                 return
 
-    # Simulate a stale double-terrain blend on the destination region --
-    # paste must reset this to -1, not preserve it.
+    # One source tile carries a layered terrain, the other three none, so a
+    # paste that kept, dropped or shifted the layers cannot pass.
+    source_layer = _pick_different_terrain(new_terrain_id)
+    mm.get_tile(sx0 + 1, sy0).layer = source_layer
+    carried = source_layer if window.scenario.terrain_has_layer else -1
+    expected_layers = {(x, y): -1 for y in range(sy1 - sy0) for x in range(sx1 - sx0)}
+    expected_layers[(1, 0)] = carried
+
+    # The destination starts with a layer of its own on every tile: paste
+    # must replace it with the source's, not preserve it.
     for y in range(sy1 - sy0):
         for x in range(sx1 - sx0):
             t = mm.get_tile(dx0 + x, dy0 + y)
@@ -182,10 +190,12 @@ def _check_terrain_round_trip(window: ViewerWindow, mm, problems: list[str]) -> 
     for y in range(sy1 - sy0):
         for x in range(sx1 - sx0):
             got = mm.get_tile(dx0 + x, dy0 + y)
-            if got.terrain_id != new_terrain_id or got.layer != -1:
+            want_layer = expected_layers[(x, y)]
+            if got.terrain_id != new_terrain_id or got.layer != want_layer:
                 problems.append(
                     f"terrain paste at ({dx0 + x}, {dy0 + y}): expected "
-                    f"(terrain_id={new_terrain_id}, layer=-1), got (terrain_id={got.terrain_id}, layer={got.layer})"
+                    f"(terrain_id={new_terrain_id}, layer={want_layer}), "
+                    f"got (terrain_id={got.terrain_id}, layer={got.layer})"
                 )
     if len(window.edit_history.records) != records_before + 1:
         problems.append("terrain-only paste didn't push exactly one new EditHistory record")

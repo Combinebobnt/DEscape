@@ -23,7 +23,16 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from descape import composite_backend, iso_geometry, native_composite, perf_trace, render, settings, unit_sprites
+from descape import (
+    composite_backend,
+    iso_geometry,
+    native_composite,
+    perf_trace,
+    render,
+    settings,
+    terrain_blend,
+    unit_sprites,
+)
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.unit_filter import UnitFilter
@@ -974,6 +983,8 @@ class _ChunkCacheBase:
     # composite and the blend keys; every cache builds both in __init__.
     _terrain_ids: np.ndarray | None = None
     _layer_ids: np.ndarray | None = None
+    # The blend key of every tile, memoized from those two mirrors (_refresh_terrain_ids()).
+    _blend_key_map: terrain_blend.KeyMap | None = None
 
     def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
         """Enumerates the level set ONCE, at construction -- never lazily.
@@ -1742,10 +1753,89 @@ class _ChunkCacheBase:
 
         Two passes, every rect's sources before any composite: a blended
         tile reads its neighbours' mirror entries, which a later rect may
-        be the one refreshing."""
+        be the one refreshing. Between them the blend keys under every rect
+        are derived in one call, since each rect alone is one tile."""
         live = [rect for rect in rects if self.patch_sources(rect)]
+        self._fill_blend_keys(live)
         for rect in live:
             self.patch_composite(rect)
+
+    def _fill_blend_keys(self, rects) -> None:
+        """Derives every blend key the Flat tile rects `rects` (REFERENCE
+        canvas pixels) will read, in one influences() call instead of one
+        per rect (TASK-031.63: 12,100 one-tile rects cost 0.5 s more than
+        the per-composite derivation they replaced). The composites then
+        only gather. Through render._rect_blend_keys(), the composites' own
+        path, so the keys cannot differ."""
+        if self._blend_key_map is None or self.style != "flat" or not rects or not render.blend_effective(self.layers):
+            return
+        mm = self.scenario.map_manager
+        w, h = mm.map_width, mm.map_height
+        t = self.tile_px
+        under = np.zeros((h, w), dtype=bool)
+        for px0, py0, px1, py1 in rects:
+            # Stops clamped too: a negative one would wrap and derive most of the map.
+            under[max(py0 // t, 0) : max(-(-py1 // t), 0), max(px0 // t, 0) : max(-(-px1 // t), 0)] = True
+        ys, xs = np.nonzero(under)
+        render._rect_blend_keys(
+            self.scenario, np.stack([xs, ys], axis=1), self.layers, self._terrain_ids, self._layer_ids,
+            self._blend_key_map,
+        )
+
+    def chunk_rects(self, rects, mip: int) -> list[tuple[int, int, int, int]]:
+        """`rects` (REFERENCE canvas pixels) in per-chunk form at level `mip`:
+        one REFERENCE rect per chunk any of them reaches, the bbox of the
+        rects clipped to that chunk, cached or not. Rects that overlap inside
+        a chunk become one composite there instead of one each (TASK-031.61
+        C1's probe: 165 block rects patched one by one cost more than evicting
+        their 22 chunks, the per-chunk form 55 ms less)."""
+        canvas_w, canvas_h = self.canvas_dims(mip)
+        size = self.chunk_px
+        per_chunk: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+        for rect in rects:
+            lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, rect)
+            lx0, ly0, lx1, ly1 = max(lx0, 0), max(ly0, 0), min(lx1, canvas_w), min(ly1, canvas_h)
+            if lx1 <= lx0 or ly1 <= ly0:
+                continue
+            cx0, cy0, cx1, cy1 = self.chunk_index_range(mip, lx0, ly0, lx1, ly1)
+            for cy in range(cy0, cy1 + 1):
+                for cx in range(cx0, cx1 + 1):
+                    clipped = (
+                        max(lx0, cx * size), max(ly0, cy * size), min(lx1, (cx + 1) * size), min(ly1, (cy + 1) * size)
+                    )
+                    per_chunk[(cx, cy)] = _union_bbox(per_chunk.get((cx, cy)), clipped)
+        return [self._level_bbox_to_reference(mip, box) for _key, box in sorted(per_chunk.items())]
+
+    def patch_composite_rects(self, rects, levels=None, rebuild_levels=None, terrain_current: bool = False) -> None:
+        """patch_composite() for each rect in `rects` (REFERENCE canvas
+        pixels): one _composite_rect() per rect-chunk intersection, written
+        into the cached chunk in place. For a batch unit edit whose union bbox
+        is mostly pixels that did not change (TASK-031.61 C1:
+        ViewerWindow._repaint_unit_edit_split() passes chunk_rects()).
+
+        Runs no unit or elevation source work: the caller's invalidate_units()
+        did, and this relies on that call's _mutation_epoch bump to void a
+        margin-warm chunk job prepared before the edit (install_chunk()). A
+        caller with no such bump behind it must not use this.
+
+        terrain_current: the caller's promise that both terrain mirrors match
+        every tile, so nothing is re-read. Without it (the default) the
+        mirrors are re-read over every rect before any rect is composited,
+        patch_rects()' two passes: a blended tile reads its neighbours' mirror
+        entries, which a later rect may be the one refreshing.
+
+        levels and rebuild_levels as in patch_composite(): a level outside
+        rebuild_levels that went stale, or one with deferred work, evicts the
+        chunks under each rect instead. A stale level inside rebuild_levels
+        rebuilds here, in the first composite, not at the next paint. A chunk
+        that is not cached is skipped, never composited: get_chunk() builds
+        it fresh."""
+        live = [rect for rect in rects if rect[2] > rect[0] and rect[3] > rect[1]]
+        if not terrain_current:
+            for rect in live:
+                self._refresh_terrain_ids(rect)
+        for rect in live:
+            self.patch_composite(rect, levels, rebuild_levels)
 
     def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None, terrain_changed: bool = True) -> None:
         """Evicts every cached chunk, at every RESIDENT mip level (only those
@@ -1802,9 +1892,12 @@ class _ChunkCacheBase:
         """Builds the terrain-id and layer mirrors on either backend (2.9 ms
         each at 240x240, 11 ms at 480x480): the native composite reads the
         first, terrain blending both. A full re-render builds a fresh cache,
-        so fresh mirrors."""
+        so fresh mirrors, and an empty blend key map over them, which the
+        composites fill tile by tile as they first read each key."""
         self._terrain_ids = render.tile_field_mirror(self.scenario, "terrain_id")
         self._layer_ids = render.tile_field_mirror(self.scenario, "layer")
+        mm = self.scenario.map_manager
+        self._blend_key_map = terrain_blend.KeyMap(mm.map_width, mm.map_height)
 
     def _refresh_terrain_ids(self, bbox: tuple[int, int, int, int]) -> None:
         """Re-reads the mirror over bbox (REFERENCE canvas pixels) after a
@@ -1814,7 +1907,15 @@ class _ChunkCacheBase:
         tile grid under the rect) returns a superset of the tiles painting
         into it, so every dirty tile is re-read, layer mirror included.
         A whole-canvas bbox reads every tile directly, which beats the rect
-        enumeration at that size."""
+        enumeration at that size.
+
+        The invariant the blend key map rests on: this is the only in-place
+        writer of either mirror, and it invalidates the map's keys for
+        exactly the tiles whose terrain id or layer it changed (and their 8
+        neighbours). By value, not by bbox, so a re-read that changes nothing
+        (an elevation-only edit, refresh_wholesale()) keeps every key. Any
+        other mirror write must go through here or invalidate the map itself;
+        replacing a mirror array is safe, since the map is bound to both."""
         if self._terrain_ids is None:
             return
         px0, py0, px1, py1 = bbox
@@ -1835,8 +1936,13 @@ class _ChunkCacheBase:
             tiles = iso_geometry.tiles_in_screen_rect(px0, py0, px1, py1, w, h, self.proj)
             idx = tiles[:, 1] * w + tiles[:, 0]
         if idx.size:
-            self._terrain_ids[idx] = native_composite._terrain_ids(self.scenario, idx)
-            self._layer_ids[idx] = render.tile_field_mirror(self.scenario, "layer", idx)
+            tids = native_composite._terrain_ids(self.scenario, idx)
+            layers = render.tile_field_mirror(self.scenario, "layer", idx)
+            changed = idx[(self._terrain_ids[idx] != tids) | (self._layer_ids[idx] != layers)]
+            self._terrain_ids[idx] = tids
+            self._layer_ids[idx] = layers
+            if self._blend_key_map is not None:
+                self._blend_key_map.invalidate(changed)
 
     def _refresh_unit_sources(self) -> None:
         """Rebuilds whatever per-cache structure holds units, after the unit
@@ -2787,6 +2893,7 @@ class IsoChunkCache(_LeveledChunkCache):
                 unit_pack=unit_pack,
                 terrain_ids=self._terrain_ids,
                 layer_ids=self._layer_ids,
+                key_map=self._blend_key_map,
             )
 
     def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
@@ -2794,7 +2901,7 @@ class IsoChunkCache(_LeveledChunkCache):
         return render.prepare_rect_native(
             False, self.scenario, x0, y0, x1, y1, self.elevations, lvl.proj, lvl.tile_px, lvl.building_bboxes,
             self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
-            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids,
+            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
         )
 
 
@@ -3271,6 +3378,7 @@ class FlatChunkCache(_ChunkCacheBase):
                 grid=self.grid,
                 terrain_ids=self._terrain_ids,
                 layer_ids=self._layer_ids,
+                key_map=self._blend_key_map,
             )
 
 
@@ -3677,6 +3785,7 @@ class SlopedChunkCache(_LeveledChunkCache):
                 unit_pack=unit_pack,
                 terrain_ids=self._terrain_ids,
                 layer_ids=self._layer_ids,
+                key_map=self._blend_key_map,
             )
 
     def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
@@ -3685,7 +3794,7 @@ class SlopedChunkCache(_LeveledChunkCache):
             True, self.scenario, x0, y0, x1, y1, self._level_corner_rise(lvl), lvl.proj, lvl.tile_px,
             lvl.building_bboxes,
             self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
-            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids,
+            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
         )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:

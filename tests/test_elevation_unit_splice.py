@@ -149,7 +149,7 @@ def _source_state(cache, mip: int = 0):
     lvl = cache._level(mip)
     bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
     layer = None if sprites is None else (
-        {k: [(id(d), px, py) for d, px, py in v] for k, v in sprites.by_anchor.items()},
+        {k: [(id(d), px, py, rise) for d, px, py, rise in v] for k, v in sprites.by_anchor.items()},
         dict(sprites.bboxes), sprites.skip_ids, dict(sprites.farm_by_tile),
     )
     return dict(bboxes), layer, grid_state(grid)

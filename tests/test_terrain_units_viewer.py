@@ -11,6 +11,16 @@ import numpy as np
 import pytest
 from test_sprite_toggle_viewer import sprite_install  # noqa: F401 -- fixture, requested by name
 
+# Fixtures and a constant: blend_install is requested by name and requests the next two itself;
+# blend_keys_match_the_mirrors is autouse, so every composite here checks the cache's blend key map.
+from test_terrain_blend_render import (  # noqa: F401
+    LAYER_ID,
+    blend_install,
+    blend_keys_match_the_mirrors,
+    fake_farm,
+    synthetic_textures,
+)
+
 from descape import render_cache, settings
 from descape.edit_history import CompositeDiffRecord, TileDiffRecord
 
@@ -302,10 +312,15 @@ SHIFTED_TILES = [(24 + i, 30) for i in range(8)]
 
 
 def _styled_window(style: str):
+    """`style`, or "FlatIso": Flat with Isometric View left on, which renders
+    through Stepped's cache over all-zero elevations."""
     window = _window("draw")
     if style == "Flat":
         # Top-down Flat, not the Flat+Isometric path (see test_unit_edit_viewer's _window).
         window.iso_action.setChecked(False)
+    if style == "FlatIso":
+        assert window.iso_action.isChecked()
+        style = "Flat"
     window.terrain_style_combo.setCurrentText(style)
     window.paint_trees_check.setChecked(True)
     window.paint_eye_candy_check.setChecked(False)
@@ -396,11 +411,14 @@ def _splice_any_batch(monkeypatch) -> None:
     _pin_area_ratio(monkeypatch, float("inf"))
 
 
-def _pin_area_ratio(monkeypatch, value: float) -> None:
-    """Sets the batch patch-or-evict area ratio, for every style."""
+def _pin_area_ratio(monkeypatch, value: float, rects: float = 0.0) -> None:
+    """Sets the batch patch-or-evict area ratio, for every style, and
+    Stepped's per-chunk rect ratio past it (TASK-031.61 C1). `rects` 0, the
+    default, keeps an over-ratio batch evicting; inf always patches rects."""
     import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
+    monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", rects)
 
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
@@ -899,14 +917,18 @@ def tree_sprites(sprite_install, monkeypatch):  # noqa: F811 -- the imported fix
     unit_sprites.clear_caches()
 
 
-def _fresh_cache(window):
-    """A new cache of the window's style over its current scenario, with its settings."""
+def _fresh_cache(window, layers=None):
+    """A new cache of the window's style over its current scenario, with its
+    settings (`layers` in place of the window's, when given)."""
     from descape import render
     from descape.render_cache import IsoChunkCache, SlopedChunkCache
 
     mm = window.scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    kwargs = {"unit_filter": window._unit_filter, "sprites": window._sprites_enabled, "layers": window._layers}
+    kwargs = {
+        "unit_filter": window._unit_filter, "sprites": window._sprites_enabled,
+        "layers": window._layers if layers is None else layers,
+    }
     if isinstance(window._cache, IsoChunkCache):
         elevations, proj = render.elevations_and_proj(window.scenario)
         return IsoChunkCache(window.scenario, elevations, proj, tile_px, **kwargs)
@@ -1291,16 +1313,18 @@ def test_a_draw_undo_and_redo_refresh_terrain_sources_only_before_the_unit_step(
         window.close()
 
 
-def _blocked_stroke_history(window, monkeypatch, before_step=None) -> None:
+def _blocked_stroke_history(window, monkeypatch, before_step=None, block=None) -> None:
     """A stroke over a 3x3 block the planner treats as a cliff's footprint
     (terrain, no tree: GH #183; no cliff unit, whose mark would hide the
     terrain) and STROKE_TILES (8 oaks), so the terrain bbox reaches well past
-    the unit one; then its undo and redo, each checked as `<step>: ...`."""
+    the unit one; then its undo and redo, each checked as `<step>: ...`.
+    `block`: the tiles drawn inside that footprint, instead of all nine."""
     from types import SimpleNamespace
 
     from descape import cliff_chain
 
-    block = [(x, y) for y in range(10, 13) for x in range(10, 13)]
+    if block is None:
+        block = [(x, y) for y in range(10, 13) for x in range(10, 13)]
     monkeypatch.setattr(cliff_chain, "existing_cliffs", lambda *_a: [SimpleNamespace(bounds=(10, 13, 10, 13))])
     _draw(window, FOREST_OAK, [*block, *STROKE_TILES])
     assert len(window.scenario.unit_manager.units[0]) == len(STROKE_TILES)
@@ -1312,12 +1336,16 @@ def _blocked_stroke_history(window, monkeypatch, before_step=None) -> None:
         _check_against_fresh(window, step)
 
 
-@pytest.mark.parametrize("repaint", ["patch", "evict", "no_target"])
+@pytest.mark.parametrize("repaint", ["patch", "evict", "rects", "no_target"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_a_history_moves_terrain_past_its_units_is_repainted_with_them(style, repaint, tree_sprites, monkeypatch) -> None:
     """Stepped checks mip 0 (visible), 1 and -1, all resident; Sloped, whose
-    ladder has no finer level (TASK-031.60), 0 and -1."""
-    _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
+    ladder has no finer level (TASK-031.60), 0 and -1. `rects` is Stepped's
+    per-chunk patch (C1), which sizes the terrain from the move's tiles."""
+    _pin_area_ratio(
+        monkeypatch, 0 if repaint in ("evict", "rects") else float("inf"),
+        rects=float("inf") if repaint == "rects" else 0,
+    )
     window = _over_cap_window(style, monkeypatch)
     try:
         assert _oracle_levels(window) == ((0, 1, -1) if style == "Stepped" else (0, -1))
@@ -1378,6 +1406,928 @@ def test_a_unit_step_that_repaints_nothing_still_composites_the_deferred_terrain
         changed = [] if splice == "empty" else [UnitSplice(1, 0, unit, own, own, (), ())]
         window._after_unit_mutation(changed, batch=True, terrain_bbox=deferred[0])
         _check_against_fresh(window, splice)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- The unit split skips the terrain re-read where the mirrors are current (TASK-031.61 C0) ---
+
+BLENDED_STEPS = ("stroke", "undo", "redo")
+
+
+def _spy_split_rereads(window, monkeypatch) -> dict:
+    """Counts _repaint_unit_edit_split() calls, and records the bbox of every
+    terrain mirror re-read (_refresh_terrain_ids) made inside one."""
+    seen = {"splits": 0, "rereads": []}
+    inside = [False]
+    real_split, real_reread = window._repaint_unit_edit_split, window._cache._refresh_terrain_ids
+
+    def split(*args, **kwargs):
+        seen["splits"] += 1
+        inside[0] = True
+        try:
+            return real_split(*args, **kwargs)
+        finally:
+            inside[0] = False
+
+    def reread(bbox):
+        if inside[0]:
+            seen["rereads"].append(bbox)
+        return real_reread(bbox)
+
+    monkeypatch.setattr(window, "_repaint_unit_edit_split", split)
+    monkeypatch.setattr(window._cache, "_refresh_terrain_ids", reread)
+    return seen
+
+
+def _place_one(window, x: float = 40.5, y: float = 40.5) -> None:
+    """A single-unit Place through _unit_edit(), with its splice."""
+    from descape.render_cache import UnitSplice
+
+    model = window._ensure_unit_edits()
+    splices: list = []
+    with window._unit_edit(model, "Place unit", [1], splices=splices):
+        unit = model.add(1, CONST, x, y)
+        own, tiles = window._unit_footprint(unit)
+        splices.append(UnitSplice(1, len(window.scenario.unit_manager.units[1]) - 1, unit, None, own, (), tiles))
+
+
+@pytest.mark.parametrize("repaint", ["patch", "evict"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_unit_split_skips_the_terrain_re_read_where_the_mirrors_are_current(
+    style, repaint, tree_sprites, monkeypatch
+) -> None:
+    """A Draw stroke end (its drag re-read the mirrors step by step), its undo
+    and redo (A4's patch_sources() just did) and a _unit_edit() (no tile
+    written) evict without re-reading. Only an eager patch of the visible
+    level still re-reads, once, as patch() always does."""
+    _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
+    window = _over_cap_window(style, monkeypatch)
+    try:
+        seen = _spy_split_rereads(window, monkeypatch)
+        patched = {"evict": 0, "patch": 1}[repaint]
+        steps = (
+            ("stroke end", lambda: _draw(window, FOREST_OAK, STROKE_TILES), patched),
+            ("undo", window.undo, patched),
+            ("redo", window.redo, patched),
+            ("unit edit", lambda: _place_one(window), 1),  # a single-unit tool always patches
+        )
+        for step, act, own in steps:
+            _render_levels(window)  # a second level resident, so both evictions run
+            assert len(window._cache.resident_levels()) > 1
+            seen["splits"] = 0
+            del seen["rereads"][:]
+            act()
+            assert seen["splits"] == 1, f"{step}: the split ran {seen['splits']} times"
+            assert len(seen["rereads"]) == own, f"{step}: the split re-read the terrain mirrors over {seen['rereads']}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.fixture
+def blended_trees(tree_sprites, blend_install):  # noqa: F811
+    """tree_sprites plus the imported blend_install: test_terrain_blend_render's
+    synthetic blendomatic, blend table and layer mask (pytest hides the
+    install). Its table holds FOREST_OAK, FOREST_PALM and LAYER_ID."""
+
+
+def _blended_window(style: str, monkeypatch, repaint: str = "evict"):
+    """_over_cap_window() with terrain blending effective (the tests request
+    blended_trees) and the batch repaint pinned. Evict is the path that skips
+    the re-read, so a stale mirror would be composited as it stands. `rects`
+    is Stepped's per-chunk patch in place of that eviction (TASK-031.61 C1);
+    on Sloped it pins the same thing as `evict`."""
+    from descape import render
+
+    _pin_area_ratio(
+        monkeypatch, float("inf") if repaint == "patch" else 0, rects=float("inf") if repaint == "rects" else 0
+    )
+    window = _over_cap_window(style, monkeypatch)
+    assert render.blend_effective(window._cache.layers), "blending is off, so the case would prove nothing"
+    return window
+
+
+def _blended_history(window, before_step=None) -> None:
+    """Over grass with 8 palms on EARLIER_TILES: a Draw stroke that plants 8
+    oaks over 4 of them (past OVER_CAP), its undo and its redo. Every oracle
+    level is re-rendered right before each step, then checked against a fresh
+    build, failing as `<step>: ...`."""
+    _draw(window, FOREST_PALM, EARLIER_TILES)
+    acts = {"stroke": lambda: _draw(window, FOREST_OAK, STROKE_TILES), "undo": window.undo, "redo": window.redo}
+    for step in BLENDED_STEPS:
+        _render_levels(window)
+        if before_step is not None:
+            before_step(step)
+        acts[step]()
+        _check_against_fresh(window, step)
+
+
+@pytest.mark.parametrize("repaint", ["patch", "evict", "rects"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_blended_over_cap_draw_its_undo_and_redo_match_a_fresh_render_on_every_resident_level(
+    style, repaint, blended_trees, monkeypatch
+) -> None:
+    """Sprites and blending on: the visible level (mip 0) and the second
+    resident one(s) equal a fresh build after each step, the split having
+    re-read no terrain. `rects` patches per-chunk rects on Stepped (C1), once
+    per step (the setup stroke, with no chunk resident yet, takes the reach
+    fallback). Sloped never does."""
+    from dataclasses import replace
+
+    from descape import render
+
+    window = _blended_window(style, monkeypatch, repaint)
+    try:
+        assert render.blend_effective(window._cache.layers)
+        assert len(_oracle_levels(window)) > 1
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        _blended_history(window)
+        assert len(rect_patches) == (3 if (style, repaint) == ("Stepped", "rects") else 0), rect_patches
+        cache = window._cache
+        unblended = _fresh_cache(window, layers=replace(window._layers, terrain_blend=False))
+        w, h = cache.canvas_dims(0)
+        assert not np.array_equal(cache.render_rect(0, 0, w, h, mip=0), unblended.render_rect(0, 0, w, h, mip=0)), (
+            "blending changed no pixel, so the checks above proved nothing about it"
+        )
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", BLENDED_STEPS)
+@pytest.mark.parametrize(("style", "repaint"), [("Stepped", "evict"), ("Stepped", "rects"), ("Sloped", "evict")])
+def test_the_blended_check_names_the_one_step_whose_terrain_mirrors_went_stale(
+    style, repaint, broken, blended_trees, monkeypatch
+) -> None:
+    """Control (GOTCHAS: a step-k break fails naming step k): on step `broken`
+    only, nothing re-reads the terrain mirrors, which is the state the split
+    now trusts its three callers never to hand it."""
+    from descape import render
+
+    window = _blended_window(style, monkeypatch, repaint)
+    try:
+        assert render.blend_effective(window._cache.layers)
+        cache = window._cache
+        real = cache._refresh_terrain_ids
+        current = {}
+        monkeypatch.setattr(
+            cache, "_refresh_terrain_ids", lambda bbox: None if current.get("step") == broken else real(bbox)
+        )
+        with pytest.raises(AssertionError, match=f"{broken}: mip 0 differs"):
+            _blended_history(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", BLENDED_STEPS)
+@pytest.mark.parametrize("repaint", ["evict", "rects"])
+def test_the_blended_check_names_the_step_that_left_a_second_level_stale(
+    repaint, broken, blended_trees, monkeypatch
+) -> None:
+    """Control for the second resident level, blending on: on step `broken`
+    only, the eviction of the non-visible levels is dropped, and the check
+    must fail on that level, naming the step. Under `rects` too (C1), where
+    only the visible level is patched in place."""
+    from descape import render
+
+    window = _blended_window("Stepped", monkeypatch, repaint)
+    try:
+        assert render.blend_effective(window._cache.layers)
+        cache = window._cache
+        second = _oracle_levels(window)[1]
+        real_evict = cache.invalidate_region
+        current = {}
+
+        def evict(bbox, levels=None, **kwargs):
+            if current.get("step") == broken and levels is not None and 0 not in levels:
+                return None
+            return real_evict(bbox, levels=levels, **kwargs)
+
+        monkeypatch.setattr(cache, "invalidate_region", evict)
+        with pytest.raises(AssertionError, match=f"{broken}: mip {second} differs"):
+            _blended_history(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# Two of STROKE_TILES' oaks: each gets a layer, then the Eraser takes the oak and the layer.
+ERASED_FIRST, ERASED_LAST = STROKE_TILES[2], STROKE_TILES[5]
+# Grass with no unit near it, far enough from STROKE_TILES that no erased oak's bbox or rect reaches it.
+BARE_LAYERED = (70, 80)
+
+
+def _open_erase_stroke(window, **targets) -> None:
+    """The Eraser, brush 1, with only `targets` ticked, pressed (no tile yet)."""
+    window._on_tool_selected("eraser")
+    window.brush_size_spin.setValue(1)
+    for name, action in window.eraser_target_actions.items():
+        action.setChecked(targets.get(name, False))
+    window.on_edit_stroke_start()
+    assert window._erase is not None
+
+
+def _overlay_erase(window, seen: dict | None = None) -> None:
+    """8 oaks, two of them on tiles given a layer (through the viewer's own
+    funnel), then one Eraser drag with Trees and Terrain Overlay ticked: the
+    first oak and its layer, the mid-stroke flush, the second, the release.
+    Every oracle level is checked against a fresh build after the flush and
+    after the release. `seen` (_spy_split_rereads) is checked at both too."""
+    _draw(window, FOREST_OAK, STROKE_TILES)
+    mm = window.scenario.map_manager
+    layered = [y * mm.map_width + x for x, y in (ERASED_FIRST, ERASED_LAST)]
+    for i in layered:
+        mm.terrain[i].layer = LAYER_ID
+    window._apply_dirty(layered)
+    _render_levels(window)
+    _check_against_fresh(window, "layered")
+    trees = len(window.scenario.unit_manager.units[0])
+
+    def expect_rereads(step: str) -> None:
+        if seen is not None:
+            # One per eviction: the other resident levels', then the visible one's.
+            assert seen["splits"] == 1 and len(seen["rereads"]) == 2, f"{step}: {seen}"
+            seen["splits"] = 0
+            del seen["rereads"][:]
+
+    _open_erase_stroke(window, trees=True, overlay=True)
+    assert window._erase.overlay, "Terrain Overlay does not apply to this file"
+    if seen is not None:
+        seen["splits"] = 0
+        del seen["rereads"][:]
+    window.on_edit_stroke_tiles([ERASED_FIRST], 0)
+    assert window._erase_refresh_timer.isActive()
+    window._erase_refresh_timer.stop()
+    window._flush_erase_refresh()
+    assert window._erase is not None  # still mid-stroke
+    assert mm.terrain[layered[0]].layer == -1 and len(window.scenario.unit_manager.units[0]) == trees - 1
+    _check_against_fresh(window, "erase flush")
+    expect_rereads("erase flush")
+    _render_levels(window)
+    window.on_edit_stroke_tiles([ERASED_LAST], 0)
+    window._erase_refresh_timer.stop()
+    window.on_edit_stroke_end()
+    assert mm.terrain[layered[1]].layer == -1 and len(window.scenario.unit_manager.units[0]) == trees - 2
+    _check_against_fresh(window, "erase end")
+    expect_rereads("erase end")
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_terrain_overlay_erase_still_re_reads_and_repaints_the_layer_mid_stroke(
+    style, blended_trees, monkeypatch
+) -> None:
+    """The case C0 leaves alone: Terrain Overlay writes `layer = -1` live, and
+    the mirrors only catch up at a flush or the stroke end. Both Erase calls
+    keep the split's re-read, and the flush repaints the cleared layer."""
+    from descape import render
+
+    window = _blended_window(style, monkeypatch)
+    try:
+        assert render.blend_effective(window._cache.layers)
+        _overlay_erase(window, _spy_split_rereads(window, monkeypatch))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_overlay_erase_check_fails_if_the_flush_neither_applies_nor_re_reads_the_cleared_layer(
+    style, blended_trees, monkeypatch
+) -> None:
+    """Control: mid-stroke the cleared tiles are not put through
+    _apply_dirty() (the flush as it was), and the flush (the one defer_index
+    caller here) passes terrain_current=True, so its evictions composite the
+    stale layer mirror."""
+    from descape import render
+
+    window = _blended_window(style, monkeypatch)
+    try:
+        assert render.blend_effective(window._cache.layers)
+        real_after = window._after_unit_mutation
+
+        def after(changed=None, **kwargs):
+            if kwargs.get("defer_index"):
+                kwargs["terrain_current"] = True
+            return real_after(changed, **kwargs)
+
+        real_dirty = window._apply_dirty
+        monkeypatch.setattr(
+            window, "_apply_dirty", lambda tiles, **k: False if window._erase is not None else real_dirty(tiles, **k)
+        )
+        monkeypatch.setattr(window, "_after_unit_mutation", after)
+        with pytest.raises(AssertionError, match="erase flush: mip 0 differs"):
+            _overlay_erase(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _erase_past_a_bare_layer(window, before_flush=None) -> None:
+    """8 oaks and, well off them, a bare tile given a layer. One Eraser drag
+    with Trees and Terrain Overlay ticked clears that layer (no unit there,
+    so no flush is due), then takes an oak, flushes, and ends. Every oracle
+    level is checked against a fresh build after the flush and the release."""
+    _draw(window, FOREST_OAK, STROKE_TILES)
+    mm = window.scenario.map_manager
+    bare = BARE_LAYERED[1] * mm.map_width + BARE_LAYERED[0]
+    mm.terrain[bare].layer = LAYER_ID
+    window._apply_dirty([bare])
+    _render_levels(window)
+    _check_against_fresh(window, "layered")
+    _open_erase_stroke(window, trees=True, overlay=True)
+    assert window._erase.overlay, "Terrain Overlay does not apply to this file"
+    window.on_edit_stroke_tiles([BARE_LAYERED], 0)
+    assert mm.terrain[bare].layer == -1 and not window._erase_refresh_timer.isActive()
+    window.on_edit_stroke_tiles([ERASED_FIRST], 0)
+    assert window._erase_refresh_timer.isActive()
+    window._erase_refresh_timer.stop()
+    if before_flush is not None:
+        before_flush()
+    window._flush_erase_refresh()
+    assert window._erase is not None  # still mid-stroke
+    _check_against_fresh(window, "erase flush")
+    window.on_edit_stroke_end()
+    _check_against_fresh(window, "erase end")
+
+
+@pytest.mark.parametrize("repaint", ["patch", "evict", "rects"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_erase_flush_repaints_a_cleared_layer_no_erased_unit_stood_on(
+    style, repaint, blended_trees, monkeypatch
+) -> None:
+    """The flush's unit step repaints what its erased units reached, by bbox
+    or by rect. A layer cleared on a tile outside that shows mid-drag only
+    because the flush also puts the tiles cleared since the last one through
+    _apply_dirty()."""
+    window = _blended_window(style, monkeypatch, repaint)
+    try:
+        _erase_past_a_bare_layer(window)
+        assert window._erase is None and window.edit_history.can_undo
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("repaint", ["evict", "rects"])
+def test_the_bare_layer_check_fails_if_the_flush_drops_its_cleared_tiles(repaint, blended_trees, monkeypatch) -> None:
+    """Control: the flush's cleared tiles are forgotten just before it runs,
+    which is the flush as it was. The release still repairs the tile, so only
+    the mid-stroke check can fail."""
+    window = _blended_window("Stepped", monkeypatch, repaint)
+    try:
+        with pytest.raises(AssertionError, match="erase flush: mip 0 differs"):
+            _erase_past_a_bare_layer(window, before_flush=lambda: window._erase.pending_layer_tiles.clear())  # noqa: PLW0108 -- _erase is read at the flush
+    finally:
+        window.on_edit_stroke_end()
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("act", ["undo", "unit edit"])
+def test_inside_an_open_erase_stroke_the_split_keeps_its_re_read(act, tree_sprites, monkeypatch) -> None:
+    """Nothing refuses a keyboard undo or unit edit during an Eraser drag, and
+    the drag's Terrain Overlay writes are not in the mirrors yet, so neither
+    caller vouches for them until the stroke has ended."""
+    _pin_area_ratio(monkeypatch, 0)
+    window = _over_cap_window("Stepped", monkeypatch)
+    try:
+        _draw(window, FOREST_OAK, STROKE_TILES)
+        _render_levels(window)
+        _open_erase_stroke(window, overlay=True)
+        seen = _spy_split_rereads(window, monkeypatch)
+        if act == "undo":
+            window.undo()
+        else:
+            _place_one(window)
+        # The other levels' eviction, then the visible level's (undo) or its eager patch (unit edit).
+        assert seen["splits"] == 1 and len(seen["rereads"]) == 2, seen
+        window.on_edit_stroke_end()
+        assert window._erase is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- Stepped patches one rect per chunk instead of evicting (TASK-031.61 C1) ---
+
+# A tile row, so a diagonal on screen: five 16x16-tile blocks whose rects step down across several
+# mip-0 chunks and together cover far less than their union bbox.
+LONG_TILES = [(10 + i, 40) for i in range(60)]
+# The same row 20 tiles on: palms replace 40 of LONG_TILES' oaks and 20 more land on grass.
+LONG_SHIFTED = [(30 + i, 40) for i in range(60)]
+LONG_STEPS = ("stroke A", "stroke B", "undo B", "redo B")
+# One tile wide, inside the footprint _blocked_stroke_history() plants no tree on.
+EDGE_TILES = [(11, 10), (11, 11), (11, 12)]
+
+
+def _spy_rect_patches(window, monkeypatch) -> list:
+    """Every cache.patch_composite_rects() call from here on, as a dict: its
+    `rects`, `levels`, `terrain_current`, and `composites`, the
+    (mip, x0, y0, x1, y1) of each _composite_rect() made inside it."""
+    calls: list = []
+    cache = window._cache
+    real_rects, real_composite = cache.patch_composite_rects, cache._composite_rect
+    inside: list = []
+
+    def patch_rects(rects, levels=None, rebuild_levels=None, terrain_current=False):
+        call = {"rects": list(rects), "levels": levels, "terrain_current": terrain_current, "composites": []}
+        calls.append(call)
+        inside.append(call)
+        try:
+            return real_rects(rects, levels=levels, rebuild_levels=rebuild_levels, terrain_current=terrain_current)
+        finally:
+            inside.pop()
+
+    def composite(mip, x0, y0, x1, y1):
+        if inside:
+            inside[-1]["composites"].append((mip, x0, y0, x1, y1))
+        return real_composite(mip, x0, y0, x1, y1)
+
+    monkeypatch.setattr(cache, "patch_composite_rects", patch_rects)
+    monkeypatch.setattr(cache, "_composite_rect", composite)
+    return calls
+
+
+def _spy_all_evictions(window, monkeypatch) -> list:
+    """Every cache.invalidate_region() from here on, as (bbox, levels)."""
+    evictions = []
+    real_evict = window._cache.invalidate_region
+
+    def evict(bbox, levels=None, **kwargs):
+        evictions.append((bbox, None if levels is None else tuple(levels)))
+        return real_evict(bbox, levels=levels, **kwargs)
+
+    monkeypatch.setattr(window._cache, "invalidate_region", evict)
+    return evictions
+
+
+def _spy_qt_regions(window, monkeypatch) -> list:
+    """Every bbox the canvas is asked to repaint (map_view.invalidate_region)."""
+    regions = []
+    real = window.map_view.invalidate_region
+    monkeypatch.setattr(window.map_view, "invalidate_region", lambda bbox: (regions.append(tuple(bbox)), real(bbox))[1])
+    return regions
+
+
+def _seed_planner(monkeypatch) -> None:
+    """Every stroke plants the same trees, so two windows can be compared."""
+    import random
+
+    from descape import terrain_units
+
+    real_plan = terrain_units.plan_terrain_units
+    monkeypatch.setattr(
+        terrain_units, "plan_terrain_units", lambda *a, **k: real_plan(*a, **{**k, "rng": random.Random(7)})
+    )
+
+
+def _long_batches(window, each) -> None:
+    """LONG_STEPS: 60 oaks along LONG_TILES, 60 palms along LONG_SHIFTED, then
+    that stroke's undo and redo. Every oracle level is re-rendered right
+    before each step; each(step, act) runs it."""
+    acts = (
+        lambda: _draw(window, FOREST_OAK, LONG_TILES),
+        lambda: _draw(window, FOREST_PALM, LONG_SHIFTED),
+        window.undo,
+        window.redo,
+    )
+    for step, act in zip(LONG_STEPS, acts, strict=True):
+        _render_levels(window)
+        each(step, act)
+
+
+def _inside(outer, inner) -> bool:
+    return outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3]
+
+
+def _mip0_chunks(window) -> set:
+    return {key for key in window._cache._cache if key[0] == 0}
+
+
+@pytest.mark.parametrize("style", ["Stepped", "FlatIso", "Sloped"])
+def test_an_over_ratio_batch_patches_one_rect_per_chunk_and_evicts_nothing_at_the_visible_level(
+    style, blended_trees, monkeypatch
+) -> None:
+    """A Draw stroke end, a second one over it, its undo and its redo, each
+    past the area ratio and past UNIT_SPLICE_MAX_UNITS, sprites and blending
+    on. Stepped (and Flat + Isometric View, the same cache) evicts no chunk of
+    the visible level: it composites one rect per chunk the edit reaches, all
+    of them inside the bbox Qt repaints and together smaller than it. The
+    other resident levels are still evicted, and every level matches a fresh
+    build. Sloped keeps evicting."""
+    from descape import render
+
+    window = _blended_window(style, monkeypatch, "rects")
+    try:
+        cache = window._cache
+        assert render.blend_effective(cache.layers)
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        evictions = _spy_all_evictions(window, monkeypatch)
+        regions = _spy_qt_regions(window, monkeypatch)
+        others = tuple(mip for mip in sorted(_oracle_levels(window)) if mip != 0)
+        assert others
+
+        def each(step, act):
+            resident = _mip0_chunks(window)
+            for spy in (rect_patches, evictions, regions):
+                del spy[:]
+            act()
+            visible = [bbox for bbox, levels in evictions if levels is None or 0 in levels]
+            assert [levels for _bbox, levels in evictions if levels is not None and 0 not in levels] == [others], (
+                f"{step}: {evictions}"
+            )
+            if style == "Sloped":
+                assert rect_patches == [] and visible == [regions[-1]], f"{step}: {rect_patches} {visible}"
+            else:
+                assert visible == [], f"{step}: evicted {visible} at the visible level"
+                (call,) = rect_patches
+                assert call["levels"] == (0,) and call["terrain_current"], f"{step}: {call}"
+                rects, bbox = call["rects"], regions[-1]
+                assert len(rects) > 1, f"{step}: {rects}"
+                assert all(_inside(bbox, rect) for rect in rects), f"{step}: a rect leaves the repainted {bbox}"
+                area = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects)
+                assert area < (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]), f"{step}: the rects save nothing"
+                # Every chunk is resident, so each per-chunk rect is exactly one composite.
+                assert len(call["composites"]) == len(rects), f"{step}: {call['composites']}"
+                assert _mip0_chunks(window) == resident, f"{step}: the visible level's chunks changed"
+            _check_against_fresh(window, step)
+
+        _long_batches(window, each)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_rects_repaint_the_same_qt_region_as_the_eviction(blended_trees, monkeypatch) -> None:
+    """What Qt is told to repaint does not depend on how the visible level's
+    chunks were brought up to date: the same strokes, undo and redo ask for
+    the same bbox whether the batch patched rects or evicted."""
+    _seed_planner(monkeypatch)
+    asked = {}
+    for repaint in ("rects", "evict"):
+        window = _blended_window("Stepped", monkeypatch, repaint)
+        try:
+            regions = _spy_qt_regions(window, monkeypatch)
+            rect_patches = _spy_rect_patches(window, monkeypatch)
+            asked[repaint] = []
+
+            def each(step, act, regions=regions, repaint=repaint):
+                act()
+                asked[repaint].append((step, regions[-1]))
+
+            _long_batches(window, each)
+            assert len(rect_patches) == (len(LONG_STEPS) if repaint == "rects" else 0)
+        finally:
+            window.edit_history.mark_saved()
+            window.close()
+    assert asked["rects"] == asked["evict"]
+
+
+@pytest.mark.parametrize("broken", BLENDED_STEPS)
+def test_the_blended_check_names_the_one_step_whose_rects_fell_short(broken, blended_trees, monkeypatch) -> None:
+    """Control (GOTCHAS: a step-k break fails naming step k): on step `broken`
+    only, every per-chunk rect loses its right half, where the stroke's oaks
+    stand on what was grass (on the left they replace palms, and the
+    synthetic art gives every tree the same sprite)."""
+    window = _blended_window("Stepped", monkeypatch, "rects")
+    try:
+        real = window._unit_edit_chunk_rects
+        current = {}
+
+        def chunk_rects(*args, **kwargs):
+            rects = real(*args, **kwargs)
+            if current.get("step") != broken:
+                return rects
+            return [(x0, y0, (x0 + x1) // 2, y1) for x0, y0, x1, y1 in rects]
+
+        monkeypatch.setattr(window, "_unit_edit_chunk_rects", chunk_rects)
+        with pytest.raises(AssertionError, match=f"{broken}: mip 0 differs"):
+            _blended_history(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_one_tile_wide_stroke_edge_is_repainted_with_its_blended_neighbours(blended_trees, monkeypatch) -> None:
+    """Undo and redo of a stroke whose terrain includes a one-tile-wide run
+    with no unit on it, in a block of tiles of its own: under blending its 8
+    neighbours change with it, and only the one-tile dilation inside
+    dirty_screen_bbox_iso() puts them in that block's rect."""
+    from descape import render
+
+    window = _blended_window("Stepped", monkeypatch, "rects")
+    try:
+        assert render.blend_effective(window._cache.layers)
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        _blocked_stroke_history(window, monkeypatch, block=EDGE_TILES)
+        # The undo and the redo (the stroke itself, with no chunk resident yet, takes the reach fallback).
+        assert len(rect_patches) == 2 and all(call["composites"] for call in rect_patches), rect_patches
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", ["undo", "redo"])
+def test_the_stroke_edge_check_fails_if_a_block_rect_loses_its_one_tile_ring(
+    broken, blended_trees, monkeypatch
+) -> None:
+    """Control: on step `broken` only, each block's rect is sized from its
+    dirty tiles as they are, without the one-tile dilation
+    dirty_screen_bboxes_iso_grouped() gives them, as dirty_screen_bbox_iso()
+    does (the same sweep, over the dirty tiles alone). The edge run's blended
+    neighbours then stay stale."""
+    import descape.viewer as viewer_module
+    from descape import iso_geometry, render
+
+    window = _blended_window("Stepped", monkeypatch, "rects")
+    try:
+        assert render.blend_effective(window._cache.layers)
+        real_grouped = viewer_module.dirty_screen_bboxes_iso_grouped
+        state = {"bare": 0}
+        current = {}
+
+        def bare_grouped(scenario, groups, elevations, proj, **kwargs):
+            boxes = real_grouped(scenario, groups, elevations, proj, **kwargs)
+            if current.get("step") != broken:
+                return boxes
+            width = scenario.map_manager.map_width
+            bare = []
+            for group, box in zip(groups, boxes, strict=True):
+                idx = np.unique(np.asarray(list(group), dtype=np.int64))
+                xs, ys = idx % width, idx // width
+                lo, hi = render._observed_elevation_range(elevations, {}, xs, ys)
+                x0, y0, x1, y1 = iso_geometry.tile_screen_bounds_over(xs, ys, lo, hi, proj)
+                bare.append((int(x0.min()), int(y0.min()), int(x1.max()), int(y1.max())))
+                assert _inside(box, bare[-1]) and bare[-1] != box, (box, bare[-1])
+            state["bare"] += len(bare)
+            return bare
+
+        monkeypatch.setattr(viewer_module, "dirty_screen_bboxes_iso_grouped", bare_grouped)
+        with pytest.raises(AssertionError, match=f"{broken}: mip 0 differs"):
+            _blocked_stroke_history(
+                window, monkeypatch, before_step=lambda step: current.update(step=step), block=EDGE_TILES
+            )
+        # One block for the edge run, one for the trees.
+        assert state["bare"] == 2, state
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("history", ["long", "blocked"])
+@pytest.mark.parametrize("style", ["Stepped", "FlatIso"])
+def test_the_block_rects_are_what_one_bbox_call_per_block_sizes(style, history, blended_trees, monkeypatch) -> None:
+    """The grouped pass and the per-block dirty_screen_bbox_iso() calls it
+    replaced (still the path when it declines) hand cache.chunk_rects() the
+    same rects: over two long batches, an undo and a redo (`long`), and over
+    a history move that carries terrain tiles past its units (`blocked`)."""
+    import descape.viewer as viewer_module
+
+    window = _blended_window(style, monkeypatch, "rects")
+    try:
+        real_rects, real_chunk = window._unit_edit_chunk_rects, window._cache.chunk_rects
+        real_bbox = viewer_module.dirty_screen_bbox_iso
+        seen = {"sized": [], "per_block": 0, "compared": 0}
+
+        def chunk_rects(rects, mip):
+            seen["sized"].append(sorted(rects))
+            return real_chunk(rects, mip)
+
+        def per_block(*args, **kwargs):
+            seen["per_block"] += 1
+            return real_bbox(*args, **kwargs)
+
+        def both(blocks, terrain_tiles, visible_mip):
+            del seen["sized"][:]
+            seen["per_block"] = 0
+            with monkeypatch.context() as patch:
+                patch.setattr(viewer_module, "dirty_screen_bboxes_iso_grouped", lambda *a, **k: None)
+                patch.setattr(viewer_module, "dirty_screen_bbox_iso", per_block)
+                slow = real_rects(blocks, terrain_tiles, visible_mip)
+            assert seen["per_block"] >= 1, "the declined pass made no per-block call"
+            calls = seen["per_block"]
+            fast = real_rects(blocks, terrain_tiles, visible_mip)
+            assert seen["per_block"] == calls, "the grouped pass fell back to the per-block calls"
+            assert seen["sized"][0] == seen["sized"][1] and seen["sized"][0], seen["sized"]
+            assert fast == slow and fast
+            seen["compared"] += 1
+            return fast
+
+        monkeypatch.setattr(window._cache, "chunk_rects", chunk_rects)
+        monkeypatch.setattr(window, "_unit_edit_chunk_rects", both)
+        if history == "long":
+            _long_batches(window, lambda step, act: (act(), _check_against_fresh(window, step)))
+            assert seen["compared"] == len(LONG_STEPS)
+        else:
+            _blocked_stroke_history(window, monkeypatch, block=EDGE_TILES)
+            # The undo and the redo (the stroke itself, with no chunk resident yet, takes the reach fallback).
+            assert seen["compared"] == 2, seen["compared"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("side", ["within", "past"])
+def test_a_batch_patches_its_rects_up_to_the_rect_ratio_and_evicts_past_it(side, blended_trees, monkeypatch) -> None:
+    """The production choice at a finite ratio: for each of LONG_STEPS'
+    batches the ratio is set half a level pixel either side of what its own
+    rects price at. Within it the batch patches them; past it, it evicts the
+    union bbox and patches nothing. Every level matches a fresh build either
+    way."""
+    import descape.viewer as viewer_module
+
+    window = _blended_window("Stepped", monkeypatch, "rects")
+    try:
+        cache = window._cache
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        evictions = _spy_evictions(window, monkeypatch)
+        real = window._unit_edit_chunk_rects
+        priced = []
+
+        def chunk_rects(blocks, terrain_tiles, visible_mip):
+            rects = real(blocks, terrain_tiles, visible_mip)
+            _mip, cx0, cy0, cx1, cy1 = window.map_view.viewport_chunk_target()
+            visible = (cx1 - cx0 + 1) * (cy1 - cy0 + 1) * cache.chunk_px**2
+            area = sum(cache.patch_area(rect, levels=(visible_mip,)) for rect in rects)
+            assert 0 < area < visible, (area, visible)
+            priced.append(area / visible)
+            nudge = 0.5 if side == "within" else -0.5
+            monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", (area + nudge) / visible)
+            return rects
+
+        monkeypatch.setattr(window, "_unit_edit_chunk_rects", chunk_rects)
+
+        def each(step, act):
+            del rect_patches[:], evictions[:]
+            sized = len(priced)
+            act()
+            assert len(priced) == sized + 1, f"{step}: the batch never sized its rects"
+            if side == "within":
+                assert len(rect_patches) == 1 and evictions == [], f"{step}: {rect_patches} {evictions}"
+            else:
+                assert rect_patches == [] and len(evictions) == 1, f"{step}: {rect_patches} {evictions}"
+            _check_against_fresh(window, step)
+
+        _long_batches(window, each)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", ["undo", "redo"])
+def test_the_blocked_stroke_check_names_the_step_whose_terrain_tiles_were_dropped(
+    broken, tree_sprites, monkeypatch
+) -> None:
+    """Control for the rects' terrain term: on step `broken` only, the split
+    gets the history move's terrain bbox but not its tiles, so the rects are
+    sized from the units alone and the terrain past them stays stale."""
+    _pin_area_ratio(monkeypatch, 0, rects=float("inf"))
+    window = _over_cap_window("Stepped", monkeypatch)
+    try:
+        real = window._repaint_unit_edit_split
+        current = {}
+
+        def split(*args, terrain_tiles=None, **kwargs):
+            return real(*args, terrain_tiles=None if current.get("step") == broken else terrain_tiles, **kwargs)
+
+        monkeypatch.setattr(window, "_repaint_unit_edit_split", split)
+        with pytest.raises(AssertionError, match=f"{broken}: mip 0 differs"):
+            _blocked_stroke_history(window, monkeypatch, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_terrain_bbox_that_comes_without_its_tiles_keeps_the_eviction(tree_sprites, monkeypatch) -> None:
+    """A caller that defers a terrain bbox but hands over no tiles cannot be
+    sized per block, so the batch evicts the union bbox as before."""
+    from descape.render_cache import UnitSplice
+
+    _pin_area_ratio(monkeypatch, 0, rects=float("inf"))
+    window = _over_cap_window("Stepped", monkeypatch)
+    try:
+        _render_levels(window)
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        evictions = _spy_evictions(window, monkeypatch)
+        mm = window.scenario.map_manager
+        dirty = [y * mm.map_width + x for x, y in STROKE_TILES]
+        for i in dirty:
+            mm.terrain[i].terrain_id = FOREST_PALM
+        deferred: list = []
+        assert window._apply_dirty(dirty, deferred=deferred) is False and len(deferred) == 1
+        model = window._ensure_unit_edits()
+        model.begin_unit_edit([1])
+        unit = model.add(1, CONST, 60.5, 60.5)
+        model.commit_unit_edit("Add", window.edit_history)
+        own, tiles = window._unit_footprint(unit)
+        window._after_unit_mutation(
+            [UnitSplice(1, 0, unit, None, own, (), tiles)], batch=True, terrain_bbox=deferred[0]
+        )
+        assert rect_patches == [] and len(evictions) == 1, (rect_patches, evictions)
+        _check_against_fresh(window, "no tiles")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_over_ratio_erase_flush_re_reads_the_layer_under_its_rects(blended_trees, monkeypatch) -> None:
+    """The Erase flush and its stroke end vouch for no terrain (Terrain
+    Overlay wrote `layer = -1` live), so their rects re-read both mirrors
+    before compositing, the visible level being the only resident one, so
+    with no other eviction to re-read them first. Pinned by the flag alone:
+    each call's own _apply_dirty() over the cleared tiles shows the layer
+    whether or not the rects re-read."""
+    import sys
+
+    from descape import render
+
+    # One oracle level: _render_levels() and _check_against_fresh() then leave no second level resident.
+    monkeypatch.setattr(sys.modules[__name__], "_oracle_levels", lambda _window: (0,))
+    window = _blended_window("Stepped", monkeypatch, "rects")
+    try:
+        assert render.blend_effective(window._cache.layers)
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        evictions = _spy_all_evictions(window, monkeypatch)
+        _overlay_erase(window)
+        assert window._cache.resident_levels() == [0]
+        assert evictions == [], evictions
+        # The flush and the Erase stroke's end (the setup stroke, with no chunk resident yet, took the reach fallback).
+        assert [call["terrain_current"] for call in rect_patches] == [False, False], rect_patches
+        assert all(call["composites"] for call in rect_patches)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_rects_skip_a_chunk_that_is_not_resident_and_patch_resident_ones_off_the_viewport(
+    blended_trees, monkeypatch
+) -> None:
+    """The viewport shows one chunk of a fully resident level, except one
+    chunk under the stroke, which is not cached. The rects are composited
+    into every resident chunk they reach, on screen or not, and never into
+    the missing one, which stays missing until it is next asked for."""
+    from descape import iso_geometry
+
+    window = _blended_window("Stepped", monkeypatch, "rects")
+    try:
+        cache = window._cache
+        _draw(window, FOREST_OAK, LONG_TILES)
+        _render_levels(window)
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (0, 0, 0, 0, 0))
+        size = cache.chunk_px
+        px, py = (int(v) for v in iso_geometry.tile_screen_origin(*LONG_SHIFTED[30], 0, cache.proj))
+        missing = (0, px // size, py // size)
+        cache.invalidate_region((px, py, px + 1, py + 1), levels=(0,), terrain_changed=False)
+        assert missing not in cache._cache and missing[1:] != (0, 0)
+        resident = _mip0_chunks(window)
+        rect_patches = _spy_rect_patches(window, monkeypatch)
+        evictions = _spy_evictions(window, monkeypatch)
+
+        _draw(window, FOREST_PALM, LONG_SHIFTED)
+
+        (call,) = rect_patches
+        assert evictions == []
+        ox, oy = missing[1] * size, missing[2] * size
+        under = [r for r in call["rects"] if r[0] < ox + size and r[2] > ox and r[1] < oy + size and r[3] > oy]
+        assert under, "no rect reached the missing chunk, so nothing was at risk"
+        assert _mip0_chunks(window) == resident, "a chunk was evicted, or the missing one was built"
+        patched = {(x0 // size, y0 // size) for mip, x0, y0, _x1, _y1 in call["composites"] if mip == 0}
+        assert missing[1:] not in patched
+        assert patched - {(0, 0)}, f"no resident chunk off the viewport was patched: {patched}"
+        _check_against_fresh(window, "stroke")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_chunk_rects_keeps_one_rect_per_chunk_and_clips_to_the_level(tree_sprites, monkeypatch) -> None:
+    """cache.chunk_rects(): overlapping rects in one chunk become their bbox,
+    a rect across a chunk edge one rect on each side, and whatever lies off
+    the level's canvas is dropped. At a coarser level the answer is still in
+    reference pixels."""
+    window = _over_cap_window("Stepped", monkeypatch)
+    try:
+        cache = window._cache
+        size = cache.chunk_px
+        canvas_w, canvas_h = cache.canvas_dims(0)
+        assert canvas_w > 2 * size and canvas_h > size
+        rects = [(10, 10, 60, 40), (50, 30, 90, 80), (size - 20, 100, size + 30, 140)]
+        assert cache.chunk_rects(rects, 0) == [
+            (10, 10, size, 140), (size, 100, size + 30, 140)
+        ]
+        assert cache.chunk_rects([(-50, -50, 20, 30), (canvas_w - 5, 0, canvas_w + 99, 9)], 0) == [
+            (0, 0, 20, 30), (canvas_w - 5, 0, canvas_w, 9)
+        ]
+        assert cache.chunk_rects([(-9, -9, 0, 0), (canvas_w, 0, canvas_w + 5, 5), (7, 7, 7, 9)], 0) == []
+        scale = cache.mip_tile_px(0) // cache.mip_tile_px(-1)
+        assert scale > 1
+        edge = size * scale
+        assert cache.chunk_rects([(edge - scale, 0, edge + scale, scale)], -1) == [
+            (edge - scale, 0, edge, scale), (edge, 0, edge + scale, scale)
+        ]
     finally:
         window.edit_history.mark_saved()
         window.close()

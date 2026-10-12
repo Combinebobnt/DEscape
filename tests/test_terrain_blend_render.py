@@ -13,7 +13,10 @@ numpy path on blended rects, on the GUI thread and in a worker's chunk job.
 
 from __future__ import annotations
 
+import ast
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -79,6 +82,48 @@ def backend(request):
         pytest.skip(composite_backend.unavailable_reason)
     with composite_backend.use_backend(request.param):
         yield request.param
+
+
+@pytest.fixture(autouse=True)
+def blend_keys_match_the_mirrors(monkeypatch):
+    """Every composite's blend keys, whichever entry point asked for them,
+    equal influences() over the very mirrors it was handed. That makes each
+    stroke, undo, patch, evict and farm-move case in a module using this
+    fixture a check of the cache's key map at that state.
+
+    Yields the counters: `composites` checked, and `derives`, the
+    influences() calls the product path made (the check's own are not counted).
+    A failed check is also kept on `failures` and re-raised at teardown, since
+    MarginWarmer's tick catches Exception around its composites and only logs."""
+    seen = SimpleNamespace(composites=0, derives=0, inside=False, failures=[])
+    real_keys, real_influences = render._rect_blend_keys, terrain_blend.influences
+
+    def influences(*args, **kwargs):
+        seen.derives += seen.inside
+        return real_influences(*args, **kwargs)
+
+    def checked(scenario, candidates, layers, terrain_ids, layer_ids, key_map=None):
+        seen.inside = True
+        try:
+            blend = real_keys(scenario, candidates, layers, terrain_ids, layer_ids, key_map)
+        finally:
+            seen.inside = False
+        if candidates.shape[0] and render.blend_effective(layers):
+            try:
+                # influences() also raises on a candidate off the map, which the gather would wrap.
+                want = render._blend_keys(scenario, candidates[:, 0], candidates[:, 1], terrain_ids, layer_ids)
+                got = [None] * len(want) if blend is None else blend.as_list()
+                assert got == want, "a composite's blend keys disagree with influences() over its own mirrors"
+            except Exception as exc:
+                seen.failures.append(exc)
+                raise
+            seen.composites += 1
+        return blend
+
+    monkeypatch.setattr(terrain_blend, "influences", influences)
+    monkeypatch.setattr(render, "_rect_blend_keys", checked)
+    yield seen
+    assert not seen.failures, f"{len(seen.failures)} blend key check(s) failed, first: {seen.failures[0]!r}"
 
 
 def _with_layers(scenario):
@@ -345,7 +390,7 @@ def test_a_blended_chunk_job_matches_numpy(native_kernel, blend_install, kind): 
         key = _chunk_of_tile(cache, EDIT_X, EDIT_Y)
         job = cache.prepare_chunk_job(*key)
         assert job is not None, "no worker-safe path for a blended chunk"
-        blend = job.args[-1]
+        blend = job.args[-2]  # two_pass follows it
         assert blend is not None and (blend[0] >= 0).any(), "the job blends no candidate -- vacuous"
         ran = []
         worker = threading.Thread(target=lambda: ran.append(job.run()))
@@ -372,5 +417,258 @@ def test_a_mask_the_kernel_cannot_crop_falls_back_per_tile(native_kernel, blend_
     _assert_backends_agree(lambda *r: cache._composite_rect(0, *r), _rects(cache, 0, anchors))
     tids = np.array(TERRAIN_IDS)
     _slots, tex_tables, uniq = native_composite._textures(tids, 32, True, [LAYER_ID])
-    key = (int(tids[0]), LAYER_ID, ())
-    assert native_composite._blend_tables([key], tids[:1], None, 32, tex_tables, uniq) is native_composite.UNCOMPOSABLE
+    blend = _rect_keys([(int(tids[0]), LAYER_ID, ())])
+    assert native_composite._blend_tables(blend, tids[:1], None, 32, tex_tables, uniq) is native_composite.UNCOMPOSABLE
+
+
+def _rect_keys(keys: list) -> terrain_blend.RectKeys:
+    """RectKeys over `keys` (None for no key), one candidate each."""
+    key_map = terrain_blend.KeyMap(len(keys), 1)
+    return terrain_blend.RectKeys(key_map.lookup(np.arange(len(keys)), lambda _xs, _ys: keys), key_map)
+
+
+def test_blend_tables_build_one_spec_per_distinct_composing_key(blend_install):
+    """Without a farm pack (overridden None): a keyless candidate, a key
+    whose own tid is not the tid its crop reads, and two candidates sharing
+    a key. Farm-overridden candidates drop out, and their tids still get
+    texture slots."""
+    a, b, c = TERRAIN_IDS[:3]
+    shared = (a, LAYER_ID, ((b, 2, 4),))
+    keys = [None, shared, (c, -1, ((b, 2, 5),)), shared, (b, -1, ((c, 2, 6),))]
+    blend = _rect_keys(keys)
+    assert blend.ids.tolist() == [terrain_blend.NO_KEY, 0, 1, 0, 2]
+    base = np.array([a, a, a, a, b])  # candidate 2's key names c, its crop reads a
+    assert native_composite._blend_extra_tids(blend) == sorted({LAYER_ID, b, c})
+    assert native_composite._blend_extra_tids(None) == []
+    _slots, tex_tables, uniq = native_composite._textures(base, 32, True, native_composite._blend_extra_tids(blend))
+    slot = {int(t): i for i, t in enumerate(uniq.tolist())}
+    cand, starts, ops, masks = native_composite._blend_tables(blend, base, None, 32, tex_tables, uniq)
+    assert cand.tolist() == [-1, 0, -1, 0, 1] and cand.dtype == np.int32
+    assert starts.tolist() == [0, 2, 3]
+    kinds_slots = ops.reshape(-1, 3)[:, :2].tolist()
+    assert kinds_slots == [
+        [native_composite.BLEND_LAYER, slot[LAYER_ID]], [native_composite.BLEND_NEIGHBOUR, slot[b]],
+        [native_composite.BLEND_NEIGHBOUR, slot[c]],
+    ]
+    assert len(masks) == 3
+
+    farm = np.array([False, True, False, True, False])
+    cand, starts, _ops, _masks = native_composite._blend_tables(blend, base, farm, 32, tex_tables, uniq)
+    assert cand.tolist() == [-1, -1, -1, -1, 0] and starts.tolist() == [0, 1]
+    assert native_composite._blend_tables(blend, base, np.ones(5, dtype=bool), 32, tex_tables, uniq) is None
+
+
+# --- the cache's blend key map (TASK-031.63) ---
+
+
+def _chunk_rects(cache, mip: int = 0) -> list:
+    cw, ch = cache.canvas_dims(mip)
+    p = cache.chunk_px
+    return [cache._chunk_rect(mip, cx, cy) for cy in range(-(-ch // p)) for cx in range(-(-cw // p))]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_second_pass_derives_no_key_and_paints_the_same(blend_install, backend, kind, blend_keys_match_the_mirrors):
+    """A level composited twice: the first pass fills the cache's key map,
+    the second calls influences() zero times and returns the same pixels,
+    and the stitched level still equals the full render. Fails if the map
+    is rebound (so reset) on every call."""
+    seen = blend_keys_match_the_mirrors
+    scenario = _scenario(kind)
+    cache = _cache(kind, scenario)
+    rects = _chunk_rects(cache)
+    first = [cache._composite_rect(0, *r) for r in rects]
+    # An iso canvas corner rect can hold no tile at all, so not every rect is a checked composite.
+    assert seen.derives > 0 and 0 < seen.composites <= len(rects), (seen.derives, seen.composites)
+    key_map = cache._blend_key_map
+    assert (key_map.ids >= 0).any() and not (key_map.ids == terrain_blend.UNKNOWN).any()
+    seen.derives = 0
+    second = [cache._composite_rect(0, *r) for r in rects]
+    assert seen.derives == 0, f"{seen.derives} influences() calls on a warm key map"
+    assert cache._blend_key_map is key_map
+    for rect, a, b in zip(rects, first, second, strict=True):
+        assert np.array_equal(a, b), rect
+    _assert_equal(_stitched(cache), _full(kind, scenario), f"{kind} on {backend}, warm key map")
+
+
+@pytest.mark.parametrize("kind", ["stepped", "sloped"])
+def test_an_elevation_only_wholesale_refresh_keeps_every_key(blend_install, backend, kind, blend_keys_match_the_mirrors):
+    """refresh_wholesale() re-reads both mirrors over the whole map; with no
+    terrain id or layer changed it must invalidate no key, so the
+    recomposite it forces derives nothing."""
+    seen = blend_keys_match_the_mirrors
+    scenario = _scenario(kind)
+    mm = scenario.map_manager
+    cache = _cache(kind, scenario)
+    before = _stitched(cache).copy()
+    key_map = cache._blend_key_map
+    filled = key_map.ids != terrain_blend.UNKNOWN
+    assert filled.all(), "the whole level was composited, so every tile should have been derived"
+
+    dirty = [y * mm.map_width + x for x in range(EDIT_X - 2, EDIT_X + 3) for y in range(EDIT_Y - 2, EDIT_Y + 3)]
+    for i in dirty:
+        mm.terrain[i].elevation = (mm.terrain[i].elevation + 3) % 6
+    assert cache.refresh_wholesale(dirty) is True
+    assert cache._blend_key_map is key_map and not (key_map.ids == terrain_blend.UNKNOWN).any()
+    seen.derives = seen.composites = 0
+    after = _stitched(cache)
+    assert seen.composites > 0 and seen.derives == 0, (seen.composites, seen.derives)
+    assert not np.array_equal(after, before), "the elevation edit changed no pixel (vacuous)"
+    with composite_backend.use_backend("numpy"):
+        want = _stitched(_cache(kind, scenario))
+    _assert_equal(after, want, f"{kind} after an elevation-only wholesale refresh on {backend}")
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_rebound_blend_table_reaches_a_warm_cache(blend_install, backend, kind, monkeypatch):
+    """The key map is bound to BLEND_TABLE by identity: with the table
+    replaced and the chunks evicted WITHOUT a mirror re-read
+    (terrain_changed=False), nothing but that binding can drop the old keys."""
+    scenario = _scenario(kind)
+    cache = _cache(kind, scenario)
+    before = _stitched(cache).copy()
+    table = terrain_blend.BLEND_TABLE
+    top = max(e.priority for e in table.values())
+    flipped = {tid: BlendEntry(top + 10 - e.priority, e.blend_type, e.overlay_mask) for tid, e in table.items()}
+    monkeypatch.setattr(terrain_blend, "BLEND_TABLE", flipped)
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
+    after = _stitched(cache)
+    assert not np.array_equal(after, before), "flipping every priority changed no pixel (vacuous)"
+    _assert_equal(after, _full(kind, scenario), f"{kind} on {backend} after a BLEND_TABLE swap")
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_replaced_mirrors_reach_a_warm_cache(blend_install, backend, kind):
+    """The key map is bound to both mirror arrays by identity: a tile
+    repainted, the mirrors replaced by fresh reads and the chunks evicted
+    WITHOUT a re-read (terrain_changed=False), so no invalidate() runs and
+    nothing but that binding can drop the old keys."""
+    scenario = _scenario(kind)
+    mm = scenario.map_manager
+    cache = _cache(kind, scenario)
+    before = _stitched(cache).copy()
+    key_map = cache._blend_key_map
+    mm.terrain[EDIT_Y * mm.map_width + EDIT_X].terrain_id = NEW_TERRAIN_ID
+    cache._terrain_ids = render.tile_field_mirror(scenario, "terrain_id")
+    cache._layer_ids = render.tile_field_mirror(scenario, "layer")
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
+    after = _stitched(cache)
+    assert cache._blend_key_map is key_map, "the cache made a new map, so the binding was not what dropped the keys"
+    assert not np.array_equal(after, before), "the repaint changed no pixel (vacuous)"
+    _assert_equal(after, _full(kind, scenario), f"{kind} on {backend} after both mirrors were replaced")
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_rebound_derive_function_reaches_a_warm_cache(blend_install, backend, kind, monkeypatch):
+    """The key map is bound to render._blend_keys by identity too (the
+    review pack's one-tile-plain inject rebinds it): with a derive that
+    gives no tile a key, a warm cache repaints unblended like the full
+    render, not from the keys it already held."""
+    scenario = _scenario(kind)
+    cache = _cache(kind, scenario)
+    before = _stitched(cache).copy()
+    monkeypatch.setattr(render, "_blend_keys", lambda _scenario, xs, _ys, *_mirrors: [None] * len(xs))
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
+    after = _stitched(cache)
+    assert not np.array_equal(after, before), "dropping every key changed no pixel (vacuous)"
+    _assert_equal(after, _full(kind, scenario), f"{kind} on {backend} after _blend_keys was rebound")
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_cache_whose_key_map_keeps_resetting_paints_the_same(blend_install, backend, kind, monkeypatch):
+    """Past KEY_MAP_MAX_SPECS the map starts over inside lookup(). With the
+    cap at 4 a level's composites cross it again and again, and the stitched
+    level still equals the full render: no composite reads an id from a
+    table that was reset under it."""
+    resets = []
+    real_reset = terrain_blend.KeyMap.reset
+    monkeypatch.setattr(terrain_blend.KeyMap, "reset", lambda self: (resets.append(1), real_reset(self))[1])
+    monkeypatch.setattr(terrain_blend, "KEY_MAP_MAX_SPECS", 4)
+    scenario = _scenario(kind)
+    cache = _cache(kind, scenario)
+    resets.clear()
+    got = _stitched(cache)
+    assert len(resets) >= 2, f"{len(resets)} reset(s): the cap was not crossed repeatedly (vacuous)"
+    _assert_equal(got, _full(kind, scenario), f"{kind} on {backend} with the key map resetting")
+
+
+def test_a_flat_patch_derives_its_keys_in_one_call(blend_install, backend, blend_keys_match_the_mirrors):
+    """Flat patches one tile rect at a time; the keys an edit invalidated
+    are derived once for all of them, not once per rect, and the patched
+    canvas equals a fresh cache."""
+    seen = blend_keys_match_the_mirrors
+    scenario = _scenario("flat")
+    mm = scenario.map_manager
+    cache = _cache("flat", scenario)
+    before = _stitched(cache).copy()
+    tiles = [(EDIT_X + dx, EDIT_Y + dy) for dx in range(4) for dy in range(3)]
+    for x, y in tiles:
+        mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
+    rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, cache.tile_px, cache.layers)
+    assert len(rects) == 6 * 5, "the dirty set was not dilated by the ring"
+    seen.derives = seen.composites = 0
+    cache.patch_rects(rects)
+    assert seen.derives == 1 and seen.composites == len(rects) + 1, (seen.derives, seen.composites)
+    after = _stitched(cache)
+    assert not np.array_equal(after, before), "the edit changed no pixel (vacuous)"
+    with composite_backend.use_backend("numpy"):
+        want = _stitched(_cache("flat", scenario))
+    _assert_equal(after, want, f"flat after a 12-tile edit on {backend}")
+
+
+MIRRORS = ("_terrain_ids", "_layer_ids")
+# The names the same arrays travel under once a cache has passed them on.
+MIRROR_NAMES = ("terrain_ids", "layer_ids", "tid_mirror", "layer_mirror")
+IN_PLACE_METHODS = ("fill", "put", "itemset", "sort", "partition", "resize", "setfield", "byteswap")
+IN_PLACE_FUNCTIONS = ("put", "copyto", "place", "putmask", "put_along_axis")
+
+
+def _in_place_mirror_writes() -> list[tuple[str, str, str]]:
+    """(file, enclosing function, mirror) for every in-place write to a
+    chunk cache's terrain mirrors under descape/, as an attribute or under
+    a name they are passed on as: a subscript assignment, an augmented
+    assignment, a mutating ndarray method, or a numpy function that writes
+    its first argument."""
+    found = []
+    for path in sorted((Path(render.__file__).parent).glob("*.py")):
+        tree = ast.parse(path.read_text())
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+        def owner(node, parents=parents) -> str:
+            while node in parents:
+                node = parents[node]
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return node.name
+            return "<module>"
+
+        def mirror(node) -> str | None:
+            if isinstance(node, ast.Attribute) and node.attr in MIRRORS:
+                return node.attr
+            return node.id if isinstance(node, ast.Name) and node.id in MIRROR_NAMES else None
+
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    names.extend(mirror(sub.value) for sub in ast.walk(target) if isinstance(sub, ast.Subscript))
+                if isinstance(node, ast.AugAssign):
+                    names.append(mirror(node.target))
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in IN_PLACE_METHODS:
+                    names.append(mirror(node.func.value))
+                if node.func.attr in IN_PLACE_FUNCTIONS and node.args:
+                    names.append(mirror(node.args[0]))
+            found.extend((path.name, owner(node), name) for name in names if name)
+    return found
+
+
+def test_the_terrain_mirrors_have_one_in_place_writer():
+    """The key map is invalidated where the mirrors are written, which is
+    sound only while _refresh_terrain_ids() is the one place that writes
+    them in place. A new writer must invalidate the map itself, and then
+    belongs in this pin."""
+    assert sorted(_in_place_mirror_writes()) == [
+        ("render_cache.py", "_refresh_terrain_ids", "_layer_ids"),
+        ("render_cache.py", "_refresh_terrain_ids", "_terrain_ids"),
+    ]

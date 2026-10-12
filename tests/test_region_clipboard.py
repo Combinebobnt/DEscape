@@ -136,25 +136,72 @@ def test_paste_near_map_edge_writes_the_part_that_fits() -> None:
     # so reaching here at all is most of the assertion).
 
 
-def test_paste_resets_layer_to_minus_one() -> None:
+def _layered_source(mm, tx0: int, ty0: int) -> dict[tuple[int, int], tuple[int, int]]:
+    """Writes a 3x2 source at (tx0, ty0) whose (terrain_id, layer) pairs are
+    all different and asymmetric on both axes. Returns them by block offset."""
+    pairs = {(0, 0): (5, 9), (1, 0): (5, -1), (2, 0): (6, 11), (0, 1): (7, -1), (1, 1): (5, 12), (2, 1): (8, 9)}
+    for (dx, dy), (terrain_id, layer) in pairs.items():
+        tile = mm.terrain[(ty0 + dy) * mm.map_width + tx0 + dx]
+        tile.terrain_id, tile.layer = terrain_id, layer
+    return pairs
+
+
+def _pairs_at(mm, x0: int, y0: int, width: int, height: int) -> dict[tuple[int, int], tuple[int, int]]:
+    out = {}
+    for dy in range(height):
+        for dx in range(width):
+            tile = mm.terrain[(y0 + dy) * mm.map_width + x0 + dx]
+            out[(dx, dy)] = (tile.terrain_id, tile.layer)
+    return out
+
+
+def test_paste_carries_the_copied_layer() -> None:
     loaded = _load()
     mm = loaded.map_manager
-    tx0, ty0, tx1, ty1 = 20, 20, 22, 22
-    for y in range(ty0, ty1):
-        for x in range(tx0, tx1):
-            tile = mm.terrain[y * mm.map_width + x]
-            tile.terrain_id = 5
-            tile.layer = 9
-    block = copy_region(mm, loaded.unit_manager, tx0, ty0, tx1, ty1)
+    pairs = _layered_source(mm, 20, 20)
+    block = copy_region(mm, loaded.unit_manager, 20, 20, 23, 22)
+    assert block.layers == (9, -1, 11, -1, 12, 9)
+
+    dest_x, dest_y = 60, 60
+    for y in range(dest_y - 1, dest_y + 3):
+        for x in range(dest_x - 1, dest_x + 4):
+            mm.terrain[y * mm.map_width + x].layer = 3
+    paste_terrain(mm, block, dest_x, dest_y)
+    # A 9 and a -1 both land over the destination's 3: the layer is copied, not kept or reset.
+    assert _pairs_at(mm, dest_x, dest_y, 3, 2) == pairs
+    # The ring around the block keeps the destination's own layer.
+    ring = _pairs_at(mm, dest_x - 1, dest_y - 1, 5, 4)
+    assert all(layer == 3 for (dx, dy), (_id, layer) in ring.items() if not (1 <= dx <= 3 and 1 <= dy <= 2))
+
+
+def test_paste_with_carry_layer_off_writes_no_layer() -> None:
+    loaded = _load()
+    mm = loaded.map_manager
+    pairs = _layered_source(mm, 20, 20)
+    block = copy_region(mm, loaded.unit_manager, 20, 20, 23, 22)
 
     dest_x, dest_y = 60, 60
     for y in range(dest_y, dest_y + 2):
-        for x in range(dest_x, dest_x + 2):
+        for x in range(dest_x, dest_x + 3):
             mm.terrain[y * mm.map_width + x].layer = 3
-    paste_terrain(mm, block, dest_x, dest_y)
-    for y in range(dest_y, dest_y + 2):
-        for x in range(dest_x, dest_x + 2):
-            assert mm.terrain[y * mm.map_width + x].layer == -1
+    paste_terrain(mm, block, dest_x, dest_y, carry_layer=False)
+    assert _pairs_at(mm, dest_x, dest_y, 3, 2) == {
+        offset: (terrain_id, -1) for offset, (terrain_id, _layer) in pairs.items()
+    }
+
+
+def test_paste_clipped_at_a_negative_anchor_keeps_layers_aligned_with_ids() -> None:
+    loaded = _load()
+    mm = loaded.map_manager
+    pairs = _layered_source(mm, 20, 20)
+    block = copy_region(mm, loaded.unit_manager, 20, 20, 23, 22)
+
+    # Anchored at (-1, -1): the block's first row and first column fall off the map.
+    paste_terrain(mm, block, -1, -1)
+    assert _pairs_at(mm, 0, 0, 2, 1) == {(0, 0): pairs[(1, 1)], (1, 0): pairs[(2, 1)]}
+    # Nothing past the clipped block was written.
+    assert (mm.terrain[2].terrain_id, mm.terrain[2].layer) == (0, -1)
+    assert (mm.terrain[mm.map_width].terrain_id, mm.terrain[mm.map_width].layer) == (0, -1)
 
 
 # -- units ----------------------------------------------------------------

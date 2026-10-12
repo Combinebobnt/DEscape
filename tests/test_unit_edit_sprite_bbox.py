@@ -174,7 +174,9 @@ class _Spy:
         self.reach: list[tuple] = []
         # Where the last tight repaint's own calls start; terrain patches come before it.
         self.mark = 0
-        real_patch, real_evict = cache.patch, cache.invalidate_region
+        # Every patch_composite_rects() call: (rects, levels).
+        self.rects: list[tuple[list, tuple | None]] = []
+        real_patch, real_evict, real_rects = cache.patch, cache.invalidate_region, cache.patch_composite_rects
         real_before, real_bbox = cache.sprite_extent_before, window._unit_edit_bbox
 
         def patch(bbox, elevation_changed=None, levels=None, **kwargs):
@@ -184,6 +186,10 @@ class _Spy:
         def evict(bbox, levels=None, **kwargs):
             self.calls.append(("evict", bbox, None if levels is None else tuple(levels)))
             return real_evict(bbox, levels, **kwargs)
+
+        def patch_rects(rects, levels=None, **kwargs):
+            self.rects.append((list(rects), None if levels is None else tuple(levels)))
+            return real_rects(rects, levels=levels, **kwargs)
 
         def before(changed, mip):
             result = real_before(changed, mip)
@@ -201,6 +207,7 @@ class _Spy:
 
         monkeypatch.setattr(cache, "patch", patch)
         monkeypatch.setattr(cache, "invalidate_region", evict)
+        monkeypatch.setattr(cache, "patch_composite_rects", patch_rects)
         monkeypatch.setattr(cache, "sprite_extent_before", before)
         monkeypatch.setattr(window, "_unit_edit_bbox", unit_edit_bbox)
 
@@ -209,7 +216,19 @@ class _Spy:
         self.before.clear()
         self.tight.clear()
         self.reach.clear()
+        self.rects.clear()
         self.mark = 0
+
+    def assert_rects(self, mip: int) -> None:
+        """The visible level was patched by per-chunk rects, each inside the
+        tight bbox, and neither patched nor evicted any other way."""
+        assert self.tight, "the tight path never ran"
+        assert REACH_FALLBACK not in self.before
+        tight, _reach = self.tight[-1]
+        ((rects, levels),) = self.rects
+        assert levels == (mip,) and rects and all(_contains(tight, rect) for rect in rects), (tight, rects)
+        repaint = self.calls[self.mark :]
+        assert all(c[2] is not None and mip not in c[2] for c in repaint), repaint
 
     def assert_tight(self, mip: int) -> None:
         """The visible level was repainted with a bbox strictly inside
@@ -285,26 +304,36 @@ def _draw(window, terrain_id: int, tiles) -> None:
 
 
 def _ratio(monkeypatch, repaint: str) -> None:
-    """Forces a batch's outcome: patch everything, or evict everything."""
+    """Forces a batch's outcome: patch everything, evict everything, or
+    (`rects`, Stepped) patch per-chunk rects in place of that eviction."""
     import descape.viewer as viewer_module
 
     value = float("inf") if repaint == "patch" else 0.0
     monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
+    monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", float("inf") if repaint == "rects" else 0.0)
 
 
 # --- the fresh-render oracles ----------------------------------------------
 
 
+# Stepped also patches per-chunk rects (TASK-031.61 C1), at both of its levels.
+CONTESTED = [
+    (style, mip, repaint)
+    for style, mip in STYLE_MIPS
+    for repaint in ("patch", "evict", *(("rects",) if style == "Stepped" else ()))
+]
+
+
 @pytest.mark.parametrize("a_path", ["wholesale", "component"])
-@pytest.mark.parametrize("repaint", ["patch", "evict"])
-@pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+@pytest.mark.parametrize(("style", "mip", "repaint"), CONTESTED)
 def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_path, art, monkeypatch) -> None:
     """Stroke A crosses a villager's tile. It splices that shared tile's
     component, or with the component cap at 0 the cache rebuilds its sources
     wholesale and the post side must resolve a level with no post-edit layer.
     Stroke B replaces half of A's oaks with palms and plants the rest on
     grass: a splice. Undo removes palms with no replacement, which only the
-    pre side covers. Each is checked patched and evicted."""
+    pre side covers. Each is checked patched and evicted, and on Stepped
+    patched by per-chunk rects."""
     _ratio(monkeypatch, repaint)
     real_cap = render_cache._COMPONENT_SPLICE_MAX_UNITS
     if a_path == "wholesale":
@@ -318,6 +347,7 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
         window.paint_eye_candy_check.setChecked(False)
         _show_level(window, monkeypatch, mip)
         spy = _Spy(window, monkeypatch)
+        repainted = spy.assert_rects if repaint == "rects" else spy.assert_tight
         spliced = []
         real_plan = window._cache._unit_splice_plan
         # The plan invalidate_units() consumes, so each call is one splice-or-rebuild verdict.
@@ -328,24 +358,24 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
         _level(window, mip)
 
         _draw(window, FOREST_OAK, STROKE_TILES)
-        spy.assert_tight(mip)
+        repainted(mip)
         after_a = _check(window, mip, "stroke A")
         # Back to the real cap, so stroke B and the undo/redo run as they would.
         monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", real_cap)
         spy.reset()
         _draw(window, FOREST_PALM, SHIFTED_TILES)
-        spy.assert_tight(mip)
+        repainted(mip)
         after_b = _check(window, mip, "stroke B")
         assert not np.array_equal(after_a, after_b)
         assert spliced == [a_path == "component", True], f"stroke A must take the {a_path} path, stroke B splice"
 
         spy.reset()
         window.undo()
-        spy.assert_tight(mip)
+        repainted(mip)
         assert np.array_equal(_check(window, mip, "undo of B"), after_a)
         spy.reset()
         window.redo()
-        spy.assert_tight(mip)
+        repainted(mip)
         assert np.array_equal(_check(window, mip, "redo of B"), after_b)
     finally:
         conftest.close_window(window)
@@ -436,6 +466,8 @@ def test_the_tight_split_prices_its_batch_on_the_tight_ratio(tight, expected, ar
     import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": tight, "sloped": tight})
+    # No per-chunk rects (TASK-031.61 C1): past the ratio this evicts, as pinned.
+    monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", 0.0)
     window = _window("Stepped")
     try:
         window.mode_combo.setCurrentText("Terrain")
@@ -817,3 +849,51 @@ def test_flat_has_no_unit_edit_sprite_extent() -> None:
 def test_the_reach_fallback_sentinel_is_one_named_object() -> None:
     assert render_cache.REACH_FALLBACK is REACH_FALLBACK
     assert repr(REACH_FALLBACK) == "REACH_FALLBACK"
+
+
+FAR_OAK, BARE_LAYERED = (80, 60), (60, 90)
+
+
+def test_an_erase_flush_over_a_stale_level_still_repaints_its_erased_sprites(art, monkeypatch) -> None:
+    """Two flushes of one Eraser drag, Trees and Terrain Overlay ticked. The
+    first is over the splice cap and evicts, which leaves the visible level
+    stale. The second takes one far oak and clears one layer: the unit step
+    has to read the oak's extent before the cleared tile's _apply_dirty()
+    rebuilds that level without it, or the oak stays in its resident chunk."""
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
+    _ratio(monkeypatch, "evict")
+    window = _window("Stepped")
+    try:
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("draw")
+        window.paint_trees_check.setChecked(True)
+        window.paint_eye_candy_check.setChecked(False)
+        _show_level(window, monkeypatch, 0)
+        _draw(window, FOREST_OAK, STROKE_TILES)
+        _draw(window, FOREST_OAK, [FAR_OAK])
+        mm = window.scenario.map_manager
+        bare = BARE_LAYERED[1] * mm.map_width + BARE_LAYERED[0]
+        mm.terrain[bare].layer = FOREST_PALM
+        window._apply_dirty([bare])
+        _check(window, 0, "setup")
+        trees = len(window.scenario.unit_manager.units[0])
+
+        window._on_tool_selected("eraser")
+        window.brush_size_spin.setValue(1)
+        for name, action in window.eraser_target_actions.items():
+            action.setChecked(name in ("trees", "overlay"))
+        window.on_edit_stroke_start()
+        assert window._erase is not None and window._erase.overlay
+        window.on_edit_stroke_tiles(STROKE_TILES[:5], 0)
+        window._erase_refresh_timer.stop()
+        window._flush_erase_refresh()
+        _ratio(monkeypatch, "patch")
+        window.on_edit_stroke_tiles([BARE_LAYERED, FAR_OAK], 0)
+        window._erase_refresh_timer.stop()
+        window._flush_erase_refresh()
+        assert mm.terrain[bare].layer == -1 and len(window.scenario.unit_manager.units[0]) == trees - 6
+        _check(window, 0, "second flush")
+        window.on_edit_stroke_end()
+        _check(window, 0, "erase end")
+    finally:
+        conftest.close_window(window)

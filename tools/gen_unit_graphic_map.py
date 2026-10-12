@@ -37,6 +37,12 @@ resolves to a named graphic:
                               -- native-pixel offset from the unit's anchor,
                               -- which unit_sprites folds into the hotspot.
                               -- Never beside "pieces". See "Fish bodies".
+      "particle": true,      -- OPTIONAL, _PARTICLE_CONSTS only: file_name is a
+                              -- particle effect's stem, not an .sld's, and
+                              -- descape.particle_art cuts the frame from the
+                              -- effect's atlas. See "Particle effects".
+      "art_scale": float,    -- OPTIONAL, only beside "particle": the effect's
+                              -- own Scale, multiplied into the draw scale.
       "pieces": [           -- OPTIONAL. Present only for a multi-graphic
                               -- composite building (town centres, pastures);
                               -- absent means "one graphic", same as today.
@@ -235,6 +241,41 @@ carries `frame_offset` (`_BODY_FRAME_OFFSETS`), which
 keeps its offset as the entry's top-level `dx`/`dy` (only Perch 53, at
 (0, -30), measured 2026-10-09), so the body draws where the .dat puts it
 rather than 30 native px low.
+
+**Ship sails (GH #20).** A sailing ship's standing graphic is a legacy shell
+(file_name "W", "E" or "X") whose direct deltas are the hull followed by one
+graphic per sail, each at its own offset: Galleon 442 is the hull plus 7
+sails at (0, -40), (0, -25) x5, (0, -40). `_resolve_modern_graphic` keeps only
+the first of them, the hull, and on War Galley, Galleon, Fire Ship and
+Transport Ship the hull has no player-colour pixels at all, so those drew
+with neither sails nor an owner colour. `_resolve_shell_delta_pieces` emits
+every direct modern delta of such a shell as `pieces`, in .dat order, with the
+hull as the parent and as the entry's top-level graphic. The rule is "legacy
+shell with two or more direct modern deltas", not a const list, and it hits
+exactly 20 consts, all ships (measured 2026-10-12 over every civ's table: 17,
+21, 114, 420, 442, 527, 528, 529, 532, 535, 536, 539, 545, 691, 1103, 1104,
+2626, 2627, 2628, 2633). Fishing Ship, Longship, Turtle Ship, Dragon Ship,
+Dromon and Lou Chuan are single graphics and keep their plain entry. Every
+piece carries the ship's own unit_id, so each sail picks its frame from the
+ship's facing on its own frame_count (16 angles x 30 frames); a sail with no
+ink at some angle is a non-parent piece and is skipped there. The generator
+fails unless every emitted delta is layer 20 with display_angle -1 and the
+const is type 70: those back "one facing dispatch for hull and sails" and "no
+sail belongs to one angle only". There is no offset dedupe, unlike gates:
+five of the Galleon's sails share (0, -25). Only the Gaia table is emitted
+for ships, so a civ with its own sail set (most of them) draws these.
+
+**Particle effects (GH #20).** Butterflies 1608-1610 (`_PARTICLE_CONSTS`, an
+allowlist) have a standing graphic with file_name "None" and a
+particle_effect_name: the art is `resources/_common/particles/<name>.json`,
+which names a TexturePacker atlas (`AtlasFile`), a frame run
+(`ImageFirst`/`ImageCount`) and a `Scale`. Their entry carries the effect
+name as file_name, `particle: true` and `art_scale` (the Scale), with
+angle_count and frame_count 1: a scenario editor draws the loop's first
+frame. The generator fails unless the effect has an AtlasFile and no
+`ImageAngles` (per-angle frame runs, which the waterfalls use and
+descape.particle_art does not read). Every other particle-only const (FLAME,
+SMOKE, the seagulls, the waterfalls) is still skipped.
 """
 
 from __future__ import annotations
@@ -1114,6 +1155,102 @@ def _resolve_wall_pieces(
     return pieces
 
 
+# The .dat layer of every ship hull and sail graphic.
+_SHELL_DELTA_LAYER = 20
+
+
+def _resolve_shell_delta_pieces(
+    graphics: list, unit_const: int, unit_type: int, shell, hull
+) -> list[dict[str, object]] | None:
+    """The composite pieces for a legacy shell with two or more DIRECT modern
+    deltas (a ship: hull, then its sails), in .dat delta order at each
+    delta's own offset, or None for fewer. `hull` is the graphic
+    `_resolve_modern_graphic` picked and the caller emits as the entry's
+    top-level fields; it must be the first piece, which is marked parent.
+
+    No one-piece-per-offset dedupe, unlike the gate helper: five of the
+    Galleon's sails share (0, -25). unit_id is unit_const on every piece, as
+    for a wall. See the module docstring's "Ship sails" section."""
+    deltas = [
+        d for d in shell.deltas
+        if d.graphic_id is not None and 0 <= d.graphic_id < len(graphics)
+        and graphics[d.graphic_id] is not None
+        and _looks_modern(graphics[d.graphic_id].file_name)
+    ]
+    if len(deltas) < 2:
+        return None
+    if graphics[deltas[0].graphic_id] is not hull:
+        raise SystemExit(
+            f"unit_const {unit_const}'s shell {shell.file_name!r} lists "
+            f"{graphics[deltas[0].graphic_id].file_name!r} first, but its resolved "
+            f"graphic is {hull.file_name!r}. The parent piece must be the entry's own"
+        )
+    if unit_type != _CREATABLE_TYPE:
+        raise SystemExit(
+            f"unit_const {unit_const} (type {unit_type}) has a multi-delta legacy "
+            f"shell {shell.file_name!r} but is not type {_CREATABLE_TYPE}, so its pieces "
+            f"would not dispatch on a facing. Re-verify the ship-sail rule against the .dat"
+        )
+    pieces: list[dict[str, object]] = []
+    for delta in deltas:
+        dg = graphics[delta.graphic_id]
+        if dg.layer != _SHELL_DELTA_LAYER or delta.display_angle != -1:
+            raise SystemExit(
+                f"shell delta {dg.file_name!r} (unit_const {unit_const}) is layer "
+                f"{dg.layer}, display_angle {delta.display_angle}, not layer "
+                f"{_SHELL_DELTA_LAYER} at every angle (-1). Re-verify the ship-sail "
+                f"rule against the .dat"
+            )
+        pieces.append({
+            "unit_id": unit_const,
+            "file_name": dg.file_name,
+            "angle_count": dg.angle_count,
+            "frame_count": dg.frame_count,
+            "dx": delta.offset_x,
+            "dy": delta.offset_y,
+            **({} if pieces else {"parent": True}),
+        })
+    return pieces
+
+
+# Consts whose standing graphic is a particle effect and gets an entry: the
+# butterflies. An allowlist; see the module docstring's "Particle effects".
+_PARTICLE_CONSTS: frozenset[int] = frozenset({1608, 1609, 1610})
+
+
+def _particle_entry(unit_const: int, graphic, particles_dir: Path) -> dict[str, object]:
+    """The entry for a _PARTICLE_CONSTS const: its effect's stem as file_name
+    and the effect's Scale as art_scale. Fails rather than skips, since the
+    allowlist is a promise that descape.particle_art can draw the effect."""
+    name = graphic.particle_effect_name
+    path = particles_dir / f"{name}.json"
+    try:
+        effect = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"particle const {unit_const}'s effect {name!r} is unreadable at {path}: {exc}"
+        ) from exc
+    scale = effect.get("Scale")
+    if (
+        not name or not effect.get("AtlasFile") or "ImageAngles" in effect
+        or isinstance(scale, bool) or not isinstance(scale, (int, float)) or scale <= 0
+    ):
+        raise SystemExit(
+            f"particle const {unit_const}'s effect {name!r} needs an AtlasFile, a "
+            f"positive Scale and no ImageAngles to be drawn; it has {sorted(effect)}. "
+            f"Re-verify _PARTICLE_CONSTS"
+        )
+    return {
+        "graphic_id": graphic.id,
+        "file_name": name,
+        "angle_count": 1,
+        "mirroring_mode": 0,
+        "frame_count": 1,
+        "particle": True,
+        "art_scale": float(scale),
+    }
+
+
 def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
     """unit_const -> the index, in its decoration shell's `deltas`, of the
     body `_BODY_GRAPHIC_OVERRIDES` names on the Gaia table. Every other civ's
@@ -1149,12 +1286,16 @@ def _entry_for(
     units: list, graphics: list, graphics_dir: Path, unit_const: int,
     body_positions: dict[int, int],
     annex_upgrades: dict[int, dict[int, int]] | None = None,
+    particles_dir: Path | None = None,
 ) -> tuple[dict[str, object] | None, str]:
     """(entry, kind) for one const of one civ's unit table: the entry this
     script emits for it, or None with `kind` naming the skip reason. `kind` is
-    otherwise "gate", "tree", "override", "underwater", "composite" or "plain". Run for
+    otherwise "gate", "tree", "override", "underwater", "shell_deltas",
+    "particle", "composite" or "plain". Run for
     every civ (GH #48), so nothing in here may read a Gaia-only fact.
-    `annex_upgrades` is `_annex_upgrades()`'s table, keyed by composite const."""
+    `annex_upgrades` is `_annex_upgrades()`'s table, keyed by composite const.
+    `particles_dir` is the install's particle folder; without it the
+    _PARTICLE_CONSTS are skipped like any other legacy graphic."""
     unit = units[unit_const]
     if unit is None:
         return None, "no_unit"
@@ -1217,6 +1358,7 @@ def _entry_for(
         return None, "no_file_name"
     position = body_positions.get(unit_const)
     wall_pieces = None
+    shell_pieces = None
     body_offset = (0, 0)
     if position is not None:
         body_id = graphic.deltas[position].graphic_id if position < len(graphic.deltas) else -1
@@ -1234,7 +1376,12 @@ def _entry_for(
     elif not _looks_modern(graphic.file_name):
         resolved = _resolve_modern_graphic(graphics, graphic_id)
         if resolved is None:
+            if unit_const in _PARTICLE_CONSTS and particles_dir is not None:
+                return _particle_entry(unit_const, graphic, particles_dir), "particle"
             return None, "legacy_no_modern_replacement"
+        shell_pieces = _resolve_shell_delta_pieces(
+            graphics, unit_const, unit.type, graphic, resolved
+        )
         graphic = resolved
     entry: dict[str, object] = {
         "graphic_id": graphic.id,
@@ -1260,6 +1407,9 @@ def _entry_for(
     if wall_pieces is not None:
         entry["pieces"] = wall_pieces
         return entry, "override"
+    if shell_pieces is not None:
+        entry["pieces"] = shell_pieces
+        return entry, "shell_deltas"
     pieces = _resolve_pieces(
         units, graphics, unit_const, graphic, (annex_upgrades or {}).get(unit_const)
     )
@@ -1506,6 +1656,7 @@ def main() -> None:
         raise SystemExit(f"Not found: {dat_path}")
 
     graphics_dir = args.aoe2de_root / "resources/_common/drs/graphics"
+    particles_dir = args.aoe2de_root / "resources/_common/particles"
     data = DatFile.parse(str(dat_path))
     graphics = data.graphics
     units = data.civs[0].units
@@ -1524,13 +1675,16 @@ def main() -> None:
     gate_composited: set[int] = set()
     tree_composited: set[int] = set()
     fish_bodies: dict[int, str] = {}
+    shell_composited: set[int] = set()
+    particles: dict[int, str] = {}
 
     for unit_const, unit in enumerate(units):
         if unit is not None:
             standing = unit.standing_graphic
             secondary["set" if len(standing) > 1 and standing[1] >= 0 else "unset"] += 1
         entry, kind = _entry_for(
-            units, graphics, graphics_dir, unit_const, body_positions, annex_upgrades
+            units, graphics, graphics_dir, unit_const, body_positions, annex_upgrades,
+            particles_dir,
         )
         if entry is None:
             skipped[kind] += 1
@@ -1547,6 +1701,16 @@ def main() -> None:
             overridden[unit_const] = (shell.file_name, str(entry["file_name"]))
         elif kind == "underwater":
             fish_bodies[unit_const] = str(entry["file_name"])
+        elif kind == "shell_deltas":
+            shell_composited.add(unit_const)
+        elif kind == "particle":
+            particles[unit_const] = str(entry["file_name"])
+
+    if set(particles) != _PARTICLE_CONSTS:
+        raise SystemExit(
+            f"particle consts emitted {sorted(particles)}, listed {sorted(_PARTICLE_CONSTS)}. "
+            f"Re-verify _PARTICLE_CONSTS against the .dat"
+        )
 
     missing_fish = sorted(_UNDERWATER_BODY_CONSTS - set(fish_bodies))
     unused_offsets = sorted(set(_BODY_FRAME_OFFSETS) - set(fish_bodies.values()))
@@ -1601,6 +1765,12 @@ def main() -> None:
         entry = entries[str(const)]
         shift = f" at ({entry['dx']}, {entry['dy']})" if "dx" in entry else ""
         print(f"    {const}: {body}{shift}")
+    sail_piece_counts = Counter(len(entries[str(c)]["pieces"]) for c in shell_composited)
+    print(f"  shell-delta (ship sail) entries: {len(shell_composited)}: {sorted(shell_composited)}")
+    print(f"    piece-count histogram: {dict(sorted(sail_piece_counts.items()))}")
+    print(f"  particle entries: {len(particles)}/{len(_PARTICLE_CONSTS)}")
+    for const, effect in sorted(particles.items()):
+        print(f"    {const}: {effect} at scale {entries[str(const)]['art_scale']}")
     print(f"  standing_graphic[1]: {dict(sorted(secondary.items()))}")
     print(f"  composite (pieces) entries: {len(composited)}/{len(_COMPOSITE_SCOPE)} scoped consts")
     not_composited = sorted(_COMPOSITE_SCOPE - composited)

@@ -31,6 +31,13 @@ wrong parity for its span on 11/21 (INFO, the game writes those), and units
 off their tile centre on 6/21 (player) and 7/21 (GAIA), both INFO.
 Decorations, trees, fish and cliffs are left out on purpose.
 
+A resource or tree (unit_kind.gaia_only_consts(), the set Place Unit gives
+to GAIA) in a player's list fires on 0/21 examples/ files and on the one
+known bad file, the GH #206 tester's scenario (a player 1 Forage Bush that
+was missing in the official editor), so it is a WARNING. Its message states
+only that measured fact: whether the game drops such an object on its own
+is unconfirmed.
+
 Nothing here constructs an edit model, and nothing may be named verify_* or
 *_supported (both already mean byte-layout trust elsewhere).
 """
@@ -54,7 +61,7 @@ from descape.player_fields import defined_player_ids
 from descape.render import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS
-from descape.unit_kind import mobile_unit_consts
+from descape.unit_kind import gaia_only_consts, mobile_unit_consts
 from descape.unit_references import all_units, build_reference_index, references_in
 
 Severity = Literal["error", "warning", "info"]
@@ -239,6 +246,25 @@ def check_off_grid_player_units(loaded: LoadedScenario) -> CheckResult:
 
 def check_off_grid_gaia_units(loaded: LoadedScenario) -> CheckResult:
     return _capped("Off-grid GAIA units (not at tile centre)", _off_centre_units(loaded, gaia=True))
+
+
+def check_gaia_only_ownership(loaded: LoadedScenario) -> CheckResult:
+    """A resource or tree in a player's list, wherever it is: off-map and
+    garrisoned ones are reported too, since the owner is wrong either way."""
+    label = "GAIA-only objects owned by a player"
+    gaia_only = gaia_only_consts()
+    findings = [
+        Finding(
+            f"Player {player_id} object {unit.unit_const} (id {unit.reference_id}) at "
+            f"({unit.x:g}, {unit.y:g}) is a resource or tree; game-made files only give those to GAIA",
+            "warning",
+            tile=(int(unit.x), int(unit.y)),
+            unit_key=(player_id, unit.reference_id),
+        )
+        for player_id, unit in _all_units(loaded)
+        if player_id != 0 and unit.unit_const in gaia_only
+    ]
+    return _capped(label, findings)
 
 
 def _elevation_grid(loaded: LoadedScenario) -> np.ndarray:
@@ -508,6 +534,7 @@ CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("off_grid_buildings", check_off_grid_buildings),
     ("off_grid_player_units", check_off_grid_player_units),
     ("off_grid_gaia_units", check_off_grid_gaia_units),
+    ("gaia_only_ownership", check_gaia_only_ownership),
     ("trigger_display_order", check_trigger_display_order),
     ("trigger_references", check_trigger_references),
     ("unit_references", check_unit_references),

@@ -72,6 +72,7 @@ from typing import Any
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
 from . import library_compat, trigger_fields, trigger_organize
+from .trigger_model import entry_display_order, entry_order_after_insert, set_entry_order
 
 COPY_SUFFIX = trigger_organize.COPY_SUFFIX
 
@@ -340,7 +341,7 @@ def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "") -> PasteR
 class EntryBlock:
     """Copied conditions and effects, a second slot beside the trigger one.
 
-    `conditions` and `effects` are deepcopies in list order. `trigger_targets`
+    `conditions` and `effects` are deepcopies in display order. `trigger_targets`
     holds ((kind, pos, live target Trigger), ...) for every trigger-referencing
     entry whose target was a real trigger, `pos` counting within its kind."""
 
@@ -374,15 +375,16 @@ def copy_entries(
     manager: Any, trigger_index: int, refs: Sequence, *, doc_id: str = "", scenario_version: str = ""
 ) -> EntryBlock:
     """An EntryBlock of trigger `trigger_index`'s entries at `refs`, ((kind,
-    index), ...), each kind taken in list order."""
+    index), ...), each kind taken in display order (GH #213), the order the
+    rows are listed in."""
     live = list(manager.triggers)
     trigger = live[trigger_index]
     referencing = {id(ce) for ce in get_trigger_referencing_ce(trigger)}
     picked = {}
     targets = []
     for kind, entries in (("condition", trigger.conditions), ("effect", trigger.effects)):
-        wanted = sorted({index for ref_kind, index in refs if ref_kind == kind and 0 <= index < len(entries)})
-        picked[kind] = [entries[index] for index in wanted]
+        wanted = {index for ref_kind, index in refs if ref_kind == kind and 0 <= index < len(entries)}
+        picked[kind] = [entries[index] for index in entry_display_order(trigger, kind) if index in wanted]
         for pos, entry in enumerate(picked[kind]):
             target = entry.trigger_id if id(entry) in referencing else -1
             if 0 <= target < len(live):
@@ -407,7 +409,12 @@ def paste_entries(
     `anchor` when it is a ("condition", index) ref, else at the end of the
     conditions; effects likewise. UuidList.insert() stamps each entry with
     this manager. Trigger links resolve by identity, landing on -1 for a
-    target deleted since the copy or in another document."""
+    target deleted since the copy or in another document.
+
+    "After" holds in both orders (GH #213): the list insert is at the
+    anchor's index + 1, and the display order puts the block below the
+    anchor's display slot, so the paste shows below the clicked row. The
+    library's own heal would list a mid-list insert last and reorder the rest."""
     trigger = manager.triggers[trigger_index]
     position = {id(t): index for index, t in enumerate(manager.triggers)}
     cross = block.source_doc_id != doc_id
@@ -417,11 +424,18 @@ def paste_entries(
         ("condition", block.conditions, trigger.conditions),
         ("effect", block.effects, trigger.effects),
     ):
-        at = anchor[1] + 1 if anchor is not None and anchor[0] == kind else len(entries)
+        if not source:
+            continue
+        # Read before the insert: the getter heals the live array once the list has grown.
+        order = entry_display_order(trigger, kind)
+        anchored = anchor is not None and anchor[0] == kind and 0 <= anchor[1] < len(entries)
+        at = anchor[1] + 1 if anchored else len(entries)
+        slot = order.index(anchor[1]) + 1 if anchored else len(order)
         for offset, entry in enumerate(source):
             entries.insert(at + offset, copy.deepcopy(entry))
             pasted[kind].append(entries[at + offset])
             refs.append((kind, at + offset))
+        set_entry_order(trigger, kind, entry_order_after_insert(order, at, len(source), slot))
     cleared_links = 0
     for kind, pos, target in block.trigger_targets:
         index = None if cross else position.get(id(target))

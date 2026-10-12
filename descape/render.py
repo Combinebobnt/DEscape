@@ -280,13 +280,31 @@ def _full_blend_keys(scenario: LoadedScenario, blend: bool) -> list | None:
     return _blend_keys(scenario, xs, ys)
 
 
-def _rect_blend_keys(scenario, candidates: np.ndarray, layers: LayerState, terrain_ids, layer_ids) -> list | None:
-    """_blend_keys() for a composite_rect_*'s candidates, or None when
-    blending is off or no candidate has a key (the plain path)."""
+def _rect_blend_keys(
+    scenario, candidates: np.ndarray, layers: LayerState, terrain_ids, layer_ids, key_map: terrain_blend.KeyMap | None = None
+) -> terrain_blend.RectKeys | None:
+    """_blend_keys() for a composite_rect_*'s candidates as RectKeys, or None
+    when blending is off or no candidate has a key (the plain path).
+
+    key_map: the calling cache's KeyMap over the same two mirrors, which
+    then derives only the tiles it has not seen since their last
+    invalidate(). Without one, or without both mirrors (tools, tests,
+    the review pack, refresh_region_iso), a throwaway map derives every
+    candidate, so there is one code path. _blend_keys is looked up at call
+    time, so a caller that rebinds it still reaches the fill."""
     if not candidates.shape[0] or not blend_effective(layers):
         return None
-    keys = _blend_keys(scenario, candidates[:, 0], candidates[:, 1], terrain_ids, layer_ids)
-    return keys if any(k is not None for k in keys) else None
+    mm = scenario.map_manager
+    w = mm.map_width
+    if key_map is None or terrain_ids is None or layer_ids is None:
+        key_map = terrain_blend.KeyMap(w, mm.map_height)
+    else:
+        assert terrain_ids.size == layer_ids.size == key_map.ids.size, "a key map sized for another map"
+        key_map.bind((terrain_ids, layer_ids, terrain_blend.BLEND_TABLE, _blend_keys))
+    ids = key_map.lookup(
+        candidates[:, 1] * w + candidates[:, 0], lambda xs, ys: _blend_keys(scenario, xs, ys, terrain_ids, layer_ids)
+    )
+    return terrain_blend.RectKeys(ids, key_map) if (ids >= 0).any() else None
 
 
 def render_tile(
@@ -373,9 +391,9 @@ SKIRT_SHADE = {"left": 0.75, "right": 0.55}
 # Starts lighter than SKIRT_SHADE's own darkest value (0.55): a darkened
 # player-color unit dot sitting on a shadowed back tile must still read as
 # the right player (see _render_tile_iso's docstring and the "known
-# consequence" this trades off -- units on shadowed tiles get darkened too,
-# since there's no cheap way to exempt them without breaking the terrain/
-# unit paint-order interleaving _paint_tile_and_units_iso() depends on).
+# consequence" this trades off: with sprites off, unit marks on shadowed
+# tiles get darkened too, since the terrain/mark paint order is interleaved
+# per tile, _paint_tile_and_units_iso()).
 CONTACT_SHADE = 0.65
 
 # How far up-screen the contact shadow ramps back to no darkening, as a
@@ -728,10 +746,64 @@ def _clipped_paint_solid(img: np.ndarray, base_y: int, base_x: int, dst_y, dst_x
     _clipped_paint(img, base_y, base_x, dst_y, dst_x, np.full((dst_y.shape[0], 3), color, dtype=np.uint8), extent=extent)
 
 
-def _clipped_paint_rgba(img: np.ndarray, base_y: int, base_x: int, rgba: np.ndarray) -> None:
+# "No ink here" in a two-pass ink plane (_paint_candidates_iso): above every
+# rise, so the occlusion test `ink < height` never fires on it.
+INK_NONE = np.iinfo(np.int32).max
+
+
+def _record_ink(ink: np.ndarray, base_y: int, base_x: int, dst_y, dst_x, rise: int) -> None:
+    """ink[base_y+dst_y, base_x+dst_x] = rise, clipped: a mark's pixels."""
+    ay = base_y + dst_y
+    ax = base_x + dst_x
+    ok = (ay >= 0) & (ay < ink.shape[0]) & (ax >= 0) & (ax < ink.shape[1])
+    ink[ay[ok], ax[ok]] = rise
+
+
+def _record_ink_rgba(ink: np.ndarray, base_y: int, base_x: int, rgba: np.ndarray, rise: int) -> None:
+    """ink = rise wherever _clipped_paint_rgba's block has alpha > 0. Not only
+    opaque pixels: an occluded sprite's shadow and soft edge must go with it."""
+    h, w = rgba.shape[:2]
+    ih, iw = ink.shape
+    sy0, sx0 = max(0, -base_y), max(0, -base_x)
+    sy1, sx1 = min(h, ih - base_y), min(w, iw - base_x)
+    if sy0 >= sy1 or sx0 >= sx1:
+        return
+    ink[base_y + sy0 : base_y + sy1, base_x + sx0 : base_x + sx1][rgba[sy0:sy1, sx0:sx1, 3] > 0] = rise
+
+
+def _restore_under(
+    img: np.ndarray, terrain: np.ndarray, ink: np.ndarray, base_y: int, base_x: int, dst_y, dst_x,
+    height: int, *, extent=None,
+) -> None:
+    """Two-pass occlusion over one coverage op: wherever ink based below
+    `height` sits on these pixels, the terrain snapshot comes back and the ink
+    is cleared. Clipped like _clipped_paint, same extent contract."""
+    h, w = ink.shape
+    inside = False
+    if extent is not None:
+        y_lo, y_hi, x_lo, x_hi = extent
+        if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
+            return
+        inside = base_y + y_lo >= 0 and base_y + y_hi < h and base_x + x_lo >= 0 and base_x + x_hi < w
+    ay = base_y + dst_y
+    ax = base_x + dst_x
+    if not inside:
+        ok = (ay >= 0) & (ay < h) & (ax >= 0) & (ax < w)
+        ay, ax = ay[ok], ax[ok]
+    hit = ink[ay, ax] < height
+    if hit.any():
+        ay, ax = ay[hit], ax[hit]
+        img[ay, ax] = terrain[ay, ax]
+        ink[ay, ax] = INK_NONE
+
+
+def _clipped_paint_rgba(
+    img: np.ndarray, base_y: int, base_x: int, rgba: np.ndarray, ink: np.ndarray | None = None, ink_rise: int = 0
+) -> None:
     """Alpha-composites an (h, w, 4) uint8 block onto img at (base_y, base_x),
     clipping to img's bounds -- _clipped_paint()'s counterpart for sprites
-    (P3-g3).
+    (P3-g3). ink, when given, is the two-pass ink plane: every pixel the block
+    touches (alpha > 0) is recorded there at ink_rise.
 
     Deliberately a sibling rather than a widening of _clipped_paint(): that
     function's contract is an opaque scatter of per-pixel values at arbitrary
@@ -746,6 +818,8 @@ def _clipped_paint_rgba(img: np.ndarray, base_y: int, base_x: int, rgba: np.ndar
     thing being drawn into it" reasoning _clipped_paint()'s docstring gives
     applies here, only more often -- a sprite is far larger than a tile
     diamond, so partial containment is the normal case, not the edge one."""
+    if ink is not None:
+        _record_ink_rgba(ink, base_y, base_x, rgba, ink_rise)
     native = composite_backend.native
     if native is not None:
         native.blit_rgba(img, base_y, base_x, rgba)
@@ -963,15 +1037,15 @@ def _render_tile_iso(
     height DIFFERENCE against a neighbor, never because of its own
     absolute elevation), and stay.
 
-    Known consequence, accepted -- units on a shadowed back tile get
-    darkened too: a unit's own tile is always safe (drawn after this
-    function returns for that tile), but a unit sitting on a tile this
-    one's shadow reaches was already painted in an earlier depth_order
-    iteration, and there's no cheap way to exempt it -- a separate
-    pre-unit shadow pass would break the terrain/unit paint-order
-    interleaving _paint_tile_and_units_iso() exists to guarantee. If a
+    Known consequence, accepted, with sprites off only. Unit marks on a
+    shadowed back tile get darkened too: a unit's own tile is always safe
+    (drawn after this function returns for that tile), but a mark sitting on
+    a tile this one's shadow reaches was already painted in an earlier
+    depth_order iteration (_paint_tile_and_units_iso's interleave). If a
     darkened unit dot stops reading as its player's color, the fix is a
-    lighter CONTACT_SHADE, not trying to exempt units.
+    lighter CONTACT_SHADE, not trying to exempt units. With sprites on, all
+    terrain is down before any object (_paint_candidates_iso), so a shadow
+    darkens ground only, never a sprite or a mark standing behind the step.
 
     offset shifts the tile's canvas-absolute screen position by (-offset_x,
     -offset_y) before painting, and every write is clipped to img's own
@@ -1168,8 +1242,8 @@ def render_terrain_iso(
 
     with_units draws every unit at its own tile's elevation, interleaved
     with terrain in the same depth order (Phase 5) -- see
-    _paint_tile_and_units_iso()'s docstring for why that interleaving, not
-    a separate overlay pass, is what keeps occlusion correct.
+    _paint_tile_and_units_iso()'s docstring for the occlusion rule, and for
+    what changes once sprites are on.
 
     Thin wrapper around render_terrain_iso_with_proj() for callers that only
     need the pixels (tools/dump_scenario.py, save_png) -- see that function
@@ -1257,11 +1331,11 @@ def render_terrain_iso_with_proj(
         else None
     )
     keys = _full_blend_keys(scenario, blend)
-    for x, y in iso_geometry.depth_order(w, h):
-        _paint_tile_and_units_iso(
-            img, tile_grid[y][x], units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites, grid=grid,
-            blend=None if keys is None else keys[y * w + x],
-        )
+    order = iso_geometry.depth_order(w, h).tolist()
+    _paint_candidates_iso(
+        img, [tile_grid[y][x] for x, y in order], None if keys is None else [keys[y * w + x] for x, y in order],
+        units_by_tile, tile_px, proj, elevations, w, h, sprites=sprites, grid=grid,
+    )
     return img, elevations, proj
 
 
@@ -1911,6 +1985,76 @@ def dirty_screen_bbox_iso(
     )
 
 
+def dirty_screen_bboxes_iso_grouped(
+    scenario: LoadedScenario,
+    groups,
+    elevations: np.ndarray,
+    proj: iso_geometry.IsoProjection,
+    flatten_elevations: bool = False,
+) -> list[tuple[int, int, int, int] | None] | None:
+    """dirty_screen_bbox_iso(scenario, group, elevations, proj, with_sprites=
+    False) for each tile-index group in `groups`, in one array pass
+    (TASK-031.61 C1: a batch unit edit sizes one rect per block of tiles, and
+    the per-group calls were 8-89 ms of a large stroke end or undo). Each
+    answer is that call's own: the group's tiles dilated by 1 and clipped to
+    the map, each swept over its observed elevations, clamped to the canvas;
+    None for an empty group or one that lands off the canvas.
+
+    Only for tiles whose elevation did not move, which is what lets the
+    groups share a pass: nothing is written to `elevations` and no footprint
+    is unioned. When a tile's elevation is not the one `elevations` holds (0,
+    under flatten_elevations), or is outside proj's range, this returns None
+    having written nothing, and
+    the caller makes the per-group calls instead.
+    tests/test_grouped_dirty_bbox.py keeps those calls as its oracle."""
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    out: list[tuple[int, int, int, int] | None] = [None] * len(groups)
+    sizes = [len(group) for group in groups]
+    total = sum(sizes)
+    if not total:
+        return out
+    idx = np.fromiter((i for group in groups for i in group), dtype=np.int64, count=total)
+    tiles = np.unique(idx)
+    held = elevations[tiles // w, tiles % w]
+    if flatten_elevations:
+        moved = held != 0
+    else:
+        terrain = mm.terrain
+        moved = held != np.fromiter((terrain[i].elevation for i in tiles.tolist()), dtype=np.int64, count=tiles.size)
+    if moved.any() or ((held < proj.min_elev) | (held > proj.max_elev)).any():
+        return None
+    xs, ys = idx % w, idx // w
+    # Each tile's 3x3, one row per offset. A neighbour off the map is replaced
+    # by the tile itself, which is in the set anyway.
+    offsets = np.arange(-1, 2, dtype=np.int64)
+    nxs = xs + np.tile(offsets, 3)[:, None]
+    nys = ys + np.repeat(offsets, 3)[:, None]
+    outside = (nxs < 0) | (nxs >= w) | (nys < 0) | (nys >= h)
+    nxs, nys = np.where(outside, xs, nxs).ravel(), np.where(outside, ys, nys).ravel()
+    lo, hi = _observed_elevation_range(elevations, {}, nxs, nys)
+    bounds = iso_geometry.tile_screen_bounds_over(nxs, nys, lo, hi, proj)
+    tx0s, ty0s = (np.asarray(b).reshape(9, -1).min(axis=0) for b in bounds[:2])
+    tx1s, ty1s = (np.asarray(b).reshape(9, -1).max(axis=0) for b in bounds[2:])
+    # `idx` is in group order, so each non-empty group is one run of it.
+    filled = [g for g, n in enumerate(sizes) if n]
+    starts = np.cumsum([0] + [sizes[g] for g in filled[:-1]])
+    canvas_w, canvas_h = _canvas_pixel_dims(proj)
+    for g, gx0, gy0, gx1, gy1 in zip(
+        filled,
+        np.minimum.reduceat(tx0s, starts).tolist(),
+        np.minimum.reduceat(ty0s, starts).tolist(),
+        np.maximum.reduceat(tx1s, starts).tolist(),
+        np.maximum.reduceat(ty1s, starts).tolist(),
+        strict=True,
+    ):
+        x0, y0 = max(0, int(gx0)), max(0, int(gy0))
+        x1, y1 = min(canvas_w, int(gx1)), min(canvas_h, int(gy1))
+        if x1 > x0 and y1 > y0:
+            out[g] = (x0, y0, x1, y1)
+    return out
+
+
 def dirty_screen_bbox_sloped(
     scenario: LoadedScenario,
     dirty_indices,
@@ -2185,6 +2329,7 @@ def prepare_rect_native(
     proj: iso_geometry.IsoProjection, tile_px: int, building_bboxes: dict, with_units: bool,
     bystander_grid: BystanderGrid | None, layers: LayerState, grid: GridBake, unit_pack,
     terrain_ids: np.ndarray | None = None, layer_ids: np.ndarray | None = None,
+    key_map: terrain_blend.KeyMap | None = None,
 ) -> tuple | None:
     """composite_rect_iso (heights = elevations) or composite_rect_sloped
     (heights = corner_rise) with every Python step done here and only the
@@ -2197,20 +2342,21 @@ def prepare_rect_native(
     keeps the unit pack alive, since the kernel reaches its sprite pixels
     through raw addresses the pack alone owns. terrain_ids: the calling
     cache's per-tile mirror (native_composite's docstring), None reads live.
-    Blend keys are read here, on the calling thread, from both mirrors."""
+    Blend keys are read here, on the calling thread, from both mirrors
+    through key_map (_rect_blend_keys()); a worker never touches the map."""
     native = composite_backend.native
     if native is None or unit_pack is None:
         return None
     candidates = _rect_candidates(scenario, x0, y0, x1, y1, proj, with_units, building_bboxes, bystander_grid)
     if not candidates.shape[0]:
         return None
-    keys = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids)
+    blend = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids, key_map)
     from descape import native_composite
 
     prepare = native_composite.prepare_sloped if sloped else native_composite.prepare_iso
     args = prepare(
         scenario, x0, y0, candidates, heights, proj, tile_px, unit_pack if with_units else None,
-        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids, blend_keys=keys,
+        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids, blend=blend,
     )
     if args is None:
         return None
@@ -2237,6 +2383,7 @@ def composite_rect_iso(
     unit_pack=None,
     terrain_ids: np.ndarray | None = None,
     layer_ids: np.ndarray | None = None,
+    key_map: terrain_blend.KeyMap | None = None,
 ) -> np.ndarray:
     """Composites the half-open screen rect [x0, x1) x [y0, y1) in
     isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8 array --
@@ -2297,7 +2444,8 @@ def composite_rect_iso(
 
     Blending (layers.terrain_blend, blend_effective()) reads its keys from
     terrain_ids and layer_ids, the cache's whole-map mirrors (fresh ones
-    when either is None). The whole-rect kernel composes each blended top
+    when either is None), through key_map, the cache's memo of them
+    (_rect_blend_keys()). The whole-rect kernel composes each blended top
     block itself, byte-identical to terrain_blend.blended_block()."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
@@ -2317,14 +2465,16 @@ def composite_rect_iso(
     # elevation-range footprint test tiles_in_screen_rect() uses can only
     # ever be looser than the real, current-elevation footprint test full
     # rendering uses, since the current elevation is always inside
-    # [min_elev, max_elev]), and compositing that superset in depth_order --
-    # terrain then that tile's own units, via the SAME
-    # _paint_tile_and_units_iso() step the full render uses -- reproduces
-    # exactly what a full render's own proven-gap-free tiling (Phase 2's
-    # check_full_coverage) would have painted there, units included.
+    # [min_elev, max_elev]), and compositing that superset in depth_order,
+    # through the SAME _paint_candidates_iso() loop the full render uses
+    # (interleaved with sprites off, terrain then objects with them on),
+    # reproduces exactly what a full render's own proven-gap-free tiling
+    # (Phase 2's check_full_coverage) would have painted there, units
+    # included: a rect's candidates hold every sprite whose ink touches it
+    # and every tile whose terrain could cover that ink.
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
-    keys = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids)
+    blend = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids, key_map)
     native = composite_backend.native
     if native is not None and unit_pack is not None and candidates.shape[0]:
         from descape import native_composite
@@ -2332,18 +2482,17 @@ def composite_rect_iso(
         if native_composite.composite_iso(
             native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
             unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
-            blend_keys=keys,
+            blend=blend,
         ):
             return scratch
+    # The per-tile loop wants the keys themselves; only it pays for the list.
+    keys = None if blend is None else blend.as_list()
     # .tolist() unboxes in C, and every candidate is already clamped on-map
     # (tiles_in_screen_rect + unit_occupied_tiles), so get_tile's checks can't fire.
-    for i, (cx, cy) in enumerate(candidates.tolist()):
-        tile = mm.terrain[cy * w + cx]
-        _paint_tile_and_units_iso(
-            scratch, tile, units_by_tile, tile_px, proj, elevations, w, h,
-            offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
-            blend=None if keys is None else keys[i],
-        )
+    _paint_candidates_iso(
+        scratch, [mm.terrain[cy * w + cx] for cx, cy in candidates.tolist()], keys, units_by_tile, tile_px, proj,
+        elevations, w, h, offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
+    )
     return scratch
 
 
@@ -2659,6 +2808,8 @@ def _draw_unit_sloped(
     rise_px: int,
     corners: tuple[int, int, int, int] | None = None,
     offset: tuple[int, int] = (0, 0),
+    ink: np.ndarray | None = None,
+    ink_rise: int = 0,
 ) -> None:
     """Sloped's counterpart to _draw_unit_iso -- same one-mark-per-call paint
     (see that function for why a multi-tile unit arrives here once per
@@ -2701,7 +2852,10 @@ def _draw_unit_sloped(
     plain coloured mark for a unit with no resolved sprite, and for a farm
     only when sprites are off (Track C6): a farm with sprites on drapes as
     terrain instead, resolved in _paint_tile_and_units_sloped before this
-    function is ever called for it (see that function's own farm case)."""
+    function is ever called for it (see that function's own farm case).
+
+    ink/ink_rise: the two-pass ink plane and this mark's base rise in it, as
+    _draw_unit_iso's. Its own argument because `corners` mode ignores rise_px."""
     if corners is not None:
         base_x, base_y, dst_y, dst_x, _src_y, _src_x, _uv_idx = _sloped_tile_quad(
             tx, ty, tile_px, proj, *corners, offset
@@ -2710,12 +2864,16 @@ def _draw_unit_sloped(
         # just keyed sloped_quad_indices on, byte for byte.
         extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, *corners)
         _clipped_paint_solid(img, base_y, base_x, dst_y, dst_x, color, extent=extent)
+        if ink is not None:
+            _record_ink(ink, base_y, base_x, dst_y, dst_x, ink_rise)
         return
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
     off_x, off_y = offset
     base_y, base_x = _sloped_mark_base(unit, tx, ty, rise_px, proj)
     extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
     _clipped_paint_solid(img, base_y - off_y, base_x - off_x, dst_y, dst_x, color, extent=extent)
+    if ink is not None:
+        _record_ink(ink, base_y - off_y, base_x - off_x, dst_y, dst_x, ink_rise)
 
 
 def _sloped_mark_base(unit, tx: int, ty: int, rise_px: int, proj: iso_geometry.IsoProjection) -> tuple[int, int]:
@@ -2741,14 +2899,25 @@ def _sloped_mark_rise(unit, corner_rise: np.ndarray) -> int:
     return iso_geometry.unit_rise_px(corner_rise, ux, uy, unit.x - ux, unit.y - uy)
 
 
+def _sloped_tile_floor(corner_rise: np.ndarray, tx: int, ty: int) -> int:
+    """A Sloped tile's lowest drawn corner: its height as a two-pass occluder,
+    and the base rise of a mark conforming to it."""
+    return min(
+        int(corner_rise[ty, tx]), int(corner_rise[ty, tx + 1]),
+        int(corner_rise[ty + 1, tx]), int(corner_rise[ty + 1, tx + 1]),
+    )
+
+
 def _unit_mark_sloped(
     unit, tx: int, ty: int, proj: iso_geometry.IsoProjection, corner_rise: np.ndarray
-) -> tuple[int, int] | None:
-    """The native UnitPack's view of one Sloped mark: None when it conforms to
-    its tile's quad, else its plain diamond's (base_y, base_x)."""
+) -> tuple[tuple[int, int] | None, int]:
+    """The native UnitPack's view of one Sloped mark: (None when it conforms
+    to its tile's quad, else its plain diamond's (base_y, base_x); its base
+    rise, as _paint_objects_sloped records it)."""
     if _sloped_mark_conforms(unit):
-        return None
-    return _sloped_mark_base(unit, tx, ty, _sloped_mark_rise(unit, corner_rise), proj)
+        return None, _sloped_tile_floor(corner_rise, tx, ty)
+    rise_px = _sloped_mark_rise(unit, corner_rise)
+    return _sloped_mark_base(unit, tx, ty, rise_px, proj), rise_px
 
 
 def _paint_tile_and_units_sloped(
@@ -2767,9 +2936,10 @@ def _paint_tile_and_units_sloped(
     blend=None,
 ) -> None:
     """Sloped's counterpart to _paint_tile_and_units_iso -- same
-    "terrain then this tile's own units, interleaved in depth_order" step
-    (see that function's own docstring for why interleaving is load-
-    bearing, not a style choice).
+    "terrain then this tile's own units, interleaved in depth_order" step,
+    and like it the sprites-off path only: with sprites on,
+    _paint_candidates_sloped runs the two halves below as two passes (see
+    _paint_tile_and_units_iso's docstring for the rule).
 
     A CENTRED 1x1 unit -- everything but a multi-tile building, a farm, or
     an off-centre unit -- instead conforms to its own tile's warped footprint
@@ -2834,6 +3004,29 @@ def _paint_tile_and_units_sloped(
     not _render_tile_iso's elevation-based one -- copying that placement
     convention here would silently land the outline in the wrong place
     (this function's own `d_min` trap, a second time)."""
+    _paint_terrain_sloped(
+        img, tile, tile_px, proj, corner_rise, map_w, map_h, offset=offset, sprites=sprites,
+        textures=textures, grid=grid, blend=blend,
+    )
+    _paint_objects_sloped(img, tile, units_by_tile, tile_px, proj, corner_rise, offset=offset, sprites=sprites)
+
+
+def _paint_terrain_sloped(
+    img: np.ndarray,
+    tile,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray,
+    map_w: int,
+    map_h: int,
+    offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
+    textures: bool = True,
+    grid: GridBake = DEFAULT_GRID,
+    blend=None,
+) -> None:
+    """A tile's terrain half: its terrain (a farm's override included), the
+    farm outline, the grid. `sprites` is read for its farm tiles only."""
     d_nw = int(corner_rise[tile.y, tile.x])
     d_ne = int(corner_rise[tile.y, tile.x + 1])
     d_sw = int(corner_rise[tile.y + 1, tile.x])
@@ -2864,6 +3057,26 @@ def _paint_tile_and_units_sloped(
         d_min = min(d_nw, d_ne, d_sw, d_se)
         corners = (d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min)
         _paint_grid_iso(img, tile.x, tile.y, tile_px, map_w, map_h, gy, gx, grid, corners=corners)
+
+
+def _paint_objects_sloped(
+    img: np.ndarray,
+    tile,
+    units_by_tile: dict,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray,
+    offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
+    ink: np.ndarray | None = None,
+) -> None:
+    """A tile's objects half: its marks, then the sprites anchored on it. ink,
+    when given, records every pixel they touch at the unit's base rise: the
+    mark's own rise, or its tile's lowest corner when it conforms."""
+    d_nw = int(corner_rise[tile.y, tile.x])
+    d_ne = int(corner_rise[tile.y, tile.x + 1])
+    d_sw = int(corner_rise[tile.y + 1, tile.x])
+    d_se = int(corner_rise[tile.y + 1, tile.x + 1])
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
@@ -2881,20 +3094,106 @@ def _paint_tile_and_units_sloped(
             # render_terrain_iso on a flat map -- a hard project invariant,
             # and one a fractional unit is deliberately used to pin.
             corners = (d_nw, d_ne, d_sw, d_se)
-            _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, 0, corners=corners, offset=offset)
+            _draw_unit_sloped(
+                img, unit, color, tile.x, tile.y, tile_px, proj, 0, corners=corners, offset=offset,
+                ink=ink, ink_rise=min(corners),
+            )
             continue
         rise_px = _sloped_mark_rise(unit, corner_rise)
-        _draw_unit_sloped(img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset)
+        _draw_unit_sloped(
+            img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset, ink=ink, ink_rise=rise_px
+        )
 
-    # Sprites last within this tile's step, mirroring _paint_tile_and_units_iso's
-    # own ordering rationale: a unit standing on this tile must not be cut by
-    # its own tile's terrain.
+    # Sprites after this tile's marks, in the units' own relative order.
     if sprites is not None:
         off_x, off_y = offset
-        for draw, ax, ay in sprites.by_anchor.get((tile.x, tile.y), ()):
+        for draw, ax, ay, rise_px in sprites.by_anchor.get((tile.x, tile.y), ()):
             _clipped_paint_rgba(
-                img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba
+                img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba, ink, rise_px
             )
+
+
+def _occlude_sloped(
+    img: np.ndarray, terrain: np.ndarray, ink: np.ndarray, tile, tile_px: int,
+    proj: iso_geometry.IsoProjection, corner_rise: np.ndarray, offset: tuple[int, int], floor: int,
+) -> None:
+    """Sloped's _occlude_iso: the tile's quad is its coverage, its lowest drawn
+    corner its height, so it covers only ink its whole surface is above."""
+    d_nw = int(corner_rise[tile.y, tile.x])
+    d_ne = int(corner_rise[tile.y, tile.x + 1])
+    d_sw = int(corner_rise[tile.y + 1, tile.x])
+    d_se = int(corner_rise[tile.y + 1, tile.x + 1])
+    height = min(d_nw, d_ne, d_sw, d_se)
+    if height <= floor:
+        return
+    base_x, base_y, dst_y, dst_x, _sy, _sx, _uv = _sloped_tile_quad(
+        tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset
+    )
+    extent = iso_geometry.index_extent(iso_geometry.sloped_quad_indices, tile_px, d_nw, d_ne, d_sw, d_se)
+    _restore_under(img, terrain, ink, base_y, base_x, dst_y, dst_x, height, extent=extent)
+
+
+def _ink_floor(tiles: list, units_by_tile: dict, sprites: SpriteLayer, mark_rise) -> int:
+    """The lowest base rise among the tiles' marks and sprites, INK_NONE with
+    none: no tile at or below it can occlude anything. mark_rise(unit, tile)
+    is the rise the objects half would record for that mark."""
+    floor = INK_NONE
+    skip, by_anchor = sprites.skip_ids, sprites.by_anchor
+    for tile in tiles:
+        key = (tile.x, tile.y)
+        for unit, _color in units_by_tile.get(key, ()):
+            if id(unit) not in skip:
+                floor = min(floor, mark_rise(unit, tile))
+        for entry in by_anchor.get(key, ()):
+            floor = min(floor, entry[3])
+    return floor
+
+
+def _paint_candidates_sloped(
+    img: np.ndarray,
+    tiles: list,
+    keys: list | None,
+    units_by_tile: dict,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray,
+    map_w: int,
+    map_h: int,
+    offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
+    textures: bool = True,
+    grid: GridBake = DEFAULT_GRID,
+) -> None:
+    """Sloped's _paint_candidates_iso, same two passes and same pre-scan."""
+    if sprites is None:
+        for i, tile in enumerate(tiles):
+            _paint_tile_and_units_sloped(
+                img, tile, units_by_tile, tile_px, proj, corner_rise, map_w, map_h, offset=offset,
+                textures=textures, grid=grid, blend=None if keys is None else keys[i],
+            )
+        return
+    for i, tile in enumerate(tiles):
+        _paint_terrain_sloped(
+            img, tile, tile_px, proj, corner_rise, map_w, map_h, offset=offset, sprites=sprites,
+            textures=textures, grid=grid, blend=None if keys is None else keys[i],
+        )
+
+    def mark_rise(unit, tile) -> int:
+        if _sloped_mark_conforms(unit):
+            return _sloped_tile_floor(corner_rise, tile.x, tile.y)
+        return _sloped_mark_rise(unit, corner_rise)
+
+    floor = _ink_floor(tiles, units_by_tile, sprites, mark_rise)
+    terrain = ink = None
+    if any(_sloped_tile_floor(corner_rise, tile.x, tile.y) > floor for tile in tiles):
+        terrain = img.copy()
+        ink = np.full(img.shape[:2], INK_NONE, dtype=np.int32)
+    for tile in tiles:
+        if ink is not None:
+            _occlude_sloped(img, terrain, ink, tile, tile_px, proj, corner_rise, offset, floor)
+        _paint_objects_sloped(
+            img, tile, units_by_tile, tile_px, proj, corner_rise, offset=offset, sprites=sprites, ink=ink
+        )
 
 
 def _unit_rise_headroom_px(
@@ -2999,11 +3298,11 @@ def render_terrain_sloped_with_proj(
         else None
     )
     keys = _full_blend_keys(scenario, blend)
-    for x, y in iso_geometry.depth_order(w, h):
-        _paint_tile_and_units_sloped(
-            img, tile_grid[y][x], units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid,
-            blend=None if keys is None else keys[y * w + x],
-        )
+    order = iso_geometry.depth_order(w, h).tolist()
+    _paint_candidates_sloped(
+        img, [tile_grid[y][x] for x, y in order], None if keys is None else [keys[y * w + x] for x, y in order],
+        units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid,
+    )
     return img, elevations, corner_rise, proj
 
 
@@ -3040,6 +3339,7 @@ def composite_rect_sloped(
     unit_pack=None,
     terrain_ids: np.ndarray | None = None,
     layer_ids: np.ndarray | None = None,
+    key_map: terrain_blend.KeyMap | None = None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -3068,7 +3368,7 @@ def composite_rect_sloped(
     into whatever `sprites` was built with.
 
     unit_pack, terrain_ids: same N2 contract as composite_rect_iso()'s;
-    layer_ids and blending likewise."""
+    layer_ids, key_map and blending likewise."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -3076,7 +3376,7 @@ def composite_rect_sloped(
 
     scratch = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
     sprite_layer = sprites if with_units else None
-    keys = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids)
+    blend = _rect_blend_keys(scenario, candidates, layers, terrain_ids, layer_ids, key_map)
     native = composite_backend.native
     if native is not None and unit_pack is not None and candidates.shape[0]:
         from descape import native_composite
@@ -3084,17 +3384,15 @@ def composite_rect_sloped(
         if native_composite.composite_sloped(
             native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
             unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
-            blend_keys=keys,
+            blend=blend,
         ):
             return scratch
+    keys = None if blend is None else blend.as_list()
     # Same direct terrain index as composite_rect_iso, same clamping argument.
-    for i, (cx, cy) in enumerate(candidates.tolist()):
-        tile = mm.terrain[cy * w + cx]
-        _paint_tile_and_units_sloped(
-            scratch, tile, units_by_tile, tile_px, proj, corner_rise, w, h,
-            offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
-            blend=None if keys is None else keys[i],
-        )
+    _paint_candidates_sloped(
+        scratch, [mm.terrain[cy * w + cx] for cx, cy in candidates.tolist()], keys, units_by_tile, tile_px, proj,
+        corner_rise, w, h, offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
+    )
     return scratch
 
 
@@ -3363,6 +3661,7 @@ def composite_rect_flat(
     grid: GridBake = DEFAULT_GRID,
     terrain_ids: np.ndarray | None = None,
     layer_ids: np.ndarray | None = None,
+    key_map: terrain_blend.KeyMap | None = None,
 ) -> np.ndarray:
     """Composites the half-open canvas rect [x0, x1) x [y0, y1) for Flat
     mode in isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8
@@ -3420,7 +3719,7 @@ def composite_rect_flat(
     no farm path at all (no SpriteLayer, so no farm_by_tile), which is why
     view_layers gives that row a styles= set excluding Flat rather than
     letting it be a silent no-op (set_sprites_enabled's own documented
-    trap). Blending reads terrain_ids/layer_ids as composite_rect_iso() does.
+    trap). Blending reads terrain_ids/layer_ids/key_map as composite_rect_iso() does.
 
     Do NOT re-express render_terrain()/overlay_units() in terms of this
     function -- same reason Track B gives for composite_rect_iso(): the
@@ -3439,7 +3738,9 @@ def composite_rect_flat(
     keys = None
     if tx1 > tx0 and ty1 > ty0 and blend_effective(layers):
         ys, xs = np.mgrid[ty0:ty1, tx0:tx1]
-        keys = _blend_keys(scenario, xs.ravel(), ys.ravel(), terrain_ids, layer_ids)
+        tiles = np.stack([xs.ravel(), ys.ravel()], axis=1)
+        blend = _rect_blend_keys(scenario, tiles, layers, terrain_ids, layer_ids, key_map)
+        keys = None if blend is None else blend.as_list()
     for ty in range(ty0, ty1):
         for tx in range(tx0, tx1):
             tile = mm.get_tile(tx, ty)
@@ -3784,10 +4085,11 @@ def unit_sprite_draws_at(
     )
     if contribution is None:
         return []
+    # by_anchor entries also carry the base rise; callers here place by pixel only.
     return [
-        draw
+        entry[:3]
         for key in sorted(contribution.by_anchor, key=lambda k: (k[1], k[0]))
-        for draw in contribution.by_anchor[key]
+        for entry in contribution.by_anchor[key]
     ]
 
 
@@ -4163,6 +4465,8 @@ def _draw_unit_iso(
     proj: iso_geometry.IsoProjection,
     elevations: np.ndarray,
     offset: tuple[int, int] = (0, 0),
+    ink: np.ndarray | None = None,
+    ink_rise: int = 0,
 ) -> None:
     """Stepped mode's counterpart to _draw_unit() (Phase 5): paints ONE of a
     unit's footprint diamonds -- the one covering tile (tx, ty) -- filled,
@@ -4181,12 +4485,23 @@ def _draw_unit_iso(
     function has no off-map guard of its own; _units_by_tile() has already
     dropped anything unit_tile_bounds() rejects, which is why the index
     below is safe. offset/clipping mirror _render_tile_iso()'s own
-    scratch-canvas contract, for refresh_region_iso()'s incremental redraw."""
+    scratch-canvas contract, for refresh_region_iso()'s incremental redraw.
+
+    ink, when given, is the two-pass ink plane: the diamond's pixels are
+    recorded there at ink_rise (_unit_mark_rise_iso)."""
     dst_y, dst_x, _src_y, _src_x = iso_geometry.diamond_indices(tile_px)
     off_x, off_y = offset
     base_y, base_x = _unit_mark_base_iso(unit, tx, ty, proj, elevations)
     extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
     _clipped_paint_solid(img, base_y - off_y, base_x - off_x, dst_y, dst_x, color, extent=extent)
+    if ink is not None:
+        _record_ink(ink, base_y - off_y, base_x - off_x, dst_y, dst_x, ink_rise)
+
+
+def _unit_mark_rise_iso(unit, proj: iso_geometry.IsoProjection, elevations) -> int:
+    """A Stepped mark's base rise: its unit's own tile's height, the one
+    _unit_mark_base_iso places it at."""
+    return int(elevations[int(unit.y), int(unit.x)]) * proj.elev_step
 
 
 def _unit_mark_base_iso(unit, tx: int, ty: int, proj: iso_geometry.IsoProjection, elevations) -> tuple[int, int]:
@@ -4320,7 +4635,9 @@ class SpriteLayer:
     would dominate a chunk's cost outright.
 
     by_anchor maps a tile to the sprites that paint AT that tile, in the
-    units' own relative order. bboxes is keyed the same way and merges
+    units' own relative order, each as (draw, px, py, rise_px): the anchor
+    pixel and the unit's base rise, which decides what terrain may cover its
+    ink (_paint_candidates_iso). bboxes is keyed the same way and merges
     straight into building_bboxes, so composite_rect_iso's existing bystander
     machinery pulls a sprite's anchor tile into the candidate set with no
     change to that function's logic at all.
@@ -4346,7 +4663,7 @@ class SpriteLayer:
     coloured slab must not draw underneath.
     """
 
-    by_anchor: dict[tuple[int, int], list[tuple[object, int, int]]]
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int]]]
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]]
     skip_ids: frozenset[int]
     farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
@@ -4459,7 +4776,7 @@ class _SpriteContribution:
     this unit's alone."""
 
     skip_id: int
-    by_anchor: dict[tuple[int, int], list[tuple[object, int, int]]]
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int]]]
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]]
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
 
@@ -4573,7 +4890,7 @@ def _resolve_unit_sprite(
     # The unclamped footprint start, matching how a slot offset was derived;
     # bounds is already map-clamped and is the wrong origin to add to.
     slot_x0, slot_y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
-    by_anchor: dict[tuple[int, int], list[tuple[object, int, int]]] = {}
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int]]] = {}
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     for piece in pieces:
         px, py = ax + piece.dx, ay + piece.dy
@@ -4584,7 +4901,7 @@ def _resolve_unit_sprite(
                 min(max(slot_x0 + piece.slot[0], tile_x0), tile_x1 - 1),
                 min(max(slot_y0 + piece.slot[1], tile_y0), tile_y1 - 1),
             )
-        by_anchor.setdefault(key, []).append((piece.draw, px, py))
+        by_anchor.setdefault(key, []).append((piece.draw, px, py, rise_px))
         h, w = piece.draw.rgba.shape[:2]
         x0, y0 = px - piece.draw.hotspot_x, py - piece.draw.hotspot_y
         piece_bbox = (x0, y0, x0 + w, y0 + h)
@@ -4829,21 +5146,21 @@ def _paint_tile_and_units_iso(
     grid: GridBake = DEFAULT_GRID,
     blend=None,
 ) -> None:
-    """Terrain, then that tile's own units -- the single per-tile step both
-    render_terrain_iso_with_proj()'s full loop and refresh_region_iso()'s
-    incremental loop call, always in the SAME depth_order position, so the
-    two paths can never draw units in a different relative order than
-    terrain occlusion requires (Phase 5).
+    """Terrain, then that tile's own units: the single per-tile step of the
+    sprites-off render, which the full loop and every rect composite call in
+    the SAME depth_order position, so no two paths can draw marks in a
+    different relative order than terrain occlusion requires (Phase 5).
 
-    "Paint all terrain, then all units on top" (a separate overlay pass
-    after the whole region is final) was considered and rejected: a terrain
-    tile painted LATER in depth_order (closer to the camera) must be able
-    to visually occlude a unit painted EARLIER at a farther tile, which only
-    holds if units are interleaved tile-by-tile like this -- a bolt-on
-    "units after" pass would draw every affected unit on top regardless of
-    whether a later-depth terrain tile should actually cover it, breaking
-    exactly the occlusion property this project's own verify_iso_render.py
-    already established for terrain.
+    Sprites off, marks stay interleaved tile by tile: a terrain tile painted
+    LATER in depth_order (closer to the camera) paints over a mark drawn
+    EARLIER at a farther tile.
+
+    Sprites on, that interleave cut every big sprite along a tile-edge
+    staircase (GH #107): each later tile's terrain repainted over the ink
+    overhanging it. So _paint_candidates_iso runs the two halves below as two
+    passes over the same candidates: all terrain first, then objects, and a
+    nearer tile covers earlier ink only where it stands strictly higher than
+    that ink's base (_occlude_iso). Flat or lower ground never covers ink.
 
     A multi-tile unit contributes ONE diamond here, not its whole footprint:
     _units_by_tile() buckets it into every tile it covers, so each of its
@@ -4859,6 +5176,29 @@ def _paint_tile_and_units_iso(
     that follows still respects the same per-tile depth_order position as
     everything else here -- an edge belongs to its own tile's diamond, so
     it paints at that tile's own moment, same as the seam line does."""
+    _paint_terrain_iso(
+        img, tile, tile_px, proj, elevations, map_w, map_h, offset=offset, sprites=sprites,
+        textures=textures, grid=grid, blend=blend,
+    )
+    _paint_objects_iso(img, tile, units_by_tile, tile_px, proj, elevations, offset=offset, sprites=sprites)
+
+
+def _paint_terrain_iso(
+    img: np.ndarray,
+    tile,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    map_w: int,
+    map_h: int,
+    offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
+    textures: bool = True,
+    grid: GridBake = DEFAULT_GRID,
+    blend=None,
+) -> None:
+    """A tile's terrain half: its terrain (a farm's override included), the
+    farm outline, the grid. `sprites` is read for its farm tiles only."""
     farm = sprites.farm_by_tile.get((tile.x, tile.y)) if sprites is not None else None
     terrain_override = farm[0] if farm is not None else None
     _render_tile_iso(
@@ -4881,29 +5221,129 @@ def _paint_tile_and_units_iso(
             extent = iso_geometry.index_extent(iso_geometry.tile_edge_indices, tile_px, side)
             _clipped_paint_solid(img, base_y, base_x, dst_y, dst_x, outline_color, extent=extent)
     if grid.paints:
-        # After this tile's terrain, before its units: a sprite paints at the
-        # footprint tile LAST in depth_order (unit_sprites.sprite_anchor_tile),
-        # so no grid edge under a building can land on top of it.
+        # Part of the terrain half: the grid is ground, so it lands under
+        # every sprite, and a restored terrain pixel (_occlude_iso) keeps it.
         gx, gy = iso_geometry.tile_screen_origin(tile.x, tile.y, int(elevations[tile.y, tile.x]), proj)
         _paint_grid_iso(
             img, tile.x, tile.y, tile_px, map_w, map_h, gy - offset[1], gx - offset[0], grid, elevations=elevations
         )
+
+
+def _paint_objects_iso(
+    img: np.ndarray,
+    tile,
+    units_by_tile: dict,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
+    ink: np.ndarray | None = None,
+) -> None:
+    """A tile's objects half: its marks, then the sprites anchored on it. ink,
+    when given, is the two-pass ink plane (int32, INK_NONE where empty): every
+    pixel a mark or a sprite touches is recorded there at the unit's base
+    rise, last writer wins."""
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
             continue  # its sprite paints instead, once, at its anchor tile
-        _draw_unit_iso(img, unit, color, tile.x, tile.y, tile_px, proj, elevations, offset=offset)
+        ink_rise = _unit_mark_rise_iso(unit, proj, elevations) if ink is not None else 0
+        _draw_unit_iso(
+            img, unit, color, tile.x, tile.y, tile_px, proj, elevations, offset=offset, ink=ink, ink_rise=ink_rise
+        )
 
-    # Sprites last within this tile's step, so a unit standing on it is not
-    # cut by its own tile's terrain. A sprite paints ONCE, here at the tile
+    # Sprites after this tile's marks. A sprite paints ONCE, here at the tile
     # that comes last in depth_order among its footprint -- see
     # unit_sprites.sprite_anchor_tile for why that tile and not the unit's own.
     if sprites is not None:
         off_x, off_y = offset
-        for draw, ax, ay in sprites.by_anchor.get((tile.x, tile.y), ()):
+        for draw, ax, ay, rise_px in sprites.by_anchor.get((tile.x, tile.y), ()):
             _clipped_paint_rgba(
-                img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba
+                img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba, ink, rise_px
             )
+
+
+def _occlude_iso(
+    img: np.ndarray, terrain: np.ndarray, ink: np.ndarray, tile, tile_px: int,
+    proj: iso_geometry.IsoProjection, elevations: np.ndarray, map_h: int, offset: tuple[int, int], floor: int,
+) -> None:
+    """Pass 2's occlusion step for one tile: inside its opaque coverage (its
+    diamond and its two skirt quads, the producers _render_tile_iso paints
+    them from), ink based below the tile's own height gives way to the
+    terrain snapshot. Seams and contact shadows are darken-only, not coverage.
+    floor is _ink_floor's: a tile no higher than it has nothing to cover."""
+    tx, ty = tile.x, tile.y
+    own_elev = int(elevations[ty, tx])
+    step = proj.elev_step
+    height = own_elev * step
+    if height <= floor:
+        return
+    base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, own_elev, proj)
+    base_x -= offset[0]
+    base_y -= offset[1]
+    drop_left = max(own_elev - int(elevations[ty, tx - 1]), 0) * step if tx > 0 else 0
+    drop_right = max(own_elev - int(elevations[ty + 1, tx]), 0) * step if ty + 1 < map_h else 0
+    for side, drop_px in (("left", drop_left), ("right", drop_right)):
+        if drop_px <= 0:
+            continue
+        dst_y, dst_x, _sy, _sx = iso_geometry.skirt_quad_indices(tile_px, drop_px, side)
+        extent = iso_geometry.index_extent(iso_geometry.skirt_quad_indices, tile_px, drop_px, side)
+        _restore_under(img, terrain, ink, base_y, base_x, dst_y, dst_x, height, extent=extent)
+    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(tile_px)
+    extent = iso_geometry.index_extent(iso_geometry.diamond_indices, tile_px)
+    _restore_under(img, terrain, ink, base_y, base_x, dst_y, dst_x, height, extent=extent)
+
+
+def _paint_candidates_iso(
+    img: np.ndarray,
+    tiles: list,
+    keys: list | None,
+    units_by_tile: dict,
+    tile_px: int,
+    proj: iso_geometry.IsoProjection,
+    elevations: np.ndarray,
+    map_w: int,
+    map_h: int,
+    offset: tuple[int, int] = (0, 0),
+    sprites: SpriteLayer | None = None,
+    textures: bool = True,
+    grid: GridBake = DEFAULT_GRID,
+) -> None:
+    """Paints `tiles` (already in depth order; keys is their blend keys or
+    None) into img: the loop of the full render and of composite_rect_iso's
+    per-tile path, and the reference native_composite's kernel mirrors.
+
+    Sprites off: one interleaved loop, _paint_tile_and_units_iso per tile.
+    Sprites on, two passes over the same tiles. Pass 1 paints every terrain
+    half. Pass 2 walks the tiles again and, per tile, first lets its terrain
+    cover earlier ink based below it (_occlude_iso, against a snapshot of
+    pass 1), then paints its objects.
+
+    The pre-scan makes flat ground free: when no tile stands higher than the
+    lowest ink base, nothing can be covered, so the snapshot, the ink plane
+    and the occlusion step are all skipped. It never changes a pixel."""
+    if sprites is None:
+        for i, tile in enumerate(tiles):
+            _paint_tile_and_units_iso(
+                img, tile, units_by_tile, tile_px, proj, elevations, map_w, map_h, offset=offset,
+                textures=textures, grid=grid, blend=None if keys is None else keys[i],
+            )
+        return
+    for i, tile in enumerate(tiles):
+        _paint_terrain_iso(
+            img, tile, tile_px, proj, elevations, map_w, map_h, offset=offset, sprites=sprites,
+            textures=textures, grid=grid, blend=None if keys is None else keys[i],
+        )
+    floor = _ink_floor(tiles, units_by_tile, sprites, lambda unit, _tile: _unit_mark_rise_iso(unit, proj, elevations))
+    terrain = ink = None
+    if any(int(elevations[tile.y, tile.x]) * proj.elev_step > floor for tile in tiles):
+        terrain = img.copy()
+        ink = np.full(img.shape[:2], INK_NONE, dtype=np.int32)
+    for tile in tiles:
+        if ink is not None:
+            _occlude_iso(img, terrain, ink, tile, tile_px, proj, elevations, map_h, offset, floor)
+        _paint_objects_iso(img, tile, units_by_tile, tile_px, proj, elevations, offset=offset, sprites=sprites, ink=ink)
 
 
 def overlay_units(

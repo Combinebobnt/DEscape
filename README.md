@@ -292,7 +292,10 @@ buildings), `neighbors` (adjacent-tile lookup, off-map-safe), `is_water`
 (terrain-family classification), and
 `raise_elevation_under`/`raise_elevation_under_many`/`set_terrain` (the
 correct elevation clamp, an order-safe bulk variant, and double-terrain-blend
-reset, matching what the viewer's own tools already enforce).
+reset, matching what the viewer's own tools already enforce). `set_layer`
+sets or removes a tile's layered terrain (the second terrain drawn over its
+base) and leaves the base alone; call it after `set_terrain`, which still
+clears the layer.
 
 **Unit edits persist only through a `UnitEditModel`.** `batch_api.save()`
 always writes Map terrain exactly like the viewer's Save As does. Units are
@@ -381,6 +384,15 @@ each tile into higher-priority neighbouring terrain through the game's own
 transition masks, and draws a tile's second ("layered") terrain over it.
 View > Layers > Terrain Textures and Terrain Blending turn these off. The
 blending is a first pass and does not match the game exactly.
+
+In Terrain mode, the Target option on the Tool Options row chooses which of
+the two a terrain tool edits (the in-game editor's Layering Mode). Terrain
+paints the base terrain and clears the tile's layered terrain, Layer paints
+the layered terrain and leaves the base alone, and Clear layer removes it.
+Draw, Draw Line, Draw Rectangle and Paint Can follow it; the Eyedropper picks
+the layered terrain while it is on Layer. Hovering a tile names its layered
+terrain, and Paste Region carries it. A layered terrain is saved either way,
+but only drawn with an install configured and both View > Layers rows on.
 
 No install configured, or a specific terrain missing from it, both fall back
 to the guessed palette automatically — this is optional, not a hard
