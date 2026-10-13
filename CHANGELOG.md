@@ -194,9 +194,47 @@ content, link the doc instead of summarizing it.
   They change the display order, as the in-game editor's arrows do, and
   work on a multi-selection. The button row needs no more width than
   before.
+- **Copy, Cut and Paste units** (GH #192): in Units mode, Edit > Copy, Cut
+  and Paste (Ctrl+C / Ctrl+X / Ctrl+V) act on the selected units, and a
+  host's garrison rides along. Paste centres the group on the hovered tile,
+  kept inside the map, as one undo step and selects it. Copied units share
+  Edit > Clipboard History with copied regions.
+- **Garrison Cut** (GH #204): the Inspector's Garrison block has a Cut
+  button beside Copy. Paste inside another host then moves the same units
+  there, keeping their IDs, so triggers that name them still work.
+- **Units inspector edits Unit State and Capture Flag** (GH #186): two
+  dropdowns under Rotation with the game's own labels, for one unit or a
+  selection. A stored value with no label shows as Other (N) and is kept.
+  Capture Flag is disabled with a note on a scenario saved before 1.59,
+  which has no such field. Batch scripts get `UnitEditModel.set_status()`
+  and `set_capture_flag()`.
 
 ### Changed
 
+- **Place Unit and unit drags follow the game's placement rules** (GH #176,
+  #177, #174): by default a click or a drag-move is refused on terrain the
+  object can't stand on or on top of another object, and shore fish and
+  docks need a beach beside them; the status line says why. A new **Free
+  placement** checkbox lifts those rules and still snaps to the grid. The
+  old Free placement checkbox is now **Off-grid** (Alt is still its one-off)
+  and lifts only the grid snap. Both show under Place Unit and under Pan in
+  Units mode. Wall runs, arrow nudges, Scatter and paste are not restricted.
+- **`tools/release_render_diff.py` compares against the latest release**
+  (now v0.9) instead of v0.6. `--attribute` names the tiles, terrains and
+  objects under each difference, and the `--inject` controls are now one
+  `no-<name>` per neutralized change (`--help` lists them);
+  `no-placement-patch`, `no-exclusions` and `no-mask` are gone.
+- **A multi-unit selection's Rotation note is a tooltip on the Rotation
+  caption** (GH #198), not a paragraph under the Units inspector, as GH #147
+  did for one unit.
+- **The Units inspector's fields take the panel's extra width**, not their
+  captions, so a long dropdown label such as Capture Flag's fits once the
+  panel is a little wider than its minimum.
+- **Faster top-down Flat draws and fills** (Isometric View off): with
+  Terrain Blending on a Draw step repaints about three times faster, and a
+  large Paint Can fill or its undo no longer stalls for seconds (a
+  25,600-tile fill on a 480x480 map took 3.6 s and takes about 0.1 s zoomed
+  in).
 - **Trigger pane buttons are more compact**: Move Up/Down are now ▲ ▼
   beside Duplicate, next to the new ⇈ ⇊ Section Up/Down. New Section…,
   Rename Section… and Move to Section moved from their own row into the
@@ -359,6 +397,9 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **A selected building's range ring is centred on its footprint** (GH #200).
+  A building stored half a tile off its usual grid position, such as a Town
+  Center or Castle at `.5`, drew its ring half a tile away from its outline.
 - **Conditions and effects are listed in the order the in-game editor shows
   them** (GH #213), the file's display order, not the order they are stored
   in. A trigger whose OR or AND row is stored last now shows it between the

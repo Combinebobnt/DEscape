@@ -89,6 +89,10 @@ Units
 ├─ Moving
 ├─ Rotating: click CW / right-click CCW
 ├─ Selecting: HP/Attack/Armour, garrisoned contents, garrison delete
+├─ Capture Flag: Default / Convert Never / Convert Once / Convert Multiple Times /
+│  Convert Never (Gaia Aggressive)
+├─ Unit State: Default / Foundation / Almost Alive / Alive / Dead / Almost Dead /
+│  Really Dead / Undead / Remove / Going
 └─ Converting: source player checkboxes, destination dropdown, brush size
 
 Cinematics
@@ -222,6 +226,9 @@ Six text fields: Scenario Instructions, Objectives, Hints, Scout — each popula
 - **Moving**: reposition placed units.
 - **Rotating**: click = clockwise, right-click = counter-clockwise.
 - **Selecting**: shows HP/Attack/Armour and garrisoned contents; "garrison delete" removes units garrisoned inside another unit.
+- **Capture Flag** (added by the September 2026 update, scenario version 1.59): a per-unit dropdown, in the game's words "Change how many times this object can be captured/converted". Options, with the value the file stores: Default (-1), Convert Never (0), Convert Once (1), Convert Multiple Times (2), Convert Never (Gaia Aggressive) (3). A scenario saved before 1.59 has no such field.
+- **Unit State** (same update): a per-unit dropdown for the state a unit starts the scenario in. The game notes that a foundation shows only from the owning player's point of view. Options: Default, then Foundation (0), Almost Alive (1), Alive (2), Dead (3), Almost Dead (4), Really Dead (5), Undead (6), Remove (7), Going (8). The byte is in every scenario version, and older files already hold values other than Alive. What "Default" stores has not been measured.
+- Neither dropdown is in the UGC guide. The labels are the game's own string table (ids 31344 to 31362) and the stored values are AoE2ScenarioParser's `CaptureFlag` and `ObjectState` enums.
 - **Converting**: reassign units' owner — checkboxes pick source player(s), a dropdown picks the destination player, brush size sets the area.
 
 ## 8. Cinematics

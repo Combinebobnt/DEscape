@@ -88,9 +88,8 @@ def _open_window(path: Path):
 
 
 def _place(window, unit_const: int, tile: tuple[int, int], reference_id: int) -> None:
-    """Anchors a building at `tile`, at the `tile + span/2` placement every
-    real file uses -- a half-tile off and the ring no longer shares a centre
-    with its own footprint."""
+    """Anchors a building at `tile`, at the `tile + span/2` placement real
+    files use, so the footprint starts on `tile` itself."""
     from descape.terrain_palette import BUILDING_TILE_SPANS
 
     span_x, span_y = BUILDING_TILE_SPANS[unit_const]

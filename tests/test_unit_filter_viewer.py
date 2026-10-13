@@ -337,6 +337,7 @@ def test_placing_a_unit_the_filter_hides_says_so() -> None:
     window = conftest.blank_window()
     try:
         window.mode_combo.setCurrentText("Units")
+        window.unrestricted_check.setChecked(True)  # each click lands on the wall before it
         _unit, pos = _place_wall(window)
         window.units_panel.select_object(_WALL_CONST)
         assert window.units_panel.selected_object_const() == _WALL_CONST

@@ -1742,9 +1742,11 @@ class _ChunkCacheBase:
 
     def patch_rects(self, rects) -> None:
         """patch() for each rect in rects -- Phase B-E's Flat edits patch
-        per-tile rects rather than one union bbox (a union over a scattered
-        undo set can span the whole map, turning patch() into a full
-        recomposite; see ViewerWindow._apply_dirty's Flat branch).
+        render.flat_tile_rects()' disjoint rects (one per block of tiles an
+        edit touches, one a tile in a sparse block) rather than one union
+        bbox (a union over a scattered undo set can span the whole map,
+        turning patch() into a full recomposite; see
+        ViewerWindow._apply_dirty's Flat branch).
 
         No elevation_changed parameter: this is Flat's only patch_rects()
         caller today, and FlatChunkCache._refresh_source_caches() is a
@@ -1754,14 +1756,14 @@ class _ChunkCacheBase:
         Two passes, every rect's sources before any composite: a blended
         tile reads its neighbours' mirror entries, which a later rect may
         be the one refreshing. Between them the blend keys under every rect
-        are derived in one call, since each rect alone is one tile."""
+        are derived in one call, since a sparse block's rects are one tile each."""
         live = [rect for rect in rects if self.patch_sources(rect)]
         self._fill_blend_keys(live)
         for rect in live:
             self.patch_composite(rect)
 
     def _fill_blend_keys(self, rects) -> None:
-        """Derives every blend key the Flat tile rects `rects` (REFERENCE
+        """Derives every blend key Flat's patch rects `rects` (REFERENCE
         canvas pixels) will read, in one influences() call instead of one
         per rect (TASK-031.63: 12,100 one-tile rects cost 0.5 s more than
         the per-composite derivation they replaced). The composites then
@@ -3023,8 +3025,9 @@ class FlatChunkCache(_ChunkCacheBase):
         return self.with_units and bool(changed) and self._flat_splice_eligible(changed)
 
     def sprite_extent_before(self, changed: list[UnitSplice], mip: int | None):
-        """Flat patches per-tile rects (its icons stay inside their footprint),
-        so a unit edit here never asks for a sprite extent: raise, whatever mip."""
+        """Flat patches rects sized from the touched tiles (its icons stay inside
+        their footprint), so a unit edit here never asks for a sprite extent:
+        raise, whatever mip."""
         raise NotImplementedError("FlatChunkCache has no unit-edit sprite extent")
 
     sprite_extent_after = sprite_extent_before

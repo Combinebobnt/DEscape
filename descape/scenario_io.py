@@ -818,6 +818,17 @@ def unit_codec(loaded: LoadedScenario) -> _UnitCodec | None:
     return _unit_codec(loaded._scenario.structure["Units"], loaded.scenario_version)
 
 
+def unit_field_supported(loaded: LoadedScenario, name: str) -> bool:
+    """True if this file's version stores Unit's `name` field, by the link's
+    own support range, the test _unit_codec() applies (GH #186: `capture_flag`
+    is 1.59 only). False for a name Unit has no link for. Never None, unlike
+    unit_codec(), so it also answers for a file whose structure has no codec."""
+    for link in _unit_links():
+        if link.name == name:
+            return link.support is None or link.support.supports(loaded.scenario_version)
+    return False
+
+
 def _walk_units(
     unit_format: _UnitFormat, body: bytes, offset: int, count: int
 ) -> tuple[list[tuple], list[tuple[int, int]], int] | None:

@@ -131,17 +131,17 @@ def test_a_snapped_ghost_is_exactly_the_unit_the_click_places() -> None:
         _close(window)
 
 
-def test_a_free_ghost_is_exactly_the_unit_the_click_places() -> None:
+def test_an_off_grid_ghost_is_exactly_the_unit_the_click_places() -> None:
     window = _window()
     try:
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         scene = _hover_scene(window, _scene_pos(window, 40.3, 40.7))
         item = window.map_view._unit_ghost_item
         assert item is not None
         ghost_polygons = _mark_polygons(item)
 
         entry = _place_at(window, scene)
-        assert (entry.unit.x, entry.unit.y) != (40.5, 40.5), "free placement must not snap"
+        assert (entry.unit.x, entry.unit.y) != (40.5, 40.5), "off-grid placement must not snap"
         assert ghost_polygons == _expected_mark(window, entry)[0]
     finally:
         _close(window)
@@ -151,15 +151,15 @@ _HOUSE_CONST = 70  # 2x2: the snapped anchor takes the whole number nearest the 
 
 
 @pytest.mark.parametrize(
-    ("free", "modifiers"),
+    ("off_grid", "modifiers"),
     [(False, Qt.NoModifier), (True, Qt.NoModifier), (False, Qt.AltModifier)],
-    ids=["snapped", "free", "alt"],
+    ids=["snapped", "off_grid", "alt"],
 )
-def test_a_house_ghost_is_exactly_the_house_the_click_places(free, modifiers) -> None:
+def test_a_house_ghost_is_exactly_the_house_the_click_places(off_grid, modifiers) -> None:
     """GH #206: the ghost and the click resolve one point for a building too."""
     window = _window(const=_HOUSE_CONST)
     try:
-        window.free_place_check.setChecked(free)
+        window.off_grid_check.setChecked(off_grid)
         scene = _hover_scene(window, _scene_pos(window, 40.3, 40.7), modifiers)
         item = window.map_view._unit_ghost_item
         assert item is not None
@@ -167,10 +167,10 @@ def test_a_house_ghost_is_exactly_the_house_the_click_places(free, modifiers) ->
 
         entry = _place_at(window, scene, modifiers)
         tp = window.map_view._tile_pixels
-        if free or modifiers != Qt.NoModifier:
+        if off_grid or modifiers != Qt.NoModifier:
             # The resolved scene pixel, which the zoomed-out viewport quantizes coarsely.
             assert abs(entry.unit.x - scene.x() / tp) <= 1 / tp and abs(entry.unit.y - scene.y() / tp) <= 1 / tp
-            assert (entry.unit.x, entry.unit.y) != (40.0, 41.0), "free placement must not snap"
+            assert (entry.unit.x, entry.unit.y) != (40.0, 41.0), "off-grid placement must not snap"
         else:
             assert (entry.unit.x, entry.unit.y) == (40.0, 41.0)
         assert ghost_polygons == _expected_mark(window, entry)[0]
@@ -466,16 +466,16 @@ def test_an_owner_change_updates_the_ghost_colour_without_a_move() -> None:
         _close(window)
 
 
-def test_the_free_placement_box_updates_the_ghost_without_a_move() -> None:
+def test_the_off_grid_box_updates_the_ghost_without_a_move() -> None:
     window = _window()
     try:
         view = window.map_view
         _hover_scene(window, _scene_pos(window, 40.3, 40.7))
         snapped = view._unit_ghost_item.sceneBoundingRect()
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         free = view._unit_ghost_item.sceneBoundingRect()
         assert free != snapped
-        window.free_place_check.setChecked(False)
+        window.off_grid_check.setChecked(False)
         assert view._unit_ghost_item.sceneBoundingRect() == snapped
     finally:
         _close(window)
@@ -524,7 +524,7 @@ def test_hovering_builds_no_unit_model_adds_no_unit_and_invalidates_no_cache() -
         for step in range(8):
             _hover_scene(window, _scene_pos(window, 30.2 + step * 1.3, 30.6 + step))
         window.units_panel.select_owner(3)
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         assert window.map_view._unit_ghost_item is not None
 
         assert window.unit_edits is None

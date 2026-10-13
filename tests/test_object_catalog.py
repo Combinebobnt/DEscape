@@ -358,6 +358,44 @@ def test_combined_object_name_stays_dataset_only() -> None:
     assert object_catalog.combined_object_name(2708) == ""
 
 
+# --- GH #176: the placement-rule keys -----------------------------------------
+
+
+def test_objects_carry_the_placement_rule_keys() -> None:
+    """Villager 83 walks on land and has a 0.2-tile clearance box; Shore Fish
+    69 needs Beach 2 or Ice 35 beside it."""
+    objects = object_catalog.dat_objects()
+    assert objects[83]["restriction"] == 7
+    assert objects[83]["clearance"] == [0.2, 0.2]
+    assert "side_terrain" not in objects[83]
+    assert objects[69]["side_terrain"] == [2, 35]
+
+
+def test_the_placement_rule_keys_are_omitted_when_empty() -> None:
+    """As `obstruction`: a key is present only when it says something, so a
+    reader's `.get()` default is the passable answer."""
+    for entry in object_catalog.dat_objects().values():
+        assert entry.get("restriction", 1) > 0
+        assert any(entry.get("clearance", [1.0, 1.0]))
+        assert entry.get("side_terrain", [0])
+        assert all(terrain_id >= 0 for terrain_id in entry.get("side_terrain", []))
+
+
+def test_every_restriction_in_use_has_a_row_of_known_terrains() -> None:
+    rows = object_catalog.dat_terrain_restrictions()
+    used = {entry["restriction"] for entry in object_catalog.dat_objects().values() if "restriction" in entry}
+    assert used, "no object carries a restriction; the catalog was not regenerated"
+    # Row 2 is the Beach row: no object uses it, the shore rule reads it.
+    assert set(rows) == used | {2}
+    assert {2, 37} <= rows[2] and 0 not in rows[2]
+    known = set(object_catalog.dat_terrains())
+    for restriction_id, passable in rows.items():
+        assert passable <= known, f"restriction {restriction_id} names a terrain the catalog lacks"
+    # Land units (7) walk on Grass 0 and not on Water, Deep 22; fishing ships (13) the reverse.
+    assert 0 in rows[7] and 22 not in rows[7]
+    assert 22 in rows[13] and 0 not in rows[13]
+
+
 def test_a_missing_json_still_gives_the_library_only_catalog(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(object_catalog, "_CATALOG_JSON_PATH", tmp_path / "absent.json")
     object_catalog._dat_table.cache_clear()
@@ -365,6 +403,7 @@ def test_a_missing_json_still_gives_the_library_only_catalog(monkeypatch, tmp_pa
     try:
         assert {e.id for e in object_catalog.objects()} == set(_library_categories())
         assert object_catalog.dat_terrains() == {}
+        assert object_catalog.dat_terrain_restrictions() == {}
         assert object_catalog.display_name(2708) == "UNKNOWN_2708"
     finally:
         object_catalog._dat_table.cache_clear()

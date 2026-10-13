@@ -215,7 +215,7 @@ def _footprint_rects(scn, tile_px):
             if bounds is None:
                 continue
             tx0, tx1, ty0, ty1 = bounds
-            # Shifted by the same free-placement offset _draw_unit() applies
+            # Shifted by the same off-grid offset _draw_unit() applies
             # (Stage 1, 2026-09-17). This fixture places units at INTEGER
             # coordinates on purpose, and an integer coordinate is a grid
             # vertex, not a tile centre -- so those marks legitimately sit

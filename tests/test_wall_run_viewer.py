@@ -321,6 +321,7 @@ def test_a_gate_clicked_onto_a_run_replaces_the_walls_under_it():
 
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the fixture's pine at (6.5, 5.5) is under the gate
         window.on_shape_commit([(x, 5) for x in range(3, 12)])
         footprint = {(x, 5) for x in range(6, 10)}
         under = _walls_on(window, footprint)
@@ -362,6 +363,7 @@ def test_a_gate_clicked_in_a_tiles_low_half_anchors_one_tile_lower():
     a removal set the old 7.5 anchor (tiles 6..9) never produced."""
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the fixture's trees at (5.5, 5.5) and (6.5, 5.5) are under the gate
         window.on_shape_commit([(x, 5) for x in range(3, 12)])
         footprint = {(x, 5) for x in range(5, 9)}
         assert len(_walls_on(window, footprint)) == 4
@@ -383,6 +385,7 @@ def test_a_gate_across_a_runs_end_reshapes_the_wall_it_now_touches():
     becomes a run along y inside the same record."""
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the fixture's pine at (6.5, 5.5) is under the gate
         window.on_shape_commit([(x, 5) for x in range(2, 7)])
         window.on_shape_commit([(9, y) for y in range(6, 10)])
         top = next(u for u in window.scenario.unit_manager.units[PLAYER] if (u.x, u.y) == (9.5, 6.5))
@@ -400,12 +403,12 @@ def test_a_gate_across_a_runs_end_reshapes_the_wall_it_now_touches():
         _close(window)
 
 
-def test_free_placement_does_not_apply_to_walls():
+def test_off_grid_does_not_apply_to_walls():
     from PyQt5.QtCore import Qt
 
     window = _window()
     try:
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         _press(window.map_view, (50, 50), Qt.AltModifier)
         _release(window.map_view, (50, 50))
         unit = window.scenario.unit_manager.units[PLAYER][-1]
@@ -700,7 +703,7 @@ def test_wall_rectangle_alone_still_shows_the_tool_param_separator():
     window = _rect_window()
     try:
         assert window.tool_param_separator_action.isVisible()
-        assert not window.free_place_param_action.isVisible()
+        assert not window.off_grid_param_action.isVisible()
     finally:
         _close(window)
 

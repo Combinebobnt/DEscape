@@ -56,6 +56,9 @@ class ClipboardEntry:
 
 
 def default_label(block: RegionBlock) -> str:
+    if not block.has_tiles:
+        # A units-only entry (GH #192): its size is only a bounding box.
+        return "1 unit" if len(block.units) == 1 else f"{len(block.units)} units"
     return f"{block.width}x{block.height} ({len(block.units)} units)"
 
 
@@ -74,11 +77,14 @@ def thumbnail_rgb(block: RegionBlock, max_tiles: int = THUMBNAIL_MAX_TILES) -> n
     that is on neither tile. Smaller blocks emit one pixel per tile and are
     scaled up by Qt. Cost is bounded at max_tiles^2 lookups regardless of
     region size, and color_for_terrain_id delegates to an lru_cache'd
-    asset_source.get_terrain_average_color(), so repeats are dict hits."""
+    asset_source.get_terrain_average_color(), so repeats are dict hits.
+
+    A units-only block (no tiles, GH #192) has no terrain to preview and
+    gets the empty array, which the dialog draws as no icon."""
     src_w, src_h = block.width, block.height
     out_w = min(src_w, max_tiles)
     out_h = min(src_h, max_tiles)
-    if out_w <= 0 or out_h <= 0:
+    if out_w <= 0 or out_h <= 0 or not block.has_tiles:
         return np.zeros((0, 0, 3), dtype=np.uint8)
     xs = (np.arange(out_w) * src_w) // out_w
     ys = (np.arange(out_h) * src_h) // out_h

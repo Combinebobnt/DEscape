@@ -15,9 +15,12 @@ real number from this script.
 Drives a real offscreen ViewerWindow (QT_QPA_PLATFORM=offscreen) rather than
 calling descape.render's lower-level functions directly the way
 bench_incremental_latency.py does: _apply_dirty()'s Flat-mode path calls
-real QGraphicsView.invalidate_region() once per dirty tile, and that Qt call
-overhead is exactly what bucket 3 below needs to measure, not something a
-bypass could approximate.
+real QGraphicsView.invalidate_region() once per patched rect (one per block
+of tiles a fill touches, or once for the whole region when it evicts
+instead), and that Qt call overhead is what bucket 3 below measures, not
+something a bypass could approximate. The window here is never shown, so
+its chunk cache is empty and no composite is timed: bench_stroke_end.py
+--styles flat2d --tool fill prices the patch against the eviction.
 
 Cases: the shipped blank_120x120 template (14,400 tiles -- every fill's real
 worst case on the smallest supported map) and an in-memory 480x480 blank map

@@ -833,6 +833,7 @@ def test_a_place_that_stacks_adds_a_badge_and_a_move_that_stacks_nothing_skips_t
     view = window.map_view
     try:
         assert settings.get_stack_badges() is True
+        window.unrestricted_check.setChecked(True)  # the second villager goes on the first
         _place(window, _VILLAGER, (40, 40))
         _place(window, _VILLAGER, (40, 40))
         assert len(view._stack_groups) == 1, "the second villager did not stack"

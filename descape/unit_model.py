@@ -340,6 +340,12 @@ def capture_flag_of(unit: Any) -> int:
     return -1 if value is None else value
 
 
+def _is_int_in(value: Any, low: int, high: int) -> bool:
+    """An int (or IntEnum member) in low..high. Not a bool, float or numpy
+    int: _encode_unit() refuses a non-int in an integer field."""
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
 def _highest_reference_id(manager: UnitManager) -> int:
     return max((u.reference_id for units in manager.units for u in units), default=0)
 
@@ -471,10 +477,27 @@ def new_unit(
 # `garrisoned_in_id` is in here for the same reason since GH #115:
 # set_garrisoned_in() writes it in place, and `initial_animation_frame` since
 # GH #144: replace_type() writes it together with rotation.
-UnitState = tuple[float, float, float, float, int, int, int]
+#
+# `status` and `capture_flag` since GH #186: set_status() and
+# set_capture_flag() write them in place. The capture flag is None where the
+# file has none (before 1.59), and a None is never assigned back: the link is
+# poisoned there, so assigning even -1 raises.
+UnitState = tuple[float, float, float, float, int, int, int, int, int | None]
 
 
-def unit_state(unit: Unit) -> UnitState:
+def _capture_flag_or_none(unit: Unit) -> int | None:
+    """`unit.capture_flag` raw, or None where the link is unsupported (it
+    raises) or the attribute is absent (a pre-1.59 unit after a depoison()).
+    Not capture_flag_of(): its -1 for "none" cannot be assigned back."""
+    try:
+        return unit.capture_flag
+    except (UnsupportedAttributeError, AttributeError):
+        return None
+
+
+def unit_state(unit: Unit, capture_flag: bool = True) -> UnitState:
+    """`capture_flag=False` skips that read, for a file known to have none:
+    the poisoned link would raise and be caught once per unit."""
     return (
         unit.x,
         unit.y,
@@ -483,6 +506,8 @@ def unit_state(unit: Unit) -> UnitState:
         unit.unit_const,
         unit.garrisoned_in_id,
         unit.initial_animation_frame,
+        unit.status,
+        _capture_flag_or_none(unit) if capture_flag else None,
     )
 
 
@@ -495,7 +520,11 @@ def _set_unit_state(unit: Unit, state: UnitState) -> None:
         unit.unit_const,
         unit.garrisoned_in_id,
         unit.initial_animation_frame,
+        unit.status,
+        capture_flag,
     ) = state
+    if capture_flag is not None:
+        unit.capture_flag = capture_flag
 
 
 @dataclass
@@ -507,7 +536,8 @@ class PlayerListSnapshot:
     than merely its original owner (the insertion-position rule -- see
     UnitEditModel.reassign's docstring), and unlike triggers there is no
     O(bytes) cost to worry about capturing more than strictly needed, since
-    a UnitState is four floats, a const and a garrison link.
+    a UnitState is four floats and five small ints (const, garrison link,
+    animation frame, status, capture flag).
     """
 
     units: list = field(default_factory=list)
@@ -548,8 +578,9 @@ class UnitFieldRecord:
 class UnitFieldSnapshot:
     """One side of a fields_only delta undo record -- O(units actually
     touched) rather than UnitSnapshot's O(whole player list), for
-    set_position/set_rotation/set_unit_const/replace_type edits (Move/Nudge/
-    Rotate/Set field/gate orientation). `entries` is keyed by id(unit), filled lazily
+    set_position/set_rotation/set_unit_const/replace_type/set_status/
+    set_capture_flag edits (Move/Nudge/Rotate/Set field/gate orientation/
+    Unit State/Capture Flag). `entries` is keyed by id(unit), filled lazily
     on each unit's first field write so N field writes to the same unit
     still cost one entry."""
 
@@ -594,6 +625,8 @@ class UnitEditModel:
         codec = scenario_io.unit_codec(loaded)
         # serialize()'s writer for dirty units; None sends every save to the commit.
         self._codec = codec
+        # GH #186: decided once. False before 1.59, where set_capture_flag() raises.
+        self.supports_capture_flag = scenario_io.unit_field_supported(loaded, "capture_flag")
         self._int_positions = _int_positions(codec.unit_format) if codec is not None else ()
         if codec is not None:
             _check_all_units_encode(codec.unit_format, blobs_by_player)
@@ -777,8 +810,9 @@ class UnitEditModel:
 
     def _maybe_capture_field_delta(self, player: int, index: int, unit: Unit) -> None:
         """Batch D's D6 capture-on-first-write: called by set_position/
-        set_rotation/set_unit_const immediately before mutating, a no-op
-        unless self._pending is a fields_only UnitFieldSnapshot. Records
+        set_rotation/set_unit_const/set_status/set_capture_flag immediately
+        before mutating, a no-op unless self._pending is a fields_only
+        UnitFieldSnapshot. Records
         `unit`'s pre-mutation state once, keyed by id(unit), so a unit
         touched more than once in the same edit still gets exactly one
         entry (its state going into the record is the state before the
@@ -789,8 +823,9 @@ class UnitEditModel:
         key = id(unit)
         if key in pending.entries:
             return
+        state = unit_state(unit, self.supports_capture_flag)
         pending.entries[key] = UnitFieldRecord(
-            player=player, index=index, unit=unit, state=unit_state(unit), blob=self._blobs[player][index]
+            player=player, index=index, unit=unit, state=state, blob=self._blobs[player][index]
         )
 
     def _refuse_inside_field_delta(self, op: str) -> None:
@@ -801,7 +836,8 @@ class UnitEditModel:
         if isinstance(self._pending, UnitFieldSnapshot):
             raise RuntimeError(
                 f"{op}() changes unit membership/order and cannot run inside a fields_only "
-                f"unit edit -- only set_position/set_rotation/set_unit_const/replace_type may"
+                f"unit edit -- only set_position/set_rotation/set_unit_const/replace_type/"
+                f"set_status/set_capture_flag may"
             )
 
     # -- operations --------------------------------------------------------
@@ -816,6 +852,45 @@ class UnitEditModel:
         player, index = self._locate(unit)
         self._maybe_capture_field_delta(player, index, unit)
         unit.x, unit.y, unit.z = x, y, z
+        self._blobs[player][index] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def set_status(self, unit: Unit, value: int) -> None:
+        """Assigns `status`, the in-game editor's Unit State (GH #186), and
+        marks the unit's blob dirty. The field is a u8 in every version, so
+        anything else is refused loudly. Not checked against
+        unit_fields.UNIT_STATE_CHOICES: a script may write any raw byte, as
+        add() lets it."""
+        if not _is_int_in(value, 0, 255):
+            raise ValueError(f"status must be an int in 0..255 (u8), got {value!r}")
+        player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
+        unit.status = int(value)
+        self._blobs[player][index] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def set_capture_flag(self, unit: Unit, value: int) -> None:
+        """Assigns `capture_flag`, the in-game editor's Capture Flag (GH
+        #186), and marks the unit's blob dirty.
+
+        Refuses, loudly and never as a silent no-op, a file saved before 1.59
+        and a value outside s8. The file gate is load-bearing: after a
+        depoison() a pre-1.59 unit has no such attribute, so a bare assignment
+        would create one the encoder ignores and the save would drop it.
+        Not checked against unit_fields.CAPTURE_FLAG_CHOICES, as set_status().
+        """
+        if not self.supports_capture_flag:
+            raise ValueError(
+                f"scenario version {self.loaded.scenario_version} has no capture_flag field "
+                f"(it is stored from 1.59): refusing to set it"
+            )
+        if not _is_int_in(value, -128, 127):
+            raise ValueError(f"capture_flag must be an int in -128..127 (s8), got {value!r}")
+        player, index = self._locate(unit)
+        self._maybe_capture_field_delta(player, index, unit)
+        unit.capture_flag = int(value)
         self._blobs[player][index] = None
         self._dirty = True
         self._bump_unit_gen()
@@ -1453,12 +1528,14 @@ class UnitEditModel:
 
     def _capture(self, players: Sequence[int]) -> UnitSnapshot:
         manager = self.loaded.unit_manager
+        # Before 1.59 the capture-flag read raises per unit, so it is skipped whole.
+        capture_flag = self.supports_capture_flag
         snapshots = {}
         for p in players:
             snapshots[p] = PlayerListSnapshot(
                 units=list(manager.units[p]),
                 blobs=list(self._blobs[p]),
-                states=[unit_state(u) for u in manager.units[p]],
+                states=[unit_state(u, capture_flag) for u in manager.units[p]],
             )
         return UnitSnapshot(players=snapshots, next_unit_id=self._next_unit_id, dirty=self._dirty)
 
@@ -1519,11 +1596,11 @@ class UnitEditModel:
         `fields_only` (Batch D's D6): True opens a UnitFieldSnapshot instead
         of capturing `players`' whole lists up front -- cheap for a single-
         or few-unit edit that only ever calls set_position/set_rotation/
-        set_unit_const, which is exactly what add/remove/reassign are then
-        refused for (_refuse_inside_field_delta()) until this edit commits
-        or aborts. `players` is unused in this mode (nothing is captured up
-        front) but still required, so a caller can't silently drop the
-        declaration when flipping this flag.
+        set_unit_const/set_status/set_capture_flag, which is exactly what
+        add/remove/reassign are then refused for (_refuse_inside_field_delta())
+        until this edit commits or aborts. `players` is unused in this mode
+        (nothing is captured up front) but still required, so a caller can't
+        silently drop the declaration when flipping this flag.
         """
         if self._pending is not None:
             raise RuntimeError("begin_unit_edit() called while an edit was already in progress")
@@ -1575,7 +1652,7 @@ class UnitEditModel:
                 player=entry.player,
                 index=entry.index,
                 unit=unit,
-                state=unit_state(unit),
+                state=unit_state(unit, self.supports_capture_flag),
                 blob=self._blobs[entry.player][entry.index],
             )
         return after

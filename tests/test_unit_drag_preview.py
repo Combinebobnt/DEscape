@@ -203,8 +203,8 @@ def test_the_preview_and_the_commit_resolve_the_same_point() -> None:
         _close(window)
 
 
-def test_the_previews_resolver_does_not_log_a_free_placement_fallback() -> None:
-    """The status-log spam trap: the committing callers log a refused free-
+def test_the_previews_resolver_does_not_log_an_off_grid_fallback() -> None:
+    """The status-log spam trap: the committing callers log a refused off-grid
     placement inverse, and this resolver runs once per mouse-move. On a steep
     Sloped ramp the inverse can refuse pixel after pixel, so logging here
     would fill the log with one line per frame."""
@@ -212,7 +212,7 @@ def test_the_previews_resolver_does_not_log_a_free_placement_fallback() -> None:
     try:
         logged = []
         window._log_status = lambda text, *a, **k: logged.append(text)
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         # Forces the fallback branch without needing a degenerate ramp.
         window.map_view._pick_map_point = lambda pos: None
         pos = window.map_view.mapToScene(_viewport_pos(window, 40, 40).toPoint())
@@ -395,6 +395,7 @@ def test_a_drag_invalidates_no_cache_until_the_release_commits() -> None:
     why the preview is an overlay and not a re-render."""
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the drop is under the fixture's House
         view = window.map_view
         entry = _an_entry(window)
         unit = entry.unit

@@ -1,70 +1,70 @@
 #!/usr/bin/env python3
-"""Pixel-diffs this checkout's map render against a release tag's (GH #87:
-"everything looks like v0.6").
+"""Pixel-diffs this checkout's map render against the last release's (GH #87).
 
 Renders each scenario at both commits, off-engine and full-canvas, in Flat,
 Stepped and Sloped with sprites off and on, and reports every pixel that
-differs outside the changes the releases since then made on purpose. The
+differs outside the changes made on purpose since that release. The
 release's `descape/` is extracted with `git archive` into a scratch directory
 and rendered by the same Python in its own subprocess, with the install and
 the Isometric elevation height pinned through a throwaway `config.yaml`, so
 neither side reads your real settings.
 
-What is neutralized or masked, and why. Everything else must match exactly.
+The baseline rolls. BASE_REF is the latest release tag and moves to each new
+tag once it is cut, so the registry below only ever holds the changes since
+the last release. At a bump, set BASE_REF, run `--attribute`, and delete each
+entry whose change the release shipped: check_registry() refuses any entry
+still measured against the old tag.
 
-- **Sub-tile unit positions** (v0.7: "Units render at the position their file
-  actually stores"). This checkout renders with the pre-0.7 placement put
-  back: `render.unit_paint_offset()` returns (0, 0) and a span-1 sprite axis
-  centres on its tile again. The Sloped rise is still sampled at the stored
-  sub-tile point, as it was in v0.6. Only this checkout is patched: v0.6
-  painted from `int(unit.x)`, which the patch does not change.
-- **Stepped contact shadows** (v0.7: shadows scale with step height, no tick
-  marks, no break at inside corners). Masked: the screen bounds, over their
-  3x3 neighbourhood's height range, of every tile with a neighbour at a
-  different height. `iso_geometry.tile_screen_bounds_over` already includes
-  the shadow passes' upward reach. Since the GH #15 back-out the Stepped
-  shadows are v0.6's again, so the mask currently neutralizes nothing (the
-  `no-mask` control asserts that) and is kept for the rework's return.
-- **Sprite art changed on purpose**, sprites-on runs only. These units are
-  removed from the scenario on both sides before rendering:
-  walls and gates (shapes derived from their neighbours, palisade and sea
-  wall banners and bases, GH #51), heroes (hero glow, GH #39), invisible
-  objects (editor markers, GH #53), and buildings drawn from per-piece depth
-  slots (town centres, pastures; GH #66). Their look is judged by their own
-  review packs (tools/REVIEW_PACK.md); `--frames-dir` writes v0.6 / HEAD /
-  amplified-diff crops of them for a side-by-side look.
-- **Sprites-on paint order** (GH #107: all terrain first, then objects, so
-  nearer ground no longer cuts a sprite's or a mark's overhanging ink, and a
-  contact shadow darkens ground only). This checkout renders Stepped and
-  Sloped with the pre-fix loop put back, terrain and objects interleaved per
-  tile (`render._paint_candidates_iso/_sloped`). Only this checkout is
-  patched. Sprites-off renders never left that loop.
+What is neutralized or masked, and why, is the NEUTRALIZATIONS registry below
+(`--help` lists it). Everything else must match exactly. Each entry is one
+change made on purpose since BASE_REF, kept out of the comparison in one of
+three ways, in order of preference:
 
-Sprites-off runs keep every unit. Each Stepped sprites-on run also asserts that
-both sides resolve the same number of units to sprite art, and at least one, so
-a missing install cannot pass as "no difference".
+- **A patch** puts this checkout's code back to the release's behaviour, in
+  this checkout's render subprocess only. The change's units and pixels stay
+  under test.
+- **An exclusion** removes a group of unit consts from the scenario on both
+  sides before rendering, in sprites-on runs or in every run. For per-unit
+  art with no small patch surface. `--frames-dir` writes base / HEAD /
+  amplified-diff crops of the excluded units for a side-by-side look.
+- **A mask** ignores a screen region. Only the Stepped contact-shadow terrace
+  band: the screen bounds, over their 3x3 neighbourhood's height range, of
+  every tile with a neighbour at a different height.
+
+Every entry has a control, `--inject no-<name>`, which drops that one entry
+and must then fail on the entry's own `must_fail` configs of its
+`control_file` and nowhere else. `--inject repaint-tile` retextures one tile
+and must fail everywhere.
+
+Sprites-off runs keep every unit an every-run exclusion does not name. Each
+Stepped sprites-on run also asserts that both sides resolve the same number of
+units to sprite art, and at least one, so a missing install cannot pass as "no
+difference".
 
 Run:
     tools/release_render_diff.py                         # the quick corpus in examples/
     tools/release_render_diff.py examples/foo.aoe2scenario --elev-step-pct 25 200
-    tools/release_render_diff.py --frames-dir build/v06_frames
+    tools/release_render_diff.py --attribute             # name the tiles, terrains and units under each diff
+    tools/release_render_diff.py --frames-dir build/release_frames
     tools/release_render_diff.py --inject repaint-tile   # a control: must exit 1
 
 Needs git, the release tag, and an AoE2:DE install (--install,
 AOE2DE_INSTALL_PATH, or the configured one). Exits 1 on any unmasked
-difference. The default composite backend is numpy on both sides, since v0.6
-has no native kernel; `--composite native` renders this checkout through it.
+difference. The default composite backend is numpy on both sides;
+`--composite native` renders this checkout through the native kernel.
 """
 
 from __future__ import annotations
 
 import argparse
-import inspect
+import functools
 import json
 import os
 import subprocess
 import sys
 import tempfile
+from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,7 +72,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE_REF = "v0.6"
+BASE_REF = "v0.9"
 STYLES = ("flat", "stepped", "sloped")
 DEFAULT_PCTS = (50, 200)
 # The same four files as tests/conftest.py's QUICK_CORPUS_NAMES.
@@ -82,34 +82,40 @@ QUICK_CORPUS = (
     "C2_ElCid_coop_1_v0_16.aoe2scenario",
     "F7_2_Dos Pilas (648).aoe2scenario",
 )
-# Controls: each must make the comparison fail. The last four drop one neutralization each, proving it is load-bearing.
-# Exception: no-mask passes while Stepped shadows match v0.6 (GH #15 back-out); a failure there means the mask matters again.
-INJECTS = ("repaint-tile", "no-placement-patch", "no-exclusions", "no-mask", "no-paint-order-patch")
+# A comparison config is (style, sprites on). These name the sets the controls must fail.
+ALL_CONFIGS = frozenset((style, sprites) for style in STYLES for sprites in (False, True))
+SPRITES_ON = frozenset((style, True) for style in STYLES)
+SPRITES_OFF = ALL_CONFIGS - SPRITES_ON
+ISO_CONFIGS = frozenset((style, sprites) for style, sprites in ALL_CONFIGS if style != "flat")
+ELCID = "C2_ElCid_coop_1_v0_16.aoe2scenario"
+JOAN = "2_Joan_coop_1_v0_13.aoe2scenario"
+OLD_ALLIES = "old-allies-final-v2.aoe2scenario"
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).
 CROP_W, CROP_H, UPSCALE = 240, 180, 5
 DIFF_GAIN = 4
+# --attribute: how many terrains, consts and tiles each report line names, and how far "near" reaches in tiles.
+ATTRIBUTE_TOP = 8
+ATTRIBUTE_NEAR = 2
 
 
 # ---------------------------------------------------------------------------
-# Worker: runs in a fresh interpreter whose descape/ is the tree being rendered.
+# Patches: each runs in this checkout's worker, before it renders.
 
 
-def _legacy_placement(render) -> None:
-    """Put the pre-0.7 placement back: marks at the tile centre, span-1 sprite axes centred on their tile."""
-    for name in ("unit_paint_offset", "_sprite_axis_centre", "_span_start"):
-        if not hasattr(render, name):
-            raise SystemExit(f"render.{name} is gone: update _legacy_placement() to match the refactor")
-    render.unit_paint_offset = lambda unit: (0.0, 0.0)
-    render._sprite_axis_centre = lambda coord, span: render._span_start(coord, span) + span / 2
-
-
-def _legacy_paint_order(render) -> None:
-    """Put the pre-GH #107 composite back: terrain and objects interleaved per tile, sprites on or off."""
-    names = ("_paint_candidates_iso", "_paint_candidates_sloped", "_paint_tile_and_units_iso", "_paint_tile_and_units_sloped")
+def _require(module, *names: str) -> None:
     for name in names:
-        if not hasattr(render, name):
-            raise SystemExit(f"render.{name} is gone: update _legacy_paint_order() to match the refactor")
+        if not hasattr(module, name):
+            raise SystemExit(f"{module.__name__}.{name} is gone: update its patch in {Path(__file__).name} to match the refactor")
+
+
+def _legacy_paint_order() -> None:
+    """Put the pre-GH #107 composite back: terrain and objects interleaved per tile, sprites on or off."""
+    from descape import render
+
+    _require(
+        render, "_paint_candidates_iso", "_paint_candidates_sloped", "_paint_tile_and_units_iso", "_paint_tile_and_units_sloped"
+    )
 
     def interleaved(per_tile):
         def paint(img, tiles, keys, units_by_tile, tile_px, proj, heights, map_w, map_h, **kwargs):
@@ -121,6 +127,238 @@ def _legacy_paint_order(render) -> None:
 
     render._paint_candidates_iso = interleaved(render._paint_tile_and_units_iso)
     render._paint_candidates_sloped = interleaved(render._paint_tile_and_units_sloped)
+
+
+def _no_terrain_blending() -> None:
+    """Render with blend=False, the pre-blending terrain. The base has no such argument and never gets one."""
+    from descape import render
+
+    names = ("render_terrain", "render_terrain_iso_with_proj", "render_terrain_sloped_with_proj")
+    _require(render, *names)
+    for name in names:
+        setattr(render, name, functools.partial(getattr(render, name), blend=False))
+
+
+def _v09_texture_sampling() -> None:
+    """Put the pre-TASK-201 iso texture sampling back: the diamond reads the centre quarter of its crop
+    in the rotated (a, b) basis, and a skirt column samples one row below the diamond's edge pixel."""
+    from descape import iso_geometry
+
+    _require(iso_geometry, "_inverse_sample", "skirt_quad_indices", "diamond_indices", "sloped_quad_indices", "index_extent")
+
+    def inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
+        u = (dst_x + 0.5 - half_w) / half_w
+        v = (dst_y + 0.5 - half_h) / half_h
+        a = (u + v) / 2.0
+        b = (v - u) / 2.0
+        src_x = np.clip(np.floor((a + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
+        src_y = np.clip(np.floor((b + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
+        return src_y, src_x
+
+    def one_row_down(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
+        return inverse_sample(dst_x, dst_y + 1, half_w, half_h, tile_px)
+
+    skirt = iso_geometry.skirt_quad_indices.__wrapped__
+
+    @functools.lru_cache(maxsize=256)
+    def skirt_quad_indices(tile_px: int, drop_px: int, side: str):
+        # This checkout's skirt asks for row edge_y - 1; the release sampled edge_y.
+        iso_geometry._inverse_sample = one_row_down
+        try:
+            return skirt(tile_px, drop_px, side)
+        finally:
+            iso_geometry._inverse_sample = inverse_sample
+
+    iso_geometry._inverse_sample = inverse_sample
+    iso_geometry.skirt_quad_indices = skirt_quad_indices
+    for cached in (iso_geometry.diamond_indices, iso_geometry.sloped_quad_indices, iso_geometry.index_extent):
+        cached.cache_clear()
+
+
+def _v09_building_art() -> None:
+    """Put the pre-GH #48 art lookup back: every owner draws the Gaia-table entry of the placed const."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "resolve_entry", "graphic_map")
+    unit_sprites.resolve_entry = lambda unit_const, art_civ, age: unit_sprites.graphic_map().get(unit_const)
+
+
+def _no_fish_spans() -> None:
+    """Put the pre-GH #178 fish footprint back: every fish is 1x1 (marks, outlines and anchors)."""
+    from descape import terrain_palette
+
+    _require(terrain_palette, "FISH_TILE_SPANS", "tile_span")
+    terrain_palette.FISH_TILE_SPANS = {}
+
+
+def _no_blocker_spans() -> None:
+    """Put the pre-GH #121 blocker footprint back: a 1x3 or 3x1 blocker marks its centre tile only."""
+    from descape import terrain_palette
+
+    _require(terrain_palette, "BLOCKER_TILE_SPANS", "tile_span")
+    terrain_palette.BLOCKER_TILE_SPANS = {}
+
+
+# ---------------------------------------------------------------------------
+# Exclusions: each names the consts removed on both sides. Evaluated in the driver, against this checkout.
+
+
+def _fish_art_consts() -> frozenset[int]:
+    """The consts whose unit_graphic_map.json entry GH #178 changed: the eight spanned fish, Shore Fish, a Marlin, Box Turtles."""
+    return frozenset({53, 61, 69, 450, 451, 455, 456, 457, 458, 1141, 2625})
+
+
+def _ship_and_butterfly_consts() -> frozenset[int]:
+    """The consts GH #20 gave new art: the 20 sailing ships that gained sail pieces, and the three Butterflies doodads."""
+    ships = {17, 21, 114, 420, 442, 527, 528, 529, 532, 535, 536, 539, 545, 691, 1103, 1104, 2626, 2627, 2628, 2633}
+    return frozenset(ships | {1608, 1609, 1610})
+
+
+# ---------------------------------------------------------------------------
+# The registry.
+
+
+@dataclass(frozen=True)
+class Neutralization:
+    """One change made on purpose since BASE_REF, and how the comparison is kept blind to it.
+
+    Exactly one of `patch`, `consts` and `mask` is set. `since` is the BASE_REF the entry was
+    measured against: run() refuses a registry holding any other, so a BASE_REF bump has to
+    revisit every entry. `--inject no-<name>` is the entry's control and must fail exactly the
+    `must_fail` (style, sprites) configs of `control_file`.
+    """
+
+    name: str
+    change: str  # GH/TASK ids and what changed
+    since: str
+    control_file: str
+    must_fail: frozenset[tuple[str, bool]]
+    patch: Callable[[], None] | None = None
+    consts: Callable[[], frozenset[int]] | None = None
+    every_run: bool = False  # consts only: removed from sprites-off runs too
+    mask: bool = False
+
+    @property
+    def kind(self) -> str:
+        if self.patch is not None:
+            return "patch"
+        if self.consts is not None:
+            return "exclusion, every run" if self.every_run else "exclusion, sprites-on runs"
+        return "mask"
+
+
+NEUTRALIZATIONS: tuple[Neutralization, ...] = (
+    Neutralization(
+        "terrain-blending",
+        "GH #13, TASK-143: terrain blending and layered terrain",
+        since="v0.9", control_file=ELCID, must_fail=ALL_CONFIGS,
+        patch=_no_terrain_blending,
+    ),
+    Neutralization(
+        "texture-sampling",
+        "TASK-201: Stepped and Sloped terrain textures continue across tile edges",
+        since="v0.9", control_file=ELCID, must_fail=ISO_CONFIGS,
+        patch=_v09_texture_sampling,
+    ),
+    Neutralization(
+        "fish-spans",
+        "GH #178: deep fish outline, pick and occupy 2x2 tiles and the Whale 3x3",
+        since="v0.9", control_file=ELCID, must_fail=SPRITES_OFF,
+        patch=_no_fish_spans,
+    ),
+    Neutralization(
+        "building-art",
+        "GH #48: buildings draw in their owner's architecture and starting age",
+        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
+        patch=_v09_building_art,
+    ),
+    Neutralization(
+        "fish-art",
+        "GH #178: fish draw at their in-game size and show their bodies",
+        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
+        consts=_fish_art_consts,
+    ),
+    Neutralization(
+        "ships-and-butterflies",
+        "GH #20: ships draw their sails and their owner's colour, and Butterflies draw as butterflies",
+        since="v0.9", control_file=JOAN, must_fail=SPRITES_ON,
+        consts=_ship_and_butterfly_consts,
+    ),
+    Neutralization(
+        "blocker-spans",
+        "GH #121: 1x3 and 3x1 blockers cover their full three tiles",
+        since="v0.9", control_file=OLD_ALLIES, must_fail=ALL_CONFIGS,
+        patch=_no_blocker_spans,
+    ),
+    Neutralization(
+        "paint-order",
+        "GH #107: with sprites on, all terrain paints first, then objects",
+        since="v0.9", control_file=ELCID, must_fail=ISO_CONFIGS & SPRITES_ON,
+        patch=_legacy_paint_order,
+    ),
+    Neutralization(
+        "contact-shadows",
+        "GH #15: Stepped contact shadows are back to the earlier line style",
+        since="v0.9", control_file=ELCID, must_fail=frozenset({("stepped", False), ("stepped", True)}),
+        mask=True,
+    ),
+)
+
+# The Stepped mask's measured canvas fraction against BASE_REF, by file and elev_step_pct (emptied with the mask entry).
+# A run over measured + MASK_MARGIN fails: a mask grown to cover the canvas would pass every Stepped cell and its control.
+MASK_MEASURED: dict[str, dict[int, float]] = {
+    "0_June_Event_Scenario.aoe2scenario": {25: 0.0742, 50: 0.0729, 100: 0.0704, 200: 0.0659},
+    JOAN: {25: 0.1029, 50: 0.1005, 100: 0.0960, 200: 0.0881},
+    ELCID: {25: 0.1601, 50: 0.1548, 100: 0.1452, 200: 0.1288},
+    "F7_2_Dos Pilas (648).aoe2scenario": {25: 0.0579, 50: 0.0574, 100: 0.0566, 200: 0.0549},
+    OLD_ALLIES: {25: 0.2136, 50: 0.2111, 100: 0.2063, 200: 0.1973},
+}
+MASK_MARGIN = 0.005
+
+
+def mask_ceiling(scenario_name: str, pct: int) -> float | None:
+    """The largest Stepped masked fraction this file may report at this pct, or None where none is pinned."""
+    measured = MASK_MEASURED.get(scenario_name, {}).get(pct)
+    return None if measured is None else measured + MASK_MARGIN
+
+
+REPAINT_TILE = "repaint-tile"
+
+
+def controls() -> list[tuple[str, str, frozenset[tuple[str, bool]]]]:
+    """(inject, control file, the configs it must fail) for every control run."""
+    return [(REPAINT_TILE, ELCID, ALL_CONFIGS)] + [(f"no-{n.name}", n.control_file, n.must_fail) for n in NEUTRALIZATIONS]
+
+
+INJECTS = tuple(inject for inject, _file, _configs in controls())
+
+
+def check_registry() -> None:
+    """Raises ValueError for a registry that would prove nothing: see Neutralization."""
+    names = [n.name for n in NEUTRALIZATIONS]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate neutralization names in {names}")
+    for n in NEUTRALIZATIONS:
+        if sum((n.patch is not None, n.consts is not None, n.mask)) != 1:
+            raise ValueError(f"{n.name}: set exactly one of patch, consts and mask")
+        if not n.must_fail or not n.must_fail <= ALL_CONFIGS:
+            raise ValueError(f"{n.name}: must_fail is empty or names an unknown config, so its control proves nothing")
+        if n.since != BASE_REF:
+            raise ValueError(
+                f"{n.name} was measured against {n.since}, but BASE_REF is {BASE_REF}: delete the entry if the "
+                f"release shipped its change, else re-measure it (--attribute) and update its `since`"
+            )
+    if sum(n.mask for n in NEUTRALIZATIONS) > 1:
+        raise ValueError("more than one mask entry: there is only the contact-shadow terrace mask")
+
+
+def intended_change_consts(active: tuple[Neutralization, ...] = NEUTRALIZATIONS) -> dict[str, frozenset[int]]:
+    """The consts the exclusion entries remove, by the change that needs them out."""
+    return {n.change: n.consts() for n in active if n.consts is not None}
+
+
+# ---------------------------------------------------------------------------
+# Worker: runs in a fresh interpreter whose descape/ is the tree being rendered.
 
 
 def _terrace_mask(iso_geometry, elevations: np.ndarray, proj, shape: tuple[int, int]) -> np.ndarray:
@@ -153,42 +391,145 @@ def _repaint_one_flat_tile(scenario) -> None:
     raise SystemExit("no flat, unit-free tile to repaint")
 
 
-def _worker(spec: dict) -> None:
-    sys.path.insert(0, spec["root"])
-    from descape import iso_geometry, render
+def _load_without(spec: dict):
+    """(scenario with spec's excluded consts removed, how many units that removed)."""
     from descape.scenario_io import load_map_and_units
 
     scenario = load_map_and_units(Path(spec["scenario"]))
-    if spec.get("repaint_tile"):
-        _repaint_one_flat_tile(scenario)
     excluded = frozenset(spec["exclude"])
     removed = 0
     for units in scenario.unit_manager.units:
         kept = [u for u in units if u.unit_const not in excluded]
         removed += len(units) - len(kept)
         units[:] = kept
-    if spec["legacy_placement"]:
-        _legacy_placement(render)
-    if spec["legacy_paint_order"]:
-        _legacy_paint_order(render)
+    return scenario, removed
+
+
+def _worker(spec: dict) -> None:
+    sys.path.insert(0, spec["root"])
+    if "attribute_out" in spec:
+        _attribute(spec)
+        return
+    from descape import iso_geometry, render
+
+    patches = {n.name: n.patch for n in NEUTRALIZATIONS if n.patch is not None}
+    for name in spec["patches"]:
+        patches[name]()
+    scenario, removed = _load_without(spec)
+    if spec.get("repaint_tile"):
+        _repaint_one_flat_tile(scenario)
     style, sprites = spec["style"], spec["sprites"]
     meta: dict = {"removed_units": removed}
-    # Blending off where the tag has it, so this keeps guarding non-blend regressions against older tags.
-    nb = {"blend": False} if "blend" in inspect.signature(render.render_terrain).parameters else {}
     if style == "flat":
-        img = render.overlay_units(render.render_terrain(scenario, **nb), scenario, with_sprites=sprites)
+        img = render.overlay_units(render.render_terrain(scenario), scenario, with_sprites=sprites)
     elif style == "stepped":
-        img, elevations, proj = render.render_terrain_iso_with_proj(
-            scenario, with_units=True, with_sprites=sprites, **nb
-        )
+        img, elevations, proj = render.render_terrain_iso_with_proj(scenario, with_units=True, with_sprites=sprites)
         if spec.get("mask_out"):
             np.save(spec["mask_out"], _terrace_mask(iso_geometry, elevations, proj, img.shape[:2]))
         if sprites:
             meta["sprite_units"] = len(render.sprite_draws_by_anchor(scenario, proj, elevations).skip_ids)
     else:
-        img = render.render_terrain_sloped_with_proj(scenario, with_units=True, with_sprites=sprites, **nb)[0]
+        img = render.render_terrain_sloped_with_proj(scenario, with_units=True, with_sprites=sprites)[0]
     np.save(spec["out"], img)
     Path(spec["meta_out"]).write_text(json.dumps(meta))
+
+
+def _diff_px_by_tile(spec: dict, scenario, diff: np.ndarray) -> tuple[Counter, int]:
+    """(diff px per (x, y) tile, px no tile claims). Flat is exact (px // tile_px). Stepped and Sloped
+    sample one diff pixel per half-tile screen cell through iso_geometry.screen_to_tile, which reads
+    flat tile tops: a skirt pixel resolves to no tile, and a Sloped tile is found by its Stepped diamond."""
+    from descape import iso_geometry, render
+
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    px: Counter = Counter()
+    if spec["style"] == "flat":
+        tile_px = render.tile_pixels_for_map(w, h)
+        for top in range(0, diff.shape[0], STRIP_ROWS):
+            ys, xs = np.nonzero(diff[top : top + STRIP_ROWS])
+            ids, counts = np.unique(((ys + top) // tile_px) * w + xs // tile_px, return_counts=True)
+            for tile_id, count in zip(ids.tolist(), counts.tolist(), strict=True):
+                px[(tile_id % w, tile_id // w)] += count
+        return px, 0
+    if spec["style"] == "stepped":
+        elevations, proj = render.elevations_and_proj(scenario)
+    else:
+        elevations, _corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    cell_w, cell_h = proj.half_w, proj.half_h
+    cols = -(-diff.shape[1] // cell_w)
+    strip = cell_h * max(1, STRIP_ROWS // cell_h)
+    unresolved = 0
+    for top in range(0, diff.shape[0], strip):
+        ys, xs = np.nonzero(diff[top : top + strip])
+        if not ys.size:
+            continue
+        cells = ((ys + top) // cell_h) * cols + xs // cell_w
+        order = np.argsort(cells, kind="stable")
+        _ids, starts, counts = np.unique(cells[order], return_index=True, return_counts=True)
+        # Each cell's middle diff pixel in row-major order stands for the whole cell.
+        mid = order[starts + counts // 2]
+        for sx, sy, count in zip(xs[mid].tolist(), (ys[mid] + top).tolist(), counts.tolist(), strict=True):
+            tile = iso_geometry.screen_to_tile(sx, sy, elevations, proj)
+            if tile is None:
+                unresolved += count
+            else:
+                px[(int(tile[0]), int(tile[1]))] += count
+    return px, unresolved
+
+
+def _attribute(spec: dict) -> None:
+    """Names what sits under one comparison's unmasked diff: per tile, its terrain id and the consts of
+    the units whose footprint covers it, else of those within ATTRIBUTE_NEAR tiles (a sprite overhangs)."""
+    from descape import object_catalog, render, terrain_palette
+
+    scenario, _removed = _load_without(spec)
+    mm = scenario.map_manager
+    w, h = mm.map_width, mm.map_height
+    px_by_tile, unresolved = _diff_px_by_tile(spec, scenario, np.load(spec["diff"], mmap_mode="r"))
+
+    on_tile: dict[tuple[int, int], set[int]] = {}
+    for units in scenario.unit_manager.units:
+        for unit in units:
+            bounds = render.unit_tile_bounds(unit, w, h)
+            if bounds is None:
+                continue
+            x0, x1, y0, y1 = bounds
+            for ty in range(y0, y1):
+                for tx in range(x0, x1):
+                    on_tile.setdefault((tx, ty), set()).add(unit.unit_const)
+
+    reach = range(-ATTRIBUTE_NEAR, ATTRIBUTE_NEAR + 1)
+    by_terrain, by_const, by_near, bare = {}, {}, {}, [0, 0]
+    tiles = []
+    for (x, y), count in px_by_tile.items():
+        terrain_id = mm.terrain[y * w + x].terrain_id
+        consts = sorted(on_tile.get((x, y), ()))
+        near = [] if consts else sorted(set().union(*(on_tile.get((x + dx, y + dy), ()) for dy in reach for dx in reach)))
+        tiles.append((count, x, y, terrain_id, consts, near))
+        for table, keys in ((by_terrain, [terrain_id]), (by_const, consts), (by_near, near)):
+            for key in keys:
+                entry = table.setdefault(key, [0, 0])
+                entry[0] += count
+                entry[1] += 1
+        if not consts and not near:
+            bare[0] += count
+            bare[1] += 1
+
+    def ranked(table: dict, name) -> list:
+        top = sorted(table.items(), key=lambda item: -item[1][0])[:ATTRIBUTE_TOP]
+        return [[key, name(key), px, n] for key, (px, n) in top]
+
+    report = {
+        "px": sum(px_by_tile.values()) + unresolved,
+        "tiles": len(px_by_tile),
+        "unresolved_px": unresolved,
+        "terrains": ranked(by_terrain, terrain_palette.name_for_terrain_id),
+        "consts": ranked(by_const, object_catalog.display_name),
+        "near_consts": ranked(by_near, object_catalog.display_name),
+        "bare": bare,
+        "top_tiles": [list(t) for t in sorted(tiles, reverse=True)[:ATTRIBUTE_TOP]],
+    }
+    Path(spec["attribute_out"]).write_text(json.dumps(report))
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +558,7 @@ class PairResult:
     removed_units: int = 0
     sprite_units: tuple[int, int] | None = None
     problems: list[str] = field(default_factory=list)
+    attribution: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -233,21 +575,6 @@ class PairResult:
             f"{tag} {j.scenario.name} {j.style:7} {'sprites' if j.sprites else 'marks  '} pct {j.pct:3}: "
             f"diff {self.diff_px} px, unmasked {self.unmasked_px}{mask}{removed}{sprites}{' -- ' + detail if detail else ''}"
         )
-
-
-def intended_change_consts() -> dict[str, frozenset[int]]:
-    """The consts whose sprite art changed on purpose since v0.6, by reason."""
-    from descape import render, unit_kind
-    from descape.terrain_palette import HERO_GLOW_CONSTS
-
-    graphics = json.loads((ROOT / "descape" / "unit_graphic_map.json").read_text())["graphics"]
-    slotted = frozenset(int(c) for c, e in graphics.items() if any("slot" in p for p in e.get("pieces", ())))
-    return {
-        "walls and gates (neighbour shapes, banners, sea wall base)": unit_kind.wall_consts(),
-        "heroes (hero glow)": frozenset(HERO_GLOW_CONSTS),
-        "invisible objects (editor markers)": unit_kind.invisible_consts(),
-        "depth-slotted buildings (town centres, pastures)": slotted | render.DRAPED_SPRITE_CONSTS,
-    }
 
 
 def extract_base(ref: str, dest: Path) -> Path:
@@ -271,7 +598,7 @@ def _launch(spec: dict, config_home: Path, install: Path, composite: str) -> Non
         env=env, capture_output=True, text=True, check=False,
     )
     if proc.returncode:
-        raise RuntimeError(f"render failed for {spec['out']}:\n{proc.stderr[-4000:]}")
+        raise RuntimeError(f"worker failed for {spec.get('out') or spec.get('attribute_out')}:\n{proc.stderr[-4000:]}")
 
 
 def _compare(a_path: Path, b_path: Path, mask_path: Path | None) -> tuple[int, int, float, np.ndarray | None]:
@@ -319,12 +646,33 @@ def _write_frames(result_job: Job, a_path: Path, b_path: Path, diff: np.ndarray,
     return lines
 
 
+def _attribution_lines(report: dict) -> list[str]:
+    def named(rows: list) -> str:
+        return "; ".join(f"{key} {name} {px} px/{tiles} tiles" for key, name, px, tiles in rows) or "none"
+
+    tiles = "; ".join(
+        f"({x}, {y}) terrain {terrain} consts {consts or 'none'}{f' near {near}' if near else ''} {px} px"
+        for px, x, y, terrain, consts, near in report["top_tiles"]
+    )
+    return [
+        f"     attribute: {report['px']} px on {report['tiles']} tiles ({report['unresolved_px']} px on no tile top)",
+        f"       terrain ids: {named(report['terrains'])}",
+        f"       unit consts on the tile: {named(report['consts'])}",
+        f"       unit consts within {ATTRIBUTE_NEAR} tiles of a unit-free tile: {named(report['near_consts'])}",
+        f"       no unit within {ATTRIBUTE_NEAR} tiles: {report['bare'][0]} px/{report['bare'][1]} tiles",
+        f"       densest tiles: {tiles or 'none'}",
+    ]
+
+
 def _pair_result(job: Job, out: Path, diff_px: int, unmasked: int, frac: float) -> PairResult:
     meta_a = json.loads((out / f"{job.key}_a.json").read_text())
     meta_b = json.loads((out / f"{job.key}_b.json").read_text())
     result = PairResult(job, diff_px, unmasked, frac, meta_b["removed_units"])
     if unmasked:
         result.problems.append(f"{unmasked} px differ outside the intended changes")
+    ceiling = mask_ceiling(job.scenario.name, job.pct) if job.style == "stepped" else None
+    if ceiling is not None and frac > ceiling:
+        result.problems.append(f"the mask covers {frac:.2%} of the canvas, over its {ceiling:.2%} ceiling")
     if meta_a["removed_units"] != meta_b["removed_units"]:
         result.problems.append(f"removed {meta_a['removed_units']} vs {meta_b['removed_units']} units")
     if "sprite_units" in meta_b:
@@ -350,18 +698,25 @@ def run(
     frames_per_config: int = 4,
     inject: str | None = None,
     keep_renders: bool = False,
+    attribute: bool = False,
     log=print,
 ) -> list[PairResult]:
     """Renders and compares every (scenario, style, sprites, pct); returns one PairResult per comparison.
 
     Each pair is compared as soon as both sides finish and its .npy canvases are then deleted
     (unless keep_renders), so disk peaks at about `jobs` pairs rather than the whole run.
+    attribute adds --attribute's report lines to each failing result.
     """
+    check_registry()
     if inject is not None and inject not in INJECTS:
         raise ValueError(f"inject must be one of {INJECTS}, got {inject!r}")
+    active = tuple(n for n in NEUTRALIZATIONS if inject != f"no-{n.name}")
     base_root = extract_base(base_ref, work_dir / "base")
-    groups = intended_change_consts()
-    exclude = sorted(set().union(*groups.values()))
+    patches = [n.name for n in active if n.patch is not None]
+    masked = any(n.mask for n in active)
+    groups = intended_change_consts(active)
+    exclude_always = set().union(*(n.consts() for n in active if n.consts is not None and n.every_run))
+    exclude_sprites = set().union(*(n.consts() for n in active if n.consts is not None and not n.every_run))
     out = work_dir / "renders"
     out.mkdir(parents=True, exist_ok=True)
     homes = {pct: work_dir / f"config_{pct}" for pct in pcts}
@@ -378,39 +733,56 @@ def run(
                     if sprites and frames_dir is not None:
                         todo.append(Job(scenario, style, sprites, pct, full=True))
 
+    def excluded_for(job: Job) -> list[int]:
+        if job.full:
+            return []
+        return sorted(exclude_always | exclude_sprites if job.sprites else exclude_always)
+
     def render_pair(job: Job) -> None:
-        excluded = exclude if job.sprites and not job.full and inject != "no-exclusions" else []
         for side, root in (("a", base_root), ("b", ROOT)):
             spec = {
                 "root": str(root),
                 "scenario": str(job.scenario),
                 "style": job.style,
                 "sprites": job.sprites,
-                "exclude": excluded,
-                "legacy_placement": side == "b" and inject != "no-placement-patch",
-                "legacy_paint_order": side == "b" and inject != "no-paint-order-patch",
-                "repaint_tile": side == "b" and inject == "repaint-tile",
+                "exclude": excluded_for(job),
+                "patches": patches if side == "b" else [],
+                "repaint_tile": side == "b" and inject == REPAINT_TILE,
                 "out": str(out / f"{job.key}_{side}.npy"),
                 "meta_out": str(out / f"{job.key}_{side}.json"),
                 "mask_out": str(out / f"{job.key}_mask.npy") if side == "b" and job.style == "stepped" else None,
             }
             _launch(spec, homes[job.pct], install, "numpy" if side == "a" else composite)
 
+    def attribution(job: Job, diff: np.ndarray) -> list[str]:
+        diff_path, report_path = out / f"{job.key}_diff.npy", out / f"{job.key}_attribute.json"
+        np.save(diff_path, diff)
+        spec = {
+            "root": str(ROOT), "scenario": str(job.scenario), "style": job.style, "exclude": excluded_for(job),
+            "diff": str(diff_path), "attribute_out": str(report_path),
+        }
+        _launch(spec, homes[job.pct], install, "numpy")
+        diff_path.unlink()
+        return _attribution_lines(json.loads(report_path.read_text()))
+
     def finish(job: Job) -> tuple[PairResult | None, list[str]]:
         a_path, b_path = out / f"{job.key}_a.npy", out / f"{job.key}_b.npy"
-        mask_path = out / f"{job.key}_mask.npy" if job.style == "stepped" and inject != "no-mask" else None
+        mask_path = out / f"{job.key}_mask.npy" if job.style == "stepped" and masked else None
         diff_px, unmasked, frac, diff = _compare(a_path, b_path, mask_path)
         frames: list[str] = []
         if job.full and frames_dir is not None and unmasked:
             frames_dir.mkdir(parents=True, exist_ok=True)
             frames = _write_frames(job, a_path, b_path, diff, frames_dir, frames_per_config)
+        notes = attribution(job, diff) if attribute and unmasked and not job.full else []
         if not keep_renders:
-            # By name, not mask_path: the no-mask control still writes the mask.
+            # By name, not mask_path: a run without the mask entry still writes the mask.
             for side in ("a", "b", "mask"):
                 (out / f"{job.key}_{side}.npy").unlink(missing_ok=True)
         if job.full:
             return None, frames
-        return _pair_result(job, out, diff_px, unmasked, frac), frames
+        result = _pair_result(job, out, diff_px, unmasked, frac)
+        result.attribution = notes
+        return result, frames
 
     # Compared serially on this thread as each pair lands: one full-canvas diff in memory at a time.
     finished: dict[Job, tuple[PairResult | None, list[str]]] = {}
@@ -428,13 +800,15 @@ def run(
         if result is not None:
             results.append(result)
             log(result.line())
+            for note in result.attribution:
+                log(note)
     if frames_dir is not None and index:
         header = [
             f"# {base_ref} vs HEAD: the intended sprite-art changes, side by side",
             "",
             f"Each frame is a/b/c: the base release, this checkout, and |a-b| x{DIFF_GAIN}.",
             f"Crops are {CROP_W}x{CROP_H} canvas px, upscaled x{UPSCALE}.",
-            "Units at sub-tile positions are drawn at their tile centre on both sides. Excluded here, compared in full:",
+            "Excluded from the comparison, compared in full here:",
             *(f"- {reason}" for reason in groups),
             "",
             "| frame | where | diff px in crop |",
@@ -450,13 +824,21 @@ def _default_install() -> Path | None:
     return asset_source.get_install_path()
 
 
+def _registry_help() -> str:
+    lines = [f"Neutralized against {BASE_REF} (name, kind, change, control file):"]
+    lines += [f"  {n.name} ({n.kind}): {n.change}. Control on {n.control_file}." for n in NEUTRALIZATIONS]
+    return "\n".join(lines)
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
         _worker(json.loads(sys.argv[2]))
         return 0
     # Only the driver imports this checkout's descape; a worker must see its own tree's.
     sys.path.insert(0, str(ROOT))
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, epilog=_registry_help(), formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("scenarios", type=Path, nargs="*", help="Scenario files (default: the quick corpus in examples/)")
     parser.add_argument("--base", default=BASE_REF, help=f"Release ref to compare against (default {BASE_REF})")
     parser.add_argument("--elev-step-pct", type=int, nargs="+", default=list(DEFAULT_PCTS), help="Isometric elevation height stops")
@@ -469,6 +851,10 @@ def main() -> int:
     parser.add_argument("--frames-dir", type=Path, default=None, help="Also write side-by-side crops of the excluded units")
     parser.add_argument("--frames-per-config", type=int, default=4)
     parser.add_argument("--inject", choices=INJECTS, default=None, help="A control run that must fail")
+    parser.add_argument(
+        "--attribute", action="store_true",
+        help="Under each failing comparison, name the tiles, terrain ids and unit consts its diff sits on",
+    )
     args = parser.parse_args()
 
     scenarios = args.scenarios or [ROOT / "examples" / name for name in QUICK_CORPUS]
@@ -478,12 +864,14 @@ def main() -> int:
     install = args.install or _default_install()
     if install is None:
         parser.error("no AoE2:DE install: pass --install or set AOE2DE_INSTALL_PATH")
+    if args.base != BASE_REF:
+        print(f"warning: --base {args.base} is not BASE_REF ({BASE_REF}), which the neutralizations were measured against", file=sys.stderr)
 
     def go(work_dir: Path) -> list[PairResult]:
         return run(
             scenarios, work_dir, install, base_ref=args.base, pcts=tuple(args.elev_step_pct), styles=tuple(args.style),
             composite=args.composite, jobs=args.jobs, frames_dir=args.frames_dir, frames_per_config=args.frames_per_config,
-            inject=args.inject, keep_renders=args.keep_renders,
+            inject=args.inject, keep_renders=args.keep_renders, attribute=args.attribute,
         )
 
     if args.work_dir:

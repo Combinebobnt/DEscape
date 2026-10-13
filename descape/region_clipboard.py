@@ -10,6 +10,10 @@ of times by paste_terrain()/elevation_targets(). One type serves as both the
 clipboard entry and (for a later phase) a floating piece, so a future
 float-and-drag paste needs no second type.
 
+copy_units() makes the same type without tiles (GH #192, Units mode's Copy
+and Cut): RegionBlock.has_tiles tells the two apart, and only the unit half
+(unit_paste_targets()) may be called on a block without them.
+
 Units are dropped by copy_region()'s own bounds check, not gathered via
 unit_pick.units_in_rect(): that index is built lazily on entering Units mode
 (viewer.py's _rebuild_unit_index()) and is current or None in Terrain mode,
@@ -72,6 +76,14 @@ class RegionUnit:
 
 @dataclass(frozen=True)
 class RegionBlock:
+    """One clipboard snapshot: a tile rectangle with the units on it, or
+    units alone (GH #192, copy_units()).
+
+    A units-only block has empty tile tuples, and has_tiles is the one test
+    for it: a copied region is never empty (normalize_region() returns None
+    instead), so empty tuples can only mean "no tiles were copied". Its
+    width and height are then the copied units' anchor-tile bounding box."""
+
     width: int
     height: int
     terrain_ids: tuple[int, ...]  # row-major, len == width * height
@@ -80,6 +92,10 @@ class RegionBlock:
     # which paste_terrain() writes back verbatim beside terrain_ids.
     layers: tuple[int, ...]
     units: tuple[RegionUnit, ...]
+
+    @property
+    def has_tiles(self) -> bool:
+        return bool(self.terrain_ids)
 
 
 def normalize_region(
@@ -122,29 +138,46 @@ def copy_region(
             elevations.append(tile.elevation)
             layers.append(tile.layer)
 
-    captured = []  # (unit, caption_string_id, caption_string) for units inside the rect
-    for player_units in unit_manager.units:
-        for u in player_units:
-            if tx0 <= int(u.x) < tx1 and ty0 <= int(u.y) < ty1:
-                try:
-                    caption_string_id, caption_string = u.caption_string_id, u.caption_string
-                except (UnsupportedAttributeError, AttributeError):
-                    caption_string_id, caption_string = -1, ""
-                captured.append((u, caption_string_id, caption_string))
+    captured = [
+        u
+        for player_units in unit_manager.units
+        for u in player_units
+        if tx0 <= int(u.x) < tx1 and ty0 <= int(u.y) < ty1
+    ]
+    return RegionBlock(
+        width=width,
+        height=height,
+        terrain_ids=tuple(terrain_ids),
+        elevations=tuple(elevations),
+        layers=tuple(layers),
+        units=_region_units(captured, tx0, ty0),
+    )
+
+
+def _region_units(captured, tx0: int, ty0: int) -> tuple[RegionUnit, ...]:
+    """The RegionUnit of every unit in `captured`, in that order, with dx/dy
+    relative to (tx0, ty0) and garrison links resolved to slots in the
+    returned tuple: copy_region()'s and copy_units()' shared unit half."""
+    captions = []
+    for u in captured:
+        try:
+            captions.append((u.caption_string_id, u.caption_string))
+        except (UnsupportedAttributeError, AttributeError):
+            captions.append((-1, ""))
 
     # reference_id -> slot, but only for a reference_id captured exactly
     # once: a duplicate must resolve every link pointing at it to -1 rather
     # than let dict last-wins silently pick one holder over the other.
     slot_by_ref: dict[int, int] = {}
     duplicate_refs: set[int] = set()
-    for slot, (u, _cid, _cs) in enumerate(captured):
+    for slot, u in enumerate(captured):
         if u.reference_id in slot_by_ref:
             duplicate_refs.add(u.reference_id)
         else:
             slot_by_ref[u.reference_id] = slot
 
     units = []
-    for _slot, (u, caption_string_id, caption_string) in enumerate(captured):
+    for u, (caption_string_id, caption_string) in zip(captured, captions, strict=True):
         holder_ref = u.garrisoned_in_id
         if holder_ref == -1 or holder_ref in duplicate_refs or holder_ref == u.reference_id:
             garrison_slot = -1
@@ -167,15 +200,56 @@ def copy_region(
                 capture_flag=capture_flag_of(u),
             )
         )
+    return tuple(units)
 
+
+def copy_units(unit_manager: UnitManager, units) -> RegionBlock | None:
+    """A units-only block of `units` and everything garrisoned inside them,
+    transitively (GH #192). None when no passed unit is in the document.
+
+    Units are matched by identity, never by key: two units can share a
+    reference_id, and a key match would pull in the unselected twin. Like
+    copy_region() this walks the nine lists directly, so it needs no pick
+    index and no edit model. Slots follow list order.
+
+    The origin and size are the passed units' anchor-tile bounding box
+    alone: an occupant stored on some other tile rides along at its own
+    offset, but cannot shift the group off the paste cursor."""
+    wanted = {id(u) for u in units}
+    chosen = [u for player_units in unit_manager.units for u in player_units if id(u) in wanted]
+    if not chosen:
+        return None
+    tx0, ty0 = min(int(u.x) for u in chosen), min(int(u.y) for u in chosen)
+    tx1, ty1 = max(int(u.x) for u in chosen), max(int(u.y) for u in chosen)
+
+    taken = {id(u) for u in chosen}
+    holder_refs = {u.reference_id for u in chosen}
+    grew = True
+    while grew:
+        grew = False
+        for player_units in unit_manager.units:
+            for u in player_units:
+                inside = u.garrisoned_in_id
+                if id(u) not in taken and inside != -1 and inside in holder_refs:
+                    taken.add(id(u))
+                    holder_refs.add(u.reference_id)
+                    grew = True
+    captured = [u for player_units in unit_manager.units for u in player_units if id(u) in taken]
     return RegionBlock(
-        width=width,
-        height=height,
-        terrain_ids=tuple(terrain_ids),
-        elevations=tuple(elevations),
-        layers=tuple(layers),
-        units=tuple(units),
+        width=tx1 - tx0 + 1,
+        height=ty1 - ty0 + 1,
+        terrain_ids=(),
+        elevations=(),
+        layers=(),
+        units=_region_units(captured, tx0, ty0),
     )
+
+
+def centred_anchor(block: RegionBlock, hx: int, hy: int) -> tuple[int, int]:
+    """The anchor that centres `block`'s bounding box on tile (hx, hy), in
+    whole tiles so every unit keeps its sub-tile offset. An even size puts
+    the extra tile on the high side. Not clamped to any map."""
+    return hx - (block.width - 1) // 2, hy - (block.height - 1) // 2
 
 
 def _clipped_bounds(block: RegionBlock, tx0: int, ty0: int, map_width: int, map_height: int):
@@ -253,7 +327,8 @@ def unit_paste_targets(
     survivors: dict[int, tuple[float, float]] = {}
     for slot, u in enumerate(block.units):
         x, y = tx0 + u.dx, ty0 + u.dy
-        if 0 <= int(x) < map_width and 0 <= int(y) < map_height:
+        # The sign is tested on the float: int() truncates toward zero, so -0.5 would pass as tile 0.
+        if x >= 0 and y >= 0 and int(x) < map_width and int(y) < map_height:
             survivors[slot] = (x, y)
 
     emitted: set[int] = set()

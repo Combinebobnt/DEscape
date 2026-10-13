@@ -282,7 +282,7 @@ def test_sloped_keeps_the_selected_tool_rather_than_forcing_pan() -> None:
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_pick_map_point_resolves_the_continuous_point_under_a_pixel(style: str) -> None:
-    """Free placement's Stage 2, at the Qt boundary. `_pick_map_point`'s
+    """Off-grid placement's Stage 2, at the Qt boundary. `_pick_map_point`'s
     per-style branches are the one part of the inverse that the pure-geometry
     tier (tests/test_screen_to_map_point.py) cannot reach: wiring the wrong
     projection or corner_rise in here would ship silently, since the geometry
@@ -296,7 +296,7 @@ def test_pick_map_point_resolves_the_continuous_point_under_a_pixel(style: str) 
     Flat is absent here and covered elsewhere, not skipped: this file's
     fixture window will not actually leave Stepped for Flat (the combo change
     is gated), and Flat's own branch is exercised end to end by the
-    free-placement tests in tests/test_unit_edit_viewer.py, which force Flat
+    off-grid tests in tests/test_unit_edit_viewer.py, which force Flat
     on purpose."""
     from PyQt5.QtCore import QPointF
 

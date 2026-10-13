@@ -41,6 +41,18 @@ leaves the 1:1 viewport showing a few. The strokes are the same tiles.
 
 --tool fill replaces the Draw strokes with one Paint Can over a small
 region with Trees/Eye candy on, then its undo: a non-Draw wholesale caller.
+--fill-side N[,N...] fills an N x N tile square at the map centre instead,
+one case per size. --trees off keeps Trees and Eye candy unchecked for the
+timed edits, so a fill is terrain only: with --styles flat2d that is
+top-down Flat's own choice between patching its block rects and evicting
+the region (viewer._FLAT_EVICT_RATIO, overridden by --flat-ratio: inf never
+evicts by the ratio, 0 always does; past STEPPED_FULL_RERENDER_THRESHOLD
+dirty tiles it evicts whatever the ratio). With --resident canvas a fill case
+re-renders the mip-0 canvas and repaints before each timed call, so an
+eviction by the setup or the fill leaves the next call no less to do.
+
+--blend on|off sets View > Layers > Terrain Blending (on needs the game
+install's blendomatic and fails without it).
 
 --force-wholesale sends _after_unit_mutation's `changed` to None, i.e. the
 pre-splice path, for a same-build comparison row. --cap overrides
@@ -69,7 +81,8 @@ Columns:
              recomposites the viewport); evict: it evicted only a bbox's
              chunks at the visible level; rects: it patched one rect per
              visible-level chunk instead (Stepped, past --area-ratio and
-             within --rect-ratio); otherwise splice or scoped
+             within --rect-ratio); patch: no unit edit ran and the terrain
+             was patched in place; otherwise splice or scoped
              (invalidate_units() spliced, or rebuilt its sources: a
              _refresh_source_caches() call from inside it) with the bbox
              patched eagerly. An evict or rects row's invalidate_units() may have
@@ -84,7 +97,8 @@ Columns:
              invalidate_units are also counted inside apply_dirty/after_units;
              unit_patch is the patch/evict time inside _patch_unit_edit_cache
              alone; rebuild_in_patch the stale Stepped level rebuild inside
-             it), then rebuild_in_paint (the same inside the next paint), evict_others (evictions of non-visible levels only),
+             it; evict_region the time of the bbox or whole-canvas evictions),
+             then rebuild_in_paint (the same inside the next paint), evict_others (evictions of non-visible levels only),
              and `area` when the viewer priced a batch patch: patch_area() over
              the visible chunks' area, the ratio _patch_area_exceeds_viewport() tests;
              `rect_area` the same for the per-chunk rects it priced (`rects` of them),
@@ -108,6 +122,7 @@ import random
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -394,7 +409,8 @@ class _Timers:
                 return inner_evict(bbox, *args, **kwargs)
             levels = args[0] if args else kwargs.get("levels")
             target = view.viewport_chunk_target()
-            if levels is not None and (target is None or target[0] not in levels):
+            others = levels is not None and (target is None or target[0] not in levels)
+            if others:
                 self.evict_others += 1
             elif tuple(bbox) == (0, 0, *cache.canvas_dims(0)):
                 self.lazy += 1
@@ -404,6 +420,8 @@ class _Timers:
             try:
                 return inner_evict(bbox, *args, **kwargs)
             finally:
+                if not others:
+                    self._add("evict_region", t0)
                 if self._in_unit_edit:
                     self._add("unit_patch", t0)
 
@@ -524,6 +542,16 @@ def _unit_count(window) -> int:
     return sum(len(units) for units in window.scenario.unit_manager.units)
 
 
+def _visible_tiles(cache, target) -> int:
+    """Tiles in the visible chunks, a ragged edge chunk at its real size:
+    what top-down Flat's evict rule prices a patch against."""
+    mip, cx0, cy0, cx1, cy1 = target
+    canvas_w, canvas_h = cache.canvas_dims(mip)
+    size = cache.chunk_px
+    px = (min((cx1 + 1) * size, canvas_w) - cx0 * size) * (min((cy1 + 1) * size, canvas_h) - cy0 * size)
+    return round(px / cache.mip_tile_px(mip) ** 2)
+
+
 def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float, int, dict, str, list[str]]:
     """Runs `action` (the handler under test), then pumps the next paint(s)."""
     _pump(0.2)
@@ -539,7 +567,7 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
     _pump_until_quiet(paints)
     path = (
         "lazy" if timers.lazy else "evict" if timers.evict else "rects" if timers.rects
-        else "scoped" if timers.wholesale else "splice"
+        else "scoped" if timers.wholesale else "splice" if timers.unit_edits else "patch"
     )
     path += timers.bbox_kind(window._cache)
     ms = dict(timers.ms)
@@ -615,32 +643,41 @@ def _run_case(
     return lines
 
 
-def _run_fill_case(window, timers: _Timers, paints: list, seed: int) -> list[str]:
-    """Paint Can with Trees/Eye candy on over a small region, then its undo.
-    The region is a brush-9 short stroke of a terrain absent from the map,
-    painted untimed with both boxes off, so the fill can't escape into a
-    same-terrain neighbour (a big fill would open the modal Large-fill box)."""
+def _run_fill_case(
+    window, timers: _Timers, paints: list, seed: int, side: int | None = None, units: bool = True, prime=None
+) -> list[str]:
+    """Paint Can over a small region, then its undo, with Trees/Eye candy on
+    unless `units` is off. The region is a brush-9 short stroke of a terrain
+    absent from the map, or with `side` a side x side square of it at the
+    map centre, painted untimed with both boxes off, so the fill can't
+    escape into a same-terrain neighbour (a big fill with the boxes on would
+    open the modal Large-fill box). `prime`, called before each timed call,
+    puts back whatever the call before it evicted."""
     from PyQt5.QtCore import Qt
 
     from descape import terrain_catalog, terrain_units
     from descape.fill_tools import contiguous_region
 
     mm = window.scenario.map_manager
+    cx, cy = mm.map_width // 2, mm.map_height // 2
     present = {tile.terrain_id for tile in mm.terrain}
     patch = next(e.id for e in terrain_catalog.terrains() if e.id not in present)
     window.paint_trees_check.setChecked(False)
     window.paint_eye_candy_check.setChecked(False)
-    window.brush_size_spin.setValue(9)
     window.terrain_panel.set_terrain(patch)
-    window.on_edit_stroke_start()
-    for tile in _stroke_tiles("short", mm.map_width, mm.map_height):
-        window.on_edit_stroke_tiles([tile], Qt.NoModifier)
-    window.on_edit_stroke_end()
+    if side is None:
+        window.brush_size_spin.setValue(9)
+        window.on_edit_stroke_start()
+        for tile in _stroke_tiles("short", mm.map_width, mm.map_height):
+            window.on_edit_stroke_tiles([tile], Qt.NoModifier)
+        window.on_edit_stroke_end()
+    else:
+        x0, y0 = cx - side // 2, cy - side // 2
+        window.on_shape_commit([(x, y) for y in range(y0, y0 + side) for x in range(x0, x0 + side)])
     _pump(0.5)
-    window.paint_trees_check.setChecked(True)
-    window.paint_eye_candy_check.setChecked(True)
+    window.paint_trees_check.setChecked(units)
+    window.paint_eye_candy_check.setChecked(units)
     window.terrain_panel.set_terrain(FOREST_A)
-    cx, cy = mm.map_width // 2, mm.map_height // 2
     region = len(contiguous_region(mm, cx, cy))
     real_plan = terrain_units.plan_terrain_units
 
@@ -651,11 +688,17 @@ def _run_fill_case(window, timers: _Timers, paints: list, seed: int) -> list[str
     lines = []
     terrain_units.plan_terrain_units = seeded
     try:
+        if prime is not None:
+            prime()
+            chunks = Counter(key[0] for key in window._cache._cache)
+            lines.append("      resident chunks " + " ".join(f"mip {mip}: {n}" for mip, n in sorted(chunks.items())))
         before = _unit_count(window)
         result = _timed(window, timers, paints, lambda: window.on_fill(cx, cy, Qt.NoModifier))
         lines.append(_row(f"fill {region}", result, before, _unit_count(window)))
     finally:
         terrain_units.plan_terrain_units = real_plan
+    if prime is not None:
+        prime()
     before = _unit_count(window)
     result = _timed(window, timers, paints, window.undo)
     lines.append(_row("undo fill", result, before, _unit_count(window)))
@@ -688,7 +731,7 @@ def _zoom_cycle(window) -> None:
 def _bench_file(
     path: Path, styles, brushes, kinds, sprite_modes, resident: str, force_wholesale: bool, tool: str = "draw",
     force_reach: bool = False, zoom_cycle: bool = False, fit: bool = False, rows: int = 4,
-    terrains: tuple[int, int] = (FOREST_A, FOREST_B),
+    terrains: tuple[int, int] = (FOREST_A, FOREST_B), fill_sides: list[int] | None = None, units: bool = True,
 ) -> list[str]:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QTransform
@@ -721,8 +764,8 @@ def _bench_file(
     try:
         window.mode_combo.setCurrentText("Terrain")
         window._on_tool_selected("draw")
-        window.paint_trees_check.setChecked(True)
-        window.paint_eye_candy_check.setChecked(True)
+        window.paint_trees_check.setChecked(units)
+        window.paint_eye_candy_check.setChecked(units)
         if force_wholesale:
             real_after = window._after_unit_mutation
 
@@ -756,18 +799,34 @@ def _bench_file(
                     _zoom_cycle(window)
                 timers = _Timers(force_reach)
                 timers.install(window)
+
+                def prime(view=view) -> None:
+                    """Every mip-0 chunk resident again, then a repaint, so the visible level is too."""
+                    cache = window._cache
+                    cx0, cy0, cx1, cy1 = cache.chunk_index_range(0, 0, 0, *cache.canvas_dims(0))
+                    for cy in range(cy0, cy1 + 1):
+                        for cx in range(cx0, cx1 + 1):
+                            cache.get_chunk(0, cx, cy)
+                    view.viewport().update()
+                    _pump_until_quiet(paints)
+
                 vp = view.viewport()
                 target = view.viewport_chunk_target()
+                visible_tiles = target and _visible_tiles(window._cache, target)
                 emit(
                     f"    style={style} sprites={sprites} resident={resident} zoom={'fit' if fit else '1:1'} "
                     f"viewport {vp.width()}x{vp.height()} units {_unit_count(window)} "
                     f"cache {type(window._cache).__name__} "
-                    f"mips {_tight_bbox.resident_levels(window._cache)} visible {target and target[0]}"
+                    f"mips {_tight_bbox.resident_levels(window._cache)} visible {target and target[0]} "
+                    f"visible_tiles {visible_tiles}"
                 )
                 try:
-                    if tool == "fill":
-                        emit("     fill")
-                        for line in _run_fill_case(window, timers, paints, seed=7):
+                    for side in (fill_sides or [None]) if tool == "fill" else ():
+                        emit("     fill" + (f" side={side}" if side else ""))
+                        for line in _run_fill_case(
+                            window, timers, paints, seed=7, side=side, units=units,
+                            prime=prime if resident == "canvas" else None,
+                        ):
                             emit(line)
                     for kind in kinds if tool == "draw" else ():
                         for brush in brushes:
@@ -814,7 +873,32 @@ def main() -> None:
     )
     parser.add_argument("--zoom-cycle", action="store_true", help="Zoom out one mip and back before the strokes")
     parser.add_argument("--fit", action="store_true", help="Fit zoom (the zoom a load opens at), not 1:1")
+    parser.add_argument(
+        "--flat-ratio", type=float,
+        help="Override viewer._FLAT_EVICT_RATIO (top-down Flat's terrain patch; 0: always evict, inf: never by the ratio)",
+    )
+    parser.add_argument("--fill-side", help="--tool fill: comma-separated sides of square fill regions, one case each")
+    parser.add_argument(
+        "--trees", choices=("on", "off"), default="on",
+        help="Trees and Eye candy for the timed edits (off: terrain only)",
+    )
+    parser.add_argument(
+        "--blend", choices=("on", "off"), default="on",
+        help="View > Layers > Terrain Blending (on needs the game install)",
+    )
     args = parser.parse_args()
+    fill_sides = [int(s) for s in args.fill_side.split(",")] if args.fill_side else None
+    if fill_sides and args.trees == "on":
+        from descape import viewer
+
+        if max(fill_sides) ** 2 > viewer.TERRAIN_UNIT_CONFIRM_THRESHOLD:
+            raise SystemExit("--fill-side: a fill this large with --trees on opens the modal Large-fill box. Pass --trees off.")
+    if args.flat_ratio is not None:
+        from descape import viewer
+
+        # Absent on a build that patches one rect a tile and never evicts.
+        if hasattr(viewer, "_FLAT_EVICT_RATIO"):
+            viewer._FLAT_EVICT_RATIO = args.flat_ratio
     if args.area_ratio is not None:
         from descape import viewer
 
@@ -832,7 +916,7 @@ def main() -> None:
 
         render_cache.UNIT_SPLICE_MAX_UNITS = args.cap
 
-    from descape import composite_backend
+    from descape import composite_backend, render, settings
 
     names = [n.strip() for n in args.files.split(",")] if args.files else FILES
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
@@ -846,6 +930,12 @@ def main() -> None:
     print(composite_backend.describe(), flush=True)
     with tempfile.TemporaryDirectory(prefix="bench_stroke_end_") as tmp:
         settings_isolation.isolate_settings(Path(tmp))
+        # Before any window: ViewerWindow reads its layers from settings at construction.
+        settings.set_view_layer("terrain_blend", args.blend == "on")
+        effective = render.blend_effective(settings.get_view_layers())
+        if args.blend == "on" and not effective:
+            raise SystemExit("--blend on: no blendomatic readable (no AoE2:DE install configured). Pass --blend off.")
+        print(f"terrain blending {args.blend}", flush=True)
         for name in names:
             path = args.scenario_dir / name
             if not path.exists():
@@ -854,7 +944,7 @@ def main() -> None:
             _bench_file(
                 path, styles, brushes, kinds, sprite_modes, args.resident, args.force_wholesale, args.tool,
                 force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle, fit=args.fit, rows=args.rows,
-                terrains=(terrain_a, terrain_b),
+                terrains=(terrain_a, terrain_b), fill_sides=fill_sides, units=args.trees == "on",
             )
 
 

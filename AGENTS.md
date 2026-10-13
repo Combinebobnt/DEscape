@@ -172,8 +172,8 @@ commands, and architecture.
   cycle), or for a unit that holds a garrison of its own (no nesting). -1
   unloads and is always allowed. Type and capacity are not model rules: every
   UI path checks them through `garrison.refusal()`, so a batch script stays
-  unvalidated, as with `add()`. Region paste and `add()` set the field at
-  construction only.
+  unvalidated, as with `add()`. Clipboard paste (a region or copied units)
+  and `add()` set the field at construction only.
 - A unit's `standing_graphic` is not always the thing you draw. For some consts
   it is a DECORATION — an animated flag — whose real body is a delta hanging
   off it, and whose own art covers only the one shape the decoration sits on.

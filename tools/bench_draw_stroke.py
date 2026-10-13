@@ -33,14 +33,20 @@ a cause instead of guessed at:
                     whatever that helper actually costs rather than a copy
                     of it that can drift. Always 0 for Flat.
   composite        the residual: the real _composite_rect() call's own
-                    time, minus the bystander figure above.
+                    time, minus the bystander figure above. Flat adds
+                    patch_rects()' one blend-key fill between its passes.
 
 --styles takes stepped, sloped, flat (top-down, FlatChunkCache) and flat-iso
 (Flat with Isometric View on: an IsoChunkCache on an all-zero elevation
 array, bbox'd with flatten_elevations=True, built the way the viewer's
 _render_current() builds it). Flat patches render.flat_dirty_rects()' rects
-in patch_rects()' two passes, as the viewer does: with blending on that is
-each dirty tile and its 8 neighbours.
+in patch_rects()' two passes, as the viewer does: one rect per 16-tile block
+the step's dirty tiles touch (with blending on, the tiles and their 8
+neighbours), or one a tile in a sparse block. bbox-px is those rects' area.
+
+--check-fresh (flat only) compares the primed canvas, chunk by chunk, with a
+fresh FlatChunkCache after each stroke, outside every timer. A stroke whose
+patches left a stale pixel is listed and the run exits non-zero.
 
 --blend on|off sets View > Layers > Terrain Blending on every cache (TASK-143's
 perf gate compares the two, interleaved). `on` needs the game install's
@@ -237,6 +243,23 @@ def _composite_phased(cache, style: str, bbox, phases: dict[str, float]) -> None
                 chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
 
 
+def _stale_chunks(cache, scenario, tile_px: int, sprites: bool) -> list[tuple[int, int]]:
+    """Mip-0 chunks of `cache` that differ from a fresh FlatChunkCache's
+    composite of the same rect (or are no longer resident, which would hide
+    a stale one). One chunk at a time, so nothing the size of the canvas is
+    allocated twice."""
+    fresh = FlatChunkCache(scenario, tile_px, sprites=sprites, layers=cache.layers)
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(0, 0, 0, canvas_w, canvas_h)
+    stale = []
+    for cy in range(cy0, cy1 + 1):
+        for cx in range(cx0, cx1 + 1):
+            chunk = cache._cache.get((0, cx, cy))
+            if chunk is None or not np.array_equal(chunk, fresh._composite_rect(0, *fresh._chunk_rect(0, cx, cy))):
+                stale.append((cx, cy))
+    return stale
+
+
 def _keyed_count(cache, coords) -> int:
     """How many of `coords` ((x, y) tiles) and their 8 neighbours carry a blend
     key right now, read from the cache's own mirrors."""
@@ -268,14 +291,15 @@ def _changed_px(before, after) -> int:
 
 def _run_stroke(
     path: Path, style: str, brush_size: int, sprites: bool, edit: str = "paint", beach_width: int = 0,
-    blend: bool = True,
-) -> tuple[str, int]:
-    """One stroke's report line, and how many blend-keyed tiles its steps saw
-    (always 0 with blend off)."""
+    blend: bool = True, check_fresh: bool = False,
+) -> tuple[str, int, int | None]:
+    """One stroke's report line, how many blend-keyed tiles its steps saw
+    (always 0 with blend off), and with check_fresh on a flat stroke, how
+    many chunks differ from a fresh render (else None)."""
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
     if edit == "elevation" and mm.map_width != mm.map_height:
-        return f"  {path.name:32s} style={style:8s} skipped (elevation mode needs a square map)", -1
+        return f"  {path.name:32s} style={style:8s} skipped (elevation mode needs a square map)", -1, None
     cache, elevations, proj, tile_px = _make_cache(style, scenario, sprites, blend)
     # Flat + Isometric View patches exactly like Stepped, just on a zeroed array.
     patch_style = "stepped" if style == "flat-iso" else style
@@ -344,6 +368,12 @@ def _run_stroke(
             befores = [cache.render_rect(*rect, mip=0).copy() for rect in rects] if diff else []
             # patch_rects()' two passes: every rect's sources before any composite.
             live = [rect for rect in rects if _sources_phased(cache, rect, None, phases)]
+            # Between them, its one blend-key fill (absent on a build before the key map).
+            fill_keys = getattr(cache, "_fill_blend_keys", None)
+            if fill_keys is not None:
+                t0 = time.perf_counter()
+                fill_keys(live)
+                phases["composite"] += _ms(time.perf_counter() - t0)
             for rect in live:
                 _composite_phased(cache, style, rect, phases)
             # Empty unless diffing; zip stops there.
@@ -384,6 +414,7 @@ def _run_stroke(
             keyed.append(_keyed_count(cache, [(mm.terrain[i].x, mm.terrain[i].y) for i in new_dirty]))
 
     n = len(scan_ms)
+    stale = len(_stale_chunks(cache, scenario, tile_px, sprites)) if check_fresh and style == "flat" else None
 
     def mean(xs: list[float]) -> float:
         return sum(xs) / len(xs) if xs else 0.0
@@ -410,8 +441,9 @@ def _run_stroke(
         f"level_rebuild={mean(phase_totals['level_rebuild']):6.2f} "
         f"bystander_scan={mean(phase_totals['bystander_scan']):5.2f} "
         f"composite={mean(phase_totals['composite']):6.2f}"
+        + ("" if stale is None else f" fresh={'ok' if not stale else f'{stale}-chunks-differ'}")
     )
-    return line, sum(keyed)
+    return line, sum(keyed), stale
 
 
 def main() -> None:
@@ -436,6 +468,10 @@ def main() -> None:
         "--blend", choices=("on", "off"), default="on",
         help="View > Layers > Terrain Blending on every cache (on needs the game install)",
     )
+    parser.add_argument(
+        "--check-fresh", action="store_true",
+        help="After each flat stroke, compare the primed canvas with a fresh FlatChunkCache; exit non-zero on a difference",
+    )
     args = parser.parse_args()
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     blend = args.blend == "on"
@@ -446,6 +482,7 @@ def main() -> None:
     print(composite_backend.describe())
     print(f"terrain blending {args.blend}")
     unblended: list[str] = []
+    stale_rows: list[str] = []
     for name in names:
         path = args.scenario_dir / name
         if not path.exists():
@@ -454,13 +491,20 @@ def main() -> None:
         for brush_size in BRUSH_SIZES:
             for sprites in (False, True):
                 for style in styles:
-                    line, keyed = _run_stroke(path, style, brush_size, sprites, args.edit, args.beach_width, blend)
+                    line, keyed, stale = _run_stroke(
+                        path, style, brush_size, sprites, args.edit, args.beach_width, blend, args.check_fresh
+                    )
                     print(line, flush=True)
+                    row = f"{name} {style} brush={brush_size} sprites={sprites}"
                     # An Elevate stroke changes no terrain, so a blank map has nothing to key.
                     if blend and keyed == 0 and args.edit == "paint":
-                        unblended.append(f"{name} {style} brush={brush_size} sprites={sprites}")
+                        unblended.append(row)
+                    if stale:
+                        stale_rows.append(row)
     if unblended:
         raise SystemExit("--blend on, but no blend-keyed tile in: " + "; ".join(unblended))
+    if stale_rows:
+        raise SystemExit("--check-fresh: the patched canvas differs from a fresh render in: " + "; ".join(stale_rows))
 
 
 if __name__ == "__main__":

@@ -52,8 +52,20 @@ def test_phased_patch_repaints_a_terrain_edit_like_patch_does() -> None:
 def test_a_paint_stroke_runs_in_every_style(monkeypatch, style) -> None:
     """One whole Draw stroke per style reports a line (no install here, so blending is off)."""
     monkeypatch.setattr(bench_draw_stroke, "load_map_and_units", lambda _path: _scenario(units=False))
-    line, keyed = bench_draw_stroke._run_stroke(Path("fake.aoe2scenario"), style, 9, False, blend=False)
-    assert "ms/step=" in line and keyed == 0
+    line, keyed, stale = bench_draw_stroke._run_stroke(Path("fake.aoe2scenario"), style, 9, False, blend=False)
+    assert "ms/step=" in line and keyed == 0 and stale is None
+
+
+def test_check_fresh_passes_a_flat_stroke_and_catches_an_unpatched_one(monkeypatch) -> None:
+    """--check-fresh: a patched flat stroke equals a fresh cache, and one whose
+    rects cover nothing (the control) is counted and named in its line."""
+    monkeypatch.setattr(bench_draw_stroke, "load_map_and_units", lambda _path: _scenario(units=False))
+    run = bench_draw_stroke._run_stroke
+    line, _keyed, stale = run(Path("fake.aoe2scenario"), "flat", 9, False, blend=False, check_fresh=True)
+    assert stale == 0 and "fresh=ok" in line
+    monkeypatch.setattr(render, "flat_dirty_rects", lambda *args, **kwargs: [])
+    line, _keyed, stale = run(Path("fake.aoe2scenario"), "flat", 9, False, blend=False, check_fresh=True)
+    assert stale and f"fresh={stale}-chunks-differ" in line
 
 
 def test_blend_off_reaches_every_style_cache() -> None:

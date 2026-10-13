@@ -26,6 +26,7 @@ import pytest
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
+from descape.units_panel import _ROTATION_TOOLTIP
 
 import conftest
 
@@ -320,7 +321,8 @@ def test_rotation_is_shown_raw_with_its_variant_index_warning() -> None:
         gaia_entry.unit.rotation = 37
         window.units_panel.show_unit(gaia_entry)
         assert window.units_panel.unit_field_labels["rotation"].text() == "37"
-        assert not window.units_panel.unit_rotation_note.isVisibleTo(window.units_panel)
+        # One unit, so no group note leads the caption's tooltip (GH #198).
+        assert window.units_panel.unit_rotation_label.toolTip() == _ROTATION_TOOLTIP
         assert "variant index" in window.units_panel.unit_field_labels["rotation"].toolTip()
         # The "stored in radians" half stays reachable regardless of
         # const, via the Rotation caption's own tooltip -- see
@@ -798,8 +800,7 @@ def _ring_window(enabled: bool = True, second_castle: bool = False):
     window = _window(with_units=False)
     units = window.scenario.unit_manager.units
     # Every even-span building sits at `tile + span/2`, so a 4x4 and a 2x2
-    # both land on a whole coordinate -- the ring's centre and the footprint's
-    # only coincide when the placement is the one real files use.
+    # both land on a whole coordinate. Off-parity: tests/test_range_ring_centre.py.
     units[1].append(SyntheticUnit(x=20.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=201))
     units[1].append(SyntheticUnit(x=40.0, y=40.0, unit_const=_HOUSE_CONST, reference_id=202))
     units[1].append(SyntheticUnit(x=60.5, y=60.5, unit_const=_ARCHER_CONST, reference_id=203))

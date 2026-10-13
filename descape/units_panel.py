@@ -22,6 +22,7 @@ panel boundary.
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QBrush, QFont, QPalette
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -51,9 +52,16 @@ from descape import (
 )
 from descape.constant_picker import HIDDEN_LABEL, catalog_preview, items_for, preview_pixmap
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
+from descape.unit_model import capture_flag_of
 from descape.unit_stats_table import unit_stats
 from descape.value_picker import ValuePickerView
-from descape.viewer_common import FontScaledWidth, _add_player_item, _relabel_player_rows, pixmap_from_rgba
+from descape.viewer_common import (
+    FontScaledWidth,
+    _add_player_item,
+    _fit_combo_width,
+    _relabel_player_rows,
+    pixmap_from_rgba,
+)
 
 # unit_fields.UnitFieldSpec.conditional -> the rule it names. The specs stay
 # Qt-free and data-only by naming a rule as a string; this is the one place
@@ -61,7 +69,7 @@ from descape.viewer_common import FontScaledWidth, _add_player_item, _relabel_pl
 _FIELD_CONDITIONALS = {"rotation_is_editable": unit_variant.is_rotation_editable}
 
 # Always on the Rotation caption's tooltip. GH #147: a lone read-only unit gets a one-line per-kind tooltip on its value
-# instead of this inline; unit_rotation_note is group-only (see _apply_conditional_fields).
+# instead of this inline. GH #198: a group's note leads the same tooltip (see _apply_conditional_fields).
 _ROTATION_TOOLTIP = (
     "Rotation is shown as a facing number, 0 to one less than the unit's "
     "direction count, stored in radians (hover the field). Trees, plants and "
@@ -95,6 +103,19 @@ _STATS_NOTE_FULL = (
 
 _MIXED_TEXT = "(mixed)"
 
+# GH #186: how a CHOICE row reads its raw value. getattr and capture_flag_of
+# because a test fake has neither field and a pre-1.59 unit has no capture flag.
+_CHOICE_READERS = {
+    "status": lambda unit: getattr(unit, "status", 2),
+    "capture_flag": capture_flag_of,
+}
+# A stored value the row has no label for: shown, selected, never rewritten.
+_OTHER_CHOICE = "Other ({value})"
+# UnitFieldSpec.requires_codec_field -> why the row is disabled in a file without it.
+_CODEC_FIELD_TOOLTIPS = {
+    "capture_flag": "Capture Flag needs a scenario saved by the September 2026 game update (version 1.59)",
+}
+
 # unit_fields.FIELDS rows the header shows instead of the field grid (GH #148).
 _HEADER_FIELDS = ("name", "unit_const")
 
@@ -108,8 +129,10 @@ _GARRISON_OVER_CAPACITY = (
     "Shown as it is; DEscape never changes it."
 )
 _GARRISON_WRONG_TYPE = "{count} of these cannot garrison here in game. Shown as it is; DEscape never changes it."
+# GH #204: on each row a pending Cut marked, which is also drawn italic and dimmed.
+_GARRISON_CUT_TIP = "Cut: Paste inside another host moves it there"
 
-# Group-mode wording of unit_rotation_note: {skipped} of {total} selected.
+# Group-mode notes on the Rotation caption's tooltip (GH #198): {skipped} of {total} selected.
 # GH #71: leads with what a typed value does, since "won't rotate" read as "trees can't".
 _GROUP_ROTATION_NOTE = (
     "Typing a Rotation turns the {turned} selected {units} with a facing. "
@@ -191,11 +214,15 @@ class UnitsPanel(QWidget):
         on_garrison_paste=None,
         on_garrison_unload=None,
         on_garrison_owner=None,
+        on_garrison_cut=None,
+        codec_field_supported=None,
     ):
         super().__init__()
         # (width, height) of the loaded map, or None: queried at populate time
         # so a load or resize needs no push (GH #118).
         self._map_size = map_size or (lambda: None)
+        # GH #186: does the loaded file store this Unit field? Pulled at populate time too.
+        self._codec_field_supported = codec_field_supported or (lambda _name: True)
         # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel/PlayersPanel's
         # callbacks have.
@@ -212,6 +239,8 @@ class UnitsPanel(QWidget):
         self._on_garrison_paste = on_garrison_paste or (lambda *args: None)
         self._on_garrison_unload = on_garrison_unload or (lambda *args: None)
         self._on_garrison_owner = on_garrison_owner or (lambda *args: None)
+        # GH #204: Cut (row ids). It marks rows; the next Paste moves them.
+        self._on_garrison_cut = on_garrison_cut or (lambda *args: None)
         # True while show_unit()/show_group()/clear() are populating widgets
         # programmatically -- suppresses _field_changed() the same way
         # PlayersPanel._changed()'s own _populating guard does, so a
@@ -384,6 +413,8 @@ class UnitsPanel(QWidget):
         self.unit_inspector_grid = QWidget()
         grid = QGridLayout(self.unit_inspector_grid)
         grid.setContentsMargins(0, 0, 0, 0)
+        # Extra pane width goes to the editors: unstretched, Qt widens the captions first (TASK-247).
+        grid.setColumnStretch(1, 1)
         # Group mode's "(mixed)" spinbox value, one step below the live minimum.
         # A FLOAT's is set per group by _set_spin_mixed (None when not mixed).
         self._mixed_sentinels: dict[str, float | None] = {}
@@ -430,6 +461,19 @@ class UnitsPanel(QWidget):
                 grid.addWidget(spin, row, 1)
                 self.unit_field_editors[spec.field_id] = spin
                 self._mixed_sentinels[spec.field_id] = -1
+            elif spec.kind == unit_fields.CHOICE:
+                # GH #186. Never in _mixed_sentinels: a -1 sentinel would swallow
+                # Capture Flag's "Default". Its "(mixed)" is an item with data None.
+                combo = QComboBox()
+                for raw, label in spec.choices:
+                    combo.addItem(label, raw)
+                # The longest label would otherwise set the pane's minimum width.
+                _fit_combo_width(combo)
+                combo.currentIndexChanged.connect(
+                    lambda _, s=spec, w=combo: self._field_changed(s, w.currentData())
+                )
+                grid.addWidget(combo, row, 1)
+                self.unit_field_editors[spec.field_id] = combo
             else:  # FLOAT
                 spin = QDoubleSpinBox()
                 spin.setDecimals(spec.decimals)
@@ -448,12 +492,6 @@ class UnitsPanel(QWidget):
                 self.unit_field_editors[spec.field_id] = spin
                 self._mixed_sentinels[spec.field_id] = None
         self.inspector_layout.addWidget(self.unit_inspector_grid)
-
-        # Group-only: shown when a typed Rotation would skip a selected member.
-        # _apply_conditional_fields owns its visibility and text.
-        self.unit_rotation_note = QLabel("")
-        self.unit_rotation_note.setWordWrap(True)
-        self.inspector_layout.addWidget(self.unit_rotation_note)
 
         # A separate grid (GH #42), on the stats grid's own pattern and for
         # the same reason: a garrison is a list of OTHER units, not a field of
@@ -479,8 +517,8 @@ class UnitsPanel(QWidget):
         self.garrison_note.setWordWrap(True)
         self.inspector_layout.addWidget(self.garrison_note)
 
-        # Three rows in the planned order (GH #115): four buttons on one row
-        # already overflow the inspector at MIN_USEFUL_WIDTH (measured offscreen).
+        # Three rows of at most three (GH #115; GH #204 regrouped them around Cut): a fourth
+        # button overflows the inspector at MIN_USEFUL_WIDTH or leaves 8 px (measured offscreen).
         self.garrison_buttons = QWidget()
         rows_layout = QVBoxLayout(self.garrison_buttons)
         rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -494,11 +532,19 @@ class UnitsPanel(QWidget):
         self.garrison_pick_button.setCheckable(True)
         self.garrison_pick_button.setToolTip("Click units on the map to put them inside; Esc or right-click to finish")
         self.garrison_pick_button.toggled.connect(self._garrison_pick_toggled)
+        self.garrison_cut_button = QPushButton("Cut")
+        self.garrison_cut_button.setToolTip(
+            "Mark the selected rows to move: Paste inside another host moves the same units there, "
+            "so triggers naming them keep working"
+        )
+        self.garrison_cut_button.clicked.connect(lambda *_: self._garrison_rows_clicked(self._on_garrison_cut))
         self.garrison_copy_button = QPushButton("Copy")
         self.garrison_copy_button.setToolTip("Copy the selected rows, to paste inside this or another host")
         self.garrison_copy_button.clicked.connect(lambda *_: self._garrison_rows_clicked(self._on_garrison_copy))
         self.garrison_paste_button = QPushButton("Paste")
-        self.garrison_paste_button.setToolTip("Add copies of the copied rows inside this host, each with its own owner")
+        self.garrison_paste_button.setToolTip(
+            "Add copies of the copied rows inside this host, or move the cut rows here; each keeps its own owner"
+        )
         self.garrison_paste_button.clicked.connect(lambda *_: self._on_garrison_paste())
         self.garrison_unload_button = QPushButton("Unload")
         self.garrison_unload_button.setToolTip("Take the selected rows out, onto the tile beside this host")
@@ -512,9 +558,9 @@ class UnitsPanel(QWidget):
             _add_player_item(self.garrison_owner_combo, player_id, self._player_labels, self._player_colors, player_id)
         self.garrison_owner_combo.activated.connect(self._garrison_owner_activated)
         groups = (
-            (self.garrison_add_button, self.garrison_pick_button, self.garrison_copy_button),
-            (self.garrison_paste_button, self.garrison_unload_button, self.garrison_delete_button),
-            (self.garrison_owner_combo,),
+            (self.garrison_add_button, self.garrison_pick_button),
+            (self.garrison_cut_button, self.garrison_copy_button, self.garrison_paste_button),
+            (self.garrison_unload_button, self.garrison_delete_button, self.garrison_owner_combo),
         )
         for row, widgets in zip(self.garrison_button_rows, groups, strict=True):
             for widget in widgets:
@@ -598,11 +644,6 @@ class UnitsPanel(QWidget):
     def _show_inspector_fields(self, visible: bool) -> None:
         self.unit_header.setVisible(visible)
         self.unit_inspector_grid.setVisible(visible)
-        if not visible:
-            # Shown again only if _apply_conditional_fields() re-admits it
-            # for whatever gets selected next -- no unit selected means no
-            # per-const caveat to show.
-            self.unit_rotation_note.setVisible(False)
         self.unit_inspector_empty.setVisible(not visible)
 
     def show_unit(self, entry) -> None:
@@ -654,6 +695,7 @@ class UnitsPanel(QWidget):
                 # previous unit's range (GH #118).
                 spin.setRange(*self._coordinate_range(field_id, [value]))
                 spin.setValue(value)
+            self._apply_choice_fields([unit])
             self._apply_conditional_fields([unit])
         finally:
             self._populating = False
@@ -691,6 +733,7 @@ class UnitsPanel(QWidget):
             self._set_group_owner({entry.player_id for entry in entries})
             for field_id, values in coords.items():
                 self._set_group_spin(field_id, values)
+            self._apply_choice_fields(units)
             self._apply_conditional_fields(units)
         finally:
             self._populating = False
@@ -712,12 +755,15 @@ class UnitsPanel(QWidget):
         combo = self.unit_field_editors["player"]
         if combo.count() and combo.itemData(0) is None:
             combo.removeItem(0)
+        for spec in unit_fields.FIELDS:
+            if spec.kind == unit_fields.CHOICE:
+                self._strip_choice_extras(spec)
         for field_id in self._mixed_sentinels:
             self._set_spin_mixed(field_id, False)
         for field_id in ("reference_id", "garrisoned_in_id"):
             self.unit_field_captions[field_id].setVisible(True)
             self.unit_field_labels[field_id].setVisible(True)
-        self.unit_rotation_note.setText("")
+        self.unit_rotation_label.setToolTip(_ROTATION_TOOLTIP)
 
     def _set_group_owner(self, players: set[int]) -> None:
         combo = self.unit_field_editors["player"]
@@ -730,6 +776,53 @@ class UnitsPanel(QWidget):
         if not has_mixed_item:
             combo.insertItem(0, _MIXED_TEXT, None)
         combo.setCurrentIndex(0)
+
+    def _strip_choice_extras(self, spec: unit_fields.UnitFieldSpec) -> None:
+        """Takes a CHOICE combo back to its spec's own items: drops a leading
+        "(mixed)" and a trailing "Other (N)". Caller holds the populating guard."""
+        combo = self.unit_field_editors[spec.field_id]
+        if combo.count() and combo.itemData(0) is None:
+            combo.removeItem(0)
+        while combo.count() > len(spec.choices):
+            combo.removeItem(combo.count() - 1)
+
+    def _apply_choice_fields(self, units) -> None:
+        """Populates each CHOICE row (GH #186) for the selected unit(s): the
+        shared raw value's label, "Other (N)" for a shared value the spec has
+        no label for, or "(mixed)", repeated as the combo's tooltip. A row
+        whose field the loaded file does not store is disabled on "Default"
+        with a tooltip saying why.
+
+        Only ever called with the populating guard already held, like
+        _apply_conditional_fields: every step here emits currentIndexChanged.
+        """
+        for spec in unit_fields.FIELDS:
+            if spec.kind != unit_fields.CHOICE:
+                continue
+            combo = self.unit_field_editors[spec.field_id]
+            self._strip_choice_extras(spec)
+            gate = spec.requires_codec_field
+            supported = gate is None or self._codec_field_supported(gate)
+            combo.setEnabled(supported)
+            self.unit_field_captions[spec.field_id].setToolTip("" if supported else _CODEC_FIELD_TOOLTIPS[gate])
+            if not supported:
+                # The first choice is the field's default, the only value such a file can hold.
+                combo.setCurrentIndex(0)
+                combo.setToolTip(_CODEC_FIELD_TOOLTIPS[gate])
+                continue
+            values = {_CHOICE_READERS[spec.field_id](unit) for unit in units}
+            if len(values) > 1:
+                combo.insertItem(0, _MIXED_TEXT, None)
+                index = 0
+            else:
+                value = next(iter(values))
+                index = combo.findData(value)
+                if index < 0:
+                    combo.addItem(_OTHER_CHOICE.format(value=value), value)
+                    index = combo.count() - 1
+            combo.setCurrentIndex(index)
+            # The closed combo cuts the longest label at MIN_USEFUL_WIDTH, as placing_label's does.
+            combo.setToolTip(combo.currentText())
 
     def _coordinate_range(self, field_id: str, values) -> tuple[float, float]:
         """X/Y/Z's live range (GH #118): the loaded map's bounds, or the
@@ -791,8 +884,9 @@ class UnitsPanel(QWidget):
         label for the selected unit(s) -- today only Rotation, whose rule is
         unit_variant.is_rotation_editable. The editor shows if ANY unit's const
         admits it, or if every selected unit is a gate (rotation_field_mode's
-        "gate" mode); for a group, unit_rotation_note shows if a typed value
-        would skip any member. A lone read-only unit gets a tooltip instead (GH #147).
+        "gate" mode); for a group, the Rotation caption's tooltip leads with a
+        note if a typed value would skip any member, never an inline label
+        (GH #198). A lone read-only unit gets a tooltip on its value (GH #147).
 
         Only ever called with the populating guard already held: it sets an
         editor's value, and the resulting valueChanged must not record a
@@ -831,11 +925,12 @@ class UnitsPanel(QWidget):
             else:
                 writable = admitted
             skipped = len(units) - len(writable)
-            # GH #147: a lone read-only unit explains itself in a tooltip, not the inline note.
-            self.unit_rotation_note.setVisible(group and skipped > 0)
+            # GH #147: a lone read-only unit explains itself in a tooltip on its value.
             readonly_single = not group and not allowed
             label.setToolTip(_readonly_rotation_tooltip(units[0].unit_const) if readonly_single else "")
-            if group:
+            # Only for a group a typed value would skip part of; "gate" mode skips nobody.
+            note = ""
+            if group and skipped > 0:
                 if mode == "variant":
                     turned = len(writable)
                     note = _GROUP_VARIANT_NOTE.format(
@@ -849,13 +944,12 @@ class UnitsPanel(QWidget):
                         turned=turned, units="unit" if turned == 1 else "units", skipped=skipped, total=len(units)
                     )
                     note += _rotate_tail(units)
-                elif mode is None:
+                else:  # mode is None: nothing in the group takes a typed value
                     note = _GROUP_NO_ROTATION_NOTE.format(total=len(units)) + _rotate_tail(units)
-                else:  # "gate": every member takes the typed index, so nothing is skipped
-                    note = ""
-                self.unit_rotation_note.setText(note)
-                if not allowed:
-                    label.setText("(n/a)")
+            # GH #198: the note leads the caption's tooltip instead of taking an inline line.
+            self.unit_rotation_label.setToolTip(f"{note}\n\n{_ROTATION_TOOLTIP}" if note else _ROTATION_TOOLTIP)
+            if group and not allowed:
+                label.setText("(n/a)")
             if mode == "facing":
                 scale = unit_rotation.facing_scale(unit.unit_const for unit in writable)
                 editor.setRange(editor.minimum(), scale - 1)
@@ -1012,7 +1106,7 @@ class UnitsPanel(QWidget):
 
     # -- garrison block (GH #42) ---------------------------------------------
 
-    def show_garrison(self, rows, capacity: int, wrong_type: int = 0, can_paste: bool = False) -> None:
+    def show_garrison(self, rows, capacity: int, wrong_type: int = 0, can_paste: bool = False, cut=()) -> None:
         """The Garrison block for the one selected host.
 
         `rows` is a sequence of (label, owner, reference_id) the viewer built
@@ -1021,6 +1115,7 @@ class UnitsPanel(QWidget):
         itself would not admit; both are reported, never corrected, since a
         file is shown as it is. `can_paste` is the viewer's call (GH #115): a
         garrison clipboard holding something, and a host that can hold it.
+        `cut` is the reference_ids a pending Cut marked here (GH #204).
         Pick from map's checked state is not touched; see set_garrison_pick_armed().
         """
         rows = list(rows)
@@ -1030,6 +1125,7 @@ class UnitsPanel(QWidget):
             item = QTreeWidgetItem([label, owner])
             item.setData(0, Qt.UserRole, reference_id)
             self.garrison_tree.addTopLevelItem(item)
+        self.set_garrison_cut(cut)
         notes = []
         if len(rows) > capacity:
             notes.append(_GARRISON_OVER_CAPACITY.format(count=len(rows), capacity=capacity))
@@ -1060,8 +1156,24 @@ class UnitsPanel(QWidget):
         return [item.data(0, Qt.UserRole) for item in self.garrison_tree.selectedItems()]
 
     def set_garrison_can_paste(self, can_paste: bool) -> None:
-        """Paste's enablement alone, so a Copy keeps the rows it copied selected."""
+        """Paste's enablement alone, so a Copy or a Cut keeps its rows selected."""
         self.garrison_paste_button.setEnabled(can_paste)
+
+    def set_garrison_cut(self, reference_ids) -> None:
+        """Draws the rows a pending Cut holds italic and dimmed, and every
+        other row plain, in place: a Cut keeps the rows it cut selected (GH #204)."""
+        cut = set(reference_ids)
+        italic = QFont()
+        italic.setItalic(True)
+        dimmed = QBrush(self.garrison_tree.palette().color(QPalette.Disabled, QPalette.Text))
+        for index in range(self.garrison_tree.topLevelItemCount()):
+            item = self.garrison_tree.topLevelItem(index)
+            marked = item.data(0, Qt.UserRole) in cut
+            for column in range(self.garrison_tree.columnCount()):
+                # None clears the role, back to the tree's own font, colour and tooltip.
+                item.setData(column, Qt.FontRole, italic if marked else None)
+                item.setData(column, Qt.ForegroundRole, dimmed if marked else None)
+                item.setData(column, Qt.ToolTipRole, _GARRISON_CUT_TIP if marked else None)
 
     def set_garrison_pick_armed(self, armed: bool) -> None:
         """The viewer's word on Pick from map, shown without reporting back."""
@@ -1073,6 +1185,7 @@ class UnitsPanel(QWidget):
 
     def _set_garrison_row_actions_enabled(self, enabled: bool) -> None:
         for widget in (
+            self.garrison_cut_button,
             self.garrison_copy_button,
             self.garrison_unload_button,
             self.garrison_delete_button,

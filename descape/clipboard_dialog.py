@@ -1,4 +1,4 @@
-"""The Clipboard History window -- pick which copied region Paste Region uses.
+"""The Clipboard History window: pick which copied region or units Paste uses.
 
 Dumb in exactly the way trigger_panel.VariablesDialog is: it never imports
 ClipboardHistory, never touches EditHistory, and reports intent through the
@@ -58,10 +58,10 @@ def _thumbnail_icon(thumbnail: np.ndarray) -> QPixmap | None:
 
 
 class ClipboardHistoryDialog(QDialog):
-    _EMPTY = "The clipboard is empty. Select a region and press Copy Region."
+    _EMPTY = "The clipboard is empty. Select a region or units and press Copy."
     _HINT = (
         "Paste anchors on the tile under the mouse - click the map, hover the "
-        "target, then press Paste Region."
+        "target, then press Paste."
     )
 
     def __init__(self, parent=None, on_activate=None, on_delete=None, on_clear=None, on_rename=None):
@@ -94,7 +94,7 @@ class ClipboardHistoryDialog(QDialog):
         self.hint.setWordWrap(True)
 
         self.activate_button = QPushButton("Set Active")
-        self.activate_button.setToolTip("Paste Region will use this entry (or double-click its row)")
+        self.activate_button.setToolTip("Paste will use this entry (or double-click its row)")
         self.activate_button.clicked.connect(lambda checked=False: self._request_activate())
         self.rename_button = QPushButton("Rename")
         self.rename_button.setToolTip("Rename the selected entry")

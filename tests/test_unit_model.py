@@ -817,6 +817,10 @@ def _mutate_set_garrisoned_in(loaded, model) -> None:
     model.set_garrisoned_in(_unit(loaded, _REF_VILLAGER_P1), -1)
 
 
+def _mutate_set_status(loaded, model) -> None:
+    model.set_status(_unit(loaded, _REF_ARCHER_P1), 0)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -830,6 +834,7 @@ def _mutate_set_garrisoned_in(loaded, model) -> None:
         _mutate_remove_many,
         _mutate_remove,
         _mutate_set_garrisoned_in,
+        _mutate_set_status,
     ],
     ids=[
         "set_position",
@@ -842,6 +847,7 @@ def _mutate_set_garrisoned_in(loaded, model) -> None:
         "remove_many",
         "remove",
         "set_garrisoned_in",
+        "set_status",
     ],
 )
 def test_every_public_mutator_bumps_unit_gen(mutate) -> None:
@@ -1095,8 +1101,9 @@ def test_set_unit_const_delta_round_trip_is_byte_clean() -> None:
 )
 def test_a_membership_mutator_raises_inside_a_fields_only_edit(mutate) -> None:
     """A fields_only edit's precondition (Batch D's D6): only set_position/
-    set_rotation/set_unit_const may run inside one, enforced rather than
-    left as a caller convention that could be told a lie by accident."""
+    set_rotation/set_unit_const/set_status/set_capture_flag may run inside
+    one, enforced rather than left as a caller convention that could be told
+    a lie by accident."""
     loaded, model = _open()
     model.begin_unit_edit([0, 1, 2], fields_only=True)
     with pytest.raises(RuntimeError):

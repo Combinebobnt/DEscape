@@ -303,7 +303,10 @@ written only when edited through a `descape.unit_model.UnitEditModel` passed as
 `save(..., units=model)`; mutating a `Unit` object returned by `buildings_of()`
 directly (its player, position, etc.) and calling `save()` silently drops that
 edit, on purpose. See `descape/batch_api.py`'s module docstring for the full
-detail.
+detail. The model's `set_status(unit, value)` and `set_capture_flag(unit,
+value)` set a unit's Unit State and Capture Flag by raw value (a bare
+`unit.status = ...` is not saved); `set_capture_flag` raises on a scenario saved
+before version 1.59, which has no such field.
 
 `descape/scatter.py` places units at random, reproducible positions across a
 tile set you build yourself (e.g. every water tile, or one connected pond):

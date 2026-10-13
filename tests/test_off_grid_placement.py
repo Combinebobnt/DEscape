@@ -1,4 +1,4 @@
-"""Stage 1 of free (non-snapped) unit placement: a unit's sub-tile position
+"""Stage 1 of off-grid (non-snapped) unit placement: a unit's sub-tile position
 must actually reach the screen.
 
 Until 2026-09-17 it did not, in any render style. `render._span_start(coord, 1)`
@@ -199,7 +199,7 @@ def test_off_centre_units_paint_different_pixels(sprite_install):
 # --- the off-centre ID-plane oracle -----------------------------------
 #
 # tests/test_unit_pick.py's oracle is the right shape for this, but its
-# fixture places every unit at an exact `.5`, so free placement makes no
+# fixture places every unit at an exact `.5`, so off-grid placement makes no
 # difference to it and it proves nothing here. Its pinned stack counts make
 # widening that fixture in place the expensive option, so this is a second,
 # deliberately off-centre population run through the same idea: re-run the
@@ -259,7 +259,7 @@ def _oc_tile_px() -> int:
 
 def _oc_flat_id_plane(index, tile_px: int) -> np.ndarray:
     """_flat_unit_draws()'s rects, in ascending order, later writes winning --
-    with the free-placement shift applied HERE rather than read back out of
+    with the off-grid shift applied HERE rather than read back out of
     render, so the oracle can catch the painter and the picker agreeing on a
     wrong shift."""
     plane = np.zeros((OC_MAP_H * tile_px, OC_MAP_W * tile_px), dtype=np.int32)
@@ -459,7 +459,7 @@ def test_a_tenth_of_a_tile_nudge_moves_the_render():
 # construction rather than by a tolerance. Encodes the SAME centred/off-centre
 # split the renderer uses -- a centred 1x1 unit paints through its tile's
 # warped quad (Track C6), an off-centre one paints a diamond at its own point
-# (free placement, Stage 1) -- which is what makes this an oracle for that
+# (off-grid placement, Stage 1) -- which is what makes this an oracle for that
 # split rather than a restatement of it.
 
 

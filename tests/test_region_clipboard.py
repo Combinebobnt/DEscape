@@ -21,7 +21,9 @@ from descape.elevation_tools import set_tiles_elevation
 from descape.region_clipboard import (
     RegionBlock,
     RegionUnit,
+    centred_anchor,
     copy_region,
+    copy_units,
     elevation_targets,
     normalize_region,
     paste_terrain,
@@ -293,6 +295,32 @@ def test_unit_paste_targets_translates_and_drops_off_map() -> None:
     assert off_map == []
 
 
+@pytest.mark.parametrize(
+    ("anchor", "kept"),
+    [
+        # int() truncates toward zero, so -0.5 reads as tile 0: the sign has to be checked itself.
+        ((-1, 5), [(3.5, 9.5)]),
+        ((5, -1), [(9.5, 3.5)]),
+        ((-1, -1), [(3.5, 3.5)]),
+        ((0, 0), [(0.5, 0.5), (4.5, 4.5)]),
+    ],
+)
+def test_unit_paste_targets_drops_a_target_just_past_the_low_edge(anchor, kept) -> None:
+    block = RegionBlock(
+        width=5,
+        height=5,
+        terrain_ids=(),
+        elevations=(),
+        layers=(),
+        units=(_ru(dx=0.5, dy=0.5, garrison_slot=-1), _ru(dx=4.5, dy=4.5, garrison_slot=-1)),
+    )
+
+    targets = unit_paste_targets(block, *anchor, 20, 20)
+
+    assert [(t.x, t.y) for t in targets] == kept
+    assert all(t.x >= 0 and t.y >= 0 for t in targets)
+
+
 def test_rotation_is_never_transformed_by_copy_or_paste() -> None:
     loaded = _load()
     edits = UnitEditModel(loaded)
@@ -417,6 +445,149 @@ def test_unit_paste_targets_holder_slot_minus_one_when_holder_clipped_but_occupa
     targets = unit_paste_targets(block, -5, 0, 20, 20)
     assert [t.slot for t in targets] == [1]
     assert targets[0].holder_slot == -1
+
+
+# -- copy_units: a block without tiles (GH #192) ----------------------------
+
+
+def _detailed_unit(loaded, player: int, x: float, y: float, reference_id: int) -> Unit:
+    """A unit whose every carried field differs from add()'s defaults."""
+    unit = Unit(
+        player=player,
+        x=x,
+        y=y,
+        z=3.0,
+        reference_id=reference_id,
+        unit_const=349,
+        status=4,
+        rotation=7.0,  # a tree's variant index, not an angle
+        initial_animation_frame=5,
+        garrisoned_in_id=-1,
+        caption_string_id=77,
+        caption_string="hello",
+        uuid=loaded._scenario.uuid,
+    )
+    unit.capture_flag = 1
+    loaded.unit_manager.units[player].append(unit)
+    return unit
+
+
+def test_copy_units_captures_exactly_the_passed_units() -> None:
+    loaded = _load()
+    first = _detailed_unit(loaded, 2, 30.25, 41.75, 7001)
+    second = _add_raw_unit(loaded, player=1, x=33.5, y=40.5, reference_id=7002, garrisoned_in_id=-1)
+    _add_raw_unit(loaded, player=1, x=31.5, y=41.5, reference_id=7003, garrisoned_in_id=-1)  # inside the box, not passed
+
+    block = copy_units(loaded.unit_manager, [first, second])
+
+    assert not block.has_tiles
+    assert (block.terrain_ids, block.elevations, block.layers) == ((), (), ())
+    # The anchor tiles span x 30..33 and y 40..41.
+    assert (block.width, block.height) == (4, 2)
+    # List order: player 1's unit before player 2's.
+    assert [u.player for u in block.units] == [1, 2]
+    assert (block.units[0].dx, block.units[0].dy) == (3.5, 0.5)
+    assert block.units[1] == RegionUnit(
+        player=2,
+        unit_const=349,
+        dx=0.25,
+        dy=1.75,
+        z=3.0,
+        rotation=7.0,
+        status=4,
+        initial_animation_frame=5,
+        caption_string_id=77,
+        caption_string="hello",
+        garrison_slot=-1,
+        capture_flag=1,
+    )
+
+
+def test_copy_units_of_nothing_is_none() -> None:
+    loaded = _load()
+    stray = _add_raw_unit(loaded, player=1, x=5.5, y=5.5, reference_id=7001, garrisoned_in_id=-1)
+    loaded.unit_manager.units[1].remove(stray)
+    assert copy_units(loaded.unit_manager, []) is None
+    assert copy_units(loaded.unit_manager, [stray]) is None, "a unit no longer in the document"
+
+
+def test_only_a_copied_region_has_tiles() -> None:
+    loaded = _load()
+    unit = _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=7001, garrisoned_in_id=-1)
+    assert copy_region(loaded.map_manager, loaded.unit_manager, 10, 10, 11, 11).has_tiles
+    assert not copy_units(loaded.unit_manager, [unit]).has_tiles
+
+
+def test_copy_units_pulls_in_a_hosts_garrison_transitively() -> None:
+    loaded = _load()
+    host = _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=500, garrisoned_in_id=-1, unit_const=79)
+    # Stored four tiles off its host, and nested: the box must stay the host's own tile.
+    inner_host = _add_raw_unit(loaded, player=1, x=14.5, y=10.5, reference_id=501, garrisoned_in_id=500)
+    nested = _add_raw_unit(loaded, player=2, x=14.5, y=12.5, reference_id=502, garrisoned_in_id=501)
+    _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=503, garrisoned_in_id=-1)  # same tile, not inside
+
+    block = copy_units(loaded.unit_manager, [host])
+
+    assert (block.width, block.height) == (1, 1)
+    assert len(block.units) == 3
+    by_offset = {(u.dx, u.dy): slot for slot, u in enumerate(block.units)}
+    host_slot, inner_slot, nested_slot = by_offset[(0.5, 0.5)], by_offset[(4.5, 0.5)], by_offset[(4.5, 2.5)]
+    assert block.units[host_slot].garrison_slot == -1
+    assert block.units[inner_slot].garrison_slot == host_slot
+    assert block.units[nested_slot].garrison_slot == inner_slot
+    assert inner_host.garrisoned_in_id == 500 and nested.garrisoned_in_id == 501, "the source is untouched"
+
+
+def test_copy_units_occupant_without_its_host_is_free() -> None:
+    loaded = _load()
+    _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=500, garrisoned_in_id=-1, unit_const=79)
+    occupant = _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=501, garrisoned_in_id=500)
+
+    block = copy_units(loaded.unit_manager, [occupant])
+
+    assert len(block.units) == 1
+    assert block.units[0].garrison_slot == -1
+
+
+def test_copy_units_matches_by_identity_not_by_reference_id() -> None:
+    loaded = _load()
+    picked = _add_raw_unit(loaded, player=0, x=10.5, y=10.5, reference_id=555, garrisoned_in_id=-1)
+    _add_raw_unit(loaded, player=0, x=20.5, y=20.5, reference_id=555, garrisoned_in_id=-1)  # its twin
+
+    block = copy_units(loaded.unit_manager, [picked])
+
+    assert len(block.units) == 1
+    assert (block.width, block.height) == (1, 1)
+    assert (block.units[0].dx, block.units[0].dy) == (0.5, 0.5)
+
+
+def test_unit_paste_targets_on_a_block_without_tiles_orders_holders_first() -> None:
+    loaded = _load()
+    # The occupant sits in player 1's list, ahead of its player-2 host.
+    _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=501, garrisoned_in_id=500)
+    host = _add_raw_unit(loaded, player=2, x=10.5, y=10.5, reference_id=500, garrisoned_in_id=-1, unit_const=79)
+    block = copy_units(loaded.unit_manager, [host])
+    assert [u.unit_const for u in block.units] == [83, 79]
+
+    targets = unit_paste_targets(block, 40, 50, 120, 120)
+
+    assert [t.unit.unit_const for t in targets] == [79, 83]
+    assert [(t.x, t.y) for t in targets] == [(40.5, 50.5), (40.5, 50.5)]
+    assert targets[1].holder_slot == targets[0].slot
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ((1, 1), (50, 60)),
+        ((3, 5), (49, 58)),
+        # An even size has no middle tile: the extra one goes on the high side.
+        ((2, 4), (50, 59)),
+    ],
+)
+def test_centred_anchor_for_odd_and_even_sizes(size, expected) -> None:
+    block = RegionBlock(width=size[0], height=size[1], terrain_ids=(), elevations=(), layers=(), units=())
+    assert centred_anchor(block, 50, 60) == expected
 
 
 # -- elevation: verification step 4 (the plan's design gate) ---------------

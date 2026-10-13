@@ -21,7 +21,18 @@ requirement tests/test_new_map.py's own docstring states).
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
+from test_sprite_toggle_viewer import sprite_install  # noqa: F401 -- fixture, requested by name
+
+# blend_install is requested by name and requests the next two itself;
+# blend_keys_match_the_mirrors is autouse, so every composite here checks the cache's blend key map.
+from test_terrain_blend_render import (  # noqa: F401
+    blend_install,
+    blend_keys_match_the_mirrors,
+    fake_farm,
+    synthetic_textures,
+)
 
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 
@@ -472,6 +483,218 @@ def test_stepped_full_rerender_fallback_actually_fires(monkeypatch) -> None:
 
         assert "refreshed the full map in place instead of patching" in window.status_log.toPlainText()
         assert QApplication.overrideCursor() is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- top-down Flat: block rects, or an eviction once the patch outgrows the view (TASK-324) --
+
+# A closed _OTHER_TERRAIN outline, inclusive tile corners. Each side sits one tile outside a mip-0
+# chunk edge, so the outline's own tiles share no chunk with the tiles a fill inside it dirties.
+_RING = (23, 23, 56, 48)
+_INSIDE = (30, 30)
+_INSIDE_TILES = 32 * 24
+_GRASS_3 = 9  # outranks _OTHER_TERRAIN in blend_install's table: a fill inside re-blends the outline's tiles
+_EVICTED = "evicted the cached region instead of patching"
+
+
+def _blended_flat_window(levels):
+    """A shown top-down Flat window at 1:1, so mip 0 is the visible level,
+    with the _RING outline drawn, Paint Can holding _GRASS_3 and the whole
+    canvas resident at each of `levels`. Returns (window, bbox): the
+    outline's rect in canvas pixels, the fill's region grown by its blend
+    ring. Caller must conftest.close_window()."""
+    from PyQt5.QtGui import QTransform
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import render
+
+    window = conftest.shown_terrain_window()
+    window.paint_trees_check.setChecked(False)
+    window.paint_eye_candy_check.setChecked(False)
+    # Unchecked before the style switch: see _shown_flat().
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText("Flat")
+    x0, y0, x1, y1 = _RING
+    outline = [(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1) if x in (x0, x1) or y in (y0, y1)]
+    window._on_tool_selected("draw_rect")
+    assert window.terrain_panel.set_terrain(_OTHER_TERRAIN)
+    window.on_shape_commit(outline)
+    window._on_tool_selected("fill")
+    assert window.terrain_panel.set_terrain(_GRASS_3)
+    view = window.map_view
+    view.setTransform(QTransform())
+    view.center_on_tile((x0 + x1) // 2, (y0 + y1) // 2)
+    QApplication.processEvents()
+    cache = window._cache
+    assert render.blend_effective(cache.layers), "blending is off, so the outline would prove nothing"
+    assert view.viewport_chunk_target()[0] == 0, "mip 0 is not the visible level"
+    cache.max_bytes *= 4  # room for every level at once, and for whatever a warm tick adds
+    for mip in levels:
+        cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+    t = cache.tile_px
+    return window, (x0 * t, y0 * t, (x1 + 1) * t, (y1 + 1) * t)
+
+
+def _chunk_keys_under(cache, bbox) -> set:
+    """Every cached chunk key, at any level, whose chunk the REFERENCE bbox reaches."""
+    keys = set()
+    for mip in cache.resident_levels():
+        cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, *cache._bbox_to_level(mip, bbox))
+        keys.update(k for k in cache._cache if k[0] == mip and cx0 <= k[1] <= cx1 and cy0 <= k[2] <= cy1)
+    return keys
+
+
+def _levels(cache, levels) -> dict:
+    return {mip: cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip).copy() for mip in levels}
+
+
+def _fresh_levels(window, levels) -> dict:
+    from descape.render_cache import FlatChunkCache
+
+    cache = window._cache
+    fresh = FlatChunkCache(
+        window.scenario, cache.tile_px, sprites=cache.sprites_enabled, unit_filter=cache.unit_filter, layers=cache.layers
+    )
+    return _levels(fresh, levels)
+
+
+def _count_patch_rects(cache, monkeypatch) -> list:
+    """Every rect list patch_rects() is handed from here on, through a fake that delegates."""
+    handed = []
+    real = cache.patch_rects
+
+    def patch_rects(rects):
+        handed.append(list(rects))
+        return real(rects)
+
+    monkeypatch.setattr(cache, "patch_rects", patch_rects)
+    return handed
+
+
+@pytest.mark.parametrize("levels", [(0,), (0, -1)], ids=["visible-level", "and-a-coarser-one"])
+@pytest.mark.parametrize("rule", ["count", "ratio"])
+def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_install, monkeypatch) -> None:  # noqa: F811
+    """A fill bounded by a second terrain, past the dirty-count threshold
+    (`count`, lowered to 100) or under it but past the visible-tiles ratio
+    (`ratio`): nothing is patched, every chunk under the region and its
+    blend ring is dropped at every resident level, every other chunk stays
+    the same object, and the canvas read back equals a fresh cache. The
+    same again for its undo."""
+    from PyQt5.QtWidgets import QApplication
+
+    import descape.viewer as viewer_module
+
+    def no_dilation(*args, **kwargs):
+        raise AssertionError("the count pre-check dilated the dirty set")
+
+    window, bbox = _blended_flat_window(levels)
+    try:
+        cache = window._cache
+        if rule == "count":
+            # Only the dirty count may evict here, before any rect is built.
+            monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
+            monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", float("inf"))
+            monkeypatch.setattr(viewer_module, "flat_dirty_rects", no_dilation)
+        else:
+            monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", 0.01)
+        handed = _count_patch_rects(cache, monkeypatch)
+        original = _levels(cache, levels)
+        line = f"Flat view: {_INSIDE_TILES} tiles dirty, {_EVICTED}"
+
+        for n, (step, act) in enumerate((("fill", lambda: window.on_fill(*_INSIDE, 0)), ("undo", window.undo)), start=1):
+            before = _levels(cache, levels)  # every chunk of every level resident again
+            under = _chunk_keys_under(cache, bbox)
+            assert {k[0] for k in under} >= set(levels) and len(under) >= 30, f"{step}: too few chunks under the bbox"
+            outside = {k: id(chunk) for k, chunk in cache._cache.items() if k not in under}
+            assert outside, f"{step}: no chunk outside the bbox (vacuous)"
+
+            act()
+
+            assert not handed, f"{step}: patch_rects() ran"
+            assert not under & cache._cache.keys(), f"{step}: chunks under the bbox are still cached"
+            assert all(k in cache._cache and id(cache._cache[k]) == v for k, v in outside.items()), (
+                f"{step}: a chunk outside the bbox was dropped or replaced"
+            )
+            assert window.status_log.toPlainText().count(line) == n, f"{step}: no status line"
+            assert QApplication.overrideCursor() is None
+            after = _levels(cache, levels)
+            fresh = _fresh_levels(window, levels)
+            for mip in levels:
+                assert np.array_equal(after[mip], fresh[mip]), f"{step}: mip {mip} differs from a fresh render"
+                assert not np.array_equal(after[mip], before[mip]), f"{step}: mip {mip} did not change (vacuous)"
+        for mip in levels:
+            assert np.array_equal(after[mip], original[mip]), f"mip {mip}: the undo did not restore the canvas"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_small_flat_edit_patches_block_rects_and_evicts_nothing(blend_install, monkeypatch) -> None:  # noqa: F811
+    """At the default ratio and threshold a few contiguous tiles are patched
+    in place, one rect a step, and no chunk is dropped."""
+    window, _bbox = _blended_flat_window((0,))
+    try:
+        cache = window._cache
+        handed = _count_patch_rects(cache, monkeypatch)
+        before = _levels(cache, (0,))
+        warm = {k: id(chunk) for k, chunk in cache._cache.items()}
+
+        window._on_tool_selected("draw")
+        window.on_edit_stroke_start()
+        for tile in ((36, 36), (37, 36), (36, 37), (37, 37)):  # each ring stays inside block (2, 2)
+            window.on_edit_stroke_tile(*tile, 0)
+        window.on_edit_stroke_end()
+
+        assert len(handed) == 4 and all(len(rects) == 1 for rects in handed), handed
+        assert all(k in cache._cache and id(cache._cache[k]) == v for k, v in warm.items()), "a small edit evicted a chunk"
+        assert _EVICTED not in window.status_log.toPlainText()
+        after = _levels(cache, (0,))
+        assert not np.array_equal(after[0], before[0]), "the edit changed no pixel (vacuous)"
+        assert np.array_equal(after[0], _fresh_levels(window, (0,))[0]), "the patched canvas differs from a fresh render"
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_flat_evict_rule_weighs_covered_tiles_per_level_against_visible_tiles(monkeypatch) -> None:
+    """_flat_patch_exceeds_viewport() at its boundary: rect tiles times
+    resident levels against _FLAT_EVICT_RATIO times the tiles in the visible
+    chunks (a ragged edge chunk counted at its real size), strictly greater,
+    and never with no viewport target."""
+    import descape.viewer as viewer_module
+
+    window = _edit_window("draw")
+    try:
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        cache = window._cache
+        t = cache.tile_px
+        assert cache.chunk_px == 8 * t and cache.mip_tile_px(-1) * 2 == t
+        exceeds = window._flat_patch_exceeds_viewport
+        target = [(0, 0, 0, 1, 1)]  # 2x2 chunks of 8x8 tiles: 256 visible
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: target[0])
+
+        assert not exceeds([(0, 0, 16 * t, 16 * t)], t), "an empty cache has nothing to patch, so nothing to evict"
+        cache.get_chunk(0, 0, 0)
+        assert cache.resident_levels() == [0]
+        assert not exceeds([(0, 0, 16 * t, 16 * t)], t), "256 tiles on one level is not past 256 visible"
+        assert exceeds([(0, 0, 16 * t, 16 * t), (16 * t, 0, 17 * t, t)], t)
+        cache.get_chunk(-1, 0, 0)
+        assert cache.resident_levels() == [-1, 0]
+        assert not exceeds([(0, 0, 16 * t, 8 * t)], t), "128 tiles on two levels is not past 256 visible"
+        assert exceeds([(0, 0, 16 * t, 8 * t), (16 * t, 0, 17 * t, t)], t)
+
+        # Mip -1 holds 16 tiles a chunk; the 120-tile map's last chunk is 8 wide and high: 64 visible.
+        target[0] = (-1, 7, 7, 7, 7)
+        assert not exceeds([(0, 0, 8 * t, 4 * t)], t)
+        assert exceeds([(0, 0, 8 * t, 4 * t), (16 * t, 0, 17 * t, t)], t)
+
+        monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", float("inf"))
+        assert not exceeds([(0, 0, 120 * t, 120 * t)], t)
+        monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", 0.0)
+        assert exceeds([(0, 0, t, t)], t)
+        target[0] = None
+        assert not exceeds([(0, 0, 120 * t, 120 * t)], t), "no viewport target, yet it priced an eviction"
     finally:
         window.edit_history.mark_saved()
         window.close()

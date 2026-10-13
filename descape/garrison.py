@@ -218,3 +218,18 @@ class GarrisonClip:
     caption_string_id: int
     caption_string: str
     capture_flag: int = -1
+
+
+@dataclass(frozen=True)
+class GarrisonCut:
+    """The Garrison block's Cut (GH #204): rows marked for a move, not copies.
+    Paste relinks the units themselves, so each keeps its reference_id.
+
+    Held as reference_ids and resolved at paste time: a marked unit that has
+    left `host` since (deleted, unloaded, dragged elsewhere) is skipped, and
+    one an undo puts back is marked again. `doc_id` is the document the cut
+    was made in, since a reference_id means nothing in another file."""
+
+    doc_id: str
+    host: int
+    occupants: tuple[int, ...]

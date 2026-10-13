@@ -107,7 +107,7 @@ def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted(mip)
     (render._sloped_tile_quad), so there is no separate placement to drift
     from the terrain's.
 
-    **Centred, and only centred, since free placement's Stage 1
+    **Centred, and only centred, since off-grid placement's Stage 1
     (2026-09-18).** A conforming quad has no position term to shift, so it
     cannot express a sub-tile position; C6's model and a mark that shows
     where the unit stands are mutually exclusive for the same unit. The
@@ -140,7 +140,7 @@ def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted(mip)
 @pytest.mark.parametrize("mip", LEVELS)
 @pytest.mark.parametrize("want_fx, want_fy", [(0.25, 0.75), (0.8, 0.6), (0.15, 0.2)])
 def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy, mip) -> None:
-    """Free placement's Stage 1: the off-centre tail leaves C6's conforming
+    """Off-grid placement's Stage 1: the off-centre tail leaves C6's conforming
     quad and takes the plain diamond at its own continuous point.
 
     Two assertions, because either alone is weak. Most of the diamond at
@@ -156,7 +156,7 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy,
     interleaves units at their own tile's moment. Measured 59% / 79% / 93%
     across these three fixtures. The exhaustive positional claim is made
     where it can be made correctly -- against an ID plane that reproduces
-    the depth walk -- in tests/test_free_placement.py.
+    the depth walk -- in tests/test_off_grid_placement.py.
     """
     tile_px = render.tile_pixels_for_map(MAP_W, MAP_H) >> -mip
     ux, uy = 9, 8

@@ -165,6 +165,7 @@ def test_placing_and_undoing_a_unit_moves_the_count_both_ways() -> None:
         window.mode_combo.setCurrentText("Units")
         assert window.stats_player_combo.currentData() == 1
         before = _placements(window)
+        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_PLACE_CONST)
         window.units_panel.select_owner(1)
         window.place_unit_action.setChecked(True)

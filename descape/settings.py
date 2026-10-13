@@ -1463,16 +1463,19 @@ class ToolDef:
     # for a second reason on top of that one: a wall's shape is derived from
     # its neighbours, which aren't known until the path ends.
     drag_shape: str = ""
-    # Whether this tool offers the free (non-snapped) placement checkbox --
-    # D2's toggle, free placement's Stage 3. Orthogonal to param_widget for
+    # Whether this tool offers the Off-grid (non-snapped) placement checkbox --
+    # D2's toggle, off-grid placement's Stage 3. Orthogonal to param_widget for
     # exactly the reason supports_brush is: param_widget is single-valued
     # ("" | "terrain" | "level" | ...), and Place Unit already spends it on
     # nothing while needing this. Session-only in the UI (tool options are
     # deliberately not persisted), so there is no settings getter/setter pair
     # behind it -- this field only says which tool grows the checkbox.
-    supports_free_place: bool = False
+    supports_off_grid: bool = False
+    # Whether this tool offers "Free placement" (GH #176), which lifts the
+    # terrain and object rules in placement_rules.py. Session-only, as above.
+    supports_unrestricted: bool = False
     # Whether this tool offers "Walls skip occupied tiles" (GH #124), for the
-    # tools that commit wall runs. Session-only, like supports_free_place.
+    # tools that commit wall runs. Session-only, like supports_off_grid.
     supports_skip_occupied: bool = False
     # Which mode(s) this tool's toolbar button shows in; empty means every
     # mode. Drives viewer_common.tool_applicable() and
@@ -1567,13 +1570,13 @@ TOOLS: list[ToolDef] = [
     # shared QKeySequence does -- fires NEITHER action, silently).
     ToolDef(
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
-        click_only=True, modes=("units",), supports_free_place=True,
-        supports_skip_occupied=True,
+        click_only=True, modes=("units",), supports_off_grid=True,
+        supports_unrestricted=True, supports_skip_occupied=True,
     ),
     # The wall enclosure plan (2026-09-21): an outline-only, tile-axis ring
     # of walls, one undo record per drag. Its own drag_shape value, like Draw
     # Line / Draw Rectangle are two ToolDefs. The wall const comes from the
-    # Units catalog (no param widget), and brush/free placement stay off
+    # Units catalog (no param widget), and brush/off-grid placement stay off
     # because an off-centre or dilated wall piece has no derivable shape.
     # Unbound: a duplicate QKeySequence silently kills BOTH actions.
     ToolDef(
@@ -1643,7 +1646,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # an accepted tradeoff.
     # "Copy"/"Paste", not "... Region": the actions dispatch on mode, and in
     # Triggers mode they copy and paste triggers (GH #27).
-    # GH #137: triggers, conditions and effects only (no Cut Region).
+    # GH #137, GH #192: Cut takes triggers, conditions, effects and Units
+    # mode's selected units (no Cut Region).
     ("edit_cut", "Cut", "Ctrl+X"),
     ("edit_copy", "Copy", "Ctrl+C"),
     ("edit_paste", "Paste", "Ctrl+V"),

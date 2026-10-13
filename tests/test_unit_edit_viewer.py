@@ -264,6 +264,7 @@ def test_an_unexpected_gate_failure_still_restores_the_cursor(monkeypatch) -> No
 def test_placing_a_unit_snaps_to_the_tile_centre_and_selects_it() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_PLACE_CONST)
         window.units_panel.select_owner(1)
         window.place_unit_action.setChecked(True)
@@ -338,6 +339,7 @@ _BERRY_BUSH = 59  # FORAG, GAIA in every corpus placement
 def test_placing_a_gaia_only_object_for_a_player_places_it_for_gaia() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_BERRY_BUSH)
         window.units_panel.select_owner(1)
         window.place_unit_action.setChecked(True)
@@ -363,6 +365,7 @@ def test_placing_a_gaia_only_object_for_a_player_places_it_for_gaia() -> None:
 def test_placing_a_villager_for_a_player_keeps_the_player() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_PLACE_CONST)
         window.units_panel.select_owner(1)
         window.place_unit_action.setChecked(True)
@@ -380,6 +383,7 @@ def test_placing_a_villager_for_a_player_keeps_the_player() -> None:
 def test_reassigning_a_gaia_only_object_to_a_player_goes_through_with_a_note() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_BERRY_BUSH)
         window.units_panel.select_owner(0)
         window.place_unit_action.setChecked(True)
@@ -406,6 +410,7 @@ def test_reassigning_a_gaia_only_object_to_a_player_goes_through_with_a_note() -
 def test_find_reassign_of_a_gaia_only_object_to_a_player_notes_it() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_BERRY_BUSH)
         window.place_unit_action.setChecked(True)
         window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
@@ -1057,6 +1062,7 @@ def test_an_appending_edit_keeps_the_index_in_paint_order(op) -> None:
     window = _window()
     try:
         if op == "place":
+            window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
             window.units_panel.select_object(_PLACE_CONST)
             window.units_panel.select_owner(1)
             window.place_unit_action.setChecked(True)
@@ -1156,6 +1162,7 @@ def test_dragging_onto_an_accepting_host_garrisons_and_one_undo_restores() -> No
 def test_a_shift_drop_on_a_host_moves_instead() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the move lands on the tower
         tower = _place_tower(window)
         archer = _live(window, _REF_ARCHER_P2)
 
@@ -1210,6 +1217,7 @@ def test_a_group_drop_with_a_wrong_type_member_is_refused_with_no_change() -> No
 def test_dropping_on_a_unit_that_holds_nothing_moves() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the move lands on the tree
         oak = _live(window, _REF_TREE_OAK)
         archer = _live(window, _REF_ARCHER_P2)
 
@@ -1678,6 +1686,7 @@ def test_place_pixels_appear_where_none_existed() -> None:
 def test_move_pixels_update_at_both_the_old_and_new_tile() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the new tile is under the fixture's House
         entry = window.map_view._unit_index.entries[0]
         key = (entry.player_id, entry.unit.reference_id)
         window._selection = [key]
@@ -1862,6 +1871,109 @@ def test_a_group_delete_cascades_every_hosts_garrison_in_one_record(monkeypatch)
         _close(window)
 
 
+# Delete's wording, pinned because Cut Units (GH #192) shares its code with a different verb.
+
+
+def _last_status_lines(window, count: int) -> list[str]:
+    return window.status_log.toPlainText().splitlines()[-count:]
+
+
+def _warnings(window) -> list[tuple[str, str]]:
+    """Routes the window's warning dialogs into the returned list."""
+    warned: list[tuple[str, str]] = []
+    window._warn = lambda title, text: warned.append((title, text))
+    return warned
+
+
+def _orphan_reference_id(window, player: int, reference_id: int) -> tuple[int, int]:
+    """Gives a unit the -1 reference_id the model refuses to remove; returns its new key."""
+    unit = next(u for u in window.scenario.unit_manager.units[player] if u.reference_id == reference_id)
+    unit.reference_id = -1
+    window._rebuild_unit_index()
+    return (player, -1)
+
+
+def test_delete_labels_and_status_lines_for_one_unit_and_for_a_group() -> None:
+    from descape.viewer import _unit_name
+
+    window = _window()
+    try:
+        (entry,) = _select(window, _REF_ARCHER_P1)
+        name = _unit_name(entry.unit.unit_const)
+        window.on_unit_delete(Qt.NoModifier)
+        assert window.edit_history.peek_undo().label == "Delete unit"
+        assert _last_status_lines(window, 2) == ["Delete unit", f"Deleted {name}"]
+
+        _select(window, _REF_ARCHER_P2, _REF_TREE_PINE)
+        window.on_unit_delete(Qt.NoModifier)
+        assert window.edit_history.peek_undo().label == "Delete 2 units"
+        assert _last_status_lines(window, 2) == ["Delete 2 units", "Deleted 2 units"]
+    finally:
+        _close(window)
+
+
+def test_delete_status_names_the_host_and_counts_its_garrison() -> None:
+    from descape.viewer import _unit_name
+
+    window = _window()
+    try:
+        _hide_garrisoned(window)
+        (entry,) = _select(window, _REF_HOUSE)
+        name = _unit_name(entry.unit.unit_const)
+        window.on_unit_delete(Qt.NoModifier)
+        assert window.edit_history.peek_undo().label == "Delete 2 units"
+        assert _last_status_lines(window, 2) == ["Delete 2 units", f"Deleted {name} (1 garrisoned)"]
+    finally:
+        _close(window)
+
+
+def test_a_wholly_refused_delete_warns_by_count() -> None:
+    window = _window()
+    try:
+        warned = _warnings(window)
+        house_key = _orphan_reference_id(window, 1, _REF_HOUSE)
+        records_before = len(window.edit_history.records)
+
+        _select_keys(window, [house_key])
+        window.on_unit_delete(Qt.NoModifier)
+        assert _last_status_lines(window, 1) == ["Delete failed: referenced by a garrison"]
+        assert warned == [("Cannot delete unit", "Referenced by another unit's garrison.")]
+
+        archer_key = _orphan_reference_id(window, 2, _REF_ARCHER_P2)
+        _select_keys(window, [house_key, archer_key])
+        window.on_unit_delete(Qt.NoModifier)
+        assert _last_status_lines(window, 1) == ["Delete failed: referenced by a garrison"]
+        assert warned[1:] == [
+            ("Cannot delete units", "All selected units are referenced by another unit's garrison.")
+        ]
+        assert len(window.edit_history.records) == records_before
+    finally:
+        _close(window)
+
+
+def test_a_partly_refused_delete_says_how_many_it_left() -> None:
+    window = _window()
+    try:
+        warned = _warnings(window)
+        house_key = _orphan_reference_id(window, 1, _REF_HOUSE)
+        before = _unit_count(window)
+
+        _select_keys(window, [house_key, (1, _REF_ARCHER_P1)])
+        window.on_unit_delete(Qt.NoModifier)
+
+        assert _unit_count(window) == before - 1
+        assert window.edit_history.peek_undo().label == "Delete unit"
+        assert _last_status_lines(window, 2) == ["Delete unit", "Deleted 1; 1 refused (garrison reference)"]
+        assert warned == [
+            (
+                "Some units not deleted",
+                "1 unit(s) are referenced by another unit's garrison and were not deleted.",
+            )
+        ]
+    finally:
+        _close(window)
+
+
 def test_group_nudge_moves_every_selected_unit_in_one_undo_record() -> None:
     window = _window()
     try:
@@ -1877,6 +1989,50 @@ def test_group_nudge_moves_every_selected_unit_in_one_undo_record() -> None:
         assert len(window.edit_history.records) == records_before + 1
         assert (a.unit.x, a.unit.y) == (ax + 0.1, ay)
         assert (b.unit.x, b.unit.y) == (bx + 0.1, by)
+    finally:
+        _close(window)
+
+
+def test_a_flat_group_move_across_two_blocks_patches_one_rect_per_block(monkeypatch) -> None:
+    """Four units in two 16-tile blocks moved one tile in one edit: top-down
+    Flat hands patch_rects() one rect per block, not one per touched tile,
+    patches the warmed chunks in place, and the canvas equals a fresh cache."""
+    from descape.render_cache import FlatChunkCache
+
+    window = _window()
+    try:
+        cache = window._cache
+        assert isinstance(cache, FlatChunkCache)
+        entries = _select(window, _REF_TREE_OAK, _REF_TREE_PINE, _REF_ARCHER_P2, _REF_VILLAGER_P2)
+        block = render.FLAT_PATCH_BLOCK_TILES
+        assert len({(int(e.unit.x) // block, int(e.unit.y) // block) for e in entries}) == 2
+        canvas = (0, 0, *cache.canvas_dims(0))
+        before = cache.render_rect(*canvas, mip=0).copy()
+        warm = {key: id(chunk) for key, chunk in cache._cache.items()}
+        handed = []
+        real_patch = cache.patch_rects
+
+        def patch_rects(rects):
+            handed.append(list(rects))
+            return real_patch(rects)
+
+        monkeypatch.setattr(cache, "patch_rects", patch_rects)
+
+        assert window.on_unit_nudge(0, 1, Qt.ShiftModifier)
+
+        (rects,) = handed
+        tp = cache.tile_px
+        assert rects == [(5 * tp, 5 * tp, 7 * tp, 7 * tp), (20 * tp, 20 * tp, 22 * tp, 22 * tp)], rects
+        assert {key: id(chunk) for key, chunk in cache._cache.items()} == warm, "the unit patch evicted a chunk"
+        after = cache.render_rect(*canvas, mip=0).copy()
+        assert not np.array_equal(after, before), "the move changed no pixel, so the check below proves nothing"
+        fresh = FlatChunkCache(
+            window.scenario, tp, sprites=cache.sprites_enabled, unit_filter=cache.unit_filter, layers=cache.layers
+        )
+        assert np.array_equal(after, fresh.render_rect(*canvas, mip=0)), "the patched canvas differs from a fresh render"
+
+        window.undo()
+        assert np.array_equal(cache.render_rect(*canvas, mip=0), before), "the undo left a stale tile"
     finally:
         _close(window)
 
@@ -3573,7 +3729,7 @@ def test_convert_flushes_splices_and_the_stroke_end_rebuilds_the_pick_index(monk
         _close(window)
 
 
-# --- D2's free-placement toggle (free placement, Stage 3) -------------------
+# --- D2's off-grid toggle (off-grid placement, Stage 3) ---------------------
 
 
 def _pos_in_tile(window, tile_x: int, tile_y: int, fx: float, fy: float) -> QPointF:
@@ -3592,31 +3748,34 @@ def _place_at(window, pos, modifiers=Qt.NoModifier, const: int = _PLACE_CONST):
     return window.map_view._unit_index.entry_for_key(window._selection[0])
 
 
-def test_the_free_placement_checkbox_shows_only_for_place_unit() -> None:
+def test_the_off_grid_checkbox_shows_only_for_place_unit() -> None:
     """Asserted on the captured QAction handle, never on the widget's own
     isVisible(): offscreen, a never-shown widget reads False unconditionally."""
     window = _window()
     try:
         window._on_tool_selected("place_unit")
-        assert window.free_place_param_action.isVisible()
-        assert window.free_place_check.isEnabled()
+        assert window.off_grid_param_action.isVisible()
+        assert window.off_grid_check.isEnabled()
         assert window.tool_param_separator_action.isVisible()
 
         window._on_tool_selected("convert")
-        assert not window.free_place_param_action.isVisible()
-        assert not window.free_place_check.isEnabled()
+        assert not window.off_grid_param_action.isVisible()
+        assert not window.off_grid_check.isEnabled()
     finally:
         _close(window)
 
 
 def test_the_toggle_is_session_only_and_starts_off() -> None:
     """Tool options are deliberately not persisted, so there is no settings
-    key behind this and a fresh window must start snapped."""
+    key behind either placement box and a fresh window must start snapped
+    and restricted."""
     window = _window()
     try:
-        assert not window.free_place_check.isChecked()
-        assert not any("free_place" in key for key in dir(__import__("descape.settings", fromlist=["x"]))), (
-            "free placement grew a settings accessor; it is supposed to be session-only"
+        assert not window.off_grid_check.isChecked()
+        assert not window.unrestricted_check.isChecked()
+        names = dir(__import__("descape.settings", fromlist=["x"]))
+        assert not any("off_grid" in key or "unrestricted" in key for key in names), (
+            "a placement box grew a settings accessor; both are supposed to be session-only"
         )
     finally:
         _close(window)
@@ -3625,11 +3784,12 @@ def test_the_toggle_is_session_only_and_starts_off() -> None:
 def test_placement_snaps_by_default_and_floats_with_the_toggle() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the second unit overlaps the first
         tx, ty = _empty_tile(window)
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
         assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
 
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
         assert (entry.unit.x, entry.unit.y) != (tx + 0.5, ty + 0.5)
         # Under the cursor, to within the pixel the click itself quantizes to.
@@ -3640,13 +3800,14 @@ def test_placement_snaps_by_default_and_floats_with_the_toggle() -> None:
         _close(window)
 
 
-def test_held_alt_places_free_for_one_click_without_changing_the_toggle() -> None:
+def test_held_alt_places_off_grid_for_one_click_without_changing_the_toggle() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the second unit overlaps the first
         tx, ty = _empty_tile(window)
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85), Qt.AltModifier)
         assert (entry.unit.x, entry.unit.y) != (tx + 0.5, ty + 0.5)
-        assert not window.free_place_check.isChecked(), "the one-off modifier flipped the toggle"
+        assert not window.off_grid_check.isChecked(), "the one-off modifier flipped the toggle"
 
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
         assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
@@ -3663,13 +3824,13 @@ def test_moving_a_unit_takes_the_same_branch_as_placing_one() -> None:
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.5, 0.5))
         key = window._selection[0]
 
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         window.on_unit_move(key, _pos_in_tile(window, tx + 1, ty + 1, 0.2, 0.7), Qt.NoModifier)
         moved = window.map_view._unit_index.entry_for_key(key)
         assert moved is not None
         assert (moved.unit.x, moved.unit.y) != (tx + 1.5, ty + 1.5)
 
-        window.free_place_check.setChecked(False)
+        window.off_grid_check.setChecked(False)
         window.on_unit_move(key, _pos_in_tile(window, tx + 2, ty + 2, 0.2, 0.7), Qt.NoModifier)
         moved = window.map_view._unit_index.entry_for_key(key)
         assert (moved.unit.x, moved.unit.y) == (tx + 2.5, ty + 2.5)
@@ -3678,25 +3839,25 @@ def test_moving_a_unit_takes_the_same_branch_as_placing_one() -> None:
         _close(window)
 
 
-def test_a_free_placed_unit_paints_where_it_stands() -> None:
+def test_an_off_grid_unit_paints_where_it_stands() -> None:
     """The end-to-end check the whole feature exists for: model coordinates
     reaching the canvas. A model-only assertion is exactly what b1's own
     postmortem records as having missed the last bug here."""
     window = _window()
     try:
         tx, ty = _empty_tile(window)
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         _place_at(window, _pos_in_tile(window, tx, ty, 0.1, 0.1))
         cx, cy = _chunk_for_tile(window, tx, ty)
         low = np.array(window._cache.get_chunk(0, cx, cy), copy=True)
 
         window.undo()
-        window.free_place_check.setChecked(False)
+        window.off_grid_check.setChecked(False)
         _place_at(window, _pos_in_tile(window, tx, ty, 0.1, 0.1))
         snapped = np.array(window._cache.get_chunk(0, cx, cy), copy=True)
 
         assert not np.array_equal(low, snapped), (
-            "a free-placed unit painted the same pixels as a snapped one"
+            "an off-grid unit painted the same pixels as a snapped one"
         )
     finally:
         _close(window)
@@ -3713,33 +3874,33 @@ def test_a_refused_inverse_snaps_and_says_so(monkeypatch) -> None:
     degenerate ramp: this module forces Flat on purpose, and the geometry's
     own degenerate case is pinned in tests/test_screen_to_map_point.py. What
     is untested without this is the viewer's REACTION to a refusal."""
-    from descape.viewer import FREE_PLACE_FALLBACK_MESSAGE
+    from descape.viewer import OFF_GRID_FALLBACK_MESSAGE
 
     window = _window()
     try:
         tx, ty = _empty_tile(window)
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         monkeypatch.setattr(window.map_view, "_pick_map_point", lambda pos: None)
 
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
 
         assert (entry.unit.x, entry.unit.y) == (tx + 0.5, ty + 0.5)
-        assert FREE_PLACE_FALLBACK_MESSAGE in window.status_log.toPlainText()
+        assert OFF_GRID_FALLBACK_MESSAGE in window.status_log.toPlainText()
     finally:
         _close(window)
 
 
-def test_a_successful_free_placement_stays_quiet() -> None:
-    """The other half: the fallback line must not fire on every free click,
+def test_a_successful_off_grid_placement_stays_quiet() -> None:
+    """The other half: the fallback line must not fire on every off-grid click,
     or it stops meaning anything."""
-    from descape.viewer import FREE_PLACE_FALLBACK_MESSAGE
+    from descape.viewer import OFF_GRID_FALLBACK_MESSAGE
 
     window = _window()
     try:
         tx, ty = _empty_tile(window)
-        window.free_place_check.setChecked(True)
+        window.off_grid_check.setChecked(True)
         _place_at(window, _pos_in_tile(window, tx, ty, 0.15, 0.85))
-        assert FREE_PLACE_FALLBACK_MESSAGE not in window.status_log.toPlainText()
+        assert OFF_GRID_FALLBACK_MESSAGE not in window.status_log.toPlainText()
     finally:
         _close(window)
 
@@ -3753,6 +3914,7 @@ _MARKET_CONST = 84  # 4x4
 def test_a_snapped_house_centres_on_the_whole_number_nearest_the_cursor() -> None:
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the second House overlaps the first
         tx, ty = _empty_tile(window)
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.2, 0.3), const=_HOUSE_CONST)
         assert (entry.unit.x, entry.unit.y) == (tx, ty)
@@ -3767,6 +3929,7 @@ def test_a_snapped_market_centres_its_4x4_footprint_on_the_cursor() -> None:
 
     window = _window()
     try:
+        window.unrestricted_check.setChecked(True)  # the second Market overlaps the first
         tx, ty = _empty_tile(window)
         mm = window.scenario.map_manager
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.2, 0.3), const=_MARKET_CONST)
@@ -3789,7 +3952,7 @@ def test_a_snapped_barracks_sits_on_its_tiles_centre() -> None:
 
 
 def test_a_snapped_house_with_no_map_point_takes_the_far_corner_quietly(monkeypatch) -> None:
-    from descape.viewer import FREE_PLACE_FALLBACK_MESSAGE
+    from descape.viewer import OFF_GRID_FALLBACK_MESSAGE
 
     window = _window()
     try:
@@ -3797,7 +3960,7 @@ def test_a_snapped_house_with_no_map_point_takes_the_far_corner_quietly(monkeypa
         monkeypatch.setattr(window.map_view, "_pick_map_point", lambda pos: None)
         entry = _place_at(window, _pos_in_tile(window, tx, ty, 0.2, 0.3), const=_HOUSE_CONST)
         assert (entry.unit.x, entry.unit.y) == (tx + 1, ty + 1)
-        assert FREE_PLACE_FALLBACK_MESSAGE not in window.status_log.toPlainText()
+        assert OFF_GRID_FALLBACK_MESSAGE not in window.status_log.toPlainText()
     finally:
         _close(window)
 
@@ -3978,7 +4141,7 @@ def test_grabbing_a_houses_lower_tile_moves_the_group_exactly_one_tile() -> None
         _close(window)
 
 
-def test_a_free_group_drag_keeps_every_offset(monkeypatch) -> None:
+def test_an_off_grid_group_drag_keeps_every_offset(monkeypatch) -> None:
     window = _window()
     try:
         _free_tiles(window, [(62, 62), (64, 63)])

@@ -136,6 +136,8 @@ def main() -> None:
                 count = sum(len(units) for units in window.scenario.unit_manager.units)
                 window.units_panel.select_object(_TOWN_CENTRE)
                 mid = (window.scenario.map_manager.map_width // 2, window.scenario.map_manager.map_height // 2)
+                # Free placement: map centre can be water or occupied, and this place must land.
+                window.unrestricted_check.setChecked(True)
                 window.on_unit_place(view._tile_polygon(*mid).boundingRect().center(), None)
                 assert sum(len(u) for u in window.scenario.unit_manager.units) == count + 1, "the place did not happen"
                 enter(window, "Terrain")

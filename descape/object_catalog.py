@@ -87,6 +87,14 @@ def dat_terrains() -> dict[int, dict]:
     return {int(k): dict(v) for k, v in _dat_table().get("terrains", {}).items()}
 
 
+def dat_terrain_restrictions() -> dict[int, frozenset[int]]:
+    """restriction id -> the terrain ids that .dat restriction row passes, for
+    every id an object's `restriction` key names plus the Beach row 2
+    (GH #176), or {} with no generated table. An object with no `restriction`
+    key passes everywhere."""
+    return {int(k): frozenset(v) for k, v in _dat_table().get("terrain_restrictions", {}).items()}
+
+
 # Type 80 classes that the library files under Units/Heroes, not Buildings:
 # packed (51) and unpacked (54) siege.
 _SIEGE_BUILDING_CLASSES = frozenset({51, 54})

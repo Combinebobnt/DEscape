@@ -28,6 +28,15 @@ An object's `obstruction` key (GH #149) is the raw .dat
 `unit.obstruction_type`, present only when non-zero: 0 is the passable value
 (grass, plants, rubble), anything else blocks movement.
 unit_kind.obstacle_consts() is derived from it.
+Three more per-object keys back Place Unit's and Move's placement rules
+(GH #176), each omitted when empty: `restriction` is the raw
+`unit.terrain_restriction` when above 0, `clearance` is `unit.clearance_size`
+as `[x, y]` half-extents in tiles (rounded to 4 places) unless both are 0,
+and `side_terrain` lists the non-negative ids of `placement_side_terrain`
+(the shore a dock or shore fish needs beside it). The top-level
+`terrain_restrictions` section maps each restriction id a named object uses,
+plus the Beach row 2 that the shore rule reads, to the enabled terrain ids
+its .dat row passes (a value above 0).
 Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
@@ -71,6 +80,35 @@ def _object_entries(units: list, blank_ids: frozenset[int]) -> dict[str, dict]:
         # Omitted when 0 (passable), so the committed diff is only the consts that block.
         if unit.obstruction_type:
             entries[str(unit_const)]["obstruction"] = unit.obstruction_type
+        # GH #176's placement-rule keys, each omitted when empty (0 passes every terrain).
+        if unit.terrain_restriction > 0:
+            entries[str(unit_const)]["restriction"] = unit.terrain_restriction
+        if any(unit.clearance_size):
+            entries[str(unit_const)]["clearance"] = [round(size, 4) for size in unit.clearance_size]
+        side_terrain = [terrain_id for terrain_id in unit.placement_side_terrain if terrain_id >= 0]
+        if side_terrain:
+            entries[str(unit_const)]["side_terrain"] = side_terrain
+    return entries
+
+
+# The .dat's Beach restriction row. No object uses it, but it is the shore a
+# `side_terrain` object needs beside it (descape/placement_rules.py).
+_BEACH_RESTRICTION = 2
+
+
+def _terrain_restriction_entries(restrictions: list, objects: dict[str, dict], terrains: dict[str, dict]) -> dict:
+    """{restriction id: passable terrain ids} for every id an entry in
+    `objects` carries plus the Beach row, limited to the enabled terrains
+    `terrains` lists. A row value above 0 passes (it doubles as a damage
+    multiplier)."""
+    used = sorted({entry["restriction"] for entry in objects.values() if "restriction" in entry} | {_BEACH_RESTRICTION})
+    terrain_ids = sorted(int(terrain_id) for terrain_id in terrains)
+    entries: dict[str, list[int]] = {}
+    for restriction_id in used:
+        if restriction_id >= len(restrictions):
+            raise SystemExit(f"Terrain restriction {restriction_id} has no .dat row; the placement rule needs re-checking")
+        row = restrictions[restriction_id].passable_buildable_dmg_multiplier
+        entries[str(restriction_id)] = [t for t in terrain_ids if t < len(row) and row[t] > 0]
     return entries
 
 
@@ -143,6 +181,7 @@ def main() -> None:
     objects = _object_entries(data.civs[0].units, blank_ids)
     techs = _tech_entries(data.techs)
     terrains = _terrain_entries(data.terrain_block.terrains)
+    terrain_restrictions = _terrain_restriction_entries(data.terrain_restrictions, objects, terrains)
 
     out_path = Path(__file__).resolve().parent.parent / "descape" / "object_catalog.json"
     out = {
@@ -156,9 +195,13 @@ def main() -> None:
         "objects": objects,
         "techs": techs,
         "terrains": terrains,
+        "terrain_restrictions": terrain_restrictions,
     }
     out_path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
-    print(f"Wrote {len(objects)} objects, {len(terrains)} terrains and {len(techs)} techs to {out_path}")
+    print(
+        f"Wrote {len(objects)} objects, {len(terrains)} terrains, {len(terrain_restrictions)} terrain "
+        f"restrictions and {len(techs)} techs to {out_path}"
+    )
 
 
 if __name__ == "__main__":

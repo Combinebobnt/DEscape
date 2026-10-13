@@ -39,6 +39,7 @@ from test_native_composite import (
 from test_sprite_edit_bbox import EDIT_X, EDIT_Y, sprite_install  # noqa: F401
 
 from descape import asset_source, composite_backend, native_composite, render, terrain_blend
+from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
 from descape.grid_overlay import grid_bake
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
 from descape.terrain_blend import BlendEntry
@@ -329,9 +330,123 @@ class _At:
 
 
 def test_flat_dirty_rects_dilate_only_while_blending_is_effective(blend_install):
-    on = render.flat_dirty_rects([(0, 0), (1, 0)], 4, 4, 8, LayerState())
-    assert sorted(on) == sorted((x * 8, y * 8, x * 8 + 8, y * 8 + 8) for x in range(3) for y in range(2))
+    """Blending on, the two tiles and their ring are one block rect, not six tile rects."""
+    assert render.flat_dirty_rects([(0, 0), (1, 0)], 4, 4, 8, LayerState()) == [(0, 0, 24, 16)]
     assert render.flat_dirty_rects([(0, 0)], 4, 4, 8, BLEND_OFF) == [(0, 0, 8, 8)]
+
+
+def _tile_sets() -> dict[str, list]:
+    """Seeded tile sets on a 120x120 map for flat_tile_rects()' properties."""
+    rng = np.random.default_rng(20261012)
+    block = render.FLAT_PATCH_BLOCK_TILES
+    full_block = [(2 * block + dx, block + dy) for dx in range(block) for dy in range(block)]
+    scatter = [tuple(t) for t in rng.integers(0, 120, size=(40, 2)).tolist()]
+    disc = brush_tiles(3 * block, 3 * block, 9, BRUSH_SHAPE_CIRCLE, 120, 120)
+    edges = [(0, 0), (119, 0), (0, 119), (119, 119), *((x, 119) for x in range(100, 120)), *((119, y) for y in range(60, 70))]
+    return {
+        "full-block": full_block,
+        "scatter": scatter,
+        "disc-on-a-block-corner": disc,
+        "map-edges": edges,
+        "duplicates": [*disc, *disc[::2], *scatter[:5], *scatter[:5]],
+        "one-tile": [(37, 81)],
+        "two-far-in-a-block": [(block, block), (2 * block - 1, 2 * block - 1)],
+    }
+
+
+@pytest.mark.parametrize("name", list(_tile_sets()))
+def test_flat_tile_rects_cover_their_tiles_in_disjoint_block_rects(name):
+    """Every tile is covered, no two rects overlap, each rect lies inside one
+    block, and a block's rects cover at most FLAT_PATCH_DENSITY times the
+    tiles asked for there."""
+    tiles = _tile_sets()[name]
+    tile_px, block, density = 32, render.FLAT_PATCH_BLOCK_TILES, render.FLAT_PATCH_DENSITY
+    rects = render.flat_tile_rects(iter(tiles), tile_px)
+    assert rects == sorted(rects) and len(set(rects)) == len(rects)
+    covered: dict[tuple[int, int], int] = {}
+    per_block: dict[tuple[int, int], int] = {}
+    for x0, y0, x1, y1 in rects:
+        assert x0 < x1 and y0 < y1 and not any(v % tile_px for v in (x0, y0, x1, y1)), (x0, y0, x1, y1)
+        tx0, ty0, tx1, ty1 = x0 // tile_px, y0 // tile_px, x1 // tile_px, y1 // tile_px
+        key = (tx0 // block, ty0 // block)
+        assert key == ((tx1 - 1) // block, (ty1 - 1) // block), f"rect {(tx0, ty0, tx1, ty1)} leaves its block"
+        per_block[key] = per_block.get(key, 0) + (tx1 - tx0) * (ty1 - ty0)
+        for x in range(tx0, tx1):
+            for y in range(ty0, ty1):
+                covered[(x, y)] = covered.get((x, y), 0) + 1
+    assert set(tiles) <= covered.keys(), f"uncovered: {sorted(set(tiles) - covered.keys())[:5]}"
+    assert max(covered.values()) == 1, "two rects overlap"
+    asked: dict[tuple[int, int], int] = {}
+    for x, y in set(tiles):
+        asked[(x // block, y // block)] = asked.get((x // block, y // block), 0) + 1
+    assert per_block.keys() == asked.keys()
+    for key, n in asked.items():
+        assert per_block[key] <= density * n, f"block {key}: {per_block[key]} tiles covered for {n} asked"
+    if name == "full-block":
+        assert rects == [(2 * block * tile_px, block * tile_px, 3 * block * tile_px, 2 * block * tile_px)]
+    if name == "one-tile":
+        assert rects == [(37 * tile_px, 81 * tile_px, 38 * tile_px, 82 * tile_px)]
+    if name == "disc-on-a-block-corner":
+        assert len(rects) == 4, "a disc across a block corner is one bbox per block"
+    if name == "two-far-in-a-block":
+        assert len(rects) == 2 and len(covered) == 2, "a sparse block falls back to one rect a tile"
+
+
+def test_flat_tile_rects_of_nothing_is_empty():
+    assert render.flat_tile_rects([], 32) == []
+
+
+def _straddling_and_sparse_edit(monkeypatch) -> tuple[list, int]:
+    """With 8-tile blocks: a 4x3 patch whose ring crosses a block edge, and
+    two lone tiles whose rings each put one corner tile into block (2, 2),
+    which is then sparse. Returns the tiles and the block side."""
+    block = 8
+    monkeypatch.setattr(render, "FLAT_PATCH_BLOCK_TILES", block)
+    patch = [(EDIT_X + dx, EDIT_Y + dy) for dx in range(4) for dy in range(3)]
+    return [*patch, (2 * block - 1, 2 * block - 1), (3 * block, 3 * block)], block
+
+
+def test_a_multi_tile_flat_edit_patches_to_a_fresh_render(blend_install, backend, monkeypatch):
+    """One level warm, then an edit whose rects take both flat_tile_rects()
+    branches (block bboxes on either side of a block edge, and a sparse
+    block's one-tile rects), patched through the viewer's funnel: the whole
+    canvas equals a fresh cache, with no chunk evicted."""
+    scenario = _scenario("flat")
+    mm = scenario.map_manager
+    tiles, block = _straddling_and_sparse_edit(monkeypatch)
+    originals = {t: mm.terrain[t[1] * mm.map_width + t[0]].terrain_id for t in tiles}
+    assert NEW_TERRAIN_ID not in originals.values()
+
+    def apply():
+        for x, y in tiles:
+            mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
+
+    apply()
+    with composite_backend.use_backend("numpy"):
+        fresh = _cache("flat", scenario)
+        mips = [m for m in fresh.mip_levels() if m in (0, -1)]
+        want = {m: _stitched(fresh, m).copy() for m in mips}
+
+    for m in mips:
+        for (x, y), tid in originals.items():
+            mm.terrain[y * mm.map_width + x].terrain_id = tid
+        cache = _cache("flat", scenario)
+        t = cache.tile_px
+        before = _stitched(cache, m).copy()
+        warm = {k: id(chunk) for k, chunk in cache._cache.items()}
+        apply()
+        rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
+        sizes = [((x1 - x0) // t, (y1 - y0) // t) for x0, y0, x1, y1 in rects]
+        sparse = [(2 * block * t, 2 * block * t, (2 * block + 1) * t, (2 * block + 1) * t)]
+        sparse.append(((3 * block - 1) * t, (3 * block - 1) * t, 3 * block * t, 3 * block * t))
+        assert set(sparse) <= set(rects), "block (2, 2) did not fall back to one rect a tile -- vacuous"
+        # The patch's ring is tiles 59..64 by 59..63: 5 columns left of the block edge at 64, 1 right of it.
+        assert (5, 5) in sizes and (1, 5) in sizes, f"no bbox on both sides of a block edge -- vacuous: {sizes}"
+        cache.patch_rects(rects)
+        assert {k: id(chunk) for k, chunk in cache._cache.items()} == warm, f"mip {m}: the patch evicted -- vacuous"
+        after = _stitched(cache, m)
+        assert not np.array_equal(after, before), f"mip {m}: the edit changed nothing -- vacuous"
+        _assert_equal(after, want[m], f"flat mip {m} after a multi-block edit on {backend}")
 
 
 def _blend_cache(kind: str, scenario):
@@ -592,11 +707,13 @@ def test_a_cache_whose_key_map_keeps_resetting_paints_the_same(blend_install, ba
     _assert_equal(got, _full(kind, scenario), f"{kind} on {backend} with the key map resetting")
 
 
-def test_a_flat_patch_derives_its_keys_in_one_call(blend_install, backend, blend_keys_match_the_mirrors):
-    """Flat patches one tile rect at a time; the keys an edit invalidated
-    are derived once for all of them, not once per rect, and the patched
-    canvas equals a fresh cache."""
+def test_a_flat_patch_derives_its_keys_in_one_call(blend_install, backend, blend_keys_match_the_mirrors, monkeypatch):
+    """Flat's sparse fallback patches one tile rect at a time (every block
+    here, with the density at 0); the keys an edit invalidated are derived
+    once for all of them, not once per rect, and the patched canvas equals
+    a fresh cache."""
     seen = blend_keys_match_the_mirrors
+    monkeypatch.setattr(render, "FLAT_PATCH_DENSITY", 0)
     scenario = _scenario("flat")
     mm = scenario.map_manager
     cache = _cache("flat", scenario)
@@ -614,6 +731,94 @@ def test_a_flat_patch_derives_its_keys_in_one_call(blend_install, backend, blend
     with composite_backend.use_backend("numpy"):
         want = _stitched(_cache("flat", scenario))
     _assert_equal(after, want, f"flat after a 12-tile edit on {backend}")
+
+
+def _chunks_under(cache, rect, mip: int = 0) -> int:
+    """Cached chunks of level `mip` the REFERENCE rect `rect` reaches."""
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, *cache._bbox_to_level(mip, rect))
+    return sum(cache.has_chunk(mip, cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1))
+
+
+def _count_composites(cache, monkeypatch) -> list:
+    """Every _composite_rect() call from here on, through a fake that delegates."""
+    calls = []
+    real = cache._composite_rect
+
+    def counting(mip, x0, y0, x1, y1):
+        calls.append((mip, x0, y0, x1, y1))
+        return real(mip, x0, y0, x1, y1)
+
+    monkeypatch.setattr(cache, "_composite_rect", counting)
+    return calls
+
+
+def test_a_flat_edit_inside_one_block_composites_once_per_chunk(blend_install, backend, monkeypatch):
+    """One resident level and a 6x6 patch whose ring stays inside one block
+    and crosses the fixture's 8-tile chunk edge both ways: _composite_rect()
+    runs once per chunk the one rect reaches (4), not once per dirty tile
+    and neighbour (64)."""
+    scenario = _scenario("flat")
+    mm = scenario.map_manager
+    cache = _cache("flat", scenario)
+    before = _stitched(cache).copy()
+    t = cache.tile_px
+    assert cache.resident_levels() == [0] and cache.chunk_px == 8 * t
+    block = render.FLAT_PATCH_BLOCK_TILES
+    x0 = y0 = 3 * block + 4
+    tiles = [(x0 + dx, y0 + dy) for dx in range(6) for dy in range(6)]
+    for x, y in tiles:
+        mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
+    rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
+    calls = _count_composites(cache, monkeypatch)
+    cache.patch_rects(rects)
+    composites = len(calls)
+    assert composites == 4, f"{composites} composites for a ring of 64 tiles over 4 chunks"
+    assert rects == [((x0 - 1) * t, (y0 - 1) * t, (x0 + 7) * t, (y0 + 7) * t)]
+    assert _chunks_under(cache, rects[0]) == 4
+    after = _stitched(cache)
+    assert not np.array_equal(after, before), "the edit changed no pixel (vacuous)"
+    with composite_backend.use_backend("numpy"):
+        want = _stitched(_cache("flat", scenario))
+    _assert_equal(after, want, f"flat after a one-block edit on {backend}")
+
+
+def test_a_multi_block_flat_edit_derives_no_tile_key_twice(blend_install, backend, blend_keys_match_the_mirrors, monkeypatch):
+    """A brush-9 disc across a block corner: one rect per block, one
+    _composite_rect() per chunk each reaches, and no tile index is handed
+    to influences() twice in the whole patch."""
+    seen = blend_keys_match_the_mirrors
+    scenario = _scenario("flat")
+    mm = scenario.map_manager
+    w = mm.map_width
+    cache = _cache("flat", scenario)
+    before = _stitched(cache).copy()
+    assert cache.resident_levels() == [0]
+    block = render.FLAT_PATCH_BLOCK_TILES
+    tiles = brush_tiles(3 * block, 3 * block, 9, BRUSH_SHAPE_CIRCLE, w, mm.map_height)
+    for x, y in tiles:
+        mm.terrain[y * w + x].terrain_id = NEW_TERRAIN_ID
+    rects = render.flat_dirty_rects(tiles, w, mm.map_height, cache.tile_px, cache.layers)
+    derived: list[int] = []
+    counted = terrain_blend.influences  # the autouse fixture's fake, which delegates
+
+    def recording(tid_mirror, layer_mirror, xs, ys):
+        if seen.inside:
+            derived.extend((np.asarray(ys) * w + np.asarray(xs)).tolist())
+        return counted(tid_mirror, layer_mirror, xs, ys)
+
+    monkeypatch.setattr(terrain_blend, "influences", recording)
+    calls = _count_composites(cache, monkeypatch)
+    cache.patch_rects(rects)
+    composites = len(calls)
+    assert len(rects) == 4, f"{len(rects)} rects for a disc whose ring reaches four blocks"
+    assert composites == sum(_chunks_under(cache, rect) for rect in rects)
+    assert derived, "the patch derived no key (vacuous)"
+    assert len(derived) == len(set(derived)), "a tile's blend key was derived twice in one patch"
+    after = _stitched(cache)
+    assert not np.array_equal(after, before), "the edit changed no pixel (vacuous)"
+    with composite_backend.use_backend("numpy"):
+        want = _stitched(_cache("flat", scenario))
+    _assert_equal(after, want, f"flat after a four-block edit on {backend}")
 
 
 MIRRORS = ("_terrain_ids", "_layer_ids")

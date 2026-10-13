@@ -182,7 +182,7 @@ def test_off_map_units_are_dropped() -> None:
 
 def _paint_offset(unit) -> tuple[float, float]:
     """How far off its own tile a unit's mark paints, in continuous tile
-    units -- free placement's Stage 1.
+    units -- off-grid placement's Stage 1.
 
     Re-derived here rather than calling render.unit_paint_offset(), matching
     how _unit_rise() re-derives the rise below and for the same reason: an
@@ -202,7 +202,7 @@ def _flat_id_plane(scn, index, tile_px: int) -> np.ndarray:
 
     Flat blits opaque rects in ascending index order, so painting in the
     same order and letting later writes win reproduces exactly what's
-    visible. Each rect carries _paint_offset()'s shift (free placement,
+    visible. Each rect carries _paint_offset()'s shift (off-grid placement,
     Stage 1), which is zero for every building and for every unit at an
     exact `.5`.
     """
@@ -230,7 +230,7 @@ def _stepped_id_plane(scn, index, tile_px: int, elevations, proj, map_w=None, ma
     one flat slab at a single height (asymmetry 1), it just no longer paints
     that whole slab at its own tile's moment in the walk.
 
-    Since free placement's Stage 1 the diamond is positioned by its CENTRE
+    Since off-grid placement's Stage 1 the diamond is positioned by its CENTRE
     whenever _paint_offset() is nonzero, matching render._draw_unit_iso.
 
     Skirts are deliberately not painted. pick_unit() treats a
@@ -329,7 +329,7 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
     conforming-marker fix rather than a restatement of the pre-C6 shape. A
     multi-tile unit's diamond still sits at its own PIXEL rise -- one
     height for the whole footprint, painted at each covering tile's own
-    screen position -- and since free placement's Stage 1 an OFF-CENTRE 1x1
+    screen position -- and since off-grid placement's Stage 1 an OFF-CENTRE 1x1
     unit joins it there, at its own shifted centre rather than at its tile's
     warped quad (a conforming quad cannot express a sub-tile position).
 

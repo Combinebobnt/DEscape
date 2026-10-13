@@ -143,6 +143,25 @@ def test_default_label_reports_the_blocks_own_size_and_unit_count() -> None:
     )
 
 
+def _units_block(count: int, width: int = 3, height: int = 2) -> RegionBlock:
+    """What region_clipboard.copy_units() makes: units and a bounding box, no tiles."""
+    return RegionBlock(
+        width=width, height=height, terrain_ids=(), elevations=(), layers=(), units=(object(),) * count
+    )
+
+
+def test_default_label_of_a_units_only_block_counts_the_units() -> None:
+    assert clipboard_history.default_label(_units_block(1)) == "1 unit"
+    assert clipboard_history.default_label(_units_block(12)) == "12 units"
+
+
+def test_thumbnail_of_a_units_only_block_is_empty() -> None:
+    """It has a size but no terrain_ids to index, so there is nothing to draw."""
+    thumb = clipboard_history.thumbnail_rgb(_units_block(2))
+    assert thumb.shape == (0, 0, 3)
+    assert thumb.dtype == np.uint8
+
+
 def test_thumbnail_of_a_small_block_is_one_pixel_per_tile() -> None:
     """Compared against color_for_terrain_id itself, never literal RGB: it
     returns real texture averages when an AoE2:DE install is configured, so

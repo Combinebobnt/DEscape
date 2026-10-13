@@ -229,18 +229,47 @@ def blend_effective(layers: LayerState = DEFAULT_LAYERS, blend: bool = True) -> 
     return blend and layers.terrain_blend and layers.terrain_textures and asset_source.get_blendomatic() is not None
 
 
+# flat_tile_rects()' block side and bbox rule. tools/bench_draw_stroke.py, Dos Pilas, mip 0: one composite call
+# 0.07 to 0.19 ms, each extra tile in it 2.6 to 6.6 us, so a bbox wins until it covers about 28 times the tiles.
+FLAT_PATCH_BLOCK_TILES = 16
+FLAT_PATCH_DENSITY = 8
+
+
+def flat_tile_rects(tiles, tile_px: int) -> list:
+    """Canvas-pixel rects covering the tiles `tiles` ((x, y) pairs, deduped
+    here), for patch_rects(): per FLAT_PATCH_BLOCK_TILES block, the bbox of
+    its tiles as one rect, or one rect a tile where that bbox would cover
+    more than FLAT_PATCH_DENSITY times the block's tiles (a sparse scatter).
+    Sorted and pairwise disjoint, each inside its own block, so one edit
+    composites a tile once per resident level and derives its blend key once."""
+    size = FLAT_PATCH_BLOCK_TILES
+    blocks: dict[tuple[int, int], list] = {}
+    for x, y in set(tiles):
+        blocks.setdefault((x // size, y // size), []).append((x, y))
+    rects = []
+    for members in blocks.values():
+        xs, ys = zip(*members, strict=True)
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs) + 1, max(ys) + 1
+        if (x1 - x0) * (y1 - y0) <= FLAT_PATCH_DENSITY * len(members):
+            rects.append((x0 * tile_px, y0 * tile_px, x1 * tile_px, y1 * tile_px))
+        else:
+            rects.extend((x * tile_px, y * tile_px, (x + 1) * tile_px, (y + 1) * tile_px) for x, y in members)
+    return sorted(rects)
+
+
 def flat_dirty_rects(coords, map_w: int, map_h: int, tile_px: int, layers: LayerState) -> list:
     """Flat's patch_rects() input for the dirty tiles `coords` ((x, y) pairs):
-    one tile rect each, dilated to the 8 neighbours (deduped) when blending
-    is effective, since a tile's blend reads them."""
+    flat_tile_rects() of them, dilated first to the 8 neighbours when
+    blending is effective, since a tile's blend reads them. The rects cover a
+    superset of the dirty tiles and their ring: never assume one rect a tile."""
     if blend_effective(layers):
-        coords = sorted({
+        coords = {
             (nx, ny)
             for x, y in coords
             for nx in range(max(x - 1, 0), min(x + 2, map_w))
             for ny in range(max(y - 1, 0), min(y + 2, map_h))
-        })
-    return [(x * tile_px, y * tile_px, (x + 1) * tile_px, (y + 1) * tile_px) for x, y in coords]
+        }
+    return flat_tile_rects(coords, tile_px)
 
 
 def tile_field_mirror(scenario: LoadedScenario, field_name: str, idx: np.ndarray | None = None) -> np.ndarray:
@@ -1467,7 +1496,7 @@ def _building_bbox_for(
         # construction -- which is what let cliffs join the multi-tile
         # side of it just by gaining an OBJECT_TILE_SPANS entry.
         #
-        # The offset condition is free placement's Stage 1: an
+        # The offset condition is off-grid placement's Stage 1: an
         # off-centre mark straddles a tile boundary, so the premise
         # above stops holding for it and it needs a real bbox. Skipping
         # it would clip that mark at a chunk edge in every chunked
@@ -2832,7 +2861,7 @@ def _draw_unit_sloped(
     encodes the surface, and adding a rise on top would double-count it (see
     the plan's `d_min` trap). Every multi-tile footprint keeps the plain
     diamond at `rise_px`, unchanged -- a real building is a flat pad, and
-    conforming per footprint tile would silently undo that -- and since free
+    conforming per footprint tile would silently undo that -- and since off-grid
     placement's Stage 1 an off-centre 1x1 unit joins it there, since a
     conforming quad has no position term to express a sub-tile position with
     (see _paint_tile_and_units_sloped's docstring for what forced that).
@@ -2878,7 +2907,7 @@ def _draw_unit_sloped(
 
 def _sloped_mark_base(unit, tx: int, ty: int, rise_px: int, proj: iso_geometry.IsoProjection) -> tuple[int, int]:
     """(base_y, base_x) of a Sloped plain-diamond mark on footprint tile (tx, ty)."""
-    # Positioned by its CENTRE, the same way _draw_unit_iso is (free
+    # Positioned by its CENTRE, the same way _draw_unit_iso is (off-grid
     # placement, Stage 1). rise_px is an int, so a zero paint offset reduces
     # this to tile_screen_origin(tx, ty, 0) shifted up by rise_px exactly --
     # the expression this line used to be, byte for byte.
@@ -2952,7 +2981,7 @@ def _paint_tile_and_units_sloped(
     whenever sprites are on -- see this function's own farm case, below the
     _render_tile_sloped() call.
 
-    **"Centred" is free placement's Stage 1, and it is the narrower of two
+    **"Centred" is off-grid placement's Stage 1, and it is the narrower of two
     possible deviations from C6.** A conforming quad has no position term, so
     it cannot show a sub-tile position at all; an off-centre 1x1 unit
     therefore joins the plain-diamond path below, at its own point. Keeping
@@ -3087,7 +3116,7 @@ def _paint_objects_sloped(
             # buckets it there -- so `tile` here already IS that tile, and
             # its corners are the ones _render_tile_sloped just painted.
             #
-            # Only at zero offset (free placement, Stage 1). A conforming
+            # Only at zero offset (off-grid placement, Stage 1). A conforming
             # quad has no position term to shift, so an off-centre unit falls
             # through to the plain-diamond path below, which does. That split
             # is what keeps render_terrain_sloped byte-identical to
@@ -3901,10 +3930,23 @@ def _sprite_axis_centre(coord: float, span: int) -> float:
     return _span_start(coord, span) + span / 2
 
 
+def unit_footprint_centre(unit) -> tuple[float, float]:
+    """The continuous map point a unit's footprint is drawn centred on:
+    `_sprite_axis_centre` per axis, the expression the sprite anchor uses.
+
+    For anything outside this module that must sit on the drawn footprint
+    (the range ring, GH #200), so the rounding stays in `_span_start` alone.
+    The stored coordinate on a span-1 axis and for a building at `tile +
+    span/2`; half a tile from it for a building stored on the other parity.
+    Unclamped, so a building hanging off a map edge keeps its true centre."""
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    return _sprite_axis_centre(unit.x, span_x), _sprite_axis_centre(unit.y, span_y)
+
+
 def unit_paint_offset(unit) -> tuple[float, float]:
     """(dx, dy) in CONTINUOUS TILE UNITS between where a unit's coloured mark
     paints now and the integer-tile position it painted at before Stage 1 of
-    free placement -- the single place that shift is derived, so the three
+    off-grid placement -- the single place that shift is derived, so the three
     painters, the three pick loops, the highlight outline and the dirty-bbox
     cannot drift apart.
 
@@ -4095,7 +4137,7 @@ def unit_sprite_draws_at(
 
 def _painted_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int] | None:
     """unit_tile_bounds() grown by one tile on whichever side the unit's mark
-    is shifted toward (free placement, Stage 1), clamped to the map.
+    is shifted toward (off-grid placement, Stage 1), clamped to the map.
 
     Grown, never moved: the invariant unit_tile_bounds' docstring names --
     (int(unit.x), int(unit.y)) is inside the returned bounds -- has three
@@ -4394,7 +4436,7 @@ def _draw_unit(
     icon centred in the same rect -- see composite_rect_flat()'s docstring for
     why replace rather than overlay.
 
-    The rect is shifted by unit_paint_offset() (free placement, Stage 1), so a
+    The rect is shifted by unit_paint_offset() (off-grid placement, Stage 1), so a
     span-1 unit's mark sits where its file says it stands rather than on its
     tile. Flat is the trivial projection: one continuous tile unit is exactly
     tile_px pixels. The shift is 0.0 for every building and for every unit at
@@ -4508,7 +4550,7 @@ def _unit_mark_base_iso(unit, tx: int, ty: int, proj: iso_geometry.IsoProjection
     """(base_y, base_x) of a Stepped mark's diamond on footprint tile (tx, ty),
     shared by _draw_unit_iso and the native UnitPack."""
     elevation = int(elevations[int(unit.y), int(unit.x)])
-    # The diamond is positioned by its CENTRE (free placement, Stage 1), so a
+    # The diamond is positioned by its CENTRE (off-grid placement, Stage 1), so a
     # span-1 unit's mark follows its sub-tile position instead of snapping to
     # (tx, ty). map_point_to_screen(tx + 0.5, ty + 0.5, elevation * elev_step)
     # is tile_screen_origin(tx, ty, elevation) + (half_w, half_h) exactly, so
@@ -4564,7 +4606,7 @@ def _unit_screen_bbox_iso(
     sx1, _ = iso_geometry.tile_screen_origin(tile_x1 - 1, tile_y1 - 1, elevation, proj)
     _, sy0 = iso_geometry.tile_screen_origin(tile_x1 - 1, tile_y0, elevation, proj)
     _, sy1 = iso_geometry.tile_screen_origin(tile_x0, tile_y1 - 1, elevation, proj)
-    # Free placement, Stage 1: a span-1 mark is shifted off its tile by up to
+    # Off-grid placement, Stage 1: a span-1 mark is shifted off its tile by up to
     # half a tile per axis, so the extremes above are no longer the whole box.
     # Widened by the WHOLE half-tile rather than by this unit's own offset --
     # under-covering here is a MISSED bystander paint (a stale pixel), not a
@@ -5467,7 +5509,7 @@ def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, t
     more such scans, but stays cheap in practice since PAINTED-tile overlaps
     are local -- it terminates as soon as a pass adds no new tiles.
 
-    "Painted", not "footprint", since free placement's Stage 1: the expansion
+    "Painted", not "footprint", since off-grid placement's Stage 1: the expansion
     walks _painted_tile_bounds(), which is a unit's footprint grown by the
     tile its mark is shifted toward. So a straddling mark drags its neighbour
     into the dirty set and cascades through that tile's own units, which is
@@ -5483,7 +5525,7 @@ def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, t
     # repo (production, tests, or tools) -- see overlay_units()'s docstring --
     # so there is no path through which a stored color override would ever
     # need to reach it.
-    # Widened by the paint offset (free placement, Stage 1): a span-1 mark now
+    # Widened by the paint offset (off-grid placement, Stage 1): a span-1 mark now
     # spills into the neighbouring tile it is shifted toward, so the plain
     # footprint would under-report which units this dirty set actually
     # repaints -- and a missed repaint here leaves a stale mark behind.

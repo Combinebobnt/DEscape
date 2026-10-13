@@ -61,7 +61,15 @@ from descape.unit_model import UnitEditModel  # re-exported too, see below
 #
 #     units = batch_api.UnitEditModel(scenario)
 #     units.set_position(unit, new_x, new_y, unit.z)   # or reassign()/add()/remove()
+#     units.set_status(unit, 0)         # Unit State: 0 Foundation, 2 Alive, 7 Remove, ...
+#     units.set_capture_flag(unit, 1)   # Capture Flag: -1 Default, 1 Convert Once, ...
 #     batch_api.save(scenario, out_path, units=units)
+#
+# set_status() and set_capture_flag() (GH #186) take the raw stored value;
+# descape/unit_fields.py lists the labelled ones. A bare `unit.status = 0` or
+# `unit.capture_flag = 1` is not saved, like any other direct mutation, and
+# set_capture_flag() raises on a scenario saved before version 1.59, which
+# has no such field.
 #
 # UnitEditModel is not memoized per scenario here -- construct one explicitly
 # per script, the same way a TriggerEditModel or OptionsEditModel would be. A

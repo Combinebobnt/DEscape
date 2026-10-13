@@ -727,6 +727,7 @@ def gh180_gates(sections: dict[str, list[str]], stalls: dict[str, tuple[float, f
     for key in ("undo1", "undo2"):
         sec = section(key)
         # The threshold branch: an in-place refresh since TASK-031.61 A5, a re-render before it or on a refusal.
+        # Top-down Flat's `N tiles dirty, evicted the cached region` is not read: no flow here is top-down.
         full = next((m for ln in sec if (m := re.search(r"(\d+) tiles dirty, (re-rendered|refreshed)", ln))), None)
         op = next((re.search(r"perf op undo: (\d+)ms", ln) for ln in sec if "perf op undo:" in ln), None)
         handler, paint, total = stalls[key]

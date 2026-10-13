@@ -28,6 +28,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 from uuid import uuid4
 
@@ -119,6 +120,7 @@ from descape import (
     option_fields,
     perf_trace,
     place_rotation,
+    placement_rules,
     player_fields,
     player_labels,
     player_stats,
@@ -202,6 +204,7 @@ from descape.render import (
     dirty_screen_bboxes_iso_grouped,
     elevations_and_proj,
     flat_dirty_rects,
+    flat_tile_rects,
     occupied_tiles_for,
     sloped_elevations_and_proj,
     snapped_anchor,
@@ -234,6 +237,7 @@ from descape.scenario_io import (
     load_map_and_units_from_bytes,
     parse_triggers,
     refresh_player_render_context,
+    unit_field_supported,
     unsupported_version_sentence,
     xs_attachment,
 )
@@ -288,8 +292,9 @@ from descape.viewer_common import (
     _TOOL_PARAM,
     _TOOL_SHAPE,
     BRUSH_TOOLS,
-    FREE_PLACE_TOOLS,
+    OFF_GRID_TOOLS,
     SKIP_OCCUPIED_TOOLS,
+    UNRESTRICTED_TOOLS,
     FontScaledWidth,
     KeepOpenMenu,
     _set_player_item,
@@ -363,11 +368,50 @@ def clamp_group_delta(units, dx, dy, map_w: int, map_h: int, whole_tiles: bool):
     cx, cy = min(max(dx, lo_x), hi_x), min(max(dy, lo_y), hi_y)
     return cx, cy, (cx, cy) != (dx, dy)
 
-# Shown when free placement was asked for and the screen -> map-point inverse
+
+def clamp_paste_anchor(block, tx0: int, ty0: int, map_w: int, map_h: int) -> tuple[int, int]:
+    """Paste Units' anchor (GH #192) shifted by whole tiles until every
+    top-level unit's footprint is on the map, measured as clamp_group_delta()
+    measures one. Unlike a move, a footprint overhanging an edge is pulled
+    back in. Occupants ride with their host and do not limit the shift.
+    Unchanged when no shift fits the group (it is larger than the map)."""
+    lo_x = lo_y = -math.inf
+    hi_x = hi_y = math.inf
+    for unit in block.units:
+        if unit.garrison_slot != -1:
+            continue
+        span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+        placed = SimpleNamespace(unit_const=unit.unit_const, x=tx0 + unit.dx, y=ty0 + unit.dy)
+        low_x, low_y = span_low_corner(placed)
+        # span_low_corner() truncates a span-1 axis toward zero, so (-1, 0) would read as tile 0.
+        if span_x <= 1:
+            low_x = math.floor(placed.x)
+        if span_y <= 1:
+            low_y = math.floor(placed.y)
+        lo_x, hi_x = max(lo_x, -low_x), min(hi_x, map_w - (low_x + span_x))
+        lo_y, hi_y = max(lo_y, -low_y), min(hi_y, map_h - (low_y + span_y))
+    if lo_x > hi_x or lo_y > hi_y:
+        return tx0, ty0
+    return tx0 + min(max(0, lo_x), hi_x), ty0 + min(max(0, lo_y), hi_y)
+
+
+def _units_text(count: int, carried: int) -> str:
+    """"1 unit" or "N units", plus how many more ride inside them as garrisons."""
+    text = "1 unit" if count == 1 else f"{count} units"
+    return f"{text} ({carried} garrisoned)" if carried else text
+
+
+# Paste's status line when the file's units cannot be edited (Paste Region and Paste Units).
+_PASTE_UNITS_SKIPPED = "Units were skipped -- units are read-only for this file"
+
+# _report_delete()'s past tense for each verb that removes units.
+_REMOVE_VERB_PAST = {"Delete": "Deleted", "Cut": "Cut"}
+
+# Shown when off-grid placement was asked for and the screen -> map-point inverse
 # had no answer for that pixel. A module constant so a test can assert on the
 # real string rather than on a paraphrase of it.
-FREE_PLACE_FALLBACK_MESSAGE = (
-    "Free placement: no exact point under the cursor here, snapped to the grid instead"
+OFF_GRID_FALLBACK_MESSAGE = (
+    "Off-grid: no exact point under the cursor here, snapped to the grid instead"
 )
 
 # Which left-panel page each mode shows. The panel swaps rather than growing
@@ -542,7 +586,9 @@ ELEVATION_LEVEL_MAX = iso_geometry.MAX_ELEVATION
 # re-render" no longer means "recomposite every pixel up front" -- see that
 # method's own docstring). Set well above the fine case and well below the
 # slow one; the exact crossover between them hasn't been measured. Past it the
-# cache is now refreshed in place (TASK-031.61 A5), not rebuilt.
+# cache is now refreshed in place (TASK-031.61 A5), not rebuilt. Top-down Flat
+# reads it as a pre-check too: past it the dirty set is never dilated into
+# rects, and the cached region under its bbox is evicted (_evict_flat_region()).
 STEPPED_FULL_RERENDER_THRESHOLD = 20_000
 
 # Above this many tiles, a Paint Can fill with Trees or Eye candy checked
@@ -564,6 +610,10 @@ _SPLICE_COST_RATIO = 16
 # since 2026-09-30, the reach-padded one too. Measured with tools/bench_stroke_end.py
 # --area-ratio: see _patch_area_exceeds_viewport().
 _TIGHT_PATCH_AREA_RATIO = {"stepped": 0.3, "sloped": 1.0}
+
+# Top-down Flat evicts a terrain patch's bbox once its rects cover more tiles, summed over the resident
+# levels, than this multiple of the tiles in the visible chunks. tools/bench_stroke_end.py --flat-ratio.
+_FLAT_EVICT_RATIO = 1.0
 
 # Stepped only (TASK-031.61 C1). A batch past the ratio above patches one rect per visible-level
 # chunk, sized from 16x16-tile blocks of the edit, while those rects recomposite at most this
@@ -2780,6 +2830,8 @@ class ViewerWindow(QMainWindow):
         self._tile_picker: tuple | None = None
         # GH #115: the Garrison block's Copy, as garrison.GarrisonClip rows. Session-only.
         self._garrison_clipboard: tuple = ()
+        # GH #204: the Garrison block's Cut, or None. Never held together with a Copy.
+        self._garrison_cut: garrison.GarrisonCut | None = None
         # Built on first ask, dropped on any unit mutation or document change.
         self._unit_ref_index: unit_references.ReferenceIndex | None = None
         self._convert_done: set[tuple[int, int]] = set()
@@ -2922,6 +2974,9 @@ class ViewerWindow(QMainWindow):
             on_garrison_paste=self._on_garrison_paste,
             on_garrison_unload=self._on_garrison_unload,
             on_garrison_owner=self._on_garrison_owner,
+            on_garrison_cut=self._on_garrison_cut,
+            # GH #186: a pull like map_size, never the lazily built unit_edits model.
+            codec_field_supported=lambda name: self.scenario is None or unit_field_supported(self.scenario, name),
         )
         self.terrain_panel = TerrainPanel()
         self.terrain_panel.set_hover_text(HOVER_IDLE_TEXT)
@@ -3188,7 +3243,7 @@ class ViewerWindow(QMainWindow):
         # _build_keybind_actions()/apply_keybind()), same as every tool
         # action, so its shortcut comes from settings.REBINDABLE_ACTIONS's
         # matching "edit_*" entry.
-        # GH #137: Cut exists only for triggers, conditions and effects; there is no Cut Region.
+        # GH #137, GH #192: Cut takes triggers, conditions, effects and Units mode's selected units; there is no Cut Region.
         self.cut_action = QAction("Cu&t Triggers", self)
         self.cut_action.setEnabled(False)  # re-gated by _update_clipboard_actions()
         self.cut_action.triggered.connect(self._dispatch_cut)
@@ -3205,7 +3260,9 @@ class ViewerWindow(QMainWindow):
         # No setShortcut(): the whole menu takes its shortcuts from the
         # keybind system. Ships unbound, like Settings… directly below.
         self.clipboard_history_action = QAction("Clipboard &History…", self)
-        self.clipboard_history_action.setToolTip("The last few regions you copied this session; pick which one Paste uses")
+        self.clipboard_history_action.setToolTip(
+            "The last few regions or units you copied this session; pick which one Paste uses"
+        )
         self.clipboard_history_action.triggered.connect(self._show_clipboard_history)
         edit_menu.addAction(self.clipboard_history_action)
         # GH #30's edit-history window. Ships unbound like the two dialog
@@ -3674,7 +3731,8 @@ class ViewerWindow(QMainWindow):
         them to the typed value, and Rotation sets every ANGLE member to one
         facing, skipping the rest, or with no ANGLE member every cyclable one
         to one variant (GH #123), or with only gates every gate to one
-        orientation (GH #61). A one-unit selection is a group of one, so
+        orientation (GH #61). Unit State and Capture Flag (GH #186) set every
+        member to the picked raw value. A one-unit selection is a group of one, so
         both cases share this path, and each edit is one undo record.
 
         UnitsPanel itself suppresses this during a programmatic populate (its
@@ -3770,6 +3828,31 @@ class ViewerWindow(QMainWindow):
                     splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
             if skipped:
                 self._log_status(f"{label} ({skipped} skipped: not rotatable)")
+            return
+
+        if spec.kind == unit_fields.CHOICE:
+            # Unit State / Capture Flag (GH #186): exactly the selected units,
+            # with no garrison carry, unlike a typed coordinate below.
+            capture = spec.field_id == "capture_flag"
+            if capture and not model.supports_capture_flag:
+                # The panel disables the row before 1.59; set_capture_flag() would raise.
+                return
+            raw = int(value)
+            changing = [e for e in entries if (capture_flag_of(e.unit) if capture else e.unit.status) != raw]
+            if not changing:
+                return
+            label = f"Set {spec.label}" if single else f"Set {spec.label} on {len(changing)} units"
+            setter = model.set_capture_flag if capture else model.set_status
+            players = sorted({e.player_id for e in changing})
+            splices = []
+            with self._unit_edit(model, label, players, splices, fields_only=True):
+                for entry in changing:
+                    unit = entry.unit
+                    # Nothing moves: one footprint on both sides, as Rotation's splice above.
+                    own, tiles = self._unit_footprint(unit)
+                    idx = self._unit_list_index(entry.player_id, unit)
+                    setter(unit, raw)
+                    splices.append(UnitSplice(entry.player_id, idx, unit, own, own, tiles, tiles))
             return
 
         axis = spec.field_id
@@ -3955,8 +4038,13 @@ class ViewerWindow(QMainWindow):
             for player_id, occupant in occupants
         ]
         wrong_type = sum(1 for _pid, o in occupants if not garrison.accepts(unit.unit_const, o.unit_const))
-        can_paste = bool(self._garrison_clipboard) and garrison.can_hold(unit.unit_const)
-        self.units_panel.show_garrison(rows, garrison.capacity(unit.unit_const), wrong_type, can_paste=can_paste)
+        cut = self._pending_garrison_cut()
+        can_paste = (bool(self._garrison_clipboard) or cut is not None) and garrison.can_hold(unit.unit_const)
+        # GH #204: the marks show only on the host the rows were cut from.
+        marked = cut.occupants if cut is not None and cut.host == unit.reference_id else ()
+        self.units_panel.show_garrison(
+            rows, garrison.capacity(unit.unit_const), wrong_type, can_paste=can_paste, cut=marked
+        )
 
     def _selected_host_entry(self):
         """The one selected unit's entry, or None -- the garrison block only
@@ -4073,9 +4161,10 @@ class ViewerWindow(QMainWindow):
             name_of=_unit_name,
         )
 
-    def _garrison_units(self, host_entry, entries) -> bool:
+    def _garrison_units(self, host_entry, entries, label: str = "Garrison units", verb: str = "Garrisoned") -> bool:
         """Puts existing units inside `host_entry`'s unit, at its point, in one
-        undo record (GH #115). False, with a status line, when refused."""
+        undo record (GH #115). False, with a status line, when refused.
+        `label` and `verb` reword the record and the status line for Paste's move."""
         host = host_entry.unit
         model = self._ensure_unit_edits()
         if model is None:
@@ -4088,7 +4177,7 @@ class ViewerWindow(QMainWindow):
         incoming = [e for e in entries if e.unit.garrisoned_in_id != host.reference_id]
         players = sorted({e.player_id for e in incoming})
         splices: list[UnitSplice] = []
-        with self._unit_edit(model, "Garrison units", players, splices):
+        with self._unit_edit(model, label, players, splices):
             for entry in incoming:
                 unit = entry.unit
                 old_own, old_tiles = self._unit_footprint(unit)
@@ -4099,7 +4188,7 @@ class ViewerWindow(QMainWindow):
                 splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
             # A garrisoned unit leaves the index under the default filter, and no remove patch exists.
             self._rebuild_unit_index()
-        self._log_status(f"Garrisoned {len(incoming)} unit(s) inside {_unit_name(host.unit_const)}")
+        self._log_status(f"{verb} {len(incoming)} unit(s) inside {_unit_name(host.unit_const)}")
         return True
 
     def _unload_units(self, host_entry, rows) -> bool:
@@ -4279,13 +4368,57 @@ class ViewerWindow(QMainWindow):
                 capture_flag=capture_flag_of(unit),
             ))
         self._garrison_clipboard = tuple(clips)
+        # GH #204: a Copy replaces a pending Cut, whose rows stay where they are.
+        self._garrison_cut = None
+        self.units_panel.set_garrison_cut(())
         self.units_panel.set_garrison_can_paste(garrison.can_hold(entry.unit.unit_const))
         self._log_status(f"Copied {len(clips)} garrisoned unit(s)")
 
+    def _on_garrison_cut(self, reference_ids) -> None:
+        """Marks the selected rows for a move (GH #204). Nothing is edited
+        until Paste: the rows stay inside this host, and no record is made."""
+        entry = self._selected_host_entry()
+        if entry is None:
+            return
+        rows = self._selected_garrison_rows(entry, reference_ids)
+        if not rows:
+            return
+        occupants = tuple(unit.reference_id for _pid, unit in rows)
+        self._garrison_cut = garrison.GarrisonCut(self._doc_id, entry.unit.reference_id, occupants)
+        self._garrison_clipboard = ()
+        self.units_panel.set_garrison_cut(occupants)
+        self.units_panel.set_garrison_can_paste(garrison.can_hold(entry.unit.unit_const))
+        self._log_status(f"Cut {len(occupants)} garrisoned unit(s); Paste inside another host moves them")
+
+    def _pending_garrison_cut(self):
+        """The Cut waiting for a Paste, or None once its document is gone."""
+        cut = self._garrison_cut
+        return cut if cut is not None and cut.doc_id == self._doc_id else None
+
+    def _paste_garrison_cut(self, host_entry, cut) -> None:
+        """Paste after a Cut (GH #204): the cut rows still inside the host they
+        were cut from move into `host_entry`'s unit through _garrison_units(),
+        so its checks and its one record apply. A refusal keeps the cut."""
+        source = self._entry_for_reference(cut.host)
+        rows = [] if source is None else self._selected_garrison_rows(source, cut.occupants)
+        if rows:
+            entries = [unit_pick.UnitEntry(pid, u, int(u.x), int(u.y), -1) for pid, u in rows]
+            if not self._garrison_units(host_entry, entries, label="Move into garrison", verb="Moved"):
+                return
+        else:
+            self._log_status("Paste: the cut units are no longer inside the host they were cut from")
+        self._garrison_cut = None
+        self.units_panel.set_garrison_can_paste(False)
+
     def _on_garrison_paste(self) -> None:
         """New copies of the clipboard inside the selected host, each with its
-        own owner, all or nothing through garrison.refusal(). One record."""
+        own owner, all or nothing through garrison.refusal(). One record.
+        After a Cut it moves the cut rows instead (_paste_garrison_cut())."""
         entry = self._selected_host_entry()
+        cut = self._pending_garrison_cut()
+        if entry is not None and cut is not None:
+            self._paste_garrison_cut(entry, cut)
+            return
         clips = self._garrison_clipboard
         if entry is None or not clips:
             return
@@ -4714,7 +4847,7 @@ class ViewerWindow(QMainWindow):
         self._log_status(f"{len(self._selection)} units selected (stack)")
 
     def _placement_point(self, pos, modifiers, unit_const: int | None = None) -> tuple[float, float] | None:
-        """Where a click puts a unit -- the one place the snapped/free choice
+        """Where a click puts a unit -- the one place the snapped/off-grid choice
         is made, so Place Unit and Move Unit cannot disagree about it.
 
         Snapped (the default) is `render.snapped_anchor` for `unit_const`'s
@@ -4724,13 +4857,13 @@ class ViewerWindow(QMainWindow):
         game's grid (GH #206). `_pick_tile()` resolves the
         clicked SCREEN pixel to an integer tile in all three render styles
         (Flat's division, Stepped's screen_to_tile, Sloped's pick-plane
-        lookup). Free is `_pick_map_point()`, the continuous inverse added by
-        free placement's Stage 2 -- which supersedes the "Sloped has no
+        lookup). Off-grid is `_pick_map_point()`, the continuous inverse added by
+        off-grid placement's Stage 2 -- which supersedes the "Sloped has no
         analytic inverse" reason this feature used to be deferred for. That
         claim is true of the TERRAIN surface and was never true of the
         point-placement one, which inverts closed-form.
 
-        Free is reached by the toolbar checkbox or by holding Alt for a
+        Off-grid is reached by the toolbar checkbox or by holding Alt for a
         one-off (D2's modifier), either one. Falls back to the snapped point
         whenever the inverse returns None -- a degenerate denominator or a
         failed round-trip, both reachable on a steep Sloped ramp -- rather
@@ -4738,20 +4871,25 @@ class ViewerWindow(QMainWindow):
         worse than one that snaps.
 
         **The fallback says so.** Without a status line a tester who asked
-        for free placement and got a grid point cannot tell "the inverse
+        for off-grid placement and got a grid point cannot tell "the inverse
         refused this pixel" from "the checkbox didn't apply" from "the window
         manager ate the Alt", and those want three different responses."""
         point, fell_back = self._resolve_placement_point(pos, modifiers, unit_const=unit_const)
         if fell_back:
-            self._log_status(FREE_PLACE_FALLBACK_MESSAGE)
+            self._log_status(OFF_GRID_FALLBACK_MESSAGE)
         return point
 
-    def _free_placement_requested(self, modifiers) -> bool:
-        """The toolbar checkbox, or a held Alt for a one-off."""
+    def _off_grid_requested(self, modifiers) -> bool:
+        """The Off-grid toolbar checkbox, or a held Alt for a one-off."""
         # `modifiers` is None from a caller that has no real event behind it
         # (a test, or a programmatic place), so it must not be bit-tested.
         alt = modifiers is not None and bool(modifiers & Qt.AltModifier)
-        return self.free_place_check.isChecked() or alt
+        return self.off_grid_check.isChecked() or alt
+
+    def _restrictions_lifted(self) -> bool:
+        """The Free placement checkbox (GH #176): Place Unit and Move skip
+        placement_rules' terrain and object rules. It has no modifier."""
+        return self.unrestricted_check.isChecked()
 
     def _resolve_placement_point(
         self, pos, modifiers, unit_const: int | None = None
@@ -4766,21 +4904,25 @@ class ViewerWindow(QMainWindow):
         tile = self.map_view._pick_tile(pos)
         if tile is None:
             return None, False
-        free = self._free_placement_requested(modifiers)
+        off_grid = self._off_grid_requested(modifiers)
         span = (1, 1) if unit_const is None else tile_span(unit_const, NON_BUILDING_SPAN)
         # The snapped anchor needs the cursor point only on an even-span axis.
-        point = self.map_view._pick_map_point(pos) if free or span[0] % 2 == 0 or span[1] % 2 == 0 else None
-        if free and point is not None:
+        point = self.map_view._pick_map_point(pos) if off_grid or span[0] % 2 == 0 or span[1] % 2 == 0 else None
+        if off_grid and point is not None:
             return point, False
         mm = self.scenario.map_manager
-        return snapped_anchor(tile, point, span, mm.map_width, mm.map_height), free
+        return snapped_anchor(tile, point, span, mm.map_width, mm.map_height), off_grid
 
     def on_unit_place(self, pos, modifiers) -> None:
         """MapView's seventh injected callable -- a left click with the
         Place Unit tool active (b1.4).
 
-        Snapped by default, free with the param toolbar's checkbox or a held
-        Alt -- see `_placement_point`, which is where that choice lives."""
+        Snapped by default, off-grid with the param toolbar's checkbox or a held
+        Alt -- see `_placement_point`, which is where that choice lives.
+
+        Refused, with nothing added and no undo record, where
+        placement_rules says the game would refuse it (GH #176), unless Free
+        placement is ticked. The walls a gate replaces never block it."""
         if self.scenario is None:
             return
         object_id = self.units_panel.selected_object_const()
@@ -4801,7 +4943,12 @@ class ViewerWindow(QMainWindow):
             if model is None:
                 return
             x, y = point
-            gate_plan = self._gate_plan(model, object_id, x, y)
+            gate_plan, gate_walls = self._gate_plan(model, object_id, x, y)
+            if not self._restrictions_lifted():
+                reason = placement_rules.refusal(self.scenario, object_id, x, y, exclude=gate_walls)
+                if reason is not None:
+                    self._log_status(f"Place Unit: {reason}. Tick Free placement to place it anyway.")
+                    return
             if gate_plan:
                 # GH #159: removals shift list indices, so no splice; one wholesale record.
                 with self._unit_edit(model, "Place unit", wall_run.touched_players(player, gate_plan)):
@@ -4843,22 +4990,30 @@ class ViewerWindow(QMainWindow):
             status += " (a Filters toggle is hiding it, so it won't be visible)"
         self._log_status(status)
 
-    def _gate_plan(self, model, object_id: int, x: float, y: float) -> wall_run.GatePlan | None:
-        """The walls a gate click at (x, y) replaces or reshapes (GH #159), or
-        None for a non-gate const or an off-map footprint."""
+    def _gate_plan(self, model, object_id: int, x: float, y: float) -> tuple[wall_run.GatePlan | None, list]:
+        """(plan, walls) for a gate click at (x, y): the walls it replaces or
+        reshapes (GH #159), or None for a non-gate const or an off-map
+        footprint, and every wall under its footprint.
+
+        `walls` is taken before the plan drops the ones remove_many() would
+        refuse, and is what the placement rules exclude (GH #176): the gate
+        replaces the walls it can and still sits over a referenced one."""
         if not gate_orientation.is_gate(object_id):
-            return None
+            return None, []
         mm = self.scenario.map_manager
         gate_tiles = occupied_tiles_for(object_id, x, y, mm.map_width, mm.map_height)
         if gate_tiles is None:
-            return None
+            return None, []
         existing_tiles, existing_walls = wall_run.wall_scene(self.scenario, mm.map_width, mm.map_height)
         plan = wall_run.plan_gate_over_walls(
             gate_tiles, existing_tiles=existing_tiles, existing_walls=existing_walls
         )
+        walls = [u for _p, u in plan.removals]
         # Keep a wall remove_many() would refuse (a referenced or -1 reference_id), as Delete does.
         removals = [(p, u) for p, u in plan.removals if not model.referencing(u)]
-        return dataclasses.replace(plan, removals=removals) if len(removals) != len(plan.removals) else plan
+        if len(removals) != len(plan.removals):
+            plan = dataclasses.replace(plan, removals=removals)
+        return plan, walls
 
     def on_place_preview(self, pos, modifiers) -> None:
         """MapView's place-preview hook (GH #128): Place Unit's hover ghost, a
@@ -4909,7 +5064,7 @@ class ViewerWindow(QMainWindow):
         self._place_ghost_memo = None if item is None else (key, item)
 
     def _refresh_place_ghost(self, *_args) -> None:
-        """A catalog pick, owner or free-placement change with no mouse move."""
+        """A catalog pick, owner or Off-grid change with no mouse move."""
         # GH #172: a half notch turned for the old pick must not fire on the new one.
         self.map_view.reset_place_wheel()
         self._update_rotate_enabled()
@@ -5530,6 +5685,10 @@ class ViewerWindow(QMainWindow):
 
         A drop on a host that can take the dragged units garrisons them
         instead (GH #115, _garrison_drop()); Shift keeps it a move.
+
+        A move placement_rules refuses changes nothing and adds no undo
+        record (GH #176), unless Free placement is ticked. A group is all or
+        nothing (_group_move_refusal()).
         """
         if self.scenario is None:
             return
@@ -5558,11 +5717,17 @@ class ViewerWindow(QMainWindow):
             return
         x, y = point
         unit = entry.unit
-        # Effectively never fires in free mode (two float coordinates rarely
+        # Effectively never fires off-grid (two float coordinates rarely
         # land on the same bits twice), and still correct for the snapped
         # path, which is the only reason it is still here.
         if (x, y) == (unit.x, unit.y):
             return
+        if not self._restrictions_lifted():
+            # GH #176. The mover never blocks itself; its occupants are garrisoned, so they never block.
+            reason = placement_rules.move_refusal(self.scenario, unit, x, y, exclude=[unit])
+            if reason is not None:
+                self._log_status(f"Move: {reason}. Tick Free placement to move it anyway.")
+                return
         mm = self.scenario.map_manager
         # The garrison rides along, onto the host's new point (GH #42).
         occupants = self._garrison_occupant_entries(model, [entry])
@@ -5583,8 +5748,8 @@ class ViewerWindow(QMainWindow):
     def _group_delta(self, anchor, pos, modifiers, commit: bool):
         """(entries, dx, dy, clamped) for a group drag grabbing `anchor`, or
         None. Snapped moves by whole tiles from the press's cover tile, so
-        every member keeps its parity; free moves the anchor onto the point,
-        as a single free move does."""
+        every member keeps its parity; off-grid moves the anchor onto the point,
+        as a single off-grid move does."""
         index = self.map_view._unit_index
         if index is None:
             return None
@@ -5594,23 +5759,23 @@ class ViewerWindow(QMainWindow):
         pos = self.map_view._clamped_to_map_rect(pos)
         point, fell_back = self._resolve_placement_point(pos, modifiers)
         if commit and fell_back:
-            self._log_status(FREE_PLACE_FALLBACK_MESSAGE)
-        free = self._free_placement_requested(modifiers)
+            self._log_status(OFF_GRID_FALLBACK_MESSAGE)
+        off_grid = self._off_grid_requested(modifiers)
         if point is None:
             # Off the diamond in Stepped/Sloped: the ground-plane point, which the clamp then pulls in.
             ground = self.map_view.ground_map_point(pos)
             if ground is None:
                 return None
-            point = ground if free else (math.floor(ground[0]) + 0.5, math.floor(ground[1]) + 0.5)
+            point = ground if off_grid else (math.floor(ground[0]) + 0.5, math.floor(ground[1]) + 0.5)
         unit = anchor.unit
-        if free:
+        if off_grid:
             dx, dy = point[0] - unit.x, point[1] - unit.y
         else:
             grab = self._drag_grab_tile or (int(unit.x), int(unit.y))
             dx, dy = math.floor(point[0]) - grab[0], math.floor(point[1]) - grab[1]
         mm = self.scenario.map_manager
         dx, dy, clamped = clamp_group_delta(
-            [e.unit for e in entries], dx, dy, mm.map_width, mm.map_height, whole_tiles=not free
+            [e.unit for e in entries], dx, dy, mm.map_width, mm.map_height, whole_tiles=not off_grid
         )
         return entries, dx, dy, clamped
 
@@ -5629,11 +5794,34 @@ class ViewerWindow(QMainWindow):
         model = self._ensure_unit_edits()
         if model is None:
             return
+        if not self._restrictions_lifted():
+            refused = self._group_move_refusal(entries, dx, dy)
+            if refused is not None:
+                self._log_status(refused)
+                return
         self._move_units(model, entries, dx, dy, f"Move {len(entries)} units")
         status = f"Moved {len(entries)} units by ({dx:g}, {dy:g})"
         if clamped:
             status += ", stopped at the map edge"
         self._log_status(status)
+
+    def _group_move_refusal(self, entries, dx: float, dy: float) -> str | None:
+        """Why placement_rules refuses moving every entry by (dx, dy), as a
+        status line, or None (GH #176). All or nothing, so a formation never
+        tears. The members never block each other: they keep their spacing."""
+        grid = placement_rules.BlockerGrid(self.scenario, exclude=[e.unit for e in entries])
+        reasons = []
+        for entry in entries:
+            unit = entry.unit
+            reason = placement_rules.move_refusal(self.scenario, unit, unit.x + dx, unit.y + dy, grid=grid)
+            if reason is not None:
+                reasons.append(reason)
+        if not reasons:
+            return None
+        return (
+            f"Move: {len(reasons)} of {len(entries)} units can't go there (first: {reasons[0]}). "
+            "Tick Free placement to move them anyway."
+        )
 
     def _move_occupant_to(self, model, entry, x: float, y: float, splices: list) -> None:
         """One garrisoned unit onto (x, y), inside its host's own open
@@ -5753,8 +5941,8 @@ class ViewerWindow(QMainWindow):
             self._preview_group(key, entry, pos, modifiers)
             return
         # The same resolver on_unit_move commits through, so the preview
-        # cannot lie about where the unit lands -- including under free
-        # placement's checkbox and its held-Alt one-off. Its fallback status
+        # cannot lie about where the unit lands -- including under the
+        # Off-grid checkbox and its held-Alt one-off. Its fallback status
         # line is deliberately dropped here; see _resolve_placement_point.
         point, _fell_back = self._resolve_placement_point(pos, modifiers, unit_const=entry.unit.unit_const)
         if point is None:
@@ -6244,8 +6432,35 @@ class ViewerWindow(QMainWindow):
         if not removable:
             self._report_delete(entries, removable, cascaded_ids)
             return
+        self._remove_units(model, removable, "Delete")
+        self._report_delete(entries, removable, cascaded_ids)
+
+    def cut_units(self) -> None:
+        """Cut Units (GH #192): Copy Units, then Delete's exact rules (the
+        garrison cascade and the refusal, _delete_preflight()) as one undo
+        record. Nothing is copied unless something is about to be removed,
+        and a refused unit is neither copied nor removed."""
+        entries = self._selected_unit_entries()
+        if self.scenario is None or not entries:
+            return
+        model = self._ensure_unit_edits()
+        if model is None:
+            self._log_status("Cut Units: units are read-only for this file")
+            return
+        entries, removable, cascaded_ids = self._delete_preflight(model, entries)
+        if not removable:
+            self._report_delete(entries, removable, cascaded_ids, "Cut")
+            return
+        # Without the cascade: the copy's own garrison closure finds those again.
+        self.copy_units([e for e in removable if id(e.unit) not in cascaded_ids], quiet=True)
+        self._remove_units(model, removable, "Cut")
+        self._report_delete(entries, removable, cascaded_ids, "Cut")
+
+    def _remove_units(self, model, removable, verb: str) -> None:
+        """Removes `removable` (a non-empty _delete_preflight() result) as one
+        undo record labelled with `verb`: Delete's and Cut's shared write."""
         players = sorted({e.player_id for e in removable})
-        label = "Delete unit" if len(removable) == 1 else f"Delete {len(removable)} units"
+        label = f"{verb} unit" if len(removable) == 1 else f"{verb} {len(removable)} units"
         if len(removable) == 1:
             # Splice-eligible (Batch D's D5's "single Delete"): a batch of
             # 2+ removals keeps the wholesale path below instead, since each
@@ -6268,7 +6483,6 @@ class ViewerWindow(QMainWindow):
         else:
             with self._unit_edit(model, label, players):
                 model.remove_many([e.unit for e in removable])
-        self._report_delete(entries, removable, cascaded_ids)
 
     def _delete_preflight(self, model, entries) -> tuple[list, list, set[int]]:
         """(entries plus their garrison cascade, the removable ones, the
@@ -6293,14 +6507,16 @@ class ViewerWindow(QMainWindow):
         removable = [e for e in entries if all(id(u) in batch for u in model.referencing(e.unit))]
         return entries, removable, cascaded_ids
 
-    def _report_delete(self, entries, removable, cascaded_ids) -> tuple[int, int, int]:
+    def _report_delete(self, entries, removable, cascaded_ids, verb: str = "Delete") -> tuple[int, int, int]:
         """The status line and refusal warning for a delete that already ran
-        (or was wholly refused); returns (removed, cascaded, blocked)."""
+        (or was wholly refused); returns (removed, cascaded, blocked). `verb`
+        is "Delete", or "Cut" for Cut Units, which words the same report."""
+        done = _REMOVE_VERB_PAST[verb]
         blocked = len(entries) - len(removable)
         if not removable:
-            self._log_status("Delete failed: referenced by a garrison")
+            self._log_status(f"{verb} failed: referenced by a garrison")
             self._warn(
-                "Cannot delete unit" if len(entries) == 1 else "Cannot delete units",
+                f"Cannot {verb.lower()} unit" if len(entries) == 1 else f"Cannot {verb.lower()} units",
                 "Referenced by another unit's garrison." if len(entries) == 1
                 else "All selected units are referenced by another unit's garrison.",
             )
@@ -6310,16 +6526,16 @@ class ViewerWindow(QMainWindow):
         cascaded = sum(1 for e in removable if id(e.unit) in cascaded_ids)
         carried = f" ({cascaded} garrisoned)" if cascaded else ""
         if blocked:
-            self._log_status(f"Deleted {len(removable)}{carried}; {blocked} refused (garrison reference)")
+            self._log_status(f"{done} {len(removable)}{carried}; {blocked} refused (garrison reference)")
             self._warn(
-                "Some units not deleted",
-                f"{blocked} unit(s) are referenced by another unit's garrison and were not deleted.",
+                f"Some units not {done.lower()}",
+                f"{blocked} unit(s) are referenced by another unit's garrison and were not {done.lower()}.",
             )
         elif len(removable) - cascaded == 1:
             name = next(_unit_name(e.unit.unit_const) for e in removable if id(e.unit) not in cascaded_ids)
-            self._log_status(f"Deleted {name}{carried}")
+            self._log_status(f"{done} {name}{carried}")
         else:
-            self._log_status(f"Deleted {len(removable) - cascaded} units{carried}")
+            self._log_status(f"{done} {len(removable) - cascaded} units{carried}")
         return len(removable), cascaded, blocked
 
     def _delete_units(self, entries) -> tuple[int, int, int]:
@@ -7070,9 +7286,10 @@ class ViewerWindow(QMainWindow):
         self.place_unit_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.place_unit_action.setToolTip(
             "Click to place the chosen object for the chosen owner (Units mode), "
-            "snapped to the grid and centred on the cursor. With a wall picked, drag to place a run "
+            "snapped to the grid and centred on the cursor, where the game's placement rules allow it "
+            "(Free placement lifts them). With a wall picked, drag to place a run "
             "(one undo step per drag): it bends once, and Shift makes it one straight segment. "
-            "Walls are always tile-snapped, so free placement doesn't apply to them. "
+            "Walls are always tile-snapped and unrestricted, so Off-grid and Free placement don't apply to them. "
             "Ctrl+wheel or the Rotate keys turn the preview before you click, and later "
             "placements keep that facing or variant."
         )
@@ -7445,21 +7662,31 @@ class ViewerWindow(QMainWindow):
         self.paste_units_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.paste_units_param_action = param_toolbar.addWidget(self.paste_units_check)
 
-        # D2's free-placement toggle -- shown for any ToolDef.supports_free_place
+        # GH #176: lifts placement_rules' terrain and object rules for Place Unit clicks and
+        # Move drags. Read at the click or drop only. Session-only, like Off-grid below.
+        self.unrestricted_check = QCheckBox("Free placement")
+        self.unrestricted_check.setToolTip(
+            "Place or move a unit where the game would refuse it: on terrain it can't stand on, "
+            "or on top of another object. It still snaps to the grid; tick Off-grid to lift that too."
+        )
+        self.unrestricted_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.unrestricted_param_action = param_toolbar.addWidget(self.unrestricted_check)
+
+        # D2's off-grid toggle -- shown for any ToolDef.supports_off_grid
         # tool (Place Unit). Session-only like the brush and paste-filter
         # controls above: tool options are deliberately not persisted, so
         # there is no settings getter/setter pair behind this one either.
-        self.free_place_check = QCheckBox("Free placement")
-        self.free_place_check.setToolTip(
+        self.off_grid_check = QCheckBox("Off-grid")
+        self.off_grid_check.setToolTip(
             "Place a unit exactly under the cursor instead of snapping it to the grid. "
-            "Hold Alt for a one-off free placement without changing this."
+            "Hold Alt for a one-off. Placement rules still apply."
         )
-        self.free_place_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.off_grid_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         # The click reads the box directly; only the hover ghost needs telling.
-        self.free_place_check.toggled.connect(self._refresh_place_ghost)
-        self.free_place_param_action = param_toolbar.addWidget(self.free_place_check)
+        self.off_grid_check.toggled.connect(self._refresh_place_ghost)
+        self.off_grid_param_action = param_toolbar.addWidget(self.off_grid_check)
 
-        # GH #124: off by default and session-only, like free placement above.
+        # GH #124: off by default and session-only, like Off-grid above.
         # Read at press (the preview) and at commit; nothing else needs telling.
         self.skip_occupied_check = QCheckBox("Walls skip occupied tiles")
         self.skip_occupied_check.setToolTip(
@@ -9869,19 +10096,22 @@ class ViewerWindow(QMainWindow):
         self.paste_units_param_action.setVisible(select_param_ok)
         self.paste_units_check.setEnabled(select_param_ok)
 
-        # D2's free-placement toggle -- same tool-param convention as every
-        # group above, derived from FREE_PLACE_TOOLS rather than naming
-        # Place Unit here, so a second free-placing tool needs only a ToolDef
+        # D2's off-grid toggle -- same tool-param convention as every
+        # group above, derived from OFF_GRID_TOOLS rather than naming
+        # Place Unit here, so a second off-grid tool needs only a ToolDef
         # field. It goes in the separator roll-up below too: a new param group
         # that forgets that line leaves the separator hidden while its own
         # widget shows.
-        free_place_ok = (
-            self._current_tool in FREE_PLACE_TOOLS
-            and current_action is not None
-            and current_action.isEnabled()
-        )
-        self.free_place_param_action.setVisible(free_place_ok)
-        self.free_place_check.setEnabled(free_place_ok)
+        # GH #176: both placement boxes also show under Pan in Units mode, where unit drags
+        # run. Drop pan_drags_units when a Move tool takes the two ToolDef flags.
+        pan_drags_units = self._current_tool == "pan" and unit_editable
+        tool_action_ok = current_action is not None and current_action.isEnabled()
+        unrestricted_ok = pan_drags_units or (self._current_tool in UNRESTRICTED_TOOLS and tool_action_ok)
+        self.unrestricted_param_action.setVisible(unrestricted_ok)
+        self.unrestricted_check.setEnabled(unrestricted_ok)
+        off_grid_ok = pan_drags_units or (self._current_tool in OFF_GRID_TOOLS and tool_action_ok)
+        self.off_grid_param_action.setVisible(off_grid_ok)
+        self.off_grid_check.setEnabled(off_grid_ok)
         # GH #124's toggle, the same convention, and in the roll-up below too.
         skip_occupied_ok = (
             self._current_tool in SKIP_OCCUPIED_TOOLS
@@ -9899,7 +10129,7 @@ class ViewerWindow(QMainWindow):
         self.tool_param_separator_action.setVisible(
             terrain_param_ok or level_param_ok or convert_param_ok or eraser_param_ok
             or cliff_param_ok or brush_ok or select_param_ok or rect_param_ok
-            or beach_param_ok or free_place_ok or ruler_param_ok or skip_occupied_ok
+            or beach_param_ok or unrestricted_ok or off_grid_ok or ruler_param_ok or skip_occupied_ok
             or self.wall_pick_param_action.isVisible()
         )
 
@@ -11001,6 +11231,16 @@ class ViewerWindow(QMainWindow):
             block = region_clipboard.copy_region(
                 self.scenario.map_manager, self.scenario.unit_manager, tx0, ty0, tx1, ty1
             )
+        self._push_clipboard(block)
+        w, h = tx1 - tx0, ty1 - ty0
+        self._log_status(
+            f"Copied {w}x{h} region ({len(block.units)} units) "
+            f"(entry {len(self._clipboard_history.entries)} of {clipboard_history.MAX_ENTRIES})"
+        )
+
+    def _push_clipboard(self, block) -> None:
+        """Makes `block` the new active clipboard entry: the shared tail of
+        Copy Region and Copy Units."""
         with perf_trace.phase("thumbnail"):
             thumbnail = clipboard_history.thumbnail_rgb(block)
         self._clipboard_history.push(block, thumbnail, clipboard_history.default_label(block))
@@ -11011,11 +11251,29 @@ class ViewerWindow(QMainWindow):
         self._set_paste_move(None)
         self._update_tool_enabled()
         self._refresh_clipboard_dialog()
-        w, h = tx1 - tx0, ty1 - ty0
-        self._log_status(
-            f"Copied {w}x{h} region ({len(block.units)} units) "
-            f"(entry {len(self._clipboard_history.entries)} of {clipboard_history.MAX_ENTRIES})"
-        )
+
+    def copy_units(self, entries=None, quiet: bool = False) -> bool:
+        """Copy Units (GH #192): pushes the selected units, and what they
+        hold, as a clipboard entry without tiles. `entries` defaults to the
+        Units-mode selection. No undo record: nothing is mutated. False when
+        there was nothing to copy."""
+        if self.scenario is None:
+            return False
+        if entries is None:
+            entries = self._selected_unit_entries()
+        with perf_trace.op("copy"):
+            with perf_trace.phase("region_copy"):
+                block = region_clipboard.copy_units(self.scenario.unit_manager, [e.unit for e in entries])
+            if block is None:
+                return False
+            self._push_clipboard(block)
+        if not quiet:
+            carried = sum(1 for u in block.units if u.garrison_slot != -1)
+            self._log_status(
+                f"Copied {_units_text(len(block.units) - carried, carried)} "
+                f"(entry {len(self._clipboard_history.entries)} of {clipboard_history.MAX_ENTRIES})"
+            )
+        return True
 
     def _clipboard_rows(self):
         return [
@@ -11164,6 +11422,9 @@ class ViewerWindow(QMainWindow):
             return
         # A coalesced move still pending would leave _hover_tile one tile behind the cursor.
         self.map_view.flush_pending_move()
+        if not block.has_tiles:
+            self._paste_units(block)
+            return
         if self._hover_tile is not None:
             tx0, ty0 = self._hover_tile
         elif self._region is not None:
@@ -11182,7 +11443,7 @@ class ViewerWindow(QMainWindow):
         # still fail halfway.
         do_elevation = self.paste_elevation_check.isChecked() and self.scenario.map_is_square
         do_units = self.paste_units_check.isChecked()
-        record, parts, units_skipped = self._paste_block_at(
+        record, parts, units_skipped, _added = self._paste_block_at(
             block, tx0, ty0, do_terrain, do_elevation, do_units
         )
         self.on_region_selected(self._pasted_region(block, tx0, ty0))
@@ -11204,7 +11465,47 @@ class ViewerWindow(QMainWindow):
         else:
             self._log_status(f"Pasted {label} at ({tx0}, {ty0})")
         if units_skipped:
-            self._log_status("Units were skipped -- units are read-only for this file")
+            self._log_status(_PASTE_UNITS_SKIPPED)
+
+    def _paste_units(self, block) -> None:
+        """Paste Units (GH #192): a clipboard entry without tiles, centred on
+        the hovered tile and pulled inside the map, as one undo step.
+
+        The three paste-filter checkboxes are not read: they split a mixed
+        block into categories and this one has a single category. The tile
+        region and the paste-move state are left alone, and in Units mode the
+        pasted top-level units become the selection."""
+        mm = self.scenario.map_manager
+        target = self._hover_tile
+        if target is None and self._region is not None:
+            target = self._region[0], self._region[1]
+        # Flat reports the tile under the cursor even past the map's edge.
+        if target is None or not (0 <= target[0] < mm.map_width and 0 <= target[1] < mm.map_height):
+            self._log_status("Paste Units: no target tile, hover the map first")
+            return
+        centred = region_clipboard.centred_anchor(block, *target)
+        tx0, ty0 = clamp_paste_anchor(block, *centred, mm.map_width, mm.map_height)
+        _record, _parts, units_skipped, added = self._paste_block_at(block, tx0, ty0, False, False, True)
+        if units_skipped:
+            self._log_status(_PASTE_UNITS_SKIPPED)
+            return
+        top_level = [(player_id, unit) for player_id, unit in added if unit.garrisoned_in_id == -1]
+        hidden = 0
+        if self.mode == "units" and top_level:
+            self._selection = [unit_pick.unit_key(player_id, unit) for player_id, unit in top_level]
+            # Drops a pasted unit the live filter hides, as it would a clicked one.
+            self._refresh_selection_view()
+            hidden = len(top_level) - len(self._selection)
+        # Where the group's centre landed: the hovered tile unless the clamp shifted it.
+        centre = tx0 + (block.width - 1) // 2, ty0 + (block.height - 1) // 2
+        status = f"Pasted {_units_text(len(top_level), len(added) - len(top_level))} at ({centre[0]}, {centre[1]})"
+        if len(added) < len(block.units):
+            status += f", {len(block.units) - len(added)} off the map skipped"
+        if hidden:
+            # on_unit_place()'s clause: a paste the live filter hides looks like nothing happened.
+            what = "it, so it" if len(top_level) == 1 else f"{hidden} of them, so they"
+            status += f" (a Filters toggle is hiding {what} won't be visible)"
+        self._log_status(status)
 
     def _set_paste_move(self, state) -> None:
         """The ONE assignment path for _paste_move, so MapView's movable flag
@@ -11255,7 +11556,7 @@ class ViewerWindow(QMainWindow):
         # terrain when set_tiles_elevation propagates its skirt.
         tx0, ty0 = state.anchor[0] + dx, state.anchor[1] + dy
         block = state.block
-        record, _parts, _units_skipped = self._paste_block_at(
+        record, _parts, _units_skipped, _added = self._paste_block_at(
             block, tx0, ty0, state.do_terrain, state.do_elevation, state.do_units
         )
         if record is None:
@@ -11302,21 +11603,31 @@ class ViewerWindow(QMainWindow):
         checkboxes -- so Paste Region and a region MOVE share exactly one
         paste write path.
 
-        Returns (pushed_record, parts, units_skipped); pushed_record is None
-        when nothing changed, which is what tells the caller there is no
-        record to replace and therefore nothing to move.
+        Returns (pushed_record, parts, units_skipped, added); pushed_record is
+        None when nothing changed, which is what tells the caller there is no
+        record to replace and therefore nothing to move. `added` is the
+        (player_id, unit) pairs the paste created, in paste order.
 
         One undo step regardless of how many categories are checked: terrain
         and elevation ride a single TileDiffRecord (they share TileState),
         units ride a separate UnitDiffRecord built with push=False so it
         doesn't land on the stack until it's known how many other children
-        there are -- see edit_history.CompositeDiffRecord."""
+        there are -- see edit_history.CompositeDiffRecord.
+
+        A block without tiles (GH #192's copied units) has only its unit
+        half, whatever the caller's flags say, and its record is labelled
+        Paste Units."""
         mm = self.scenario.map_manager
         children: list = []
         parts: list[str] = []
         units_skipped = False
         tile_record = None
         unit_splices: list[UnitSplice] | None = None
+        added_units: list[tuple[int, object]] = []
+        if not block.has_tiles:
+            # paste_terrain() and elevation_targets() index the tile tuples and would raise.
+            do_terrain = do_elevation = False
+        unit_label = "Paste Region" if block.has_tiles else "Paste Units"
 
         if do_terrain or do_elevation:
             with perf_trace.phase("paste_tiles"):
@@ -11375,8 +11686,9 @@ class ViewerWindow(QMainWindow):
                             unit_splices.append(
                                 UnitSplice(player_id, len(units[player_id]) - 1, added, None, own, (), tiles)
                             )
+                            added_units.append((player_id, added))
                     with perf_trace.phase("unit_commit"):
-                        unit_record = unit_edits.commit_unit_edit("Paste Region", self.edit_history, push=False)
+                        unit_record = unit_edits.commit_unit_edit(unit_label, self.edit_history, push=False)
                     children.append(unit_record)
                 parts.append("units")
 
@@ -11423,7 +11735,7 @@ class ViewerWindow(QMainWindow):
                 )
         self._update_edit_actions()
         self._update_title()
-        return pushed, parts, units_skipped
+        return pushed, parts, units_skipped, added_units
 
     def on_fill(self, x: int, y: int, modifiers) -> None:
         with perf_trace.op("fill"):
@@ -11810,15 +12122,21 @@ class ViewerWindow(QMainWindow):
         tests/test_sloped_edit.py's checks 7 and 8.
 
         Flat mode (Phase B-E): no elevation term and no fallback case --
-        the dirty rect is simply the union of the dirty tiles' own pixel
-        squares. Unlike Stepped, there's no footprint-expansion step here
+        the dirty rects cover the dirty tiles' own pixel squares, and their
+        ring of neighbours while terrain blending is effective. Unlike
+        Stepped, there's no footprint-expansion step here
         either: composite_rect_flat() redraws terrain AND every overlapping
         unit in full stacking order within whatever rect it's given (see
         that function's own docstring for why that makes the old
         refresh_units_over() fixed-point dirty-tile expansion unnecessary).
-        Patches per-tile rects, not one union bbox -- a union over a
-        scattered undo set could span the whole map, turning patch() into a
-        full recomposite.
+        Patches render.flat_dirty_rects()' rects (one per 16-tile block the
+        set touches, one a tile where a block is sparse), not one union
+        bbox -- a union over a scattered undo set could span the whole map,
+        turning patch() into a full recomposite. Two cases evict the cached
+        region under the set's bbox instead (_evict_flat_region()), leaving
+        the next paint to recomposite what is on screen: more than
+        STEPPED_FULL_RERENDER_THRESHOLD dirty tiles, and rects that cover
+        more tiles than are visible (_flat_patch_exceeds_viewport()).
 
         Re-arms the level warm at its tail (Batch B step B1). Every branch
         below cancels the warms first, and _start_level_warm() had exactly one
@@ -11834,7 +12152,8 @@ class ViewerWindow(QMainWindow):
         Returns True when a full branch ran (the threshold's in-place refresh,
         _refresh_wholesale(), or an out-of-range re-render): the unit step
         must then run wholesale, not apply a history move's splices
-        (_refresh_after_history_move).
+        (_refresh_after_history_move). Flat's eviction is not one: it moves
+        no unit source, so the splices still apply.
 
         `deferred` (TASK-031.61 A4, a terrain + unit history move): a list
         that, when the Stepped/Sloped patch branch runs for an edit that moved
@@ -11990,9 +12309,27 @@ class ViewerWindow(QMainWindow):
             )
             if self._cache is None:
                 return False
+            if len(dirty_indices) > STEPPED_FULL_RERENDER_THRESHOLD:
+                # Sized from the indices alone and grown one tile for the blend ring: no dilation, no rects.
+                with perf_trace.phase("bbox"):
+                    idx = np.fromiter(dirty_indices, dtype=np.int64, count=len(dirty_indices))
+                    ys, xs = np.divmod(idx, mm.map_width)
+                    bbox = (
+                        max(int(xs.min()) - 1, 0) * tile_px, max(int(ys.min()) - 1, 0) * tile_px,
+                        min(int(xs.max()) + 2, mm.map_width) * tile_px, min(int(ys.max()) + 2, mm.map_height) * tile_px,
+                    )
+                self._evict_flat_region(bbox, len(dirty_indices))
+                return False
             with perf_trace.phase("bbox"):
                 coords = [(mm.terrain[i].x, mm.terrain[i].y) for i in dirty_indices]
                 rects = flat_dirty_rects(coords, mm.map_width, mm.map_height, tile_px, self._layers)
+                evict = self._flat_patch_exceeds_viewport(rects, tile_px)
+            if evict:
+                bbox = (
+                    min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects)
+                )
+                self._evict_flat_region(bbox, len(dirty_indices))
+                return False
             with perf_trace.phase("patch"):
                 self._cache.patch_rects(rects)
             with perf_trace.phase("invalidate"):
@@ -12000,6 +12337,41 @@ class ViewerWindow(QMainWindow):
                     self.map_view.invalidate_region(rect)
             full = False
         return full
+
+    def _flat_patch_exceeds_viewport(self, rects, tile_px: int) -> bool:
+        """Top-down Flat: whether patch_rects(rects) would composite more
+        tiles, summed over the resident levels, than _FLAT_EVICT_RATIO times
+        the tiles in the visible chunks. Both sides run the same per-tile
+        composite, one over the tiles the rects cover and the other over the
+        tiles on screen, so past that evicting is the cheaper side (the
+        tile-count form of _patch_area_exceeds_viewport(); measured with
+        tools/bench_stroke_end.py --flat-ratio). False with no viewport
+        target: there is no visible area to price against."""
+        target = self.map_view.viewport_chunk_target()
+        if target is None or not rects:
+            return False
+        mip, cx0, cy0, cx1, cy1 = target
+        cache = self._cache
+        canvas_w, canvas_h = cache.canvas_dims(mip)
+        size = cache.chunk_px
+        # The visible chunks at their own level, the ragged last ones clipped to the canvas.
+        visible_px = (min((cx1 + 1) * size, canvas_w) - cx0 * size) * (min((cy1 + 1) * size, canvas_h) - cy0 * size)
+        visible = visible_px / cache.mip_tile_px(mip) ** 2
+        covered = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects) / tile_px**2
+        return covered * len(cache.resident_levels()) > _FLAT_EVICT_RATIO * visible
+
+    def _evict_flat_region(self, bbox: tuple[int, int, int, int], n_dirty: int) -> None:
+        """Top-down Flat's answer to a terrain edit too large to patch:
+        evicts every cached chunk under bbox (REFERENCE canvas pixels) at
+        every resident level, so the next paint recomposites the ones on
+        screen. One invalidate_region() call, never one per rect (it scans
+        every cached key), with terrain_changed left True so both terrain
+        mirrors are re-read over bbox."""
+        with perf_trace.phase("patch"):
+            self._cache.invalidate_region(bbox)
+        with perf_trace.phase("invalidate"):
+            self.map_view.invalidate_region(bbox)
+        self._log_status(f"Flat view: {n_dirty} tiles dirty, evicted the cached region instead of patching")
 
     def _refresh_wholesale(self, dirty_indices, label: str) -> bool:
         """_apply_dirty_render()'s threshold branch (TASK-031.61 A5): the
@@ -12512,20 +12884,45 @@ class ViewerWindow(QMainWindow):
     def _update_clipboard_actions(self) -> None:
         """Edit > Cut/Copy/Paste's texts, tooltips and enabled states. Part of
         _update_tool_enabled(), and re-run on every focus move, since in
-        Triggers mode a focused text editor takes the three over."""
+        Triggers mode a focused text editor takes the three over, and in
+        Units mode the Units panel's own focus takes Cut and Copy (GH #192,
+        _units_clipboard_focus())."""
         if self.mode != "triggers":
             # Phase 2.8's region pair, gated on the committed region and
             # clipboard alone: a region survives a tool switch.
             has_map = self.scenario is not None
-            self.cut_action.setText("Cu&t Triggers")
-            self.cut_action.setToolTip("Cut the selected triggers (Triggers mode only)")
-            self.cut_action.setEnabled(False)
-            self.copy_action.setText("&Copy Region")
-            self.paste_action.setText("&Paste Region")
-            self.paste_action.setToolTip("Paste the copied region at the hovered tile, as one undo step")
-            self.copy_action.setToolTip("Copy the selected region's terrain, elevation and units")
-            self.copy_action.setEnabled(has_map and self._region is not None)
-            self.paste_action.setEnabled(has_map and self._region_clipboard is not None)
+            # GH #192: in Units mode a unit selection takes Cut and Copy from the region.
+            units_selected = has_map and self.mode == "units" and bool(self._selection)
+            focus = self._units_clipboard_focus() if units_selected else "units"
+            if self.mode == "units":
+                self.cut_action.setText("Cu&t Units")
+                self.cut_action.setToolTip("Cut the selected units and what they garrison, as one undo step")
+                self.cut_action.setEnabled(units_selected and focus == "units")
+            else:
+                self.cut_action.setText("Cu&t Triggers")
+                self.cut_action.setToolTip("Cut the selected triggers (Triggers mode only)")
+                self.cut_action.setEnabled(False)
+            if units_selected and focus == "label":
+                self.copy_action.setText("&Copy")
+                self.copy_action.setToolTip("Copy the selected text")
+                self.copy_action.setEnabled(True)
+            elif units_selected:
+                self.copy_action.setText("&Copy Units")
+                self.copy_action.setToolTip("Copy the selected units and what they garrison")
+                # The Garrison list has its own Copy button and clipboard.
+                self.copy_action.setEnabled(focus != "garrison")
+            else:
+                self.copy_action.setText("&Copy Region")
+                self.copy_action.setToolTip("Copy the selected region's terrain, elevation and units")
+                self.copy_action.setEnabled(has_map and self._region is not None)
+            block = self._region_clipboard
+            if block is not None and not block.has_tiles:
+                self.paste_action.setText("&Paste Units")
+                self.paste_action.setToolTip("Paste the copied units centred on the hovered tile, as one undo step")
+            else:
+                self.paste_action.setText("&Paste Region")
+                self.paste_action.setToolTip("Paste the copied region at the hovered tile, as one undo step")
+            self.paste_action.setEnabled(has_map and block is not None)
             return
         editor = self._focused_editor()
         if editor is not None:
@@ -12578,7 +12975,25 @@ class ViewerWindow(QMainWindow):
         self.cut_action.setToolTip("Cut the selected conditions and effects, to paste into any trigger")
         self.copy_action.setToolTip("Copy the selected conditions and effects, to paste into any trigger")
 
+    def _units_clipboard_focus(self) -> str:
+        """Who answers Cut and Copy while units are selected in Units mode
+        (GH #192): "garrison" with the Inspector's Garrison list focused (it
+        has its own Copy and Paste buttons and clipboard), "label" with a
+        selectable label holding selected text focused (Copy copies that
+        text), else "units", the map selection. A spin box never gets here:
+        it keeps the keys through Qt's own shortcut override."""
+        if self.units_panel.garrison_tree.hasFocus():
+            return "garrison"
+        widget = QApplication.focusWidget()
+        if isinstance(widget, QLabel) and self.isAncestorOf(widget) and widget.hasSelectedText():
+            return "label"
+        return "units"
+
     def _dispatch_cut(self, _checked=False) -> None:
+        if self.mode == "units":
+            if self._selection and self._units_clipboard_focus() == "units":
+                self.cut_units()
+            return
         if self.mode != "triggers":
             return
         if (editor := self._focused_editor()) is not None:
@@ -12589,7 +13004,14 @@ class ViewerWindow(QMainWindow):
             self.cut_triggers()
 
     def _dispatch_copy(self, _checked=False) -> None:
-        if self.mode != "triggers":
+        if self.mode == "units" and self._selection:
+            # GH #192: a unit selection wins over the region; with none, Copy Region as before.
+            focus = self._units_clipboard_focus()
+            if focus == "label":
+                QApplication.clipboard().setText(QApplication.focusWidget().selectedText())
+            elif focus == "units":
+                self.copy_units()
+        elif self.mode != "triggers":
             self.copy_region()
         elif (editor := self._focused_editor()) is not None:
             editor.copy()
@@ -13475,8 +13897,8 @@ class ViewerWindow(QMainWindow):
         caller above except Place and single Delete -- add()/remove() are
         membership mutators UnitEditModel refuses to run inside a
         fields_only edit, so only the pure set_position/set_rotation/
-        set_unit_const callers (Move/Nudge/Rotate/Set field/gate
-        orientation) may pass it.
+        set_unit_const/set_status/set_capture_flag callers (Move/Nudge/
+        Rotate/Set field/gate orientation) may pass it.
 
         terrain_current: no caller of this method writes a tile, so the tail
         is told the terrain mirrors are current (_after_unit_mutation()),
@@ -13763,8 +14185,9 @@ class ViewerWindow(QMainWindow):
         always eagerly: with no visible area there is nothing to price against.
 
         Flat has no elevation term and no dirty_screen_bbox_* counterpart --
-        mirrors _apply_dirty_render's own Flat branch, patching one rect per
-        touched tile rather than a union bbox.
+        mirrors _apply_dirty_render's own Flat branch, patching
+        render.flat_tile_rects() of the touched tiles rather than a union
+        bbox. No blend ring (a unit edit moves no blend key) and no evict rule.
 
         In the split, a `batch` whose bbox is large against the viewport
         (_patch_area_exceeds_viewport()) evicts that bbox's chunks instead of
@@ -13820,7 +14243,7 @@ class ViewerWindow(QMainWindow):
         if self._render_style == "flat":
             mm = self.scenario.map_manager
             tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
-            rects = [(x * tile_px, y * tile_px, (x + 1) * tile_px, (y + 1) * tile_px) for x, y in touched]
+            rects = flat_tile_rects(touched, tile_px)
             with perf_trace.phase("unit_patch"):
                 self._cache.patch_rects(rects)
             for rect in rects:
@@ -14482,10 +14905,11 @@ class ViewerWindow(QMainWindow):
         terrain_current: that scoped unit step is told the terrain mirrors
         are current (_after_unit_mutation()). Every tile the move restored is
         in `dirty`, and _apply_dirty() re-read the mirrors over it on each
-        branch that leaves the splices standing (patch(), or A4's
-        patch_sources()); a full branch runs the unit step wholesale. Not
-        inside an open Erase stroke, whose Terrain Overlay writes are not in
-        the mirrors until it ends.
+        branch that leaves the splices standing (patch(), A4's
+        patch_sources(), or top-down Flat's patch_rects() and its eviction,
+        which keeps terrain_changed); a full branch runs the unit step
+        wholesale. Not inside an open Erase stroke, whose Terrain Overlay
+        writes are not in the mirrors until it ends.
         """
         # Undo/redo rewrites what the armed field and its form show.
         self.disarm_unit_picker()

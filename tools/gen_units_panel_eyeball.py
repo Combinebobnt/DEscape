@@ -16,8 +16,8 @@ Captures, at MIN_USEFUL_WIDTH and a comfortable width:
 3. A tree selected -- Hit points only, combat rows gone, Rotation an
    editable variant number (GH #123).
 4. Group mode: an agreeing pair of archers, then a mixed archers + tree
-   selection (mixed owner/name/X, and the GH #71 note: typing turns the 2
-   archers, Rotate still steps the tree), then an archer
+   selection (mixed owner/name/X; its GH #71 note is only the Rotation
+   caption's tooltip since GH #198, so no line shows), then an archer
    + trebuchet pair facing one way (a 32-direction scale, GH #61).
 5. Catalog filtered to a long name (elision check, no horizontal clipping).
 6. The vertical splitter dragged to its floor (the _fit_inspector_height
@@ -175,7 +175,7 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
 
     # 4. Group mode (GH #71): two archers agree on name/owner/rotation, and
     # X/Y read "(mixed)"; then archers + a tree, which adds a mixed owner and
-    # name and the "Typing a Rotation turns the 2 selected units" note.
+    # name. Its "Typing a Rotation" note is a tooltip only (GH #198).
     window.units_panel.show_group([_entry_for(window, 103), _entry_for(window, 104)])
     path = out_dir / f"w{width}_4a_group_agreeing.png"
     _grab(window, path)

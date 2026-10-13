@@ -21,12 +21,63 @@ def test_fields_by_id_mirrors_fields():
     assert {spec.field_id: spec for spec in unit_fields.FIELDS} == unit_fields.FIELDS_BY_ID
 
 
-def test_only_xyz_owner_and_rotation_are_editable():
+def test_only_xyz_owner_rotation_and_the_two_choices_are_editable():
     """D5: X, Y, Z and Owner get real editors, plus Rotation as of b3 (which
-    is additionally per-const gated). Everything else (Name, Unit ID,
-    Reference ID, Garrisoned in) stays a read-only label."""
+    is additionally per-const gated) and Unit State and Capture Flag as of
+    GH #186. Everything else (Name, Unit ID, Reference ID, Garrisoned in)
+    stays a read-only label."""
     editable = {spec.field_id for spec in unit_fields.FIELDS if spec.editable}
-    assert editable == {"x", "y", "z", "player", "rotation"}
+    assert editable == {"x", "y", "z", "player", "rotation", "status", "capture_flag"}
+
+
+def test_capture_flag_and_unit_state_sit_between_rotation_and_reference_id():
+    """GH #186: the in-game editor's own order, Capture Flag first."""
+    ids = [spec.field_id for spec in unit_fields.FIELDS]
+    start = ids.index("rotation")
+    assert ids[start : start + 4] == ["rotation", "capture_flag", "status", "reference_id"]
+    for field_id, label in (("capture_flag", "Capture Flag"), ("status", "Unit State")):
+        spec = unit_fields.FIELDS_BY_ID[field_id]
+        assert (spec.kind, spec.label, spec.editable) == (unit_fields.CHOICE, label, True)
+
+
+def test_the_choice_values_are_the_parser_enums():
+    """The raw values are the pinned library's own enums, so a pin bump that
+    renumbers, adds or drops a member fails here rather than mislabelling."""
+    from AoE2ScenarioParser.datasets.trigger_lists import CaptureFlag, ObjectState
+
+    assert {value for value, _ in unit_fields.CAPTURE_FLAG_CHOICES} == {int(member) for member in CaptureFlag}
+    assert {value for value, _ in unit_fields.UNIT_STATE_CHOICES} == {int(member) for member in ObjectState}
+    assert unit_fields.FIELDS_BY_ID["capture_flag"].choices == unit_fields.CAPTURE_FLAG_CHOICES
+    assert unit_fields.FIELDS_BY_ID["status"].choices == unit_fields.UNIT_STATE_CHOICES
+
+
+def test_the_choice_labels_are_the_games_own_and_distinct():
+    assert dict(unit_fields.CAPTURE_FLAG_CHOICES) == {
+        -1: "Default",
+        0: "Convert Never",
+        1: "Convert Once",
+        2: "Convert Multiple Times",
+        3: "Convert Never (Gaia Aggressive)",
+    }
+    assert dict(unit_fields.UNIT_STATE_CHOICES) == {
+        0: "Foundation",
+        1: "Almost Alive",
+        2: "Alive",
+        3: "Dead",
+        4: "Almost Dead",
+        5: "Really Dead",
+        6: "Undead",
+        7: "Remove",
+        8: "Going",
+    }
+
+
+def test_only_capture_flag_is_gated_per_file():
+    """Unit State's byte is in every version; Capture Flag is stored from
+    1.59. The gate is its own attribute, not a `conditional` (per const)."""
+    gated = {spec.field_id: spec.requires_codec_field for spec in unit_fields.FIELDS if spec.requires_codec_field}
+    assert gated == {"capture_flag": "capture_flag"}
+    assert not [spec.field_id for spec in unit_fields.FIELDS if spec.choices and spec.kind != unit_fields.CHOICE]
 
 
 def test_rotation_is_the_only_conditional_field():

@@ -55,9 +55,11 @@ BRUSH_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_brush)
 # see MapView's shape branches, which sit above the EDIT_TOOLS ones.
 SHAPE_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.drag_shape)
 _TOOL_SHAPE = {t.tool_id: t.drag_shape for t in settings.TOOLS}
-# Tools that offer the free (non-snapped) placement checkbox -- see
-# ToolDef.supports_free_place's own comment.
-FREE_PLACE_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_free_place)
+# Tools that offer the Off-grid (non-snapped) placement checkbox -- see
+# ToolDef.supports_off_grid's own comment.
+OFF_GRID_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_off_grid)
+# Tools that offer "Free placement" (GH #176); see ToolDef.supports_unrestricted.
+UNRESTRICTED_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_unrestricted)
 # Tools that offer "Walls skip occupied tiles" (GH #124); see
 # ToolDef.supports_skip_occupied.
 SKIP_OCCUPIED_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_skip_occupied)

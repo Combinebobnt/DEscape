@@ -269,7 +269,7 @@ def _stepped_key(order: int, x: int, y: int, draped: bool = False) -> tuple[int,
 def _pick_unit_flat(
     index: UnitIndex, sx: int, sy: int, tile_px: int, tile_w: int, tile_h: int
 ) -> tuple[UnitEntry, tuple[int, int]] | None:
-    """The 3x3 tile neighbourhood, with a per-entry rect test (free placement,
+    """The 3x3 tile neighbourhood, with a per-entry rect test (off-grid placement,
     Stage 1). A span-1 mark is shifted off its tile by up to half a tile per
     axis, so the clicked tile's own bucket under-enumerates: a unit at x = 10.9
     paints across the boundary into tile 11 and must be pickable there.
@@ -337,7 +337,7 @@ def _pick_unit_stepped(
         cx = (u / proj.half_w - v / proj.half_h) / 2
         cy = (u / proj.half_w + v / proj.half_h) / 2
         fx0, fy0 = int(np.floor(cx)), int(np.floor(cy))
-        # Widened by one tile in each direction (free placement, Stage 1), and
+        # Widened by one tile in each direction (off-grid placement, Stage 1), and
         # membership moved INSIDE the per-entry loop, because two units
         # bucketed into the same tile no longer share one diamond position.
         #
@@ -414,7 +414,7 @@ def _pick_unit_sloped(
       sy = origin_y + (y - x) * half_h - rise + local_y, likewise for y
 
     The first confines s = x + y to a small window (a half-open window of
-    width 2*half_w spans two multiples of half_w; free placement's Stage 1
+    width 2*half_w spans two multiples of half_w; off-grid placement's Stage 1
     adds one more candidate at each end, see the bound's own comment below),
     and the second confines d = y - x to a window whose width is set by the
     map's own rise range. s and d must share parity for (x, y) to be
@@ -440,7 +440,7 @@ def _pick_unit_sloped(
     what keeps this branch clear of that plane's cost re-measurement.
 
     **A CENTRED 1x1 unit's membership test collapses onto `terrain_tile`
-    (Track C6), instead of diamond_membership().** Centred, since free
+    (Track C6), instead of diamond_membership().** Centred, since off-grid
     placement's Stage 1: an off-centre unit is not painted through its tile's
     quad at all, so the collapse's whole justification stops applying to it
     and it takes the plain-diamond branch at its own shifted centre.
@@ -471,7 +471,7 @@ def _pick_unit_sloped(
 
     q = (sx - proj.origin_x) // half_w
     v = sy - proj.origin_y
-    # Both bounds carry one extra row/column for free placement's Stage 1: an
+    # Both bounds carry one extra row/column for off-grid placement's Stage 1: an
     # off-centre mark's centre moves by (dx + dy) * half_w across and
     # (dy - dx) * half_h down, each strictly under one tile since
     # |dx|, |dy| < 0.5, so s and d each need exactly one more candidate at
@@ -906,7 +906,7 @@ def unit_polygons(
     Qt-free; the viewer converts.
 
     Every style's shape is additionally shifted by
-    render.unit_paint_offset() (free placement, Stage 1), which is zero for
+    render.unit_paint_offset() (off-grid placement, Stage 1), which is zero for
     every building and for every unit at an exact `.5`.
 
     - Flat: one axis-aligned rect, matching render._draw_unit() exactly.
@@ -943,7 +943,7 @@ def unit_polygons(
         return None
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
 
-    # Free placement, Stage 1: the mark is shifted off its tile by up to half
+    # Off-grid placement, Stage 1: the mark is shifted off its tile by up to half
     # a tile per span-1 axis, and the outline's whole contract is that it
     # matches the pixels actually painted -- so it takes the same shift, from
     # the same single source, in every style below.

@@ -45,6 +45,7 @@ from descape import (
     perf_trace,
     range_overlay,
     region_clipboard,
+    render,
     ruler,
     settings,
     shape_tools,
@@ -1160,7 +1161,7 @@ class MapView(QGraphicsView):
     def refresh_place_ghost(self) -> None:
         """Re-runs the Place Unit hover preview at the last hovered point with
         no mouse move: refresh_highlight()'s analogue, for a catalog pick,
-        owner, free-placement or Alt change. A no-op unless Place Unit is the
+        owner, off-grid or Alt change. A no-op unless Place Unit is the
         active tool and the cursor is over the view."""
         if self._place_hover is None or self._mode != "units" or self._tool != "place_unit":
             return
@@ -1659,24 +1660,23 @@ class MapView(QGraphicsView):
         """One entry's ring polygon in scene space, or None when it draws no
         ring: not a building, no range, or no geometry to project with.
 
-        The centre is the unit's own stored coordinate, with no span
-        arithmetic: every corpus placement sits at `tile + span/2` per axis
-        (AGENTS.md), so that coordinate already IS the footprint centre. Span
-        enters only through ring_radius_for_const()."""
+        The centre is the drawn footprint's own (render.unit_footprint_centre),
+        not the stored coordinate: the two differ by half a tile for a
+        building stored off its span's parity, e.g. a 4x4 at `.5` (GH #200).
+        The ring follows the footprint, by decision, wherever that is drawn."""
         radius = range_overlay.ring_radius_for_const(entry.unit.unit_const)
         if radius is None:
             return None
+        cx, cy = render.unit_footprint_centre(entry.unit)
         if self._terrain_style == "flat":
-            return range_overlay.ring_points(
-                entry.unit.x, entry.unit.y, radius, "flat", tile_px=self._tile_pixels or 1
-            )
+            return range_overlay.ring_points(cx, cy, radius, "flat", tile_px=self._tile_pixels or 1)
         if self._iso_proj is None:
             return None
         rise_px = self._range_ring_rise_px(entry)
         if rise_px is None:
             return None
         return range_overlay.ring_points(
-            entry.unit.x, entry.unit.y, radius, self._terrain_style, proj=self._iso_proj, rise_px=rise_px
+            cx, cy, radius, self._terrain_style, proj=self._iso_proj, rise_px=rise_px
         )
 
     def _draw_unit_range_rings(self, entries) -> None:
@@ -2044,7 +2044,7 @@ class MapView(QGraphicsView):
         return int(pos.x()) // self._tile_pixels, int(pos.y()) // self._tile_pixels
 
     def _pick_map_point(self, pos: QPointF) -> tuple[float, float] | None:
-        """The CONTINUOUS map point under scene-space pos, or None -- free
+        """The CONTINUOUS map point under scene-space pos, or None -- off-grid
         placement's Stage 2, and `_pick_tile`'s fractional counterpart.
 
         A separate method rather than a widened `_pick_tile`, deliberately:
@@ -2597,7 +2597,7 @@ class MapView(QGraphicsView):
             self._shape_modifiers = self._shape_modifiers | Qt.ShiftModifier
             self._update_shape_preview()
             return
-        # Held Alt is free placement's one-off, so the hover ghost answers it
+        # Held Alt is off-grid placement's one-off, so the hover ghost answers it
         # without a move. Falls through: Alt alone is no other binding here.
         if event.key() == Qt.Key_Alt and self._place_hover is not None:
             pos, modifiers = self._place_hover
@@ -3952,8 +3952,8 @@ class MapView(QGraphicsView):
         single-tile edit on this project's biggest real map, dominated by
         that whole-pixmap round trip, not the actual patch). The chunk cache
         is assumed already patched by the caller (see
-        ViewerWindow._apply_dirty: dirty_screen_bbox_iso()/per-tile rects ->
-        cache.patch()/patch_rects() -> here) -- this method is purely
+        ViewerWindow._apply_dirty: dirty_screen_bbox_iso()/Flat's block rects
+        -> cache.patch()/patch_rects() -> here) -- this method is purely
         "please repaint this rect," forwarded to MapCanvasItem.
         invalidate_region(), which schedules a Qt repaint; the next paint()
         call pulls the already-patched chunk pixels straight from the cache,

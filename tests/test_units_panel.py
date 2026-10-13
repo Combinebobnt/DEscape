@@ -19,11 +19,11 @@ from dataclasses import dataclass
 import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QSpinBox
+from PyQt5.QtWidgets import QLabel, QSpinBox
 
 from descape.unit_filter import GAIA_PLAYER_ID
 from descape.unit_pick import UnitEntry
-from descape.units_panel import UnitsPanel
+from descape.units_panel import _ROTATION_TOOLTIP, UnitsPanel
 
 import conftest
 
@@ -60,6 +60,13 @@ def _entry(player_id=1, **kwargs) -> UnitEntry:
 def _panel(**kwargs):
     conftest.ensure_qapp()
     return UnitsPanel(**kwargs)
+
+
+def _group_rotation_note(panel) -> str:
+    """The group note leading the Rotation caption's tooltip (GH #198), "" for the caveat alone."""
+    tip = panel.unit_rotation_label.toolTip()
+    assert tip.endswith(_ROTATION_TOOLTIP)
+    return tip.removesuffix(_ROTATION_TOOLTIP).removesuffix("\n\n")
 
 
 def test_starts_with_no_unit_selected() -> None:
@@ -142,7 +149,7 @@ def test_a_gate_shows_its_orientation_index_never_its_stored_rotation() -> None:
     assert not panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid)
     assert (spin.minimum(), spin.maximum(), spin.value()) == (0, 3, 2)
     assert spin.toolTip().startswith("Orientation 2 of 4: NW to SE (const 88).")
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
     assert received == []
 
 
@@ -161,7 +168,7 @@ def test_a_group_of_gates_edits_together_and_a_gate_with_a_wall_does_not() -> No
     assert spin.isVisibleTo(panel.unit_inspector_grid)
     assert spin.text() == "(mixed)"
     assert spin.toolTip().startswith("Orientation for every selected gate.")
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
     panel.show_group([_entry(unit_const=_GATE_CONST), _entry(unit_const=_WALL_CONST)])
     assert not spin.isVisibleTo(panel.unit_inspector_grid)
     assert panel.unit_field_labels["rotation"].text() == "(n/a)"
@@ -475,7 +482,7 @@ def test_float_editors_have_keyboard_tracking_off() -> None:
 def test_rotation_caption_carries_the_full_caveat_as_a_tooltip() -> None:
     """The "shown as a facing, stored in radians" half of the old note stays
     reachable regardless of which const is selected -- via the Rotation
-    caption's own tooltip, not the conditional unit_rotation_note."""
+    caption's own tooltip, which a group's note only ever leads (GH #198)."""
     panel = _panel()
     assert "radians" in panel.unit_rotation_label.toolTip()
 
@@ -645,9 +652,9 @@ def test_show_group_marks_disagreeing_fields_mixed() -> None:
     assert combo.currentData() is None
     # Only the two archers count for rotation, and they agree.
     assert panel.unit_field_editors["rotation"].text() == "1"  # 0.5 rad = 1.27 of 16
-    assert panel.unit_rotation_note.isVisibleTo(panel)
-    assert panel.unit_rotation_note.text().startswith("Typing a Rotation turns the 2 selected units")
-    assert "The other 1 of 3" in panel.unit_rotation_note.text()
+    assert _group_rotation_note(panel)
+    assert _group_rotation_note(panel).startswith("Typing a Rotation turns the 2 selected units")
+    assert "The other 1 of 3" in _group_rotation_note(panel)
     assert not panel.unit_stats_grid.isVisibleTo(panel)
     assert not panel.unit_portrait.isVisibleTo(panel)
 
@@ -662,7 +669,7 @@ def test_group_rotation_is_mixed_across_angle_members() -> None:
     panel = _panel()
     panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
     assert panel.unit_field_editors["rotation"].text() == "(mixed)"
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
 
 
 def test_group_with_no_editable_member_shows_na_and_hides_the_editor() -> None:
@@ -672,7 +679,7 @@ def test_group_with_no_editable_member_shows_na_and_hides_the_editor() -> None:
     assert not panel.unit_field_editors["rotation"].isVisibleTo(grid)
     assert panel.unit_field_labels["rotation"].isVisibleTo(grid)
     assert panel.unit_field_labels["rotation"].text() == "(n/a)"
-    assert panel.unit_rotation_note.text().startswith("Typing a Rotation changes none of the 2 selected")
+    assert _group_rotation_note(panel).startswith("Typing a Rotation changes none of the 2 selected")
 
 
 def test_show_unit_after_group_restores_single_unit_state() -> None:
@@ -695,12 +702,12 @@ def test_show_unit_after_group_restores_single_unit_state() -> None:
 
 
 def test_group_note_gives_way_to_a_tooltip_for_a_single_wall() -> None:
-    """GH #147: after a group, a lone wall hides the note and explains itself in the value's tooltip."""
+    """GH #147: after a group, a lone wall drops the note and explains itself in the value's tooltip."""
     panel = _panel()
     panel.show_group([_entry(), _entry(unit_const=_WALL_CONST, rotation=2)])
-    assert panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel)
     panel.show_unit(_entry(unit_const=_WALL_CONST, rotation=2))
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
     assert panel.unit_field_labels["rotation"].text() == "2"
     assert "variant index" in panel.unit_field_labels["rotation"].toolTip()
 
@@ -716,14 +723,14 @@ def test_a_single_frame_object_gets_a_tooltip_not_the_note() -> None:
     assert label.isVisibleTo(panel.unit_inspector_grid)
     assert label.text() == "7"
     assert label.toolTip().startswith("Single-frame object")
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
 
 
 def test_a_one_variant_object_gets_its_own_tooltip() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_STATUE_B_CONST, rotation=0.0))
     assert panel.unit_field_labels["rotation"].toolTip().startswith("Only one graphic variant")
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
 
 
 def test_the_readonly_rotation_tooltip_never_outlives_its_unit() -> None:
@@ -1015,7 +1022,7 @@ def test_a_single_tree_shows_an_editable_variant_spinbox() -> None:
     assert (spin.minimum(), spin.maximum()) == (0, 41)
     assert spin.value() == 37
     assert spin.toolTip() == "Variant 37 of 42 (stored: 37)"
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
     assert received == []
 
 
@@ -1046,7 +1053,7 @@ def test_an_oak_and_pine_group_edits_the_fewest_variants() -> None:
     assert spin.maximum() == 26
     assert spin.text() == "5"
     assert "the fewest any selected object has" in spin.toolTip()
-    assert not panel.unit_rotation_note.isVisibleTo(panel)
+    assert _group_rotation_note(panel) == ""
 
 
 def test_a_tree_group_beyond_the_shared_range_can_only_show_mixed() -> None:
@@ -1063,8 +1070,8 @@ def test_an_archer_and_tree_group_is_facing_mode_and_the_note_counts_the_tree() 
     spin = _rotation_spin(panel)
     assert spin.maximum() == 15
     assert spin.text() == "1"
-    assert panel.unit_rotation_note.isVisibleTo(panel)
-    note = panel.unit_rotation_note.text()
+    assert _group_rotation_note(panel)
+    note = _group_rotation_note(panel)
     assert note.startswith("Typing a Rotation turns the 1 selected unit with a facing.")
     assert "Rotate (. and ,) still steps trees" in note
 
@@ -1073,7 +1080,7 @@ def test_the_group_note_leads_with_what_a_typed_rotation_turns() -> None:
     """GH #71: "won't rotate" read as "trees can't rotate", though Rotate steps them."""
     panel = _panel()
     panel.show_group([_entry(rotation=0.5), _entry(rotation=0.5), _entry(unit_const=_TREE_CONST, rotation=7.0)])
-    note = panel.unit_rotation_note.text()
+    note = _group_rotation_note(panel)
     assert note.startswith("Typing a Rotation turns the 2 selected units with a facing.")
     assert "The other 1 of 3 (trees, walls, gates, buildings, scenery) keep theirs." in note
     assert "won't rotate" not in note
@@ -1087,7 +1094,7 @@ def test_the_group_note_names_the_rebound_rotate_keys(monkeypatch) -> None:
     monkeypatch.setattr(settings, "get_keybind", lambda action_id: keys.get(action_id, ""))
     panel = _panel()
     panel.show_group([_entry(rotation=0.5), _entry(unit_const=_GATE_CONST)])
-    note = panel.unit_rotation_note.text()
+    note = _group_rotation_note(panel)
     assert note.startswith("Typing a Rotation turns the 1 selected unit with a facing.")
     assert "Rotate (R) still turns gates through their four orientations." in note
 
@@ -1095,7 +1102,7 @@ def test_the_group_note_names_the_rebound_rotate_keys(monkeypatch) -> None:
 def test_the_note_for_a_group_with_nothing_typeable_says_so() -> None:
     panel = _panel()
     panel.show_group([_entry(unit_const=_GATE_CONST, rotation=7), _entry(unit_const=_WALL_CONST, rotation=2)])
-    note = panel.unit_rotation_note.text()
+    note = _group_rotation_note(panel)
     assert note.startswith("Typing a Rotation changes none of the 2 selected:")
     assert "Rotate (. and ,) still turns gates" in note
 
@@ -1107,7 +1114,7 @@ def test_a_tree_and_wall_group_is_variant_mode_and_the_note_counts_the_wall() ->
     assert spin.isVisibleTo(panel.unit_inspector_grid)
     assert (spin.minimum(), spin.maximum()) == (0, 41)
     assert spin.text() == "7"
-    note = panel.unit_rotation_note.text()
+    note = _group_rotation_note(panel)
     assert note.startswith("Typing a Rotation picks that variant for the 1 selected object with graphic variants.")
     assert "The other 1 of 2 (walls, cliffs, gates, single-frame objects) keep theirs." in note
     assert "won't rotate" not in note
@@ -1118,10 +1125,92 @@ def test_a_tree_and_gate_variant_group_note_says_rotate_turns_the_gate() -> None
     """The tail names only what the typed value skips: the gate, never the tree it already steps."""
     panel = _panel()
     panel.show_group([_entry(unit_const=_TREE_CONST, rotation=7.0), _entry(unit_const=_GATE_CONST)])
-    note = panel.unit_rotation_note.text()
+    note = _group_rotation_note(panel)
     assert note.startswith("Typing a Rotation picks that variant for the 1 selected object with graphic variants.")
     assert note.endswith("Rotate (. and ,) still turns gates through their four orientations.")
     assert "steps trees" not in note
+
+
+# --- GH #198: the group note leads the Rotation caption's tooltip ----------
+
+_FACING_GROUP_NOTE = (
+    "Typing a Rotation turns the 1 selected unit with a facing. "
+    "The other 1 of 2 (trees, walls, gates, buildings, scenery) keep theirs."
+)
+_VARIANT_GROUP_NOTE = (
+    "Typing a Rotation picks that variant for the 1 selected object with graphic variants. "
+    "The other 1 of 2 (walls, cliffs, gates, single-frame objects) keep theirs."
+)
+_NO_ROTATION_GROUP_NOTE = (
+    "Typing a Rotation changes none of the 2 selected: walls, cliffs, "
+    "gates and single-frame objects keep their stored value."
+)
+# Per rotation_field_mode: the group's members, and the note its tooltip leads with.
+_GROUP_NOTE_CASES = {
+    "facing": ([{}, {"unit_const": _BARRACKS_CONST}], _FACING_GROUP_NOTE),
+    "variant": (
+        [{"unit_const": _TREE_CONST, "rotation": 7.0}, {"unit_const": _WALL_CONST, "rotation": 2.0}],
+        _VARIANT_GROUP_NOTE,
+    ),
+    "none": ([{"unit_const": _BARRACKS_CONST}, {"unit_const": _WALL_CONST, "rotation": 2.0}], _NO_ROTATION_GROUP_NOTE),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_GROUP_NOTE_CASES))
+def test_a_group_note_leads_the_rotation_captions_tooltip(case) -> None:
+    members, note = _GROUP_NOTE_CASES[case]
+    panel = _panel()
+    panel.show_group([_entry(**member) for member in members])
+    assert panel.unit_rotation_label.isVisibleTo(panel.unit_inspector_grid)
+    assert panel.unit_rotation_label.toolTip() == f"{note}\n\n{_ROTATION_TOOLTIP}"
+
+
+@pytest.mark.parametrize("case", sorted(_GROUP_NOTE_CASES))
+def test_no_label_in_the_panel_shows_a_group_note(case) -> None:
+    members, _note = _GROUP_NOTE_CASES[case]
+    panel = _panel()
+    panel.show_group([_entry(**member) for member in members])
+    assert [label.text() for label in panel.findChildren(QLabel) if "Typing a Rotation" in label.text()] == []
+
+
+@pytest.mark.parametrize("unit_const", [_ARCHER_CONST, _TREE_CONST, _WALL_CONST, _GATE_CONST, _BARRACKS_CONST])
+def test_one_unit_keeps_the_rotation_captions_tooltip_as_it_was(unit_const) -> None:
+    """Before a group and straight after one, whose note must not outlive it."""
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=unit_const))
+    assert panel.unit_rotation_label.toolTip() == _ROTATION_TOOLTIP
+    panel.show_group([_entry(), _entry(unit_const=_BARRACKS_CONST)])
+    assert panel.unit_rotation_label.toolTip() != _ROTATION_TOOLTIP
+    panel.show_unit(_entry(unit_const=unit_const))
+    assert panel.unit_rotation_label.toolTip() == _ROTATION_TOOLTIP
+
+
+def test_a_cleared_selection_drops_the_group_note_from_the_tooltip() -> None:
+    panel = _panel()
+    panel.show_group([_entry(), _entry(unit_const=_BARRACKS_CONST)])
+    panel.show_selection_count(0)
+    assert panel.unit_rotation_label.toolTip() == _ROTATION_TOOLTIP
+
+
+def _group_inspector_height(second_const: int) -> int:
+    """The scroll content's height for an Archer plus `second_const`, on a fresh shown panel."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 900)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        panel.show_group([_entry(), _entry(unit_const=second_const)])
+        QApplication.processEvents()
+        return panel.inspector_host.minimumHeight()
+    finally:
+        panel.close()
+
+
+def test_a_group_note_costs_the_inspector_no_line_of_height() -> None:
+    """Both groups mix two consts; only the Barracks one has a member a typed Rotation skips."""
+    assert _group_inspector_height(_BARRACKS_CONST) == _group_inspector_height(_TREBUCHET_CONST)
 
 
 # --- GH #42: the Garrison block -----------------------------------------
@@ -1226,6 +1315,7 @@ def test_the_buttons_keep_the_planned_order() -> None:
     order = [
         panel.garrison_add_button,
         panel.garrison_pick_button,
+        panel.garrison_cut_button,
         panel.garrison_copy_button,
         panel.garrison_paste_button,
         panel.garrison_unload_button,

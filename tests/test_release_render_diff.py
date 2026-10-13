@@ -1,23 +1,24 @@
-"""GH #87: the map renders exactly like v0.6 outside the changes made on purpose since.
+"""GH #87: the map renders exactly like the last release outside the changes made on purpose since.
 
-Drives tools/release_render_diff.py, which renders each file at the `v0.6` tag and
-at this checkout in Flat, Stepped and Sloped with sprites off and on, and diffs
-the full canvases. Its docstring lists what it neutralizes and why: sub-tile
-unit placement, the Stepped contact-shadow terrace band, the units whose
-sprite art changed on purpose, and the sprites-on paint order (GH #107).
+Drives tools/release_render_diff.py, which renders each file at the `tool.BASE_REF`
+tag and at this checkout in Flat, Stepped and Sloped with sprites off and on, and
+diffs the full canvases. Its NEUTRALIZATIONS registry lists what it keeps out of
+the comparison and why: one entry per change made on purpose since that release.
 
-The controls below are what make a pass mean something. A single retextured
-tile fails every comparison, and dropping any one neutralization fails exactly
-the comparisons that neutralization exists for, so none of them is masking
-more than it has to. The contact-shadow mask is the exception while Stepped
-shadows match v0.6 (GH #15 back-out): its control must then fail nowhere.
+The controls below are what make a pass mean something, and they are generated
+from that registry, so an entry cannot exist without its control. A single
+retextured tile fails every comparison, and dropping any one entry fails exactly
+the comparisons that entry declares, so none of them is hiding more than it has
+to. The Stepped mask's size is pinned too: it may not grow past its measured
+fraction of the canvas.
 
 Corpus-marked: it needs the real examples/, an install via AOE2DE_INSTALL_PATH
-(conftest hides config.yaml from the suite), and the `v0.6` tag in this clone.
+(conftest hides config.yaml from the suite), and the base tag in this clone.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,8 +33,9 @@ pytestmark = pytest.mark.corpus
 
 tool = conftest.load_verify_module("release_render_diff")
 
-CONTROL_FILE = "C2_ElCid_coop_1_v0_16.aoe2scenario"
-ALL_CONFIGS = {(style, sprites) for style in tool.STYLES for sprites in (False, True)}
+MATCH_PCTS = (25, 50, 100, 200)
+# Control files outside the quick corpus: no scenario_path cell renders them, so they get a match test of their own.
+EXTRA_CONTROL_FILES = sorted({file for _inject, file, _configs in tool.controls()} - set(tool.QUICK_CORPUS))
 
 
 def _require_install_and_tag():
@@ -53,35 +55,74 @@ def _require_install_and_tag():
     return install
 
 
-def test_the_render_matches_v06_outside_the_intended_changes(scenario_path, tmp_path):
+def _example(name: str) -> Path:
+    scenario = conftest.ROOT / "examples" / name
+    if not scenario.is_file():
+        pytest.skip(f"{name} is not in examples/")
+    return scenario
+
+
+def _assert_matches(scenario: Path, tmp_path: Path) -> None:
     install = _require_install_and_tag()
     # run() deletes each pair's canvases once compared; the rest (base/, metas) is freed here, not kept with pytest's basetemps.
     with tempfile.TemporaryDirectory(dir=tmp_path) as work:
-        results = tool.run([scenario_path], Path(work), install, pcts=(25, 50, 100, 200))
-    assert {(r.job.style, r.job.sprites) for r in results} == ALL_CONFIGS
+        results = tool.run([scenario], Path(work), install, pcts=MATCH_PCTS)
+    assert {(r.job.style, r.job.sprites) for r in results} == tool.ALL_CONFIGS
     failed = [r.line() for r in results if not r.ok]
     assert not failed, "\n".join(failed)
+    if any(n.mask for n in tool.NEUTRALIZATIONS):
+        unpinned = [r.line() for r in results if r.job.style == "stepped" and tool.mask_ceiling(scenario.name, r.job.pct) is None]
+        assert not unpinned, "no mask ceiling pinned for:\n" + "\n".join(unpinned)
 
 
-@pytest.mark.parametrize(
-    ("inject", "must_fail"),
-    [
-        ("repaint-tile", ALL_CONFIGS),
-        ("no-placement-patch", ALL_CONFIGS),
-        ("no-exclusions", {(style, True) for style in tool.STYLES}),
-        # GH #15 back-out: Stepped shadows equal v0.6 again, so the mask must be inert.
-        ("no-mask", set()),
-        # GH #107: only the sprites-on iso composites run terrain first, then objects.
-        ("no-paint-order-patch", {("stepped", True), ("sloped", True)}),
-    ],
-)
-def test_every_control_fails_exactly_where_it_should(inject, must_fail, tmp_path):
+def test_the_render_matches_the_last_release_outside_the_intended_changes(scenario_path, tmp_path):
+    _assert_matches(scenario_path, tmp_path)
+
+
+def test_the_control_files_outside_the_quick_corpus_match_too(tmp_path):
+    # A loop, not a parametrization: an empty list would report a skipped cell.
+    for name in EXTRA_CONTROL_FILES:
+        _assert_matches(_example(name), tmp_path)
+
+
+@pytest.mark.parametrize(("inject", "control_file", "must_fail"), tool.controls(), ids=[c[0] for c in tool.controls()])
+def test_every_control_fails_exactly_where_it_should(inject, control_file, must_fail, tmp_path):
     install = _require_install_and_tag()
-    scenario = conftest.ROOT / "examples" / CONTROL_FILE
-    if not scenario.is_file():
-        pytest.skip(f"{CONTROL_FILE} is not in examples/")
+    scenario = _example(control_file)
     with tempfile.TemporaryDirectory(dir=tmp_path) as work:
         results = tool.run([scenario], Path(work), install, pcts=(50,), inject=inject)
         assert not list(Path(work).rglob("*.npy")), "run() left canvases behind"
     failed = {(r.job.style, r.job.sprites) for r in results if not r.ok}
     assert failed == must_fail, "\n".join(r.line() for r in results)
+
+
+# A stand-in mask entry: these three tests must hold whatever the registry holds, an empty one after a bump included.
+PROBE = tool.Neutralization(
+    "probe", "a stand-in entry", since=tool.BASE_REF, control_file=tool.ELCID, must_fail=tool.ALL_CONFIGS, mask=True
+)
+
+
+def test_a_mask_over_its_ceiling_fails_the_stepped_cells(tmp_path, monkeypatch):
+    install = _require_install_and_tag()
+    scenario = _example(tool.ELCID)
+    # Pinned at 1% of the canvas, far under what the terrace mask covers on this file, as if the mask had grown.
+    monkeypatch.setattr(tool, "NEUTRALIZATIONS", (PROBE,))
+    monkeypatch.setattr(tool, "MASK_MEASURED", {tool.ELCID: {50: 0.01}})
+    with tempfile.TemporaryDirectory(dir=tmp_path) as work:
+        results = tool.run([scenario], Path(work), install, pcts=(50,), styles=("stepped",))
+    assert len(results) == 2
+    for result in results:
+        assert any("ceiling" in problem for problem in result.problems), result.line()
+
+
+def test_the_registry_refuses_an_entry_measured_against_another_release(monkeypatch):
+    tool.check_registry()
+    monkeypatch.setattr(tool, "NEUTRALIZATIONS", (dataclasses.replace(PROBE, since="v0.1"),))
+    with pytest.raises(ValueError, match="measured against"):
+        tool.check_registry()
+
+
+def test_the_registry_refuses_a_control_that_must_fail_nowhere(monkeypatch):
+    monkeypatch.setattr(tool, "NEUTRALIZATIONS", (dataclasses.replace(PROBE, must_fail=frozenset()),))
+    with pytest.raises(ValueError, match="proves nothing"):
+        tool.check_registry()

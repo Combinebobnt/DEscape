@@ -69,10 +69,10 @@ _EXPECTED_PARAM = {t.tool_id: (t.param_widget or None) for t in _TERRAIN_MODE_TO
 def _expected_brush(tool_id: str, window) -> bool:
     return viewer_common.brush_applicable(tool_id, rect_filled=window._rect_filled())
 
-# Free placement's own orthogonal group (D2's toggle). Derived, not asserted
-# flat-False, so that if a Terrain-mode tool ever sets supports_free_place
+# Off-grid's own orthogonal group (D2's toggle). Derived, not asserted
+# flat-False, so that if a Terrain-mode tool ever sets supports_off_grid
 # this file starts checking it instead of silently contradicting it.
-_EXPECTED_FREE_PLACE = {t.tool_id: t.supports_free_place for t in _TERRAIN_MODE_TOOLS}
+_EXPECTED_OFF_GRID = {t.tool_id: t.supports_off_grid for t in _TERRAIN_MODE_TOOLS}
 
 
 def test_tool_visibility_matches_mode_applicability() -> None:
@@ -104,7 +104,7 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
         window._on_tool_selected(tool)
         expected = _EXPECTED_PARAM[tool]
         expected_brush = _expected_brush(tool, window)
-        expected_free = _EXPECTED_FREE_PLACE[tool]
+        expected_off_grid = _EXPECTED_OFF_GRID[tool]
 
         # The terrain itself is picked in the sidebar (GH #56); Trees/Eye candy carry its gate.
         assert window.paint_trees_param_action.isVisible() == (expected == "terrain")
@@ -114,17 +114,77 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
         assert window.brush_size_spin_action.isVisible() == expected_brush
         assert window.brush_shape_combo_action.isVisible() == expected_brush
         assert window.brush_param_label_action.isVisible() == expected_brush
-        assert window.free_place_param_action.isVisible() == expected_free
+        assert window.off_grid_param_action.isVisible() == expected_off_grid
         # Elevate has no _EXPECTED_PARAM entry (expected is None) but DOES
         # have a brush -- the separator must track EVERY group, not just the
         # single-valued param. A new group that forgets to join the roll-up
         # `or` chain shows its own widget beside a hidden separator.
         assert window.tool_param_separator_action.isVisible() == (
-            expected is not None or expected_brush or expected_free
+            expected is not None or expected_brush or expected_off_grid
         )
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def _placement_boxes(window) -> tuple[bool, bool]:
+    return window.unrestricted_param_action.isVisible(), window.off_grid_param_action.isVisible()
+
+
+def test_the_placement_boxes_show_for_place_unit_and_for_pan_in_units_mode() -> None:
+    """GH #176: "Free placement" then "Off-grid", under Place Unit and under
+    Pan in Units mode (where unit drags run), hidden everywhere else."""
+    window = conftest.blank_window()
+    try:
+        assert window.unrestricted_check.text() == "Free placement"
+        assert window.off_grid_check.text() == "Off-grid"
+        for mode in ("View", "Terrain", "Triggers"):
+            window.mode_combo.setCurrentText(mode)
+            assert window._current_tool == "pan"
+            assert _placement_boxes(window) == (False, False), mode
+            assert not window.unrestricted_check.isEnabled() and not window.off_grid_check.isEnabled()
+
+        window.mode_combo.setCurrentText("Units")
+        assert window._current_tool == "pan"
+        assert _placement_boxes(window) == (True, True)
+        assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
+        assert window.tool_param_separator_action.isVisible()
+
+        window.place_unit_action.setChecked(True)
+        assert window._current_tool == "place_unit"
+        assert _placement_boxes(window) == (True, True)
+        assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
+
+        for other in ("wall_rect", "convert", "eraser", "ruler"):
+            getattr(window, f"{other}_action").setChecked(True)
+            assert window._current_tool == other
+            assert _placement_boxes(window) == (False, False), other
+
+        toolbar = window.unrestricted_check.parentWidget()
+        order = toolbar.actions()
+        assert order.index(window.off_grid_param_action) == order.index(window.unrestricted_param_action) + 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_no_identifier_keeps_the_old_free_place_name() -> None:
+    """The old Free placement box is Off-grid now, and "Free placement" means
+    something else. Unmerged code that still says free_place must fail loudly."""
+    from descape import viewer
+
+    window = conftest.blank_window()
+    try:
+        assert not [name for name in dir(window) if "free_place" in name]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    for module in (settings, viewer_common, viewer):
+        assert not [name for name in dir(module) if "free_place" in name.lower()], module.__name__
+    assert not [name for name in dir(settings.ToolDef) if "free_place" in name]
+    place_unit = next(t for t in settings.TOOLS if t.tool_id == "place_unit")
+    assert place_unit.supports_off_grid and place_unit.supports_unrestricted
+    assert viewer_common.OFF_GRID_TOOLS == viewer_common.UNRESTRICTED_TOOLS == {"place_unit"}
 
 
 def test_level_spin_dead_while_draw_selected() -> None:

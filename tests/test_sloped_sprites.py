@@ -234,7 +234,7 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
     # Now give the same unit a real sprite and recover the implied rise from
     # its own anchor y: ay = round(origin_y + (fy-fx)*half_h - rise_px) + half_h,
     # with fx/fy where the footprint PAINTS. For a span (1, 1) unit that is now
-    # the unit's own exact coordinate: free placement's Stage 1 replaced
+    # the unit's own exact coordinate: off-grid placement's Stage 1 replaced
     # `_span_start(coord, 1) + 0.5` (which quantized 60.3 to 60.5) with the
     # coordinate itself, which is the whole point of that stage.
     unit.unit_const = CONST
