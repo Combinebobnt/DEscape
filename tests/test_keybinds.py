@@ -228,6 +228,7 @@ _TOGGLE_ACTION_IDS = (
     "view_layer_farm_overlay",
     "view_layer_small_trees",
     "view_layer_hero_glow",
+    "view_layer_translucent_walls",
     "help_perf_trace",
     "filter_show_gaia",
     "filter_show_trees",

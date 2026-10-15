@@ -111,6 +111,34 @@ def set_pan_speed(value: int) -> None:
     _save_config(config)
 
 
+# View > Layers > Translucent Walls' opacity, Settings > Appearance (GH #35).
+# The bounds live in view_layers, which stays a leaf.
+_wall_opacity_pct: int | None = None
+
+
+def get_wall_opacity_pct() -> int:
+    """Translucent Walls' opacity in percent, clamped into
+    [WALL_OPACITY_MIN_PCT, WALL_OPACITY_MAX_PCT] and falling back to
+    WALL_OPACITY_DEFAULT_PCT if never set or malformed."""
+    global _wall_opacity_pct
+    if _wall_opacity_pct is None:
+        raw = _load_config().get("wall_opacity_pct", view_layers.WALL_OPACITY_DEFAULT_PCT)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = view_layers.WALL_OPACITY_DEFAULT_PCT
+        _wall_opacity_pct = max(view_layers.WALL_OPACITY_MIN_PCT, min(view_layers.WALL_OPACITY_MAX_PCT, value))
+    return _wall_opacity_pct
+
+
+def set_wall_opacity_pct(value: int) -> None:
+    global _wall_opacity_pct
+    _wall_opacity_pct = max(view_layers.WALL_OPACITY_MIN_PCT, min(view_layers.WALL_OPACITY_MAX_PCT, int(value)))
+    config = _load_config()
+    config["wall_opacity_pct"] = _wall_opacity_pct
+    _save_config(config)
+
+
 # App-chrome theme, Settings > Appearance: a themes.PRESETS id plus per-role
 # overrides. See viewer_dialogs.apply_theme() for what it does and doesn't
 # affect. Replaces the old `dark_mode` bool, migrated on read below.
@@ -343,7 +371,7 @@ def _load_view_layers() -> dict[str, bool]:
 
 
 def get_view_layers() -> view_layers.LayerState:
-    return view_layers.LayerState(**_load_view_layers())
+    return view_layers.LayerState(**_load_view_layers(), wall_opacity_pct=get_wall_opacity_pct())
 
 
 def set_view_layer(layer_id: str, on: bool) -> None:

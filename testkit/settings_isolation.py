@@ -31,6 +31,7 @@ MEMOIZED_GLOBALS = (
     "_zoom_centered_on_cursor",
     "_graphics_quality",
     "_pan_speed",
+    "_wall_opacity_pct",
     "_theme",
     "_theme_colors",
     "_preload_zoom_levels",

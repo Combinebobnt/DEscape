@@ -1088,6 +1088,32 @@ class SettingsDialog(QDialog):
         pan_row.addWidget(self.pan_speed_value_label)
         layout.addLayout(pan_row)
 
+        wall_row = QHBoxLayout()
+        wall_row.addWidget(QLabel("Wall opacity:"))
+        self.wall_opacity_slider = QSlider(Qt.Horizontal)
+        self.wall_opacity_slider.setRange(view_layers.WALL_OPACITY_MIN_PCT, view_layers.WALL_OPACITY_MAX_PCT)
+        self.wall_opacity_slider.setTickInterval(10)
+        self.wall_opacity_slider.setTickPosition(QSlider.TicksBelow)
+        self.wall_opacity_slider.setSingleStep(5)
+        self.wall_opacity_slider.setPageStep(10)
+        self.wall_opacity_slider.setToolTip(
+            "How opaque walls and gates draw while View > Layers > Translucent "
+            "Walls is on. Lower shows more of the units behind a wall line. "
+            "Where two wall pieces' art overlaps, the overlap reads darker."
+        )
+        self.wall_opacity_slider.setValue(settings.get_wall_opacity_pct())
+        self.wall_opacity_value_label = QLabel()
+        self._update_wall_opacity_label(settings.get_wall_opacity_pct())
+        # Debounced like the sliders above: with the layer on, each apply rebuilds every wall sprite.
+        self._wall_opacity_apply_timer = QTimer(self)
+        self._wall_opacity_apply_timer.setSingleShot(True)
+        self._wall_opacity_apply_timer.timeout.connect(self._apply_wall_opacity)
+        self.wall_opacity_slider.valueChanged.connect(self._on_wall_opacity_slider_changed)
+        self.wall_opacity_slider.sliderReleased.connect(self._apply_wall_opacity)
+        wall_row.addWidget(self.wall_opacity_slider, stretch=1)
+        wall_row.addWidget(self.wall_opacity_value_label)
+        layout.addLayout(wall_row)
+
         layout.addWidget(self._build_overlay_colors_group())
         layout.addWidget(self._build_trigger_status_group())
 
@@ -1854,6 +1880,21 @@ class SettingsDialog(QDialog):
         # No refresh_map(): MapView._pan_step reads get_pan_speed() on every
         # tick, so the new value is live on the next hold with no wiring.
         settings.set_pan_speed(self.pan_speed_slider.value())
+
+    def _update_wall_opacity_label(self, pct: int) -> None:
+        suffix = " (default)" if pct == view_layers.WALL_OPACITY_DEFAULT_PCT else ""
+        self.wall_opacity_value_label.setText(f"{pct}%{suffix}")
+
+    def _on_wall_opacity_slider_changed(self, value: int) -> None:
+        self._update_wall_opacity_label(value)
+        if self.wall_opacity_slider.isSliderDown():
+            return
+        self._wall_opacity_apply_timer.start(200)
+
+    def _apply_wall_opacity(self) -> None:
+        value = self.wall_opacity_slider.value()
+        settings.set_wall_opacity_pct(value)
+        self._window.set_wall_opacity_pct(value)
 
     # action_id prefix (before the first "_") -> section header text. Covers
     # today's sections (REBINDABLE_ACTIONS's "file_*"/"edit_*"/"view_*"/
@@ -5317,6 +5358,7 @@ class ViewerWindow(QMainWindow):
             view._terrain_style,
             self._layers.tree_scale,
             self._layers.hero_glow,
+            self._layers.wall_alpha,
             id(view._iso_elevations),
         )
         # Snapped, the point only changes on a tile crossing (half-tile on an even span).
@@ -6407,6 +6449,7 @@ class ViewerWindow(QMainWindow):
             # would drag a tree at full size and snap it small on drop.
             tree_scale=self._layers.tree_scale,
             hero_glow=self._layers.hero_glow,
+            wall_alpha=self._layers.wall_alpha,
         )
 
     def _ghost_sprites_on(self) -> bool:
@@ -7318,6 +7361,26 @@ class ViewerWindow(QMainWindow):
         repaint from the now-empty cache."""
         self._layers = dataclasses.replace(self._layers, **{layer_id: on})
         settings.set_view_layer(layer_id, on)
+        label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
+        self._apply_layers(f"{label}: {'on' if on else 'off'}")
+        if layer_id in ("terrain_textures", "terrain_blend"):
+            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
+            self._update_tool_enabled()
+
+    def set_wall_opacity_pct(self, pct: int) -> None:
+        """Settings > Appearance's wall opacity (GH #35), already persisted by
+        the caller. With Translucent Walls off the drawn wall_alpha is
+        unchanged, so only the window's copy updates: set_layers() would miss
+        its equality guard on the raw pct and evict the whole canvas for no
+        visible change."""
+        old_alpha = self._layers.wall_alpha
+        self._layers = dataclasses.replace(self._layers, wall_opacity_pct=pct)
+        if self._layers.wall_alpha != old_alpha:
+            self._apply_layers(f"Wall opacity: {pct}%")
+
+    def _apply_layers(self, status: str) -> None:
+        """Pushes self._layers into the live cache and repaints, logging
+        `status` with the time it took. See _on_layer_toggled() for the order."""
         self._cancel_warms()
         if self.scenario is None or self._cache is None:
             self._update_tool_enabled()
@@ -7338,11 +7401,7 @@ class ViewerWindow(QMainWindow):
             self._busy = was_busy
             QApplication.restoreOverrideCursor()
             self.setEnabled(True)
-        label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
-        self._log_status(f"{label}: {'on' if on else 'off'} (applied in {elapsed:.2f}s)")
-        if layer_id in ("terrain_textures", "terrain_blend"):
-            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
-            self._update_tool_enabled()
+        self._log_status(f"{status} (applied in {elapsed:.2f}s)")
 
     def _filter_summary(self) -> str:
         if self._unit_filter.is_default:

@@ -49,6 +49,11 @@ elev_step_pct: 50
 # Default: 700.
 pan_speed: 700
 
+# Opacity of walls and gates in percent while View > Layers > Translucent
+# Walls is on, Settings > Appearance. Clamped to 10-90 on read.
+# Default: 50.
+wall_opacity_pct: 50
+
 # Anchor mouse-wheel zoom under the cursor (true) or the view center
 # (false). Default: true.
 zoom_centered_on_cursor: true
@@ -98,7 +103,7 @@ terrain_style: stepped
 # launches. Rows:
 # terrain_textures (Terrain Textures), terrain_blend (Terrain Blending),
 # farm_overlay (Farm Terrain Overlay), small_trees (Small Trees), hero_glow
-# (Hero Glow).
+# (Hero Glow), translucent_walls (Translucent Walls).
 # An unknown row or a non-true/false value keeps that row's default, shown here.
 view_layers:
   terrain_textures: true
@@ -106,6 +111,7 @@ view_layers:
   farm_overlay: true
   small_trees: false
   hero_glow: true
+  translucent_walls: false
 
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
@@ -273,6 +279,7 @@ keybinds:
   view_layer_farm_overlay: ''
   view_layer_small_trees: ''
   view_layer_hero_glow: ''
+  view_layer_translucent_walls: ''
   view_pan_up: Up
   view_pan_down: Down
   view_pan_left: Left

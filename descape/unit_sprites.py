@@ -1472,6 +1472,7 @@ def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
     art: tuple[int | None, int] | None = None,
+    wall_alpha: float = 1.0,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -1509,6 +1510,11 @@ def sprite_pieces_for(
     B) resolves to its editor-only marker instead, one piece at (0, 0).
 
     `art` as sprite_for()'s.
+
+    `wall_alpha` (View > Layers > Translucent Walls, GH #35) below 1.0
+    returns _wall_draw()'s one flattened piece at (0, 0) instead, or [] if it
+    fails. tree_scale and hero_glow are ignored there; the caller decides
+    which consts get each.
     """
     category = unit_kind.invisible_category(unit_const)
     if category is not None:
@@ -1517,6 +1523,9 @@ def sprite_pieces_for(
     entry = _entry_for_art(unit_const, art)
     if entry is None:
         return []
+    if wall_alpha < 1.0:
+        draw = _wall_draw(unit_const, entry, rotation, team_index, half_w, seed, wall_alpha)
+        return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
     pieces_data = entry.get("pieces")
     if not pieces_data:
         draw = _draw_for_entry(
@@ -1645,10 +1654,18 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     A single piece IS the assembly -- returned as-is rather than copied
     through a composite. _build_icon() no longer sends it here (it tints a
     single piece at whichever size is smaller), but the case stays exact."""
+    assembled = _assembled_with_origin(pieces)
+    return None if assembled is None else assembled[0]
+
+
+def _assembled_with_origin(pieces: list[SpritePiece]) -> tuple[np.ndarray, int, int] | None:
+    """_assembled_native()'s array plus its (ox, oy): where its top-left sits
+    relative to the unit's anchor, so the anchor is pixel (-ox, -oy)."""
     if not pieces:
         return None
     if len(pieces) == 1:
-        return pieces[0].draw.rgba
+        piece = pieces[0]
+        return piece.draw.rgba, piece.dx - piece.draw.hotspot_x, piece.dy - piece.draw.hotspot_y
 
     rects = []
     for piece in pieces:
@@ -1661,7 +1678,64 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     out = np.zeros((max(r[3] for r in rects) - oy, max(r[2] for r in rects) - ox, 4), dtype=np.uint8)
     for piece, (x0, y0, _x1, _y1) in zip(pieces, rects, strict=True):
         _source_over(out, y0 - oy, x0 - ox, piece.draw.rgba)
-    return out
+    return out, ox, oy
+
+
+def _wall_draw(
+    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
+    seed: int | None, alpha: float,
+) -> SpriteDraw | None:
+    """A wall or gate's whole composite as one tinted, scaled SpriteDraw with
+    Translucent Walls' alpha applied (GH #35). None on any failure
+    sprite_for() lists, or a lost parent piece.
+
+    Flattened first, at native scale, so the alpha is uniform within the
+    unit and a flag over a tower or a pillar over a gate does not stack. No
+    wall or gate piece has a depth slot, so flattening changes no draw
+    order. Then one resize, then the alpha multiply, as round(a * alpha).
+
+    Cached in _scaled_cache under a key of its own, for the reasons
+    _draw_for_entry() gives for its own. _frame_key() resolves every piece's
+    frame, a seeded one included; _art_key() tells two owners' art apart."""
+    team_slot = team_index % len(TEAM_COLORS)
+    key = (
+        "wall", unit_const, _art_key(entry), _body_offset(entry),
+        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha,
+    )
+    hit = _scaled_cache.get_or_none(key)
+    if hit is not None:
+        return None if hit is _MISS else hit
+    draw = _build_wall_draw(unit_const, entry, rotation, TEAM_COLORS[team_slot], half_w, seed, alpha)
+    _scaled_cache.put(key, _MISS if draw is None else draw)  # see _MISS
+    return draw
+
+
+def _build_wall_draw(
+    unit_const: int, entry: dict, rotation: float, team, half_w: int,
+    seed: int | None, alpha: float,
+) -> SpriteDraw | None:
+    """_wall_draw()'s uncached body."""
+    pieces = _native_pieces_for(unit_const, entry, rotation, seed=seed)
+    assembled = _assembled_with_origin([
+        SpritePiece(
+            draw=SpriteDraw(rgba=_tinted(p.main, p.playercolor, team), hotspot_x=p.hotspot_x, hotspot_y=p.hotspot_y),
+            dx=p.dx, dy=p.dy,
+        )
+        for p in pieces
+    ])
+    if assembled is None:
+        return None
+    # The pieces are already cropped to ink, so their union is too.
+    rgba, ox, oy = assembled
+    hx, hy = -ox, -oy
+    scale = sprite_scale(half_w)
+    width = max(1, round(rgba.shape[1] * scale))
+    height = max(1, round(rgba.shape[0] * scale))
+    small = _resize_rgba(rgba, width, height)
+    if alpha < 1.0:
+        small = small.copy()
+        small[..., 3] = np.rint(small[..., 3] * alpha).astype(np.uint8)
+    return SpriteDraw(rgba=small, hotspot_x=round(hx * scale), hotspot_y=round(hy * scale))
 
 
 def _frame_key(
