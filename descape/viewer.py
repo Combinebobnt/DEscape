@@ -8410,6 +8410,8 @@ class ViewerWindow(QMainWindow):
             self._keybind_actions[f"tool_{tool.tool_id}"] = getattr(self, f"{tool.tool_id}_action")
         for pid, action in self.player_select_actions.items():
             self._keybind_actions[f"player_select_{pid}"] = action
+        for pid, action in self.player_actions.items():
+            self._keybind_actions[f"filter_player_{pid}"] = action
         for action_id in self._keybind_actions:
             self.apply_keybind(action_id)
 

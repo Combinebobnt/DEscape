@@ -1819,10 +1819,12 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # (Shift added, mnemonic letter kept) rather than picking an unrelated
     # free letter.
     ("mode_messages", "Messages Mode", "Ctrl+Shift+M"),
-    # The Filters popup's toggles (_build_filters_button). All ship unbound,
-    # same reasoning as view_distance_ticks above -- these are per-session,
-    # not-persisted toggles, and no default was requested for them.
-    ("filter_show_gaia", "Show GAIA", ""),
+    # The Filters popup's toggles (_build_filters_button). The kind toggles ship
+    # unbound, same reasoning as view_distance_ticks above -- these are
+    # per-session, not-persisted toggles, and no default was requested for them.
+    # GH #207 requested Ctrl+digit for the owner toggles: GAIA has no player
+    # checkbox, so Ctrl+0 goes on Show GAIA.
+    ("filter_show_gaia", "Show GAIA", "Ctrl+0"),
     ("filter_show_trees", "Show Trees", ""),
     ("filter_show_walls", "Show Walls", ""),
     ("filter_show_buildings", "Show Buildings", ""),
@@ -1830,6 +1832,11 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_show_obstacles", "Show Obstacles", ""),
     ("filter_show_invisible", "Show Invisible Objects", ""),
     ("filter_show_garrisoned", "Show Garrisoned Units", ""),
+] + [
+    # range(1, 9) rather than unit_filter.MAX_PLAYER_ID, as with player_select_ below.
+    (f"filter_player_{pid}", f"Show Player {pid}", f"Ctrl+{pid}")
+    for pid in range(1, 9)
+] + [
     ("filter_all_players", "All Players", ""),
     ("filter_no_players", "No Players", ""),
     ("filter_show_all", "Show All (Filters)", ""),
