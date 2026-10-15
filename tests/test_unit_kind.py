@@ -435,13 +435,14 @@ PGOLD = 252  # class 41, the same
 SHEEP = 594  # class 58, a herdable a player can own
 RELIC = 285
 RUBBLE = 863  # class 14 eye candy the corpus places for players
+GUNPOWDER_KEG = 2607  # class 64, GAIA-only by the official editor (GH #208)
 
 
-def test_gaia_only_consts_holds_resources_and_trees_only() -> None:
+def test_gaia_only_consts_holds_resources_trees_and_the_keg_only() -> None:
     gaia_only = unit_kind.gaia_only_consts()
     tree = sorted(TREE_UNIT_IDS)[0]
-    # Forage, gold, stone, Perch (fish), shore fish, the two class-63 consts, a tree.
-    assert {BERRY_BUSH, GOLD_MINE, STONE_MINE, 53, 69, 2170, 2625, tree} <= gaia_only
+    # Forage, gold, stone, Perch (fish), shore fish, the two class-63 consts, a tree, the keg.
+    assert {BERRY_BUSH, GOLD_MINE, STONE_MINE, 53, 69, 2170, 2625, tree, GUNPOWDER_KEG} <= gaia_only
     assert gaia_only >= TREE_UNIT_IDS
     assert gaia_only.isdisjoint({PILE1, PGOLD, SHEEP, RELIC, FLARE4, RUBBLE})
 
@@ -454,6 +455,7 @@ def test_placement_owner_coerces_only_gaia_only_consts() -> None:
     assert unit_kind.placement_owner(BERRY_BUSH, 8) == GAIA_PLAYER_ID
     assert unit_kind.placement_owner(BERRY_BUSH, GAIA_PLAYER_ID) == GAIA_PLAYER_ID
     assert unit_kind.placement_owner(sorted(TREE_UNIT_IDS)[0], 3) == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(GUNPOWDER_KEG, 1) == GAIA_PLAYER_ID
     assert unit_kind.placement_owner(83, 1) == 1  # Villager
     assert unit_kind.placement_owner(SHEEP, 2) == 2
     assert unit_kind.placement_owner(RUBBLE, 4) == 4

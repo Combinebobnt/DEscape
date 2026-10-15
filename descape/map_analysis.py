@@ -31,12 +31,12 @@ wrong parity for its span on 11/21 (INFO, the game writes those), and units
 off their tile centre on 6/21 (player) and 7/21 (GAIA), both INFO.
 Decorations, trees, fish and cliffs are left out on purpose.
 
-A resource or tree (unit_kind.gaia_only_consts(), the set Place Unit gives
-to GAIA) in a player's list fires on 0/21 examples/ files and on the one
-known bad file, the GH #206 tester's scenario (a player 1 Forage Bush that
-was missing in the official editor), so it is a WARNING. Its message states
-only that measured fact: whether the game drops such an object on its own
-is unconfirmed.
+A GAIA-only object (unit_kind.gaia_only_consts(), the set Place Unit gives
+to GAIA: resources, trees and the Gunpowder Keg) in a player's list fires
+on 0/21 examples/ files and on the one known bad file, the GH #206
+tester's scenario (a player 1 Forage Bush that was missing in the official
+editor), so it is a WARNING. Its message states only that measured fact:
+whether the game drops such an object on its own is unconfirmed.
 
 Nothing here constructs an edit model, and nothing may be named verify_* or
 *_supported (both already mean byte-layout trust elsewhere).
@@ -249,14 +249,14 @@ def check_off_grid_gaia_units(loaded: LoadedScenario) -> CheckResult:
 
 
 def check_gaia_only_ownership(loaded: LoadedScenario) -> CheckResult:
-    """A resource or tree in a player's list, wherever it is: off-map and
+    """A GAIA-only object in a player's list, wherever it is: off-map and
     garrisoned ones are reported too, since the owner is wrong either way."""
     label = "GAIA-only objects owned by a player"
     gaia_only = gaia_only_consts()
     findings = [
         Finding(
             f"Player {player_id} object {unit.unit_const} (id {unit.reference_id}) at "
-            f"({unit.x:g}, {unit.y:g}) is a resource or tree; game-made files only give those to GAIA",
+            f"({unit.x:g}, {unit.y:g}) is GAIA-only; game-made files only give those to GAIA",
             "warning",
             tile=(int(unit.x), int(unit.y)),
             unit_key=(player_id, unit.reference_id),

@@ -79,6 +79,16 @@ def test_the_counts_follow_the_filter_and_hidden_box_but_not_the_class() -> None
     assert _counts(view)["Units"] != before["Units"]
 
 
+def test_gun_lists_the_gunpowder_keg_under_other() -> None:
+    """GH #208: under Other, as in the official editor, with the hidden box unticked."""
+    view = _view()
+    view.filter_edit.setText("gun")
+    assert 2607 not in _shown(view)
+    view.category_buttons["Others"].click()
+    assert not view.show_hidden_checkbox.isChecked()
+    assert 2607 in _shown(view)
+
+
 def test_the_class_combo_lists_the_categorys_classes_and_resets_on_a_switch() -> None:
     view = _view()
     labels = [view.class_combo.itemText(i) for i in range(view.class_combo.count())]

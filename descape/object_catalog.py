@@ -100,6 +100,9 @@ def dat_terrain_restrictions() -> dict[int, frozenset[int]]:
 _SIEGE_BUILDING_CLASSES = frozenset({51, 54})
 _RELIC_CLASS = 42
 
+# Dat-only ids the .dat hides but the official editor lists, by its category: Gunpowder Keg (GH #208).
+_EDITOR_LISTED_DAT_ONLY = {2607: "Others"}
+
 
 def derived_category(dat_entry: dict) -> str:
     """The picker category for an object no library dataset covers, from its
@@ -255,7 +258,9 @@ def objects() -> tuple[CatalogEntry, ...]:
     Then every .dat-table id no dataset covers and the .dat does not hide
     from the editor (the Sept 2026 patch's Jarl, Longhouse, Spruce, ...),
     named install string -> .dat code and categorized by derived_category().
-    Editor-hidden dat-only ids stay out entirely (user decision 2026-09-27)."""
+    Editor-hidden dat-only ids stay out (user decision 2026-09-27), except
+    _EDITOR_LISTED_DAT_ONLY, listed as not hidden under the official
+    editor's category (GH #208)."""
     seen: set[int] = set()
     entries = []
     lang = asset_source.get_language()
@@ -267,12 +272,14 @@ def objects() -> tuple[CatalogEntry, ...]:
             dat_entry = _dat_entry("objects", member.ID)
             name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
             entries.append(_entry(member.ID, name, category, dat_entry))
-    for key, dat_entry in _dat_table()["objects"].items():
+    for key, raw_entry in _dat_table()["objects"].items():
         id_ = int(key)
-        if id_ in seen or dat_entry.get("hidden"):
+        category = _EDITOR_LISTED_DAT_ONLY.get(id_)
+        if id_ in seen or (raw_entry.get("hidden") and category is None):
             continue
+        dat_entry = raw_entry if category is None else {**raw_entry, "hidden": False}
         name = resolve_name(id_, "", dat_entry, lang)
-        entries.append(_entry(id_, name, derived_category(dat_entry), dat_entry))
+        entries.append(_entry(id_, name, category or derived_category(dat_entry), dat_entry))
     return tuple(sorted(entries, key=lambda e: e.name))
 
 
