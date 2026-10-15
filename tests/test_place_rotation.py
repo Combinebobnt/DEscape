@@ -10,7 +10,6 @@ import pytest
 from descape import gate_orientation, unit_rotation, unit_sprites, unit_variant
 from descape.place_rotation import (
     CYCLED,
-    GAIA_NO_FACING,
     GATE,
     NOTHING,
     TURNED,
@@ -89,12 +88,12 @@ def test_every_angle_value_is_exactly_on_the_consts_grid() -> None:
         assert 0.0 <= value < 2 * math.pi
 
 
-def test_gaia_angle_does_not_turn_and_places_zero() -> None:
-    turned, _, _ = step(PlaceRotation(), ARCHER, P1, 3)
-    state, const, outcome = step(turned, ARCHER, GAIA, 1)
-    assert (state, const, outcome) == (turned, ARCHER, GAIA_NO_FACING)
-    assert rotation_for(turned, ARCHER, GAIA) == 0.0
-    assert rotation_for(turned, ARCHER, P1) != 0.0, "the stored facing survives for the next owner"
+def test_gaia_angle_turns_and_places_its_facing_like_a_player() -> None:
+    """GH #217: GAIA creatables have a facing the game draws, so the owner no longer matters."""
+    state, const, outcome = step(PlaceRotation(), ARCHER, GAIA, 3)
+    assert (const, outcome) == (ARCHER, TURNED)
+    assert rotation_for(state, ARCHER, GAIA) == pytest.approx(2 * math.pi * 3 / 16)
+    assert rotation_for(state, ARCHER, GAIA) == rotation_for(state, ARCHER, P1)
 
 
 # --- Cyclable -----------------------------------------------------------------

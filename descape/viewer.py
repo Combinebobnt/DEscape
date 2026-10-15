@@ -5382,8 +5382,6 @@ class ViewerWindow(QMainWindow):
             status = f"Placement: {_unit_name(new_const)}"
             if had_filter and not self.units_panel.catalog_view.filter_edit.text():
                 status += " (cleared the catalog filter to show it)"
-        elif outcome == place_rotation.GAIA_NO_FACING:
-            status = f"Placement: GAIA units have no facing, so {name} places facing 0"
         elif outcome == place_rotation.NOTHING:
             status = f"Placement: {name} has no facing or variant to rotate"
         else:
@@ -12572,8 +12570,8 @@ class ViewerWindow(QMainWindow):
 
         Reads the unit and writes UI state only, so there is no undo record.
         What a later click stores still comes from place_rotation.rotation_for()
-        alone, which is why a GAIA unit's facing may be kept here: it places 0.0.
-        Walls, gates, cliffs and single-frame consts leave the rotation alone."""
+        alone, a GAIA unit's facing included (GH #217). Walls, gates, cliffs
+        and single-frame consts leave the rotation alone."""
         if self.scenario is None:
             return
         unit = entry.unit

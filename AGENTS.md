@@ -143,12 +143,12 @@ commands, and architecture.
     before a click, or set by the Eyedropper's Units-mode pick,
     `ViewerWindow.pick_unit_value()`). The value a new unit
     is `add()`ed with, and the ghost drawn with, comes only from
-    `place_rotation.rotation_for()`. A non-GAIA ANGLE const gets a facing on
-    its own frame grid (a GAIA one gets `0.0`, since GAIA creatables have no
-    facing to draw). A cyclable const gets a literal integer variant index,
-    inside the *Cycle Variant* scope above. A gate's orientation is a
-    different catalog const, picked before the click, so this is a new unit
-    and not a `set_unit_const()` case, the same as mirroring. Everything else
+    `place_rotation.rotation_for()`. An ANGLE const gets a facing on its own
+    frame grid, GAIA's included (GH #217). A cyclable const gets a literal
+    integer variant index, inside the *Cycle Variant* scope above. A gate's
+    orientation is a different catalog const, picked before the click, so
+    this is a new unit and not a `set_unit_const()` case, the same as
+    mirroring. Everything else
     (walls, cliffs, INERT) keeps `add()`'s `0.0`. `add()` itself stays
     unvalidated, as with mirroring and paste: the guard is `rotation_for()`,
     pinned by `tests/test_place_rotation.py`.

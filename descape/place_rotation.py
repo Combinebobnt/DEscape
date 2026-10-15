@@ -20,9 +20,8 @@ It follows the Rotate rules (ViewerWindow.on_unit_rotate) per const:
 - Everything else (walls, cliffs, single-variant and INERT consts): nothing to
   turn, and rotation_for() is 0.0, add()'s own default.
 
-GAIA owns no camera-relative facing: render.stored_rotation() draws a GAIA
-creatable at 0.0 whatever it stores, so an ANGLE pick with owner GAIA does not
-turn and places 0.0. GAIA trees and gates still rotate.
+The owner does not change any of this: a GAIA creatable turns and places its
+facing like any player's, and render.stored_rotation() draws it (GH #217).
 
 Qt-free and install-free (it reads the committed tables through the modules
 above), so the default test tier covers it.
@@ -34,13 +33,11 @@ import dataclasses
 from dataclasses import dataclass
 
 from descape import gate_orientation, unit_rotation, unit_variant
-from descape.unit_filter import GAIA_PLAYER_ID
 
 # step()'s outcomes.
 TURNED = "turned"
 CYCLED = "cycled"
 GATE = "gate"
-GAIA_NO_FACING = "gaia_no_facing"
 NOTHING = "nothing"
 
 
@@ -69,10 +66,9 @@ def variant_for(state: PlaceRotation, const: int) -> int:
 def step(state: PlaceRotation, const: int, owner: int, steps: int) -> tuple[PlaceRotation, int, str]:
     """Turns the pending rotation `steps` along for a `const` pick owned by
     `owner`. Returns (new state, the const to place, outcome). Only a gate
-    changes the const; only an ANGLE or cyclable const changes the state."""
+    changes the const; only an ANGLE or cyclable const changes the state.
+    `owner` no longer changes the answer (GH #217); callers still pass it."""
     if unit_rotation.rotation_is_angle(const):
-        if owner == GAIA_PLAYER_ID:
-            return state, const, GAIA_NO_FACING
         count = unit_rotation.angle_count_for(const)
         facing = unit_rotation.rotate_step(_snapped_facing(state.facing, const), count, steps)
         return dataclasses.replace(state, facing=facing), const, TURNED
@@ -98,11 +94,12 @@ def steps_for_coarse(const: int, direction: int) -> int:
 
 def rotation_for(state: PlaceRotation, const: int, owner: int) -> float:
     """The `rotation` a placement of `const` for `owner` stores, and the only
-    source of one: the snapped facing for a non-GAIA ANGLE const, the literal
-    variant index for a cyclable const, 0.0 for everything else (walls,
-    cliffs, gates, INERT). Never a radian-encoded variant."""
+    source of one: the snapped facing for an ANGLE const, GAIA's included
+    (GH #217), the literal variant index for a cyclable const, 0.0 for
+    everything else (walls, cliffs, gates, INERT). Never a radian-encoded
+    variant."""
     if unit_rotation.rotation_is_angle(const):
-        return 0.0 if owner == GAIA_PLAYER_ID else _snapped_facing(state.facing, const)
+        return _snapped_facing(state.facing, const)
     if unit_variant.is_cyclable(const):
         return float(variant_for(state, const))
     return 0.0

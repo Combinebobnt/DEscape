@@ -25,6 +25,7 @@ from descape import (
     settings,
     terrain_blend,
     terrain_style,
+    unit_rotation,
     unit_sprites,
 )
 from descape.grid_overlay import DEFAULT_GRID, GridBake
@@ -4241,16 +4242,19 @@ def stored_rotation(player_id: int, unit) -> float:
     angle_index(). Tier B made that known-set generated (unit_graphic_map.json's
     `rotation_is_variant` field, from the .dat's own unit.type != 70) rather
     than the two hand-kept frozensets Track A2 shipped with, which is what
-    fixed trees drawing variant 0 in every map. Everything GAIA owns that is
-    still creatable (unit.type == 70) keeps zeroing, since for those the field
-    is a real angle a GAIA placement has no camera-relative facing to apply.
-    Zeroing is the safe default precisely because it is the "we don't know
-    what this integer means" answer.
+    fixed trees drawing variant 0 in every map.
+
+    GH #217 widened it to the ANGLE consts (unit_rotation.rotation_is_angle(),
+    the predicate set_rotation() and Rotate use): a GAIA creatable's rotation
+    is a real facing, and the game draws it, checked in the official editor
+    and in a scenario DEscape wrote. Only a GAIA const that is neither keeps
+    zeroing, the safe "we don't know what this integer means" answer.
 
     A1 and A2 are one change, not two: un-zeroing a cliff without cliffs in the
     variant set sends rotation 6.0 through angle_index() to index 24, past the
     24-frame file, and 246 corpus placements degrade to coloured marks."""
-    if player_id == 0 and not unit_sprites.rotation_is_variant(unit.unit_const):
+    const = unit.unit_const
+    if player_id == 0 and not (unit_sprites.rotation_is_variant(const) or unit_rotation.rotation_is_angle(const)):
         return 0.0
     return float(unit.rotation)
 
