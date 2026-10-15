@@ -10,8 +10,8 @@
 # test bootstrap picks offscreen, as it does on CI. QT_FONT_DPI needs nothing
 # here: testkit/qt_window.ensure_qapp() hard-sets it.
 #
-# This matches build.yml's test step only until that workflow changes, so it
-# does not replace a real CI run on a release branch before tagging.
+# This matches .github/actions/default-tier only until that action changes, so
+# it does not replace a real CI run on a release branch before tagging.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -52,6 +53,20 @@ def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     if start is not None:
         ranges.append((start, len(before)))
     return ranges
+
+
+def symlink_loop(tmp_path: Path) -> Path:
+    """loop-a -> loop-b -> loop-a, returning loop-a."""
+    a, b = tmp_path / "loop-a", tmp_path / "loop-b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    return a
+
+
+def resolve_like_py313(monkeypatch) -> None:
+    """Python 3.13+'s non-strict Path.resolve() on a loop: no raise, and a ".."
+    applied as text. Lets a loop-refusal test pin the stat check on CI's 3.11."""
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: Path(os.path.normpath(self.absolute())))
 
 
 # -- GH #148: a fake install with portraits and stat icons, for the unit cards --
@@ -539,6 +554,8 @@ def _isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_module, "CONFIG_PATH", fake_config_path)
     for name in settings_isolation.MEMOIZED_GLOBALS:
         monkeypatch.setattr(settings_module, name, None)
+    # Settings > General lists content_roots(), so a developer's AOE2DE_PROFILE_PATH must not reach it (GH #126).
+    monkeypatch.delenv("AOE2DE_PROFILE_PATH", raising=False)
     # pytest-qt processes events after this fixture's teardown, so a live warm tick can cache the
     # real config's install between tests; clear it here, not only on teardown.
     asset_source_module.clear_install_caches()

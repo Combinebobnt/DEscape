@@ -113,7 +113,11 @@ _STARTING_AGE_CHOICES = tuple((m.value, m.name.replace("_", " ").title()) for m 
 _COLOR_CHOICES = tuple((m.value, m.name.title()) for m in ColorId if not m.name.startswith("INVALID"))
 # ai_type follows Personality, not the Human/Computer/Either control:
 # confirmed by in-game saves (GH #126 Step 0) and the name-class corpus census.
+# The in-game Player Type control is the `human` spec below.
 _PLAYER_TYPE_CHOICES = ((0, "Custom"), (1, "Standard"), (2, "None"))
+# player_data_1.human, per the GH #126 Step 0 saves and the corpus census: the
+# game's Human and Either both store 1, Computer stores 0, and no file holds anything else.
+_HUMAN_CHOICES = ((1, "Either"), (0, "Computer"))
 
 
 _SPECS: tuple[PlayerFieldSpec, ...] = (
@@ -201,6 +205,14 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
     ),
 
     # -- AI -------------------------------------------------------------------
+    PlayerFieldSpec(
+        "human", "Player type", "AI",
+        "DataHeader", "player_data_1", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
+        struct_field="human", choices=_HUMAN_CHOICES,
+        tooltip="Either: a human or the computer can take this slot (the game's "
+                "Human stores the same value, so a Human slot shows as Either). "
+                "Computer: always the AI, running the Personality below.",
+    ),
     PlayerFieldSpec(
         "player_type", "AI type", "AI",
         "PlayerDataTwo", "ai_type", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
@@ -510,6 +522,10 @@ _NOT_BYTE_PATCHED = _NEVER_WRITABLE | _OWN_WRITE_PATH
 # set marks which two fields need that per-file codec check at all;
 # everything else always uses the fixed-stride path.
 _STR16_CAPABLE_FIELDS = frozenset({"civilization", "architecture"})
+# Fixed-width player_data_1 fields that still need the variable-stride walk:
+# from 1.56 the array's entries differ in length, so _array_target()'s single
+# stride lands wrong (or returns None) on a mixed-length file, as for `active`.
+_PLAYER_DATA_1_FIXED_FIELDS = frozenset({"human"})
 
 
 # Number of Players' own OptionsEditModel id. Deliberately NOT a
@@ -1310,7 +1326,7 @@ def _resolve_all(loaded: LoadedScenario) -> dict[str, tuple[_Resolved, ...]]:
             index = spec.layout.index_for(player_id)
             if spec.field_id == "pop_limit":
                 primary = _array_target(loaded, "Units", "player_data_4", "population_limit", index)
-            elif is_str16:
+            elif is_str16 or spec.field_id in _PLAYER_DATA_1_FIXED_FIELDS:
                 # Variable-stride: player_data_1's own entries differ in
                 # byte length from each other, so _array_target()'s single
                 # `stride` cannot locate them -- see
@@ -1401,12 +1417,16 @@ def verify_player_block(loaded: LoadedScenario) -> bool:
             if player_field_id(spec.field_id, 0) not in resolved:
                 return False
             continue
-        if spec.field_id in _STR16_CAPABLE_FIELDS and _player_data_1_field_codec(loaded, spec.struct_field) == "str16":
+        if spec.field_id in _PLAYER_DATA_1_FIXED_FIELDS or (
+            spec.field_id in _STR16_CAPABLE_FIELDS and _player_data_1_field_codec(loaded, spec.struct_field) == "str16"
+        ):
             # Step B: with the variable-stride locator able to reach index
             # 8, this is a *stronger* shift detector than for the
             # fixed-width fields above -- a wrong entry offset in a
             # variable-stride array lands mid-string, not on a plausible
             # integer. Unreached while civilization/architecture are GAIA_FIELDS.
+            # `human` (GH #126) takes it on every version: _array_target()
+            # returns None on a mixed-length file, which would fail the whole tab.
             gaia = _player_data_1_variable_target(loaded, spec.struct_field, 0)
         else:
             gaia = _array_target(loaded, spec.section, spec.retriever, spec.struct_field, 8)

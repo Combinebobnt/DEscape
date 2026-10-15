@@ -18,7 +18,8 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # Path to your AoE2:DE profile folder, the one holding numeric per-account
 # folders with resources/ and mods/ inside. Only read, never written, and
 # optional: without it only the install's own content is offered. Also
-# settable via the AOE2DE_PROFILE_PATH env var (checked first). Default:
+# settable from Settings > General's profile folder row, or via the
+# AOE2DE_PROFILE_PATH env var (checked first, overrides both). Default:
 # detected, as %USERPROFILE%\Games\Age of Empires 2 DE on Windows, or on
 # Linux as the Proton prefix beside aoe2de_install's Steam library
 # (steamapps/compatdata/813780/pfx/drive_c/users/steamuser/Games/...).
@@ -127,6 +128,15 @@ stack_badges: true
 # badge inside the tile; above is the original look.
 # Default: bottom_right.
 stack_badge_position: bottom_right
+
+# How Terrain mode's picker shows terrains, switched by the List/Grid buttons
+# beside its filter box: list or grid. Anything else falls back to the
+# default on read. Default: list.
+terrain_picker_mode: list
+
+# The terrain grid's swatch size in px, Settings > Appearance: 32, 48, 64.
+# Anything else falls back to the default on read. Default: 48.
+terrain_grid_swatch_px: 48
 
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.

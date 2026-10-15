@@ -836,7 +836,7 @@ def _in_place_mirror_writes() -> list[tuple[str, str, str]]:
     its first argument."""
     found = []
     for path in sorted((Path(render.__file__).parent).glob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
 
         def owner(node, parents=parents) -> str:

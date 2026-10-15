@@ -130,10 +130,8 @@ def blocked_tiles(
     wall_scene()'s: the `id(unit)` values of units a move carries away.
 
     Obstacles (rocks, ruins, statues, mountains: unit_kind.obstacle_consts(),
-    GH #149) block, but only on their 1x1 anchor tile: like every
-    non-building, unit_occupied_tiles() gives them NON_BUILDING_SPAN, so a
-    run can pass through a 3x3 mountain's outer tiles. Accepted limitation;
-    real spans would also change drawing and picking (unit_kind docstring).
+    GH #149) block on their whole footprint: a mountain's is 6x6 through
+    terrain_palette.DOODAD_TILE_SPANS (TASK-134, which closed TASK-209).
 
     The sparse unit_occupied_tiles() set, the same oracle wall_scene() uses,
     never a bounding rect. A function of its own rather than a third

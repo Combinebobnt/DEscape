@@ -489,6 +489,223 @@ def test_loading_an_install_path_refreshes_the_swatches(monkeypatch) -> None:
         _close(window)
 
 
+# -- GH #161: the grid presentation ------------------------------------------
+
+
+def _grid_pick(view, value) -> None:
+    """What a click on a grid cell does: moves the grid's current item."""
+    view.grid.setCurrentItem(view.grid.cell_item(value))
+
+
+def _shown_panel(mode: str = "grid"):
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.terrain_panel import TerrainPanel
+
+    conftest.ensure_qapp()
+    panel = TerrainPanel(_GRASS_1, display_mode=mode)
+    panel.resize(440, 700)
+    panel.show()
+    for _ in range(4):
+        QApplication.processEvents()
+    return panel
+
+
+def test_a_mode_switch_flips_the_page_buttons_and_preview_and_emits_once() -> None:
+    from PyQt5.QtCore import Qt
+
+    panel = _shown_panel("list")
+    try:
+        view = panel.view
+        modes: list[str] = []
+        panel.display_mode_changed.connect(modes.append)
+        assert view.stack.currentWidget() is view.tree and view.mode_buttons["list"].isChecked()
+        assert view.preview.isVisible()
+        view.mode_buttons["grid"].click()
+        assert modes == ["grid"] and panel.display_mode() == "grid"
+        assert view.stack.currentWidget() is view.grid
+        assert view.mode_buttons["grid"].isChecked() and not view.mode_buttons["list"].isChecked()
+        assert not view.preview.isVisible()
+        view.mode_buttons["grid"].click()
+        assert modes == ["grid"]
+        view.mode_buttons["list"].click()
+        assert modes == ["grid", "list"] and view.preview.isVisible()
+        assert all(b.focusPolicy() == Qt.NoFocus for b in view.mode_buttons.values())
+        assert view.grid.focusPolicy() == Qt.ClickFocus
+        assert view.mode_buttons["grid"].toolTip() == "Show terrains as a grid of swatches"
+    finally:
+        panel.close()
+
+
+def test_a_mode_switch_never_changes_the_terrain() -> None:
+    window = _terrain_window()
+    try:
+        panel = window.terrain_panel
+        _user_pick(window, _SNOW_SOFT)
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        panel.set_display_mode("grid")
+        assert panel.terrain_id() == _SNOW_SOFT and panel.view.grid.current_value() == _SNOW_SOFT
+        panel.set_display_mode("list")
+        assert panel.terrain_id() == _SNOW_SOFT and emitted == []
+    finally:
+        _close(window)
+
+
+def test_a_grid_pick_is_what_draw_paints() -> None:
+    window = _terrain_window()
+    try:
+        mm = window.scenario.map_manager
+        view = window.terrain_panel.view
+        window.terrain_panel.set_display_mode("grid")
+        _grid_pick(view, _SNOW_SOFT)
+        assert window.terrain_panel.terrain_id() == _SNOW_SOFT
+        assert view.current_value() == _SNOW_SOFT  # the tree followed
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(3, 3, 0)
+        window.on_edit_stroke_end()
+        assert mm.get_tile(3, 3).terrain_id == _SNOW_SOFT
+    finally:
+        _close(window)
+
+
+def test_the_filter_and_show_hidden_drive_the_grid_and_the_pick_stays_sticky() -> None:
+    window = _terrain_window()
+    try:
+        panel = window.terrain_panel
+        view = panel.view
+        panel.set_display_mode("grid")
+        _grid_pick(view, _SNOW_SOFT)
+        grid = view.grid
+        black_cell = grid.cell_item(_BLACK)
+        assert black_cell.isHidden()
+        view.filter_edit.setText("water")
+        search = {item.value: item.search_text for item in terrain_browser.items_for()}
+        shown = [v for v in grid.values() if not grid.cell_item(v).isHidden()]
+        assert shown and all("water" in search[v] for v in shown)
+        assert grid.cell_item(_SNOW_SOFT).isHidden()
+        visible_heads = [h.text() for h in grid.heading_items() if not h.isHidden()]
+        assert visible_heads and all(not t.startswith("Snow") for t in visible_heads)
+        assert panel.terrain_id() == _SNOW_SOFT and grid.current_value() == _SNOW_SOFT
+        view.filter_edit.setText("")
+        assert grid.currentItem() is grid.cell_item(_SNOW_SOFT)
+        view.show_hidden_checkbox.setChecked(True)
+        assert not black_cell.isHidden()
+        unused = next(e.category for e in terrain_catalog.terrains() if e.id == _BLACK)
+        assert any(h.text().startswith(unused) and not h.isHidden() for h in grid.heading_items())
+    finally:
+        _close(window)
+
+
+def test_a_heading_current_in_the_tree_leaves_the_grid_frame_alone() -> None:
+    window = _terrain_window()
+    try:
+        view = window.terrain_panel.view
+        _user_pick(window, _SNOW_SOFT)
+        view.tree.setCurrentItem(view.tree.topLevelItem(0))
+        assert view.grid.current_value() == _SNOW_SOFT
+    finally:
+        _close(window)
+
+
+def test_the_eyedropper_in_grid_mode_arms_a_hidden_terrain_without_decoding_rows() -> None:
+    window = _terrain_window()
+    try:
+        panel = window.terrain_panel
+        view = panel.view
+        panel.set_display_mode("grid")
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        assert panel.set_terrain(_BLACK)
+        assert view.show_hidden_checkbox.isChecked()
+        assert emitted == [_BLACK]
+        assert view.grid.current_value() == _BLACK
+        assert view.grid.currentItem() is view.grid.cell_item(_BLACK)
+        group, _row = next((g, r) for g, r in _rows(view.tree) if r.data(0, _user_role()) == _BLACK)
+        assert group.isExpanded()
+        assert all(group.child(c).icon(0).isNull() for c in range(group.childCount()))
+    finally:
+        _close(window)
+
+
+def test_a_grid_pick_in_a_collapsed_group_has_an_icon_back_in_list() -> None:
+    """On a shown view: _terrain_window() is never shown, so it cannot catch this."""
+    panel = _shown_panel("grid")
+    try:
+        view = panel.view
+        group, _row = next((g, r) for g, r in _rows(view.tree) if r.data(0, _user_role()) == _WATER_DEEP)
+        assert not group.isExpanded()
+        _grid_pick(view, _WATER_DEEP)
+        assert panel.terrain_id() == _WATER_DEEP
+        panel.set_display_mode("list")
+        from PyQt5.QtWidgets import QApplication
+
+        QApplication.processEvents()
+        assert group.isExpanded()
+        assert not _row_for(view.tree, _WATER_DEEP).icon(0).isNull()
+    finally:
+        panel.close()
+
+
+def test_refresh_swatches_reaches_the_grid(monkeypatch) -> None:
+    from PyQt5.QtGui import QColor, QPixmap
+
+    panel = _shown_panel("grid")
+    try:
+        grid = panel.view.grid
+        grid.flush_swatches()
+
+        def _magenta(_terrain_id, px=terrain_browser.SWATCH_PX):
+            pixmap = QPixmap(px, px)
+            pixmap.fill(QColor(255, 0, 255))
+            return pixmap
+
+        monkeypatch.setattr(terrain_browser, "swatch_pixmap", _magenta)
+        panel.view.refresh_swatches()
+        assert grid.fill_pending()
+        grid.flush_swatches()
+        icon = grid.cell_item(_GRASS_1).icon()
+        assert (icon.pixmap(8, 8).toImage().pixel(4, 4) & 0xFFFFFF) == 0xFF00FF
+    finally:
+        panel.close()
+
+
+def test_the_window_restores_and_saves_the_mode_and_swatch_size() -> None:
+    from descape import settings
+
+    settings.set_terrain_picker_mode("grid")
+    settings.set_terrain_grid_swatch_px(64)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        panel = window.terrain_panel
+        assert panel.display_mode() == "grid" and panel.view.grid.swatch_px() == 64
+        panel.view.mode_buttons["list"].click()
+        assert settings._load_config()["terrain_picker_mode"] == "list"
+        combo = dialog.terrain_grid_swatch_combo
+        assert combo.currentData() == 64
+        combo.setCurrentIndex(combo.findData(32))
+        assert settings._load_config()["terrain_grid_swatch_px"] == 32
+        assert panel.view.grid.swatch_px() == 32 and panel.view.grid.iconSize().width() == 32
+        assert "Terrain grid swatch size: 32 px" in window.status_log.toPlainText()
+    finally:
+        dialog.close()
+        _close(window)
+
+
+def test_row_icons_and_grid_swatches_share_the_64_px_decode(monkeypatch) -> None:
+    sizes: list[int] = []
+    real = asset_source.get_terrain_thumbnail
+    monkeypatch.setattr(asset_source, "get_terrain_thumbnail", lambda tid, px: (sizes.append(px), real(tid, px))[1])
+    panel = _shown_panel("list")
+    try:
+        panel.view.filter_edit.setText("grass")  # expands and decodes a group
+        panel.set_display_mode("grid")
+        panel.view.grid.flush_swatches()
+        assert sizes and set(sizes) == {terrain_browser.SWATCH_PX} == {64}
+    finally:
+        panel.close()
+
+
 # -- cache registration ------------------------------------------------------
 
 

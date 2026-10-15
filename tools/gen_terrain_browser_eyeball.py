@@ -143,6 +143,187 @@ def _capture(out_dir: Path) -> list[Path]:
     return written
 
 
+_GRID_WIDE_WIDTH = 600
+
+
+def _pixel_spread(image) -> int:
+    samples = [image.pixel(x, y) for y in range(image.height()) for x in range(image.width())]
+    return max(max((p >> s) & 0xFF for p in samples) - min((p >> s) & 0xFF for p in samples) for s in (16, 8, 0))
+
+
+def _grid_report(window, label: str, expect_detail: bool) -> int:
+    """GH #161 grid checks a screenshot cannot settle; returns the failure count.
+
+    Every shown cell has an icon (with real texture detail when an install is
+    configured), every caption's wrapped text rect fits its cell, headings
+    are left-aligned in WindowText, and the armed cell carries Highlight on
+    all four sides with its swatch untinted. Offscreen Qt geometry."""
+    from PyQt5.QtCore import QRect
+    from PyQt5.QtGui import QFontMetrics, QPalette
+
+    from descape import asset_source
+    from descape.swatch_grid import _TEXT_FLAGS, PAD
+
+    grid = window.terrain_panel.view.grid
+    grid.flush_swatches()
+    image = grid.viewport().grab().toImage()
+    palette = grid.palette()
+    metrics = QFontMetrics(grid.caption_font())
+    failures = []
+    shown = [v for v in grid.values() if not grid.cell_item(v).isHidden()]
+    for value in shown:
+        cell = grid.cell_item(value)
+        icon = cell.icon()
+        if icon.isNull():
+            failures.append(f"no icon on {cell.text()}")
+        elif expect_detail and _pixel_spread(icon.pixmap(64, 64).toImage()) == 0:
+            # g_bla.dds and g_kf1.dds really are solid black; only a fallback fill is a failure.
+            if asset_source.get_terrain_thumbnail(value, 64) is None:
+                failures.append(f"flat fallback swatch on {cell.text()}")
+            else:
+                print(f"  [{label}] note: {cell.text()}'s real texture is a single colour")
+        rect = grid.visualItemRect(cell)
+        box = grid.caption_rect(rect, cell.text())
+        used = metrics.boundingRect(QRect(box.left(), box.top(), box.width(), 100_000), _TEXT_FLAGS, cell.text())
+        if not rect.contains(used):
+            failures.append(f"caption overflows on {cell.text()}: {used} outside {rect}")
+    text = palette.color(QPalette.WindowText).rgb()
+    viewport = grid.viewport().rect()
+    for heading in grid.heading_items():
+        rect = grid.visualItemRect(heading)
+        if heading.isHidden() or not rect.intersects(viewport):
+            continue
+        xs = [x for y in range(rect.top(), rect.bottom()) for x in range(rect.left(), rect.right())
+              if image.valid(x, y) and image.pixel(x, y) == text]
+        if not xs:
+            failures.append(f"heading {heading.text()!r} has no WindowText pixels")
+        elif min(xs) - rect.left() > PAD + 4:
+            failures.append(f"heading {heading.text()!r} starts {min(xs) - rect.left()} px in, not left-aligned")
+    armed = grid.current_value()
+    cell = grid.cell_item(armed) if armed is not None else None
+    if cell is not None and not cell.isHidden() and grid.visualItemRect(cell).intersects(viewport):
+        rect = grid.visualItemRect(cell)
+        highlight = palette.color(QPalette.Highlight).rgb()
+        mid = rect.center()
+        sides = [(rect.left(), mid.y()), (mid.x(), rect.top()), (rect.right(), mid.y()), (mid.x(), rect.bottom())]
+        if not all(image.pixel(x, y) == highlight for x, y in sides):
+            failures.append("armed cell is missing Highlight on a side")
+        swatch = grid.swatch_rect(rect)
+        source = cell.icon().pixmap(grid.swatch_px(), grid.swatch_px()).toImage()
+        drawn = image.copy(swatch)
+        if any(drawn.pixel(x, y) != source.pixel(x, y) for x, y in ((0, 0), (swatch.width() // 2, swatch.height() // 2))):
+            failures.append("armed swatch is tinted")
+    else:
+        print(f"  [{label}] armed cell not on screen; frame check skipped")
+    tops = [grid.visualItemRect(grid.cell_item(v)).top() for v in shown]
+    per_row = max(tops.count(t) for t in set(tops)) if tops else 0
+    print(
+        f"  [{label}] cells shown={len(shown)} cell_w={grid.cell_width()} per_row={per_row} "
+        f"content height={grid.verticalScrollBar().maximum() + grid.viewport().height()} "
+        f"hscroll max={grid.horizontalScrollBar().maximum()} failures={len(failures)}"
+    )
+    for failure in failures:
+        print(f"    FAIL {failure}")
+    return len(failures)
+
+
+def _capture_grid(out_dir: Path) -> tuple[list[Path], int]:
+    """Grid mode at MIN_USEFUL_WIDTH and 600 px, at each swatch size, once with
+    show-hidden ticked, and once under a dark theme (offscreen Qt)."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import asset_source, settings
+    from descape.viewer_dialogs import apply_theme
+
+    expect_detail = asset_source.is_available()
+    window = _open_window()
+    written: list[Path] = []
+    failures = 0
+    panel = window.terrain_panel
+    try:
+        panel.set_display_mode("grid")
+        panel.set_terrain(next(v for v in panel.view.grid.values() if v != panel.terrain_id()))
+        for width in (panel.MIN_USEFUL_WIDTH, _GRID_WIDE_WIDTH):
+            _set_left_width(window, width)
+            for px in settings.TERRAIN_GRID_SWATCH_SIZES:
+                panel.set_grid_swatch_px(px)
+                QApplication.processEvents()
+                failures += _grid_report(window, f"grid w{width} {px}px", expect_detail)
+                path = out_dir / f"grid_w{width}_{px}px.png"
+                panel.grab().save(str(path))
+                written.append(path)
+        _set_left_width(window, panel.MIN_USEFUL_WIDTH)
+        panel.set_grid_swatch_px(settings.TERRAIN_GRID_SWATCH_PX_DEFAULT)
+        panel.view.show_hidden_checkbox.setChecked(True)
+        panel.view.grid.scrollToBottom()
+        QApplication.processEvents()
+        failures += _grid_report(window, "grid show-hidden", expect_detail)
+        path = out_dir / "grid_show_hidden_bottom.png"
+        panel.grab().save(str(path))
+        written.append(path)
+        panel.view.show_hidden_checkbox.setChecked(False)
+        panel.set_terrain(panel.terrain_id())
+        panel.view.grid.set_current_value(panel.terrain_id())
+        settings.set_theme("dark")
+        apply_theme(QApplication.instance(), "dark", {})
+        QApplication.processEvents()
+        failures += _grid_report(window, "grid dark", expect_detail)
+        path = out_dir / "grid_dark.png"
+        panel.grab().save(str(path))
+        written.append(path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written, failures
+
+
+def _grid_timing() -> int:
+    """Shows the grid on the real install with cold caches and lets the event
+    loop fill it: prints the time from first show to the last icon and the
+    longest single tick."""
+    import time
+
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import asset_source
+
+    if not asset_source.is_available():
+        print("--grid-timing needs a configured AoE2DE install", file=sys.stderr)
+        return 1
+    from descape.terrain_panel import TerrainPanel
+
+    asset_source.clear_install_caches()
+    panel = TerrainPanel(display_mode="grid")
+    panel.resize(440, 900)
+    grid = panel.view.grid
+    ticks: list[float] = []
+    real_tick = grid._tick
+
+    def timed_tick() -> None:
+        start = time.perf_counter()
+        real_tick()
+        ticks.append(time.perf_counter() - start)
+
+    grid._timer.timeout.disconnect()
+    grid._timer.timeout.connect(timed_tick)
+    start = time.perf_counter()
+    panel.show()
+    while True:
+        QApplication.processEvents()
+        if not grid.fill_pending() and all(
+            grid.cell_item(v).isHidden() or not grid.cell_item(v).icon().isNull() for v in grid.values()
+        ):
+            break
+    total = time.perf_counter() - start
+    load = os.getloadavg()[0] if hasattr(os, "getloadavg") else float("nan")
+    print(
+        f"grid fill: {total:.2f} s from show to last icon over {len(ticks)} ticks, "
+        f"longest tick {max(ticks) * 1000:.1f} ms, load {load:.1f}"
+    )
+    panel.close()
+    return 0
+
+
 def _measure(out_dir: Path) -> int:
     """The assertions a screenshot cannot make, per category representative:
     the swatches are pairwise distinct in mean RGB, and each one carries
@@ -207,6 +388,10 @@ def main() -> int:
         "--no-install", action="store_true", help="hide the AoE2DE install: capture the flat-colour fallback"
     )
     parser.add_argument("--out", type=Path, default=OUT_DIR)
+    parser.add_argument(
+        "--grid-timing", action="store_true",
+        help="time the grid's progressive fill on the real install with cold caches (GH #161), then exit",
+    )
     args = parser.parse_args()
 
     if not PYQT5_AVAILABLE:
@@ -222,10 +407,16 @@ def main() -> int:
             os.environ.pop("AOE2DE_INSTALL_PATH", None)
         settings_isolation.isolate_settings(Path(tmp), redirect_asset_source=args.no_install)
         _ensure_qapp()
+        if args.grid_timing:
+            return _grid_timing()
         for path in _capture(args.out):
             print(f"wrote {path}")
+        print("grid mode:")
+        grid_paths, grid_failures = _capture_grid(args.out)
+        for path in grid_paths:
+            print(f"wrote {path}")
         print("category swatch means:")
-        collisions = _measure(args.out)
+        collisions = _measure(args.out) + grid_failures
     if collisions:
         print(f"{collisions} swatch check(s) failed -- see the flags above", file=sys.stderr)
         return 1

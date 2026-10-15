@@ -124,6 +124,7 @@ from descape.scenario_io import (
     LoadedScenario,
     is_workshop_subscribed,
     names_workshop_subscribed,
+    resolve_detecting_loops,
 )
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
@@ -652,8 +653,8 @@ def write_scenario(
     resolved = None
     if not names_workshop_subscribed(out_path):
         try:
-            resolved = out_path.resolve()
-        except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
+            resolved = resolve_detecting_loops(out_path)
+        except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
             raise WriteBlockedError(
                 f"Refusing to write to a path that cannot be resolved ({e}), so it can't be"
                 f" shown to be outside a subscribed-mods (mods/subscribed/) folder: {out_path}"

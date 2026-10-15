@@ -348,6 +348,53 @@ def test_civilization_choices_exclude_gaia() -> None:
         _close(window)
 
 
+def test_the_player_type_row_offers_either_and_computer_and_undoes() -> None:
+    """GH #126: the in-game Player Type, first in AI, above the read-only AI type."""
+    from PyQt5.QtWidgets import QComboBox
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        assert "human" in window._editable_player_fields()
+        ai_rows = [s.field_id for s in panel._specs if s.group == "AI"]
+        assert ai_rows[:2] == ["human", "player_type"]
+        widget = panel.widget_for("human")
+        assert isinstance(widget, QComboBox) and widget.isEnabled()
+        assert [(widget.itemData(i), widget.itemText(i)) for i in range(widget.count())] == [
+            (1, "Either"), (0, "Computer"),
+        ]
+        assert widget.currentText() == "Either"
+
+        widget.setCurrentIndex(widget.findData(0))
+        assert window.edit_history.is_dirty
+        assert window.option_edits.current_value("player:human:1") == 0
+        window.undo()
+        assert panel.current_values()["human"] == 1
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_an_out_of_range_player_type_shows_as_unknown(tmp_path: Path) -> None:
+    from descape.options_model import OptionsEditModel
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    model = OptionsEditModel(loaded)
+    model.set_value("player:human:1", 7)
+    odd = tmp_path / "odd.aoe2scenario"
+    write_scenario(loaded, odd, options=model, backup=False)
+    panel, _reported = _editable_panel(load_map_and_units(odd))
+    try:
+        widget = panel.widget_for("human")
+        assert widget.isEnabled()
+        assert widget.currentText() == "unknown (7)"
+        assert widget.count() == 3
+    finally:
+        panel.deleteLater()
+
+
 def test_player_type_carries_its_own_reason() -> None:
     window = _players_window()
     try:

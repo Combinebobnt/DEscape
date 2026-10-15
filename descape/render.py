@@ -32,6 +32,7 @@ from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
     BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
+    DOODAD_TILE_SPANS,
     FOUNDATION_TERRAIN,
     HERO_GLOW_CONSTS,
     PLAYER_COLORS,
@@ -214,7 +215,8 @@ def _top_block(
 
 
 def _tile_block(tile, tile_px: int, textures: bool = True, blend=None) -> np.ndarray:
-    """Flat's per-tile content: _top_block() with no farm override. Split
+    """Flat's per-tile content: _top_block() with no farm override (a draped
+    farm tile calls _top_block() itself, GH #150). Split
     out of render_tile() (Phase B-E) so composite_rect_flat() can reuse the
     exact same per-tile content without going through render_tile()'s own
     img-mutating, tile.x/tile.y-derived placement."""
@@ -343,6 +345,7 @@ def render_tile(
     grid: GridBake = DEFAULT_GRID,
     map_dims: tuple[int, int] | None = None,
     blend=None,
+    farm=None,
 ) -> None:
     """Paints one tile's tile_px x tile_px block into img, in place. The
     per-tile body shared by render_terrain() (full-map render) and
@@ -354,29 +357,41 @@ def render_tile(
     Stepped mode shows real per-tile Z-height displacement, and actively
     misleading in Flat mode, which has no other elevation cue at all).
     Plain terrain color/texture only. blend: the tile's blend key
-    (_top_block())."""
+    (_top_block()). farm: the tile's flat_farm_tiles() entry, painted as its
+    farm terrain plus outline under the grid (GH #150), or None."""
     px0, py0 = tile.x * tile_px, tile.y * tile_px
-    img[py0 : py0 + tile_px, px0 : px0 + tile_px] = _tile_block(tile, tile_px, blend=blend)
+    if farm is None:
+        img[py0 : py0 + tile_px, px0 : px0 + tile_px] = _tile_block(tile, tile_px, blend=blend)
+    else:
+        img[py0 : py0 + tile_px, px0 : px0 + tile_px] = _top_block(tile, tile_px, blend=blend, terrain_override=farm[0])
+        _paint_farm_outline_flat(img, py0, px0, tile_px, farm[1], farm[2])
     if grid.paints and map_dims is not None:
         _paint_grid_flat(img, tile.x, tile.y, tile_px, map_dims[0], map_dims[1], py0, px0, grid)
 
 
-def render_terrain(scenario: LoadedScenario, grid: GridBake = DEFAULT_GRID, blend: bool = True) -> np.ndarray:
+def render_terrain(
+    scenario: LoadedScenario, grid: GridBake = DEFAULT_GRID, blend: bool = True, farm_tiles=None
+) -> np.ndarray:
     """Terrain rendered at tile_pixels_for_map()-per-tile resolution
     (adaptive on map size -- see that function). Uses a real per-tile
     texture crop when an AoE2DE install is configured
     (asset_source.get_terrain_texture_array), falling back to
     terrain_palette's flat color per tile otherwise. Returns an
     (H*tile_px, W*tile_px, 3) uint8 array. blend=False keeps the
-    pre-blending render (blend_effective())."""
+    pre-blending render (blend_effective()). farm_tiles: flat_farm_tiles()'
+    by_tile, the oracle half of composite_rect_flat()'s drape (GH #150)."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
     img = np.zeros((h * tile_px, w * tile_px, 3), dtype=np.uint8)
 
     keys = _full_blend_keys(scenario, blend)
+    farms = farm_tiles or {}
     for tile in mm.terrain:
-        render_tile(img, tile, tile_px, grid, (w, h), None if keys is None else keys[tile.y * w + tile.x])
+        render_tile(
+            img, tile, tile_px, grid, (w, h), None if keys is None else keys[tile.y * w + tile.x],
+            farms.get((tile.x, tile.y)),
+        )
     return img
 
 
@@ -3568,7 +3583,7 @@ def _flat_unit_rows(
 
 
 def _flat_icon_layer(
-    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter()
+    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter(), with_farms: bool = False
 ) -> tuple[dict[int, unit_sprites.SpriteDraw], int]:
     """Flat's real .sld icons (P3-g7), keyed by ROW INDEX into the bboxes
     array _flat_unit_draws() returns for the same arguments, plus that walk's
@@ -3594,12 +3609,15 @@ def _flat_icon_layer(
 
     Footprint size comes from the CLAMPED bounds, matching the rect
     _flat_unit_draws() actually paints, so a building hanging off a map edge
-    fits what is on screen rather than what it would be inland."""
-    return _drain(_flat_icon_layer_sliced(scenario, tile_px, unit_filter))
+    fits what is on screen rather than what it would be inland.
+
+    with_farms (GH #150): a draped unit with no icon gets FLAT_DRAPED, so
+    its rect gives way to the farm drape composite_rect_flat() paints."""
+    return _drain(_flat_icon_layer_sliced(scenario, tile_px, unit_filter, with_farms))
 
 
 def _flat_icon_layer_sliced(
-    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter()
+    scenario: LoadedScenario, tile_px: int, unit_filter: UnitFilter = UnitFilter(), with_farms: bool = False
 ) -> Generator[None, None, tuple[dict[int, unit_sprites.SpriteDraw], int]]:
     """_flat_icon_layer() as a resumable generator -- Flat's counterpart to
     sprite_draws_by_anchor_sliced(), same shape and same reasons (see that
@@ -3626,12 +3644,18 @@ def _flat_icon_layer_sliced(
             # unit_filter keeps.
             draw = _flat_unit_icon(
                 unit, player_id, i, overrides, team_index, bounds, tile_px,
-                player_art_for(scenario, player_id),
+                player_art_for(scenario, player_id), with_farms,
             )
             if draw is not None:
                 icons[row] = draw
             row += 1
     return icons, row
+
+
+FLAT_DRAPED = unit_sprites.SpriteDraw(np.zeros((0, 0, 4), dtype=np.uint8), 0, 0)
+"""_flat_unit_icon()'s answer for a farm drawn as Flat terrain (GH #150): an
+icon-layer entry, compared by identity, that paints nothing in place of the
+unit's rect, so the drape under it shows."""
 
 
 def _flat_unit_icon(
@@ -3643,19 +3667,21 @@ def _flat_unit_icon(
     bounds: tuple[int, int, int, int],
     tile_px: int,
     art: tuple[int | None, int] | None = None,
+    with_farms: bool = False,
 ) -> unit_sprites.SpriteDraw | None:
     """One unit's Flat icon, the per-unit body of _flat_icon_layer_sliced()
     and of FlatChunkCache's row splice, shared so the two cannot drift. index
     is the unit's position in its player's full list, the key `overrides`
     (wall_variant_rotation_overrides()) uses. Footprint size comes from the
     CLAMPED bounds, matching the rect _flat_unit_bbox() paints. `art` is the
-    owner's player_art_for() pair (GH #48)."""
+    owner's player_art_for() pair (GH #48). with_farms: FLAT_DRAPED for a
+    draped const with no icon, where None would keep its rect."""
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     rotation = stored_rotation(player_id, unit)
     # A wall/gate's shape isn't always recoverable from its own stored
     # rotation; see wall_variant_rotation_overrides()'s docstring.
     rotation = overrides.get((player_id, index), rotation)
-    return unit_sprites.icon_for(
+    icon = unit_sprites.icon_for(
         unit.unit_const,
         rotation,
         team_index,
@@ -3664,6 +3690,9 @@ def _flat_unit_icon(
         getattr(unit, "reference_id", None),
         art,
     )
+    if icon is None and with_farms and _terrain_overlay_for(unit.unit_const) is not None:
+        return FLAT_DRAPED
+    return icon
 
 
 def player_art_for(scenario, player_id: int) -> tuple[int | None, int] | None:
@@ -3691,6 +3720,7 @@ def composite_rect_flat(
     terrain_ids: np.ndarray | None = None,
     layer_ids: np.ndarray | None = None,
     key_map: terrain_blend.KeyMap | None = None,
+    farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] | None = None,
 ) -> np.ndarray:
     """Composites the half-open canvas rect [x0, x1) x [y0, y1) for Flat
     mode in isolation and returns it as a fresh (y1-y0, x1-x0, 3) uint8
@@ -3744,11 +3774,13 @@ def composite_rect_flat(
     "sprites off is byte-identical" a structural property rather than a
     measured one.
 
-    layers: only the terrain-textures half means anything here -- Flat has
-    no farm path at all (no SpriteLayer, so no farm_by_tile), which is why
-    view_layers gives that row a styles= set excluding Flat rather than
-    letting it be a silent no-op (set_sprites_enabled's own documented
-    trap). Blending reads terrain_ids/layer_ids/key_map as composite_rect_iso() does.
+    layers: the terrain-textures and blend halves are read here; the farm
+    layer arrives already applied, as farm_tiles and FLAT_DRAPED icons.
+    Blending reads terrain_ids/layer_ids/key_map as composite_rect_iso() does.
+
+    farm_tiles (GH #150): flat_farm_tiles()' by_tile. Each listed tile paints
+    its farm terrain, then its 1px outline, then the grid, all in the tile
+    loop, so the grid and every unit land over it. None is today's bytes.
 
     Do NOT re-express render_terrain()/overlay_units() in terms of this
     function -- same reason Track B gives for composite_rect_iso(): the
@@ -3770,17 +3802,22 @@ def composite_rect_flat(
         tiles = np.stack([xs.ravel(), ys.ravel()], axis=1)
         blend = _rect_blend_keys(scenario, tiles, layers, terrain_ids, layer_ids, key_map)
         keys = None if blend is None else blend.as_list()
+    farms = farm_tiles or None
     for ty in range(ty0, ty1):
         for tx in range(tx0, tx1):
             tile = mm.get_tile(tx, ty)
             key = None if keys is None else keys[(ty - ty0) * (tx1 - tx0) + tx - tx0]
-            _blit_clipped(
-                out, _tile_block(tile, tile_px, layers.terrain_textures, key),
-                tx * tile_px - x0, ty * tile_px - y0,
-            )
+            farm = None if farms is None else farms.get((tx, ty))
+            if farm is None:
+                block = _tile_block(tile, tile_px, layers.terrain_textures, key)
+            else:
+                block = _top_block(tile, tile_px, layers.terrain_textures, key, terrain_override=farm[0])
+            _blit_clipped(out, block, tx * tile_px - x0, ty * tile_px - y0)
             # Units are a separate pass below, so anywhere in this loop is
             # "between terrain and units". Into `out`, never the block: it is
             # a view of the cached texture.
+            if farm is not None:
+                _paint_farm_outline_flat(out, ty * tile_px - y0, tx * tile_px - x0, tile_px, farm[1], farm[2])
             if paint_grid:
                 _paint_grid_flat(out, tx, ty, tile_px, tile_w, tile_h, ty * tile_px - y0, tx * tile_px - x0, grid)
 
@@ -3793,6 +3830,8 @@ def composite_rect_flat(
             for i in hits:
                 bx0, by0, bx1, by1 = (int(v) for v in bboxes[i])
                 draw = None if icons is None else icons.get(int(i))
+                if draw is FLAT_DRAPED:
+                    continue  # its farm_tiles drape is the whole draw
                 if draw is None:
                     ix0, iy0 = max(bx0, x0) - x0, max(by0, y0) - y0
                     ix1, iy1 = min(bx1, x1) - x0, min(by1, y1) - y0
@@ -3885,13 +3924,14 @@ def _span_start(coord: float, span: int) -> int:
     non-buildings, whose coordinates are arbitrary floats: 291,148 axis values
     across the example corpus have 15,370 distinct fractional parts.
 
-    A span > 1 axis works in half-tiles, which is exact because span > 1
-    implies a building, and building coordinates are always exact multiples of
-    0.5 (measured: 27,320 axis values, fractional part 0.0 or 0.5, nothing
-    else). Rounding half up rather than flooring is what keeps the own-tile
-    invariant on legal off-parity placements. Deep-water fish (GH #178) are
-    the exception: 21 of 1049 corpus fish sit off the half-tile grid and are
-    accepted as quantized, and the own-tile invariant holds for any float.
+    A span > 1 axis works in half-tiles, which is exact for buildings, whose
+    coordinates are always exact multiples of 0.5 (measured: 27,320 axis
+    values, fractional part 0.0 or 0.5, nothing else). Rounding half up rather
+    than flooring is what keeps the own-tile invariant on legal off-parity
+    placements. Deep-water fish (GH #178) and class-14 doodads (TASK-134) are
+    not buildings: 21 of 1049 corpus fish and 24 of 205 doodads sit off the
+    half-tile grid and are accepted as quantized, and the own-tile invariant
+    holds for any float.
 
     Per axis, not per unit: a gate segment is (4, 1) and takes both branches.
     Applying the half-tile branch to a span-1 axis would move any unit whose
@@ -3919,9 +3959,11 @@ def _sprite_axis_centre(coord: float, span: int) -> float:
     the render never showed moving.
 
     A span > 1 axis keeps `_span_start(coord, span) + span / 2`, deliberately.
-    span > 1 implies a building, building coordinates are exact multiples of
-    0.5 (measured: 27,320 axis values, nothing else), and a building is drawn
-    as a half-tile-quantized slab on purpose -- see _span_start.
+    Building coordinates are exact multiples of 0.5 (measured: 27,320 axis
+    values, nothing else), and a building is drawn as a half-tile-quantized
+    slab on purpose -- see _span_start. A class-14 doodad's footprint is
+    quantized the same way, but its sprite is not: _resolve_unit_sprite keeps
+    the stored point for it (_sprite_keeps_own_point, TASK-134).
 
     Per axis, not per unit: a gate segment is (4, 1) and takes both branches.
     """
@@ -4732,6 +4774,82 @@ _FARM_EDGE_BITS = (
 DRAPED_SPRITE_CONSTS: frozenset[int] = frozenset({1893, 1897})
 
 
+def _farm_footprint_tiles(
+    bounds: tuple[int, int, int, int], terrain_id: int, color: tuple[int, int, int]
+) -> dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]:
+    """One draped unit's farm_by_tile entries: every footprint tile maps to
+    (terrain_id, outline colour, the EDGE_* bits on the footprint's outer
+    boundary). Shared by the iso sprite walk and flat_farm_tiles()."""
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+    for ty in range(tile_y0, tile_y1):
+        for tx in range(tile_x0, tile_x1):
+            mask = 0
+            if tx == tile_x0:
+                mask |= EDGE_LEFT
+            if ty == tile_y1 - 1:
+                mask |= EDGE_RIGHT
+            if ty == tile_y0:
+                mask |= EDGE_UP_LEFT
+            if tx == tile_x1 - 1:
+                mask |= EDGE_UP_RIGHT
+            farm_tiles[(tx, ty)] = (terrain_id, color, mask)
+    return farm_tiles
+
+
+def flat_farm_tiles(
+    scenario: LoadedScenario, unit_filter: UnitFilter = UnitFilter()
+) -> tuple[dict[tuple[int, int], tuple[int, tuple[int, int, int], int]], set[int]]:
+    """Top-down Flat's farm drape (GH #150): (by_tile, unit_ids), by_tile in
+    SpriteLayer.farm_by_tile's shape and unit_ids the id(unit) of every unit
+    that contributed. Walks players then units in list order, so a later
+    farm wins an overlap as _accumulate_contribution() lets it. Mip-free:
+    the caller paints each entry at its own tile_px."""
+    mm = scenario.map_manager
+    tile_w, tile_h = mm.map_width, mm.map_height
+    by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+    unit_ids: set[int] = set()
+    overlay: dict[int, int | None] = {}
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        for unit in units:
+            const = unit.unit_const
+            if const not in overlay:
+                overlay[const] = _terrain_overlay_for(const)
+            terrain_id = overlay[const]
+            if terrain_id is None or not unit_filter.matches(player_id, unit):
+                continue
+            bounds = unit_tile_bounds(unit, tile_w, tile_h)
+            if bounds is None:
+                continue
+            color = _unit_color(unit, scenario.player_colors[player_id])
+            by_tile.update(_farm_footprint_tiles(bounds, terrain_id, color))
+            unit_ids.add(id(unit))
+    return by_tile, unit_ids
+
+
+def _paint_farm_outline_flat(
+    img: np.ndarray, base_y: int, base_x: int, tile_px: int, color: tuple[int, int, int], edge_mask: int
+) -> None:
+    """A Flat farm tile's 1px owner-colour perimeter, along the inside of its
+    block on each outer side: EDGE_LEFT is x-low, EDGE_UP_RIGHT x-high,
+    EDGE_UP_LEFT y-low, EDGE_RIGHT y-high (iso_geometry.tile_edge_indices'
+    neighbour vocabulary). Clipped to img."""
+    h, w = img.shape[:2]
+    strips = []
+    if edge_mask & EDGE_LEFT:
+        strips.append((base_y, base_y + tile_px, base_x, base_x + 1))
+    if edge_mask & EDGE_UP_RIGHT:
+        strips.append((base_y, base_y + tile_px, base_x + tile_px - 1, base_x + tile_px))
+    if edge_mask & EDGE_UP_LEFT:
+        strips.append((base_y, base_y + 1, base_x, base_x + tile_px))
+    if edge_mask & EDGE_RIGHT:
+        strips.append((base_y + tile_px - 1, base_y + tile_px, base_x, base_x + tile_px))
+    for sy0, sy1, sx0, sx1 in strips:
+        y0, y1, x0, x1 = max(sy0, 0), min(sy1, h), max(sx0, 0), min(sx1, w)
+        if y1 > y0 and x1 > x0:
+            img[y0:y1, x0:x1] = color
+
+
 def _terrain_overlay_for(unit_const: int) -> int | None:
     """The terrain id `unit_const` draws as instead of a coloured mark, or
     None. A real .sld always wins over a terrain override -- most consts
@@ -4823,6 +4941,13 @@ class _SpriteContribution:
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
 
 
+def _sprite_keeps_own_point(unit_const: int) -> bool:
+    """A class-14 doodad with a footprint (DOODAD_TILE_SPANS, TASK-134) draws
+    its sprite at its stored point and sorts it at its own tile, as before it
+    had one. Its own tile is inside the footprint, so a splice still clears it."""
+    return unit_const in DOODAD_TILE_SPANS
+
+
 def _resolve_unit_sprite(
     scenario: LoadedScenario,
     proj: iso_geometry.IsoProjection,
@@ -4878,20 +5003,7 @@ def _resolve_unit_sprite(
     terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
     if terrain_id is not None and (not pieces or unit.unit_const in DRAPED_SPRITE_CONSTS):
         player_color = scenario.player_colors[player_id]
-        color = _unit_color(unit, player_color)
-        tile_x0, tile_x1, tile_y0, tile_y1 = bounds
-        for ty in range(tile_y0, tile_y1):
-            for tx in range(tile_x0, tile_x1):
-                mask = 0
-                if tx == tile_x0:
-                    mask |= EDGE_LEFT
-                if ty == tile_y1 - 1:
-                    mask |= EDGE_RIGHT
-                if ty == tile_y0:
-                    mask |= EDGE_UP_LEFT
-                if tx == tile_x1 - 1:
-                    mask |= EDGE_UP_RIGHT
-                farm_tiles[(tx, ty)] = (terrain_id, color, mask)
+        farm_tiles = _farm_footprint_tiles(bounds, terrain_id, _unit_color(unit, player_color))
     if not pieces:
         if not farm_tiles:
             return None
@@ -4906,6 +5018,9 @@ def _resolve_unit_sprite(
     fx = _sprite_axis_centre(unit.x, span_x)
     fy = _sprite_axis_centre(unit.y, span_y)
     ux, uy = int(unit.x), int(unit.y)
+    own_point = _sprite_keeps_own_point(unit.unit_const)
+    if own_point:
+        fx, fy = unit.x, unit.y
     # own_fx/own_fy: sub-tile fractions INSIDE the unit's own tile, not
     # to be confused with fx/fy above (where the footprint PAINTS, in
     # continuous tile coords) -- unit_rise_px() needs the former, the
@@ -4927,7 +5042,7 @@ def _resolve_unit_sprite(
     # moment instead of the unit's single anchor, which is what lets a unit
     # stand between a town centre's back and front pieces. Slotting moves
     # ordering only, never a pixel: px/py below are unchanged either way.
-    anchor = unit_sprites.sprite_anchor_tile(unit_occupied_tiles(unit, tile_w, tile_h))
+    anchor = (ux, uy) if own_point else unit_sprites.sprite_anchor_tile(unit_occupied_tiles(unit, tile_w, tile_h))
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     # The unclamped footprint start, matching how a slot offset was derived;
     # bounds is already map-clamped and is the wrong origin to add to.
@@ -5393,9 +5508,13 @@ def overlay_units(
     scenario: LoadedScenario,
     unit_filter: UnitFilter = UnitFilter(),
     with_sprites: bool = False,
+    with_farms: bool = False,
 ) -> np.ndarray:
     """Draws a colored dot per unit -- see _draw_unit() for the per-unit
     rules. Mutates and returns img.
+
+    with_farms (GH #150, with with_sprites): a draped const with no icon
+    draws nothing here, its drape being render_terrain()'s farm_tiles.
 
     unit_filter is threaded here for the HEADLESS path only (render_scenario
     -> save_png, tools/dump_scenario.py): the viewer composites through
@@ -5440,6 +5559,8 @@ def overlay_units(
                     scenario, unit, player_id, scenario.team_indices[player_id], tile_w, tile_h, tile_px,
                     overrides.get((player_id, i)),
                 )
+                if icon is None and with_farms and _terrain_overlay_for(unit.unit_const) is not None:
+                    continue
             _draw_unit(out, unit, player_color, tile_w, tile_h, tile_px, icon)
     return out
 

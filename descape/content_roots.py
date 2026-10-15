@@ -15,7 +15,8 @@ tests/test_content_roots.py scans this module's source for write calls.
 Profile location, in priority order (the same shape as
 asset_source.get_install_path()):
   1. the AOE2DE_PROFILE_PATH environment variable
-  2. an "aoe2de_profile" key in config.yaml
+  2. an "aoe2de_profile" key in config.yaml (Settings > General's profile
+     folder row writes it, through asset_source.save_profile_path_to_config())
   3. Windows: %USERPROFILE%/Games/Age of Empires 2 DE
   4. elsewhere: derived from the install path, via its nearest `steamapps`
      ancestor and the Proton prefix of app 813780. Never guesses ~/.steam,
@@ -137,6 +138,28 @@ def profile_path(install: Path | None = None, *, platform: str | None = None) ->
     return derive_profile_from_install(install)
 
 
+SOURCE_ENV = "env"
+SOURCE_CONFIG = "config"
+SOURCE_AUTO = "auto"
+SOURCE_NONE = "none"
+SOURCE_ENV_INVALID = "env-invalid"
+SOURCE_CONFIG_INVALID = "config-invalid"
+
+
+def profile_source(install: Path | None = None, *, platform: str | None = None) -> tuple[str, str | None]:
+    """(source, raw) for what profile_path() answers: SOURCE_ENV or SOURCE_CONFIG
+    with the raw setting, their *_INVALID twins when it is not a folder (so
+    profile_path() is None), or SOURCE_AUTO / SOURCE_NONE with raw None."""
+    env_raw = os.environ.get(PROFILE_ENV_VAR)
+    if env_raw:
+        return (SOURCE_ENV if Path(env_raw).is_dir() else SOURCE_ENV_INVALID), env_raw
+    config_raw = _config_value(PROFILE_CONFIG_KEY)
+    if config_raw:
+        return (SOURCE_CONFIG if Path(config_raw).is_dir() else SOURCE_CONFIG_INVALID), config_raw
+    found = profile_path(install, platform=platform)
+    return (SOURCE_AUTO if found is not None else SOURCE_NONE), None
+
+
 def _sorted_dirs(folder: Path) -> list[Path]:
     """Sub-folders of `folder` by name; [] (logged) if it cannot be listed."""
     try:
@@ -191,6 +214,24 @@ def _profile_roots(profile: Path) -> list[ContentRoot]:
                     profile_id=profile_id, mod_id=mod_dir.name,
                 ))
     return roots
+
+
+def skipped_mods(profile: Path) -> list[tuple[str, str]]:
+    """(kind folder, mod folder) for each mod on disk that _profile_roots()
+    leaves out because mod-status.json disables it, in profile id order."""
+    skipped: list[tuple[str, str]] = []
+    for id_dir in _sorted_dirs(Path(profile)):
+        mods_dir = id_dir / "mods"
+        if not id_dir.name.isdigit() or not mods_dir.is_dir():
+            continue
+        disabled = _disabled_mods(mods_dir)
+        skipped.extend(sorted(pair for pair in disabled if (mods_dir / pair[0] / pair[1]).is_dir()))
+    return skipped
+
+
+def has_profile_ids(folder: Path) -> bool:
+    """Whether `folder` holds a numeric per-account folder, the shape a profile folder has."""
+    return any(p.name.isdigit() for p in _sorted_dirs(Path(folder)))
 
 
 _UNSET = object()

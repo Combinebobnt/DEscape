@@ -738,12 +738,14 @@ def test_a_wall_run_through_a_rock_leaves_that_tile_empty():
     assert {int(node.x) for node in plan.nodes} == set(range(5, 16)) - {10}
 
 
-def test_a_mountain_blocks_only_its_anchor_tile():
-    """The accepted 1x1-footprint limitation (unit_kind docstring): pinned so
-    a later real-span fix shows up here as a deliberate change."""
-    mountain = 744  # MNTN3, a 3x3 mountain in game
-    scenario = _Scenario(60, [[_wall_at(20, 20, const=mountain)], [], [], [], [], [], [], [], []])
-    assert wall_run.blocked_tiles(scenario, 60, 60) == {(20, 20)}
+def test_a_mountain_blocks_its_whole_footprint():
+    """TASK-209, closed by TASK-134: a 6x6 mountain on a whole coordinate
+    blocks all 36 tiles of its footprint, not just its anchor tile."""
+    mountain = FakeUnit(x=20.0, y=20.0, unit_const=744, rotation=0.0)  # MNTN3
+    scenario = _Scenario(60, [[mountain], [], [], [], [], [], [], [], []])
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    assert blocked == {(x, y) for x in range(17, 23) for y in range(17, 23)}
+    assert len(blocked) == 36
 
 
 # --- a moved gate (GH #194: Moving a gate updates walls) -----------------

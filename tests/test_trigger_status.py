@@ -451,3 +451,113 @@ def test_display_instructions_with_defaults_is_ok_under_the_universal_rules() ->
     """A fixed-slot effect never trips the cluster check, whatever its quantity holds."""
     entry = _effect(_DISPLAY_INSTRUCTIONS, quantity=None)
     assert _status(EFFECT, entry).status is Status.OK
+
+
+# -- per-type plans (TASK-215) ---------------------------------------------------
+
+
+def _counting(monkeypatch, module, name: str) -> list:
+    calls: list = []
+    real = getattr(module, name)
+
+    def wrapper(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, wrapper)
+    return calls
+
+
+def test_one_context_derives_each_types_plan_once(monkeypatch) -> None:
+    """Anything derived from the type alone is built once per type and context:
+    a pass visits 160k entries on the largest corpus file."""
+    from descape import trigger_geometry, unit_references
+
+    coordinate = _counting(monkeypatch, trigger_geometry, "coordinate_fields")
+    unit_fields = _counting(monkeypatch, unit_references, "unit_reference_fields")
+    specs = _counting(monkeypatch, trigger_fields, "field_specs")
+    context = _context(_effects_table(kill_object=Requirement(all=("selected_object_ids",))), units={5})
+    trigger = _trigger(effects=[_effect(_KILL_OBJECT, selected_object_ids=[5]) for _ in range(50)])
+    for _ in range(2):
+        result = trigger_status.evaluate_trigger(trigger, context)
+        assert [s.status for s in result.effects] == [Status.OK] * 50
+    assert (len(coordinate), len(unit_fields), len(specs)) == (1, 1, 1)
+
+
+def test_an_all_ok_trigger_never_builds_entry_labels(monkeypatch) -> None:
+    labels = _counting(monkeypatch, trigger_status, "entry_label")
+    trigger = _trigger(conditions=[_condition(_OWN_OBJECTS)], effects=[_effect(_SEND_CHAT), _effect(_CREATE_OBJECT)])
+    assert trigger_status.evaluate_trigger(trigger, _context()).trigger is trigger_status.OK
+    assert labels == []
+
+
+def test_one_problem_entry_still_gets_its_label_in_display_slot_order(monkeypatch) -> None:
+    context = _context(_effects_table(create_object=Requirement(all=("location",))))
+    trigger = _trigger(effects=[_effect(_SEND_CHAT), _effect(_SEND_CHAT), _effect(_CREATE_OBJECT)])
+    trigger.effect_order = [1, 2, 0]
+    result = trigger_status.evaluate_trigger(trigger, context)
+    assert result.trigger == trigger_status.EntryStatus(Status.PROBLEM, ("effect 2 (create object): missing location",))
+
+
+def test_two_contexts_with_different_requirements_do_not_share_a_verdict() -> None:
+    import dataclasses
+
+    entry = _effect(_CREATE_OBJECT)
+    strict = _context(_effects_table(create_object=Requirement(all=("location",))))
+    lenient = _context()
+    assert _status(EFFECT, entry, strict).status is Status.PROBLEM
+    assert _status(EFFECT, entry, lenient).status is Status.OK
+    assert _status(EFFECT, entry, strict).status is Status.PROBLEM
+    # A copy gets its own plans, never the original's.
+    copied = dataclasses.replace(strict, requirements=_effects_table())
+    assert _status(EFFECT, entry, copied).status is Status.OK
+    assert _status(EFFECT, entry, strict).status is Status.PROBLEM
+
+
+def _with_references(trigger, context=None):
+    statuses, unit_refs, targets = trigger_status.evaluate_with_references(trigger, context or _context())
+    assert statuses == trigger_status.evaluate_trigger(trigger, context or _context())
+    return statuses, unit_refs, targets
+
+
+def test_evaluate_with_references_without_a_vocabulary_is_false_and_empty() -> None:
+    trigger = _trigger(effects=[_effect(_KILL_OBJECT, selected_object_ids=[5]), _effect(_ACTIVATE_TRIGGER, trigger_id=2)])
+    statuses, unit_refs, targets = _with_references(trigger, _context(vocabulary=None))
+    assert statuses.trigger is trigger_status.UNCHECKED
+    assert (unit_refs, targets) == (False, ())
+
+
+def test_evaluate_with_references_a_set_unit_id_counts_placed_or_not() -> None:
+    trigger = _trigger(effects=[_effect(_SEND_CHAT), _effect(_KILL_OBJECT, selected_object_ids=[-1, 5])])
+    assert _with_references(trigger, _context(units={5}))[1:] == (True, ())
+    assert _with_references(trigger, _context(units=()))[1:] == (True, ())
+
+
+def test_evaluate_with_references_an_unset_only_unit_field_does_not_count() -> None:
+    trigger = _trigger(effects=[_effect(_KILL_OBJECT, selected_object_ids=[-1])])
+    assert _with_references(trigger)[1:] == (False, ())
+
+
+def test_evaluate_with_references_collects_every_trigger_id_in_stored_order() -> None:
+    """Valid, dangling and UNSET alike, conditions then effects: a count change can flip any of them."""
+    trigger = _trigger(
+        conditions=[_condition(_TRIGGER_ACTIVE, trigger_id=9)],
+        effects=[_effect(_ACTIVATE_TRIGGER, trigger_id=2), _effect(_SEND_CHAT), _effect(_ACTIVATE_TRIGGER, trigger_id=-1)],
+    )
+    statuses, unit_refs, targets = _with_references(trigger)
+    assert (unit_refs, targets) == (False, (9, 2, -1))
+    assert statuses.conditions[0].reasons == ("trigger 9 does not exist",)
+    assert [s.status for s in statuses.effects] == [Status.OK] * 3
+
+
+def test_evaluate_with_references_keys_targets_on_the_type_even_when_the_vocabulary_lacks_it() -> None:
+    """An unknown type id is UNCHECKED, but a trigger-id type still names its target."""
+    import dataclasses
+
+    stripped = dataclasses.replace(
+        VOCABULARY, effects={k: v for k, v in VOCABULARY.effects.items() if k != _ACTIVATE_TRIGGER}
+    )
+    trigger = _trigger(effects=[_effect(_ACTIVATE_TRIGGER, trigger_id=9), SimpleNamespace(effect_type=999, trigger_id=4)])
+    statuses, unit_refs, targets = _with_references(trigger, _context(vocabulary=stripped))
+    assert [s.status for s in statuses.effects] == [Status.UNCHECKED, Status.UNCHECKED]
+    assert (unit_refs, targets) == (False, (9,))

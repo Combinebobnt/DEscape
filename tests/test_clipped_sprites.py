@@ -273,3 +273,53 @@ def test_marks_keep_their_depth_order_against_a_sprite(ink_sprite, backend, styl
     expected = _blend_ink(expected, x0, y0)
     expected[near_px] = colour
     _assert_renders(style, scn, full, expected)
+
+
+# -- a doodad's footprint does not move its sprite (TASK-134) --------------------
+
+DOODAD = 744  # MNTN3, a 6x6 footprint
+
+
+@pytest.fixture
+def doodad_sprite(monkeypatch):
+    """DOODAD resolves to INK; nothing else resolves."""
+
+    def pieces(unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None):
+        if unit_const != DOODAD:
+            return []
+        return [unit_sprites.SpritePiece(unit_sprites.SpriteDraw(INK, *HOTSPOT), 0, 0)]
+
+    monkeypatch.setattr(unit_sprites, "sprite_pieces_for", pieces)
+
+
+def _sprite_positions(style: str, scn) -> dict:
+    """by_anchor key -> [(px, py, rise)] of the production sprite layer."""
+    if style == "stepped":
+        (elevations, proj), corner_rise = render.elevations_and_proj(scn), None
+    else:
+        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+    return {key: [entry[1:] for entry in entries] for key, entries in layer.by_anchor.items()}
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("point", [(6.0, 6.0), (6.37, 5.81)], ids=["on-grid", "free-placed"])
+def test_a_doodads_sprite_keeps_its_point_and_tile_with_a_footprint(doodad_sprite, monkeypatch, style, point):
+    """Decision 1: only the footprint is new. With the doodad table emptied
+    (the old 1x1) the sprite resolves to the same anchor key and pixel, on the
+    half-tile grid and off it, on uneven ground."""
+    from descape.terrain_palette import DOODAD_TILE_SPANS
+
+    scn = _scenario([[], [Unit(*point, DOODAD)]])
+    for (x, y), level in {(5, 5): 1, (6, 5): 2, (6, 6): 1, (7, 7): 1}.items():
+        scn.map_manager.get_tile(x, y).elevation = level
+    x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    assert (x1 - x0, y1 - y0) == (6, 6)
+    with_footprint = _sprite_positions(style, scn)
+    assert list(with_footprint) == [(int(point[0]), int(point[1]))]
+
+    for const in list(DOODAD_TILE_SPANS):
+        monkeypatch.delitem(DOODAD_TILE_SPANS, const)
+    x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    assert (x1 - x0, y1 - y0) == (1, 1)
+    assert _sprite_positions(style, scn) == with_footprint

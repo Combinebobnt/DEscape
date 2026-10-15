@@ -136,16 +136,12 @@ LAYERS: tuple[LayerSpec, ...] = (
             "this hides the terrain override, not the farm."
         ),
         default=True,
-        # Flat has no farm path at all: FlatChunkCache composites through
-        # unit_draws/icons, never through the SpriteLayer that carries
-        # farm_by_tile. Stepped (P3 farm terrain) and Sloped (Track C6, which
-        # drapes a farm over its footprint's warped terrain) both do -- which
-        # is exactly terrain_style.ELEVATED_STYLES, not a coincidence worth
-        # re-enumerating here.
-        styles=frozenset(terrain_style.ELEVATED_STYLES),
-        # The farm override rides SpriteLayer, which the caches only build
-        # when sprites are enabled; with sprites off there is no farm_by_tile
-        # to suppress and the plain coloured mark is already what draws.
+        # All three caches drape: Stepped (P3 farm terrain), Sloped (Track C6,
+        # over its footprint's warped terrain) and top-down Flat (GH #150,
+        # FlatChunkCache's own farm tiles).
+        styles=None,
+        # Every cache builds the drape only when sprites are enabled; with
+        # sprites off the plain coloured mark is already what draws.
         requires_sprites=True,
         keybind_label="Farm Terrain Overlay Layer",
     ),
@@ -202,8 +198,9 @@ def availability(
     ViewerWindow._update_tool_enabled().
 
     `style` is the RENDER style ("flat"/"stepped"/"sloped"), not the terrain
-    style: Flat + Isometric View renders through IsoChunkCache, where farms
-    really do drape, so keying on the terrain style would grey a live layer.
+    style: Flat + Isometric View renders through IsoChunkCache, where small
+    trees really do shrink, so keying on the terrain style would grey a live
+    layer.
 
     Returns (enabled, tooltip). An unavailable layer keeps its checked state;
     the caller must never write the returned flag back into its LayerState.

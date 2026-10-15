@@ -421,6 +421,57 @@ def test_the_stack_badge_position_round_trips(tmp_path: Path, monkeypatch, posit
     assert settings.get_stack_badge_position() == position
 
 
+# --- GH #161: terrain picker mode and grid swatch size --------------------
+
+
+def test_the_terrain_picker_defaults_to_list_and_48_px(tmp_path: Path) -> None:
+    assert settings.get_terrain_picker_mode() == "list"
+    assert [mid for mid, _label in settings.TERRAIN_PICKER_MODES] == ["list", "grid"]
+    assert settings.get_terrain_grid_swatch_px() == 48
+    assert settings.TERRAIN_GRID_SWATCH_SIZES == (32, 48, 64)
+
+
+@pytest.mark.parametrize("raw", ["icons", "'GRID'", "0", "true", "[grid]"])
+def test_an_off_list_terrain_picker_mode_falls_back(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"terrain_picker_mode: {raw}\n")
+    assert settings.get_terrain_picker_mode() == "list"
+
+
+@pytest.mark.parametrize("raw", ["40", "128", "'48'", "48.0", "true", "[48]"])
+def test_an_off_list_terrain_grid_swatch_px_falls_back(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"terrain_grid_swatch_px: {raw}\n")
+    assert settings.get_terrain_grid_swatch_px() == 48
+
+
+@pytest.mark.parametrize(
+    ("setter", "bad"),
+    [
+        (settings.set_terrain_picker_mode, "icons"),
+        (settings.set_terrain_grid_swatch_px, 40),
+        (settings.set_terrain_grid_swatch_px, "48"),
+        (settings.set_terrain_grid_swatch_px, True),
+    ],
+)
+def test_setting_an_unknown_terrain_picker_value_raises_and_writes_nothing(tmp_path: Path, setter, bad) -> None:
+    with pytest.raises(ValueError):
+        setter(bad)
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("mode", [mid for mid, _label in settings.TERRAIN_PICKER_MODES])
+def test_the_terrain_picker_mode_round_trips(tmp_path: Path, monkeypatch, mode: str) -> None:
+    settings.set_terrain_picker_mode(mode)
+    monkeypatch.setattr(settings, "_terrain_picker_mode", None)
+    assert settings.get_terrain_picker_mode() == mode
+
+
+@pytest.mark.parametrize("px", settings.TERRAIN_GRID_SWATCH_SIZES)
+def test_the_terrain_grid_swatch_px_round_trips(tmp_path: Path, monkeypatch, px: int) -> None:
+    settings.set_terrain_grid_swatch_px(px)
+    monkeypatch.setattr(settings, "_terrain_grid_swatch_px", None)
+    assert settings.get_terrain_grid_swatch_px() == px
+
+
 def test_the_stack_badge_background_colour_row_follows_the_text_row() -> None:
     ids = [cid for cid, _label, _default in settings.OVERLAY_COLORS]
     assert ids[ids.index("unit_stack") + 1] == "unit_stack_background"

@@ -96,6 +96,7 @@ class EntryStatus:
 
 
 UNCHECKED = EntryStatus(Status.UNCHECKED)
+OK = EntryStatus(Status.OK)
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,20 @@ class Requirement:
     all: tuple[str, ...] = ()
     any: tuple[tuple[str, ...], ...] = ()
     why: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _TypePlan:
+    """Everything a check derives from the type alone, built once per type and
+    context: a pass visits 160k entries of 48 types on the largest corpus file."""
+
+    definition: VocabularyEntry
+    unit_fields: tuple[str, ...]
+    checks_trigger_id: bool
+    coordinate_groups: tuple[tuple[str, ...], ...]
+    requirement: Requirement | None
+    specs: Mapping[str, FieldSpec]
+    listed: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -120,8 +135,11 @@ class StatusContext:
     trigger_ids: frozenset[int] = frozenset()
     unit_exists: Callable[[int], bool] = lambda _ref: True
     requirements: Mapping[str, Mapping[str, Requirement]] | None = None
-    # (kind, type id) -> {field name: FieldSpec}; per context, so one vocabulary. field_specs() was 75% of a pass.
-    _specs: dict[tuple[str, int], dict[str, FieldSpec]] = field(default_factory=dict, compare=False, repr=False)
+    # (kind, type id) -> its plan, None for a type the vocabulary does not list. Per context, as
+    # requirements and vocabulary are; init=False, so a dataclasses.replace() copy never shares it.
+    _plans: dict[tuple[str, Any], _TypePlan | None] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True)
@@ -236,17 +254,48 @@ def _label(name: str) -> str:
     return name.replace("_", " ")
 
 
-def _universal_reasons(
-    kind: str, entry: Any, definition: VocabularyEntry, presentation: Mapping[str, str], context: StatusContext
-) -> list[str]:
+def _build_plan(kind: str, definition: VocabularyEntry, context: StatusContext) -> _TypePlan:
+    _, presentation = _vocab(kind, context.vocabulary)
+    table = context.requirements if context.requirements is not None else load_table()
+    return _TypePlan(
+        definition=definition,
+        unit_fields=unit_references.unit_reference_fields(definition, presentation),
+        checks_trigger_id=definition.id in TRIGGER_ID_TYPES[kind] and _TRIGGER_ID_FIELD in definition.attributes,
+        coordinate_groups=trigger_geometry.coordinate_fields(definition),
+        requirement=table.get(_TABLE_KEY[kind], {}).get(definition.name),
+        specs={spec.name: spec for spec in field_specs_for(kind, definition, context.vocabulary)},
+        listed=frozenset(definition.attributes),
+    )
+
+
+def _plan(kind: str, type_id: Any, context: StatusContext) -> _TypePlan | None:
+    """The plan for a type id read off an entry; None when the vocabulary does not list it."""
+    key = (kind, type_id)
+    try:
+        return context._plans[key]
+    except KeyError:
+        pass
+    entries, _ = _vocab(kind, context.vocabulary)
+    definition = entries.get(type_id)
+    plan = None if definition is None else _build_plan(kind, definition, context)
+    context._plans[key] = plan
+    return plan
+
+
+def _plan_for_definition(kind: str, definition: VocabularyEntry, context: StatusContext) -> _TypePlan:
+    plan = _plan(kind, definition.id, context)
+    return plan if plan is not None and plan.definition is definition else _build_plan(kind, definition, context)
+
+
+def _universal_reasons(kind: str, entry: Any, plan: _TypePlan, refs: Mapping[str, tuple[int, ...]], context: StatusContext) -> list[str]:
     reasons = [
         f"unit {ref_id} ({_label(attribute)}) is not placed on the map"
-        for attribute, ids in unit_references.references_in(entry, definition, presentation).items()
+        for attribute, ids in refs.items()
         for ref_id in ids
         if not context.unit_exists(ref_id)
     ]
 
-    if definition.id in TRIGGER_ID_TYPES[kind] and _TRIGGER_ID_FIELD in definition.attributes:
+    if plan.checks_trigger_id:
         target = read_value(entry, _TRIGGER_ID_FIELD)
         if _is_number(target) and target != trigger_fields.UNSET and target not in context.trigger_ids:
             reasons.append(f"trigger {target} does not exist")
@@ -256,19 +305,17 @@ def _universal_reasons(
         if incoherence:
             reasons.append(incoherence)
 
-    for fields in trigger_geometry.coordinate_fields(definition):
+    for fields in plan.coordinate_groups:
         values = [_coordinate(entry, f) for f in fields]
         if any(v >= 0 for v in values) and any(v < 0 for v in values):
             reasons.append(f"{_GROUP_NAMES[fields]} is only partly set")
     return reasons
 
 
-def _token_state(
-    token: str, entry: Any, definition: VocabularyEntry, specs: Mapping[str, FieldSpec], context: StatusContext
-) -> bool | None:
+def _token_state(token: str, entry: Any, plan: _TypePlan, context: StatusContext) -> bool | None:
     """True/False for set/unset, or None when this version does not list the
     token's field(s) for the type, so the token is skipped."""
-    listed = set(definition.attributes)
+    listed = plan.listed
     if token == AREA:
         fields = [f for f in trigger_geometry.AREA_FIELDS if f in listed]
         if not fields:
@@ -286,7 +333,7 @@ def _token_state(
             # A stale reference must not read as a set location.
             return bool(ids) and all(context.unit_exists(ref_id) for ref_id in ids)
         return False
-    spec = specs.get(token)
+    spec = plan.specs.get(token)
     if token not in listed or spec is None:
         return None
     return is_set(spec, read_value(entry, spec.attribute))
@@ -298,22 +345,13 @@ def token_state(kind: str, token: str, entry: Any, context: StatusContext) -> bo
     definition = definition_for(kind, entry, context.vocabulary)
     if definition is None:
         return None
-    return _token_state(token, entry, definition, _specs_by_name(kind, definition, context), context)
+    return _token_state(token, entry, _plan_for_definition(kind, definition, context), context)
 
 
 def field_specs_for(kind: str, definition: VocabularyEntry, vocabulary: TriggerVocabulary) -> tuple[FieldSpec, ...]:
     """trigger_fields.field_specs() for one type: the specs is_set() is keyed on."""
     _, presentation = _vocab(kind, vocabulary)
     return trigger_fields.field_specs(definition, presentation, _TYPE_ATTRIBUTE[kind])
-
-
-def _specs_by_name(kind: str, definition: VocabularyEntry, context: StatusContext) -> dict[str, FieldSpec]:
-    key = (kind, definition.id)
-    specs = context._specs.get(key)
-    if specs is None:
-        specs = {spec.name: spec for spec in field_specs_for(kind, definition, context.vocabulary)}
-        context._specs[key] = specs
-    return specs
 
 
 def _token_label(token: str, specs: Mapping[str, FieldSpec]) -> str:
@@ -323,19 +361,17 @@ def _token_label(token: str, specs: Mapping[str, FieldSpec]) -> str:
     return spec.label if spec is not None else _label(token)
 
 
-def _table_reasons(
-    kind: str, requirement: Requirement, entry: Any, definition: VocabularyEntry, context: StatusContext
-) -> list[str]:
-    specs = _specs_by_name(kind, definition, context)
+def _table_reasons(requirement: Requirement, entry: Any, plan: _TypePlan, context: StatusContext) -> list[str]:
+    specs = plan.specs
     reasons = [
         f"missing {_token_label(token, specs)}"
         for token in requirement.all
-        if _token_state(token, entry, definition, specs, context) is False
+        if _token_state(token, entry, plan, context) is False
     ]
 
     groups = []
     for group in requirement.any:
-        states = [_token_state(token, entry, definition, specs, context) for token in group]
+        states = [_token_state(token, entry, plan, context) for token in group]
         kept = [(token, state) for token, state in zip(group, states, strict=True) if state is not None]
         if kept:
             groups.append(kept)
@@ -348,26 +384,34 @@ def _table_reasons(
 def entry_status(kind: str, entry: Any, context: StatusContext) -> EntryStatus:
     """The status of one condition (`kind` CONDITION) or effect (EFFECT).
     UNCHECKED with no vocabulary, or for a type id the vocabulary does not list."""
-    vocabulary = context.vocabulary
-    if vocabulary is None:
+    if context.vocabulary is None:
         return UNCHECKED
-    entries, presentation = _vocab(kind, vocabulary)
-    type_attribute = _TYPE_ATTRIBUTE[kind]
-    type_id = read_value(entry, type_attribute)
+    type_id = read_value(entry, _TYPE_ATTRIBUTE[kind])
     if type_id == 0:
-        return EntryStatus(Status.PROBLEM, (f"no {kind} type chosen",))
-    definition = entries.get(type_id)
-    if definition is None:
+        return _no_type(kind)
+    plan = _plan(kind, type_id, context)
+    if plan is None:
         return UNCHECKED
+    return _planned_status(kind, entry, plan, _unit_refs(entry, plan), context)
 
-    reasons = _universal_reasons(kind, entry, definition, presentation, context)
-    table = context.requirements if context.requirements is not None else load_table()
-    requirement = table.get(_TABLE_KEY[kind], {}).get(definition.name)
-    if requirement is not None:
-        reasons += _table_reasons(kind, requirement, entry, definition, context)
+
+def _no_type(kind: str) -> EntryStatus:
+    return EntryStatus(Status.PROBLEM, (f"no {kind} type chosen",))
+
+
+def _unit_refs(entry: Any, plan: _TypePlan) -> dict[str, tuple[int, ...]]:
+    return unit_references.ids_in(entry, plan.unit_fields) if plan.unit_fields else {}
+
+
+def _planned_status(
+    kind: str, entry: Any, plan: _TypePlan, refs: Mapping[str, tuple[int, ...]], context: StatusContext
+) -> EntryStatus:
+    reasons = _universal_reasons(kind, entry, plan, refs, context)
+    if plan.requirement is not None:
+        reasons += _table_reasons(plan.requirement, entry, plan, context)
     if reasons:
         return EntryStatus(Status.PROBLEM, tuple(reasons))
-    return EntryStatus(Status.OK)
+    return OK
 
 
 # -- rollups ---------------------------------------------------------------------
@@ -387,7 +431,7 @@ def group_status(labelled: Iterable[tuple[str, EntryStatus]]) -> EntryStatus:
         return EntryStatus(Status.PROBLEM, tuple(reasons))
     if unchecked:
         return UNCHECKED
-    return EntryStatus(Status.OK)
+    return OK
 
 
 def _is_divider(trigger: Any) -> bool:
@@ -423,20 +467,61 @@ def trigger_status(trigger: Any, entry_statuses: Sequence[tuple[str, EntryStatus
 def evaluate_trigger(trigger: Any, context: StatusContext) -> TriggerStatuses:
     """Every entry's status plus the trigger rollup. With no vocabulary every
     entry and every non-divider trigger is UNCHECKED, zero effects included."""
+    return evaluate_with_references(trigger, context)[0]
+
+
+def evaluate_with_references(trigger: Any, context: StatusContext) -> tuple[TriggerStatuses, bool, tuple]:
+    """evaluate_trigger() plus what a later edit elsewhere can flip in it, from
+    the same walk: whether some entry of a listed type holds a placed-unit id
+    (a unit edit), and every numeric trigger_id its trigger-id entries name,
+    UNSET included, conditions then effects in stored order (a trigger-count
+    change). With no vocabulary the pair is (False, ())."""
     conditions = list(read_value(trigger, "conditions") or [])
     effects = list(read_value(trigger, "effects") or [])
     if context.vocabulary is None:
         rollup = trigger_status(trigger, []) if _is_divider(trigger) else UNCHECKED
-        return TriggerStatuses(rollup, (UNCHECKED,) * len(conditions), (UNCHECKED,) * len(effects))
-    condition_statuses = tuple(entry_status(CONDITION, c, context) for c in conditions)
-    effect_statuses = tuple(entry_status(EFFECT, e, context) for e in effects)
-    # GH #213: numbered and listed by display slot, the order the entry tree shows.
-    labelled = [
-        (entry_label(kind, slot, entries[index], context.vocabulary), statuses[index])
-        for kind, entries, statuses in (
-            (CONDITION, conditions, condition_statuses),
-            (EFFECT, effects, effect_statuses),
-        )
-        for slot, index in enumerate(entry_display_order(trigger, kind) if entries else ())
-    ]
-    return TriggerStatuses(trigger_status(trigger, labelled), condition_statuses, effect_statuses)
+        return TriggerStatuses(rollup, (UNCHECKED,) * len(conditions), (UNCHECKED,) * len(effects)), False, ()
+    unit_refs = False
+    targets: list = []
+    all_ok = True
+    per_kind = []
+    for kind, entries in ((CONDITION, conditions), (EFFECT, effects)):
+        type_attribute = _TYPE_ATTRIBUTE[kind]
+        trigger_id_types = TRIGGER_ID_TYPES[kind]
+        statuses = []
+        for entry in entries:
+            type_id = read_value(entry, type_attribute)
+            # Keyed on the type alone, never the plan's checks_trigger_id, which also needs the field listed.
+            if type_id in trigger_id_types:
+                target = read_value(entry, _TRIGGER_ID_FIELD)
+                if isinstance(target, (int, float)) and not isinstance(target, bool):
+                    targets.append(target)
+            plan = _plan(kind, type_id, context)
+            refs = _unit_refs(entry, plan) if plan is not None else {}
+            if refs:
+                unit_refs = True
+            if type_id == 0:
+                status = _no_type(kind)
+            elif plan is None:
+                status = UNCHECKED
+            else:
+                status = _planned_status(kind, entry, plan, refs, context)
+            if status is not OK:
+                all_ok = False
+            statuses.append(status)
+        per_kind.append(tuple(statuses))
+    condition_statuses, effect_statuses = per_kind
+    # Labels only feed PROBLEM reasons, and an empty list already rolls up to OK.
+    labelled = []
+    if not all_ok:
+        # GH #213: numbered and listed by display slot, the order the entry tree shows.
+        labelled = [
+            (entry_label(kind, slot, entries[index], context.vocabulary), statuses[index])
+            for kind, entries, statuses in (
+                (CONDITION, conditions, condition_statuses),
+                (EFFECT, effects, effect_statuses),
+            )
+            for slot, index in enumerate(entry_display_order(trigger, kind) if entries else ())
+        ]
+    statuses = TriggerStatuses(trigger_status(trigger, labelled), condition_statuses, effect_statuses)
+    return statuses, unit_refs, tuple(targets)

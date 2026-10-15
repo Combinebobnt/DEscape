@@ -55,7 +55,7 @@ def test_write_targets_is_empty_until_verify_passes(_loaded) -> None:
     assert pf.verify_player_block(loaded)
     targets = pf.write_targets(loaded)
     assert targets
-    # 16 Tier-1 field_ids * 8 players, on a file new enough to carry all of
+    # 17 Tier-1 field_ids * 8 players, on a file new enough to carry all of
     # them (both blank donors are 1.56+) -- civilization/architecture
     # included as of Step B, str16-coded on this file but still writable
     # through the resizing splice. GAIA (0) only for GAIA_FIELDS (GH #187).
@@ -63,7 +63,7 @@ def test_write_targets_is_empty_until_verify_passes(_loaded) -> None:
     assert field_ids == {
         "tribe_name", "player_name_string_id", "lock_civilization", "lock_personality",
         "civilization", "architecture", "starting_age", "food", "wood", "stone", "gold",
-        "pop_limit", "color", "base_priority", "initial_view_x", "initial_view_y",
+        "pop_limit", "color", "human", "base_priority", "initial_view_x", "initial_view_y",
     }
     for field_id in field_ids:
         players = {int(key.split(":")[2]) for key in targets if key.split(":")[1] == field_id}
@@ -306,6 +306,70 @@ def test_a_civilization_edit_below_1_56_round_trips_through_write_scenario(tmp_p
     spec = next(s for s in specs_for(reloaded) if s.field_id == "civilization")
     assert pf.current_value(reloaded, spec, 1) == after
     assert pf.verify_player_block(reloaded)
+
+
+# -- GH #126 follow-ups: Player Type (player_data_1.human) --------------------
+
+
+def mixed_length_player_data_1(tmp_path: Path) -> Path:
+    """The blank template with P2's civ set to HUN-CIV through the write path:
+    player_data_1's entries then differ in length (P2's is 3 bytes shorter), so
+    _array_target()'s single stride is wrong there and only the variable route
+    reaches `human`. The template itself has all 16 entries at one length."""
+    from descape.options_model import OptionsEditModel
+    from descape.scenario_write import write_scenario
+
+    loaded = load_map_and_units(BLANK_TEMPLATE_PATH)
+    model = OptionsEditModel(loaded)
+    model.set_value("player:civilization:2", "HUN-CIV")
+    out = tmp_path / "mixed_player_data_1.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+    entries = load_map_and_units(out)._scenario.sections["DataHeader"].retriever_map["player_data_1"].data
+    assert len({e.byte_length for e in entries}) > 1, "the fixture's entries all have one length"
+    return out
+
+
+def test_human_targets_sit_right_after_active_on_a_mixed_length_file(tmp_path: Path) -> None:
+    """`human` is the u32 after `active`, whose eight targets Number of Players
+    already trusts; the bytes there decode to the parsed value for P1..P8."""
+    loaded = load_map_and_units(mixed_length_player_data_1(tmp_path))
+    spec = next(s for s in pf.specs_for(loaded) if s.field_id == "human")
+    assert pf._array_target(loaded, spec.section, spec.retriever, spec.struct_field, 2) is None
+    assert pf.verify_player_block(loaded)
+    targets = pf.write_targets(loaded)
+    active = pf.player_count_targets(loaded)
+    body = loaded.decompressed_body
+    for player_id in range(1, 9):
+        (target,) = targets[f"player:human:{player_id}"]
+        assert target.codec == "u32"
+        assert target.offset == active[player_id - 1].offset + 4, player_id
+        stored = pf.current_value(loaded, spec, player_id)
+        assert body[target.offset : target.offset + 4] == stored.to_bytes(4, "little"), player_id
+    assert "player:human:0" not in targets
+
+
+def test_corrupting_the_human_gaia_sentinel_flips_verify_to_false(tmp_path: Path) -> None:
+    loaded = load_map_and_units(mixed_length_player_data_1(tmp_path))
+    gaia = pf._player_data_1_variable_target(loaded, "human", 0)
+    body = bytearray(loaded.decompressed_body)
+    body[gaia.target.offset] ^= 0xFF
+    loaded.decompressed_body = bytes(body)
+    assert not pf.verify_player_block(loaded)
+
+
+@pytest.mark.corpus
+def test_human_is_a_u32_target_below_1_56() -> None:
+    if not _PRE_1_56_PATH.exists():
+        pytest.skip("examples/ corpus not present")
+    loaded = load_map_and_units(_PRE_1_56_PATH)
+    assert float(loaded.scenario_version) < 1.56, loaded.scenario_version
+    assert pf.verify_player_block(loaded)
+    targets = pf.write_targets(loaded)
+    active = pf.player_count_targets(loaded)
+    for player_id in range(1, 9):
+        (target,) = targets[f"player:human:{player_id}"]
+        assert target.codec == "u32"
+        assert target.offset == active[player_id - 1].offset + 4, player_id
 
 
 # -- 4. corpus ----------------------------------------------------------------

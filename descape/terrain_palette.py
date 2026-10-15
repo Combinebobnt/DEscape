@@ -164,13 +164,20 @@ BLOCKER_TILE_SPANS: dict[int, tuple[int, int]] = {
 FISH_TILE_SPANS: dict[int, tuple[int, int]] = {
     int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("fish_spans", {}).items()
 }
+# unit_const -> (span_x, span_y) for the 46 class-14 doodads bigger than 1x1
+# (mountains, ruins, TASK-134), a .dat class rule; see
+# tools/gen_unit_render_data.py's "doodad_spans" docs. Their sprites keep
+# their own point (render._resolve_unit_sprite): only the footprint uses this.
+DOODAD_TILE_SPANS: dict[int, tuple[int, int]] = {
+    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("doodad_spans", {}).items()
+}
 
 def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     """The footprint span every render path should ask for. BUILDING_TILE_SPANS
     stays the is-a-building MEMBERSHIP test (render._unit_color reads it that
-    way); this answers how big something is, over all four tables. Their keys
-    are disjoint by construction -- a cliff's, blocker's or fish's `building`
-    field is None, which is exactly why each needed its own table.
+    way); this answers how big something is, over all five tables. Their keys
+    are disjoint by construction -- a cliff's, blocker's, fish's or doodad's
+    `building` field is None, which is exactly why each needed its own table.
 
     **A function rather than a merged dict**, so it reads both tables live. A
     pre-merged snapshot would silently ignore a runtime `monkeypatch.setitem`
@@ -185,7 +192,10 @@ def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     span = BLOCKER_TILE_SPANS.get(unit_const)
     if span is not None:
         return span
-    return FISH_TILE_SPANS.get(unit_const, default)
+    span = FISH_TILE_SPANS.get(unit_const)
+    if span is not None:
+        return span
+    return DOODAD_TILE_SPANS.get(unit_const, default)
 
 RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {
     int(uid): tuple(rgb) for uid, rgb in _UNIT_RENDER_DATA["resource_colors"].items()

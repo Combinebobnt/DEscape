@@ -523,7 +523,7 @@ def test_hover_preview_matches_the_stroke_footprint() -> None:
 
         map_view._update_highlight(40, 40)
         expected = set(brush_tiles(40, 40, 5, BRUSH_SHAPE_CIRCLE, mm.map_width, mm.map_height))
-        assert map_view._highlight_key == (40, 40, 5, BRUSH_SHAPE_CIRCLE)
+        assert map_view._highlight_key == (40, 40, 5, BRUSH_SHAPE_CIRCLE, 1)
         assert map_view._highlight_outline_item is not None
 
         path = map_view._highlight_outline_item.path()
@@ -616,10 +616,10 @@ def test_brush_size_change_refreshes_preview_without_a_mouse_move() -> None:
         map_view = window.map_view
 
         map_view._update_highlight(40, 40)
-        assert map_view._highlight_key == (40, 40, 1, BRUSH_SHAPE_SQUARE)
+        assert map_view._highlight_key == (40, 40, 1, BRUSH_SHAPE_SQUARE, 1)
 
         window.brush_size_spin.setValue(5)  # no mouse move in between
-        assert map_view._highlight_key == (40, 40, 5, BRUSH_SHAPE_SQUARE)
+        assert map_view._highlight_key == (40, 40, 5, BRUSH_SHAPE_SQUARE, 1)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -634,6 +634,7 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
     try:
         window.brush_size_spin.setValue(9)
         window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_CIRCLE))
+        window.brush_thickness_spin.setValue(3)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -642,9 +643,80 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
     try:
         assert fresh.brush_size_spin.value() == 1
         assert fresh.brush_shape_combo.currentData() == BRUSH_SHAPE_SQUARE
+        assert fresh.brush_thickness_spin.value() == 1
+        assert fresh.map_view._brush_thickness == 1
     finally:
         fresh.edit_history.mark_saved()
         fresh.close()
+
+
+# -- TASK-257's shapes ---------------------------------------------------------
+
+
+_NEW_SHAPES = ("rounded", "square_outline", "circle_outline", "plus", "line_x", "line_y")
+
+
+@pytest.mark.parametrize("shape", _NEW_SHAPES)
+def test_a_draw_stamp_with_each_new_shape_paints_its_footprint(shape: str) -> None:
+    from descape.brush import brush_tiles
+
+    window = _edit_window("draw")
+    try:
+        window.brush_size_spin.setValue(7)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(shape))
+        window.brush_thickness_spin.setValue(2)
+        mm = window.scenario.map_manager
+        _stroke(window, 40, 40)
+        painted = {(t.x, t.y) for t in mm.terrain if t.terrain_id == _TERRAIN}
+        assert painted == set(brush_tiles(40, 40, 7, shape, mm.map_width, mm.map_height, thickness=2))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_hover_key_and_preview_follow_shape_and_thickness() -> None:
+    from PyQt5.QtCore import QPointF
+
+    from descape.brush import BRUSH_SHAPE_SQUARE_OUTLINE, brush_tiles
+
+    window = _edit_window("draw")
+    try:
+        window.brush_size_spin.setValue(9)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_SQUARE_OUTLINE))
+        window.brush_thickness_spin.setValue(2)
+        _shown_flat(window)
+        mm = window.scenario.map_manager
+        map_view = window.map_view
+        tp = map_view._tile_pixels
+        map_view._update_highlight(40, 40)
+        assert map_view._highlight_key == (40, 40, 9, BRUSH_SHAPE_SQUARE_OUTLINE, 2)
+        path = map_view._highlight_outline_item.path()
+        ring = set(brush_tiles(40, 40, 9, BRUSH_SHAPE_SQUARE_OUTLINE, mm.map_width, mm.map_height, thickness=2))
+        assert len(ring) == 56
+        for dx in range(-4, 5):
+            for dy in range(-4, 5):
+                inside = path.contains(QPointF((40 + dx + 0.5) * tp, (40 + dy + 0.5) * tp))
+                assert inside == ((40 + dx, 40 + dy) in ring), (dx, dy)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_thickness_change_refreshes_the_preview_without_a_mouse_move() -> None:
+    from descape.brush import BRUSH_SHAPE_CIRCLE_OUTLINE
+
+    window = _edit_window("draw")
+    try:
+        window.on_hover((40, 40))
+        window.brush_size_spin.setValue(9)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_CIRCLE_OUTLINE))
+        map_view = window.map_view
+        assert map_view._highlight_key == (40, 40, 9, BRUSH_SHAPE_CIRCLE_OUTLINE, 1)
+        window.brush_thickness_spin.setValue(3)  # no mouse move in between
+        assert map_view._highlight_key == (40, 40, 9, BRUSH_SHAPE_CIRCLE_OUTLINE, 3)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
 
 
 # -- the highlight pulse's stroke gate (perf batch B, step B3) ---------------
