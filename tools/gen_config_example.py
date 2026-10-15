@@ -234,12 +234,29 @@ grid_overlay: false
 grid_follow_elevation: true
 
 # A circle around each selected building showing its attack range, View >
-# Range Rings. Buildings only, and only ones with a range. Default: false.
+# Range Rings > Selected Buildings. Buildings only, and only ones with a
+# range. Default: false.
 range_rings: false
 
 # Each ring in its owner's player colour, View > Range Rings > Colour by
-# Owner. GAIA keeps the overlay_colors range_ring colour. Default: false.
+# Owner. Applies to every ring layer. GAIA keeps the overlay_colors
+# range_ring colour. Default: false.
 range_rings_by_owner: false
+
+# A circle around every building that has a range, selected or not, in every
+# mode, View > Range Rings > All Buildings. Siege units are not included.
+# Default: false.
+range_rings_buildings: false
+
+# A circle around each selected map revealer showing the area it reveals
+# (its line of sight), View > Range Rings > Selected Map Revealers.
+# Default: false.
+range_rings_selected_revealers: false
+
+# A circle around every map revealer showing the area it reveals (its line of
+# sight), in every mode, View > Range Rings > All Map Revealers. Hidden while
+# Show Invisible Objects is off. Default: false.
+range_rings_revealers: false
 
 # A camera glyph on each player's stored starting view tile, View > Player
 # Cameras. Default: false.

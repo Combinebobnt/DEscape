@@ -506,6 +506,11 @@ _footprint_by_owner: bool | None = None
 _range_rings: bool | None = None
 # GH #156: each ring in its owner's player colour. Off by default, like GH #143's.
 _range_rings_by_owner: bool | None = None
+# GH #153 / #155: always-on rings that follow the unit index, not the selection. Off by default.
+_range_rings_revealers: bool | None = None
+_range_rings_buildings: bool | None = None
+# Rings on selected map revealers, beside Selected Buildings (_range_rings). Off by default.
+_range_rings_selected_revealers: bool | None = None
 # View > Player Cameras (GH #22): a camera glyph on each player's stored
 # starting view tile. Off by default for the same opt-in reason as the rings
 # above -- it draws over the map rather than beside it.
@@ -654,6 +659,51 @@ def set_range_rings_by_owner(enabled: bool) -> None:
     _range_rings_by_owner = enabled
     config = _load_config()
     config["range_rings_by_owner"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_revealers() -> bool:
+    global _range_rings_revealers
+    if _range_rings_revealers is None:
+        _range_rings_revealers = bool(_load_config().get("range_rings_revealers", False))
+    return _range_rings_revealers
+
+
+def set_range_rings_revealers(enabled: bool) -> None:
+    global _range_rings_revealers
+    _range_rings_revealers = enabled
+    config = _load_config()
+    config["range_rings_revealers"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_buildings() -> bool:
+    global _range_rings_buildings
+    if _range_rings_buildings is None:
+        _range_rings_buildings = bool(_load_config().get("range_rings_buildings", False))
+    return _range_rings_buildings
+
+
+def set_range_rings_buildings(enabled: bool) -> None:
+    global _range_rings_buildings
+    _range_rings_buildings = enabled
+    config = _load_config()
+    config["range_rings_buildings"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_selected_revealers() -> bool:
+    global _range_rings_selected_revealers
+    if _range_rings_selected_revealers is None:
+        _range_rings_selected_revealers = bool(_load_config().get("range_rings_selected_revealers", False))
+    return _range_rings_selected_revealers
+
+
+def set_range_rings_selected_revealers(enabled: bool) -> None:
+    global _range_rings_selected_revealers
+    _range_rings_selected_revealers = enabled
+    config = _load_config()
+    config["range_rings_selected_revealers"] = enabled
     _save_config(config)
 
 
@@ -1761,9 +1811,15 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_selection_owner_colour", "Colour Selection by Owner", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
-    ("view_range_rings", "Range Rings", ""),
+    ("view_range_rings", "Range Rings: Selected Buildings", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_range_rings_by_owner", "Range Rings: Colour by Owner", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_buildings", "Range Rings: All Buildings", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_revealers", "Range Rings: All Map Revealers", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_selected_revealers", "Range Rings: Selected Map Revealers", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_player_cameras", "Player Cameras", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.

@@ -756,6 +756,15 @@ class MapView(QGraphicsView):
         self._range_ring_items: dict = {}
         self._range_rings_enabled = settings.get_range_rings()
         self._range_rings_by_owner = settings.get_range_rings_by_owner()
+        self._range_rings_selected_revealers = settings.get_range_rings_selected_revealers()
+        # GH #153 / #155: the always-on ring layer, one item per colour group like the
+        # selection's rings above, but walking the unit index rather than the selection.
+        self._ring_layer_items: dict = {}
+        # (radius, cx, cy, rise_px) -> QPolygonF, valid for _ring_layer_projection only. See refresh_ring_layer().
+        self._ring_layer_polygons: dict = {}
+        self._ring_layer_projection = None
+        self._ring_layer_revealers = settings.get_range_rings_revealers()
+        self._ring_layer_buildings = settings.get_range_rings_buildings()
         # Memoized on the picked (player_id, reference_id) key, the same way
         # _highlight_key memoizes the tile highlight: mouseMoveEvent runs a
         # pick on every pixel, and rebuilding a 25-diamond path per pixel
@@ -1050,6 +1059,9 @@ class MapView(QGraphicsView):
         if None in self._range_ring_items:
             # Owner groups draw in player colours, which this setting does not reach.
             self._range_ring_items[None].setPen(self._range_ring_pen)
+        if None in self._ring_layer_items:
+            # The layer may hold only owner groups, hence the membership test.
+            self._ring_layer_items[None].setPen(self._range_ring_pen)
         if self._mirror_overlay_outline_item is not None:
             self._mirror_overlay_outline_item.setPen(self._mirror_overlay_outline_pen)
             self._mirror_overlay_fill_item.setBrush(QBrush(self._mirror_overlay_fill_color))
@@ -1458,13 +1470,15 @@ class MapView(QGraphicsView):
         self._clear_unit_hover()
         self.refresh_unit_highlight()
         self.refresh_footprint_overlay()
+        self.refresh_ring_layer()
 
     def refresh_after_index_patch(self) -> None:
         """For a caller that patched _unit_index in place rather than
-        swapping it: everything derived from the index, which is the stacks
-        and the footprint outlines."""
+        swapping it: everything derived from the index, which is the stacks,
+        the footprint outlines and the always-on ring layer."""
         self.refresh_stack_groups()
         self.refresh_footprint_overlay()
+        self.refresh_ring_layer()
 
     def refresh_stack_groups(self) -> None:
         """Recomputes the stacks from the current index -- for a caller that
@@ -1741,28 +1755,39 @@ class MapView(QGraphicsView):
             return None
         return int(self._iso_elevations[entry.own_y, entry.own_x]) * self._iso_proj.elev_step
 
-    def _range_ring_points(self, entry):
-        """One entry's ring polygon in scene space, or None when it draws no
-        ring: not a building, no range, or no geometry to project with.
+    def _range_ring_points(self, entry, radius: float | None):
+        """One entry's ring polygon in scene space at `radius` tiles, or None
+        when it draws no ring: no radius, or no geometry to project with.
 
         The centre is the drawn footprint's own (render.unit_footprint_centre),
         not the stored coordinate: the two differ by half a tile for a
         building stored off its span's parity, e.g. a 4x4 at `.5` (GH #200).
-        The ring follows the footprint, by decision, wherever that is drawn."""
-        radius = range_overlay.ring_radius_for_const(entry.unit.unit_const)
+        The ring follows the footprint, by decision, wherever that is drawn.
+        For a 1x1 such as a map revealer the two are the same point."""
         if radius is None:
             return None
+        anchor = self._range_ring_anchor(entry)
+        if anchor is None:
+            return None
+        return self._range_ring_points_at(radius, *anchor)
+
+    def _range_ring_anchor(self, entry) -> tuple[float, float, int] | None:
+        """(cx, cy, rise_px) one entry's ring is drawn from, rise 0 in Flat,
+        or None with no geometry to project with."""
         cx, cy = render.unit_footprint_centre(entry.unit)
         if self._terrain_style == "flat":
-            return range_overlay.ring_points(cx, cy, radius, "flat", tile_px=self._tile_pixels or 1)
+            return cx, cy, 0
         if self._iso_proj is None:
             return None
         rise_px = self._range_ring_rise_px(entry)
         if rise_px is None:
             return None
-        return range_overlay.ring_points(
-            cx, cy, radius, self._terrain_style, proj=self._iso_proj, rise_px=rise_px
-        )
+        return cx, cy, rise_px
+
+    def _range_ring_points_at(self, radius: float, cx: float, cy: float, rise_px: int):
+        if self._terrain_style == "flat":
+            return range_overlay.ring_points(cx, cy, radius, "flat", tile_px=self._tile_pixels or 1)
+        return range_overlay.ring_points(cx, cy, radius, self._terrain_style, proj=self._iso_proj, rise_px=rise_px)
 
     def _draw_unit_range_rings(self, entries) -> None:
         """One QPainterPath per owner colour group unioning that group's
@@ -1773,12 +1798,17 @@ class MapView(QGraphicsView):
         composites its circle into the terrain so a palisade occludes it.
         That is an accepted deviation: drawing under the sprites means
         painting into cached chunk pixels, a different feature."""
-        if not self._range_rings_enabled:
+        if not (self._range_rings_enabled or self._range_rings_selected_revealers):
             self._clear_unit_range_rings()
             return
         paths: dict = {}
         for entry in entries:
-            points = self._range_ring_points(entry)
+            radius = range_overlay.selection_ring_radius(
+                entry.unit.unit_const,
+                buildings=self._range_rings_enabled,
+                revealers=self._range_rings_selected_revealers,
+            )
+            points = self._range_ring_points(entry, radius)
             if points:
                 key = self._owner_group_key(entry.player_id, self._range_rings_by_owner)
                 _add_closed_polygons(paths.setdefault(key, QPainterPath()), [points])
@@ -1812,10 +1842,98 @@ class MapView(QGraphicsView):
             self._clear_unit_range_rings()
         self.refresh_unit_highlight()
 
+    def set_range_rings_selected_revealers(self, enabled: bool) -> None:
+        """View > Range Rings > Selected Map Revealers: the selection's rings
+        also cover map revealers, at their line of sight. Scene items only."""
+        self._range_rings_selected_revealers = enabled
+        if not (enabled or self._range_rings_enabled):
+            self._clear_unit_range_rings()
+        self.refresh_unit_highlight()
+
     def set_range_rings_by_owner(self, enabled: bool) -> None:
-        """GH #156: each ring in its owner's player colour, GAIA in the configured one."""
+        """GH #156: each ring in its owner's player colour, GAIA in the configured one.
+        Applies to the always-on layer too."""
         self._range_rings_by_owner = enabled
         self.refresh_unit_highlight()
+        self.refresh_ring_layer()
+
+    def set_ring_layer_revealers(self, enabled: bool) -> None:
+        """GH #153: View > Range Rings > Map Revealers. Like set_range_rings,
+        this evicts no chunk cache: the rings are scene items only."""
+        self._ring_layer_revealers = enabled
+        self.refresh_ring_layer()
+
+    def set_ring_layer_buildings(self, enabled: bool) -> None:
+        """GH #155: View > Range Rings > All Buildings. Scene items only, as above."""
+        self._ring_layer_buildings = enabled
+        self.refresh_ring_layer()
+
+    def refresh_ring_layer_owner_colors(self) -> None:
+        """For a player colour edit, after set_selection_player_colors(): only
+        owner-coloured rings have anything to recolour."""
+        if self._range_rings_by_owner:
+            self.refresh_ring_layer()
+
+    def _ring_layer_wanted(self) -> bool:
+        return (self._ring_layer_revealers or self._ring_layer_buildings) and self._unit_index is not None
+
+    def refresh_ring_layer(self) -> None:
+        """Rebuilds the always-on rings (GH #153 / #155) from the live index,
+        in every mode, the way refresh_footprint_overlay() does the outlines.
+        Iterates index.entries, so it inherits the unit filter: Show Invisible
+        Objects off hides the revealer rings.
+
+        A selected building with All Buildings on also draws in the selection's
+        own ring item: same path, same pen, identical pixels, not deduplicated.
+
+        Each ring's polygon is kept between rebuilds, keyed on everything it
+        depends on but the projection, which invalidates the whole set: this
+        runs synchronously on every unit edit, and sampling 1300 rings from
+        scratch measured ~275 ms against the footprint layer's 45-80 ms.
+        Only rings still drawn are kept, so the set never outgrows the map."""
+        if not self._ring_layer_wanted():
+            self._clear_ring_layer()
+            return
+        projection = (self._terrain_style, self._tile_pixels, self._iso_proj)
+        previous = self._ring_layer_polygons if projection == self._ring_layer_projection else {}
+        polygons: dict = {}
+        paths: dict = {}
+        for entry in self._unit_index.entries:
+            radius = range_overlay.persistent_ring_radius(
+                entry.unit.unit_const, revealers=self._ring_layer_revealers, buildings=self._ring_layer_buildings
+            )
+            if radius is None:
+                continue
+            anchor = self._range_ring_anchor(entry)
+            if anchor is None:
+                continue
+            ring_key = (radius, *anchor)
+            polygon = polygons.get(ring_key) or previous.get(ring_key)
+            if polygon is None:
+                polygon = QPolygonF([QPointF(x, y) for x, y in self._range_ring_points_at(radius, *anchor)])
+            polygons[ring_key] = polygon
+            path = paths.setdefault(self._owner_group_key(entry.player_id, self._range_rings_by_owner), QPainterPath())
+            path.addPolygon(polygon)
+            path.closeSubpath()
+        self._ring_layer_polygons = polygons
+        self._ring_layer_projection = projection
+        for key in [k for k in self._ring_layer_items if k not in paths]:
+            self.scene().removeItem(self._ring_layer_items.pop(key))
+        for key, path in paths.items():
+            item = self._ring_layer_items.get(key)
+            if item is None:
+                # Cosmetic width 0 for an owner group too: see _range_ring_pen.
+                pen = self._range_ring_pen if key is None else QPen(QColor(*key), 0)
+                item = self._ring_layer_items[key] = self.scene().addPath(path, pen)
+                item.setZValue(self.RANGE_RING_Z)
+            else:
+                item.setPath(path)
+
+    def _clear_ring_layer(self) -> None:
+        for item in self._ring_layer_items.values():
+            self.scene().removeItem(item)
+        self._ring_layer_items = {}
+        self._ring_layer_polygons = {}
 
     def refresh_unit_highlight(self) -> None:
         """Re-entry point for state changing WITHOUT the mouse moving --
@@ -4095,6 +4213,7 @@ class MapView(QGraphicsView):
         self._unit_hover_item = None
         self._unit_select_groups = {}
         self._range_ring_items = {}
+        self._ring_layer_items = {}
         self._selection_player_colors = None
         self._unit_hover_key = None
         self._unit_select_keys = []
@@ -4424,6 +4543,7 @@ class MapView(QGraphicsView):
         self._unit_hover_item = None
         self._unit_select_groups = {}
         self._range_ring_items = {}
+        self._ring_layer_items = {}
         # Mandatory, not tidiness: scene().clear() destroyed the C++ objects,
         # so a later removeItem() on one would raise. The pushed list itself
         # survives -- unlike the selection below, a stored camera view is
@@ -5228,7 +5348,8 @@ class MapView(QGraphicsView):
         path is built eagerly, and on the largest example file at All units
         in Sloped that is ~1s. So this defers it to the event loop: one
         8-step Set Elevation drag touches 131 tiles per _apply_dirty's own
-        comment, and rebuilding per touch would be unusable."""
+        comment, and rebuilding per touch would be unusable. The always-on
+        ring layer (GH #153 / #155) rides the same deferral."""
         self.schedule_footprint_refresh()
         # Not deferred: at most 8 items, each one _ruler_anchor lookup, and
         # unlike the footprint path there is no per-unit walk behind it.
@@ -5244,8 +5365,13 @@ class MapView(QGraphicsView):
         self._rebuild_stack_badges()
 
     def schedule_footprint_refresh(self) -> None:
+        """Queues one rebuild of the footprint outlines and the always-on ring
+        layer, whichever of the two is live."""
+        if self._footprint_refresh_pending:
+            return
         # Hidden: nothing to queue per drag step (refresh_footprint_overlay's invariant).
-        if self._footprint_refresh_pending or not self._footprint_items or not self._footprint_enabled:
+        footprints = bool(self._footprint_items) and self._footprint_enabled
+        if not footprints and not self._ring_layer_wanted():
             return
         self._footprint_refresh_pending = True
         QTimer.singleShot(0, self._flush_footprint_refresh)
@@ -5257,6 +5383,9 @@ class MapView(QGraphicsView):
         if self._footprint_items:
             with perf_trace.phase("footprint_refresh"):
                 self.refresh_footprint_overlay()
+        if self._ring_layer_wanted():
+            with perf_trace.phase("ring_layer_refresh"):
+                self.refresh_ring_layer()
 
     def set_grid_appearance(self, blend: int, thickness: int) -> bool:
         """Stores the appearance for both halves. Evicts only when the bake

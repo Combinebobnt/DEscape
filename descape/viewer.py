@@ -3633,31 +3633,8 @@ class ViewerWindow(QMainWindow):
         )
         view_menu.addAction(self.selection_owner_colour_action)
 
-        # GH #49. Persisted passive chrome like the two above, but off by
-        # default: it draws over the sprites, so it is opt-in.
-        range_menu = KeepOpenMenu("&Range Rings", view_menu)
-        view_menu.addMenu(range_menu)
-        range_menu.menuAction().setToolTip("Attack-range circles around selected buildings, and their colour")
-        self.range_rings_action = QAction(
-            "&Show", self, checkable=True, checked=settings.get_range_rings()
-        )
-        self.range_rings_action.setToolTip(
-            "In Units mode, a circle around each selected building showing its attack range. "
-            "Buildings only, and only ones that have a range. No technology or trigger "
-            "effects are applied."
-        )
-        range_menu.addAction(self.range_rings_action)
-        self.range_rings_by_owner_action = QAction(
-            "Colour by O&wner", self, checkable=True, checked=settings.get_range_rings_by_owner()
-        )
-        self.range_rings_by_owner_action.setToolTip(
-            "Each ring in its owner's player colour. GAIA keeps the Range ring colour "
-            "from Settings > Appearance."
-        )
-        range_menu.addAction(self.range_rings_by_owner_action)
-
         # GH #22. Persisted passive chrome, off by default for the same
-        # reason as the rings: it draws on the map rather than beside it.
+        # reason as the rings below: it draws on the map rather than beside it.
         # Not mode-gated -- a starting camera belongs to the scenario, not to
         # Players mode; only the emphasis on the selected player is.
         self.player_cameras_action = QAction(
@@ -3682,6 +3659,60 @@ class ViewerWindow(QMainWindow):
             "condition or effect is drawn strongest."
         )
         view_menu.addAction(self.trigger_overlay_action)
+
+        # GH #49. Persisted passive chrome, but off by default: it draws over
+        # the sprites, so it is opt-in.
+        range_menu = KeepOpenMenu("&Range Rings", view_menu)
+        view_menu.addMenu(range_menu)
+        range_menu.menuAction().setToolTip(
+            "Attack-range circles around buildings, sight circles around map revealers, and their colour"
+        )
+        self.range_rings_action = QAction(
+            "&Selected Buildings", self, checkable=True, checked=settings.get_range_rings()
+        )
+        self.range_rings_action.setToolTip(
+            "In Units mode, a circle around each selected building showing its attack range. "
+            "Buildings only, and only ones that have a range. No technology or trigger "
+            "effects are applied."
+        )
+        range_menu.addAction(self.range_rings_action)
+        # GH #155 / #153: always-on layers that follow the unit index, not the selection.
+        self.range_rings_buildings_action = QAction(
+            "All &Buildings", self, checkable=True, checked=settings.get_range_rings_buildings()
+        )
+        self.range_rings_buildings_action.setToolTip(
+            "A circle around every building that has a range, selected or not, in every mode. "
+            "Siege units are not included. No technology or trigger effects are applied."
+        )
+        range_menu.addAction(self.range_rings_buildings_action)
+        self.range_rings_selected_revealers_action = QAction(
+            "Selected &Map Revealers", self, checkable=True, checked=settings.get_range_rings_selected_revealers()
+        )
+        self.range_rings_selected_revealers_action.setToolTip(
+            "In Units mode, a circle around each selected map revealer showing the area it reveals "
+            "(its line of sight, e.g. 4, 10 or 20 tiles). Invisible Objects have no sight radius in "
+            "the game data, so they draw none; trigger changes are not applied."
+        )
+        range_menu.addAction(self.range_rings_selected_revealers_action)
+        self.range_rings_revealers_action = QAction(
+            "All Map &Revealers", self, checkable=True, checked=settings.get_range_rings_revealers()
+        )
+        self.range_rings_revealers_action.setToolTip(
+            "A circle around every map revealer showing the area it reveals (its line of sight, "
+            "e.g. 4, 10 or 20 tiles), in every mode. Invisible Objects have no sight radius in the "
+            "game data, so they draw none; trigger changes are not applied. Hidden while Show "
+            "Invisible Objects is off."
+        )
+        range_menu.addAction(self.range_rings_revealers_action)
+        range_menu.addSeparator()
+        self.range_rings_by_owner_action = QAction(
+            "Colour by O&wner", self, checkable=True, checked=settings.get_range_rings_by_owner()
+        )
+        self.range_rings_by_owner_action.setToolTip(
+            "Each ring in its owner's player colour. GAIA keeps the Range ring colour "
+            "from Settings > Appearance."
+        )
+        range_menu.addAction(self.range_rings_by_owner_action)
 
         # The ruler strip of tick marks outside the map border. Deliberately
         # NOT gated by mode or terrain style, unlike its two neighbours
@@ -3720,6 +3751,9 @@ class ViewerWindow(QMainWindow):
         self.selection_owner_colour_action.toggled.connect(self._on_selection_owner_colour_toggled)
         self.range_rings_action.toggled.connect(self._on_range_rings_toggled)
         self.range_rings_by_owner_action.toggled.connect(self._on_range_rings_by_owner_toggled)
+        self.range_rings_buildings_action.toggled.connect(self._on_range_rings_buildings_toggled)
+        self.range_rings_revealers_action.toggled.connect(self._on_range_rings_revealers_toggled)
+        self.range_rings_selected_revealers_action.toggled.connect(self._on_range_rings_selected_revealers_toggled)
         self.player_cameras_action.toggled.connect(self._on_player_cameras_toggled)
         self.trigger_overlay_action.toggled.connect(self._on_trigger_overlay_toggled)
         for tiles, action in self.distance_tick_interval_actions.items():
@@ -4821,11 +4855,18 @@ class ViewerWindow(QMainWindow):
         self._unit_filter = self._current_unit_filter()
 
     def _needs_unit_index(self) -> bool:
-        """Units mode needs the pick index, and so does View > Footprint
-        Outlines, which is reachable from every mode. Without the second
-        term the overlay silently draws nothing outside Units mode, since
-        the index is built on demand rather than at load."""
-        return self.mode == "units" or settings.get_footprint_outlines() or self._unit_picker is not None
+        """Units mode needs the pick index, and so do View > Footprint
+        Outlines and the always-on Range Rings layers (GH #153 / #155), which
+        are reachable from every mode. Without those terms the overlays
+        silently draw nothing outside Units mode, since the index is built on
+        demand rather than at load."""
+        return (
+            self.mode == "units"
+            or settings.get_footprint_outlines()
+            or settings.get_range_rings_revealers()
+            or settings.get_range_rings_buildings()
+            or self._unit_picker is not None
+        )
 
     def _rebuild_unit_index(self) -> None:
         """Rebuilds the pick index for the current scenario + filter and hands
@@ -8363,6 +8404,9 @@ class ViewerWindow(QMainWindow):
             "view_selection_owner_colour": self.selection_owner_colour_action,
             "view_range_rings": self.range_rings_action,
             "view_range_rings_by_owner": self.range_rings_by_owner_action,
+            "view_range_rings_buildings": self.range_rings_buildings_action,
+            "view_range_rings_revealers": self.range_rings_revealers_action,
+            "view_range_rings_selected_revealers": self.range_rings_selected_revealers_action,
             "view_player_cameras": self.player_cameras_action,
             "view_trigger_overlay": self.trigger_overlay_action,
             **{f"view_layer_{lid}": action for lid, action in self.layer_actions.items()},
@@ -8518,6 +8562,22 @@ class ViewerWindow(QMainWindow):
     def _on_range_rings_by_owner_toggled(self, checked: bool) -> None:
         settings.set_range_rings_by_owner(checked)
         self.map_view.set_range_rings_by_owner(checked)
+
+    def _on_range_rings_selected_revealers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_selected_revealers(checked)
+        self.map_view.set_range_rings_selected_revealers(checked)
+
+    def _on_range_rings_buildings_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_buildings(checked)
+        if checked and self._needs_unit_index():
+            self._rebuild_unit_index()
+        self.map_view.set_ring_layer_buildings(checked)
+
+    def _on_range_rings_revealers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_revealers(checked)
+        if checked and self._needs_unit_index():
+            self._rebuild_unit_index()
+        self.map_view.set_ring_layer_revealers(checked)
 
     def _on_player_cameras_toggled(self, checked: bool) -> None:
         settings.set_camera_markers(checked)
@@ -9924,6 +9984,7 @@ class ViewerWindow(QMainWindow):
         self.map_view.refresh_unit_highlight()
         # Here, not in set_selection_player_colors(): _rebuild_unit_index() pushes colours too.
         self.map_view.refresh_footprint_owner_colors()
+        self.map_view.refresh_ring_layer_owner_colors()
         # An in-flight warm is walking unit data this recolour just changed;
         # re-armed below, same as _after_unit_mutation()'s own third
         # invalidation.
