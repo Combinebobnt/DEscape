@@ -34,7 +34,7 @@ from uuid import uuid4
 
 import numpy as np
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
-from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer, QUrl
 from PyQt5.QtGui import (
     QColor,
     QFont,
@@ -324,6 +324,12 @@ _FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
 
 # GH #88: the tools whose water lays an auto-beach ring (Draw's stroke, the two shape commits).
 _AUTO_BEACH_TOOLS = ("draw", "draw_line", "draw_rect")
+
+
+def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
+    """GH #221: the local .aoe2scenario files among dropped URLs, in drop order."""
+    paths = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
+    return [path for path in paths if path.suffix.lower() == ".aoe2scenario"]
 
 
 def _new_map_tip(tiles: int) -> str:
@@ -2754,6 +2760,8 @@ class ViewerWindow(QMainWindow):
         # them regardless of enabled state. This flag is what actually
         # makes such a call a no-op rather than a reentrant interleave.
         self._busy = False
+        # GH #221: a .aoe2scenario dropped anywhere on the window opens it.
+        self.setAcceptDrops(True)
         # Seconds the last load's pre-freeze gc.collect() took (_freeze_loaded_document).
         self._load_gc_collect_s: float | None = None
         # Tools > Map Analysis results, modeless and reused; see _show_analysis().
@@ -17135,6 +17143,40 @@ class ViewerWindow(QMainWindow):
         if not self._confirm_discard_changes():
             return
         self.load_scenario(Path(path_str))
+
+    def _drop_paths(self, event) -> list[Path]:
+        """The scenario files a drag carries, or [] when it can't open one now."""
+        if self._busy or not event.mimeData().hasUrls():
+            return []
+        return dropped_scenario_paths(event.mimeData().urls())
+
+    def dragEnterEvent(self, event) -> None:
+        if self._drop_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:
+        paths = self._drop_paths(event)
+        if not paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        # Deferred: the discard prompt's modal loop inside dropEvent would stall the drag source.
+        QTimer.singleShot(0, lambda: self._open_dropped(paths))
+
+    def _open_dropped(self, paths: list[Path]) -> None:
+        if self._busy or not self._confirm_discard_changes():
+            return
+        before = self.scenario
+        self.load_scenario(paths[0])
+        if len(paths) > 1 and self.scenario is not before:
+            message = f"Opened {paths[0].name}; skipped {len(paths) - 1} other dropped file(s)"
+            self._log_status(message)
+            self.statusBar().showMessage(message)
 
     def _clear_recent_files(self) -> None:
         settings.clear_recent_files()

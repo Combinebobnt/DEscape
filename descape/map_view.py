@@ -440,6 +440,9 @@ class MapView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.scene().setBackgroundBrush(self.OUTSIDE_MAP_COLOR)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
+        # GH #221: file drops go up to ViewerWindow; the scene would otherwise swallow them.
+        self.setAcceptDrops(False)
+        self.viewport().setAcceptDrops(False)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         # Populates every self._*_pen/self._*_color attribute _update_highlight
         # et al. read below -- must run before anything else in __init__ could

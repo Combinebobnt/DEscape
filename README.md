@@ -208,6 +208,7 @@ directly:
 python3 map_editor.py    # Linux/macOS
 python map_editor.py      # Windows
 python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file immediately
+# A .aoe2scenario dropped onto the open window opens it too.
 
 # CLI summary + PNG export
 .venv/bin/python3 tools/dump_scenario.py path/to/scenario.aoe2scenario                       # Linux/macOS
