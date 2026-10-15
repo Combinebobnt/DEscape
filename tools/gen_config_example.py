@@ -153,6 +153,11 @@ elev_step_pct: {iso_geometry.ELEV_STEP_DEFAULT_PCT}
 # Default: {settings.PAN_SPEED_DEFAULT}.
 pan_speed: {settings.PAN_SPEED_DEFAULT}
 
+# Opacity of walls and gates in percent while View > Layers > Translucent
+# Walls is on, Settings > Appearance. Clamped to {view_layers.WALL_OPACITY_MIN_PCT}-{view_layers.WALL_OPACITY_MAX_PCT} on read.
+# Default: {view_layers.WALL_OPACITY_DEFAULT_PCT}.
+wall_opacity_pct: {view_layers.WALL_OPACITY_DEFAULT_PCT}
+
 # Anchor mouse-wheel zoom under the cursor (true) or the view center
 # (false). Default: true.
 zoom_centered_on_cursor: true

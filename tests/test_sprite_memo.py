@@ -85,18 +85,25 @@ class _ResolveCounter:
         monkeypatch.setattr(render, "_resolve_unit_sprite", counted)
 
 
-def _walk(style: _Style, memo, unit_filter=UnitFilter(), with_farms=True, tree_scale=1.0, hero_glow=False):
+def _walk(
+    style: _Style, memo, unit_filter=UnitFilter(), with_farms=True, tree_scale=1.0, hero_glow=False,
+    wall_height_scale=1.0, wall_alpha=1.0,
+):
     elevations, corner_rise = style.args()
     return render._drain(render.sprite_draws_by_anchor_sliced(
         style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
-        memo=memo,
+        wall_height_scale, wall_alpha, memo=memo,
     ))
 
 
-def _fresh(style: _Style, unit_filter=UnitFilter(), with_farms=True, tree_scale=1.0, hero_glow=False):
+def _fresh(
+    style: _Style, unit_filter=UnitFilter(), with_farms=True, tree_scale=1.0, hero_glow=False,
+    wall_height_scale=1.0, wall_alpha=1.0,
+):
     elevations, corner_rise = style.args()
     return render.sprite_draws_by_anchor(
-        style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow
+        style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
+        wall_height_scale, wall_alpha,
     )
 
 
@@ -231,15 +238,19 @@ def test_a_filter_change_matches_fresh_without_reresolving(monkeypatch):
 
 @pytest.mark.parametrize(
     "toggle",
-    [{"with_farms": False}, {"tree_scale": 0.5}, {"hero_glow": True}],
-    ids=["farm_overlay", "small_trees", "hero_glow"],
+    [
+        {"with_farms": False}, {"tree_scale": 0.5}, {"hero_glow": True},
+        {"wall_height_scale": 0.5}, {"wall_alpha": 0.5},
+    ],
+    ids=["farm_overlay", "small_trees", "hero_glow", "short_walls", "translucent_walls"],
 )
 def test_a_layer_toggle_matches_fresh(monkeypatch, toggle):
     """Each build-time layer field is a memo invariant: flipping it must
-    re-resolve rather than serve the old art. CONST is patched into the tree
-    and hero sets so the two toggles change pixels at all."""
+    re-resolve rather than serve the old art. CONST is patched into the tree,
+    hero and wall sets so those toggles change pixels at all."""
     monkeypatch.setattr(render, "TREE_UNIT_IDS", frozenset({CONST}))
     monkeypatch.setattr(render, "HERO_GLOW_CONSTS", frozenset({CONST}))
+    monkeypatch.setattr(render.unit_kind, "wall_consts", lambda: frozenset({CONST}))
     scenario = _scenario()
     style = _Style(False, scenario)
     _layer, memo = _walk(style, render.SpriteMemo())

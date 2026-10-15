@@ -14,9 +14,10 @@ re-deriving the same action/gating/keybind pattern.
 Layer visibility is a third axis, distinct from the two the existing menus
 already own: Filters is WHICH units are drawn, View > Show sprites is WHETHER
 unit art draws at all, and this is a render-category question -- which
-categories of rendering happen, and (small_trees) how big one category's art
-is drawn. That is why a row about tree ART size still belongs here and not in
-Filters, which decides membership rather than appearance.
+categories of rendering happen, and (small_trees, translucent_walls,
+short_walls) how one category's art is drawn. That is why a row about tree or
+wall ART still belongs here and not in Filters, which decides membership
+rather than appearance.
 
 Every row persists across launches, by user decision (GH #182), stored by
 settings.get_view_layers()/set_view_layer() under the config key
@@ -38,12 +39,23 @@ user-adjustable: the value is a readability tradeoff settled once, so only
 the on/off bool is a setting, not the factor. Lives here because this
 module is where the bool is defined; unit_sprites wants only the float."""
 
+SHORT_WALL_HEIGHT = 0.5
+"""The vertical factor the Short Walls row squashes wall and gate art by
+(GH #35). Fixed for SMALL_TREE_SCALE's reason: only the on/off bool is a
+setting."""
+
+# Translucent Walls' opacity, Settings > Appearance (GH #35). Here rather than
+# in settings.py so this module stays a leaf: settings.py imports these.
+WALL_OPACITY_MIN_PCT = 10
+WALL_OPACITY_MAX_PCT = 90
+WALL_OPACITY_DEFAULT_PCT = 50
+
 
 @dataclass(frozen=True)
 class LayerState:
     """An immutable "render these layers" state, whose defaults are each row's
     own LayerSpec.default (on for the two visibility rows and Hero Glow, off
-    for the Small Trees size row).
+    for Small Trees and the two wall rows).
 
     Frozen for exactly the reason UnitFilter is: it is stored on a chunk
     cache and compared BY VALUE to decide whether a change needs the cache
@@ -62,6 +74,10 @@ class LayerState:
     farm_overlay: bool = True
     small_trees: bool = False
     hero_glow: bool = True
+    translucent_walls: bool = False
+    short_walls: bool = False
+    # Not a registry row: Settings > Appearance owns it, and the viewer fills it in.
+    wall_opacity_pct: int = WALL_OPACITY_DEFAULT_PCT
 
     @property
     def tree_scale(self) -> float:
@@ -69,6 +85,18 @@ class LayerState:
         the mapping is written once here rather than at each of the six
         cache re-resolve sites."""
         return SMALL_TREE_SCALE if self.small_trees else 1.0
+
+    @property
+    def wall_alpha(self) -> float:
+        """Translucent Walls as the alpha factor wall art is drawn at. The
+        caches compare this, not the raw pct, so moving the opacity slider
+        with the row off rebuilds nothing."""
+        return self.wall_opacity_pct / 100 if self.translucent_walls else 1.0
+
+    @property
+    def wall_height_scale(self) -> float:
+        """Short Walls as the vertical factor wall art is squashed by."""
+        return SHORT_WALL_HEIGHT if self.short_walls else 1.0
 
 
 DEFAULT_LAYERS = LayerState()
@@ -188,6 +216,37 @@ LAYERS: tuple[LayerSpec, ...] = (
         # build with sprites enabled.
         requires_sprites=True,
         keybind_label="Hero Glow Layer",
+    ),
+    LayerSpec(
+        layer_id="translucent_walls",
+        label="T&ranslucent Walls",
+        tooltip=(
+            "Draw walls and gates see-through, at the opacity set in Settings "
+            "> Appearance, so units behind a wall line show. A wall is still "
+            "picked by its footprint -- this changes the art, not the unit."
+        ),
+        # Off, like Small Trees: it changes the map away from what the game shows.
+        default=False,
+        # Flat's icons are contain-fit into their own footprint, so a wall
+        # there hides nothing behind it.
+        styles=frozenset(terrain_style.ELEVATED_STYLES),
+        # Baked into the sprite the caches store, which they only build with
+        # sprites enabled.
+        requires_sprites=True,
+        keybind_label="Translucent Walls Layer",
+    ),
+    LayerSpec(
+        layer_id="short_walls",
+        label="Short &Walls",
+        tooltip=(
+            "Draw wall and gate art squashed to half height toward its base, "
+            "so units behind a wall line stay visible. The wall still stands "
+            "on the same tiles and is still picked by its footprint."
+        ),
+        default=False,
+        styles=frozenset(terrain_style.ELEVATED_STYLES),
+        requires_sprites=True,
+        keybind_label="Short Walls Layer",
     ),
 )
 

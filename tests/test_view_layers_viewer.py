@@ -353,3 +353,95 @@ def test_the_drag_ghost_takes_the_windows_own_layer_value(sprite_install, monkey
         assert seen[-1] == 1.0
     finally:
         conftest.close_window(window)
+
+
+WALL_LAYERS = ["translucent_walls", "short_walls"]
+
+
+@pytest.mark.parametrize("layer_id", WALL_LAYERS)
+def test_each_wall_toggle_reaches_the_live_cache_and_survives_a_style_switch(sprite_install, layer_id) -> None:
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.layer_actions[layer_id].setChecked(True)
+        assert getattr(window._cache.layers, layer_id) is True
+        for style in ("Flat", "Stepped", "Sloped"):
+            window.terrain_style_combo.setCurrentText(style)
+            assert getattr(window._layers, layer_id) is True, style
+            assert getattr(window._cache.layers, layer_id) is True, style
+        window.layer_actions[layer_id].setChecked(False)
+        assert (window._cache.layers.wall_alpha, window._cache.layers.wall_height_scale) == (1.0, 1.0)
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_drag_ghost_takes_the_windows_own_wall_values(sprite_install, monkeypatch) -> None:
+    """test_the_drag_ghost_takes_the_windows_own_layer_value's shape: without
+    these a dragged wall or gate shows full size and opaque."""
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.show_sprites_action.setChecked(True)
+        seen: list[tuple[float, float]] = []
+        monkeypatch.setattr(
+            viewer, "unit_sprite_draws_at",
+            lambda *args, **kwargs: (seen.append((kwargs["wall_height_scale"], kwargs["wall_alpha"])), [])[1],
+        )
+        monkeypatch.setattr(window, "_ghost_rotation_override", lambda entry: None)
+        ghost = SimpleNamespace(x=5.5, y=5.5, unit_const=CONST, rotation=0.0, reference_id=1)
+        entry = SimpleNamespace(player_id=1)
+
+        window.layer_actions["translucent_walls"].setChecked(True)
+        window.layer_actions["short_walls"].setChecked(True)
+        window._drag_ghost_sprite_draws(entry, ghost)
+        assert seen[-1] == (view_layers.SHORT_WALL_HEIGHT, window._layers.wall_opacity_pct / 100)
+
+        window.layer_actions["translucent_walls"].setChecked(False)
+        window.layer_actions["short_walls"].setChecked(False)
+        window._drag_ghost_sprite_draws(entry, ghost)
+        assert seen[-1] == (1.0, 1.0)
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_opacity_setting_reaches_the_cache_only_while_translucent_walls_is_on(
+    sprite_install, monkeypatch
+) -> None:
+    """With the row off the drawn alpha is unchanged, so set_layers() is not
+    called at all: its equality guard would miss on the raw pct and evict the
+    whole canvas for nothing."""
+    window = conftest.blank_window()
+    dialog = viewer.SettingsDialog(window)
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        calls = []
+        real = type(window._cache).set_layers
+        monkeypatch.setattr(
+            type(window._cache), "set_layers",
+            lambda self, layers: (calls.append(layers), real(self, layers))[1],
+        )
+        dialog.wall_opacity_slider.setValue(30)
+        dialog._apply_wall_opacity()
+        assert settings.get_wall_opacity_pct() == 30
+        assert window._layers.wall_opacity_pct == 30
+        assert calls == []
+
+        window.layer_actions["translucent_walls"].setChecked(True)
+        assert window._cache.layers.wall_alpha == 0.3
+        dialog.wall_opacity_slider.setValue(70)
+        dialog._apply_wall_opacity()
+        assert len(calls) == 2
+        assert window._cache.layers.wall_alpha == 0.7
+    finally:
+        dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_the_window_starts_with_the_saved_wall_opacity(sprite_install) -> None:
+    settings.set_wall_opacity_pct(25)
+    window = conftest.blank_window()
+    try:
+        assert window._layers.wall_opacity_pct == 25
+        assert window._cache.layers.wall_opacity_pct == 25
+    finally:
+        conftest.close_window(window)

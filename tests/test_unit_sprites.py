@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1158,6 +1159,189 @@ def test_a_composites_piece_offsets_shrink_with_its_art(install):
     assert len(full) == len(small) == 2
     assert (full[1].dx, full[1].dy) == (40, -20)
     assert (small[1].dx, small[1].dy) == (round(40 * 0.6), round(-20 * 0.6))
+
+
+# --- wall_height_scale / wall_alpha (View > Layers > Short and Translucent Walls, GH #35)
+
+
+def _column_rows(rgba: np.ndarray) -> list[tuple[int, int] | None]:
+    """Each column's (top, bottom) opaque row, None for an empty column."""
+    out = []
+    for x in range(rgba.shape[1]):
+        rows = np.flatnonzero(rgba[:, x, 3] > 0)
+        out.append(None if rows.size == 0 else (int(rows[0]), int(rows[-1])))
+    return out
+
+
+RUN_STEP = (48, -24)  # a +x neighbour's native offset, tile_screen_origin()'s (+half_w, -half_h)
+
+
+def _run_segment(width: int = 77, height: int = 140, ink_h: int = 60, cap_drop: int = 14) -> np.ndarray:
+    """A synthetic +x wall run segment: ink_h px of wall above a base that
+    rises one row per two columns, plus an end cap at its left end that
+    reaches cap_drop px below that base. In a run, the next segment forward
+    hides the cap, which is what a squash toward each piece's own lowest ink
+    exposes as a step."""
+    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    for x in range(width):
+        base = height - 1 - cap_drop - x // 2
+        bottom = base + cap_drop if x < RUN_STEP[0] // 2 else base
+        rgba[base - ink_h + 1 : bottom + 1, x] = (90, 90, 90 + x % 50, 255)
+    return rgba
+
+
+def _paint(canvas: np.ndarray, top: int, left: int, rgba: np.ndarray) -> None:
+    view = canvas[top : top + rgba.shape[0], left : left + rgba.shape[1]]
+    ink = rgba[..., 3] > 0
+    view[ink] = rgba[ink]
+
+
+def test_squash_toward_line_moves_every_row_toward_the_line_and_keeps_the_shape():
+    rgba = _run_segment()
+    s, y0, slope = 0.5, 100.0, -0.5
+    out = unit_sprites._squash_toward_line(rgba, s, y0, slope)
+    assert out.shape == rgba.shape
+    for x, (before, after) in enumerate(zip(_column_rows(rgba), _column_rows(out), strict=True)):
+        anchor = y0 + slope * x
+        assert abs(after[0] - (anchor + (before[0] - anchor) * s)) <= 1, x
+        assert abs(after[1] - (anchor + (before[1] - anchor) * s)) <= 1, x
+
+
+def test_a_run_squashed_piece_by_piece_is_the_run_squashed_whole():
+    """**The step guard.** Three segments of one +x run, each squashed on its
+    own toward a line through its own hotspot and then painted back to
+    front, must equal the painted run squashed as one image. A squash toward
+    each piece's own lowest ink fails this: the hidden end caps reach below
+    the run line and come out as a step at every join."""
+    seg = _run_segment()
+    h, w = seg.shape[:2]
+    hx, hy = 30, 90  # the segment's hotspot, on its run line
+    slope = unit_sprites._RUN_SLOPE["x"]
+    dx, dy = RUN_STEP
+    n = 3
+    canvas_h, canvas_w = h - dy * (n - 1), w + dx * (n - 1)
+    # Back to front: the +x neighbour sits higher on screen, so it paints first.
+    origins = [(-dy * (n - 1 - i), dx * i) for i in range(n)][::-1]
+
+    def line_y0(top: int, left: int) -> float:
+        return top + hy + unit_sprites.WALL_BASE_BELOW_HOTSPOT_PX - slope * (left + hx)
+
+    whole = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
+    pieces = np.zeros_like(whole)
+    for top, left in origins:
+        _paint(whole, top, left, seg)
+        _paint(pieces, top, left, unit_sprites._squash_toward_line(seg, 0.5, line_y0(0, 0), slope))
+    front_top, front_left = origins[-1]
+    squashed_whole = unit_sprites._squash_toward_line(whole, 0.5, line_y0(front_top, front_left), slope)
+    assert np.array_equal(pieces, squashed_whole)
+
+
+def test_the_run_slopes_match_the_projection():
+    from descape import iso_geometry
+
+    proj = SimpleNamespace(origin_x=0, origin_y=0, half_w=48, half_h=24, elev_step=0)
+    x0, y0 = iso_geometry.tile_screen_origin(0, 0, 0, proj)
+    for axis, (tx, ty) in (("x", (1, 0)), ("y", (0, 1))):
+        sx, sy = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
+        assert unit_sprites._RUN_SLOPE[axis] == (sy - y0) / (sx - x0), axis
+
+
+@pytest.mark.parametrize(("const", "rotation", "slope"), [
+    (117, 0.0, -0.5),  # stone wall, run along x
+    (117, 1.0, 0.5),  # run along y
+    (117, 2.0, 0.0),  # tower
+    (117, 3.0, 0.0),  # screen-flat diagonal run
+    (117, 4.0, 0.0),  # screen-vertical diagonal run
+    (64, 0.0, -0.5),  # stone gate, span (4, 1)
+    (88, 0.0, 0.5),  # stone gate, span (1, 4)
+    (659, 0.0, 0.0),  # stone gate, span (4, 4)
+])
+def test_each_wall_and_gate_squashes_toward_its_own_runs_slope(const, rotation, slope):
+    entry = unit_sprites.graphic_map()[const]
+    assert unit_sprites._wall_run_slope(const, entry, rotation) == slope
+
+
+def test_wall_alpha_multiplies_alpha_exactly_and_leaves_rgb_alone(install):
+    install.write(build_sld(1, canvas=32))
+    install.register(angle_count=1, frame_count=1)
+    half_w = unit_sprites.NATIVE_TILE_W // 2
+    opaque = _piece_draw(CONST, 0.0, 1, half_w)
+    faded = _piece_draw(CONST, 0.0, 1, half_w, wall_alpha=0.3)
+
+    assert faded.rgba.shape == opaque.rgba.shape
+    assert (faded.hotspot_x, faded.hotspot_y) == (opaque.hotspot_x, opaque.hotspot_y)
+    assert np.array_equal(faded.rgba[..., :3], opaque.rgba[..., :3])
+    expected = np.vectorize(lambda a: round(a * 0.3))(opaque.rgba[..., 3])
+    assert np.array_equal(faded.rgba[..., 3], expected)
+
+
+def test_wall_factors_of_one_are_byte_identical_to_omitting_them(install):
+    install.write(build_sld(1, canvas=32))
+    install.write(build_sld(1, canvas=32, colour_base=7), name="t_annex_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1, "frame_count": 1, "dx": 0, "dy": 0},
+        {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
+    ])
+    omitted = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32)
+    passed = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_height_scale=1.0, wall_alpha=1.0)
+    assert len(omitted) == len(passed) == 2
+    for a, b in zip(omitted, passed, strict=True):
+        assert (a.dx, a.dy, a.draw.hotspot_x, a.draw.hotspot_y) == (b.dx, b.dy, b.draw.hotspot_x, b.draw.hotspot_y)
+        assert np.array_equal(a.draw.rgba, b.draw.rgba)
+
+
+def test_wall_factors_do_not_collide_in_the_scaled_cache(install):
+    install.write(build_sld(1, canvas=32))
+    install.register(angle_count=1, frame_count=1)
+    plain = _piece_draw(CONST, 0.0, 1, 32)
+    half = _piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.5)
+    third = _piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.3)
+    short = _piece_draw(CONST, 0.0, 1, 32, wall_height_scale=0.5)
+    both = _piece_draw(CONST, 0.0, 1, 32, wall_height_scale=0.5, wall_alpha=0.5)
+
+    assert int(plain.rgba[..., 3].max()) == 255
+    assert int(half.rgba[..., 3].max()) == 128
+    assert int(third.rgba[..., 3].max()) == 76
+    assert short.rgba.shape[0] < plain.rgba.shape[0]
+    assert both.rgba.shape == short.rgba.shape and int(both.rgba[..., 3].max()) == 128
+    assert np.array_equal(_piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.5).rgba, half.rgba)
+
+
+def test_a_composite_wall_flattens_to_one_piece_and_its_flag_moves_down_with_it(install):
+    """The squash runs over the flattened unit, so a tower's flag comes down
+    with the body instead of floating at its old height."""
+    install.write(build_sld(1, canvas=32))
+    install.write(build_sld(1, canvas=32, colour_base=7), name="t_annex_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1, "frame_count": 1, "dx": 0, "dy": 0},
+        {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
+    ])
+    half_w = unit_sprites.NATIVE_TILE_W // 2
+    body, flag = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w)
+    flag_rgb = tuple(int(c) for c in flag.draw.rgba[0, 0, :3])
+    base = body.draw.rgba.shape[0] - 1 - body.draw.hotspot_y  # below the anchor
+    top = flag.dy - flag.draw.hotspot_y
+
+    alpha_only = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, wall_alpha=0.5)
+    squashed = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, wall_height_scale=0.5)
+    assert len(alpha_only) == len(squashed) == 1
+    assert (squashed[0].dx, squashed[0].dy) == (0, 0)
+
+    flat = alpha_only[0].draw
+    assert flat.rgba.shape[0] - 1 - flat.hotspot_y == base
+    assert -flat.hotspot_y == top
+    # A (1, 1) const squashes toward a flat line this far below its hotspot.
+    line = unit_sprites.WALL_BASE_BELOW_HOTSPOT_PX
+    draw = squashed[0].draw
+    assert abs(draw.rgba.shape[0] - 1 - draw.hotspot_y - (line + (base - line) * 0.5)) <= 1
+    assert abs(-draw.hotspot_y - (line + (top - line) * 0.5)) <= 1, "the flag stayed at its old height"
+    assert flag_rgb in {tuple(int(c) for c in px) for px in draw.rgba[draw.rgba[..., 3] > 0][:, :3]}
+
+
+def test_a_wall_draw_with_no_parent_art_falls_back_to_the_mark(install):
+    install.register(angle_count=1, frame_count=1)  # registered, but no .sld written
+    assert unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_alpha=0.5) == []
+    assert unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_height_scale=0.5) == []
 
 
 # --- caching ----------------------------------------------------------

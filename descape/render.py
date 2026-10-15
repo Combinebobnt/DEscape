@@ -25,6 +25,7 @@ from descape import (
     settings,
     terrain_blend,
     terrain_style,
+    unit_kind,
     unit_sprites,
 )
 from descape.grid_overlay import DEFAULT_GRID, GridBake
@@ -4098,6 +4099,8 @@ def unit_sprite_draws_at(
     rotation_override: float | None = None,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_height_scale: float = 1.0,
+    wall_alpha: float = 1.0,
 ) -> list[tuple[object, int, int]]:
     """Every sprite piece `unit` would paint at its own stored position, as
     (draw, px, py) triples in canvas pixels, ordered the way the composite
@@ -4119,11 +4122,12 @@ def unit_sprite_draws_at(
 
     tree_scale must be the WINDOW's current View > Layers value: a ghost left
     on the default 1.0 would drag a tree at full size and snap it small on
-    drop. hero_glow likewise, or a hero would lose its ring mid-drag."""
+    drop. hero_glow likewise, or a hero would lose its ring mid-drag, and
+    wall_height_scale and wall_alpha, or a wall would drag at full size."""
     overrides = {} if rotation_override is None else {(player_id, 0): rotation_override}
     contribution = _resolve_unit_sprite(
         scenario, proj, elevations, UnitFilter(), corner_rise, overrides, False,
-        player_id, 0, unit, tree_scale, hero_glow,
+        player_id, 0, unit, tree_scale, hero_glow, wall_height_scale, wall_alpha,
     )
     if contribution is None:
         return []
@@ -4759,6 +4763,8 @@ def sprite_draws_by_anchor(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_height_scale: float = 1.0,
+    wall_alpha: float = 1.0,
 ) -> SpriteLayer:
     """Resolves every visible unit to a real .sld sprite or a farm-terrain
     override, or leaves it to the coloured mark.
@@ -4795,9 +4801,14 @@ def sprite_draws_by_anchor(
     hero_glow=True (View > Layers > Hero Glow) rings HERO_GLOW_CONSTS art in
     gold. Off by default here, so a caller that never names it stays
     byte-identical; the chunk caches pass their LayerState's own value, which
-    defaults on. The bboxes widen with the ring the same way."""
+    defaults on. The bboxes widen with the ring the same way.
+
+    wall_height_scale < 1.0 (View > Layers > Short Walls) squashes and
+    wall_alpha < 1.0 (Translucent Walls) fades unit_kind.wall_consts() art
+    (GH #35); see unit_sprites.sprite_pieces_for()."""
     return _drain(sprite_draws_by_anchor_sliced(
-        scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow
+        scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
+        wall_height_scale, wall_alpha,
     ))
 
 
@@ -4836,6 +4847,8 @@ def _resolve_unit_sprite(
     unit,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_height_scale: float = 1.0,
+    wall_alpha: float = 1.0,
 ) -> _SpriteContribution | None:
     """Resolves ONE unit to its sprite or farm-terrain-override contribution
     -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
@@ -4854,7 +4867,9 @@ def _resolve_unit_sprite(
     re-derived, and deliberately not terrain_units.TREE_CONSTS, which is that
     set intersected with the auto-place table and so a strict subset. This is
     where the "which consts" decision lives; unit_sprites just takes a float.
-    `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39)."""
+    `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39), and
+    `wall_height_scale`/`wall_alpha` to unit_kind.wall_consts(), the set
+    Filters' Show Walls owns, gates included (GH #35)."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     half_w = proj.half_w
@@ -4866,12 +4881,16 @@ def _resolve_unit_sprite(
     rotation = stored_rotation(player_id, unit)
     rotation = overrides.get((player_id, i), rotation)
     team_index = scenario.team_indices[player_id]
+    # Short-circuits, so the wall set is only looked up with a wall row on.
+    is_styled_wall = (wall_height_scale < 1.0 or wall_alpha < 1.0) and unit.unit_const in unit_kind.wall_consts()
     pieces = unit_sprites.sprite_pieces_for(
         unit.unit_const, rotation, team_index, half_w,
         tree_scale if unit.unit_const in TREE_UNIT_IDS else 1.0,
         getattr(unit, "reference_id", None),
         hero_glow=hero_glow and unit.unit_const in HERO_GLOW_CONSTS,
         art=player_art_for(scenario, player_id),
+        wall_height_scale=wall_height_scale if is_styled_wall else 1.0,
+        wall_alpha=wall_alpha if is_styled_wall else 1.0,
     )
     # A pasture (DRAPED_SPRITE_CONSTS) carries both: its drape plus its annex-tree art.
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
@@ -4985,8 +5004,13 @@ class SpriteMemo:
     entries: dict = field(default_factory=dict)
 
 
-def _sprite_memo_invariants(proj, mm, corner_rise, with_farms, tree_scale, hero_glow) -> tuple:
-    return (proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow)
+def _sprite_memo_invariants(
+    proj, mm, corner_rise, with_farms, tree_scale, hero_glow, wall_height_scale=1.0, wall_alpha=1.0
+) -> tuple:
+    return (
+        proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow,
+        wall_height_scale, wall_alpha,
+    )
 
 
 def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, player_id: int, i: int, unit) -> tuple:
@@ -5052,6 +5076,8 @@ def sprite_draws_by_anchor_sliced(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_height_scale: float = 1.0,
+    wall_alpha: float = 1.0,
     memo: SpriteMemo | None = None,
 ) -> Generator[object, None, SpriteLayer | tuple[SpriteLayer, SpriteMemo]]:
     """sprite_draws_by_anchor() as a resumable generator -- one yield per
@@ -5086,7 +5112,8 @@ def sprite_draws_by_anchor_sliced(
     farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
     if memo is not None:
         invariants = _sprite_memo_invariants(
-            proj, scenario.map_manager, corner_rise, with_farms, tree_scale, hero_glow
+            proj, scenario.map_manager, corner_rise, with_farms, tree_scale, hero_glow,
+            wall_height_scale, wall_alpha,
         )
         old = memo.entries if memo.invariants == invariants else {}
         entries: dict[int, tuple] = {}
@@ -5100,7 +5127,7 @@ def sprite_draws_by_anchor_sliced(
             if memo is None:
                 contribution = _resolve_unit_sprite(
                     scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                    player_id, i, unit, tree_scale, hero_glow,
+                    player_id, i, unit, tree_scale, hero_glow, wall_height_scale, wall_alpha,
                 )
             else:
                 if not unit_filter.matches(player_id, unit):
@@ -5116,7 +5143,7 @@ def sprite_draws_by_anchor_sliced(
                 else:
                     contribution = _resolve_unit_sprite(
                         scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                        player_id, i, unit, tree_scale, hero_glow,
+                        player_id, i, unit, tree_scale, hero_glow, wall_height_scale, wall_alpha,
                     )
                 entries[id(unit)] = (unit, key, contribution)
             if contribution is not None:

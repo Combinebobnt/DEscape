@@ -865,6 +865,35 @@ def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> N
     assert settings.get_pan_speed() == settings.PAN_SPEED_MAX
 
 
+def test_wall_opacity_defaults_and_round_trips(tmp_path: Path, monkeypatch) -> None:
+    assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_DEFAULT_PCT
+    settings.set_wall_opacity_pct(30)
+    monkeypatch.setattr(settings, "_wall_opacity_pct", None)
+    assert settings.get_wall_opacity_pct() == 30
+    assert "wall_opacity_pct: 30" in (tmp_path / "config.yaml").read_text()
+    assert settings.get_view_layers().wall_opacity_pct == 30
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("wall_opacity_pct: 0\n", view_layers.WALL_OPACITY_MIN_PCT),
+    ("wall_opacity_pct: 100\n", view_layers.WALL_OPACITY_MAX_PCT),
+    ("wall_opacity_pct: half\n", view_layers.WALL_OPACITY_DEFAULT_PCT),
+    ("wall_opacity_pct:\n", view_layers.WALL_OPACITY_DEFAULT_PCT),
+])
+def test_an_out_of_range_or_malformed_wall_opacity_falls_back_on_read(
+    tmp_path: Path, raw: str, expected: int
+) -> None:
+    _write_config(tmp_path, raw)
+    assert settings.get_wall_opacity_pct() == expected
+
+
+def test_the_wall_opacity_setter_clamps_rather_than_writing_an_illegal_value() -> None:
+    settings.set_wall_opacity_pct(view_layers.WALL_OPACITY_MAX_PCT + 50)
+    assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_MAX_PCT
+    settings.set_wall_opacity_pct(-5)
+    assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_MIN_PCT
+
+
 # The refused saved value behind get_autosave_dir()'s "", so a restart can still say why.
 
 

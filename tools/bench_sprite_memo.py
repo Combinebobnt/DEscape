@@ -114,6 +114,7 @@ def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) ->
     kwargs = {
         "corner_rise": corner_rise, "with_farms": layers.farm_overlay,
         "tree_scale": layers.tree_scale, "hero_glow": layers.hero_glow,
+        "wall_height_scale": layers.wall_height_scale, "wall_alpha": layers.wall_alpha,
     }
     uf = cache.unit_filter
 
@@ -128,7 +129,7 @@ def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) ->
         return [
             render._resolve_unit_sprite(
                 scenario, proj, elevations, uf, corner_rise, overrides, layers.farm_overlay,
-                pid, i, u, layers.tree_scale, layers.hero_glow,
+                pid, i, u, layers.tree_scale, layers.hero_glow, layers.wall_height_scale, layers.wall_alpha,
             )
             for pid, i, u in units
         ]

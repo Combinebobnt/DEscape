@@ -1472,6 +1472,7 @@ def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
     art: tuple[int | None, int] | None = None,
+    wall_height_scale: float = 1.0, wall_alpha: float = 1.0,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -1509,6 +1510,11 @@ def sprite_pieces_for(
     B) resolves to its editor-only marker instead, one piece at (0, 0).
 
     `art` as sprite_for()'s.
+
+    `wall_height_scale` and `wall_alpha` (View > Layers > Short Walls and
+    Translucent Walls, GH #35): either below 1.0 returns _wall_draw()'s one
+    flattened piece at (0, 0) instead, or [] if it fails. tree_scale and
+    hero_glow are ignored there; the caller decides which consts get each.
     """
     category = unit_kind.invisible_category(unit_const)
     if category is not None:
@@ -1517,6 +1523,9 @@ def sprite_pieces_for(
     entry = _entry_for_art(unit_const, art)
     if entry is None:
         return []
+    if wall_height_scale < 1.0 or wall_alpha < 1.0:
+        draw = _wall_draw(unit_const, entry, rotation, team_index, half_w, seed, wall_height_scale, wall_alpha)
+        return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
     pieces_data = entry.get("pieces")
     if not pieces_data:
         draw = _draw_for_entry(
@@ -1645,10 +1654,18 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     A single piece IS the assembly -- returned as-is rather than copied
     through a composite. _build_icon() no longer sends it here (it tints a
     single piece at whichever size is smaller), but the case stays exact."""
+    assembled = _assembled_with_origin(pieces)
+    return None if assembled is None else assembled[0]
+
+
+def _assembled_with_origin(pieces: list[SpritePiece]) -> tuple[np.ndarray, int, int] | None:
+    """_assembled_native()'s array plus its (ox, oy): where its top-left sits
+    relative to the unit's anchor, so the anchor is pixel (-ox, -oy)."""
     if not pieces:
         return None
     if len(pieces) == 1:
-        return pieces[0].draw.rgba
+        piece = pieces[0]
+        return piece.draw.rgba, piece.dx - piece.draw.hotspot_x, piece.dy - piece.draw.hotspot_y
 
     rects = []
     for piece in pieces:
@@ -1661,7 +1678,134 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     out = np.zeros((max(r[3] for r in rects) - oy, max(r[2] for r in rects) - ox, 4), dtype=np.uint8)
     for piece, (x0, y0, _x1, _y1) in zip(pieces, rects, strict=True):
         _source_over(out, y0 - oy, x0 - ox, piece.draw.rgba)
+    return out, ox, oy
+
+
+# Short Walls' anchor line (GH #35): how far below the hotspot it runs, in
+# native px (the measured gap to a wall's lowest ink is 20-25 on every variant),
+# and its screen slope per run direction, from tile_screen_origin(): +x steps
+# (+half_w, -half_h) and +y steps (+half_w, +half_h).
+WALL_BASE_BELOW_HOTSPOT_PX = 22
+_RUN_SLOPE = {"x": -0.5, "y": 0.5}
+
+
+def _squash_toward_line(rgba: np.ndarray, s: float, y0: float, slope: float) -> np.ndarray:
+    """`rgba` squashed vertically by `s` toward the line y = y0 + slope * x,
+    nearest neighbour (Short Walls, GH #35). Ink above the line moves down to
+    it and ink below moves up. The output has the input's shape, so ink is
+    only kept whole where the input's rows already reach the line.
+
+    One line per straight run, not one per unit: neighbouring wall art
+    overlaps, and the part of a segment its front neighbour hides can reach
+    below the run's ground line. Squashed toward its own lowest ink, that
+    hidden part shows as a step at every join. Every unit of a run maps its
+    columns through the same line, so squashing them one by one and
+    painting them in order gives exactly the squash of the painted run."""
+    h, w = rgba.shape[:2]
+    anchor = y0 + slope * np.arange(w)
+    rows = np.arange(h)[:, None]
+    src = np.floor(anchor[None, :] + (rows - anchor[None, :]) / s + 0.5).astype(np.intp)
+    valid = (src >= 0) & (src < h)
+    out = rgba[np.clip(src, 0, h - 1), np.arange(w)[None, :]]
+    out[~valid] = 0
     return out
+
+
+def _wall_run_slope(unit_const: int, entry: dict, rotation: float) -> float:
+    """The screen slope of the straight run this wall or gate piece belongs
+    to: a wall's x or y run variant (0 or 1), or a gate whose footprint is a
+    run along x or y. Towers, the screen-flat and screen-vertical diagonal
+    runs and corner pillars get a flat line."""
+    if rotation_variant_eligible(unit_const):
+        variant = _frame_for(unit_const, entry, rotation) // max(1, int(entry["frame_count"]))
+        return {0: _RUN_SLOPE["x"], 1: _RUN_SLOPE["y"]}.get(variant, 0.0)
+    span_x, span_y = terrain_palette.tile_span(unit_const, (1, 1))
+    if span_x > span_y:
+        return _RUN_SLOPE["x"]
+    if span_y > span_x:
+        return _RUN_SLOPE["y"]
+    return 0.0
+
+
+def _wall_draw(
+    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
+    seed: int | None, height_scale: float, alpha: float,
+) -> SpriteDraw | None:
+    """A wall or gate's whole composite as one tinted, scaled SpriteDraw, with
+    Short Walls' squash and Translucent Walls' alpha applied (GH #35). None on
+    any failure sprite_for() lists, or a lost parent piece.
+
+    Flattened first, at native scale: the squash then carries a flag or a
+    gate pillar down with its body, and the alpha is uniform within the unit,
+    so a flag over a tower does not stack. No wall or gate piece has a depth
+    slot, so flattening changes no draw order. Then one resize, then the
+    alpha multiply, as round(a * alpha).
+
+    The squash is toward the run's own ground line (_squash_toward_line(),
+    _wall_run_slope()), so a straight run squashes as one image. Where runs
+    of two directions meet at a tower the two lines differ, and the join
+    can show a small step. A screen-vertical run's pieces share columns
+    with different lines, so it squashes piece by piece. The sea wall's
+    (788) underwater piece moves up toward the line too.
+
+    Cached in _scaled_cache under a key of its own, for the reasons
+    _draw_for_entry() gives for its own. _frame_key() resolves every piece's
+    frame, a seeded one included; _art_key() tells two owners' art apart."""
+    team_slot = team_index % len(TEAM_COLORS)
+    key = (
+        "wall", unit_const, _art_key(entry), _body_offset(entry),
+        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, height_scale, alpha,
+    )
+    hit = _scaled_cache.get_or_none(key)
+    if hit is not None:
+        return None if hit is _MISS else hit
+    draw = _build_wall_draw(unit_const, entry, rotation, TEAM_COLORS[team_slot], half_w, seed, height_scale, alpha)
+    _scaled_cache.put(key, _MISS if draw is None else draw)  # see _MISS
+    return draw
+
+
+def _build_wall_draw(
+    unit_const: int, entry: dict, rotation: float, team, half_w: int,
+    seed: int | None, height_scale: float, alpha: float,
+) -> SpriteDraw | None:
+    """_wall_draw()'s uncached body."""
+    pieces = _native_pieces_for(unit_const, entry, rotation, seed=seed)
+    assembled = _assembled_with_origin([
+        SpritePiece(
+            draw=SpriteDraw(rgba=_tinted(p.main, p.playercolor, team), hotspot_x=p.hotspot_x, hotspot_y=p.hotspot_y),
+            dx=p.dx, dy=p.dy,
+        )
+        for p in pieces
+    ])
+    if assembled is None:
+        return None
+    rgba, ox, oy = assembled
+    if height_scale < 1.0:
+        slope = _wall_run_slope(unit_const, entry, rotation)
+        # The anchor line passes WALL_BASE_BELOW_HOTSPOT_PX below the hotspot, at (-ox, -oy).
+        y0 = -oy + WALL_BASE_BELOW_HOTSPOT_PX + slope * ox
+        # Ink only moves toward the line, so rows reaching it hold every result.
+        ends = (y0, y0 + slope * (rgba.shape[1] - 1))
+        pad_top = max(0, -math.floor(min(ends)))
+        pad_bottom = max(0, math.ceil(max(ends)) - (rgba.shape[0] - 1))
+        if pad_top or pad_bottom:
+            rgba = np.pad(rgba, ((pad_top, pad_bottom), (0, 0), (0, 0)))
+            oy -= pad_top
+            y0 += pad_top
+        rgba = _squash_toward_line(rgba, height_scale, y0, slope)
+    # Drops the rows the squash emptied, so the blit skips them.
+    cropped = _cropped_to_ink(rgba, None, -ox, -oy)
+    if cropped is None:
+        return None
+    rgba, _pc, hx, hy = cropped
+    scale = sprite_scale(half_w)
+    width = max(1, round(rgba.shape[1] * scale))
+    height = max(1, round(rgba.shape[0] * scale))
+    small = _resize_rgba(rgba, width, height)
+    if alpha < 1.0:
+        small = small.copy()
+        small[..., 3] = np.rint(small[..., 3] * alpha).astype(np.uint8)
+    return SpriteDraw(rgba=small, hotspot_x=round(hx * scale), hotspot_y=round(hy * scale))
 
 
 def _frame_key(
