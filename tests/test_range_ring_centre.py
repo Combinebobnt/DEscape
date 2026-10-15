@@ -127,8 +127,9 @@ def _ring_and_footprint_centres(window, reference_id: int):
     mv = window.map_view
     (entry,) = [e for e in mv._unit_index.entries if e.unit.reference_id == reference_id]
     mv.set_unit_selection([entry])
-    assert mv._range_ring_item is not None, "no ring drawn"
-    return mv._range_ring_item.path().boundingRect().center(), mv._unit_path(entry).boundingRect().center()
+    assert len(mv._range_ring_items) == 1, "no ring drawn"
+    (ring,) = mv._range_ring_items.values()
+    return ring.path().boundingRect().center(), mv._unit_path(entry).boundingRect().center()
 
 
 @_gui

@@ -744,3 +744,440 @@ def test_a_mountain_blocks_only_its_anchor_tile():
     mountain = 744  # MNTN3, a 3x3 mountain in game
     scenario = _Scenario(60, [[_wall_at(20, 20, const=mountain)], [], [], [], [], [], [], [], []])
     assert wall_run.blocked_tiles(scenario, 60, 60) == {(20, 20)}
+
+
+# --- a moved gate (GH #194: Moving a gate updates walls) -----------------
+
+_PALISADE = 72
+_VILLAGER = 83
+_GATE_Y = 88  # Stone Gate, 4 along y
+_GATE_NE_SW = 667  # Stone Gate, the other diagonal from 659
+
+
+def _tile(unit) -> tuple[int, int]:
+    return int(unit.x), int(unit.y)
+
+
+def _gate_tiles(const: int, tx: int, ty: int) -> list[tuple[int, int]]:
+    """`const`'s sparse footprint with its bounding box's low corner on (tx, ty)."""
+    from descape import render
+
+    span = render.tile_span(const, render.NON_BUILDING_SPAN)
+    return render.occupied_tiles_for(const, *render.span_anchor(tx, ty, *span), 60, 60)
+
+
+def _gated_run(x0: int, x1: int, y: int, gate_x: int) -> list[FakeUnit]:
+    """_x_run() with a Stone Gate standing on gate_x..gate_x+3: the walls it
+    replaced are gone, and the ones beside it already store the run index."""
+    return [u for u in _x_run(x0, x1, y) if not gate_x <= int(u.x) < gate_x + 4]
+
+
+def _move_plan(moves, walls=(), blocked=(), removable=None):
+    """plan_gate_moves() for [(old_tiles, new_tiles), ...] over `walls`, the
+    stationary ones: FakeUnits (owned by player 1), or ExistingWalls as is."""
+    walls = list(walls)
+    if walls and not isinstance(walls[0], wall_run.ExistingWall):
+        static_tiles, static_walls = _existing(walls)
+    else:
+        static_tiles, static_walls = {(w.tx, w.ty) for w in walls}, walls
+    return wall_run.plan_gate_moves(
+        [wall_run.GateMove(frozenset(old), frozenset(new)) for old, new in moves],
+        static_tiles=static_tiles,
+        static_walls=static_walls,
+        moved_tiles={tile for _old, new in moves for tile in new},
+        blocked_tiles=frozenset(blocked),
+        removable=removable,
+    )
+
+
+def _fills(plan) -> dict[tuple[int, int], int]:
+    return {(int(node.x), int(node.y)): node.variant for _p, node in plan.fills}
+
+
+def _after_move(walls, plan) -> list[FakeUnit]:
+    """The stationary walls once `plan` is applied, for planning the next move."""
+    gone = {id(u) for _p, u in plan.removals}
+    kept = [u for u in walls if id(u) not in gone]
+    for _p, unit, variant in plan.rewrites:
+        unit.rotation = float(variant)
+    return kept + [
+        FakeUnit(x=node.x, y=node.y, unit_const=node.unit_const, rotation=node.rotation) for _p, node in plan.fills
+    ]
+
+
+@pytest.mark.parametrize(
+    ("const", "line", "step"),
+    [
+        (GATE, [(10, 10), (11, 10), (12, 10), (13, 10)], (1, 0)),
+        (_GATE_Y, [(10, 10), (10, 11), (10, 12), (10, 13)], (0, 1)),
+        (_DIAGONAL_GATE, [(10, 10), (11, 11), (12, 12), (13, 13)], (1, 1)),
+        (_GATE_NE_SW, [(10, 13), (11, 12), (12, 11), (13, 10)], (1, -1)),
+    ],
+)
+def test_gate_run_line_is_the_line_through_each_stone_orientation(const, line, step):
+    tiles = _gate_tiles(const, 10, 10)
+    assert len(tiles) == (4 if step[0] * step[1] == 0 else 6)
+    assert wall_run.gate_run_line(tiles) == (line, step)
+
+
+def test_gate_run_line_has_no_answer_for_one_tile_or_a_lineless_shape():
+    assert wall_run.gate_run_line([(7, 7)]) is None
+    assert wall_run.gate_run_line([]) is None
+    # A 2x3 block has no diagonal, and a full square has two.
+    assert wall_run.gate_run_line([(x, y) for x in range(2) for y in range(3)]) is None
+    assert wall_run.gate_run_line([(x, y) for x in range(2) for y in range(2)]) is None
+
+
+def test_a_gate_moved_five_along_a_run_swaps_four_walls_for_four_fills():
+    """The GH #194 screenshots: the walls under the new footprint go and the
+    four tiles the gate left get the run's own wall, as run interior."""
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    old, new = _gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 13, 10)
+    plan = _move_plan([(old, new)], walls)
+
+    assert sorted(_tile(u) for _p, u in plan.removals) == sorted(new)
+    assert [(p, n.unit_const, n.variant, n.initial_animation_frame) for p, n in plan.fills] == [(1, WALL, 0, 0)] * 4
+    assert sorted(_fills(plan)) == sorted(old)
+    assert [(n.x, n.y) for _p, n in plan.fills] == [(tx + 0.5, ty + 0.5) for tx, ty in old]
+    assert plan.rewrites == []
+    assert plan.blocked == 0
+    assert plan
+    assert not {_tile(u) for u in _after_move(walls, plan)} & set(new)
+
+
+def test_a_gate_moved_one_along_a_run_swaps_one_wall_for_one_fill():
+    """The three tiles both footprints share are neither removed nor filled."""
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 9, 10))], walls)
+    assert [_tile(u) for _p, u in plan.removals] == [(12, 10)]
+    assert _fills(plan) == {(8, 10): 0}
+    assert plan.rewrites == []
+
+
+def test_a_gate_moved_one_back_along_a_run_fills_from_its_high_end():
+    """The low end's wall is the one the gate lands on, so it is no source."""
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 7, 10))], walls)
+    assert [_tile(u) for _p, u in plan.removals] == [(7, 10)]
+    assert _fills(plan) == {(11, 10): 0}
+
+
+def test_a_free_standing_gate_leaves_nothing_behind():
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 13, 10))], _x_run(30, 40, 30))
+    assert (plan.removals, plan.fills, plan.rewrites, plan.blocked) == ([], [], [], 0)
+    assert not plan
+
+
+def test_a_wall_only_at_the_high_end_is_still_the_source():
+    """(8, 10) has nothing west of it once the gate is gone, so it is a run end."""
+    walls = [_wall_at(x, 10, rotation=2.0 if x == 15 else 0.0, const=_PALISADE) for x in range(12, 16)]
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 30, 30))], walls)
+    assert {n.unit_const for _p, n in plan.fills} == {_PALISADE}
+    assert _fills(plan) == {(8, 10): 2, (9, 10): 0, (10, 10): 0, (11, 10): 0}
+    assert plan.removals == [] and plan.rewrites == []
+
+
+def test_two_different_ends_fill_with_the_low_ends_wall():
+    low = wall_run.ExistingWall(unit=_wall_at(7, 10, rotation=2.0, const=_PALISADE), player_id=2, tx=7, ty=10)
+    high = wall_run.ExistingWall(unit=_wall_at(12, 10, rotation=2.0), player_id=1, tx=12, ty=10)
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 30, 30))], [high, low])
+    assert [(p, n.unit_const) for p, n in plan.fills] == [(2, _PALISADE)] * 4
+    assert wall_run.gate_move_players(plan) == {2}
+
+
+def test_a_gate_stepped_sideways_off_its_run_twice_fills_only_once():
+    """The trail case, and why the source must be collinear: after the first
+    step the filled row lies beside the gate, not past either end of it."""
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    first = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 8, 11))], walls)
+    assert sorted(_fills(first)) == [(x, 10) for x in range(8, 12)]
+    assert first.removals == []
+
+    walls = _after_move(walls, first)
+    assert sorted(_tile(u) for u in walls) == [(x, 10) for x in range(5, 21)]
+    second = _move_plan([(_gate_tiles(GATE, 8, 11), _gate_tiles(GATE, 8, 12))], walls)
+    assert second.fills == []
+    assert second.removals == []
+    # The run the gate stood against is a plain run again.
+    assert {_tile(u): v for _p, u, v in second.rewrites} == {(x, 10): 0 for x in range(8, 12)}
+
+
+def test_a_diagonal_gate_fills_its_four_line_tiles_not_its_six_tile_footprint():
+    old = _gate_tiles(_DIAGONAL_GATE, 10, 10)
+    assert len(old) == 6
+    walls = [_wall_at(i, i, rotation=2.0 if i in (5, 20) else 3.0) for i in range(5, 21) if not 10 <= i <= 13]
+    plan = _move_plan([(old, _gate_tiles(_DIAGONAL_GATE, 30, 40))], walls)
+    assert _fills(plan) == {(i, i): 3 for i in range(10, 14)}
+    assert not {(11, 12), (12, 11)} & set(_fills(plan))
+    assert plan.rewrites == []
+
+
+def test_a_blocked_line_tile_is_left_open_with_run_ends_either_side():
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 13, 10))], walls, blocked={(9, 10)})
+    assert _fills(plan) == {(8, 10): 2, (10, 10): 2, (11, 10): 0}
+    assert plan.blocked == 1
+    assert len(plan.removals) == 4
+
+
+def test_a_wholly_blocked_line_is_a_falsy_plan_that_still_counts():
+    """The lone wall keeps its shape (a tower either way), so nothing at all changes."""
+    old = _gate_tiles(GATE, 8, 10)
+    plan = _move_plan([(old, _gate_tiles(GATE, 30, 30))], [_wall_at(7, 10, rotation=2.0)], blocked=set(old))
+    assert not plan
+    assert plan.blocked == 4
+    assert plan.fills == []
+
+
+def test_a_gate_moved_outward_from_a_runs_end_keeps_the_run_attached():
+    """The intended axial case: each fill is the next move's source, so the
+    run grows behind a gate carried along its own line."""
+    walls = [_wall_at(x, 10, rotation=2.0 if x == 5 else 0.0) for x in range(5, 10)]
+    first = _move_plan([(_gate_tiles(GATE, 10, 10), _gate_tiles(GATE, 14, 10))], walls)
+    assert _fills(first) == {(x, 10): 0 for x in range(10, 14)}
+
+    walls = _after_move(walls, first)
+    second = _move_plan([(_gate_tiles(GATE, 14, 10), _gate_tiles(GATE, 18, 10))], walls)
+    assert _fills(second) == {(x, 10): 0 for x in range(14, 18)}
+    assert sorted(_tile(u) for u in _after_move(walls, second)) == [(x, 10) for x in range(5, 18)]
+    assert first.rewrites == [] and second.rewrites == []
+
+
+def test_a_run_meeting_the_gates_flank_is_reshaped_and_nothing_fills():
+    """A y run ending under the gate's last tile: no wall continues the gate's
+    own line, so nothing fills, and the touching wall becomes a run end."""
+    walls = [_wall_at(11, y, rotation=2.0 if y == 15 else 1.0) for y in range(11, 16)]
+    plan = _move_plan([(_gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 30, 30))], walls)
+    assert plan.fills == [] and plan.removals == []
+    assert [(_tile(u), v) for _p, u, v in plan.rewrites] == [((11, 11), 2)]
+    assert plan
+
+
+def test_wall_scene_and_blocked_tiles_leave_out_exactly_the_excluded_units():
+    gate = FakeUnit(x=10.0, y=10.5, unit_const=GATE)
+    wall, other_wall = _wall_at(7, 10), _wall_at(20, 20)
+    villager, tree = _wall_at(9, 12, const=_VILLAGER), _wall_at(30, 30, const=_TREE)
+    scenario = _Scenario(60, [[tree], [gate, wall, other_wall, villager], [], [], [], [], [], [], []])
+    gate_tiles = set(_gate_tiles(GATE, 8, 10))
+
+    tiles, walls = wall_run.wall_scene(scenario, 60, 60)
+    assert tiles == gate_tiles | {(7, 10), (20, 20)}
+    assert [w.unit for w in walls] == [wall, other_wall]
+    assert wall_run.blocked_tiles(scenario, 60, 60) == {(9, 12), (30, 30)}
+
+    tiles, walls = wall_run.wall_scene(scenario, 60, 60, exclude_ids=frozenset({id(gate), id(wall)}))
+    assert tiles == {(20, 20)}
+    assert [w.unit for w in walls] == [other_wall]
+    assert wall_run.blocked_tiles(scenario, 60, 60, exclude_ids=frozenset({id(villager)})) == {(30, 30)}
+
+
+def _gate_scenario(extra=()):
+    """A Stone Gate on (8..11, 10) inside the x run 5..20, owned by player 1."""
+    gate = FakeUnit(x=10.0, y=10.5, unit_const=GATE)
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    return gate, walls, _Scenario(60, [[], [gate, *walls, *extra], [], [], [], [], [], [], []])
+
+
+def _shifted(units, dx: float, dy: float):
+    return [(u, u.x + dx, u.y + dy) for u in units]
+
+
+def test_scenario_gate_moves_plans_the_screenshot_case_off_a_scenario():
+    """The gate's own old tiles must not count as connectors: wall_scene()
+    without the mover excluded would find nothing to fill."""
+    gate, _walls, scenario = _gate_scenario()
+    plan = wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate], 5, 0))
+    assert sorted(_tile(u) for _p, u in plan.removals) == [(x, 10) for x in range(13, 17)]
+    assert _fills(plan) == {(x, 10): 0 for x in range(8, 12)}
+    assert plan.rewrites == []
+
+
+def test_scenario_gate_moves_leaves_walls_that_move_with_the_gate_alone():
+    """Not removed (one starts under the new footprint), not a source (the
+    low end's is a Palisade), not rewritten (it stores a stale shape)."""
+    low_end = _wall_at(7, 10, rotation=4.0, const=_PALISADE)
+    under_new = _wall_at(10, 13)
+    static_under_new = _wall_at(9, 13, rotation=2.0)
+    gate, walls, scenario = _gate_scenario([under_new, static_under_new])
+    walls[2] = low_end
+    scenario.unit_manager.units[1][3] = low_end
+    assert _tile(scenario.unit_manager.units[1][3]) == (7, 10)
+
+    plan = wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate, low_end, under_new], 0, 3))
+
+    assert [u for _p, u in plan.removals] == [static_under_new]
+    assert {n.unit_const for _p, n in plan.fills} == {WALL}
+    # (8, 10) lost its west neighbour along with the gate, so it is a run end.
+    assert _fills(plan) == {(8, 10): 2, (9, 10): 0, (10, 10): 0, (11, 10): 0}
+    # Nor is the run the Palisade left re-derived: only a gate's own sites are.
+    assert plan.rewrites == []
+
+
+def test_scenario_gate_moves_blocks_a_mover_at_its_new_tile_not_its_old_one():
+    arriving = _wall_at(9, 7, const=_VILLAGER)
+    leaving = _wall_at(10, 10, const=_VILLAGER)
+    gate, _walls, scenario = _gate_scenario([arriving, leaving])
+    plan = wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate, arriving, leaving], 0, 3))
+    assert sorted(_fills(plan)) == [(8, 10), (10, 10), (11, 10)]
+    assert plan.blocked == 1
+
+
+def test_scenario_gate_moves_blocks_on_whatever_stays_in_the_gateway():
+    """Always, whatever "Walls skip occupied tiles" says: no wall lands on a guard."""
+    guard = _wall_at(9, 10, const=_VILLAGER)
+    gate, _walls, scenario = _gate_scenario([guard])
+    plan = wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate], 0, 3))
+    assert sorted(_fills(plan)) == [(8, 10), (10, 10), (11, 10)]
+    assert plan.blocked == 1
+
+
+def test_scenario_gate_moves_plans_nothing_while_the_footprint_stays_put():
+    """An arrow nudge is 0.1 tile: no gate changes tiles, so the walls beside
+    it are not re-derived and the move stays a plain field edit."""
+    gate, walls, scenario = _gate_scenario()
+    walls[3].rotation = 4.0  # a stale stored shape right beside the gate
+    assert wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate], 0.1, 0)) is None
+    assert wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([walls[0]], 5, 5)) is None
+    assert wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate], 1, 0)) is not None
+
+
+def test_scenario_gate_moves_keeps_a_wall_the_model_would_not_remove():
+    gate, walls, scenario = _gate_scenario()
+    kept = next(u for u in walls if _tile(u) == (14, 10))
+    plan = wall_run.scenario_gate_moves(scenario, 60, 60, _shifted([gate], 5, 0), removable=lambda u: u is not kept)
+    removed = [u for _p, u in plan.removals]
+    assert kept not in removed
+    assert sorted(_tile(u) for u in removed) == [(13, 10), (15, 10), (16, 10)]
+    assert len(plan.fills) == 4
+
+
+def test_gate_move_players_is_every_owner_the_plan_touches():
+    node = wall_run.WallNode(unit_const=WALL, variant=0, x=8.5, y=10.5)
+    plan = wall_run.GateMovePlan(
+        removals=[(0, _wall_at(13, 10))], fills=[(2, node)], rewrites=[(5, _wall_at(12, 10), 2)], blocked=3
+    )
+    assert wall_run.gate_move_players(plan) == {0, 2, 5}
+    assert wall_run.gate_move_players(wall_run.GateMovePlan(removals=[], fills=[], rewrites=[])) == set()
+
+
+def test_apply_gate_move_plan_adds_the_fills_then_rewrites():
+    """Through the real model: each fill lands in its own owner's list with a
+    literal index and frame 0, and the rewrite replaces the fixture wall's radian 2."""
+    from descape.edit_history import EditHistory
+
+    loaded, model = _open()
+    wall = _unit(loaded, _REF_WALL)
+    owner = next(p for p, units in enumerate(loaded.unit_manager.units) if any(u is wall for u in units))
+    plan = wall_run.GateMovePlan(
+        removals=[],
+        fills=[
+            (1, wall_run.WallNode(unit_const=WALL, variant=0, x=30.5, y=30.5)),
+            (2, wall_run.WallNode(unit_const=_PALISADE, variant=2, x=31.5, y=30.5)),
+            (1, wall_run.WallNode(unit_const=WALL, variant=3, x=32.5, y=30.5)),
+        ],
+        rewrites=[(owner, wall, 4)],
+    )
+    before = [len(u) for u in loaded.unit_manager.units]
+
+    history = EditHistory()
+    model.begin_unit_edit(sorted(wall_run.gate_move_players(plan)))
+    added = wall_run.apply_gate_move_plan(model, plan)
+    model.commit_unit_edit("Move unit", history)
+
+    units = loaded.unit_manager.units
+    assert [len(u) for u in units] == [n + {1: 2, 2: 1}.get(p, 0) for p, n in enumerate(before)]
+    assert [(u.unit_const, u.x, u.rotation) for u in units[1][-2:]] == [(WALL, 30.5, 0.0), (WALL, 32.5, 3.0)]
+    assert (units[2][-1].unit_const, units[2][-1].rotation) == (_PALISADE, 2.0)
+    assert all(u.initial_animation_frame == 0 for u in added) and len(added) == 3
+    assert wall.rotation == 4.0
+
+    history.undo([], None, None, model)
+    assert [len(u) for u in loaded.unit_manager.units] == before
+    assert _unit(loaded, _REF_WALL).rotation != 4.0
+
+
+# --- set_cliff_frame()'s guard ----------------------------------------
+#
+# set_wall_variant()'s sibling for the Cliff drag's join rewrites (GH #44),
+# against the same model and fixture. A cliff is added first: the fixture
+# has none.
+
+_CLIFF = 264  # Cliff (Default) 01
+_MARBLE_CLIFF = 2178
+
+
+def _add_cliff(model, const: int = _CLIFF, frame: int = 19):
+    from descape.edit_history import EditHistory
+
+    model.begin_unit_edit([0])
+    cliff = model.add(0, const, 30.5, 30.5, rotation=float(frame), initial_animation_frame=frame)
+    model.commit_unit_edit("probe", EditHistory())
+    return cliff
+
+
+def test_set_cliff_frame_writes_rotation_and_animation_frame_together():
+    from descape.edit_history import EditHistory
+
+    _loaded, model = _open()
+    cliff = _add_cliff(model)
+    before = (cliff.unit_const, cliff.x, cliff.y, cliff.z, cliff.reference_id)
+
+    model.begin_unit_edit([0], fields_only=True)
+    model.set_cliff_frame(cliff, 2)
+    model.commit_unit_edit("Place cliffs", EditHistory())
+
+    assert (cliff.rotation, cliff.initial_animation_frame) == (2.0, 2)
+    assert type(cliff.initial_animation_frame) is int
+    assert (cliff.unit_const, cliff.x, cliff.y, cliff.z, cliff.reference_id) == before
+
+
+def test_set_cliff_frame_undoes_back_to_the_stored_frame():
+    from descape.edit_history import EditHistory
+
+    _loaded, model = _open()
+    history = EditHistory()
+    cliff = _add_cliff(model, frame=19)
+
+    model.begin_unit_edit([0], fields_only=True)
+    model.set_cliff_frame(cliff, 3)
+    model.commit_unit_edit("Place cliffs", history)
+    assert (cliff.rotation, cliff.initial_animation_frame) == (3.0, 3)
+
+    history.undo([], None, None, model)
+    assert (cliff.rotation, cliff.initial_animation_frame) == (19.0, 19)
+
+
+def test_set_cliff_frame_refuses_a_non_cliff_const():
+    loaded, model = _open()
+    for unit in (_unit(loaded, _REF_WALL), _unit(loaded, 201)):
+        before = (unit.rotation, unit.initial_animation_frame)
+        with pytest.raises(ValueError, match="not a cliff const"):
+            model.set_cliff_frame(unit, 2)
+        assert (unit.rotation, unit.initial_animation_frame) == before
+
+
+@pytest.mark.parametrize("frame", [-1, 24, 25, 99])
+def test_set_cliff_frame_refuses_an_out_of_range_frame(frame):
+    """24 too: with no install the frame count falls back to the .dat's 25,
+    and no cliff family has a frame 24."""
+    _loaded, model = _open()
+    cliff = _add_cliff(model)
+    with pytest.raises(ValueError, match=r"must be 0\.\.23"):
+        model.set_cliff_frame(cliff, frame)
+    assert (cliff.rotation, cliff.initial_animation_frame) == (19.0, 19)
+
+
+def test_set_cliff_frame_is_bounded_by_the_const_s_own_frame_count(monkeypatch):
+    """Marble has 23 frames, so its last legal frame is 22."""
+    from descape import cliff_catalog
+    from descape.edit_history import EditHistory
+
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda const: 23 if const == _MARBLE_CLIFF else 24)
+    _loaded, model = _open()
+    marble = _add_cliff(model, _MARBLE_CLIFF, frame=1)
+    with pytest.raises(ValueError, match=r"must be 0\.\.22"):
+        model.set_cliff_frame(marble, 23)
+    model.begin_unit_edit([0], fields_only=True)
+    model.set_cliff_frame(marble, 22)
+    model.commit_unit_edit("Place cliffs", EditHistory())
+    assert marble.rotation == 22.0

@@ -19,10 +19,17 @@ Captures, at MIN_USEFUL_WIDTH and a comfortable width:
    selection (mixed owner/name/X; its GH #71 note is only the Rotation
    caption's tooltip since GH #198, so no line shows), then an archer
    + trebuchet pair facing one way (a 32-direction scale, GH #61).
-5. Catalog filtered to a long name (elision check, no horizontal clipping).
+5. Catalog filtered to a long name and picked: the placing card under the
+   list elides the name on one line, and nothing clips or overlaps.
 6. The vertical splitter dragged to its floor (the _fit_inspector_height
    check: the inspector must scroll, never overlap). The tree shown here has
    no rotation note since GH #123, so only the stats note is in play.
+7. Each catalog category (GH #68), then each display mode the install
+   allows (icon rows, names, grid), with the thumbnails settled.
+
+`--install` pins the real AoE2:DE install (read from the real config, never
+written) so the portraits, stat icons and icon modes show; without it the
+capture is the no-install case.
 
 Writes build/units_panel_eyeball/, gitignored. No test reads it. No golden
 images -- there is no baseline, only visual inspection.
@@ -132,10 +139,22 @@ def _grab_inspector(window, out_path: Path) -> Path:
     return out_path
 
 
-def _grab(window, out_path: Path) -> None:
+def _settle(window) -> None:
+    """Waits for the thumbnail loader's worker (GH #68), at most 10 s."""
+    import time
+
     from PyQt5.QtWidgets import QApplication
 
+    deadline = time.monotonic() + 10
     QApplication.processEvents()
+    while not window.units_panel.thumb_loader.idle() and time.monotonic() < deadline:
+        time.sleep(0.005)
+        QApplication.processEvents()
+    QApplication.processEvents()
+
+
+def _grab(window, out_path: Path) -> None:
+    _settle(window)
     window.units_panel.grab().save(str(out_path))
 
 
@@ -212,6 +231,22 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
     written.append(path)
     splitter.setSizes(sizes)
 
+    # 7. Each category, then each display mode the install allows (GH #68).
+    catalog = window.units_panel.catalog_view
+    for category, button in catalog.category_buttons.items():
+        button.click()
+        path = out_dir / f"w{width}_7_category_{category.lower()}.png"
+        _grab(window, path)
+        written.append(path)
+    catalog.category_buttons["Units"].click()
+    for mode, button in catalog.display_buttons.items():
+        if not button.isEnabled():
+            continue
+        button.click()
+        path = out_dir / f"w{width}_7_mode_{mode}.png"
+        _grab(window, path)
+        written.append(path)
+
     return written
 
 
@@ -222,7 +257,7 @@ def generate(out_dir: Path) -> list[Path]:
     try:
         print(
             f"UnitsPanel.MIN_USEFUL_WIDTH={window.units_panel.MIN_USEFUL_WIDTH}, "
-            f"catalog rows={window.units_panel.catalog_view.tree.topLevelItemCount()} top-level groups"
+            f"catalog rows={window.units_panel.catalog_view.list.count()} in the first category"
         )
         for width in (_MIN_WIDTH, _COMFORTABLE_WIDTH):
             written += _capture_at_width(window, width, out_dir)
@@ -235,6 +270,7 @@ def generate(out_dir: Path) -> list[Path]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="Output directory")
+    parser.add_argument("--install", action="store_true", help="Capture with the real AoE2:DE install")
     args = parser.parse_args()
 
     if not PYQT5_AVAILABLE:
@@ -243,6 +279,11 @@ def main() -> None:
     import tempfile
 
     _ensure_qapp()
+    if args.install:
+        if settings_isolation.pin_install_path() is None:
+            raise SystemExit("--install: no AoE2:DE install visible in the config")
+    else:
+        os.environ.pop("AOE2DE_INSTALL_PATH", None)
     with tempfile.TemporaryDirectory() as tmp:
         settings_isolation.isolate_settings(Path(tmp))
         written = generate(args.out_dir)

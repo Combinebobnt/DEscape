@@ -85,9 +85,51 @@ def test_selecting_an_entry_emphasises_it_and_a_coordinate_free_trigger_draws_no
     try:
         view = window.map_view
         window.trigger_panel.select_entry(*PATROL)
-        assert view._trigger_emphasis == PATROL
+        assert view._trigger_emphasis == frozenset({PATROL})
         window.trigger_panel.select_trigger(0)
         assert view._trigger_shapes == [] and view.trigger_overlay_items() == []
+    finally:
+        conftest.close_window(window)
+
+
+def _ring_polygons(path) -> set:
+    """Each subpath of an overlay path as a hashable vertex tuple."""
+    return {tuple((round(p.x(), 3), round(p.y(), 3)) for p in polygon) for polygon in path.toSubpathPolygons()}
+
+
+def _area_ring(view, area) -> tuple:
+    """The one ring an inclusive trigger area draws, in _ring_polygons() form."""
+    (ring,) = _ring_polygons(view._rect_ring_path(view._trigger_area_rect(area)))
+    return ring
+
+
+def _mark_centre(view, tile):
+    return view._location_mark(tile).boundingRect().center()
+
+
+def test_several_selected_entries_all_draw_strong() -> None:
+    """GH #168: every selected condition and effect draws at full strength,
+    not only the panel's current one. The unselected ones stay dimmed."""
+    gen = _gen()
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entries([PATROL, CREATE])
+        assert window.trigger_panel.current_entry_ref() == PATROL
+        roles = _items_by_role(view)
+        create = _mark_centre(view, gen.GEOMETRY_CREATE_LOCATION)
+        assert roles["marks_strong"].path().contains(create), "the second selected effect's location is dimmed"
+        assert not roles["marks_dim"].path().contains(create)
+        strong, dim = _ring_polygons(roles["outline_strong"].path()), _ring_polygons(roles["outline_dim"].path())
+        assert _area_ring(view, gen.GEOMETRY_PATROL_AREA) in strong
+        assert _area_ring(view, gen.GEOMETRY_CONDITION_AREA) in dim
+        assert _area_ring(view, gen.GEOMETRY_CONDITION_AREA) not in strong
+        assert view._trigger_emphasis == frozenset({PATROL, CREATE})
+
+        # Back to one entry: the other selected one dims again.
+        window.trigger_panel.select_entry(*PATROL)
+        assert view._trigger_emphasis == frozenset({PATROL})
+        assert _items_by_role(view)["marks_dim"].path().contains(create)
     finally:
         conftest.close_window(window)
 
@@ -114,13 +156,185 @@ def test_the_panel_hook_fires_on_user_selection_not_on_populate() -> None:
         conftest.close_window(window)
 
 
-def test_a_multi_selection_clears_the_overlay() -> None:
+def test_several_triggers_draw_their_union_unemphasised() -> None:
+    """GH #168: several selected triggers draw every shape of each, all at
+    full strength. The second trigger is a Duplicate of the first, so every
+    entry ref exists in both: a run must still pair within one trigger."""
     window = _window()
     try:
-        window.trigger_panel.select_triggers([GEOMETRY_TRIGGER, 0])
-        assert window.map_view._trigger_shapes == []
-        window.trigger_panel.select_trigger(GEOMETRY_TRIGGER)
-        assert window.map_view._trigger_shapes
+        view = window.map_view
+        panel = window.trigger_panel
+        single = _shape_refs(view)
+        single_labels = _labels(view)
+        single_roles = set(_items_by_role(view))
+        assert single and single_labels, "the fixture trigger should carry shapes and a labelled run"
+        name = window.trigger_panel._manager().triggers[GEOMETRY_TRIGGER].name
+
+        window.trigger_structural_edit("copy", [GEOMETRY_TRIGGER])
+        triggers = window.trigger_edits.manager().triggers
+        source = next(i for i, t in enumerate(triggers) if t.name == name)
+        copy = next(i for i, t in enumerate(triggers) if t.name == f"{name} (copy)")
+        panel.select_triggers([source, copy])
+        assert panel.selected_trigger_indices() == [source, copy]
+
+        by_trigger: dict[int, list] = {}
+        for shape in view._trigger_shapes:
+            by_trigger.setdefault(shape.trigger_index, []).append((shape.entry_ref, shape.shape, shape.coords))
+        assert by_trigger == {source: single, copy: single}
+        assert view._trigger_emphasis is None
+        # The roles one unemphasised trigger draws (marks_dim is its superseded location), none dimmed.
+        roles = set(_items_by_role(view))
+        assert roles == single_roles and not roles & {"outline_dim", "fill_dim", "units_dim"}, sorted(roles)
+        # One label per run-bearing entry per trigger: a cross-trigger pairing would add more.
+        assert sorted(_labels(view)) == sorted(single_labels * 2)
+
+        panel.select_trigger(source)
+        assert _shape_refs(view) == single and _labels(view) == single_labels
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_union_one_shape_past_the_cap_draws_nothing_and_says_why(monkeypatch) -> None:
+    """The union is re-derived on every unit edit, so past MAX_OVERLAY_SHAPES
+    it draws nothing (never a partial union) and stops being re-derived. One
+    trigger alone is never capped."""
+    import descape.viewer as viewer_module
+
+    window = _window()
+    try:
+        view = window.map_view
+        panel = window.trigger_panel
+        name = panel._manager().triggers[GEOMETRY_TRIGGER].name
+        window.trigger_structural_edit("copy", [GEOMETRY_TRIGGER])
+        triggers = window.trigger_edits.manager().triggers
+        pair = [
+            next(i for i, t in enumerate(triggers) if t.name == name),
+            next(i for i, t in enumerate(triggers) if t.name == f"{name} (copy)"),
+        ]
+        panel.select_triggers(pair)
+        total = len(view._trigger_shapes)
+        assert total > 0 and total < viewer_module.MAX_OVERLAY_SHAPES
+
+        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total)
+        panel.select_trigger(pair[0])
+        panel.select_triggers(pair)
+        assert len(view._trigger_shapes) == total, "a union exactly at the cap still draws"
+        assert "Trigger overlay hidden" not in window.status_log.toPlainText()
+
+        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
+        panel.select_trigger(pair[0])
+        panel.select_triggers(pair)
+        assert view._trigger_shapes == [] and view.trigger_overlay_items() == []
+        assert window._trigger_overlay_ref is None, "a unit edit would re-derive the whole union"
+        said = window.status_log.toPlainText().splitlines()[-1]
+        assert said == f"Trigger overlay hidden: the 2 selected triggers have more than {total - 1} areas, locations and units to draw"
+
+        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", 0)
+        panel.select_trigger(pair[0])
+        assert len(view._trigger_shapes) == total // 2, "one trigger is never capped"
+    finally:
+        conftest.close_window(window)
+
+
+def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(monkeypatch) -> None:
+    """TASK-352: View > Show Trigger Overlay off skips the union and the cap
+    message on every selection change; turning it on derives and reports."""
+    import descape.viewer as viewer_module
+    from descape import trigger_geometry
+
+    window = _window()
+    try:
+        view = window.map_view
+        panel = window.trigger_panel
+        name = panel._manager().triggers[GEOMETRY_TRIGGER].name
+        window.trigger_structural_edit("copy", [GEOMETRY_TRIGGER])
+        triggers = window.trigger_edits.manager().triggers
+        pair = [
+            next(i for i, t in enumerate(triggers) if t.name == name),
+            next(i for i, t in enumerate(triggers) if t.name == f"{name} (copy)"),
+        ]
+        panel.select_triggers(pair)
+        total = len(view._trigger_shapes)
+        assert total > 0
+        calls = []
+        real = trigger_geometry.shapes_for_trigger
+        monkeypatch.setattr(trigger_geometry, "shapes_for_trigger", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+        window.trigger_overlay_action.setChecked(False)
+        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
+        panel.select_trigger(pair[0])
+        calls.clear()
+        panel.select_triggers(pair)
+        assert calls == [], "the union was derived for a hidden overlay"
+        assert "Trigger overlay hidden" not in window.status_log.toPlainText()
+        assert window._trigger_overlay_ref == (tuple(pair), frozenset()), "the ref is kept for turning it on"
+
+        window.trigger_overlay_action.setChecked(True)
+        said = window.status_log.toPlainText().splitlines()[-1]
+        assert said == f"Trigger overlay hidden: the 2 selected triggers have more than {total - 1} areas, locations and units to draw"
+        assert view._trigger_shapes == [] and window._trigger_overlay_ref is None
+
+        window.trigger_overlay_action.setChecked(False)
+        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total)
+        panel.select_trigger(pair[0])
+        panel.select_triggers(pair)
+        window.trigger_overlay_action.setChecked(True)
+        assert len(view._trigger_shapes) == total, "turning it on draws the union"
+        assert view.trigger_overlay_items() and all(i.isVisible() for i in view.trigger_overlay_items())
+    finally:
+        conftest.close_window(window)
+
+
+def test_runs_never_pair_entries_across_triggers() -> None:
+    """Two triggers' ("effect", 1) are different entries: an area in one and a
+    location in the other is no run. The same pair inside one trigger is."""
+    from descape import trigger_geometry
+    from descape.trigger_geometry import TriggerShape
+
+    gen = _gen()
+    window = _window()
+    try:
+        view = window.map_view
+
+        def shapes(location_trigger: int) -> list:
+            return [
+                TriggerShape(0, "effect", 1, "area", trigger_geometry.AREA_FIELDS, gen.GEOMETRY_PATROL_AREA),
+                TriggerShape(
+                    location_trigger, "effect", 1, "location", trigger_geometry.LOCATION_FIELDS, gen.GEOMETRY_PATROL_LOCATION
+                ),
+            ]
+
+        view.show_trigger_overlay(shapes(location_trigger=0), None)
+        assert len(_labels(view)) == 1
+        # The location mark plus the run segment.
+        assert len(_items_by_role(view)["marks_strong"].path().toSubpathPolygons()) == 2
+
+        view.show_trigger_overlay(shapes(location_trigger=1), None)
+        assert _labels(view) == []
+        assert len(_items_by_role(view)["marks_strong"].path().toSubpathPolygons()) == 1, "a run crossed two triggers"
+        assert "outline_strong" in _items_by_role(view)
+    finally:
+        conftest.close_window(window)
+
+
+def test_adding_a_second_entry_to_the_selection_disarms_a_map_pick() -> None:
+    """A pick targets one entry's field, so it ends once the form shows two
+    entries, even when the picked entry stays the current row."""
+    gen = _gen()
+    window = _window()
+    try:
+        panel = window.trigger_panel
+        picked = ("effect", gen.TASK_OBJECT_EFFECT)
+        panel.select_entry(*picked)
+        target = (GEOMETRY_TRIGGER, *picked, "selected_object_ids", True)
+        window.arm_unit_picker(target)
+        # The compare, not a plain disarm: a refocus on the same entry keeps the pick.
+        window._on_trigger_focus_changed()
+        assert window._unit_picker == target
+
+        panel.select_entries([picked, ("effect", gen.PATROL_IDS_EFFECT)])
+        assert panel.current_entry_ref() == picked
+        assert window._unit_picker is None and not window.map_view.unit_picker_active()
     finally:
         conftest.close_window(window)
 
@@ -244,7 +458,7 @@ def test_the_overlay_survives_a_mode_change_and_a_restyle() -> None:
         for style in ("Sloped", "Flat", "Stepped"):
             window.terrain_style_combo.setCurrentText(style)
             assert view._trigger_shapes == shapes, style
-            assert view._trigger_emphasis == PATROL, style
+            assert view._trigger_emphasis == frozenset({PATROL}), style
             assert all(item.scene() is view.scene() for item in view.trigger_overlay_items()), style
     finally:
         conftest.close_window(window)

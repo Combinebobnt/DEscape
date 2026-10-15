@@ -103,6 +103,26 @@ def test_appearance_scrolls_vertically_but_never_sideways() -> None:
         conftest.close_window(window)
 
 
+def test_keybinds_never_scrolls_sideways() -> None:
+    """The Mouse Wheel rows' dropdowns hold long action names and a wrapped
+    note; neither may widen the rows past the dialog's default width."""
+    from PyQt5.QtWidgets import QScrollArea
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        tabs, index = _tab(dialog, "Keybinds")
+        dialog.show()
+        tabs.setCurrentIndex(index)
+        _pump()
+        scroll = tabs.widget(index).findChild(QScrollArea)
+        assert scroll is not None and dialog._wheel_note.isVisibleTo(scroll.widget())
+        _assert_no_sideways_scroll(scroll)
+        assert scroll.verticalScrollBar().maximum() > 0
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_a_live_ui_font_bump_widens_the_dialog_not_the_page(font_baseline) -> None:
     """The UI font spin lives on this very tab, and a bigger font widens the
     page; the dialog must grow with it rather than scroll sideways."""

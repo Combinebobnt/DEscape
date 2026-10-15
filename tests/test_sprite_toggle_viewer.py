@@ -434,6 +434,34 @@ def test_the_sloped_dirty_bbox_call_matches_the_cache_flag(sprite_install, monke
         conftest.close_window(window)
 
 
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_unit_pick_follows_the_cache_flag(sprite_install, monkeypatch, style: str) -> None:
+    """TASK-319: pick's terrain occlusion follows the paint order, which the
+    live cache's sprites flag picks, so MapView must pass that flag through."""
+    from PyQt5.QtCore import QPointF
+
+    from descape import unit_pick
+
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        window.map_view.set_unit_index(unit_pick.build_index(window.scenario))
+        seen: list[tuple[bool, bool]] = []
+        real = unit_pick.pick_unit_cover
+
+        def recording(*args, **kwargs):
+            seen.append((kwargs.get("sprites_on"), window._cache.sprites_enabled))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(unit_pick, "pick_unit_cover", recording)
+        for enabled in (True, False):
+            window.show_sprites_action.setChecked(enabled)
+            window.map_view.pick_unit_cover_at(QPointF(10.0, 10.0))
+        assert seen == [(True, True), (False, False)]
+    finally:
+        conftest.close_window(window)
+
+
 def _bump_one_tile(mm):
     """One real elevation edit, returning the terrain indices it changed --
     the same shape tests/test_sprite_edit_bbox.py's own helper uses. A real

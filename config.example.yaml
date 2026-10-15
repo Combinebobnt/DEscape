@@ -53,17 +53,33 @@ pan_speed: 700
 # (false). Default: true.
 zoom_centered_on_cursor: true
 
+# What the mouse wheel does over the map, per modifier held, Settings >
+# Keybinds. Slots: plain, ctrl, shift, alt.
+# Actions: zoom, tool, brush_size, rotate, pan_vertical, pan_horizontal, none.
+# "tool" steps the brush size or turns Place Unit's preview, whichever
+# applies; a tool action with nothing to act on zooms, and so does any other
+# modifier combination. Only slots moved off their default are stored, and an
+# unknown slot or action is ignored.
+# Defaults: plain zoom, ctrl tool, shift zoom, alt zoom.
+# The value below is only an example.
+# wheel_bindings:
+#   plain: tool
+#   ctrl: zoom
+
 # App-chrome theme preset, Settings > Appearance. One of:
 # light, dark, dim, high_contrast_dark, high_contrast_light, solarized_light,
-# solarized_dark.
+# solarized_dark, editor_parchment_red, editor_parchment_blue,
+# editor_parchment_green, editor_parchment_purple, editor_dark_wood_red,
+# editor_dark_wood_blue, editor_dark_wood_green, editor_dark_wood_purple.
 # An unknown id falls back to the default. A config with no `theme` but the
-# retired `dark_mode: true` reads as dark. Default: light.
-theme: light
+# retired `dark_mode: true` reads as dark. Default: editor_parchment_red.
+theme: editor_parchment_red
 
 # Per-role chrome colour overrides on top of the preset, "#rrggbb", Settings >
 # Appearance > Chrome colours. Roles:
 # window, window_text, base, alternate_base, text, button, button_text,
-# highlight, highlighted_text, tooltip_base, tooltip_text, link.
+# surface, surface_text, highlight, highlighted_text, tooltip_base,
+# tooltip_text, link.
 # An unknown role or malformed value is ignored. Switching preset clears them.
 theme_colors: {}
 
@@ -128,6 +144,10 @@ grid_follow_elevation: true
 # Range Rings. Buildings only, and only ones with a range. Default: false.
 range_rings: false
 
+# Each ring in its owner's player colour, View > Range Rings > Colour by
+# Owner. GAIA keeps the overlay_colors range_ring colour. Default: false.
+range_rings_by_owner: false
+
 # A camera glyph on each player's stored starting view tile, View > Player
 # Cameras. Default: false.
 camera_markers: false
@@ -176,6 +196,11 @@ window_size: [1280, 720]
 # something you normally set by hand. Omitted entirely until first saved.
 # split_sizes: [340, 900]
 
+# How the Units panel's object list shows objects, set by the buttons above
+# it: icons (icon and name rows), names (text rows) or grid (icons only).
+# One of icons, names, grid. Default: icons.
+units_catalog_mode: icons
+
 # Height in pixels of the system log, below the map view. Persisted
 # automatically when you drag the split -- not something you normally set by
 # hand. Omitted entirely until first saved; until then the log is four text
@@ -223,6 +248,8 @@ keybinds:
   edit_history: ''
   edit_scatter_units: ''
   edit_find_replace: ''
+  edit_flip_horizontal: ''
+  edit_flip_vertical: ''
   edit_settings: ''
   map_resize: ''
   map_mirror: ''
@@ -238,6 +265,7 @@ keybinds:
   view_footprint_by_owner: ''
   view_selection_owner_colour: ''
   view_range_rings: ''
+  view_range_rings_by_owner: ''
   view_player_cameras: ''
   view_trigger_overlay: ''
   view_layer_terrain_textures: ''
@@ -282,6 +310,12 @@ keybinds:
   unit_variant_random: '-'
   unit_select_stack: Ctrl+K
   unit_wall_pick: ''
+  trigger_move_up: Alt+Up
+  trigger_move_down: Alt+Down
+  trigger_move_up_far: Alt+Shift+Up
+  trigger_move_down_far: Alt+Shift+Down
+  trigger_move_top: Alt+Home
+  trigger_move_bottom: Alt+End
   player_select_0: '0'
   player_select_1: '1'
   player_select_2: '2'
@@ -299,8 +333,9 @@ keybinds:
   tool_draw_line: ''
   tool_draw_rect: ''
   tool_cliff: ''
-  tool_eyedropper: I
   tool_select: S
+  tool_move: V
+  tool_eyedropper: I
   tool_ruler: R
   tool_place_unit: ''
   tool_wall_rect: ''
@@ -343,7 +378,7 @@ overlay_colors:
   unit_stack: '#ffd24a'
   unit_stack_background: '#000000'
   footprint_outline: '#c8c8c8'
-  range_ring: '#9ee65a'
+  range_ring: '#404040'
   ruler_line: '#ff8228'
   ruler_label: '#ffbe6e'
   ruler_label_outline: '#000000'

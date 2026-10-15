@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Generates tests/fixtures/v159_units_triggers.aoe2scenario, the default
-tier's only scenario version 1.59 file.
+tier's only scenario version 1.59 file with units and triggers in it.
 
-Why it has to be generated: CI has no 1.59 file to read. It is derived from
-the shipped descape/templates/blank_120x120.aoe2scenario donor (a 1.58 file,
-so this inherits whatever licensing answer shipping the donor already made)
-the same way tools/gen_units_fixture.py and tools/gen_trigger_fixture.py are:
+Why it has to be generated: CI has no such 1.59 file to read. It is derived
+from the shipped descape/templates/blank_120x120.aoe2scenario donor (so this
+inherits whatever licensing answer shipping the donor already made), the way
+tools/gen_units_fixture.py and tools/gen_trigger_fixture.py derive theirs
+from the 1.58 donor:
 
-1. Patch the donor's two version carriers to 1.59: FileHeader.version (ASCII,
-   header bytes 0..4) and DataHeader.version (f32, body bytes 4..8). Measured
-   by diffing every FileHeader/DataHeader value of a real game-saved 1.59
-   file against a 1.58 one; nothing else in those sections carries it. The
-   donor has no units or conditions, so its body is already valid 1.59.
-2. Load that through the real loader, which reads it with
+1. Nothing to patch: the shipped template is already 1.59
+   (tools/gen_blank_template.py), trigger version included. This refuses a
+   donor that reads as anything else.
+2. Load it through the real loader, which reads it with
    AoE2ScenarioParser's own v1.59 structure.
 3. Add units and triggers through AoE2ScenarioParser's own managers, commit,
    then set the two 1.59-only fields (`capture_flag`, `allow_in_fog`)
@@ -32,12 +31,15 @@ What it holds, and why:
   shifts it down a slot.
 - Trigger 1: a condition 27 with allow_in_fog left at -1.
 
-Deterministic: two runs produce identical bytes (tests/test_v159_fixture.py).
+Deterministic: two runs produce identical bytes
+(tests/test_v159_load_path.py::test_fixture_matches_its_generator).
 
 Its FileHeader/DataHeader field layout matches a real game-saved 1.59
 file's. Moving the pin from 0.8.3 (which read it through a vendored copy of
 upstream's 1.59 structure) to 0.9.4, and then to 0.9.3, regenerated it
-byte-identical.
+byte-identical. Moving the donor from a patched 1.58 file to the 1.59
+template changed only its trigger version, 4.9 to the 5.0 a real 1.59 file
+carries.
 """
 
 from __future__ import annotations
@@ -58,7 +60,6 @@ from descape.scenario_io import (
     LoadedScenario,
     is_workshop_subscribed,
     load_map_and_units,
-    load_map_and_units_from_bytes,
     parse_triggers,
 )
 from descape.scenario_write import WriteBlockedError
@@ -66,9 +67,6 @@ from descape.scenario_write import WriteBlockedError
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "v159_units_triggers.aoe2scenario"
 
 SCENARIO_VERSION = "1.59"
-_FILE_HEADER_VERSION = slice(0, 4)  # ASCII, e.g. b"1.58"
-_DATA_HEADER_VERSION = struct.Struct("<f")  # at decompressed body offset 4
-_DATA_HEADER_VERSION_OFFSET = 4
 
 _ARCHER = 4
 _VILLAGER = 83
@@ -101,23 +99,6 @@ VISIBLE_UNIT = 200
 # (trigger, condition) -> allow_in_fog, for every condition in the file.
 ALLOW_IN_FOG = {(0, 0): -1, (0, 1): 1, (0, 2): -1, (1, 0): -1}
 CONDITION_TYPES = {(0, 0): 10, (0, 1): 27, (0, 2): 10, (1, 0): 27}
-
-
-def _patched_donor(donor_path: Path) -> bytes:
-    """The donor with both version carriers set to 1.59. Refuses if either
-    doesn't read 1.58 first, so a changed donor fails here, not silently."""
-    loaded = load_map_and_units(donor_path)
-    header = bytearray(loaded.header_bytes)
-    if bytes(header[_FILE_HEADER_VERSION]) != b"1.58":
-        raise GenerationVerificationError(f"{donor_path}: FileHeader.version is {bytes(header[:4])!r}")
-    (version,) = _DATA_HEADER_VERSION.unpack_from(loaded.decompressed_body, _DATA_HEADER_VERSION_OFFSET)
-    if abs(version - 1.58) > 1e-6:
-        raise GenerationVerificationError(f"{donor_path}: DataHeader.version is {version}")
-    header[_FILE_HEADER_VERSION] = SCENARIO_VERSION.encode("ascii")
-    body = bytearray(loaded.decompressed_body)
-    _DATA_HEADER_VERSION.pack_into(body, _DATA_HEADER_VERSION_OFFSET, float(SCENARIO_VERSION))
-    deflate = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS)
-    return bytes(header) + deflate.compress(bytes(body)) + deflate.flush()
 
 
 def _build_units(loaded: LoadedScenario) -> None:
@@ -158,9 +139,9 @@ def _patch_counter(buffer: bytearray, end_offset: int, value: int) -> None:
 
 
 def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
-    loaded = load_map_and_units_from_bytes(_patched_donor(donor_path), FIXTURE_PATH.name, fast_units=False)
+    loaded = load_map_and_units(donor_path, fast_units=False)
     if loaded.scenario_version != SCENARIO_VERSION:
-        raise GenerationVerificationError(f"patched donor loaded as {loaded.scenario_version}, expected 1.59")
+        raise GenerationVerificationError(f"{donor_path}: donor loaded as {loaded.scenario_version}, expected {SCENARIO_VERSION}")
     _build_units(loaded)
     _build_triggers(loaded)
 

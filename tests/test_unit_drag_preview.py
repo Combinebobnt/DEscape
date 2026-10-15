@@ -59,6 +59,8 @@ def _window(style: str = "Flat"):
     window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText(style)
     window.mode_combo.setCurrentText("Units")
+    # Every gesture here is a unit drag, which is the Move tool's (TASK-012).
+    window.move_action.setChecked(True)
     window.show()
     QApplication.processEvents()
     return window

@@ -26,6 +26,9 @@ silently mis-shore every map.
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install -- neither of which this repo depends on for normal use, only for
 regenerating this file if the game updates its terrain table.
+
+Normally run through tools/regen_game_data.py, which also restamps
+tools/game_data_stamp.json.
 """
 
 from __future__ import annotations
@@ -72,6 +75,12 @@ def main() -> None:
         type=Path,
         help="Path to the AoE2DE install root (contains resources/_common/...)",
     )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "descape",
+        help="Where to write terrain_classes.json (default: descape/)",
+    )
     args = parser.parse_args()
 
     from genieutils.datfile import DatFile
@@ -110,7 +119,8 @@ def main() -> None:
             "Re-measure before touching descape/terrain_classes.py."
         )
 
-    out_path = Path(__file__).resolve().parent.parent / "descape" / "terrain_classes.json"
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.out_dir / "terrain_classes.json"
     out = {
         "_comment": (
             "terrain_id -> {raw is_water byte, family, climate}. Pure factual "

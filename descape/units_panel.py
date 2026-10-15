@@ -21,6 +21,8 @@ panel boundary.
 
 from __future__ import annotations
 
+import random
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QBrush, QFont, QPalette
 from PyQt5.QtWidgets import (
@@ -41,26 +43,26 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
-    asset_source,
+    catalog_thumbs,
     gate_orientation,
     object_catalog,
+    place_random,
     player_labels,
     settings,
     unit_fields,
     unit_rotation,
     unit_variant,
 )
-from descape.constant_picker import HIDDEN_LABEL, catalog_preview, items_for, preview_pixmap
+from descape.catalog_browser import CatalogBrowserView
+from descape.terrain_palette import PLAYER_COLORS
+from descape.unit_card import _MIXED_TEXT, UnitCard
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.unit_model import capture_flag_of
-from descape.unit_stats_table import unit_stats
-from descape.value_picker import ValuePickerView
 from descape.viewer_common import (
     FontScaledWidth,
     _add_player_item,
     _fit_combo_width,
     _relabel_player_rows,
-    pixmap_from_rgba,
 )
 
 # unit_fields.UnitFieldSpec.conditional -> the rule it names. The specs stay
@@ -78,30 +80,6 @@ _ROTATION_TOOLTIP = (
     "graphic-variant index the game derives itself, and single-frame objects "
     "have nothing to change: both are shown raw and not editable."
 )
-
-# The in-game editor's own Units-tab selection panel set (docs/
-# INGAME_EDITOR_REFERENCE.md's "Selecting: shows HP/Attack/Armour") plus
-# Range, which the original stats request named explicitly. unit_stats()
-# keys use genieutils' own British spelling; captions don't have to. The third
-# column is the game's own staticons file for it (GH #148, per widgetui/materials.json).
-_STAT_FIELDS = (
-    ("hp", "Hit points", "hp"),
-    ("attack", "Attack", "damage"),
-    ("melee_armour", "Melee armour", "armor"),
-    ("pierce_armour", "Pierce armour", "range-armor"),
-    ("range", "Range", "range"),
-)
-# Icon+value pairs per stats row: HP/Attack, Melee/Pierce, Range.
-_STAT_PAIRS_PER_ROW = 2
-PORTRAIT_PX = 64
-
-# GH #148: tooltip-only, on the stats grid; it no longer costs a visible line.
-_STATS_NOTE_FULL = (
-    "Base values from the game's own unit table: no civ bonuses, tech "
-    "upgrades or trigger effects applied."
-)
-
-_MIXED_TEXT = "(mixed)"
 
 # GH #186: how a CHOICE row reads its raw value. getattr and capture_flag_of
 # because a test fake has neither field and a pre-1.59 unit has no capture flag.
@@ -193,11 +171,12 @@ def _readonly_rotation_tooltip(unit_const: int) -> str:
 
 
 class UnitsPanel(QWidget):
-    # Measured at MIN_USEFUL_WIDTH: 64 px sprite preview + ~16 px scrollbar +
-    # ~280 px tree viewport + margins. Between messages/map_options (300) and
-    # diplomacy (430) -- see tools/gen_units_panel_eyeball.py's screenshot
-    # pass for confirmation; adjust there; not by argument. Scales with the
-    # app font (FontScaledWidth, GH #142).
+    # Re-measured for GH #68 at the test font: the inspector holds it, the
+    # selection card's 334 px without an install plus 34 px of frame,
+    # scrollbar and margins (368); the catalog browser's class row needs 342.
+    # Between messages/map_options (300) and diplomacy (430) -- see
+    # tools/gen_units_panel_eyeball.py's screenshot pass for confirmation;
+    # adjust there; not by argument. Scales with the app font (FontScaledWidth, GH #142).
     MIN_USEFUL_WIDTH = FontScaledWidth(380)
 
     def __init__(
@@ -216,8 +195,15 @@ class UnitsPanel(QWidget):
         on_garrison_owner=None,
         on_garrison_cut=None,
         codec_field_supported=None,
+        rng=None,
     ):
         super().__init__()
+        # GH #164: rolls a random pick's real const; injectable so a test can seed it.
+        self._rng = rng if rng is not None else random.Random()
+        # The real const a random pending pick places next; None for a real pick.
+        self._rolled_const: int | None = None
+        # GH #68: one loader, so the list and both cards share one thumbnail memo.
+        self.thumb_loader = catalog_thumbs.ThumbLoader(self)
         # (width, height) of the loaded map, or None: queried at populate time
         # so a load or resize needs no push (GH #118).
         self._map_size = map_size or (lambda: None)
@@ -251,6 +237,7 @@ class UnitsPanel(QWidget):
         # filter or selection change that lands on nothing): the object the
         # next Place click/Enter places. See _on_catalog_current_changed.
         self._pending_object_const: int | None = None
+        self._pending_name: str | None = None
         # GH #130: what the owner combos show, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
@@ -279,6 +266,7 @@ class UnitsPanel(QWidget):
         self.splitter.setSizes([2, 1])
 
         self._show_inspector_fields(False)
+        self._sync_team_colors()
 
     # -- catalog pane ------------------------------------------------------
 
@@ -287,27 +275,16 @@ class UnitsPanel(QWidget):
         pane_layout = QVBoxLayout(pane)
         pane_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.catalog_view = ValuePickerView(
-            items_for(object_catalog.objects()),
-            default_group="Units",
-            show_values=False,
-            hidden_label=HIDDEN_LABEL,
-            preview=catalog_preview,
-        )
-        # ClickFocus, not the tree's Qt default: this tree sits in an
-        # always-visible sidebar, and MapView's own arrow-key unit nudge
-        # (map_view.py's keyPressEvent) only fires while MapView itself has
-        # focus. A focus-follows-click default would silently break nudging
-        # the moment a user clicks into the catalog and forgets to click
-        # back onto the map -- see _on_catalog_activated, which is the
-        # common flow's own way back.
-        self.catalog_view.tree.setFocusPolicy(Qt.ClickFocus)
+        # GH #68: category buttons, a class combo and three display modes,
+        # sharing the cards' thumbnail loader; it lists the GH #164 random
+        # rows too. Its list takes ClickFocus, not Qt's default: MapView's own
+        # arrow-key unit nudge (map_view.py's keyPressEvent) only fires while
+        # MapView has focus, and _on_catalog_activated is the common flow's
+        # way back to it.
+        self.catalog_view = CatalogBrowserView(loader=self.thumb_loader)
         self.catalog_view.current_changed.connect(self._on_catalog_current_changed)
         self.catalog_view.activated.connect(self._on_catalog_activated)
         pane_layout.addWidget(self.catalog_view, stretch=1)
-
-        self.placing_label = QLabel("Placing: (none)")
-        pane_layout.addWidget(self.placing_label)
 
         owner_row = QHBoxLayout()
         owner_row.setContentsMargins(0, 0, 0, 0)
@@ -317,6 +294,7 @@ class UnitsPanel(QWidget):
             _add_player_item(self.owner_combo, player_id, self._player_labels, self._player_colors, player_id)
         self.owner_combo.setCurrentIndex(1)  # Player 1, preserved default
         self.owner_combo.currentIndexChanged.connect(lambda _index: self._on_pending_changed())
+        self.owner_combo.currentIndexChanged.connect(lambda _index: self._sync_team_colors())
         owner_row.addWidget(self.owner_combo, stretch=1)
         pane_layout.addLayout(owner_row)
         return pane
@@ -338,27 +316,63 @@ class UnitsPanel(QWidget):
 
     def _set_pending_object(self, value: int) -> None:
         self._pending_object_const = value
-        name = object_catalog.name_for(object_catalog.objects(), value) or str(value)
-        self.placing_label.setText(f"Placing: {name}")
-        # A one-line label doesn't wrap or elide, so a long name (the
-        # longest object names run 36 characters) silently clips at
-        # MIN_USEFUL_WIDTH -- caught by the screenshot pass, not by any
-        # widget assertion. The tooltip is the cheap fix that keeps the
-        # label one line.
+        if place_random.is_random(value):
+            # GH #164: rolled now, so the ghost already shows what the next click places.
+            self._rolled_const = place_random.roll(value, self._rng)
+            name = place_random.label(value)
+            # The card stands for the whole pick with one fixed const, not the roll; Unit ID lists every choice.
+            shown = place_random.preview_const(value)
+            const_text = " / ".join(str(const) for const in place_random.choices(value)) + " (random)"
+        else:
+            self._rolled_const = None
+            name = object_catalog.name_for(object_catalog.objects(), value) or str(value)
+            shown = value
+            const_text = None
+        self._pending_name = name
+        self.placing_card.show_const(shown, prefix="Placing: ", name=name, const_text=const_text)
+        # The name line elides a long name (the longest run 36 characters),
+        # so the full one stays reachable by hover.
         self.placing_label.setToolTip(name)
         self._on_pending_changed()
 
     def selected_object_const(self) -> int | None:
+        """The real const the next placement adds: a random pick's rolled one (GH #164)."""
+        if place_random.is_random(self._pending_object_const):
+            return self._rolled_const
         return self._pending_object_const
+
+    def selected_object_choices(self) -> tuple[int, ...] | None:
+        """Every const the pending pick may place (Scatter rolls per copy), or None with nothing picked."""
+        if self._pending_object_const is None:
+            return None
+        return place_random.choices(self._pending_object_const)
+
+    def selected_object_label(self) -> str | None:
+        """The pending pick's name as "Placing:" shows it, or None with nothing picked."""
+        return self._pending_name
+
+    def reroll_pending(self) -> None:
+        """After a placement: a random pick rolls its next const and the ghost follows. No-op for a real pick."""
+        if not place_random.is_random(self._pending_object_const):
+            return
+        self._rolled_const = place_random.roll(self._pending_object_const, self._rng)
+        self._on_pending_changed()
 
     def select_object(self, const: int) -> None:
         self.catalog_view.select(const)
 
     def pick_object(self, const: int) -> bool:
         """select_object() that also lands on a row the catalog filter hides,
-        by clearing that filter (GH #125's wall button). True if `const` is
-        now the pending object."""
+        by clearing that filter (GH #125's wall button), or on an editor-hidden
+        row, by ticking the show-hidden box. True if `const` is now the pending
+        object; False, changing nothing, for a const the catalog doesn't list."""
         view = self.catalog_view
+        entry = object_catalog.entry(object_catalog.objects(), const)
+        if entry is None:
+            return False
+        # Before select(), as TerrainPanel.set_terrain does: a row the box hides never reads as picked.
+        if entry.hidden and view.show_hidden_checkbox is not None:
+            view.show_hidden_checkbox.setChecked(True)
         view.select(const)
         if view.current_value() != const and view.filter_edit.text():
             view.filter_edit.clear()
@@ -380,6 +394,19 @@ class UnitsPanel(QWidget):
         owner = self.unit_field_editors.get("player")
         if owner is not None:
             _relabel_player_rows(owner, labels, colors)
+        self._sync_team_colors()
+
+    def _team_rgb(self, player_id: int | None) -> tuple[int, int, int]:
+        """The owner swatch's colour; GAIA's for None (a mixed-owner group)."""
+        colors = self._player_colors if self._player_colors is not None else PLAYER_COLORS
+        return colors[GAIA_PLAYER_ID if player_id is None else player_id]
+
+    def _sync_team_colors(self) -> None:
+        """Portrait fills: the Owner combo's for the pick and the list, the inspector Owner's for the selection."""
+        placing = self._team_rgb(self.owner_combo.currentData())
+        self.placing_card.set_team_color(placing)
+        self.catalog_view.set_team_color(placing)
+        self.selection_card.set_team_color(self._team_rgb(self.unit_field_editors["player"].currentData()))
 
     def select_owner(self, player_id: int) -> bool:
         index = self.owner_combo.findData(player_id)
@@ -405,10 +432,27 @@ class UnitsPanel(QWidget):
         self.unit_inspector_empty.setWordWrap(True)
         self.inspector_layout.addWidget(self.unit_inspector_empty)
 
+        # GH #148's follow-up: the pick's portrait, Unit ID and base stats. It
+        # shares one slot with the selection card below, shown only while
+        # nothing is selected, so the two never compete for the pane's height.
+        self.placing_card = UnitCard(stable=True, loader=self.thumb_loader)
+        self.placing_card.clear("Placing: (none)")
+        self.placing_label = self.placing_card.name_label
+        self.inspector_layout.addWidget(self.placing_card)
+
         self.unit_field_labels: dict[str, QLabel] = {}
         self.unit_field_editors: dict[str, QWidget] = {}
         self.unit_field_captions: dict[str, QLabel] = {}
-        self.inspector_layout.addWidget(self._build_unit_header())
+        # GH #148: portrait, name, Unit ID and stats; the names below are aliases of its widgets.
+        self.selection_card = UnitCard(loader=self.thumb_loader)
+        self.unit_header = self.selection_card
+        self.unit_portrait = self.selection_card.portrait
+        self.unit_stats_grid = self.selection_card.stats_grid
+        self.unit_stat_rows = self.selection_card.stat_rows
+        self.unit_field_labels["name"] = self.selection_card.name_label
+        self.unit_field_labels["unit_const"] = self.selection_card.const_label
+        self.unit_field_captions["unit_const"] = self.selection_card.const_caption
+        self.inspector_layout.addWidget(self.selection_card)
 
         self.unit_inspector_grid = QWidget()
         grid = QGridLayout(self.unit_inspector_grid)
@@ -447,6 +491,7 @@ class UnitsPanel(QWidget):
                 combo.currentIndexChanged.connect(
                     lambda _, s=spec, w=combo: self._field_changed(s, w.currentData())
                 )
+                combo.currentIndexChanged.connect(lambda _index: self._sync_team_colors())
                 grid.addWidget(combo, row, 1)
                 self.unit_field_editors[spec.field_id] = combo
             elif spec.kind == unit_fields.FACING:
@@ -574,75 +619,21 @@ class UnitsPanel(QWidget):
         self.inspector_area.setWidget(self.inspector_host)
         return self.inspector_area
 
-    def _build_unit_header(self) -> QWidget:
-        """GH #148, on the in-game editor's stats preview: the portrait on the
-        left; name, Unit ID and the stats as icon+value pairs on the right."""
-        self.unit_header = QWidget()
-        row = QHBoxLayout(self.unit_header)
-        row.setContentsMargins(0, 0, 0, 0)
-        self.unit_portrait = QLabel()
-        self.unit_portrait.setFixedSize(PORTRAIT_PX, PORTRAIT_PX)
-        self.unit_portrait.setAlignment(Qt.AlignCenter)
-        row.addWidget(self.unit_portrait, 0, Qt.AlignTop)
-        # "icon" (the install's portrait), "sprite" (the map sprite) or None (hidden).
-        self.portrait_source: str | None = None
-        self._portrait_pixmap = None
-        self._portrait_key = object()
+    @property
+    def portrait_source(self) -> str | None:
+        """The selection card's: "icon", "sprite" or None."""
+        return self.selection_card.portrait_source
 
-        column = QVBoxLayout()
-        column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(2)
-        name = QLabel("")
-        font = name.font()
-        font.setBold(True)
-        name.setFont(font)
-        name.setWordWrap(True)
-        name.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.unit_field_labels["name"] = name
-        column.addWidget(name)
-        const_row = QHBoxLayout()
-        const_row.setContentsMargins(0, 0, 0, 0)
-        caption = QLabel(f"{unit_fields.FIELDS_BY_ID['unit_const'].label}:")
-        value = QLabel("")
-        value.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        const_row.addWidget(caption)
-        const_row.addWidget(value, 1)
-        self.unit_field_captions["unit_const"] = caption
-        self.unit_field_labels["unit_const"] = value
-        column.addLayout(const_row)
-
-        # Derived reference data (empires2_x2_p1.dat, committed as
-        # unit_stats.json), never editable, so not in unit_fields.FIELDS.
-        # Hidden whole when unit_stats() has nothing for the const -- see _apply_stats.
-        self.unit_stats_grid = QWidget()
-        self.unit_stats_grid.setToolTip(_STATS_NOTE_FULL)
-        stats_grid = QGridLayout(self.unit_stats_grid)
-        stats_grid.setContentsMargins(0, 0, 0, 0)
-        # Packs the pairs to the left whatever the pane width.
-        stats_grid.setColumnStretch(2 * _STAT_PAIRS_PER_ROW, 1)
-        # Both labels per pair, not just the value: ~1,169 of 2,642 consts
-        # have no type_50 combat block at all (a tree, say), so a pair goes
-        # outright rather than leaving an icon with nothing beside it.
-        # _apply_stats places them; the caption becomes an icon once an install supplies one.
-        self.unit_stat_rows: dict[str, tuple[QLabel, QLabel]] = {}
-        for field_id, caption_text, _icon in _STAT_FIELDS:
-            cap_label = QLabel(f"{caption_text}:")
-            cap_label.setToolTip(caption_text)
-            cap_label.setAccessibleName(caption_text)
-            value_label = QLabel("")
-            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            # Room for a 4-digit value, so the second pair column lines up across rows.
-            value_label.setMinimumWidth(value_label.fontMetrics().horizontalAdvance("0000"))
-            self.unit_stat_rows[field_id] = (cap_label, value_label)
-        # The install the stat icons were loaded for; a sentinel until the first _apply_stats.
-        self._stat_icon_install = object()
-        column.addWidget(self.unit_stats_grid)
-        column.addStretch(1)
-        row.addLayout(column, 1)
-        return self.unit_header
+    def refresh_thumbnails(self) -> None:
+        """After an install change: the list's thumbnails and modes, and both cards' stat icons and portraits."""
+        self.thumb_loader.clear()
+        self.catalog_view.refresh_thumbnails()
+        self.placing_card.refresh_thumbnails()
+        self.selection_card.refresh_thumbnails()
 
     def _show_inspector_fields(self, visible: bool) -> None:
         self.unit_header.setVisible(visible)
+        self.placing_card.setVisible(not visible)
         self.unit_inspector_grid.setVisible(visible)
         self.unit_inspector_empty.setVisible(not visible)
 
@@ -663,8 +654,7 @@ class UnitsPanel(QWidget):
             for label in self.unit_field_labels.values():
                 label.setText("")
             self.unit_field_labels["rotation"].setToolTip("")
-            self._apply_stats(None)
-            self._apply_portrait(None)
+            self.selection_card.clear()
             self.hide_garrison()
             self._fit_inspector_height()
             return
@@ -673,8 +663,6 @@ class UnitsPanel(QWidget):
         # const is a host; anything else leaves the block hidden.
         self.hide_garrison()
         texts = {
-            "name": object_catalog.display_name(unit.unit_const),
-            "unit_const": str(unit.unit_const),
             "rotation": f"{unit.rotation:g}",
             "reference_id": str(unit.reference_id),
             "garrisoned_in_id": str(getattr(unit, "garrisoned_in_id", -1)),
@@ -699,8 +687,7 @@ class UnitsPanel(QWidget):
             self._apply_conditional_fields([unit])
         finally:
             self._populating = False
-        self._apply_stats(unit.unit_const)
-        self._apply_portrait(unit.unit_const)
+        self.selection_card.show_const(unit.unit_const)
         self._show_inspector_fields(True)
         self._fit_inspector_height()
 
@@ -715,12 +702,11 @@ class UnitsPanel(QWidget):
         units = [entry.unit for entry in entries]
         consts = {unit.unit_const for unit in units}
         common_const = next(iter(consts)) if len(consts) == 1 else None
+        # Stats and portrait only when every member shares one const.
         if common_const is None:
-            self.unit_field_labels["name"].setText(_MIXED_TEXT)
-            self.unit_field_labels["unit_const"].setText(_MIXED_TEXT)
+            self.selection_card.show_mixed(len(consts))
         else:
-            self.unit_field_labels["name"].setText(object_catalog.display_name(common_const))
-            self.unit_field_labels["unit_const"].setText(str(common_const))
+            self.selection_card.show_const(common_const)
         self.unit_field_labels["reference_id"].setText("")
         self.unit_field_labels["garrisoned_in_id"].setText("")
         coords = {
@@ -737,9 +723,6 @@ class UnitsPanel(QWidget):
             self._apply_conditional_fields(units)
         finally:
             self._populating = False
-        self._apply_stats(common_const)
-        # Like the stats: only when every member shares one const.
-        self._apply_portrait(common_const)
         self._show_inspector_fields(True)
         for field_id in ("reference_id", "garrisoned_in_id"):
             self.unit_field_captions[field_id].setVisible(False)
@@ -821,7 +804,7 @@ class UnitsPanel(QWidget):
                     combo.addItem(_OTHER_CHOICE.format(value=value), value)
                     index = combo.count() - 1
             combo.setCurrentIndex(index)
-            # The closed combo cuts the longest label at MIN_USEFUL_WIDTH, as placing_label's does.
+            # The closed combo cuts the longest label at MIN_USEFUL_WIDTH, so the full one is on hover.
             combo.setToolTip(combo.currentText())
 
     def _coordinate_range(self, field_id: str, values) -> tuple[float, float]:
@@ -1003,72 +986,6 @@ class UnitsPanel(QWidget):
             f"Variant 0 to {scale - 1}: the fewest any selected object has. "
             f"Others have {', '.join(str(count) for count in counts[1:])}."
         )
-
-    def _apply_stats(self, unit_const: int | None) -> None:
-        """Shows each stat pair against key presence in unit_stats(unit_const),
-        re-packing the present ones _STAT_PAIRS_PER_ROW to a row, so a tree
-        shows one pair rather than a gap. Hides the whole grid when the dict is
-        empty -- an unrecognized const (a modded scenario), or a real one with
-        no HP and no combat block at all (roughly a fifth of the table:
-        cliffs, rocks, other decoratives). `unit_const=None` (no selection) is
-        treated the same as "no stats"."""
-        self._load_stat_icons()
-        stats = unit_stats(unit_const) if unit_const is not None else {}
-        self.unit_stats_grid.setVisible(bool(stats))
-        grid = self.unit_stats_grid.layout()
-        placed = 0
-        for field_id, (cap_label, value_label) in self.unit_stat_rows.items():
-            present = field_id in stats
-            grid.removeWidget(cap_label)
-            grid.removeWidget(value_label)
-            if present:
-                row, pair = divmod(placed, _STAT_PAIRS_PER_ROW)
-                grid.addWidget(cap_label, row, 2 * pair)
-                grid.addWidget(value_label, row, 2 * pair + 1)
-                placed += 1
-            cap_label.setVisible(present)
-            value_label.setVisible(present)
-            # :g so 4.0 renders as "4" -- a melee unit's range is 0, not "0.0".
-            value_label.setText(f"{stats[field_id]:g}" if present else "")
-
-    def _load_stat_icons(self) -> None:
-        """Each stat caption as the install's icon at the font's line height,
-        or its text with no install. Reloads only when the install changes."""
-        install = asset_source.get_install_path()
-        if install == self._stat_icon_install:
-            return
-        self._stat_icon_install = install
-        for field_id, caption, icon_name in _STAT_FIELDS:
-            cap_label = self.unit_stat_rows[field_id][0]
-            arr = asset_source.get_stat_icon(icon_name)
-            if arr is None:
-                cap_label.setText(f"{caption}:")
-            else:
-                cap_label.setPixmap(pixmap_from_rgba(arr, cap_label.fontMetrics().height()))
-
-    def _apply_portrait(self, unit_const: int | None) -> None:
-        """The install's portrait (building-aware), else the map sprite, else
-        hidden; instruction_preview's icon pattern. Re-resolved only when the
-        const or the install changes."""
-        key = (unit_const, asset_source.get_install_path())
-        if key != self._portrait_key:
-            self._portrait_key = key
-            pixmap, source = None, None
-            if unit_const is not None:
-                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(unit_const))
-                if arr is not None:
-                    pixmap, source = pixmap_from_rgba(arr, PORTRAIT_PX), "icon"
-                else:
-                    sprite = preview_pixmap(unit_const)
-                    if sprite is not None:
-                        pixmap = sprite.scaled(PORTRAIT_PX, PORTRAIT_PX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        source = "sprite"
-            self._portrait_pixmap, self.portrait_source = pixmap, source
-        if self._portrait_pixmap is None:
-            self.unit_portrait.clear()
-        else:
-            self.unit_portrait.setPixmap(self._portrait_pixmap)
-        self.unit_portrait.setVisible(self._portrait_pixmap is not None)
 
     def clear(self) -> None:
         """Blanks the inspector with no count to report -- the mode-switch

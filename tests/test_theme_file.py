@@ -65,6 +65,26 @@ def test_export_then_import_round_trips_to_an_identical_document(tmp_path, monke
     assert theme_file.build_document() == exported
 
 
+def test_an_editor_preset_with_a_surface_override_round_trips(tmp_path, monkeypatch) -> None:
+    settings.set_theme("editor_dark_wood_green")
+    settings.set_theme_color("surface", "#3a2010")
+    settings.set_theme_color("button", "#0a4a04")
+    exported = theme_file.build_document()
+    assert exported["theme"] == {"preset": "editor_dark_wood_green", "colors": {"surface": "#3a2010", "button": "#0a4a04"}}
+    out = tmp_path / f"editor{theme_file.FILE_SUFFIX}"
+    theme_file.write_theme_file(out, exported)
+
+    monkeypatch.setattr(settings, "CONFIG_PATH", tmp_path / "other" / "config.yaml")
+    _reset_memos(monkeypatch)
+    assert settings.get_theme() == "editor_parchment_red"
+    plan = theme_file.parse_theme_file(out)
+    assert plan.problems == []
+    settings.apply_appearance_values(plan.values)
+    assert theme_file.build_document() == exported
+    _reset_memos(monkeypatch)
+    assert theme_file.build_document() == exported
+
+
 def test_the_document_is_look_only() -> None:
     doc = theme_file.build_document()
     assert set(doc) == {
@@ -322,7 +342,7 @@ def test_summary_lists_changes_problems_and_notes(tmp_path) -> None:
     doc = _doc(theme={"preset": "dark", "colors": {}}, grid_thickness=2, bogus=1, ui_font={"family": "Nowhere Sans"})
     plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", doc), installed_families=[])
     summary = theme_file.format_import_summary(plan)
-    assert "Theme: Light -> Dark" in summary
+    assert "Theme: Wood (red) -> Dark" in summary
     assert "Grid thickness: 1 px -> 2 px" in summary
     assert "unknown key 'bogus'" in summary
     assert "Nowhere Sans" in summary.split("Notes:")[1]
@@ -340,24 +360,18 @@ def test_summary_of_a_no_op_file_says_so(tmp_path) -> None:
 def qt_dialog():
     if not conftest.PYQT5_AVAILABLE:
         pytest.skip("PyQt5 not importable")
-    conftest.ensure_qapp()
-    from PyQt5.QtGui import QPalette
-    from PyQt5.QtWidgets import QApplication
-
     from descape import viewer_dialogs
 
-    app = QApplication.instance()
-    saved = (QPalette(app.palette()), app.style().objectName(), app.font(), viewer_dialogs._LIGHT_PALETTE, viewer_dialogs._DEFAULT_FONT)
-    viewer_dialogs._LIGHT_PALETTE = None
-    viewer_dialogs._DEFAULT_FONT = None
-    dialog, window = conftest.dialog_and_window()
-    yield dialog
-    dialog.close()
-    conftest.close_window(window)
-    viewer_dialogs._LIGHT_PALETTE, viewer_dialogs._DEFAULT_FONT = saved[3], saved[4]
-    app.setStyle(saved[1])
-    app.setPalette(saved[0])
-    app.setFont(saved[2])
+    # The theme's own state (both palettes, style, _LIGHT_PALETTE) goes back through the shared helper.
+    with conftest.restoring_app_theme() as app:
+        saved_font, saved_default_font = app.font(), viewer_dialogs._DEFAULT_FONT
+        viewer_dialogs._DEFAULT_FONT = None
+        dialog, window = conftest.dialog_and_window()
+        yield dialog
+        dialog.close()
+        conftest.close_window(window)
+        viewer_dialogs._DEFAULT_FONT = saved_default_font
+        app.setFont(saved_font)
 
 
 def _answer_import(monkeypatch, path: Path, apply: bool) -> list[str]:
@@ -393,7 +407,7 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
     monkeypatch.setattr(settings, "_save_config", lambda config: (saves.append(1), real_save(config)))
     qt_dialog.theme_import_button.click()
 
-    assert len(shown) == 1 and "Theme: Light -> High contrast light" in shown[0]
+    assert len(shown) == 1 and "Theme: Wood (red) -> High contrast light" in shown[0]
     assert len(saves) == 1  # the widget refresh re-persisted nothing
     palette = QApplication.instance().palette()
     assert palette.color(QPalette.Active, QPalette.Highlight).name() == "#123456"

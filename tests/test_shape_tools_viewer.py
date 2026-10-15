@@ -137,7 +137,10 @@ def test_the_terrain_keybind_rows_stay_contiguous() -> None:
     terrain_ids = [t.tool_id for t in settings.TOOLS if t.modes == ("terrain",)]
     positions = [tool_rows.index(f"tool_{t}") for t in terrain_ids]
     assert positions == sorted(positions)
-    assert positions == list(range(min(positions), max(positions) + 1))
+    # No row that also shows in another mode sits inside the block: the Eyedropper
+    # and Select (both Terrain and Units, TASK-252) come after its last row.
+    block = tool_rows[min(positions) : max(positions) + 1]
+    assert [row for row in block if row not in {f"tool_{t}" for t in terrain_ids}] == []
 
 
 # -- the gesture -------------------------------------------------------------

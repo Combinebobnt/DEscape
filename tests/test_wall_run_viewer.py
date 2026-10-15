@@ -851,7 +851,7 @@ def test_a_gapped_run_agrees_with_the_render_sides_derivation():
 
 
 def _pan_window(const: int = VILLAGER):
-    """Units mode with Pan active and a non-wall picked, so the button's
+    """Units mode with Pan active and a non-wall picked, so the keybind's
     pick and tool switch are both observable."""
     window = _window(const)
     window.pan_action.setChecked(True)
@@ -863,14 +863,35 @@ def _menu_action(window, const: int):
     return next(a for a in window.wall_pick_button.menu().actions() if a.data() == const)
 
 
-def test_the_wall_button_only_shows_in_units_mode():
-    """QAction.isVisible(), never the widget's, for the reason the Wall
-    Rectangle test gives. The separator must follow it even under Pan."""
-    window = _pan_window()
+def test_the_wall_button_only_shows_for_the_wall_tools():
+    """GH #190. QAction.isVisible(), never the widget's, for the reason the
+    Wall Rectangle test gives. Every other Units-mode tool hides it, Convert included."""
+    from descape.viewer import _WALL_TOOLS
+    from descape.viewer_common import tool_applicable
+
+    window = _window(VILLAGER)
     try:
-        assert window.wall_pick_param_action.isVisible()
-        assert window.wall_pick_button.isEnabled()
-        assert window.tool_param_separator_action.isVisible()
+        for tool_id in _WALL_TOOLS:
+            getattr(window, f"{tool_id}_action").setChecked(True)
+            assert window._current_tool == tool_id
+            assert window.wall_pick_param_action.isVisible(), tool_id
+            assert window.wall_pick_button.isEnabled(), tool_id
+            assert window.tool_param_separator_action.isVisible(), tool_id
+        others = [
+            t.tool_id for t in settings.TOOLS
+            if t.tool_id not in _WALL_TOOLS and tool_applicable(t.tool_id, "units")
+        ]
+        assert "convert" in others and "pan" in others
+        for tool_id in others:
+            action = getattr(window, f"{tool_id}_action")
+            assert action.isEnabled(), tool_id
+            action.setChecked(True)
+            assert window._current_tool == tool_id
+            assert not window.wall_pick_param_action.isVisible(), tool_id
+            assert not window.wall_pick_button.isEnabled(), tool_id
+            # The keybind is not the button: it still arms a wall from any Units tool.
+            assert window.wall_pick_action.isEnabled(), tool_id
+        window.place_unit_action.setChecked(True)
         for mode in ("Terrain", "View", "Triggers"):
             window.mode_combo.setCurrentText(mode)
             assert not window.wall_pick_param_action.isVisible(), mode
@@ -892,8 +913,8 @@ def test_the_wall_menu_lists_every_wall_family_const():
         _close(window)
 
 
-def test_a_click_with_nothing_placed_yet_arms_place_unit_with_stone_wall():
-    window = _pan_window()
+def test_a_click_with_nothing_placed_yet_picks_stone_wall():
+    window = _window(VILLAGER)
     try:
         assert window.wall_pick_button.text() == "Wall: Stone Wall"
         window.wall_pick_button.click()
@@ -904,14 +925,19 @@ def test_a_click_with_nothing_placed_yet_arms_place_unit_with_stone_wall():
         _close(window)
 
 
-def test_after_a_palisade_run_a_click_arms_palisade():
+def test_after_a_palisade_run_a_click_picks_palisade():
     window = _window(PALISADE)
     try:
         _drag(window.map_view, (20, 40), (26, 40))
         assert window.wall_pick_button.text() == "Wall: Palisade Wall"
         _pick(window, VILLAGER)
-        window.pan_action.setChecked(True)
         window.wall_pick_button.click()
+        assert window._current_tool == "place_unit"
+        assert window.units_panel.selected_object_const() == PALISADE
+        # And the keybind arms the same wall from a tool that hides the button.
+        _pick(window, VILLAGER)
+        window.pan_action.setChecked(True)
+        window.wall_pick_action.trigger()
         assert window._current_tool == "place_unit"
         assert window.units_panel.selected_object_const() == PALISADE
     finally:
@@ -947,19 +973,20 @@ def test_a_menu_pick_while_wall_rectangle_is_active_keeps_wall_rectangle():
         _close(window)
 
 
-def test_a_menu_pick_from_pan_arms_place_unit():
-    window = _pan_window()
+def test_a_menu_pick_while_place_unit_is_active_keeps_place_unit():
+    window = _window(VILLAGER)
     try:
         _menu_action(window, AQUEDUCT).trigger()
         assert window._current_tool == "place_unit"
         assert window.units_panel.selected_object_const() == AQUEDUCT
+        assert window.wall_pick_button.text() == "Wall: Aqueduct"
     finally:
         _close(window)
 
 
 def test_a_catalog_filter_that_hides_the_wall_row_still_lands_the_pick():
     """select_object() alone is a silent no-op on a filtered-out row."""
-    window = _pan_window()
+    window = _window(VILLAGER)
     try:
         filter_edit = window.units_panel.catalog_view.filter_edit
         filter_edit.setText("villager")
@@ -986,9 +1013,11 @@ def test_the_keybind_action_arms_the_last_used_wall():
     window = _pan_window()
     try:
         assert window._keybind_actions["unit_wall_pick"] is window.wall_pick_action
+        assert not window.wall_pick_param_action.isVisible()
         window.wall_pick_action.trigger()
         assert window._current_tool == "place_unit"
         assert window.units_panel.selected_object_const() == WALL
+        assert window.wall_pick_param_action.isVisible()
     finally:
         _close(window)
 
@@ -1008,5 +1037,521 @@ def test_the_wall_button_is_disabled_without_a_unit_editable_map():
         assert not window.wall_pick_action.isEnabled()
         window.wall_pick_action.trigger()
         assert window._current_tool == "pan"
+    finally:
+        _close(window)
+
+
+# --- Moving a gate updates walls (GH #194) --------------------------------
+
+_ROW = 44
+# Laid from x=20 to x=40, so a +5 move still lands the gate on four walls.
+_RUN = [(x, _ROW) for x in range(20, 41)]
+_OLD = {(x, _ROW) for x in range(25, 29)}
+_NEW = {(x, _ROW) for x in range(30, 34)}
+# A cursor point inside the gate, off the 4-long axis' rounding tie (GH #206).
+_GRAB = (26.75, _ROW + 0.4)
+
+
+def _point_pos(window, x: float, y: float):
+    """Viewport position of a continuous Flat map point."""
+    from PyQt5.QtCore import QPointF
+
+    view = window.map_view
+    tp = view._tile_pixels
+    return QPointF(view.mapFromScene(QPointF(x * tp, y * tp)))
+
+
+def _drag_point(window, a, b) -> None:
+    """A real press-move-release between two continuous map points."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    view = window.map_view
+    start, end = _point_pos(window, *a), _point_pos(window, *b)
+    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+    view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+    view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+
+
+def _drag_gate(window, dx: float, dy: float) -> None:
+    _drag_point(window, _GRAB, (_GRAB[0] + dx, _GRAB[1] + dy))
+
+
+def _gate_window(box: bool = True, free: bool = False):
+    """(window, gate): the run on _ROW with a Stone Gate clicked onto tiles
+    25..28 (GH #159's path), then Move. `box` ticks "Moving a gate updates
+    walls", which alone lets the gate land on walls; `free` ticks Free
+    placement, which a box-off drop onto walls still needs."""
+    window = _window()
+    window.on_shape_commit(_RUN)
+    _pick(window, GATE)
+    _click_point(window, *_GRAB)
+    gate = window.scenario.unit_manager.units[PLAYER][-1]
+    assert gate.unit_const == GATE and (gate.x, gate.y) == (27.0, _ROW + 0.5)
+    assert _walls_on(window, _OLD) == [] and len(_walls_on(window, _NEW)) == 4
+    window.move_action.setChecked(True)
+    assert window._current_tool == "move"
+    window.unrestricted_check.setChecked(free)
+    window.gate_walls_check.setChecked(box)
+    return window, gate
+
+
+def _last_status(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]
+
+
+def _moved_gate_status(window) -> str:
+    """The last status line past the gate's catalog name, which depends on the install."""
+    last = _last_status(window)
+    assert last.startswith("Moved ") and " to (" in last, last
+    return last[last.index(" to (") + 1:]
+
+
+def _is_field_delta(window) -> bool:
+    """Whether the newest undo record is today's fields-only move, not a wholesale one."""
+    return window.edit_history.peek_undo().unit_field_entries is not None
+
+
+def _row_indices(window) -> dict[int, float]:
+    return {int(u.x): u.rotation for u in _walls_on(window, set(_RUN))}
+
+
+def _add_unit(window, const: int, x: float, y: float, garrisoned_in_id: int = -1):
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [PLAYER]):
+        return model.add(PLAYER, const, x, y, garrisoned_in_id=garrisoned_in_id)
+
+
+def _select_units(window, units) -> list:
+    from descape import unit_pick
+
+    keys = [unit_pick.unit_key(PLAYER, u) for u in units]
+    window._selection = list(keys)
+    window._refresh_selection_view()
+    return keys
+
+
+def _arrow(window, key, modifiers=None) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+
+    window.map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier if modifiers is None else modifiers))
+
+
+def test_the_gate_walls_checkbox_shows_under_its_tool_in_units_mode_only():
+    """QAction.isVisible(), for the reason the Wall Rectangle test gives. Its
+    tool is Move, the tool that drags units (TASK-012), and Move is Units-only,
+    so leaving Units mode lands on Pan with the box hidden."""
+    from descape.viewer_common import GATE_WALLS_TOOLS, tool_applicable
+
+    assert sorted(GATE_WALLS_TOOLS) == ["move"]
+    window = _window(VILLAGER)
+    try:
+        assert not window.gate_walls_check.isChecked()
+        assert not window.gate_walls_param_action.isVisible()
+        for tool_id in GATE_WALLS_TOOLS:
+            for mode in ("Terrain", "View", "Triggers", "Units"):
+                window.mode_combo.setCurrentText("Units")
+                getattr(window, f"{tool_id}_action").setChecked(True)
+                assert window._current_tool == tool_id
+                assert window.gate_walls_param_action.isVisible(), tool_id
+                assert window.gate_walls_check.isEnabled(), tool_id
+                assert window.tool_param_separator_action.isVisible(), tool_id
+                assert window.gate_walls_check.text() == "Moving a gate updates walls"
+                window.mode_combo.setCurrentText(mode)
+                assert window._current_tool == (tool_id if mode == "Units" else "pan"), mode
+                assert window.gate_walls_param_action.isVisible() == (mode == "Units"), mode
+                assert window.gate_walls_check.isEnabled() == (mode == "Units"), mode
+        others = [
+            t.tool_id for t in settings.TOOLS
+            if t.tool_id not in GATE_WALLS_TOOLS and tool_applicable(t.tool_id, "units")
+        ]
+        assert "place_unit" in others
+        for tool_id in others:
+            getattr(window, f"{tool_id}_action").setChecked(True)
+            assert window._current_tool == tool_id
+            assert not window.gate_walls_param_action.isVisible(), tool_id
+            assert not window.gate_walls_check.isEnabled(), tool_id
+    finally:
+        _close(window)
+
+
+def test_box_off_a_gate_dragged_along_its_run_is_todays_plain_move():
+    window, gate = _gate_window(box=False, free=True)
+    try:
+        before = _unit_count(window)
+        indices = _row_indices(window)
+        records = len(window.edit_history.records)
+
+        _drag_gate(window, 5, 0)
+
+        assert (gate.x, gate.y) == (32.0, _ROW + 0.5)
+        assert _unit_count(window) == before
+        assert len(_walls_on(window, _NEW)) == 4
+        assert _walls_on(window, _OLD) == []
+        assert _row_indices(window) == indices
+        assert len(window.edit_history.records) == records + 1
+        assert _is_field_delta(window)
+        assert _moved_gate_status(window) == f"to (32, {_ROW + 0.5:g})"
+    finally:
+        _close(window)
+
+
+def test_box_on_a_gate_dragged_along_its_run_swaps_the_walls_in_one_record():
+    """The GH #194 screenshots. The walls under the new footprint go, the four
+    tiles the gate left hold the run's wall again, and undo restores the
+    removed walls by identity with the rotations they had. The box alone is
+    enough: the walls the gate replaces never block it, Free placement off."""
+    from descape import unit_pick
+
+    window, gate = _gate_window()
+    try:
+        assert not window.unrestricted_check.isChecked()
+        under = _walls_on(window, _NEW)
+        rotations = {id(u): u.rotation for u in under}
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        _drag_gate(window, 5, 0)
+
+        assert (gate.x, gate.y) == (32.0, _ROW + 0.5)
+        assert _walls_on(window, _NEW) == []
+        filled = _walls_on(window, _OLD)
+        assert sorted(int(u.x) for u in filled) == [25, 26, 27, 28]
+        assert all(u.unit_const == WALL and u.rotation == 0.0 and u.initial_animation_frame == 0 for u in filled)
+        assert all(any(u is own for own in window.scenario.unit_manager.units[PLAYER]) for u in filled)
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert window._selection == [unit_pick.unit_key(PLAYER, gate)]
+        assert _moved_gate_status(window) == f"to (32, {_ROW + 0.5:g}), replacing 4 walls, filling 4"
+        # An integer-only read of the row: ends are towers, the rest runs along x.
+        assert _row_indices(window) == {x: (2.0 if x in (20, 40) else 0.0) for x in range(20, 41) if not 30 <= x <= 33}
+
+        window.undo()
+        restored = _walls_on(window, _NEW)
+        assert {id(u) for u in restored} == set(rotations)
+        assert all(u.rotation == rotations[id(u)] for u in restored)
+        assert _walls_on(window, _OLD) == []
+        assert _unit_count(window) == before
+        moved = next(u for u in window.scenario.unit_manager.units[PLAYER] if u.unit_const == GATE)
+        assert (moved.x, moved.y) == (27.0, _ROW + 0.5)
+
+        window.redo()
+        assert _walls_on(window, _NEW) == []
+        assert len(_walls_on(window, _OLD)) == 4
+        assert _unit_count(window) == before
+    finally:
+        _close(window)
+
+
+def test_box_on_a_gate_dragged_off_its_run_fills_without_free_placement():
+    """Nothing stands where it lands, so placement_rules has nothing to refuse."""
+    window, gate = _gate_window()
+    try:
+        before = _unit_count(window)
+        _drag_gate(window, 0, 3)
+        assert (gate.x, gate.y) == (27.0, _ROW + 3.5), _last_status(window)
+        assert len(_walls_on(window, _OLD)) == 4
+        assert _unit_count(window) == before + 4
+        assert _moved_gate_status(window) == f"to (27, {_ROW + 3.5:g}), filling 4"
+    finally:
+        _close(window)
+
+
+def test_box_on_a_shift_arrow_nudge_swaps_one_wall_and_a_plain_one_touches_none():
+    from PyQt5.QtCore import Qt
+
+    window, gate = _gate_window()
+    try:
+        _select_units(window, [gate])
+        before = _unit_count(window)
+        indices = _row_indices(window)
+        records = len(window.edit_history.records)
+
+        # 0.1 tile keeps the footprint, so this is a field edit and no wall is re-derived.
+        _arrow(window, Qt.Key_Right)
+        assert gate.x == pytest.approx(27.1)
+        assert _row_indices(window) == indices
+        assert len(window.edit_history.records) == records + 1
+        assert _is_field_delta(window)
+        assert "filling" not in _last_status(window) and "replacing" not in _last_status(window)
+
+        window.undo()
+        assert gate.x == 27.0
+        _arrow(window, Qt.Key_Right, Qt.ShiftModifier)
+
+        assert gate.x == 28.0
+        assert _walls_on(window, {(29, _ROW)}) == []
+        assert [u.rotation for u in _walls_on(window, {(25, _ROW)})] == [0.0]
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert _moved_gate_status(window) == f"to (28, {_ROW + 0.5:g}), replacing 1 wall, filling 1"
+
+        window.undo()
+        assert gate.x == 27.0
+        assert len(_walls_on(window, {(29, _ROW)})) == 1 and _walls_on(window, {(25, _ROW)}) == []
+    finally:
+        _close(window)
+
+
+def test_the_box_still_applies_while_another_units_tool_hides_it():
+    from PyQt5.QtCore import Qt
+
+    window, gate = _gate_window()
+    try:
+        window.place_unit_action.setChecked(True)
+        assert window._current_tool == "place_unit"
+        assert not window.gate_walls_param_action.isVisible()
+        _select_units(window, [gate])
+        _arrow(window, Qt.Key_Down, Qt.ShiftModifier)
+        assert gate.y == _ROW + 1.5
+        assert len(_walls_on(window, _OLD)) == 4
+    finally:
+        _close(window)
+
+
+def test_a_unit_garrisoned_in_the_gate_does_not_block_the_fill_under_it():
+    """The occupant stands on the gate's anchor point, a tile of the old line,
+    and rides along: it is no blocker where it stood."""
+    from descape import wall_run
+
+    window, gate = _gate_window()
+    try:
+        guard = _add_unit(window, VILLAGER, gate.x, gate.y, garrisoned_in_id=gate.reference_id)
+        mm = window.scenario.map_manager
+        assert (27, _ROW) in wall_run.blocked_tiles(window.scenario, mm.map_width, mm.map_height)
+
+        _drag_gate(window, 5, 0)
+
+        assert (guard.x, guard.y) == (gate.x, gate.y) == (32.0, _ROW + 0.5)
+        assert guard.garrisoned_in_id == gate.reference_id
+        assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [25, 26, 27, 28]
+        assert _last_status(window).endswith("replacing 4 walls, filling 4")
+    finally:
+        _close(window)
+
+
+def test_something_left_standing_in_the_gateway_keeps_its_tile_open():
+    window, gate = _gate_window()
+    try:
+        # On tile 27, clear of the tile the drag grabs the gate by.
+        _add_unit(window, VILLAGER, 27.5, _ROW + 0.5)
+        _drag_gate(window, 5, 0)
+        assert (gate.x, gate.y) == (32.0, _ROW + 0.5)
+        assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [25, 26, 28]
+        # The walls either side of the gap are run ends.
+        assert _row_indices(window)[26] == _row_indices(window)[28] == 2.0
+        assert _last_status(window).endswith("replacing 4 walls, filling 3 (1 occupied tiles left open)")
+    finally:
+        _close(window)
+
+
+def test_a_group_drag_of_the_gate_with_its_whole_run_changes_no_wall():
+    """Walls travelling in the selection are left alone, and nothing stays behind to plan."""
+    window, gate = _gate_window()
+    try:
+        walls = _walls_on(window, set(_RUN))
+        assert len(walls) == 17
+        rotations = {id(u): u.rotation for u in walls}
+        _select_units(window, [gate, *walls])
+        before = _unit_count(window)
+
+        _drag_gate(window, 0, 3)
+
+        assert (gate.x, gate.y) == (27.0, _ROW + 3.5), _last_status(window)
+        assert _walls_on(window, set(_RUN)) == []
+        assert all((u.y, u.rotation) == (_ROW + 3.5, rotations[id(u)]) for u in walls)
+        assert _unit_count(window) == before
+        assert _is_field_delta(window)
+        assert _last_status(window) == "Moved 18 units by (0, 3)"
+    finally:
+        _close(window)
+
+
+def test_a_group_drag_of_the_gate_with_an_unrelated_unit_plans_like_a_single_move():
+    """Onto walls with Free placement off: a group's gate is not blocked by the walls it replaces."""
+    window, gate = _gate_window()
+    try:
+        assert not window.unrestricted_check.isChecked()
+        other = _add_unit(window, VILLAGER, 60.5, 60.5)
+        _select_units(window, [gate, other])
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        _drag_gate(window, 5, 0)
+
+        assert (gate.x, gate.y) == (32.0, _ROW + 0.5), _last_status(window)
+        assert (other.x, other.y) == (65.5, 60.5)
+        assert _walls_on(window, _NEW) == []
+        assert len(_walls_on(window, _OLD)) == 4
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert _last_status(window) == "Moved 2 units by (5, 0), replacing 4 walls, filling 4"
+
+        window.undo()
+        assert (gate.x, other.x) == (27.0, 60.5)
+        assert len(_walls_on(window, _NEW)) == 4 and _walls_on(window, _OLD) == []
+    finally:
+        _close(window)
+
+
+def test_a_group_drag_holding_a_gate_plans_the_gate_move_once(monkeypatch):
+    """TASK-352: the refusal check and the move share one plan, not a scene walk each."""
+    from descape import wall_run
+
+    window, gate = _gate_window()
+    try:
+        assert not window.unrestricted_check.isChecked()
+        other = _add_unit(window, VILLAGER, 60.5, 60.5)
+        _select_units(window, [gate, other])
+        calls = []
+        real = wall_run.scenario_gate_moves
+        monkeypatch.setattr(wall_run, "scenario_gate_moves", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+        _drag_gate(window, 5, 0)
+
+        assert _last_status(window) == "Moved 2 units by (5, 0), replacing 4 walls, filling 4"
+        assert len(calls) == 1
+    finally:
+        _close(window)
+
+
+_MOVE_HINT = "Tick Free placement to move it anyway."
+
+
+def _gate_site_state(window, gate) -> tuple:
+    """Everything a refused gate move must leave alone."""
+    return (
+        (gate.x, gate.y),
+        _unit_count(window),
+        len(window.edit_history.records),
+        sorted((id(u), u.x, u.rotation) for u in _walls_on(window, set(_RUN))),
+    )
+
+
+def test_box_off_a_gate_dragged_onto_walls_is_refused_as_before():
+    from descape import object_catalog
+
+    window, gate = _gate_window(box=False)
+    try:
+        state = _gate_site_state(window, gate)
+        _drag_gate(window, 5, 0)
+        assert _gate_site_state(window, gate) == state
+        wall = object_catalog.display_name(WALL)
+        assert _last_status(window) == f"Move: blocked by {wall} (Player 1) at (30.5, {_ROW + 0.5:g}). {_MOVE_HINT}"
+    finally:
+        _close(window)
+
+
+def test_box_on_something_that_is_not_a_wall_under_the_new_footprint_still_refuses():
+    """Only the walls the plan removes stop blocking. The villager stands on
+    one of them, and no wall is removed before the refusal is known."""
+    from descape import object_catalog
+
+    window, gate = _gate_window()
+    try:
+        _add_unit(window, VILLAGER, 31.5, _ROW + 0.5)
+        state = _gate_site_state(window, gate)
+        _drag_gate(window, 5, 0)
+        assert _gate_site_state(window, gate) == state
+        villager = object_catalog.display_name(VILLAGER)
+        assert _last_status(window) == f"Move: blocked by {villager} (Player 1) at (31.5, {_ROW + 0.5:g}). {_MOVE_HINT}"
+
+        # The same in a group: all or nothing.
+        other = _add_unit(window, VILLAGER, 60.5, 60.5)
+        _select_units(window, [gate, other])
+        state = _gate_site_state(window, gate)
+        _drag_gate(window, 5, 0)
+        assert _gate_site_state(window, gate) == state
+        assert (other.x, other.y) == (60.5, 60.5)
+        assert _last_status(window).startswith(f"Move: 1 of 2 units can't go there (first: blocked by {villager} ")
+    finally:
+        _close(window)
+
+
+def test_box_on_a_wall_the_model_would_not_remove_still_refuses():
+    """A unit garrisoned in the wall makes remove_many() refuse it, so the
+    plan keeps it, and a wall that stays is a blocker like any other."""
+    from descape import object_catalog
+
+    window, gate = _gate_window()
+    try:
+        (kept,) = _walls_on(window, {(31, _ROW)})
+        _add_unit(window, VILLAGER, kept.x, kept.y, garrisoned_in_id=kept.reference_id)
+        assert window._ensure_unit_edits().referencing(kept)
+        state = _gate_site_state(window, gate)
+
+        _drag_gate(window, 5, 0)
+
+        assert _gate_site_state(window, gate) == state
+        wall = object_catalog.display_name(WALL)
+        assert _last_status(window) == f"Move: blocked by {wall} (Player 1) at (31.5, {_ROW + 0.5:g}). {_MOVE_HINT}"
+    finally:
+        _close(window)
+
+
+def test_box_on_a_move_with_no_gate_in_it_keeps_the_splice_path(monkeypatch):
+    """Checked before the scene walk: the planner is never asked, and the
+    refresh is the per-unit splice, not the wholesale one."""
+    from descape import wall_run
+
+    window, _gate = _gate_window()
+    try:
+        villager = _add_unit(window, VILLAGER, 60.5, 60.5)
+
+        def never(*_args, **_kwargs):
+            raise AssertionError("a move with no gate in it must not plan")
+
+        monkeypatch.setattr(wall_run, "scenario_gate_moves", never)
+        refreshes = []
+        real = window._after_unit_mutation
+        monkeypatch.setattr(
+            window, "_after_unit_mutation", lambda changed=None, **kw: (refreshes.append(changed), real(changed, **kw))[1]
+        )
+
+        _drag_point(window, (60.5, 60.5), (63.5, 60.5))
+
+        assert (villager.x, villager.y) == (63.5, 60.5), _last_status(window)
+        assert _is_field_delta(window)
+        assert len(refreshes) == 1 and refreshes[0], "expected one spliced refresh"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("encoding", ["radian", "integer"])
+def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
+    """Fills (along the run, then beside a gate stepped off it) and rewrites
+    (the gate stepping further away). The fixture's GAIA wall is radian, which
+    forces render's override path: no override may disagree with what is
+    stored. Without that wall the file is integer-only and render derives
+    nothing, so there the stored indices are read directly."""
+    from PyQt5.QtCore import Qt
+
+    from descape import render, unit_sprites
+
+    window, gate = _gate_window()
+    try:
+        if encoding == "integer":
+            model = window._ensure_unit_edits()
+            with window._unit_edit(model, "Drop the radian wall", [GAIA_PLAYER_ID]):
+                model.remove(_gaia_wall(window))
+        _drag_gate(window, 5, 0)
+        _select_units(window, [gate])
+        steps = []
+        for _step in range(2):
+            _arrow(window, Qt.Key_Down, Qt.ShiftModifier)
+            steps.append(_last_status(window))
+            overrides = render.wall_variant_rotation_overrides(window.scenario)
+            assert bool(overrides) == (encoding == "radian")
+            units = window.scenario.unit_manager.units
+            for (player_id, index), derived in overrides.items():
+                unit = units[player_id][index]
+                assert derived == unit_sprites.variant_index(unit.rotation, 5), (unit.x, unit.y, derived, unit.rotation)
+        assert steps[0].endswith(", filling 4")
+        assert steps[1].endswith(", reshaping 4 adjacent")
+        # The gate is two rows away again, so the whole row reads as one plain run.
+        assert _row_indices(window) == {x: (2.0 if x in (20, 40) else 0.0) for x in range(20, 41)}
     finally:
         _close(window)

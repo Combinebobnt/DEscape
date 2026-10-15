@@ -901,7 +901,7 @@ def test_a_left_click_on_a_pinned_endpoint_in_units_mode_still_selects_a_unit() 
         model = window._ensure_unit_edits()
         with window._unit_edit(model, "Place", [1]):
             unit = model.add(1, 83, 40.5, 40.5)
-        window._on_tool_selected("pan")
+        window.select_action.setChecked(True)  # Select picks units, Pan only pans (TASK-252)
         assert len(_pinned_labels(map_view)) == 1
         pos = _viewport_pos(map_view, 40, 40)
         map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))

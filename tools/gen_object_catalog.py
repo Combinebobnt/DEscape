@@ -44,6 +44,9 @@ bundled as text in this repo.
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install -- neither of which this repo depends on for normal use, only for
 regenerating this file if the game updates its object/tech tables.
+
+Normally run through tools/regen_game_data.py, which also restamps
+tools/game_data_stamp.json.
 """
 
 from __future__ import annotations
@@ -163,6 +166,12 @@ def main() -> None:
         type=Path,
         help="Path to the AoE2DE install root (contains resources/_common/...)",
     )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "descape",
+        help="Where to write object_catalog.json (default: descape/)",
+    )
     args = parser.parse_args()
 
     from genieutils.datfile import DatFile
@@ -183,7 +192,8 @@ def main() -> None:
     terrains = _terrain_entries(data.terrain_block.terrains)
     terrain_restrictions = _terrain_restriction_entries(data.terrain_restrictions, objects, terrains)
 
-    out_path = Path(__file__).resolve().parent.parent / "descape" / "object_catalog.json"
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.out_dir / "object_catalog.json"
     out = {
         "_comment": (
             "Per-object, per-terrain and per-tech integer fields and internal "

@@ -252,45 +252,79 @@ def test_the_dangling_check_and_describe_agree_on_the_fixture() -> None:
 # -- corpus -------------------------------------------------------------------
 
 
-@pytest.mark.corpus
-def test_corpus_unit_references_match_the_plan() -> None:
+# Per file, (references, dangling, duplicate ids, off-map, garrisoned), or None
+# where parse_triggers() gives up. The plan measured the 20 files before the 1.59 example joined.
+_JOINED_AFTER_THE_PLAN = "8tp3w9j.aoe2scenario"
+_REFERENCES_PER_FILE = {
+    "0_June_Event_Scenario.aoe2scenario": (8, 0, 0, 0, 0),
+    "2_Joan_coop_1_v0_13.aoe2scenario": None,
+    "2_Joan_coop_2_v0_15.aoe2scenario": (50, 0, 0, 0, 0),
+    "2_Joan_coop_3_v0_14.aoe2scenario": None,
+    "2_Joan_coop_4_v0_13.aoe2scenario": None,
+    "2_Joan_coop_5_v0_13.aoe2scenario": (33, 0, 0, 0, 0),
+    "2_Joan_coop_6_v0_14.aoe2scenario": None,
+    _JOINED_AFTER_THE_PLAN: (3, 3, 0, 0, 0),
+    "C2_ElCid_coop_1_v0_16.aoe2scenario": (31, 0, 0, 0, 0),
+    "C2_ElCid_coop_2_v0_13.aoe2scenario": (12, 0, 0, 0, 0),
+    "C2_ElCid_coop_3_v0_12.aoe2scenario": (67, 0, 0, 0, 0),
+    "C2_ElCid_coop_4_v0_13.aoe2scenario": (20, 0, 0, 0, 0),
+    "C2_ElCid_coop_5_v0_14.aoe2scenario": (78, 0, 0, 0, 0),
+    "C2_ElCid_coop_6_v0_13.aoe2scenario": (10, 0, 0, 0, 0),
+    "F7_2_Dos Pilas (648).aoe2scenario": (145, 1, 0, 0, 0),
+    "F7_3_York (865).aoe2scenario": (40, 0, 0, 0, 0),
+    "R4_LeLoi_4.aoe2scenario": (40, 0, 0, 0, 0),
+    "atilla_1_scn_resaved.aoe2scenario": (83, 0, 0, 0, 0),
+    "blank_map.aoe2scenario": (0, 0, 0, 0, 0),
+    "old-allies-final-v2.aoe2scenario": (235, 0, 0, 0, 0),
+    "ring75_v0_scx_resaved.aoe2scenario": (0, 0, 0, 0, 0),
+}
+
+
+def test_the_per_file_reference_table_sums_to_the_plan() -> None:
     """The plan's table: 852 non-empty references, 1 dangling, no duplicate
-    ids, none off-map or garrisoned, and the 4 unparseable files degrade."""
-    examples = Path(__file__).resolve().parent.parent / "examples"
-    files = sorted(examples.glob("*.aoe2scenario"))
-    if len(files) != 20:
-        pytest.skip(f"expects the 20-file examples/ corpus, found {len(files)}")
-    total = dangling = duplicates = off_map = garrisoned = 0
-    unparseable = []
-    for path in files:
-        loaded = load_map_and_units(path)
-        manager = parse_triggers(loaded)
-        if manager is None:
-            unparseable.append(path.name)
-            assert map_analysis.check_unit_references(loaded).unavailable
-            continue
-        vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
-        index = unit_references.build_reference_index(loaded)
-        duplicates += len(index.duplicates)
-        inside = {
-            u.reference_id
-            for _p, u in unit_references.all_units(loaded)
-            if getattr(u, "garrisoned_in_id", -1) not in (-1, None, u.reference_id)
-        }
-        kinds = (
-            ("conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
-            ("effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
-        )
-        for trigger in manager.triggers:
-            for list_name, type_attribute, definitions, presentation in kinds:
-                for entry in getattr(trigger, list_name):
-                    definition = definitions.get(getattr(entry, type_attribute))
-                    for ids in unit_references.references_in(entry, definition, presentation).values():
-                        for ref_id in ids:
-                            total += 1
-                            ref = index.get(ref_id)
-                            dangling += ref is None
-                            off_map += ref is not None and ref.bounds is None
-                            garrisoned += ref_id in inside
-    assert (total, dangling, duplicates, off_map, garrisoned) == (852, 1, 0, 0, 0)
-    assert len(unparseable) == 4
+    ids, none off-map or garrisoned, over the 16 of 20 files that parse."""
+    planned = [row for name, row in _REFERENCES_PER_FILE.items() if name != _JOINED_AFTER_THE_PLAN]
+    parsed = [row for row in planned if row is not None]
+    assert (len(planned), len(parsed)) == (20, 16)
+    assert tuple(sum(column) for column in zip(*parsed, strict=True)) == (852, 1, 0, 0, 0)
+
+
+def _measure_references(path: Path) -> tuple[int, int, int, int, int] | None:
+    loaded = load_map_and_units(path)
+    manager = parse_triggers(loaded)
+    if manager is None:
+        assert map_analysis.check_unit_references(loaded).unavailable, path.name
+        return None
+    total = dangling = off_map = garrisoned = 0
+    vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+    index = unit_references.build_reference_index(loaded)
+    inside = {
+        u.reference_id
+        for _p, u in unit_references.all_units(loaded)
+        if getattr(u, "garrisoned_in_id", -1) not in (-1, None, u.reference_id)
+    }
+    kinds = (
+        ("conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
+        ("effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
+    )
+    for trigger in manager.triggers:
+        for list_name, type_attribute, definitions, presentation in kinds:
+            for entry in getattr(trigger, list_name):
+                definition = definitions.get(getattr(entry, type_attribute))
+                for ids in unit_references.references_in(entry, definition, presentation).values():
+                    for ref_id in ids:
+                        total += 1
+                        ref = index.get(ref_id)
+                        dangling += ref is None
+                        off_map += ref is not None and ref.bounds is None
+                        garrisoned += ref_id in inside
+    return total, dangling, len(index.duplicates), off_map, garrisoned
+
+
+@pytest.mark.corpus
+def test_corpus_unit_references_match_the_plan(corpus_files) -> None:
+    """Every corpus file against its pinned row; an unpinned file fails with its measured row."""
+    measured = {path.name: _measure_references(path) for path in corpus_files}
+    unpinned = {name: row for name, row in measured.items() if name not in _REFERENCES_PER_FILE}
+    assert not unpinned, f"pin these new files' rows in _REFERENCES_PER_FILE: {unpinned}"
+    assert measured == {name: _REFERENCES_PER_FILE[name] for name in measured}

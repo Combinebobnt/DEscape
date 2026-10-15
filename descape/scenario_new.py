@@ -13,9 +13,9 @@ s32 immediately preceding the terrain array: Map's last three retrievers are
 map_width, map_height, terrain_data, in that order, in every DE
 versions/DE/*/structure.json, library and repo (v1.36 through v1.59) -- so the -8/-4
 offsets are a structural guarantee, not an accident of one file. Applying this
-splice to the shipped 120x120 donor reproduces the real 240x240 and 480x480
-exports byte-for-byte, except for two fields that are deliberately inherited
-rather than touched:
+splice to the real 1.58 120x120 export reproduces the real 1.58 240x240 and
+480x480 exports byte-for-byte, except for two fields that are deliberately
+inherited rather than touched:
 
 - FileHeader's timestamp_of_last_save (u32 at header offset 12).
 - DataHeader's filename (a length-prefixed str16, its terminal field). It
@@ -26,6 +26,13 @@ See tests/test_scenario_new.py for the byte-for-byte comparison against the
 real exports (relocated to tests/fixtures/real_blank_*.aoe2scenario as byte
 oracles once this landed -- see that module's docstring for why those files
 must never be regenerated from the donor).
+
+That 1.58 120x120 export was the shipped donor until 1.59 and is now a test
+fixture, tests/fixtures/blank_120x120_v158.aoe2scenario. The shipped donor is
+the same file with its three version fields set to 1.59 by
+tools/gen_blank_template.py, so every new map is a 1.59 scenario.
+tests/test_blank_template.py compares it against a blank map saved by the
+1.59 game editor.
 
 MIN_MAP_TILES is set by a structural constraint, not the donor's own size:
 Units.player_data_3's editor_camera_x/y and initial_camera_x/y are (60, 60)
@@ -53,7 +60,7 @@ BLANK_TERRAIN_STRUCT = b"\x00\x00\x00\xff\xff\xff\xff"
 
 # The 7 sizes real AoE2:DE scenarios use -- confirmed empirically, not from
 # memory: every one of the 20 real campaign files in examples/ (scenario
-# versions 1.37-1.58) is exactly one of these. File > New Map's size submenu.
+# versions 1.37-1.59) is exactly one of these. File > New Map's size submenu.
 STANDARD_MAP_SIZES = (120, 144, 168, 200, 220, 240, 480)
 
 # In-game names for each STANDARD_MAP_SIZES entry, used to label File > New

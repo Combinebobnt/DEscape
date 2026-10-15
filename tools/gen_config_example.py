@@ -52,6 +52,7 @@ _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
+_UNITS_CATALOG_MODES = ", ".join(settings.UNITS_CATALOG_MODES)
 _VIEW_LAYER_LABELS = textwrap.fill(
     ", ".join(f"{spec.layer_id} ({spec.label.replace('&', '')})" for spec in view_layers.LAYERS),
     width=76,
@@ -59,6 +60,9 @@ _VIEW_LAYER_LABELS = textwrap.fill(
 )
 _THEME_PRESETS = textwrap.fill(", ".join(themes.PRESETS), width=76, subsequent_indent="# ")
 _THEME_ROLES = textwrap.fill(", ".join(themes.ROLE_IDS), width=76, subsequent_indent="# ")
+_WHEEL_SLOTS = ", ".join(settings.WHEEL_SLOTS)
+_WHEEL_ACTIONS = ", ".join(settings.WHEEL_ACTIONS)
+_WHEEL_DEFAULTS = ", ".join(f"{slot} {settings.DEFAULT_WHEEL_BINDINGS[slot]}" for slot in settings.WHEEL_SLOTS)
 
 
 def render() -> str:
@@ -153,6 +157,19 @@ pan_speed: {settings.PAN_SPEED_DEFAULT}
 # (false). Default: true.
 zoom_centered_on_cursor: true
 
+# What the mouse wheel does over the map, per modifier held, Settings >
+# Keybinds. Slots: {_WHEEL_SLOTS}.
+# Actions: {_WHEEL_ACTIONS}.
+# "tool" steps the brush size or turns Place Unit's preview, whichever
+# applies; a tool action with nothing to act on zooms, and so does any other
+# modifier combination. Only slots moved off their default are stored, and an
+# unknown slot or action is ignored.
+# Defaults: {_WHEEL_DEFAULTS}.
+# The value below is only an example.
+# wheel_bindings:
+#   plain: tool
+#   ctrl: zoom
+
 # App-chrome theme preset, Settings > Appearance. One of:
 # {_THEME_PRESETS}.
 # An unknown id falls back to the default. A config with no `theme` but the
@@ -220,6 +237,10 @@ grid_follow_elevation: true
 # Range Rings. Buildings only, and only ones with a range. Default: false.
 range_rings: false
 
+# Each ring in its owner's player colour, View > Range Rings > Colour by
+# Owner. GAIA keeps the overlay_colors range_ring colour. Default: false.
+range_rings_by_owner: false
+
 # A camera glyph on each player's stored starting view tile, View > Player
 # Cameras. Default: false.
 camera_markers: false
@@ -267,6 +288,11 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # [left, right]. Persisted automatically when you drag the split -- not
 # something you normally set by hand. Omitted entirely until first saved.
 # split_sizes: [340, 900]
+
+# How the Units panel's object list shows objects, set by the buttons above
+# it: icons (icon and name rows), names (text rows) or grid (icons only).
+# One of {_UNITS_CATALOG_MODES}. Default: {settings.UNITS_CATALOG_MODE_DEFAULT}.
+units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 
 # Height in pixels of the system log, below the map view. Persisted
 # automatically when you drag the split -- not something you normally set by

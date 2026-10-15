@@ -2,9 +2,10 @@
 user may override, Settings > Appearance.
 
 One active theme is a preset plus optional per-role overrides (settings.py's
-`theme` and `theme_colors`). viewer_dialogs.apply_theme() turns that into a
-QPalette; this module only holds the data and the colour arithmetic, so it
-never imports PyQt5 or descape.settings (settings imports it).
+`theme` and `theme_colors`). viewer_dialogs.apply_theme() turns that into the
+app palette and a push-button palette; this module only holds the data and
+the colour arithmetic, so it never imports PyQt5 or descape.settings
+(settings imports it).
 
 Scope is app chrome only. The map view's tool overlay colours
 (settings.OVERLAY_COLORS) are a separate setting no preset touches.
@@ -23,6 +24,8 @@ THEME_ROLES: list[tuple[str, str, str]] = [
     ("text", "Input text", "Text"),
     ("button", "Button", "Button"),
     ("button_text", "Button text", "ButtonText"),
+    ("surface", "Tabs and drop-downs", "Button"),
+    ("surface_text", "Drop-down and menu text", "ButtonText"),
     ("highlight", "Selection", "Highlight"),
     ("highlighted_text", "Selected text", "HighlightedText"),
     ("tooltip_base", "Tooltip background", "ToolTipBase"),
@@ -32,6 +35,11 @@ THEME_ROLES: list[tuple[str, str, str]] = [
 ROLE_IDS: tuple[str, ...] = tuple(role_id for role_id, _label, _qt in THEME_ROLES)
 _ROLE_LABELS: dict[str, str] = {role_id: label for role_id, label, _qt in THEME_ROLES}
 ROLE_QT_NAMES: dict[str, str] = {role_id: qt_name for role_id, _label, qt_name in THEME_ROLES}
+
+# Two pairs share Qt's Button/ButtonText. `button` reaches push buttons only; `surface` reaches
+# the rest Fusion paints from Button: tab pages and bars, combos, tool buttons, headers.
+PUSH_BUTTON_ROLES: tuple[str, str] = ("button", "button_text")
+SURFACE_ROLES: tuple[str, str] = ("surface", "surface_text")
 
 # Keys only the legacy `dark` preset carries: its recipe's five explicit
 # Disabled colours and BrightText, beyond the overridable roles.
@@ -47,7 +55,7 @@ LEGACY_EXTRA_KEYS: tuple[str, ...] = (
 # The presets whose palette is exactly the pre-theme app's: `light` is Fusion's
 # standardPalette() untouched, `dark` the old dark-mode recipe.
 LEGACY_PRESETS: tuple[str, ...] = ("light", "dark")
-THEME_DEFAULT = "light"
+THEME_DEFAULT = "editor_parchment_red"
 
 # Disabled-group derivation: (role, its background role, blend toward it).
 DISABLED_BLENDS: tuple[tuple[str, str, float], ...] = (
@@ -80,6 +88,8 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
             "text": "#ffffff",
             "button": "#353535",
             "button_text": "#ffffff",
+            "surface": "#353535",
+            "surface_text": "#ffffff",
             "highlight": "#2a82da",
             "highlighted_text": "#000000",
             "tooltip_base": "#353535",
@@ -103,6 +113,8 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
             "text": "#f0f0f0",
             "button": "#53575c",
             "button_text": "#f0f0f0",
+            "surface": "#53575c",
+            "surface_text": "#f0f0f0",
             "highlight": "#4f86c6",
             "highlighted_text": "#ffffff",
             "tooltip_base": "#2b2d30",
@@ -122,6 +134,8 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
             "text": "#ffffff",
             "button": "#262626",
             "button_text": "#ffffff",
+            "surface": "#262626",
+            "surface_text": "#ffffff",
             "highlight": "#1aebff",
             "highlighted_text": "#000000",
             "tooltip_base": "#000000",
@@ -139,6 +153,8 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
             "text": "#000000",
             "button": "#e6e6e6",
             "button_text": "#000000",
+            "surface": "#e6e6e6",
+            "surface_text": "#000000",
             "highlight": "#37006e",
             "highlighted_text": "#ffffff",
             "tooltip_base": "#ffffff",
@@ -156,6 +172,8 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
             "text": _SOL_BASE02,
             "button": _SOL_BASE2,
             "button_text": _SOL_BASE02,
+            "surface": _SOL_BASE2,
+            "surface_text": _SOL_BASE02,
             "highlight": _SOL_BLUE,
             "highlighted_text": _SOL_BASE3,
             "tooltip_base": _SOL_BASE02,
@@ -174,6 +192,8 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
             "button": _SOL_BASE02,
             # base2, not base1: Fusion paints a dark button lighter, which took base1 to 3.85:1.
             "button_text": _SOL_BASE2,
+            "surface": _SOL_BASE02,
+            "surface_text": _SOL_BASE2,
             "highlight": _SOL_BLUE,
             "highlighted_text": _SOL_BASE3,
             "tooltip_base": _SOL_BASE03,
@@ -183,6 +203,63 @@ PRESETS: dict[str, tuple[str, dict[str, str]]] = {
     ),
 }
 HIGH_CONTRAST_PRESETS: tuple[str, ...] = ("high_contrast_dark", "high_contrast_light")
+
+# Wood family (ids keep `editor_`: saved settings and theme files name them): a base x an accent (push
+# button colour and a selection of the same hue). Bases sampled from the DE editor, then desaturated 15% / 35%.
+_EDITOR_BASES: dict[str, tuple[str, dict[str, str]]] = {
+    "parchment": (
+        "Wood",
+        {
+            "window": "#c7a07d",
+            "window_text": "#462c17",
+            "base": "#d6b597",
+            "alternate_base": "#cbab8f",
+            "text": "#462c17",
+            "surface": "#c7a07d",
+            "surface_text": "#462c17",
+            "highlighted_text": "#ffffff",
+            "tooltip_base": "#101207",
+            "tooltip_text": "#ffffff",
+            "link": "#7a2e0e",
+        },
+    ),
+    "dark_wood": (
+        "Dark Wood",
+        {
+            "window": "#523d29",
+            "window_text": "#cfb69f",
+            "base": "#412d1d",
+            "alternate_base": "#4b3624",
+            "text": "#ddc8b1",
+            # Darker than the window: Fusion lightens a dark surface, to #523f30 on a tab page.
+            "surface": "#412d1d",
+            "surface_text": "#ddc8b1",
+            "highlighted_text": "#ffffff",
+            "tooltip_base": "#101207",
+            "tooltip_text": "#ffffff",
+            "link": "#e8a860",
+        },
+    ),
+}
+# Selection of each accent, and its push button per base: far darker than it paints, since Fusion lightens the
+# face and caps its saturation at 75%. Red aims at the game's #87080f; the other three sit deeper on dark wood.
+_EDITOR_ACCENTS: dict[str, dict[str, str]] = {
+    "red": {"button_text": "#ffffff", "highlight": "#9b272e"},
+    "blue": {"button_text": "#ffffff", "highlight": "#1d3f8b"},
+    "green": {"button_text": "#ffffff", "highlight": "#158809"},
+    "purple": {"button_text": "#ffffff", "highlight": "#5b1d7a"},
+}
+_EDITOR_BUTTONS: dict[str, dict[str, str]] = {
+    "parchment": {"red": "#5c0005", "blue": "#00184c", "green": "#084f00", "purple": "#2b0040"},
+    "dark_wood": {"red": "#5c0005", "blue": "#01133b", "green": "#063d00", "purple": "#220133"},
+}
+EDITOR_PRESETS: tuple[str, ...] = tuple(f"editor_{base}_{accent}" for base in _EDITOR_BASES for accent in _EDITOR_ACCENTS)
+for _base_id, (_base_label, _base_colors) in _EDITOR_BASES.items():
+    for _accent_id, _accent_colors in _EDITOR_ACCENTS.items():
+        PRESETS[f"editor_{_base_id}_{_accent_id}"] = (
+            f"{_base_label} ({_accent_id})",
+            {**_base_colors, **_accent_colors, "button": _EDITOR_BUTTONS[_base_id][_accent_id]},
+        )
 
 
 def preset_label(preset_id: str) -> str:
@@ -229,3 +306,17 @@ def contrast_ratio(a: str, b: str) -> float:
     la, lb = relative_luminance(a), relative_luminance(b)
     hi, lo = max(la, lb), min(la, lb)
     return (hi + 0.05) / (lo + 0.05)
+
+
+def legible(color: str, background: str, minimum: float) -> str:
+    """`color` unchanged when it reaches `minimum` contrast on `background`.
+    Otherwise the first 5% blend toward black or white (whichever contrasts
+    more with the background) that does, or that pole when none can."""
+    if contrast_ratio(color, background) >= minimum:
+        return color
+    pole = max(("#000000", "#ffffff"), key=lambda candidate: contrast_ratio(candidate, background))
+    for step in range(1, 20):
+        shade = blend(color, pole, step / 20)
+        if contrast_ratio(shade, background) >= minimum:
+            return shade
+    return pole

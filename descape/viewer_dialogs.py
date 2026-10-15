@@ -8,12 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QRect, QUrl
 from PyQt5.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
     QFontDatabase,
+    QImage,
+    QPainter,
     QPalette,
 )
 from PyQt5.QtWidgets import (
@@ -24,11 +26,14 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QStyle,
+    QStyleOptionTabWidgetFrame,
     QVBoxLayout,
 )
 
 from descape import (
     debug_log,
+    settings,
     themes,
 )
 
@@ -55,17 +60,32 @@ _LIGHT_PALETTE: QPalette | None = None
 _DEFAULT_FONT: QFont | None = None
 
 
-_ROLE_ENUMS: dict[str, QPalette.ColorRole] = {role_id: getattr(QPalette, qt) for role_id, qt in themes.ROLE_QT_NAMES.items()}
+# The 12 roles one palette is built from, under the push-button pair's names:
+# the app palette reads the surface pair in their place, see _palette_view().
+_ROLE_ENUMS: dict[str, QPalette.ColorRole] = {
+    role_id: getattr(QPalette, qt) for role_id, qt in themes.ROLE_QT_NAMES.items() if role_id not in themes.SURFACE_ROLES
+}
 _BEVEL_ROLES = (QPalette.Light, QPalette.Midlight, QPalette.Mid, QPalette.Dark, QPalette.Shadow)
 _GROUPS = (QPalette.Active, QPalette.Inactive, QPalette.Disabled)
 
 
-def _build_dark_palette(base: QPalette) -> QPalette:
+def _palette_view(colors: dict[str, str], push_button: bool) -> dict[str, str]:
+    """`colors` as one of the two palettes sees it: that palette's own Button
+    pair under the names `button`/`button_text`, the other pair dropped."""
+    own = themes.PUSH_BUTTON_ROLES if push_button else themes.SURFACE_ROLES
+    view = {key: value for key, value in colors.items() if key not in (*themes.PUSH_BUTTON_ROLES, *themes.SURFACE_ROLES)}
+    for name, source in zip(themes.PUSH_BUTTON_ROLES, own, strict=True):
+        if source in colors:
+            view[name] = colors[source]
+    return view
+
+
+def _build_dark_palette(base: QPalette, colors: dict[str, str]) -> QPalette:
     """The pre-theme dark-mode recipe, the well-known Fusion-dark combination,
     built on a copy of `base` (Fusion's standard palette) rather than the old
     QPalette(), which copies whatever app palette is live. Identical for every
-    role and group whenever apply_theme()'s setStyle() has just reset it."""
-    colors = themes.PRESETS["dark"][1]
+    role and group whenever apply_theme()'s setStyle() has just reset it.
+    `colors` is the `dark` preset through _palette_view()."""
     palette = QPalette(base)
     for role_id, role in _ROLE_ENUMS.items():
         palette.setColor(role, QColor(colors[role_id]))
@@ -75,19 +95,21 @@ def _build_dark_palette(base: QPalette) -> QPalette:
     return palette
 
 
-def build_theme_palette(base: QPalette, preset_id: str, overrides: dict[str, str]) -> QPalette:
-    """`base` is Fusion's standard palette. An unknown preset id is treated as
+def build_theme_palette(base: QPalette, preset_id: str, overrides: dict[str, str], *, push_button: bool = False) -> QPalette:
+    """The app palette, or with `push_button` the QPushButton class palette:
+    one build, run on that palette's own Button pair, so the two cannot drift.
+    `base` is Fusion's standard palette. An unknown preset id is treated as
     themes.THEME_DEFAULT. See the plan-level rules in this module's
     apply_theme() docstring for what is derived."""
     if preset_id not in themes.PRESETS:
         preset_id = themes.THEME_DEFAULT
     legacy = preset_id in themes.LEGACY_PRESETS
-    overrides = {role_id: hex_str for role_id, hex_str in overrides.items() if role_id in _ROLE_ENUMS}
-    palette = _build_dark_palette(base) if preset_id == "dark" else QPalette(base)
+    preset = _palette_view(themes.PRESETS[preset_id][1], push_button)
+    overrides = {role_id: hex_str for role_id, hex_str in _palette_view(overrides, push_button).items() if role_id in _ROLE_ENUMS}
+    palette = _build_dark_palette(base, preset) if preset_id == "dark" else QPalette(base)
     if legacy and not overrides:
         return palette
 
-    preset = themes.PRESETS[preset_id][1]
     # Every group first, as the legacy recipe's group-less setColor does.
     for role_id, role in _ROLE_ENUMS.items():
         hex_str = overrides.get(role_id) or (None if legacy else preset[role_id])
@@ -126,22 +148,59 @@ def apply_theme(app: QApplication, preset_id: str, overrides: dict[str, str] | N
     Appearance settings tab -- safe to call repeatedly, setStyle("Fusion")
     is idempotent and _LIGHT_PALETTE is only ever captured once.
 
-    `light` with no overrides is _LIGHT_PALETTE itself and `dark` with none is
-    the legacy recipe. Anything else starts from Fusion's palette and sets
-    each role in every group. Disabled text, button text, window text and
-    highlight are then blended toward their background (highlighted text
-    takes Disabled text), for every non-legacy preset and for any role
-    overridden on a legacy one, whose other Disabled colours stay as they
-    were. Frame shades follow the button colour for every non-legacy preset
-    and for a button override."""
+    Two palettes are set on every call: the app palette, then a QPushButton
+    class palette. The `button`/`button_text` roles reach push buttons only.
+    Everything else Fusion paints from Button (tab pages and bars, combos,
+    tool buttons, headers, scrollbar handles, menu bar text) takes
+    `surface`/`surface_text` from the app palette, so an accent colour never
+    ends up behind window text. A preset that declares the two pairs equal
+    looks the same as with no class palette at all.
+
+    Each palette is built alike from its own Button pair. `light` with no
+    overrides is a copy of _LIGHT_PALETTE and `dark` with none is the legacy
+    recipe. Anything else starts from Fusion's palette and sets each role in
+    every group. Disabled text, button text, window text and highlight are
+    then blended toward their background (highlighted text takes Disabled
+    text), for every non-legacy preset and for any role overridden on a
+    legacy one, whose other Disabled colours stay as they were. Frame shades
+    follow that palette's button colour for every non-legacy preset and for
+    an override of it. So a `button` override alone leaves a legacy app
+    palette untouched, and a `surface` override alone the push-button one."""
     global _LIGHT_PALETTE
     app.setStyle("Fusion")
     if _LIGHT_PALETTE is None:
         _LIGHT_PALETTE = app.style().standardPalette()
-    if preset_id == "light" and not overrides:
-        app.setPalette(_LIGHT_PALETTE)
-        return
-    app.setPalette(build_theme_palette(_LIGHT_PALETTE, preset_id, overrides or {}))
+    overrides = overrides or {}
+    # Always both, app palette first: a different app palette clears the class one, an equal one leaves it stale.
+    app.setPalette(build_theme_palette(_LIGHT_PALETTE, preset_id, overrides))
+    app.setPalette(build_theme_palette(_LIGHT_PALETTE, preset_id, overrides, push_button=True), "QPushButton")
+
+
+def painted_tab_page(palette: QPalette) -> str:
+    """The colour the app style fills a QTabWidget page with under `palette`,
+    which Fusion derives from Button rather than using Window. Painted and
+    read back, so there is no port of the style's private formula."""
+    image = QImage(24, 24, QImage.Format_RGB32)
+    image.fill(palette.color(QPalette.Window))
+    option = QStyleOptionTabWidgetFrame()
+    option.rect = QRect(0, 0, 24, 24)
+    option.palette = palette
+    option.state = QStyle.State_Enabled
+    option.lineWidth = 1
+    painter = QPainter(image)
+    QApplication.style().drawPrimitive(QStyle.PE_FrameTabWidget, option, painter)
+    painter.end()
+    return QColor(image.pixel(12, 12)).name()
+
+
+def status_text_color(hex_str: str, *, on_tab_page: bool) -> str:
+    """`hex_str` shaded until it is readable under the live theme on what the
+    label sits on, a tab page or the window: 4.5:1, or 7:1 on a high-contrast
+    preset. Computed on demand, so call it again after a theme change."""
+    palette = QApplication.palette()
+    background = painted_tab_page(palette) if on_tab_page else palette.color(QPalette.Active, QPalette.Window).name()
+    floor = 7.0 if settings.get_theme() in themes.HIGH_CONTRAST_PRESETS else 4.5
+    return themes.legible(hex_str, background, floor)
 
 
 def apply_ui_font(app: QApplication, family: str, size: int | None) -> None:

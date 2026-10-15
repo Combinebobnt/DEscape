@@ -63,6 +63,7 @@ from descape import (
     particle_art,
     terrain_palette,
     unit_kind,
+    unit_rotation,
 )
 from descape.sld_decoder import LayerKind, SLDError, load_sld
 
@@ -695,6 +696,30 @@ def rotation_is_variant(unit_const: int) -> bool:
     consts forced false, in preference to the two hand-kept frozensets above
     (which stay, for their own other callers -- see their comments)."""
     return bool(graphic_map().get(unit_const, {}).get("rotation_is_variant", False))
+
+
+def rotation_facing_viewer(unit_const: int) -> float | None:
+    """The rotation that turns an ANGLE const's sprite down-left, toward the
+    viewer (GH #68), for the Units catalog's sprite thumbnails only; or None
+    for anything whose rotation is not a facing (VARIANT, INERT: trees,
+    walls, gates, cliffs; AGENTS.md's hard rules).
+
+    Found by searching angle_index() over the const's own frame grid for the
+    down-left stored frame, 3n/8, so the zero-point offset rule is reused,
+    not restated. That index is whole only for a multiple of 8 frames; the
+    other counts in use (2, 4, 6, 7, 9) take no offset at all, and their
+    down-left frame is the one pi selects (measured, TASK-022's signs). Placed
+    units, the hover ghost and preview_pixmap() never call this."""
+    if not unit_rotation.rotation_is_angle(unit_const):
+        return None
+    count = unit_rotation.angle_count_for(unit_const)
+    down_left = 3 * count / 8
+    if down_left == int(down_left):
+        for step in range(count):
+            rotation = step * 2 * math.pi / count
+            if angle_index(rotation, count) == down_left:
+                return rotation
+    return math.pi
 
 
 def cliff_consts() -> frozenset[int]:

@@ -120,6 +120,79 @@ def test_go_to_view_centres_on_the_clamped_tile() -> None:
         _close(window)
 
 
+# --- Set to Centre (GH #157) ------------------------------------------
+
+
+def _scrolled_off_centre(window) -> tuple[int, int]:
+    """Scrolls the editor to a map corner and returns the map's middle tile,
+    so a write of the viewport's centre cannot pass for the map's."""
+    mm = window.scenario.map_manager
+    middle = (mm.map_width // 2, mm.map_height // 2)
+    window.map_view.centerOn(window.map_view.sceneRect().topLeft())
+    assert window.map_view.viewport_centre_tile() != middle
+    return middle
+
+
+def test_set_to_centre_writes_the_maps_middle_tile_not_the_viewports() -> None:
+    window = _window()
+    try:
+        middle = _scrolled_off_centre(window)
+        assert middle == (60, 60), "the blank template is 120x120"
+        window.players_panel.select_player(2)
+        window.players_panel.centre_view_button.click()
+        assert window._player_view(2) == middle
+        assert window.players_panel.current_view() == middle
+        assert window._player_view(1) is None, "only the selected player is written"
+    finally:
+        _close(window)
+
+
+def test_set_to_centre_floors_each_axis_on_its_own() -> None:
+    """A 7x10 map's centre point is (3.5, 5.0): the tile holding it is (3, 5),
+    the same floor rule viewport_centre_tile() applies."""
+    from types import SimpleNamespace
+
+    from descape.viewer import ViewerWindow
+
+    written = []
+    stub = SimpleNamespace(
+        scenario=SimpleNamespace(map_manager=SimpleNamespace(map_width=7, map_height=10)),
+        _write_player_view=lambda *args: written.append(args),
+    )
+    ViewerWindow.centre_player_view(stub, 3)
+    assert written == [(3, 3, 5, "Centre P3 Point of View")]
+
+    stub.scenario = None
+    ViewerWindow.centre_player_view(stub, 3)
+    assert len(written) == 1, "no map open writes nothing"
+
+
+def test_set_to_centre_is_one_undo_step() -> None:
+    window = _window()
+    try:
+        middle = _scrolled_off_centre(window)
+        window.centre_player_view(1)
+        assert window._player_view(1) == middle
+        window.undo()
+        assert window._player_view(1) is None, "one undo must restore BOTH coordinates"
+        assert not window.edit_history.can_undo, "Set to Centre pushed more than one record"
+        window.redo()
+        assert window._player_view(1) == middle
+    finally:
+        _close(window)
+
+
+def test_set_to_centre_puts_the_marker_on_the_middle_tile() -> None:
+    window = _window()
+    try:
+        middle = _scrolled_off_centre(window)
+        assert _marker_tiles(window) == {}
+        window.centre_player_view(1)
+        assert _marker_tiles(window) == {1: middle}
+    finally:
+        _close(window)
+
+
 # --- the markers ------------------------------------------------------
 
 

@@ -16,6 +16,12 @@ holding a NUL). See _game_style_bytes() for the measurement.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+# The real 1.58 "Blank" export the shipped template used to be, byte for byte.
+# Source of tools/gen_blank_template.py and donor of the three 1.58 fixtures.
+V158_DONOR_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "blank_120x120_v158.aoe2scenario"
+
 
 class GenerationVerificationError(Exception):
     """Raised instead of leaving a fixture file on disk that failed its

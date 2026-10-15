@@ -2,13 +2,15 @@
 from write_targets()/verify_player_block() so a personality-only failure
 never greys out the rest of the Players tab.
 
-Default tier runs against the 1.58 blank template (empty Files library);
-the corpus tests cover real libraries and the 1.37/1.54 refusals."""
+Default tier runs against both blank donors, the shipped 1.59 template and
+the 1.58 export it is generated from (empty Files library in each); the
+corpus tests cover real libraries and the 1.37/1.54 refusals."""
 
 from __future__ import annotations
 
 import struct
 from itertools import pairwise
+from pathlib import Path
 
 import pytest
 
@@ -16,9 +18,14 @@ from descape import options_model as om
 from descape import player_fields as pf
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
+_V158_DONOR_PATH = Path(__file__).resolve().parent / "fixtures" / "blank_120x120_v158.aoe2scenario"
 
-def _loaded(path=BLANK_TEMPLATE_PATH):
-    return load_map_and_units(path)
+
+@pytest.fixture(params=[BLANK_TEMPLATE_PATH, _V158_DONOR_PATH], ids=["template-1.59", "donor-1.58"])
+def _loaded(request):
+    """A fresh load per call, on each blank donor in turn: the shipped 1.59
+    template and the real 1.58 export it is generated from."""
+    return lambda: load_map_and_units(request.param)
 
 
 def _corrupt(loaded, offset: int) -> None:
@@ -30,7 +37,7 @@ def _corrupt(loaded, offset: int) -> None:
 # -- PlayerDataTwo locator ---------------------------------------------------
 
 
-def test_personality_layout_on_a_clean_load() -> None:
+def test_personality_layout_on_a_clean_load(_loaded) -> None:
     loaded = _loaded()
     layout = pf.personality_layout(loaded)
     assert layout is not None
@@ -43,7 +50,7 @@ def test_personality_layout_on_a_clean_load() -> None:
     assert end < loaded.player_data_two_section_end
 
 
-def test_ai_names_spans_hold_the_parsed_names() -> None:
+def test_ai_names_spans_hold_the_parsed_names(_loaded) -> None:
     loaded = _loaded()
     layout = pf.personality_layout(loaded)
     names = loaded._scenario.sections["PlayerDataTwo"].retriever_map["ai_names"].data
@@ -52,7 +59,7 @@ def test_ai_names_spans_hold_the_parsed_names() -> None:
         assert body[span.offset : span.offset + span.length] == pf.encode_name_str16(value)
 
 
-def test_ai_type_target_is_p1_to_p8_only() -> None:
+def test_ai_type_target_is_p1_to_p8_only(_loaded) -> None:
     layout = pf.personality_layout(_loaded())
     assert layout.ai_type_target(1).offset == layout.ai_type.offset
     assert layout.ai_type_target(8) == pf.PlayerWriteTarget(layout.ai_type.offset + 7, 1, "u8")
@@ -61,34 +68,34 @@ def test_ai_type_target_is_p1_to_p8_only() -> None:
             layout.ai_type_target(bad)
 
 
-def test_corrupting_an_ai_names_length_prefix_fails_the_gate() -> None:
+def test_corrupting_an_ai_names_length_prefix_fails_the_gate(_loaded) -> None:
     loaded = _loaded()
     layout = pf.personality_layout(loaded)
     _corrupt(loaded, layout.ai_names[2].offset)
     assert not pf.verify_personality_block(loaded)
 
 
-def test_corrupting_an_ai_files_text_prefix_fails_the_gate() -> None:
+def test_corrupting_an_ai_files_text_prefix_fails_the_gate(_loaded) -> None:
     loaded = _loaded()
     layout = pf.personality_layout(loaded)
     _corrupt(loaded, layout.ai_files[4].offset + 8)  # past the 8-byte `unknown`
     assert not pf.verify_personality_block(loaded)
 
 
-def test_corrupting_ai_type_fails_the_gate() -> None:
+def test_corrupting_ai_type_fails_the_gate(_loaded) -> None:
     loaded = _loaded()
     layout = pf.personality_layout(loaded)
     _corrupt(loaded, layout.ai_type.offset + 8)  # GAIA's slot
     assert not pf.verify_personality_block(loaded)
 
 
-def test_a_shifted_anchor_fails_the_gate() -> None:
+def test_a_shifted_anchor_fails_the_gate(_loaded) -> None:
     loaded = _loaded()
     loaded.player_data_two_section_end += 1
     assert not pf.verify_personality_block(loaded)
 
 
-def test_a_personality_failure_leaves_the_players_gate_alone() -> None:
+def test_a_personality_failure_leaves_the_players_gate_alone(_loaded) -> None:
     loaded = _loaded()
     layout = pf.personality_layout(loaded)
     _corrupt(loaded, layout.ai_names[0].offset)
@@ -101,7 +108,7 @@ def test_a_personality_failure_leaves_the_players_gate_alone() -> None:
 # -- Files library locator ---------------------------------------------------
 
 
-def test_empty_library_on_the_blank_template() -> None:
+def test_empty_library_on_the_blank_template(_loaded) -> None:
     loaded = _loaded()
     library = pf.ai_library_layout(loaded)
     assert library is not None
@@ -111,7 +118,7 @@ def test_empty_library_on_the_blank_template() -> None:
     assert loaded.files_section_end == len(loaded.decompressed_body)
 
 
-def test_corrupting_ai_files_present_fails_the_library_gate() -> None:
+def test_corrupting_ai_files_present_fails_the_library_gate(_loaded) -> None:
     loaded = _loaded()
     library = pf.ai_library_layout(loaded)
     _corrupt(loaded, library.ai_files_present.offset)
@@ -119,14 +126,14 @@ def test_corrupting_ai_files_present_fails_the_library_gate() -> None:
     assert pf.verify_personality_block(loaded)
 
 
-def test_a_shifted_files_anchor_fails_the_library_gate() -> None:
+def test_a_shifted_files_anchor_fails_the_library_gate(_loaded) -> None:
     loaded = _loaded()
     pf.ai_library_layout(loaded)
     loaded.files_section_start += 1
     assert not pf.verify_ai_library_block(loaded)
 
 
-def test_gates_pass_on_a_clean_load() -> None:
+def test_gates_pass_on_a_clean_load(_loaded) -> None:
     loaded = _loaded()
     assert om.personality_write_supported(loaded)
     assert om.personality_custom_supported(loaded)

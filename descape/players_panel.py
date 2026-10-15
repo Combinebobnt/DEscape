@@ -60,6 +60,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -221,6 +222,11 @@ class PlayersPanel(QWidget):
         "Set this player's starting camera to the tile at the centre of the "
         "map view. Both coordinates change together, as one undo step."
     )
+    _CENTRE_VIEW_LABEL = "Set to Centre"
+    _CENTRE_VIEW_TOOLTIP = (
+        "Set this player's starting camera to the middle of the map ({x}, {y}). "
+        "Both coordinates change together, as one undo step."
+    )
     _GO_TO_VIEW_LABEL = "Go to View"
     _GO_TO_VIEW_TOOLTIP = (
         "Scroll the map to this player's starting camera. Disabled while the "
@@ -249,6 +255,7 @@ class PlayersPanel(QWidget):
         on_go_to_view=None,
         on_reset_view=None,
         on_player_selected=None,
+        on_centre_view=None,
     ):
         super().__init__()
         # No-op defaults so the panel stays constructible on its own, the
@@ -256,11 +263,12 @@ class PlayersPanel(QWidget):
         self._on_player_field = on_player_field or (lambda *args: None)
         self._on_player_count = on_player_count or (lambda *args: None)
         self._on_disables_requested = on_disables_requested or (lambda *args: None)
-        # GH #22's three Point of View buttons and the selection notice the
-        # camera markers' emphasis follows. All four stay model-free: the
-        # panel reports the gesture and the player it was made for, and the
-        # window does every read and write.
+        # GH #22's four Point of View buttons (GH #157 added Set to Centre) and
+        # the selection notice the camera markers' emphasis follows. All five
+        # stay model-free: the panel reports the gesture and the player it was
+        # made for, and the window does every read and write.
         self._on_set_view = on_set_view or (lambda *args: None)
+        self._on_centre_view = on_centre_view or (lambda *args: None)
         self._on_go_to_view = on_go_to_view or (lambda *args: None)
         self._on_reset_view = on_reset_view or (lambda *args: None)
         self._on_player_selected = on_player_selected or (lambda *args: None)
@@ -347,6 +355,7 @@ class PlayersPanel(QWidget):
         # Rebuilt with the form (they live inside the Point of View group),
         # so the old C++ objects go with the old host -- see _build_groups().
         self.set_view_button = None
+        self.centre_view_button = None
         self.go_to_view_button = None
         self.reset_view_button = None
 
@@ -601,9 +610,13 @@ class PlayersPanel(QWidget):
         self.host_layout.addStretch(1)
 
     def _build_point_of_view_buttons(self, form: QFormLayout | None) -> None:
-        """GH #22's Set / Go to / Reset View row, appended to the Point of
-        View group when the file has one -- so a scenario version that never
-        stored the field gets no buttons along with no spinboxes.
+        """GH #22's Set View / Set to Centre / Go to View / Reset View
+        buttons, appended to the Point of View group when the file has one,
+        so a scenario version that never stored the field gets no buttons
+        along with no spinboxes.
+
+        A 2x2 grid, the two that write a position over the other two: four
+        in one row need more than MIN_USEFUL_WIDTH (GH #157).
 
         Rebuilt on every player switch with the rest of the form, which is
         what keeps the enabled states in step with the newly shown player
@@ -611,7 +624,7 @@ class PlayersPanel(QWidget):
         if form is None:
             return
         row = QWidget()
-        row_layout = QHBoxLayout(row)
+        row_layout = QGridLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         editable = POV_X_FIELD in self._editable_fields
         self.set_view_button = QPushButton(self._SET_VIEW_LABEL)
@@ -620,6 +633,16 @@ class PlayersPanel(QWidget):
         )
         self.set_view_button.setEnabled(editable)
         self.set_view_button.clicked.connect(lambda *_: self._on_set_view(self._player_id))
+        self.centre_view_button = QPushButton(self._CENTRE_VIEW_LABEL)
+        map_manager = self._loaded.map_manager
+        centre_tooltip = self._CENTRE_VIEW_TOOLTIP.format(
+            x=map_manager.map_width // 2, y=map_manager.map_height // 2
+        )
+        self.centre_view_button.setToolTip(
+            centre_tooltip if editable else self._read_only_reasons.get(POV_X_FIELD, "")
+        )
+        self.centre_view_button.setEnabled(editable)
+        self.centre_view_button.clicked.connect(lambda *_: self._on_centre_view(self._player_id))
         self.go_to_view_button = QPushButton(self._GO_TO_VIEW_LABEL)
         self.go_to_view_button.setToolTip(self._GO_TO_VIEW_TOOLTIP)
         # Read-only files still navigate: Go to View changes nothing on disk.
@@ -631,8 +654,10 @@ class PlayersPanel(QWidget):
         )
         self.reset_view_button.setEnabled(editable)
         self.reset_view_button.clicked.connect(lambda *_: self._on_reset_view(self._player_id))
-        for button in (self.set_view_button, self.go_to_view_button, self.reset_view_button):
-            row_layout.addWidget(button)
+        row_layout.addWidget(self.set_view_button, 0, 0)
+        row_layout.addWidget(self.centre_view_button, 0, 1)
+        row_layout.addWidget(self.go_to_view_button, 1, 0)
+        row_layout.addWidget(self.reset_view_button, 1, 1)
         form.addRow(row)
 
     def current_view(self) -> tuple[int, int] | None:

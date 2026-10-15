@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Regenerates descape/cliff_connectivity.json: the Track B Stage 2 blocking
-measurement from the 2026-09-02 cliffs plan -- a `neighbour-direction-set ->
-(suffix, rotation candidates)` table for cliffs, measured from real scenario
-placements (this is corpus geometry, not .dat content, so it belongs here
-rather than in gen_unit_render_data.py).
+"""Regenerates descape/cliff_connectivity.json: which piece a cliff takes
+from its neighbours, measured from real scenario placements (this is corpus
+geometry, not .dat content, so it belongs here rather than in
+gen_unit_render_data.py).
 
 **Install-free, corpus-scan tool** in the scan_wall_rotation.py mould:
 `--scenario-dir` defaults to `examples/` and may be repeated. The shipped
@@ -32,56 +31,48 @@ Limestone/Terrace at N in {0, 1, 3, 6, 9, 13}, so pooling rotation data
 across families is safe. Only the suffix (which of the family's 9 unit_consts
 was placed) varies the footprint span; rotation alone selects the frame.
 
-**Measured purity is well below the plan's informal ~80% estimate, and
-that's a real finding, not a bug in this tool.** Two experiments (see the
-2026-09-05 Track B Stage 2 execution notes in the plan) isolated why:
+**Piece size is the facing, and that is what the shape projection measures**
+(GH #44 round 2). A piece's leg on an arm is tall (front, the rock face
+toward the camera) when its footprint is 3 tiles across that arm, else thin
+(back, the low ridge). Both ends of a join agree on that, and a run keeps its
+face on one side through every corner, so a run has two dressings and each
+node's piece follows from its arms and that side. `shapes` counts (cardinal
+arm set of 1-3 directions, suffix) with every frame seen there; raw counts,
+the resolver applies its own floor. Diagonal neighbours are ignored for the
+key: the two 3x3 flanks of a 3x3 corner touch each other diagonally, so an
+exact dirset key never reaches the all-3x3 corners. `shape_metadata` reports
+how well the model fits the same scan (`build_shape_metadata()`): leg-type
+agreement over edge ends, one-sided corners, and how many one- and two-arm
+nodes sit on their class's resolved piece and frame.
 
-1. For any given dirset, TWO different suffixes are both common (e.g. the
-   plain vertical-run dirset splits ~55%/45% between the 3x3 "01" piece and
-   the 1x3 "02" piece) -- which SIZE of piece to use is a real stylistic
-   choice human map-makers make, not something neighbour geometry
-   determines. This, not the rotation/face axis, is the dominant source of
-   unpredictability.
-2. Within one suffix, the residual is genuinely the "face" pair the plan
-   named: restricted to strict run-interior nodes (dirset exactly {N,S} or
-   {E,W}, single suffix throughout), runs are constant-rotation ~34% of the
-   time and cleanly period-2 alternating ~36% of the time -- ~70% combined
-   "the observed rotation is one of exactly two acceptable values," which
-   IS close to the plan's estimate once suffix choice is factored out.
+**The per-dirset majority table (`entries`, `metadata`) is the older
+measurement, and its low purity is the same fact seen from the other side.**
+For any given dirset TWO suffixes are both common (the plain vertical-run
+dirset splits ~55%/45% between the 3x3 "01" piece and the 1x3 "02" piece):
+they are the front-facing and the back-facing dressing of one line, which a
+neighbour set alone cannot tell apart. That is why purity is 61% within the
+pinned dirsets, where it was first read as a stylistic size choice. Within
+one suffix a straight's two frames are art twins, in no fixed order along a
+run. The table picks the single most-common suffix per dirset and keeps its
+top-2 rotations; coverage is reported per entry (`suffix_fraction`,
+`rotation_fraction`). Nothing is placed from it any more.
 
-So the table below picks the single most-common suffix per dirset (a
-canonicalising choice a placement tool is allowed to make, unlike a corpus
-classifier) and keeps the top-2 rotations as the value -- "top-2" because a
-face is a real either-or, not noise to average away. Coverage is reported
-per entry (`suffix_fraction`, `rotation_fraction`) so a consumer can see how
-confident any given lookup is instead of trusting a single blended number.
+**Each entry also carries `rotations_by_suffix`**: the top-level rotations
+are the MAJORITY suffix's, and rotation is strongly conditioned on suffix,
+because a 1x3 footprint holds thin shapes and a 3x3 holds big ones. A
+`{N, S}` run at suffix 1 uses rotation 1/2 (192px of decoded ink); the same
+dirset at suffix 2 uses 8/7 (90px). A pair below `--min-suffix-n` is simply
+absent.
 
-**Each entry also carries `rotations_by_suffix`, and a consumer that pins
-one piece size must read that, not the top-level `rotations`.** Added
-2026-09-05 for Track B Stage 2's drag, which pins one suffix per run: the
-top-level rotations are the MAJORITY suffix's, and rotation turns out to be
-strongly conditioned on suffix, because a 1x3 footprint holds thin shapes
-and a 3x3 holds big ones. A `{N, S}` run at suffix 1 uses rotation 1/2
-(192px of decoded ink); the same dirset at suffix 2 uses 8/7 (90px). Mixing
-them drew a run as a thin ridge between tall end caps. Purely additive --
-a different projection of the same `scan()` output, so every field above
-and every metadata figure is unchanged. Splitting by suffix makes the
-buckets sparser, so a pair below `--min-suffix-n` is simply absent and the
-consumer must fall back to its own manual value rather than borrow the
-majority suffix's rotations.
+**Offset projections.** `offsets` is where a neighbour's footprint sits
+relative to this node's (low corner minus low corner), over every cardinal
+edge between nodes whose dirset is a drag shape (cap, straight, L) or a T,
+keyed on realized span rather than suffix, with a span-only backoff
+`offsets_by_span` over every cardinal edge. `projection_metadata` reports
+the offset tables' modal share.
 
-**Transition and offset projections** (added 2026-10-09 for the chain drag's
-transition-conditioned walk). Which piece size a corner takes depends on the
-size of the straight it meets, so per-node majorities compose into runs the
-corpus never contains. `transitions` counts (dirset, suffix) -d-> (dirset,
-suffix) over every cardinal edge between nodes whose dirset is a drag shape
-(cap, straight, L) or a T, and `rotation_transitions` the same with
-rotations; both are raw counts, the resolver applies its own floor.
-`offsets` is where a neighbour's footprint sits relative to this node's
-(low corner minus low corner), keyed on realized span rather than suffix,
-with a span-only backoff `offsets_by_span` over every cardinal edge.
-`projection_metadata` reports the offset tables' modal share. All of it is
-the same `scan()` output as above, so the original fields are unchanged.
+Every projection reads the one `scan()`, so no field can disagree with
+another on which nodes or neighbours exist.
 """
 
 from __future__ import annotations
@@ -96,7 +87,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from descape import cliff_catalog, unit_sprites
+from descape.cliff_connectivity import NOMINAL_SPAN, SHAPE_FLOOR, ShapeTables, edge_tall, leg_tall
 from descape.cliff_connectivity import adjacency_dir as _adjacency_dir
+from descape.cliff_connectivity import offset as _offset
 from descape.render import NON_BUILDING_SPAN, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import tile_span
@@ -126,7 +119,7 @@ def _suffix_map() -> dict[int, int | None]:
 
 _CARDINALS: tuple[Direction, ...] = ((0, -1), (0, 1), (-1, 0), (1, 0))
 
-# The dirsets the transition and offset projections keep: every cardinal-only
+# The dirsets the full-key offset projection keeps: every cardinal-only
 # neighbour set of 1-3 directions. Sizes 1 and 2 are the 10 drag shapes (4
 # caps, 2 straights, 4 L corners); size 3 is the T rows a drag against an
 # existing cliff produces.
@@ -160,6 +153,10 @@ class ScannedFile:
 
     def dirset(self, i: int) -> frozenset[Direction]:
         return frozenset(d for _, d in self.adjacency[i])
+
+    def arms(self, i: int) -> frozenset[Direction]:
+        """The cardinal half of dirset(): the shape projection's key."""
+        return frozenset(d for _, d in self.adjacency[i] if d in _CARDINALS)
 
 
 def scan(scenario_dirs: list[Path]) -> list[ScannedFile]:
@@ -239,33 +236,6 @@ def _drag_pairs(files: list[ScannedFile]):
                     yield f, dirsets, i, d, j
 
 
-def build_transitions(files: list[ScannedFile]) -> tuple[list[dict], list[dict]]:
-    """`transitions` and `rotation_transitions`: raw counts of
-    (dirset_i, suffix_i[, rotation_i]) -d-> (dirset_j, suffix_j[, rotation_j])
-    over every cardinal edge between drag/T nodes. No count floor here: the
-    resolver applies its own, and a floor at build time would turn rare but
-    real pairs into zeros."""
-    by_suffix: Counter = Counter()
-    by_rotation: Counter = Counter()
-    for f, dirsets, i, d, j in _drag_pairs(files):
-        a, b = f.nodes[i], f.nodes[j]
-        if a.suffix is None or b.suffix is None:
-            continue
-        ka, kb = tuple(sorted(dirsets[i])), tuple(sorted(dirsets[j]))
-        by_suffix[(ka, a.suffix, d, kb, b.suffix)] += 1
-        by_rotation[(ka, a.suffix, a.rotation, d, kb, b.suffix, b.rotation)] += 1
-
-    transitions = [
-        {"a": [[list(x) for x in ka], sa], "d": list(d), "b": [[list(x) for x in kb], sb], "n": n}
-        for (ka, sa, d, kb, sb), n in sorted(by_suffix.items())
-    ]
-    rotation_transitions = [
-        {"a": [[list(x) for x in ka], sa, ra], "d": list(d), "b": [[list(x) for x in kb], sb, rb], "n": n}
-        for (ka, sa, ra, d, kb, sb, rb), n in sorted(by_rotation.items())
-    ]
-    return transitions, rotation_transitions
-
-
 def _offset_records(counter: dict, full_key: bool) -> list[dict]:
     out = []
     for key, offsets in sorted(counter.items()):
@@ -317,30 +287,146 @@ def build_offsets(files: list[ScannedFile]) -> tuple[list[dict], list[dict], dic
     return _offset_records(full, True), _offset_records(span_only, False), stats
 
 
+def build_shapes(files: list[ScannedFile], min_suffix_n: int = 10) -> list[dict]:
+    """`shapes`: one row per (cardinal arm set of 1-3 directions, suffix) at
+    n >= `min_suffix_n`, with every frame seen there, commonest first. Raw
+    counts: the resolver applies its own floor."""
+    counts: dict[tuple, Counter[int]] = defaultdict(Counter)
+    for f in files:
+        for i, node in enumerate(f.nodes):
+            arms = f.arms(i)
+            if node.suffix is not None and 1 <= len(arms) <= 3:
+                counts[(tuple(sorted(arms)), node.suffix)][node.rotation] += 1
+    return [
+        {
+            "arms": [list(d) for d in arms],
+            "suffix": suffix,
+            "n": sum(frames.values()),
+            "frames": [[frame, n] for frame, n in sorted(frames.items(), key=lambda kv: (-kv[1], kv[0]))],
+        }
+        for (arms, suffix), frames in sorted(counts.items())
+        if sum(frames.values()) >= min_suffix_n
+    ]
+
+
+def one_stroke_classes() -> list[dict[Direction, bool]]:
+    """The 20 typed arm sets one drag can ask for: 8 end caps, 4 straights
+    and each of the 4 corners dressed for either side."""
+    classes: list[dict[Direction, bool]] = []
+    for a in _CARDINALS:
+        classes += [{a: True}, {a: False}]
+    for i, a in enumerate(_CARDINALS):
+        for b in _CARDINALS[i + 1 :]:
+            for side in (1, -1):
+                # In through `a` (travelling away from it), out through `b`.
+                classes.append({a: edge_tall((-a[0], -a[1]), side), b: edge_tall(b, side)})
+    return classes
+
+
+def build_shape_metadata(files: list[ScannedFile], shapes: list[dict]) -> dict:
+    """The facing model's own fit, over the same scan. `leg_agreement`: both
+    ends of a cardinal join have the same leg type. `corner_one_sided`: a
+    two-arm corner's own legs are one of the two dressings a one-sided run
+    gives it. `on_table`: a 1-2 arm node sits on its class's resolved piece
+    (twin suffixes share a footprint and count together) at one of its
+    frames. `classes`: the (class, frame) cells of the resolved table, and how
+    many hold SHAPE_FLOOR nodes or more."""
+    tables = ShapeTables({"shapes": shapes})
+    everything = range(1, 10)
+    valid = one_stroke_classes()
+    ends = agree = 0
+    for f in files:
+        for i, row in enumerate(f.adjacency):
+            for j, d in row:
+                a, b = f.nodes[i].suffix, f.nodes[j].suffix
+                if d in _CARDINALS and a is not None and b is not None:
+                    ends += 1
+                    agree += leg_tall(a, d) == leg_tall(b, (-d[0], -d[1]))
+    corners = one_sided = drag_nodes = on_table = 0
+    for f in files:
+        for i, node in enumerate(f.nodes):
+            arms = f.arms(i)
+            if node.suffix is None or not 1 <= len(arms) <= 2:
+                continue
+            drag_nodes += 1
+            typed = {d: leg_tall(node.suffix, d) for d in arms}
+            if len(arms) == 2 and sum(d[0] for d in arms) != 0:
+                corners += 1
+                one_sided += typed in valid
+            found = tables.resolve(typed, allowed_suffixes=everything, frame_limit=24) if typed in valid else None
+            if found is not None:
+                on_table += NOMINAL_SPAN[node.suffix] == NOMINAL_SPAN[found[0]] and node.rotation in found[1]
+    row_frames = {(frozenset(tuple(d) for d in r["arms"]), r["suffix"]): dict(r["frames"]) for r in shapes}
+    cells = []
+    for typed in valid:
+        found = tables.resolve(typed, allowed_suffixes=everything, frame_limit=24)
+        if found is not None:
+            cells += [row_frames[(frozenset(typed), found[0])][frame] for frame in found[1]]
+
+    def share(part: int, whole: int) -> float:
+        return round(part / whole, 4) if whole else 0.0
+
+    return {
+        "shape_floor": SHAPE_FLOOR,
+        "edge_ends": ends,
+        "edge_ends_agreeing": agree,
+        "leg_agreement": share(agree, ends),
+        "corners": corners,
+        "corners_one_sided": one_sided,
+        "corner_one_sided": share(one_sided, corners),
+        "drag_nodes": drag_nodes,
+        "drag_nodes_on_table": on_table,
+        "on_table": share(on_table, drag_nodes),
+        "classes": len(cells),
+        "classes_at_floor": sum(1 for n in cells if n >= SHAPE_FLOOR),
+        "smallest_class_n": min(cells, default=0),
+    }
+
+
+def all_tall_corner_offsets(files: list[ScannedFile], tables) -> tuple[int, int]:
+    """(hits, edge ends) over every cardinal edge of an all-3x3 corner (s1 at
+    frame 3 on {N, E} or frame 15 on {S, W}), seen from both ends: whether
+    `cliff_connectivity.offset()` over `tables` lays that neighbour where the
+    file has it. Keyed on cardinal arms, as the chain drag asks."""
+    corners = {(frozenset({(0, -1), (1, 0)}), 3), (frozenset({(0, 1), (-1, 0)}), 15)}
+    hits = ends = 0
+    for f in files:
+        for i, node in enumerate(f.nodes):
+            if node.suffix != 1 or (f.arms(i), node.rotation) not in corners:
+                continue
+            for j, d in f.adjacency[i]:
+                if d not in _CARDINALS:
+                    continue
+                other = f.nodes[j]
+                real = (other.bounds[0] - node.bounds[0], other.bounds[2] - node.bounds[2])
+                back = (-d[0], -d[1])
+                ends += 2
+                hits += _offset(f.arms(i), node.span, d, f.arms(j), other.span, tables=tables) == real
+                hits += _offset(f.arms(j), other.span, back, f.arms(i), node.span, tables=tables) == (-real[0], -real[1])
+    return hits, ends
+
+
 def build_document(files: list[ScannedFile], min_n: int = 30, min_suffix_n: int = 10) -> dict:
     """The whole JSON document, as main() writes it and the drift test
     compares it."""
     entries, metadata = build_table(dirset_counts(files), min_n, min_suffix_n)
-    transitions, rotation_transitions = build_transitions(files)
     offsets, offsets_by_span, offset_stats = build_offsets(files)
+    shapes = build_shapes(files, min_suffix_n)
     return {
         "_comment": "Cliff neighbour-direction-set -> (suffix, rotation candidates) -- see tools/gen_cliff_connectivity.py",
         "metadata": metadata,
         "entries": entries,
-        "projection_metadata": {
-            "transition_pairs": sum(t["n"] for t in transitions),
-            **offset_stats,
-        },
-        "transitions": transitions,
-        "rotation_transitions": rotation_transitions,
+        "projection_metadata": offset_stats,
+        "shape_metadata": build_shape_metadata(files, shapes),
         "offsets": offsets,
         "offsets_by_span": offsets_by_span,
+        "shapes": shapes,
     }
 
 
 def dump_document(doc: dict) -> str:
-    """indent=2 like before for the original fields; the new record lists
-    hold one record per line, which keeps the file a few hundred KB."""
+    """indent=2 for `entries` and the metadata blocks; the record lists hold
+    one record per line, which keeps the file small."""
     parts = []
     for key, value in doc.items():
         if isinstance(value, list) and key != "entries":
@@ -459,12 +545,15 @@ def main() -> None:
         f"({metadata['purity_over_all_records']:.1%} of all records)"
     )
     print(
-        f"Transitions: {len(doc['transitions'])} keys over {proj['transition_pairs']} drag/T edge ends, "
-        f"{len(doc['rotation_transitions'])} with rotations"
-    )
-    print(
         f"Offset modal share: {proj['offset_modal_share']:.1%} by (dirset, span) over {proj['offset_pairs']} pairs, "
         f"{proj['offset_by_span_modal_share']:.1%} by span only over {proj['offset_by_span_pairs']}"
+    )
+    shape = doc["shape_metadata"]
+    print(
+        f"Shapes: {len(doc['shapes'])} rows; leg agreement {shape['leg_agreement']:.1%} over {shape['edge_ends']} "
+        f"edge ends, one-sided corners {shape['corner_one_sided']:.1%} of {shape['corners']}, on the table "
+        f"{shape['on_table']:.1%} of {shape['drag_nodes']} 1-2 arm nodes, {shape['classes_at_floor']}/"
+        f"{shape['classes']} classes at n >= {shape['shape_floor']} (smallest {shape['smallest_class_n']})"
     )
     print(f"Wrote {args.output}")
 

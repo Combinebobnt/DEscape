@@ -6,9 +6,11 @@ Why it has to be generated rather than copied: every file this repo ships has
 zero triggers, and zero-trigger files are exactly the ones that trivially pass
 a byte-identity check, so none of them can exercise the phase 4b write path.
 Copying a real examples/ scenario in would raise a licensing question this
-repo has not answered; deriving one from descape/templates/blank_120x120.
-aoe2scenario, which is already shipped, inherits whatever answer shipping the
-donor already made.
+repo has not answered; deriving one from the 1.58 donor inherits whatever
+answer shipping it already made. That donor is
+tests/fixtures/blank_120x120_v158.aoe2scenario (tools/_fixture_bytes.py's
+V158_DONOR_PATH): the real 1.58 export the shipped template is generated
+from, kept so this fixture stays a 1.58 file.
 
 Deliberately serializes the Triggers section through AoE2ScenarioParser's own
 retrievers, never through descape.trigger_model. The tests this fixture feeds
@@ -41,10 +43,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _fixture_bytes import GenerationVerificationError, _game_style_bytes
+from _fixture_bytes import V158_DONOR_PATH, GenerationVerificationError, _game_style_bytes
 
 from descape.scenario_io import (
-    BLANK_TEMPLATE_PATH,
     LoadedScenario,
     is_workshop_subscribed,
     load_map_and_units,
@@ -150,10 +151,10 @@ def _build_triggers(loaded: LoadedScenario) -> None:
     """Populates the donor's (empty) TriggerManager in place."""
     manager = parse_triggers(loaded)
     if manager is None:
-        raise GenerationVerificationError(f"{BLANK_TEMPLATE_PATH}: donor's Triggers section did not parse")
+        raise GenerationVerificationError(f"{loaded.path}: donor's Triggers section did not parse")
     if len(manager.triggers) != 0:
         raise GenerationVerificationError(
-            f"{BLANK_TEMPLATE_PATH}: donor already has {len(manager.triggers)} triggers, expected 0"
+            f"{loaded.path}: donor already has {len(manager.triggers)} triggers, expected 0"
         )
 
     setup = manager.add_trigger(
@@ -244,7 +245,7 @@ def _build_units(loaded: LoadedScenario) -> None:
     manager = loaded.unit_manager
     for player in range(9):
         if manager.units[player]:
-            raise GenerationVerificationError(f"{BLANK_TEMPLATE_PATH}: donor already has units on player {player}")
+            raise GenerationVerificationError(f"{loaded.path}: donor already has units on player {player}")
     for const, (x, y), ref in (
         (_UNIT_ARCHER, ARCHER_A_POS, REF_ARCHER_A),
         (_UNIT_ARCHER, ARCHER_B_POS, REF_ARCHER_B),
@@ -262,7 +263,7 @@ def _patch_counter(buffer: bytearray, end_offset: int, value: int) -> None:
     struct.pack_into("<I", buffer, end_offset - 4, value)
 
 
-def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
+def build_fixture_bytes(donor_path: Path = V158_DONOR_PATH) -> bytes:
     """The whole fixture as a full .aoe2scenario byte string.
 
     Splices freshly-serialized players_units and Triggers bytes into the
@@ -405,7 +406,7 @@ def _build_find_units(loaded: LoadedScenario) -> None:
 def _build_find_triggers(loaded: LoadedScenario) -> None:
     manager = parse_triggers(loaded)
     if manager is None or manager.triggers:
-        raise GenerationVerificationError(f"{BLANK_TEMPLATE_PATH}: donor's Triggers section is not an empty parse")
+        raise GenerationVerificationError(f"{loaded.path}: donor's Triggers section is not an empty parse")
     manager.add_variable(FIND_VARIABLE_NAME, VARIABLE_ID)
 
     messages = manager.add_trigger(FIND_TAGGED_NAME, description=FIND_DESCRIPTION)
@@ -460,7 +461,7 @@ def _build_find_triggers(loaded: LoadedScenario) -> None:
     manager.commit()
 
 
-def build_find_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
+def build_find_fixture_bytes(donor_path: Path = V158_DONOR_PATH) -> bytes:
     loaded = load_map_and_units(donor_path, fast_units=False)
     _build_find_units(loaded)
     _build_find_triggers(loaded)

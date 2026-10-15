@@ -5,9 +5,11 @@ only fixture with a non-trivial Units section.
 Why it has to be generated rather than copied: every file this repo ships is
 either unit-free or (descape/templates/blank_120x120.aoe2scenario itself) has
 zero units, and a zero-unit Units section trivially passes every write-path
-byte-identity check. Deriving one from that same donor, which is already
-shipped, inherits whatever licensing answer shipping the donor already made --
-the same reasoning tools/gen_trigger_fixture.py records for the trigger
+byte-identity check. The donor is tests/fixtures/blank_120x120_v158.aoe2scenario
+(tools/_fixture_bytes.py's V158_DONOR_PATH): the real 1.58 export the shipped
+template is generated from, kept so this fixture stays a 1.58 file. Deriving
+one from it inherits whatever licensing answer shipping that export already
+made, the same reasoning tools/gen_trigger_fixture.py records for the trigger
 fixture.
 
 Deliberately serializes the Units section through AoE2ScenarioParser's own
@@ -42,10 +44,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _fixture_bytes import GenerationVerificationError, _game_style_bytes
+from _fixture_bytes import V158_DONOR_PATH, GenerationVerificationError, _game_style_bytes
 
 from descape.scenario_io import (
-    BLANK_TEMPLATE_PATH,
     LoadedScenario,
     is_workshop_subscribed,
     load_map_and_units,
@@ -125,7 +126,7 @@ def _build_units(loaded: LoadedScenario) -> None:
     manager = loaded.unit_manager
     for player in range(9):
         if manager.units[player]:
-            raise GenerationVerificationError(f"{BLANK_TEMPLATE_PATH}: donor already has units on player {player}")
+            raise GenerationVerificationError(f"{loaded.path}: donor already has units on player {player}")
 
     manager.add_unit(
         player=_PLAYER_GAIA, unit_const=_UNIT_CONST_TREE_OAK, x=5.5, y=5.5, rotation=_TREE_OAK_ROTATION,
@@ -162,7 +163,7 @@ def _build_units(loaded: LoadedScenario) -> None:
     manager.commit()
 
 
-def build_fixture_bytes(donor_path: Path = BLANK_TEMPLATE_PATH) -> bytes:
+def build_fixture_bytes(donor_path: Path = V158_DONOR_PATH) -> bytes:
     """The whole fixture as a full .aoe2scenario byte string.
 
     Splices freshly-serialized players_units bytes into the donor's otherwise

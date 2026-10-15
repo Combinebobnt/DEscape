@@ -194,10 +194,10 @@ projection. DEscape's View > Distance Ticks letters each edge this way.
 ## 3. Terrain
 
 - **Map** (painting): Brush Size, Layering Mode (blend a second terrain over the base), Eye Candy (auto-spawn decorative units), No Waves on Shore, Water Definitions (preset visual styles: Preset_Main, Preset_FE1, Preset_FE2, Preset_WickedWitch), Beach Type.
-- **Elevation**: raise/lower tile height, with Brush Size.
-- **Cliffs**: place Granite or Sandstone cliff objects (visual variants of the same gaia object; rotatable).
-- **Map Copy**: brush-based copy/paste of map regions with rotate/flip, plus a Change Player option to reassign copied units' owner on paste.
-- **Erase**: selective bulk removal by category — Buildings, Gaia Objects, Invisible Units, Layered Terrain, Trees, Units.
+- **Elevation**: raise/lower tile height, with Brush Size. The editor offers 7 levels and cannot raise water, but the file holds higher values and elevated water; the guide says only external tools reach either. DEscape's own range is 0-15 on any terrain.
+- **Cliffs**: place Granite or Sandstone cliff objects (visual variants of the same gaia object; rotatable). The guide's tip: Units > Rotate steps a cliff through its frames, and some frames have no graphic, so the cliff turns invisible but still blocks movement (an "invisible wall").
+- **Map Copy**: brush-based copy/paste of map regions with rotate/flip, plus a Change Player option to reassign copied units' owner on paste. Bug noted by the guide: a rotated rectangular selection's brush highlight keeps its old orientation, though the paste itself is rotated.
+- **Erase**: selective bulk removal by category — Buildings, Gaia Objects, Invisible Units, Layered Terrain, Trees, Units. The Layering Mode option appears to have no effect on it.
 
 ## 4. Options
 
@@ -221,7 +221,7 @@ Six text fields: Scenario Instructions, Objectives, Hints, Scout — each popula
 
 ## 7. Units
 
-- **Placing**: four category menus (Units, Buildings, Heroes, Others); default random rotation, scroll to adjust before placing; selecting the Gaia player exposes hidden objects (trees, mines); some objects are only reachable via trigger `Create Object` or the Advanced Genie Editor.
+- **Placing**: four category menus (Units, Buildings, Heroes, Others); default random rotation, scroll to fix one before placing, which holds until another object is picked and the first re-picked; selecting the Gaia player exposes hidden objects (trees, mines); some objects are only reachable via trigger `Create Object` or the Advanced Genie Editor.
 - **Deleting**: single-unit Delete, or bulk via Terrain tab's Erase → Units.
 - **Moving**: reposition placed units.
 - **Rotating**: click = clockwise, right-click = counter-clockwise.
@@ -229,7 +229,7 @@ Six text fields: Scenario Instructions, Objectives, Hints, Scout — each popula
 - **Capture Flag** (added by the September 2026 update, scenario version 1.59): a per-unit dropdown, in the game's words "Change how many times this object can be captured/converted". Options, with the value the file stores: Default (-1), Convert Never (0), Convert Once (1), Convert Multiple Times (2), Convert Never (Gaia Aggressive) (3). A scenario saved before 1.59 has no such field.
 - **Unit State** (same update): a per-unit dropdown for the state a unit starts the scenario in. The game notes that a foundation shows only from the owning player's point of view. Options: Default, then Foundation (0), Almost Alive (1), Alive (2), Dead (3), Almost Dead (4), Really Dead (5), Undead (6), Remove (7), Going (8). The byte is in every scenario version, and older files already hold values other than Alive. What "Default" stores has not been measured.
 - Neither dropdown is in the UGC guide. The labels are the game's own string table (ids 31344 to 31362) and the stored values are AoE2ScenarioParser's `CaptureFlag` and `ObjectState` enums.
-- **Converting**: reassign units' owner — checkboxes pick source player(s), a dropdown picks the destination player, brush size sets the area.
+- **Converting**: reassign units' owner — nine checkboxes pick source player(s), a dropdown picks the destination player, brush size sets the area.
 
 ## 8. Cinematics
 
@@ -271,8 +271,8 @@ The most powerful part of the editor: each trigger has **Effects** (actions it p
 
 ## 11. Useful Hotkeys
 
-General: scroll-wheel cycles dropdown values; letter keys cycle object-placement menus; 1-8 switches players; Ctrl+Shift+F# switches player control while testing; scrolling during placement rotates the object; Ctrl+G cycles 4 grid/stacking placement modes.
+General: scroll-wheel cycles dropdown values; letter keys cycle object-placement menus; 1-8 switches players on any tab with a player selector except Triggers; Ctrl+Shift+F# switches player control while testing; scrolling during placement rotates the object, and some GAIA objects show entirely different graphics per rotation (the variant index, see the root `AGENTS.md`); Ctrl+G cycles four placement modes: off-grid, then off-grid with stacking, then on-grid with stacking, then back to default (buildings stack too).
 File: Ctrl+Q quit, Ctrl+S save, Ctrl+L load, Ctrl+N new scenario.
 View: Ctrl+A toggle hitboxes.
-Tabs: F1-F10 select tabs directly; Ctrl+W Messages, Ctrl+R Triggers, Ctrl+T Terrain, Ctrl+U Units, Ctrl+O Options, Ctrl+P Players, Ctrl+D Diplomacy, Ctrl+C Cinematics, Ctrl+V Global Victory, Ctrl+M Map.
+Tabs: F1-F10 select tabs directly (the guide names only F1 Map and F2 Terrain, so they follow the in-game tab bar, not this doc's section order; the rest is unconfirmed); Ctrl+W Messages, Ctrl+R Triggers, Ctrl+T Terrain, Ctrl+U Units, Ctrl+O Options, Ctrl+P Players, Ctrl+D Diplomacy, Ctrl+C Cinematics, Ctrl+V Global Victory, Ctrl+M Map.
 Testing: Ctrl+Space test scenario.

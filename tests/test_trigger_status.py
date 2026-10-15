@@ -17,6 +17,7 @@ VOCABULARY = library_compat.load_vocabulary("1.59")
 
 _SEND_CHAT, _ACTIVATE_TRIGGER, _CREATE_OBJECT, _TASK_OBJECT, _KILL_OBJECT, _MODIFY_ATTRIBUTE = 3, 8, 11, 12, 14, 51
 _DISPLAY_INSTRUCTIONS = 20
+_REPLACE_OBJECT = 43
 _TRIGGER_ACTIVE, _OWN_OBJECTS = 79, 1
 _ARMOR, _HIT_POINTS = 8, 0
 
@@ -261,7 +262,24 @@ def test_universal_and_table_reasons_both_show() -> None:
     context = _context(_effects_table(task_object=Requirement(all=("object_list_unit_id",))))
     entry = _effect(_TASK_OBJECT, selected_object_ids=[7])
     assert _status(EFFECT, entry, context).reasons == (
-        "unit 7 (selected object ids) is not placed on the map", "missing object list unit id")
+        "unit 7 (selected object ids) is not placed on the map", "missing source player unit")
+
+
+def test_a_missing_field_is_named_by_its_types_own_caption() -> None:
+    """GH #212: the reason reads as the form row does, so Replace Object's
+    second unit is the target player's."""
+    context = _context(_effects_table(replace_object=Requirement(all=("object_list_unit_id", "object_list_unit_id_2"))))
+    unset = _effect(_REPLACE_OBJECT, object_list_unit_id=4, object_list_unit_id_2=-1)
+    assert _status(EFFECT, unset, context).reasons == ("missing target player unit",)
+    neither = _effect(_REPLACE_OBJECT, object_list_unit_id=-1, object_list_unit_id_2=-1)
+    assert _status(EFFECT, neither, context).reasons == ("missing source player unit", "missing target player unit")
+    assert _status(EFFECT, _effect(_REPLACE_OBJECT, object_list_unit_id=4, object_list_unit_id_2=5), context).status is Status.OK
+
+
+def test_an_any_group_names_fields_by_caption_and_pseudo_fields_by_token() -> None:
+    table = _effects_table(kill_object=Requirement(any=(("object_list_unit_id", "area"), ("selected_object_ids",))))
+    assert _status(EFFECT, _effect(_KILL_OBJECT), _context(table)).reasons == (
+        "needs source player unit + area or selected object ids",)
 
 
 def test_token_state_matches_the_table_semantics_for_the_census() -> None:

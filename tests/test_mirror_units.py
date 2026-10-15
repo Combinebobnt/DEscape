@@ -3,8 +3,9 @@ AoE2ScenarioParser. Units are duck-typed here the same way the map manager is
 in tests/test_mirror_tools.py.
 
 The claims under test: an image's footprint is the reflection of its source's,
-orbit dedup keeps one image per distinct position, a wall's run-direction
-index swaps only under an axis-swapping element and only in an integer-encoded
+orbit dedup keeps one image per distinct position, a wall's shape index is
+permuted by wall_index_image() (axis runs under an axis-swapping element,
+diagonal runs under r, r3, mx, my) and only in an integer-encoded
 file, an ANGLE const's facing maps through facing_image() (derived from
 TRANSFORMS' linear part), ownership rotates along the scenario's own player list, and the two
 refusal sweeps (axis straddle, garrisoned destination unit) fire.
@@ -34,6 +35,9 @@ from descape.mirror_tools import (
     plan_mirror_units,
     reorient_gate_const,
     swaps_axes,
+    unit_image,
+    wall_index_image,
+    walls_are_radian,
 )
 from descape.terrain_palette import tile_span
 
@@ -275,6 +279,101 @@ def test_a_wall_index_in_a_radian_encoded_file_passes_through_verbatim():
     radian = _at(WALL, 1, 1, rotation=2.5132741228718345)  # 2 * 2pi/5
     plan = _plan([literal, radian], mode_id=1)
     assert [image.rotation for image in plan.images] == [0.0, radian.rotation]
+
+
+# Measured for GH #197 by pushing canonical masks through
+# wall_variant_from_neighbours8(): the image of wall index 0, 1, 3, 4 per element.
+_WALL_INDEX_TABLE = {
+    "id": (0, 1, 3, 4),
+    "r2": (0, 1, 3, 4),
+    "r": (1, 0, 4, 3),
+    "r3": (1, 0, 4, 3),
+    "mx": (0, 1, 4, 3),
+    "my": (0, 1, 4, 3),
+    "d": (1, 0, 3, 4),
+    "a": (1, 0, 3, 4),
+}
+
+
+@pytest.mark.parametrize("element", list(_WALL_INDEX_TABLE))
+def test_wall_index_image_matches_the_measured_table(element):
+    images = [wall_index_image(float(index), element) for index in (0, 1, 3, 4)]
+    assert images == [float(i) for i in _WALL_INDEX_TABLE[element]]
+    assert wall_index_image(2.0, element) == 2.0
+    for off in (7.0, 2.5, -1.0, 5.0):
+        assert wall_index_image(off, element) == off
+
+
+# Wall pieces on a 16x16 lattice, apart from each other: a run along x, a run
+# along y, both diagonal runs, a corner and an L with a free end.
+_WALL_TILES = (
+    (2, 2), (3, 2), (4, 2), (5, 2),
+    (12, 1), (12, 2), (12, 3),
+    (2, 13), (3, 12), (4, 11), (5, 10),
+    (9, 8), (10, 9), (11, 10), (12, 11),
+    (8, 2), (8, 3), (9, 3),
+    (1, 6), (2, 6), (3, 6), (3, 7),
+)
+
+
+@pytest.mark.parametrize("element", list(TRANSFORMS))
+def test_a_transformed_wall_layout_still_agrees_with_its_neighbours(element):
+    """Every wall stored with the index its neighbours give it must, after its
+    position and its index both go through `element`, still store the index
+    its new neighbours give it -- the shape the game would re-derive."""
+    from descape import unit_sprites
+
+    n = 16
+    tiles = set(_WALL_TILES)
+
+    def derived(tile, layout):
+        mask = unit_sprites.neighbour_mask(*tile, layout, diagonals=True)
+        return unit_sprites.wall_variant_from_neighbours8(mask)
+
+    stored = {tile: derived(tile, tiles) for tile in tiles}
+    assert set(stored.values()) == {0, 1, 2, 3, 4}, "the layout must exercise every index"
+    fn = TRANSFORMS[element]
+    image_tiles = {fn(x, y, n) for x, y in tiles}
+    for tile, index in stored.items():
+        image = fn(*tile, n)
+        assert wall_index_image(float(index), element) == derived(image, image_tiles), (tile, index)
+
+
+def test_a_diagonal_wall_mirrored_under_mx_stores_the_other_diagonal():
+    wall = _at(WALL, 3, rotation=3.0)  # mode 3 is `mx`
+    (image,) = _plan([wall], mode_id=3).images
+    assert image.element == "mx"
+    assert image.rotation == 4.0
+
+
+def test_an_angular_element_leaves_a_diagonal_wall_verbatim():
+    walls = [FakeUnit(WALL, *_wedge_point(10), rotation=3.0), FakeUnit(WALL, *_wedge_point(14), rotation=4.0)]
+    plan, _ = _angular_plan(walls)
+    assert plan.images
+    assert {image.rotation for image in plan.images} == {3.0, 4.0}
+
+
+def test_walls_are_radian_reads_the_wall_consts_only():
+    assert not walls_are_radian([FakeUnit(WALL, 1.5, 1.5, rotation=3.0), FakeUnit(OAK, 2.5, 2.5, rotation=7.25)])
+    assert walls_are_radian([FakeUnit(WALL, 1.5, 1.5, rotation=_RADIAN_3)])
+    assert not walls_are_radian([])
+
+
+@pytest.mark.parametrize("mode_id", [1, 2, 3, 4, 6])
+def test_unit_image_is_the_plans_own_image(mode_id):
+    """plan_mirror_units() and unit_image() resolve an image the same way."""
+    units = [
+        _at(ARCHER, mode_id, 0, rotation=1.25),
+        _at(GATE_NE, mode_id, 1),
+        _at(HOUSE, mode_id, 2),
+        _at(WALL, mode_id, 3, rotation=3.0),
+    ]
+    plan = _plan(units, mode_id=mode_id)
+    assert plan.images
+    for image in plan.images:
+        source = image.source
+        got = unit_image(source, source.x, source.y, image.element, N, False)
+        assert got == (image.unit_const, image.x, image.y, image.rotation)
 
 
 def test_an_angle_consts_facing_is_mirrored():
@@ -534,6 +633,33 @@ def test_real_walls_swap_their_run_direction_under_a_screen_mirror():
     assert swapped, "no literal-index wall in the source slice, so this proves nothing"
     for image in swapped:
         assert image.rotation == 1.0 - float(image.source.rotation)
+
+
+@pytest.mark.corpus
+def test_real_diagonal_walls_exchange_their_index_under_mode_4():
+    """The table above on real data (GH #197): mode 4 is `my`, which keeps the axis
+    runs (0, 1) but exchanges the two diagonal runs (3, 4). Modes 2 and 3,
+    the legs above, cannot see this: neither moves a diagonal wall."""
+    from pathlib import Path
+
+    from descape import unit_sprites
+    from descape.scenario_io import load_map_and_units
+
+    source = Path(__file__).resolve().parent.parent / "examples" / "2_Joan_coop_4_v0_13.aoe2scenario"
+    loaded = load_map_and_units(source)
+    mm = loaded.map_manager
+    assert not walls_are_radian(u for units in loaded.unit_manager.units for u in units)
+    tiles = plan_mirror(mm, 4, 0, False, False)
+    plan = plan_mirror_units(mm, 4, 0, loaded.unit_manager.units, tiles.source_indices)
+    walls = [image for image in plan.images if unit_sprites.rotation_variant_eligible(image.unit_const)]
+    diagonal = [image for image in walls if float(image.source.rotation) in (3.0, 4.0)]
+    assert diagonal, "no diagonal wall in mode 4's source slice, so this proves nothing"
+    for image in diagonal:
+        assert image.element == "my"
+        assert image.rotation == 7.0 - float(image.source.rotation)
+    for image in walls:
+        if float(image.source.rotation) in (0.0, 1.0, 2.0):
+            assert image.rotation == float(image.source.rotation)
 
 
 @pytest.mark.corpus

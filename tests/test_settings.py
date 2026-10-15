@@ -64,13 +64,13 @@ def test_malformed_yaml_is_tolerated_not_raised(tmp_path: Path) -> None:
     # _load_config() catches yaml.YAMLError/OSError and returns {} -- every
     # getter must fall back to its own default rather than propagate.
     assert settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_DEFAULT
-    assert settings.get_theme() == "light"
+    assert settings.get_theme() == "editor_parchment_red"
     assert settings.get_window_size() == (settings.DEFAULT_WINDOW_WIDTH, settings.DEFAULT_WINDOW_HEIGHT)
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("dark_mode: true\n", "dark"), ("dark_mode: false\n", "light"), ("", "light")],
+    [("dark_mode: true\n", "dark"), ("dark_mode: false\n", "light"), ("", "editor_parchment_red")],
 )
 def test_legacy_dark_mode_migrates_to_a_theme(tmp_path: Path, text: str, expected: str) -> None:
     _write_config(tmp_path, text)
@@ -95,9 +95,9 @@ def test_set_theme_pops_legacy_dark_mode_and_clears_overrides(tmp_path: Path) ->
     assert settings.get_theme_colors() == {}
 
 
-def test_unknown_theme_falls_back_to_light(tmp_path: Path) -> None:
+def test_unknown_theme_falls_back_to_the_default(tmp_path: Path) -> None:
     _write_config(tmp_path, "theme: no_such_preset\n")
-    assert settings.get_theme() == "light"
+    assert settings.get_theme() == "editor_parchment_red"
 
 
 def test_set_theme_rejects_an_unknown_id_and_writes_nothing(tmp_path: Path) -> None:
@@ -647,6 +647,80 @@ def test_a_saved_file_resize_binding_loads_as_map_resize_and_is_then_dropped(tmp
 def test_a_saved_map_disables_binding_beats_a_stale_edit_disables_one(tmp_path: Path) -> None:
     _write_config(tmp_path, "keybinds:\n  edit_disables: F7\n  map_disables: F9\n")
     assert settings.get_keybind("map_disables") == "F9"
+
+
+# The mouse wheel rows (Settings > Keybinds): one action per modifier slot.
+
+
+def test_the_wheel_bindings_default_on_an_empty_config(tmp_path: Path) -> None:
+    assert settings.get_wheel_bindings() == {"plain": "zoom", "ctrl": "tool", "shift": "zoom", "alt": "zoom"}
+    assert settings.get_wheel_bindings() == settings.DEFAULT_WHEEL_BINDINGS
+    assert set(settings.DEFAULT_WHEEL_BINDINGS) == set(settings.WHEEL_SLOTS) == set(settings.WHEEL_SLOT_LABELS)
+    assert set(settings.WHEEL_ACTIONS) == set(settings.WHEEL_ACTION_LABELS)
+    assert set(settings.DEFAULT_WHEEL_BINDINGS.values()) <= set(settings.WHEEL_ACTIONS)
+    assert not (tmp_path / "config.yaml").exists(), "a getter wrote the config"
+
+
+def test_get_wheel_bindings_hands_out_a_copy() -> None:
+    settings.get_wheel_bindings()["plain"] = "none"
+    assert settings.get_wheel_bindings()["plain"] == "zoom"
+
+
+@pytest.mark.parametrize("slot", settings.WHEEL_SLOTS)
+@pytest.mark.parametrize("action", settings.WHEEL_ACTIONS)
+def test_every_wheel_slot_and_action_round_trips_through_the_file(
+    tmp_path: Path, monkeypatch, slot: str, action: str
+) -> None:
+    settings.set_wheel_binding(slot, action)
+    monkeypatch.setattr(settings, "_wheel_bindings", None)
+    assert settings.get_wheel_bindings() == {**settings.DEFAULT_WHEEL_BINDINGS, slot: action}
+
+
+@pytest.mark.parametrize("slot, action", [("meta", "zoom"), ("", "zoom"), ("plain", "spin"), ("plain", "")])
+def test_setting_an_unknown_wheel_slot_or_action_raises_and_writes_nothing(
+    tmp_path: Path, slot: str, action: str
+) -> None:
+    with pytest.raises(ValueError):
+        settings.set_wheel_binding(slot, action)
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_wheel_bindings() == settings.DEFAULT_WHEEL_BINDINGS
+
+
+@pytest.mark.parametrize("junk", ["spin", "Zoom", "3", "true", "[zoom]", "{}", "null"])
+def test_a_junk_stored_wheel_action_keeps_only_its_own_default(tmp_path: Path, junk: str) -> None:
+    _write_config(tmp_path, f"wheel_bindings:\n  ctrl: {junk}\n  plain: rotate\n  meta: zoom\n")
+    assert settings.get_wheel_bindings() == {**settings.DEFAULT_WHEEL_BINDINGS, "plain": "rotate"}
+
+
+@pytest.mark.parametrize("raw", ["zoom", "3", "[plain, tool]", "true", "null"])
+def test_a_non_mapping_wheel_bindings_block_reads_as_defaults(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"wheel_bindings: {raw}\n")
+    assert settings.get_wheel_bindings() == settings.DEFAULT_WHEEL_BINDINGS
+
+
+def test_the_wheel_bindings_file_holds_overrides_only(tmp_path: Path) -> None:
+    """A slot back on its default loses its key, and the last one takes the
+    mapping with it, so a later default change still reaches that user."""
+    import yaml
+
+    def stored() -> dict:
+        return yaml.safe_load((tmp_path / "config.yaml").read_text()) or {}
+
+    settings.set_pan_speed(900)  # an unrelated key the pruning must not touch
+    settings.set_wheel_binding("plain", "tool")
+    settings.set_wheel_binding("ctrl", "zoom")
+    assert stored()["wheel_bindings"] == {"plain": "tool", "ctrl": "zoom"}
+
+    settings.set_wheel_binding("shift", settings.DEFAULT_WHEEL_BINDINGS["shift"])
+    assert stored()["wheel_bindings"] == {"plain": "tool", "ctrl": "zoom"}, "a default was written as an override"
+
+    settings.set_wheel_binding("plain", settings.DEFAULT_WHEEL_BINDINGS["plain"])
+    assert stored()["wheel_bindings"] == {"ctrl": "zoom"}
+
+    settings.set_wheel_binding("ctrl", settings.DEFAULT_WHEEL_BINDINGS["ctrl"])
+    assert "wheel_bindings" not in stored()
+    assert stored()["pan_speed"] == 900
+    assert settings.get_wheel_bindings() == settings.DEFAULT_WHEEL_BINDINGS
 
 
 # -- Settings > Saving ------------------------------------------------------

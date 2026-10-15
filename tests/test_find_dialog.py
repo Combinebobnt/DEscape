@@ -364,6 +364,261 @@ def test_double_click_centres_on_the_row(monkeypatch) -> None:
         _close(window)
 
 
+def _object_item(tab, ref):
+    return next(
+        tab.tree.topLevelItem(i)
+        for i in range(tab.tree.topLevelItemCount())
+        if tab.tree.topLevelItem(i).text(1) == str(ref)
+    )
+
+
+def test_go_to_centres_on_the_highlighted_row_not_the_ticked_ones(monkeypatch) -> None:
+    """GH #201: the button is double-click's centre step for the current row."""
+    from descape.find_dialog import _GOTO_DISABLED_TIP, _GOTO_TIP
+
+    window, _boxes = _window()
+    try:
+        dialog = _dialog(window)
+        tab = dialog.objects_tab
+        assert not tab.goto_button.isEnabled()
+        assert tab.goto_button.toolTip() == _GOTO_DISABLED_TIP
+        tab.run_find()
+        assert not tab.goto_button.isEnabled(), "a Find highlights no row"
+        centred = []
+        monkeypatch.setattr(window.map_view, "center_on_tile", lambda x, y: centred.append((x, y)))
+        tab.goto_button.click()
+        assert centred == [], "a disabled button does nothing"
+
+        _check_only(dialog, {_REF_OAK})
+        tab.tree.setCurrentItem(_object_item(tab, _REF_ARCHER_P2))
+        assert tab.goto_button.isEnabled()
+        assert tab.goto_button.toolTip() == _GOTO_TIP
+        tab.goto_button.click()
+        assert centred == [(20, 20)], "the highlighted archer, not the ticked oak at (5, 5)"
+        assert {key[1] for key in tab.checked} == {_REF_OAK}, "Go to leaves the ticks alone"
+
+        tab.run_find()
+        assert tab.tree.currentItem() is None
+        assert not tab.goto_button.isEnabled(), "a refill drops the highlight"
+        assert tab.goto_button.toolTip() == _GOTO_DISABLED_TIP
+    finally:
+        _close(window)
+
+
+def test_go_to_follows_the_highlight_not_a_current_row_ctrl_clicked_off(monkeypatch) -> None:
+    """TASK-352: a Ctrl+click unhighlights the current row; Go to must not still centre on it."""
+    from PyQt5.QtCore import Qt
+
+    from descape.find_dialog import _GOTO_DISABLED_TIP, _GOTO_TIP
+
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        tab.run_find()
+        tree = tab.tree
+        centred = []
+        monkeypatch.setattr(window.map_view, "center_on_tile", lambda x, y: centred.append((x, y)))
+        archer = _object_item(tab, _REF_ARCHER_P2)
+        _click_row(tree, archer)
+        assert tab.goto_button.isEnabled(), "a plain click highlights the row"
+        _click_row(tree, archer, Qt.ControlModifier)
+        assert tree.currentItem() is archer and tree.selectedItems() == []
+        assert not tab.goto_button.isEnabled(), "nothing is highlighted"
+        assert tab.goto_button.toolTip() == _GOTO_DISABLED_TIP
+        tab.go_to_current()
+        assert centred == []
+
+        _click_row(tree, _object_item(tab, _REF_OAK))
+        _click_row(tree, archer, Qt.ControlModifier)
+        _click_row(tree, archer, Qt.ControlModifier)
+        assert tree.currentItem() is archer and tree.selectedItems() == [_object_item(tab, _REF_OAK)]
+        assert tab.goto_button.isEnabled()
+        assert tab.goto_button.toolTip() == _GOTO_TIP
+        tab.goto_button.click()
+        assert centred == [(5, 5)], "the highlighted oak, not the unhighlighted current archer"
+    finally:
+        _close(window)
+
+
+# -- ticking several rows at once (GH #144 follow-up) ----------------------------
+
+
+def _click_row(tree, item, modifier=None) -> None:
+    """A real click on the row's second column, clear of the checkbox."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+
+    tree.scrollToItem(item)
+    pos = QPoint(tree.columnViewportPosition(1) + 10, tree.visualItemRect(item).center().y())
+    QTest.mouseClick(tree.viewport(), Qt.LeftButton, Qt.NoModifier if modifier is None else modifier, pos)
+
+
+def _press_space(tree) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    QTest.keyClick(tree, Qt.Key_Space)
+
+
+def _count_update_ops(tab, monkeypatch) -> list:
+    calls = []
+    real = tab._update_ops
+    monkeypatch.setattr(tab, "_update_ops", lambda: (calls.append(1), real())[1])
+    return calls
+
+
+def _menu_action(menu, text: str):
+    return next(a for a in menu.actions() if a.text() == text)
+
+
+def _ticked_refs(tab) -> set:
+    from PyQt5.QtCore import Qt
+
+    items = [tab.tree.topLevelItem(i) for i in range(tab.tree.topLevelItemCount())]
+    shown = {int(item.text(1)) for item in items if item.checkState(0) == Qt.Checked}
+    assert shown == {key[1] for key in tab.checked} == {row.reference_id for row in tab.checked_rows()}
+    return shown
+
+
+_ALL_REFS = {_REF_OAK, _REF_PINE, _REF_WALL, _REF_HOUSE, _REF_ARCHER_P1, _REF_VILLAGER_P1, _REF_ARCHER_P2, _REF_VILLAGER_P2}
+
+
+def test_space_flips_every_highlighted_object_row_to_the_opposite_of_the_current_one(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QAbstractItemView
+
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        tab.run_find()
+        tree = tab.tree
+        assert tree.selectionMode() == QAbstractItemView.ExtendedSelection
+        _click_row(tree, _object_item(tab, _REF_PINE))
+        _click_row(tree, _object_item(tab, _REF_HOUSE), Qt.ShiftModifier)
+        _click_row(tree, _object_item(tab, _REF_ARCHER_P2), Qt.ControlModifier)
+        span = {_REF_PINE, _REF_WALL, _REF_HOUSE, _REF_ARCHER_P2}
+        assert {int(item.text(1)) for item in tree.selectedItems()} == span
+        assert _ticked_refs(tab) == _ALL_REFS, "highlighting rows ticks nothing"
+
+        calls = _count_update_ops(tab, monkeypatch)
+        _press_space(tree)
+        assert _ticked_refs(tab) == _ALL_REFS - span
+        assert len(calls) == 1, "one button refresh for the whole toggle, not one per row"
+
+        # Mixed states follow the current row (the Ctrl+clicked archer), never a per-row flip.
+        _object_item(tab, _REF_WALL).setCheckState(0, Qt.Checked)
+        assert _ticked_refs(tab) == _ALL_REFS - span | {_REF_WALL}
+        _press_space(tree)
+        assert _ticked_refs(tab) == _ALL_REFS, "the current row was unticked, so all four tick"
+        _object_item(tab, _REF_PINE).setCheckState(0, Qt.Unchecked)
+        _press_space(tree)
+        assert _ticked_refs(tab) == _ALL_REFS - span, "the current row was ticked, so all four untick"
+
+        # Go to still follows the current row of a multi-row highlight.
+        centred = []
+        monkeypatch.setattr(window.map_view, "center_on_tile", lambda x, y: centred.append((x, y)))
+        tab.goto_button.click()
+        assert centred == [(20, 20)]
+    finally:
+        _close(window)
+
+
+def test_space_on_one_object_row_and_qts_own_space_keys_still_work() -> None:
+    from PyQt5.QtCore import QItemSelectionModel, Qt
+    from PyQt5.QtTest import QTest
+
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        tab.run_find()
+        tree = tab.tree
+        oak, pine = _object_item(tab, _REF_OAK), _object_item(tab, _REF_PINE)
+        # Clicked on the ID column: Qt's own Space only ever toggled a current Name cell.
+        _click_row(tree, oak)
+        _press_space(tree)
+        assert _ticked_refs(tab) == _ALL_REFS - {_REF_OAK}
+
+        # Nothing highlighted: Space falls through to Qt's toggle of the current Name cell.
+        tree.clearSelection()
+        tree.setCurrentItem(oak, 0, QItemSelectionModel.NoUpdate)
+        _press_space(tree)
+        assert _ticked_refs(tab) == _ALL_REFS
+
+        # Ctrl+Space is still the keyboard's "add the focused row to the highlight".
+        _click_row(tree, oak)
+        tree.setCurrentItem(pine, 1, QItemSelectionModel.NoUpdate)
+        QTest.keyClick(tree, Qt.Key_Space, Qt.ControlModifier)
+        assert {int(item.text(1)) for item in tree.selectedItems()} == {_REF_OAK, _REF_PINE}
+        assert _ticked_refs(tab) == _ALL_REFS, "Ctrl+Space ticked nothing"
+    finally:
+        _close(window)
+
+
+def test_the_object_context_menu_ticks_and_unticks_the_highlighted_rows(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        tab.run_find()
+        tree = tab.tree
+        menu = tree.check_menu()
+        assert [a.text() for a in menu.actions()] == ["Tick selected", "Untick selected"]
+        assert not any(a.isEnabled() for a in menu.actions()), "nothing is highlighted yet"
+
+        _click_row(tree, _object_item(tab, _REF_OAK))
+        _click_row(tree, _object_item(tab, _REF_WALL), Qt.ShiftModifier)
+        span = {_REF_OAK, _REF_PINE, _REF_WALL}
+        _object_item(tab, _REF_PINE).setCheckState(0, Qt.Unchecked)
+        calls = _count_update_ops(tab, monkeypatch)
+        _menu_action(tree.check_menu(), "Untick selected").trigger()
+        assert _ticked_refs(tab) == _ALL_REFS - span
+        assert len(calls) == 1
+        assert tab.delete_button.isEnabled()
+        _menu_action(tree.check_menu(), "Tick selected").trigger()
+        assert _ticked_refs(tab) == _ALL_REFS
+
+        # Check all / Check none and the buttons they gate are untouched by the highlight.
+        tab.check_none.click()
+        assert _ticked_refs(tab) == set() and not tab.delete_button.isEnabled()
+        _menu_action(tree.check_menu(), "Tick selected").trigger()
+        assert _ticked_refs(tab) == span and tab.delete_button.isEnabled()
+    finally:
+        _close(window)
+
+
+def test_a_bulk_tick_skips_a_row_no_operation_accepts() -> None:
+    """A duplicated reference id has no checkbox; highlighting it must not tick it."""
+    from dataclasses import replace
+
+    from PyQt5.QtCore import Qt
+
+    from descape.find_dialog import FindCallbacks, FindDialog
+    from descape.find_objects import FindRow
+
+    conftest.ensure_qapp()
+    base = FindRow((1, 10), 10, 4, "Archer", 1, 1.5, 1.5, 0.0, "", -1, 0, False, False)
+    rows = [base, replace(base, key=(1, 11), reference_id=11, duplicate_ref=True), replace(base, key=(1, 12), reference_id=12)]
+    dialog = FindDialog(callbacks=FindCallbacks(find_objects=lambda criteria: rows))
+    try:
+        dialog.show()
+        tab = dialog.objects_tab
+        tab.run_find()
+        tree = tab.tree
+        tree.selectAll()
+        assert len(tree.selectedItems()) == 3
+        assert [int(item.text(1)) for item in tree.highlighted_checkable()] == [10, 12]
+        tree.setCurrentItem(_object_item(tab, 11), 0, tree.selectionModel().NoUpdate)
+        _press_space(tree)
+        assert tab.checked == set(), "no lead row: every highlighted row was ticked, so they untick"
+        _press_space(tree)
+        assert tab.checked == {(1, 10), (1, 12)}
+        assert _object_item(tab, 11).data(0, Qt.CheckStateRole) is None
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 def test_export_csv_writes_checked_rows_and_refuses_mods_subscribed(tmp_path) -> None:
     window, boxes = _window()
     try:
@@ -681,6 +936,120 @@ def test_jump_lands_on_the_entry_even_with_a_panel_filter() -> None:
         assert panel.filter_edit.text() == ""
         assert panel.current_trigger_index() == 2
         assert ("effect", 3) in panel.selected_entry_refs()
+    finally:
+        _close(window)
+
+
+def _ticked_hits(tab) -> tuple[set, set]:
+    """(ticked trigger indices, ticked child entry labels), checked against the tab's own sets."""
+    from PyQt5.QtCore import Qt
+
+    parents, children, locations = set(), set(), set()
+    for i in range(tab.tree.topLevelItemCount()):
+        parent = tab.tree.topLevelItem(i)
+        if parent.checkState(0) == Qt.Checked:
+            parents.add(parent.data(0, Qt.UserRole)[1])
+        for j in range(parent.childCount()):
+            child = parent.child(j)
+            if child.checkState(0) == Qt.Checked:
+                children.add(child.text(1).split()[0] + child.text(1).split()[1])
+                locations.add(child.data(0, Qt.UserRole).location)
+    assert parents == tab.checked_parents and locations == tab.checked_children
+    return parents, children
+
+
+def test_space_and_the_context_menu_tick_several_trigger_rows_at_once(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QAbstractItemView
+
+    window, _boxes = _trigger_window()
+    try:
+        tab = _ttab(window)
+        tree = tab.tree
+        assert tree.selectionMode() == QAbstractItemView.ExtendedSelection
+        tab.add_type_const(_ARCHER)
+        _tfind(tab)
+        parent = tree.topLevelItem(0)
+        every = {"Condition#0", "Effect#0", "Effect#1", "Effect#2", "Effect#3", "Effect#4", "Effect#5"}
+        assert _ticked_hits(tab) == ({2}, every)
+
+        _click_row(tree, parent.child(1))
+        _click_row(tree, parent.child(4), Qt.ShiftModifier)
+        span = {"Effect#0", "Effect#1", "Effect#2", "Effect#3"}
+        calls = _count_update_ops(tab, monkeypatch)
+        _press_space(tree)
+        assert _ticked_hits(tab) == ({2}, every - span)
+        assert len(calls) == 1, "_update_ops rescans every hit: once per toggle, not once per row"
+        assert tab.delete_button.isEnabled() and tab.replace_type_button.isEnabled()
+
+        # A trigger row and its hits highlight together; all follow the current (trigger) row.
+        _click_row(tree, parent, Qt.ControlModifier)
+        _press_space(tree)
+        assert _ticked_hits(tab) == (set(), every - span), "the trigger row was ticked, so all five untick"
+        assert not tab.delete_button.isEnabled(), "no trigger is ticked"
+
+        del calls[:]
+        _menu_action(tree.check_menu(), "Tick selected").trigger()
+        assert _ticked_hits(tab) == ({2}, every)
+        assert len(calls) == 1
+        _click_row(tree, parent.child(0))
+        _click_row(tree, parent.child(6), Qt.ShiftModifier)
+        _menu_action(tree.check_menu(), "Untick selected").trigger()
+        assert _ticked_hits(tab) == ({2}, set())
+        assert not tab.replace_type_button.isEnabled() and tab.delete_button.isEnabled()
+    finally:
+        _close(window)
+
+
+def test_bulk_unticked_trigger_rows_are_left_out_of_the_next_operation() -> None:
+    from PyQt5.QtCore import Qt
+
+    window, _boxes = _trigger_window()
+    try:
+        tab = _ttab(window)
+        tree = tab.tree
+        _tfind(tab)
+        assert tab.checked_parents == {0, 1, 2, 3}
+        assert not any(a.isEnabled() for a in tree.check_menu().actions()), "nothing is highlighted yet"
+        _click_row(tree, tree.topLevelItem(0))
+        _click_row(tree, tree.topLevelItem(2), Qt.ShiftModifier)
+        _press_space(tree)
+        assert _ticked_hits(tab) == ({3}, set())
+        tab.check_all.click()
+        assert _ticked_hits(tab) == ({0, 1, 2, 3}, set())
+        _press_space(tree)
+        tab.delete_button.click()
+        assert [t.name for t in _triggers(window)] == ["[Find] Messages", "--- Section ---", "Retarget"]
+    finally:
+        _close(window)
+
+
+def test_hits_hidden_under_a_collapsed_trigger_are_never_bulk_ticked() -> None:
+    """TASK-352: like trigger_panel.selected_entry_refs(), a row the user cannot see is not swept in."""
+    from PyQt5.QtCore import Qt
+
+    window, _boxes = _trigger_window()
+    try:
+        tab = _ttab(window)
+        tree = tab.tree
+        tab.add_type_const(_ARCHER)
+        _tfind(tab)
+        parent = tree.topLevelItem(0)
+        every = {"Condition#0", "Effect#0", "Effect#1", "Effect#2", "Effect#3", "Effect#4", "Effect#5"}
+        tab._set_all_checked(False)
+        _click_row(tree, parent)
+        _click_row(tree, parent.child(3), Qt.ShiftModifier)
+        assert len(tree.selectedItems()) == 5
+        parent.setExpanded(False)
+        assert len(tree.selectedItems()) == 5, "Qt keeps the hidden hits highlighted"
+        assert tree.highlighted_checkable() == [parent]
+
+        _press_space(tree)
+        assert _ticked_hits(tab) == ({2}, set()), "Space ticks the trigger row only"
+        _menu_action(tree.check_menu(), "Untick selected").trigger()
+        tab.check_all.click()
+        _menu_action(tree.check_menu(), "Untick selected").trigger()
+        assert _ticked_hits(tab) == (set(), every), "the menu leaves the hidden hits ticked"
     finally:
         _close(window)
 

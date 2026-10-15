@@ -59,7 +59,7 @@ def test_blank_template_is_shipped_and_loads(tiles: int) -> None:
     assert mm.map_width == mm.map_height == tiles
     assert s.map_is_square
     assert s.terrain_write_supported
-    assert s.scenario_version == "1.58"
+    assert s.scenario_version == "1.59"
     assert all(t.terrain_id == 0 and t.elevation == 0 for t in mm.terrain)
     assert sum(len(units) for units in s.unit_manager.units) == 0
 

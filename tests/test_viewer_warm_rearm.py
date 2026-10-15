@@ -241,3 +241,181 @@ def test_a_level_warm_re_anchor_leaves_only_the_new_anchors_load_warms_queued(mo
             assert len(queued) == len(set(queued)), f"a mip queued twice: {queued}"
         finally:
             conftest.close_window(window)
+
+
+# --- TASK-326: no warm inside the Eraser and Convert live-mutation window ----
+
+
+def _armed_window(monkeypatch):
+    """UNITS_FIXTURE with Preload zoom levels on and a level warm in flight:
+    a wholesale unit step makes every level stale and re-arms it."""
+    from descape import settings
+
+    import conftest
+
+    monkeypatch.setattr(settings, "_preload_zoom_levels", True)
+    window = conftest.stepped_window(UNITS_FIXTURE)
+    window.mode_combo.setCurrentText("Units")
+    window.brush_size_spin.setValue(1)
+    window._after_unit_mutation()
+    return window
+
+
+def _jobs_in_flight(window) -> list:
+    from test_level_warm import _in_flight_jobs
+
+    jobs = _in_flight_jobs(window._level_warmer)
+    assert jobs, "vacuous: no level warm job in flight"
+    return jobs
+
+
+def _survivors(window, before) -> list:
+    from test_level_warm import _in_flight_jobs
+
+    return [job for job in _in_flight_jobs(window._level_warmer) if any(job is old for old in before)]
+
+
+def _begin_erase(window):
+    """An Eraser stroke over Units and Buildings, opened at press."""
+    window._on_tool_selected("eraser")
+    for name, action in window.eraser_target_actions.items():
+        action.setChecked(name in ("units", "buildings"))
+    window.on_edit_stroke_start()
+    assert window._erase is not None and window._erase.model is not None
+
+
+def _erase_next(window) -> None:
+    """Erases one more unit the stroke has not touched, by its own tile."""
+    from descape import eraser
+
+    stroke = window._erase
+    for entry in stroke.index.entries:
+        tile = (entry.own_x, entry.own_y)
+        if id(entry.unit) in stroke.done or tile in stroke.touched_tiles:
+            continue
+        if eraser.unit_matches(stroke.targets, entry.player_id, int(entry.unit.unit_const)):
+            erased = stroke.erased
+            window.on_edit_stroke_tiles([tile], 0)
+            window._erase_refresh_timer.stop()
+            assert stroke.erased > erased, "the tile erased nothing"
+            return
+    raise AssertionError("no unit left to erase")
+
+
+def _convert_entries(window, count: int) -> list:
+    """`count` player-1 units on distinct tiles holding only player-1 units, Player 2 the destination."""
+    window.units_panel.select_owner(2)
+    index = window.map_view._unit_index
+    picked, seen = [], set()
+    for entry in index.entries:
+        tile = (entry.own_x, entry.own_y)
+        if entry.player_id != 1 or tile in seen:
+            continue
+        if all(index.entries[o].player_id == 1 for o in index.by_tile[tile]):
+            seen.add(tile)
+            picked.append(entry)
+        if len(picked) == count:
+            return picked
+    raise AssertionError("not enough player-1 units")
+
+
+def _convert(window, entry) -> None:
+    window._convert_stroke_tile(entry.own_x, entry.own_y)
+    window._convert_refresh_timer.stop()
+    assert window._convert_pending_splices, "the tile converted nothing"
+
+
+@pytest.mark.gui
+def test_an_erase_cancels_the_warms_in_flight_before_it_mutates(monkeypatch) -> None:
+    """TASK-326 A: no job armed before an erase survives it, the press's and
+    the one the mid-stroke flush re-arms alike."""
+    import conftest
+
+    window = _armed_window(monkeypatch)
+    try:
+        _begin_erase(window)
+        before = _jobs_in_flight(window)
+        _erase_next(window)
+        assert not _survivors(window, before), "a warm armed before the erase still walks the unit lists"
+        window._flush_erase_refresh()
+        before = _jobs_in_flight(window)
+        _erase_next(window)
+        assert not _survivors(window, before), "a warm the flush re-armed survived the next erase"
+        window.on_edit_stroke_end()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_convert_cancels_the_warms_in_flight_before_it_mutates(monkeypatch) -> None:
+    """TASK-326 A, the Convert brush's reassign."""
+    import conftest
+
+    window = _armed_window(monkeypatch)
+    try:
+        first, second = _convert_entries(window, 2)
+        window._begin_convert_stroke()
+        before = _jobs_in_flight(window)
+        _convert(window, first)
+        assert not _survivors(window, before), "a warm armed before the reassign still walks the unit lists"
+        window._flush_convert_refresh()
+        before = _jobs_in_flight(window)
+        _convert(window, second)
+        assert not _survivors(window, before), "a warm the flush re-armed survived the next reassign"
+        window._end_convert_stroke()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("tool", ["erase", "convert"])
+def test_nothing_arms_a_level_warm_between_a_live_mutation_and_its_flush(tool, monkeypatch) -> None:
+    """TASK-326 B: a direct re-arm and a first viewport fire after the
+    mutation's cancel both start nothing until the flush, which starts one."""
+    import conftest
+
+    window = _armed_window(monkeypatch)
+    try:
+        starts = _spy_level_warm_starts(window, monkeypatch)
+        if tool == "erase":
+            _begin_erase(window)
+            _erase_next(window)
+        else:
+            (entry,) = _convert_entries(window, 1)
+            window._begin_convert_stroke()
+            _convert(window, entry)
+        window._start_level_warm()
+        window._last_viewport_chunk_target = None
+        window._on_viewport_changed()
+        assert starts == [], f"a level warm armed inside the window: {starts}"
+        if tool == "erase":
+            window._flush_erase_refresh()
+        else:
+            window._flush_convert_refresh()
+        assert len(starts) == 1, f"the flush re-armed {len(starts)} times"
+        if tool == "erase":
+            window.on_edit_stroke_end()
+        else:
+            window._end_convert_stroke()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_an_abandoned_convert_stroke_still_re_arms_the_level_warm(monkeypatch) -> None:
+    """A second press with a stroke still open aborts it, and its
+    _after_unit_mutation() repaints the live reassigns and re-arms; B's guard
+    must not swallow that re-arm."""
+    import conftest
+
+    window = _armed_window(monkeypatch)
+    try:
+        (entry,) = _convert_entries(window, 1)
+        window._begin_convert_stroke()
+        _convert(window, entry)
+        starts = _spy_level_warm_starts(window, monkeypatch)
+        window._begin_convert_stroke()
+        assert starts, "the abort path's unit step did not re-arm the level warm"
+        window._end_convert_stroke()
+    finally:
+        conftest.close_window(window)

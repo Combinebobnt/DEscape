@@ -184,6 +184,44 @@ def test_a_unit_move_onto_and_off_pending_tiles_matches_a_fresh_cache(sprite_ins
     _assert_matches_fresh(cache, scenario)
 
 
+def _window_mutation(scenario, tool: str) -> UnitSplice:
+    """An Eraser removal or a Convert reassign of player 2's unit, through the
+    model only, as the viewer does before its flush."""
+    units = scenario.unit_manager.units
+    unit = units[2][-1]
+    own, occ = _own_tile(unit), _occupied(scenario, unit)
+    units[2].remove(unit)
+    if tool == "erase":
+        scenario.unit_gen += 1
+        return UnitSplice(2, -1, unit, own, None, occ, ())
+    units[3].append(unit)
+    scenario.unit_gen += 1
+    return UnitSplice(3, len(units[3]) - 1, unit, own, own, occ, occ, old_player_id=2)
+
+
+@pytest.mark.parametrize("tool", ["erase", "convert"])
+def test_a_pending_flush_inside_a_live_mutation_window_converges(tool, sprite_install, monkeypatch):  # noqa: F811
+    """TASK-326's pending half, measured 2026-10-13 and pinned here: a paint
+    flushes a pending level between a model-only mutation and its splice.
+    Player 2's unit shares TILE_A, a pending tile, with units[0]. Erased, it
+    cannot be located, so the flush rebuilds the level wholesale inside that
+    call; converted, it re-derives under its new owner. The flush's
+    invalidate_units() then leaves the cache equal to a fresh one."""
+    scenario, _units = _scenario()
+    mover = scenario.unit_manager.units[2][-1]
+    mover.x, mover.y = TILE_A[0] + 0.5, TILE_A[1] + 0.5
+    scenario.unit_gen += 1
+    cache = _resident_cache(scenario)
+    _stroke(cache, scenario)
+    assert cache._defers_patch(-1), "vacuous: level -1 is not pending"
+    splice = _window_mutation(scenario, tool)
+    calls = _level_work(monkeypatch, ("_commit_level",))
+    cache._level(-1)
+    assert calls == (["_commit_level"] if tool == "erase" else []), "the in-window flush's cost moved"
+    cache.invalidate_units([splice])
+    _assert_matches_fresh(cache, scenario, rebuilt=(-1,) if tool == "erase" else ())
+
+
 def test_a_union_past_the_cap_rebuilds_the_level_wholesale(sprite_install, monkeypatch):  # noqa: F811
     scenario, _units = _scenario()
     cache = _resident_cache(scenario)
@@ -372,6 +410,26 @@ def test_a_unit_edit_mid_rebuild_drops_the_flush_jobs_result(sprite_install, mon
     calls = _level_work(monkeypatch, ("_commit_level",))
     warmer.run_to_completion()
     assert calls == [], "a rebuild started before the edit was installed"
+    assert cache._levels[-1].gen != cache._source_gen
+
+
+def test_a_model_only_unit_mutation_mid_rebuild_drops_the_flush_jobs_result(sprite_install, monkeypatch):  # noqa: F811
+    """TASK-326 C, the flush job's rebuild: an Eraser removal reaches the model
+    with no invalidate_units() until its flush, so only unit_gen moves."""
+    scenario, _units = _scenario()
+    cache = _resident_cache(scenario)
+    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
+    _stroke(cache, scenario)
+    warmer = level_warm.LevelWarmer()
+    warmer.start(cache, [-1])
+    assert warmer.tick(), "vacuous: the flush job finished in one step"
+    assert cache._levels[-1].gen != cache._source_gen, "vacuous: the flush left the level current"
+    del scenario.unit_manager.units[2][-1]
+    scenario.unit_gen += 1
+    calls = _level_work(monkeypatch, ("_commit_level",))
+    warmer.run_to_completion()
+    assert calls == [], "a rebuild started before the mutation was installed"
     assert cache._levels[-1].gen != cache._source_gen
 
 

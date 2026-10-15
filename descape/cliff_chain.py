@@ -14,29 +14,43 @@ larger overshoot goes first. A step that would land on a node already in the
 path is not taken. The walk loops, so a fast drag that skips tiles between
 mouse-move events still emits every intermediate node.
 
-**Pieces are resolved jointly per junction, not one per stroke.** A corner's
-piece size is conditioned on the size of the straights it meets, so a
-zig-zag's legs can change size between turns. `cliff_connectivity.
-resolve_chain()` scores the whole path's suffixes and rotations over the
-measured transitions, then the layout walks from the press tile, placing
-each node's footprint where `cliff_connectivity.offset()` says the corpus
-puts that neighbour. The path re-resolves after every step, since a new step
-can change earlier nodes.
+**The drag direction picks the facing.** A piece's size is which way its
+face points (`cliff_connectivity.leg_tall()`), and a run keeps its face on
+one side, so each path edge is tall or thin by the direction it was drawn in
+(`edge_tall()`) and each node's piece is a lookup on its typed arms
+(`resolve_shape()`). The same line drawn the other way is the other facing.
+A straight alternates its two art twins by footprint position, never by path
+index, so a growing drag cannot shuffle them.
+
+**The press tile is a centre.** The first piece is centred on it, clamped
+onto the map, and slid off any existing cliff it would overlap while still
+covering the press tile. The layout then walks from there, placing each
+node's footprint where `cliff_connectivity.offset()` says the corpus puts
+that neighbour.
+
+**A press on an existing cliff anchors the run on it.** That cliff is the
+path's node 0: fixed, never placed, and the walk steps from it. An end cap
+passes its own run's side on, so a run continued in line keeps its size.
 
 **Contacts get one bounded pass.** After the first layout, a node whose
 footprint shares an edge with an existing cliff or a non-adjacent node of
-the same stroke takes that direction into its dirset and that neighbour as a
-fixed contact, and the path resolves and lays out once more. A node whose
-final neighbours still differ from the shape it was resolved for is flagged
-unresolved rather than chased further.
+the same stroke takes that neighbour's own leg as one more arm, and the path
+lays out once more. A node whose widened shape has no piece keeps its path
+shape.
+
+**Joins rewrite the old end, narrowly.** An existing end cap or lone piece
+that gains exactly one neighbour from the run takes the frame the table
+gives its new arms at its own size (`rewrites()`). Where that needs a
+different-size piece it is left alone and counted (`unjoined()`).
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from descape import cliff_catalog, cliff_connectivity, unit_sprites
+from descape.cliff_connectivity import DRAG_FACE_SIDE, edge_tall, leg_tall
 from descape.render import span_anchor, unit_tile_bounds
 from descape.terrain_palette import tile_span
 
@@ -65,22 +79,42 @@ class ChainNode:
     y: float
     bounds: Bounds
     # False when the node's piece or position is not backed by the measured
-    # table: no candidate (it keeps the picked piece and frame), a pair or
-    # shape under the table's floor, a neighbour dropped next to it, or final
-    # neighbours that differ from the shape it was resolved for.
+    # table: no piece for its shape (it keeps the picked piece and frame), no
+    # measured offset, or an arm it was shaped for with no neighbour on it.
     resolved: bool
-    # The neighbour shape it was resolved for (path plus contacts), and its
+    # The cardinal arms it was shaped for (path plus contacts), and its
     # position on the path: a dropped node leaves a gap in `index`.
-    dirset: frozenset[Direction] = frozenset()
+    arms: frozenset[Direction] = frozenset()
     index: int = 0
 
 
 @dataclass(frozen=True)
 class ExistingCliff:
-    """A cliff already on the map: a fixed contact and a placement blocker."""
+    """A cliff already on the map: a fixed contact, a placement blocker, and
+    what a join may reshape. `rotation` is None when the stored value is no
+    frame index; `unit` is the live object a rewrite writes to."""
 
     unit_const: int
     bounds: Bounds
+    rotation: int | None = None
+    player: int = 0
+    unit: object = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class ChainRewrite:
+    """A new frame for the existing cliff at `existing_index`: same const,
+    same position."""
+
+    existing_index: int
+    rotation: int
+
+
+def _frame(rotation) -> int | None:
+    try:
+        return int(float(rotation))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def existing_cliffs(scenario, map_width: int, map_height: int) -> list[ExistingCliff]:
@@ -93,13 +127,17 @@ def existing_cliffs(scenario, map_width: int, map_height: int) -> list[ExistingC
     """
     consts = unit_sprites.cliff_consts()
     out: list[ExistingCliff] = []
-    for units in scenario.unit_manager.units:
+    for player, units in enumerate(scenario.unit_manager.units):
         for unit in units:
             if unit.unit_const not in consts:
                 continue
             bounds = unit_tile_bounds(unit, map_width, map_height)
             if bounds is not None:
-                out.append(ExistingCliff(unit_const=unit.unit_const, bounds=bounds))
+                out.append(
+                    ExistingCliff(
+                        unit_const=unit.unit_const, bounds=bounds, rotation=_frame(unit.rotation), player=player, unit=unit
+                    )
+                )
     return out
 
 
@@ -155,6 +193,15 @@ class _TileIndex:
         return out
 
 
+def index_cliffs(existing: list[ExistingCliff]) -> _TileIndex:
+    """The tile index a `ChainStroke` probes `existing` through. A caller that
+    builds many strokes over one cliff list (the hover) builds it once."""
+    index = _TileIndex()
+    for k, cliff in enumerate(existing):
+        index.add(k, cliff.bounds)
+    return index
+
+
 def path_dirsets(steps: list[Direction]) -> list[frozenset[Direction]]:
     """Each node's neighbour directions along the path alone: back to the
     previous node and on to the next."""
@@ -170,6 +217,16 @@ def path_dirsets(steps: list[Direction]) -> list[frozenset[Direction]]:
     return out
 
 
+def _path_arms(steps: list[Direction], side: int) -> list[dict[Direction, bool]]:
+    """`path_dirsets()` with each arm typed by its edge: tall or thin."""
+    out: list[dict[Direction, bool]] = [{} for _ in range(len(steps) + 1)]
+    for i, step in enumerate(steps):
+        tall = edge_tall(step, side)
+        out[i][step] = tall
+        out[i + 1][_opposite(step)] = tall
+    return out
+
+
 def _abut(step: Direction, span_a: tuple[int, int], span_b: tuple[int, int]) -> tuple[int, int]:
     """Flush along `step`, cross-axis 0: the layout when no offset is measured."""
     dx, dy = step
@@ -178,37 +235,39 @@ def _abut(step: Direction, span_a: tuple[int, int], span_b: tuple[int, int]) -> 
     return 0, (span_a[1] if dy > 0 else -span_b[1])
 
 
-class _Layout:
-    """One resolve plus layout pass over a path. `bounds` covers every path
-    node, dropped or off-map ones included: the walk's step test reads the
-    head's."""
+def _twin(frames: tuple[int, ...], low: tuple[int, int]) -> int:
+    """One of a straight's two art twins, by where the footprint sits."""
+    return frames[0] if ((low[0] + low[1]) // 3) % 2 == 0 else frames[-1]
 
-    def __init__(self, press, steps, dirsets, resolved, picked_const, picked_frame) -> None:
-        self.dirsets = dirsets
-        self.consts: list[int] = []
-        self.rotations: list[int] = []
-        self.ok: list[bool] = []
-        self.suffixes: list[int] = []
-        for suffix, rotation, ok in resolved:
-            const = picked_const if suffix is None else cliff_catalog.piece_for_suffix(picked_const, suffix)
-            fallback = const is None or rotation is None
-            const = picked_const if const is None else const
-            self.consts.append(const)
-            self.suffixes.append(cliff_catalog.suffixes().get(const) if suffix is None else suffix)
-            self.rotations.append(picked_frame if rotation is None else rotation)
-            self.ok.append(ok and not fallback)
-        self.spans = [tile_span(c, _NON_CLIFF_SPAN) for c in self.consts]
-        lows = [press]
-        for i, step in enumerate(steps):
-            found = cliff_connectivity.offset(dirsets[i], self.spans[i], step, dirsets[i + 1], self.spans[i + 1])
-            if found is None:
-                found = _abut(step, self.spans[i], self.spans[i + 1])
-                self.ok[i] = self.ok[i + 1] = False
-            lows.append((lows[i][0] + found[0], lows[i][1] + found[1]))
-        self.lows = lows
-        self.bounds: list[Bounds] = [
-            (x, x + sx, y, y + sy) for (x, y), (sx, sy) in zip(lows, self.spans, strict=True)
-        ]
+
+@dataclass(frozen=True)
+class _Shape:
+    """One path node's piece: its const and span, the frames its shape allows
+    (none: the picked frame stands) and the arms it was shaped for."""
+
+    const: int
+    span: tuple[int, int]
+    suffix: int | None
+    frames: tuple[int, ...]
+    arms: frozenset[Direction]
+    ok: bool
+
+
+@dataclass
+class _Plan:
+    """One resolve plus layout of a path. `bounds` covers every path node,
+    the anchor, dropped and off-map ones included: the walk's step test reads
+    the head's."""
+
+    side: int
+    shapes: list[_Shape]
+    lows: list[tuple[int, int]]
+    bounds: list[Bounds]
+    ok: list[bool]
+    # Node 0 of a free start beside an existing cliff: whether it touches
+    # one, and whether its shape took that contact in.
+    start_touches: bool = False
+    start_joined: bool = False
 
 
 class ChainStroke:
@@ -228,40 +287,57 @@ class ChainStroke:
         existing: list[ExistingCliff],
         fallback_const: int,
         fallback_frame: int,
+        existing_index: _TileIndex | None = None,
+        side: int | None = None,
     ) -> None:
         self._map_width = map_width
         self._map_height = map_height
         self._existing = existing
         # The Piece/Frame picker's values: a lone node's piece, the family
         # every resolved suffix is drawn from, and the fallback for a node
-        # with no candidate.
+        # whose shape has no piece.
         self._fallback_const = fallback_const
         self._fallback_frame = fallback_frame
         self._allowed = frozenset(
             s for s in range(1, 10) if cliff_catalog.piece_for_suffix(fallback_const, s) is not None
         )
-        self._existing_index = _TileIndex()
-        for k, cliff in enumerate(existing):
-            self._existing_index.add(k, cliff.bounds)
+        self._frame_limit = cliff_catalog.frame_count(fallback_const)
+        self._existing_index = index_cliffs(existing) if existing_index is None else existing_index
+        self._existing_arm_cache: dict[int, frozenset[Direction]] = {}
+        # A test's override of the side the face goes on; None derives it.
+        self._side_override = side
+        # The press tile: the first piece's centre, or a tile of the anchor.
         self._press: tuple[int, int] | None = None
+        # The existing cliff the press landed on, as an index into `existing`.
+        self._anchor: int | None = None
         self._steps: list[Direction] = []
-        self._plans: OrderedDict[tuple[Direction, ...], _Layout] = OrderedDict()
-        self._nodes: tuple[tuple[Direction, ...], list[ChainNode]] | None = None
+        self._plans: OrderedDict[tuple, _Plan] = OrderedDict()
+        self._nodes: tuple[tuple, list[ChainNode]] | None = None
 
     @property
     def steps(self) -> list[Direction]:
         return list(self._steps)
 
+    @property
+    def anchor(self) -> int | None:
+        """Index into `existing` of the cliff the run starts on, or None."""
+        return self._anchor
+
+    @property
+    def side(self) -> int | None:
+        """Which side the run's face is on, None before the first step: it
+        is derived from the anchor and the path on every resolve, never stored."""
+        return self._plan().side if self._press is not None and self._steps else None
+
     def set_path(self, press: tuple[int, int], steps: list[Direction]) -> None:
         """Replaces the walk with an explicit path (tests and probes)."""
-        self._press = press
+        self._start(press)
         self._steps = list(steps)
 
     def add_cursor_tile(self, tile_x: int, tile_y: int) -> None:
         if self._press is None:
-            span = tile_span(self._fallback_const, _NON_CLIFF_SPAN)
-            if self._fits((tile_x, tile_x + span[0], tile_y, tile_y + span[1])):
-                self._press = (tile_x, tile_y)
+            if 0 <= tile_x < self._map_width and 0 <= tile_y < self._map_height:
+                self._start((tile_x, tile_y))
             return
         for _ in range(_MAX_WALK_STEPS):
             options = self._step_options(self._plan().bounds[-1], tile_x, tile_y)
@@ -271,10 +347,40 @@ class ChainStroke:
     def nodes(self) -> list[ChainNode]:
         if self._press is None:
             return []
-        key = tuple(self._steps)
+        key = self._key()
         if self._nodes is None or self._nodes[0] != key:
             self._nodes = (key, self._finish(self._plan()))
         return list(self._nodes[1])
+
+    def head_bounds(self) -> Bounds | None:
+        """The footprint of the run's head, or None when the head is not
+        placed (dropped, off the map, or an anchor with no step yet)."""
+        nodes = self.nodes()
+        return nodes[-1].bounds if nodes and nodes[-1].index == len(self._steps) else None
+
+    def rewrites(self) -> list[ChainRewrite]:
+        """New frames for existing cliffs the run joins: only an end cap or
+        a lone piece (at most one cardinal neighbour) that gains exactly one
+        arm from a placed node, where the table has its new arms at its own
+        size and it is not on one of those frames already."""
+        return self._joins()[0]
+
+    def unjoined(self) -> int:
+        """How many joined ends were left as they were because the join needs
+        a different-size piece: end caps, lone pieces and the anchor, and a
+        cap a run of the other facing met end-on."""
+        return self._joins()[1]
+
+    def _start(self, press: tuple[int, int]) -> None:
+        self._press = press
+        hits = self._existing_index.overlapping((press[0], press[0] + 1, press[1], press[1] + 1))
+        self._anchor = min(hits) if hits else None
+        self._steps = []
+        self._plans.clear()
+        self._nodes = None
+
+    def _key(self) -> tuple:
+        return self._press, self._anchor, self._side_override, tuple(self._steps)
 
     def _step_options(self, head: Bounds, tile_x: int, tile_y: int) -> list[Direction]:
         x0, x1, y0, y1 = self._widened(head)
@@ -312,8 +418,8 @@ class ChainStroke:
         x0, x1, y0, y1 = bounds
         return x0 >= 0 and y0 >= 0 and x1 <= self._map_width and y1 <= self._map_height
 
-    def _plan(self) -> _Layout:
-        key = tuple(self._steps)
+    def _plan(self) -> _Plan:
+        key = self._key()
         plan = self._plans.get(key)
         if plan is None:
             plan = self._resolve()
@@ -324,98 +430,268 @@ class ChainStroke:
             self._plans.move_to_end(key)
         return plan
 
-    def _resolve(self) -> _Layout:
-        dirsets = path_dirsets(self._steps)
-        layout = self._layout(dirsets, None)
-        contacts = self._contacts(layout)
-        if any(contacts):
-            augmented = [d | {c[0] for c in cs} for d, cs in zip(dirsets, contacts, strict=True)]
-            entries = [[self._contact_entry(c, layout, augmented) for c in cs] for cs in contacts]
-            layout = self._layout(augmented, entries)
-        return layout
+    # -- which side the face goes on ---------------------------------------
 
-    def _layout(self, dirsets, contacts) -> _Layout:
-        if dirsets == [frozenset()]:
-            # A lone click never reaches the table's empty-dirset row (43%
-            # suffix purity, its weakest): the picked piece and frame stand.
-            resolved = [(None, None, False)]
+    def _resolve(self) -> _Plan:
+        if self._side_override is not None:
+            return self._lay(self._side_override)
+        if self._anchor is not None:
+            return self._lay(self._anchor_side())
+        plan = self._lay(DRAG_FACE_SIDE)
+        if self._steps and plan.start_touches and not plan.start_joined:
+            # A free start beside a cliff whose facing the default side cannot
+            # continue: the other side's, if that one joins it.
+            other = self._lay(-DRAG_FACE_SIDE)
+            if other.start_joined:
+                return other
+        return plan
+
+    def _anchor_side(self) -> int:
+        """An end cap keeps its own run's side. A lone piece takes the side
+        whose first edge matches its leg on the leaving side, if it has a cap
+        frame for that arm at all. A mid-run piece leaves it to the drag."""
+        cliff = self._existing[self._anchor]
+        suffix = cliff_catalog.suffixes().get(cliff.unit_const)
+        arms = self._existing_arms(self._anchor)
+        if suffix is None or len(arms) > 1:
+            return DRAG_FACE_SIDE
+        if arms:
+            (arm,) = arms
+            # The run that ends on this cap arrived travelling away from its arm.
+            travel, tall = _opposite(arm), leg_tall(suffix, arm)
+        elif self._steps and self._rewrite_frames(self._anchor, frozenset({self._steps[0]})) is not None:
+            travel, tall = self._steps[0], leg_tall(suffix, self._steps[0])
         else:
-            resolved = cliff_connectivity.resolve_chain(
-                dirsets, self._steps, allowed_suffixes=self._allowed, contacts=contacts
-            )
-        return _Layout(self._press, self._steps, dirsets, resolved, self._fallback_const, self._fallback_frame)
+            # A thin piece's broadside is tall only nominally: no cap there.
+            return DRAG_FACE_SIDE
+        return DRAG_FACE_SIDE if edge_tall(travel, DRAG_FACE_SIDE) == tall else -DRAG_FACE_SIDE
 
-    def _contacts(self, layout: _Layout) -> list[list[tuple[Direction, tuple[str, int]]]]:
-        """Per node, (direction, owner) of every cardinal contact that is not
-        a path neighbour: an existing cliff or a non-adjacent stroke node."""
+    # -- pieces and layout ---------------------------------------------------
+
+    def _lay(self, side: int) -> _Plan:
+        path_arms = _path_arms(self._steps, side)
+        shapes = [self._shape(arms) or self._picked(arms) for arms in path_arms]
+        if self._anchor is not None:
+            shapes[0] = self._anchor_shape()
+        plan = self._layout(side, shapes)
+        contacts = self._contacts(plan)
+        if not any(arms for arms, _ in contacts):
+            return plan
+        start_touches = contacts[0][1]
+        start_joined = False
+        for i, (extra, _) in enumerate(contacts):
+            if not extra:
+                continue
+            # A path arm keeps its edge's type over a contact on the same side.
+            found = self._shape({**extra, **path_arms[i]})
+            if found is not None:
+                shapes[i] = found
+                start_joined = start_joined or i == 0
+        plan = self._layout(side, shapes)
+        plan.start_touches = start_touches
+        plan.start_joined = start_touches and start_joined
+        return plan
+
+    def _shape(self, arms: dict[Direction, bool]) -> _Shape | None:
+        """The table's piece for these typed arms, or None when it has none.
+        A node with no arm never reaches the table: the picked piece stands."""
+        if not arms:
+            return None
+        found = cliff_connectivity.resolve_shape(arms, allowed_suffixes=self._allowed, frame_limit=self._frame_limit)
+        if found is None:
+            return None
+        suffix, frames = found
+        const = cliff_catalog.piece_for_suffix(self._fallback_const, suffix)
+        return _Shape(const, tile_span(const, _NON_CLIFF_SPAN), suffix, frames, frozenset(arms), True)
+
+    def _picked(self, arms: dict[Direction, bool]) -> _Shape:
+        const = self._fallback_const
+        suffix = cliff_catalog.suffixes().get(const)
+        return _Shape(const, tile_span(const, _NON_CLIFF_SPAN), suffix, (), frozenset(arms), False)
+
+    def _anchor_shape(self) -> _Shape:
+        cliff = self._existing[self._anchor]
+        x0, x1, y0, y1 = cliff.bounds
+        arms = self._existing_arms(self._anchor) | frozenset(self._steps[:1])
+        return _Shape(cliff.unit_const, (x1 - x0, y1 - y0), cliff_catalog.suffixes().get(cliff.unit_const), (), arms, True)
+
+    def _layout(self, side: int, shapes: list[_Shape]) -> _Plan:
+        ok = [shape.ok for shape in shapes]
+        lows = [self._first_low(shapes[0].span)]
+        for i, step in enumerate(self._steps):
+            a, b = shapes[i], shapes[i + 1]
+            found = cliff_connectivity.offset(a.arms, a.span, step, b.arms, b.span)
+            if found is None:
+                found = _abut(step, a.span, b.span)
+                ok[i] = ok[i + 1] = False
+            lows.append((lows[i][0] + found[0], lows[i][1] + found[1]))
+        bounds = [(x, x + s.span[0], y, y + s.span[1]) for (x, y), s in zip(lows, shapes, strict=True)]
+        return _Plan(side=side, shapes=list(shapes), lows=lows, bounds=bounds, ok=ok)
+
+    def _first_low(self, span: tuple[int, int]) -> tuple[int, int]:
+        """Node 0's low corner: the anchor's own, else `span` centred on the
+        press tile, clamped onto the map, then slid off any existing cliff."""
+        if self._anchor is not None:
+            x0, _x1, y0, _y1 = self._existing[self._anchor].bounds
+            return x0, y0
+        low = tuple(
+            max(0, min(press - size // 2, limit - size))
+            for press, size, limit in zip(self._press, span, (self._map_width, self._map_height), strict=True)
+        )
+        return self._slid(low, span)
+
+    def _slid(self, low: tuple[int, int], span: tuple[int, int]) -> tuple[int, int]:
+        """`low` moved by the smallest shift after which the footprint is on
+        the map, clear of every existing cliff and still over the press tile;
+        `low` itself when it is clear already or no shift is."""
+
+        def box(x: int, y: int) -> Bounds:
+            return x, x + span[0], y, y + span[1]
+
+        if not self._existing_index.overlapping(box(*low)):
+            return low
+        best = None
+        for x in range(self._press[0] - span[0] + 1, self._press[0] + 1):
+            for y in range(self._press[1] - span[1] + 1, self._press[1] + 1):
+                if not self._fits(box(x, y)) or self._existing_index.overlapping(box(x, y)):
+                    continue
+                dx, dy = x - low[0], y - low[1]
+                # Smallest first; a tie goes to x over y, then to the negative shift.
+                rank = (abs(dx) + abs(dy), abs(dy), dx, dy)
+                if best is None or rank < best[0]:
+                    best = (rank, (x, y))
+        return low if best is None else best[1]
+
+    def _contacts(self, plan: _Plan) -> list[tuple[dict[Direction, bool], bool]]:
+        """Per node, its cardinal contacts that are not path neighbours, each
+        typed by the touched piece's own leg, and whether any is an existing
+        cliff. The anchor is the path's node 0, not a contact of its own."""
         index = _TileIndex()
-        for i, b in enumerate(layout.bounds):
+        for i, b in enumerate(plan.bounds):
             index.add(i, b)
+        suffixes = cliff_catalog.suffixes()
         out = []
-        for i, b in enumerate(layout.bounds):
-            found = []
+        for i, b in enumerate(plan.bounds):
+            found: dict[Direction, bool] = {}
+            touches_existing = False
+            if i == 0 and self._anchor is not None:
+                out.append((found, False))
+                continue
             for j in sorted(index.touching(b)):
-                if abs(j - i) > 1:
-                    d = cliff_connectivity.adjacency_dir(b, layout.bounds[j])
+                suffix = plan.shapes[j].suffix
+                if abs(j - i) > 1 and suffix is not None:
+                    d = cliff_connectivity.adjacency_dir(b, plan.bounds[j])
                     if d in _CARDINALS:
-                        found.append((d, ("node", j)))
+                        found.setdefault(d, leg_tall(suffix, _opposite(d)))
             for k in sorted(self._existing_index.touching(b)):
+                suffix = suffixes.get(self._existing[k].unit_const)
+                if k == self._anchor or suffix is None:
+                    continue
                 d = cliff_connectivity.adjacency_dir(b, self._existing[k].bounds)
                 if d in _CARDINALS:
-                    found.append((d, ("existing", k)))
-            out.append(found)
+                    found.setdefault(d, leg_tall(suffix, _opposite(d)))
+                    touches_existing = True
+            out.append((found, touches_existing))
         return out
 
-    def _contact_entry(self, contact, layout: _Layout, augmented) -> cliff_connectivity.Contact:
-        d, (kind, j) = contact
-        if kind == "node":
-            return d, layout.suffixes[j], augmented[j]
-        cliff = self._existing[j]
-        dirs = {
-            cliff_connectivity.adjacency_dir(cliff.bounds, self._existing[k].bounds)
-            for k in self._existing_index.touching(cliff.bounds)
-            if k != j
-        }
-        dirs.add(_opposite(d))
-        dirs.discard(None)
-        return d, cliff_catalog.suffixes().get(cliff.unit_const), frozenset(dirs)
-
-    def _finish(self, layout: _Layout) -> list[ChainNode]:
+    def _finish(self, plan: _Plan) -> list[ChainNode]:
         """Truncates at the first node off the map, drops a node overlapping
-        an existing cliff or an earlier kept node, then flags every node
-        whose final neighbours differ from the shape it was resolved for."""
-        ok = list(layout.ok)
+        an existing cliff or an earlier kept node, then flags every node with
+        an arm it was shaped for and no neighbour on it. The anchor is the
+        map's own cliff: never placed, never dropped."""
         kept: list[int] = []
         index = _TileIndex()
-        for i, b in enumerate(layout.bounds):
+        for i, b in enumerate(plan.bounds):
+            if i == 0 and self._anchor is not None:
+                continue
             if not self._fits(b):
                 break
             if self._existing_index.overlapping(b) or index.overlapping(b):
-                for j in (i - 1, i + 1):
-                    if 0 <= j < len(ok):
-                        ok[j] = False
                 continue
             kept.append(i)
             index.add(i, b)
         out = []
         for i in kept:
-            b = layout.bounds[i]
-            realized = {cliff_connectivity.adjacency_dir(b, layout.bounds[j]) for j in index.touching(b) if j != i}
+            b, shape = plan.bounds[i], plan.shapes[i]
+            realized = {cliff_connectivity.adjacency_dir(b, plan.bounds[j]) for j in index.touching(b) if j != i}
             realized |= {
                 cliff_connectivity.adjacency_dir(b, self._existing[k].bounds) for k in self._existing_index.touching(b)
             }
-            realized.discard(None)
-            x, y = span_anchor(*layout.lows[i], *layout.spans[i])
+            x, y = span_anchor(*plan.lows[i], *shape.span)
             out.append(
                 ChainNode(
-                    unit_const=layout.consts[i],
-                    rotation=layout.rotations[i],
+                    unit_const=shape.const,
+                    rotation=_twin(shape.frames, plan.lows[i]) if shape.frames else self._fallback_frame,
                     x=x,
                     y=y,
                     bounds=b,
-                    resolved=ok[i] and realized == layout.dirsets[i],
-                    dirset=layout.dirsets[i],
+                    resolved=plan.ok[i] and shape.arms <= realized,
+                    arms=shape.arms,
                     index=i,
                 )
             )
         return out
+
+    # -- joins onto existing cliffs ----------------------------------------
+
+    def _existing_arms(self, k: int) -> frozenset[Direction]:
+        """The cardinal neighbours an existing cliff already has on the map."""
+        arms = self._existing_arm_cache.get(k)
+        if arms is None:
+            bounds = self._existing[k].bounds
+            found = {
+                cliff_connectivity.adjacency_dir(bounds, self._existing[j].bounds)
+                for j in self._existing_index.touching(bounds)
+                if j != k
+            }
+            arms = self._existing_arm_cache[k] = frozenset(found & _CARDINALS)
+        return arms
+
+    def _rewrite_frames(self, k: int, arms: frozenset[Direction]) -> tuple[int, ...] | None:
+        cliff = self._existing[k]
+        suffix = cliff_catalog.suffixes().get(cliff.unit_const)
+        if suffix is None:
+            return None
+        return cliff_connectivity.rewrite_frames(
+            arms, suffix, frame_limit=cliff_catalog.frame_count(cliff.unit_const)
+        )
+
+    def _joins(self) -> tuple[list[ChainRewrite], int]:
+        suffixes = cliff_catalog.suffixes()
+        # Per existing cliff, each side a placed node touches, and whether the
+        # node joins it there: shaped for that arm, with a leg of the same type.
+        gained: dict[int, dict[Direction, bool]] = {}
+        for node in self.nodes():
+            node_suffix = suffixes.get(node.unit_const)
+            for k in self._existing_index.touching(node.bounds):
+                d = cliff_connectivity.adjacency_dir(self._existing[k].bounds, node.bounds)
+                if d not in _CARDINALS:
+                    continue
+                suffix, back = suffixes.get(self._existing[k].unit_const), _opposite(d)
+                joined = (
+                    back in node.arms
+                    and suffix is not None
+                    and node_suffix is not None
+                    and leg_tall(suffix, d) == leg_tall(node_suffix, back)
+                )
+                sides = gained.setdefault(k, {})
+                sides[d] = sides.get(d, False) or joined
+        rewrites: list[ChainRewrite] = []
+        unjoined = 0
+        for k in sorted(gained):
+            cliff = self._existing[k]
+            prior = self._existing_arms(k)
+            new = set(gained[k]) - prior
+            # A run passing beside a straight or a corner reshapes nothing.
+            if not new or (len(prior) > 1 and k != self._anchor):
+                continue
+            frames = self._rewrite_frames(k, prior | new)
+            if frames is None:
+                unjoined += 1
+            elif len(prior) <= 1 and len(new) == 1 and cliff.rotation not in frames:
+                if gained[k][next(iter(new))]:
+                    rewrites.append(ChainRewrite(k, _twin(frames, (cliff.bounds[0], cliff.bounds[2]))))
+                else:
+                    # A run of the other facing met it end-on: two runs abut on their caps.
+                    unjoined += 1
+        return rewrites, unjoined

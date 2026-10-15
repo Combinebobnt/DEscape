@@ -65,7 +65,8 @@ class RegionUnit:
     dx: float  # relative to the source region's tx0
     dy: float  # relative to the source region's ty0
     z: float
-    rotation: float  # verbatim -- never transformed, see AGENTS.md's hard rule
+    # Verbatim at copy and paste; only region_transform.transform_block() derives a new one (AGENTS.md).
+    rotation: float
     status: int
     initial_animation_frame: int
     caption_string_id: int
@@ -390,7 +391,13 @@ class PasteMove:
     second chance to change what gets pasted.
 
     Lives here rather than in viewer.py so its invariants stay testable
-    without Qt, matching RegionBlock's own placement."""
+    without Qt, matching RegionBlock's own placement.
+
+    A turn or flip (GH #197) keeps `source`, the block as first pasted, and
+    `element`, the D4 element accumulated since, and re-derives `block` from
+    the two each time, so nothing drifts. `pivot2` is the doubled centre the
+    turns are about: set by the first turn, shifted by a move, never
+    re-derived. All three default to "no turn yet"."""
 
     block: RegionBlock
     anchor: tuple[int, int]
@@ -398,3 +405,6 @@ class PasteMove:
     do_elevation: bool
     do_units: bool
     record: object
+    source: RegionBlock | None = None
+    element: str = "id"
+    pivot2: tuple[int, int] | None = None

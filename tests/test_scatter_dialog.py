@@ -358,6 +358,28 @@ def test_state_round_trips_into_the_next_dialog() -> None:
 # -- GH #105: move the selected units -----------------------------------------
 
 
+@pytest.mark.gui
+@pytestmark_gui
+def test_a_random_pick_names_itself_and_hands_on_its_consts() -> None:
+    """GH #164: "Object:" reads the pick's name, and params() carries the mix."""
+    conftest.ensure_qapp()
+    dialog = scatter_dialog.ScatterDialog(
+        _scenario(), (0, 0, 10, 10), 83, 1, object_label="Villager (Random)", unit_consts=(83, 293)
+    )
+    assert dialog.object_label.text() == "Object: Villager (Random)"
+    params = dialog.params()
+    assert params.unit_const == 83
+    assert params.unit_consts == (83, 293)
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_a_real_pick_keeps_its_object_text_and_no_mix() -> None:
+    dialog = _dialog(_scenario())
+    assert dialog.object_label.text().endswith(f"({_FISH})")
+    assert dialog.params().unit_consts is None
+
+
 def _move_dialog(scenario, selected, region=(0, 0, 8, 8), unit_const=_FISH, last=None):
     conftest.ensure_qapp()
     return scatter_dialog.ScatterDialog(scenario, region, unit_const, 0, last=last, selected_units=selected)

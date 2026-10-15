@@ -109,12 +109,21 @@ def test_a_cross_document_paste_restamps_the_inner_lists() -> None:
 
 # -- GH #3: pasting into another document -------------------------------------
 
-VERSION = "1.58"  # the fixture's and the blank template's
+VERSION = "1.58"  # the fixture's
+V158_DONOR = Path(__file__).resolve().parent / "fixtures" / "blank_120x120_v158.aoe2scenario"
 
 
 # The library's scenario store is weak, and new_effect/new_condition look the
 # scenario up by uuid, so the sources' LoadedScenarios are kept alive here.
 _KEEP_ALIVE: list = []
+
+
+def _blank_destination():
+    """A blank 1.58 map, the fixture's own version. File > New Map's shipped
+    donor is 1.59, and a paste across versions is refused before it gets here."""
+    from descape.scenario_new import load_blank_scenario
+
+    return load_blank_scenario(120, load_map_and_units(V158_DONOR))
 
 
 def _cross_source():
@@ -145,7 +154,6 @@ def test_a_cross_document_paste_into_a_blank_map_round_trips(tmp_path: Path) -> 
     """GH #3's headline case, through the real write path: copy three triggers
     from A, paste them into a blank map B, add an effect to one afterwards,
     write B and reload it."""
-    from descape.scenario_new import load_blank_scenario
     from descape.scenario_write import write_scenario
     from descape.trigger_model import TriggerEditModel
 
@@ -153,7 +161,7 @@ def test_a_cross_document_paste_into_a_blank_map_round_trips(tmp_path: Path) -> 
     block = _cross_block(source)
     source_effects = len(source.triggers[3].effects)
 
-    blank = load_blank_scenario(120)
+    blank = _blank_destination()
     assert blank.scenario_version == VERSION
     model = TriggerEditModel(blank)
     results = []
@@ -507,7 +515,6 @@ def test_a_pasted_entrys_trigger_link_follows_its_target_by_identity() -> None:
 def test_an_entry_paste_into_another_document_clears_units_and_names_variables(tmp_path: Path) -> None:
     """GH #3's policy on the entry clipboard, into a blank map, written and
     reloaded: trigger links -1, unit references cleared, variable 0 named."""
-    from descape.scenario_new import load_blank_scenario
     from descape.scenario_write import write_scenario
     from descape.trigger_model import TriggerEditModel
 
@@ -519,7 +526,8 @@ def test_an_entry_paste_into_another_document_clears_units_and_names_variables(t
     assert block.variable_names == ((0, "fixture_var"),)
     links = trigger_clipboard.copy_entries(source, 2, [("effect", 0)], doc_id="A", scenario_version=VERSION)
 
-    blank = load_blank_scenario(120)
+    blank = _blank_destination()
+    assert blank.scenario_version == VERSION
     model = TriggerEditModel(blank)
     model.structural_edit(lambda m: m.add_trigger("Destination"))
     results = []

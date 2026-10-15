@@ -395,3 +395,28 @@ def test_a_paste_that_wrote_nothing_arms_no_move() -> None:
             check.setChecked(True)
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_a_move_carries_the_turn_state_and_shifts_the_pivot() -> None:
+    """GH #197: a turned paste stays turnable after a move, about a pivot that
+    moved with it by twice the tile delta (it is doubled)."""
+    import dataclasses
+
+    window = _select_window()
+    try:
+        _copy_and_paste(window, at=(20, 20))
+        state = window._paste_move
+        turned = dataclasses.replace(state, source=state.block, element="r", pivot2=(42, 42))
+        window._set_paste_move(turned)
+        _drag_region(window, (20, 20), (23, 22))
+        moved = window._paste_move
+        assert moved is not None and moved.anchor == (23, 22)
+        assert moved.source is state.block
+        assert moved.element == "r"
+        assert moved.pivot2 == (48, 46)
+
+        _drag_region(window, (23, 22), (24, 22))
+        assert window._paste_move.pivot2 == (50, 46)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

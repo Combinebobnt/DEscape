@@ -131,31 +131,28 @@ def _placement_boxes(window) -> tuple[bool, bool]:
     return window.unrestricted_param_action.isVisible(), window.off_grid_param_action.isVisible()
 
 
-def test_the_placement_boxes_show_for_place_unit_and_for_pan_in_units_mode() -> None:
+def test_the_placement_boxes_show_for_place_unit_and_move() -> None:
     """GH #176: "Free placement" then "Off-grid", under Place Unit and under
-    Pan in Units mode (where unit drags run), hidden everywhere else."""
+    Move (where unit drags run, TASK-012), hidden everywhere else, Pan in
+    Units mode included now that it only pans."""
     window = conftest.blank_window()
     try:
         assert window.unrestricted_check.text() == "Free placement"
         assert window.off_grid_check.text() == "Off-grid"
-        for mode in ("View", "Terrain", "Triggers"):
+        for mode in ("View", "Terrain", "Triggers", "Units"):
             window.mode_combo.setCurrentText(mode)
             assert window._current_tool == "pan"
             assert _placement_boxes(window) == (False, False), mode
             assert not window.unrestricted_check.isEnabled() and not window.off_grid_check.isEnabled()
 
-        window.mode_combo.setCurrentText("Units")
-        assert window._current_tool == "pan"
-        assert _placement_boxes(window) == (True, True)
-        assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
-        assert window.tool_param_separator_action.isVisible()
+        for tool in ("place_unit", "move"):
+            getattr(window, f"{tool}_action").setChecked(True)
+            assert window._current_tool == tool
+            assert _placement_boxes(window) == (True, True), tool
+            assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
+            assert window.tool_param_separator_action.isVisible()
 
-        window.place_unit_action.setChecked(True)
-        assert window._current_tool == "place_unit"
-        assert _placement_boxes(window) == (True, True)
-        assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
-
-        for other in ("wall_rect", "convert", "eraser", "ruler"):
+        for other in ("wall_rect", "convert", "eraser", "ruler", "select", "pan"):
             getattr(window, f"{other}_action").setChecked(True)
             assert window._current_tool == other
             assert _placement_boxes(window) == (False, False), other
@@ -184,7 +181,7 @@ def test_no_identifier_keeps_the_old_free_place_name() -> None:
     assert not [name for name in dir(settings.ToolDef) if "free_place" in name]
     place_unit = next(t for t in settings.TOOLS if t.tool_id == "place_unit")
     assert place_unit.supports_off_grid and place_unit.supports_unrestricted
-    assert viewer_common.OFF_GRID_TOOLS == viewer_common.UNRESTRICTED_TOOLS == {"place_unit"}
+    assert viewer_common.OFF_GRID_TOOLS == viewer_common.UNRESTRICTED_TOOLS == {"place_unit", "move"}
 
 
 def test_level_spin_dead_while_draw_selected() -> None:

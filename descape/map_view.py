@@ -9,7 +9,7 @@ from __future__ import annotations
 import gc
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from functools import lru_cache
 from typing import ClassVar
 
@@ -84,6 +84,7 @@ from descape.viewer_common import (
     EDIT_TOOLS,
     SHAPE_TOOLS,
     TOOL_EYEDROPPER,
+    TOOL_MOVE,
     TOOL_RULER,
     TOOL_SELECT,
     brush_applicable,
@@ -164,8 +165,19 @@ class MapView(QGraphicsView):
     # per event, so wheelEvent() accumulates rather than treating every event
     # as a full zoom step. See wheelEvent's own docstring.
     WHEEL_NOTCH_UNITS = 120
-    # GH #172: Ctrl+wheel up turns the Place Unit ghost clockwise (+1, like "."). Its feel is a human check.
+    # GH #172: the wheel's rotate binding turns the Place Unit ghost clockwise on wheel up (+1, like "."). Its feel is a human check.
     PLACE_WHEEL_DIRECTION = 1
+    # Settings > Keybinds' wheel rows: each settings.WHEEL_SLOTS slot's exact modifier set. Matched
+    # under the mask, so KeypadModifier cannot break the lookup (the reason _pan_modifiers exists).
+    _WHEEL_SLOT_MODIFIERS: ClassVar[dict[str, int]] = {
+        "plain": int(Qt.NoModifier),
+        "ctrl": int(Qt.ControlModifier),
+        "shift": int(Qt.ShiftModifier),
+        "alt": int(Qt.AltModifier),
+    }
+    _WHEEL_MODIFIER_MASK = int(Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier)
+    # Viewport pixels one wheel notch moves the view under a pan_vertical/pan_horizontal binding.
+    WHEEL_PAN_NOTCH_PX = 120
     # Idle gap that ends a wheel GESTURE, so the next event starts a fresh
     # one with a fresh +/-1 mip budget; also the minimum time between two
     # mip crossings in one continuous roll. PROVISIONAL, in the same sense as
@@ -489,7 +501,7 @@ class MapView(QGraphicsView):
         # View > Trigger Overlay: the pushed TriggerShape snapshot survives a
         # same-document set_source() like self._region; the items do not.
         self._trigger_shapes: list = []
-        self._trigger_emphasis: tuple[str, int] | None = None
+        self._trigger_emphasis: frozenset[tuple[str, int]] | None = None
         self._trigger_items: list[QGraphicsItem] = []
         self._trigger_overlay_enabled = settings.get_trigger_overlay()
         # The Ruler's grammar lives in the Qt-free descape.ruler; this
@@ -542,6 +554,14 @@ class MapView(QGraphicsView):
         self._tile_pick_item: QGraphicsPathItem | None = None
         # (cover tile, stack index) of the last pick, so a repeat click walks the stack.
         self._picker_cycle: tuple[tuple[int, int], int] | None = None
+        # The Eyedropper's Units-mode pick: on_unit_eyedrop(entry, cover_tile, modifiers),
+        # assigned by the window. Its own stack position, never shared with Pick from map's.
+        self.on_unit_eyedrop = lambda entry, cover_tile, modifiers: None
+        self._eyedrop_cycle: tuple[tuple[int, int], int] | None = None
+        # A sub-threshold left click under Pan in Units mode: on_pan_click(scene_pos),
+        # assigned by the window for its one-time hint; the press's device pos.
+        self.on_pan_click = lambda pos: None
+        self._pan_click_pos: QPointF | None = None
         # Repeating, self-stopping (see _on_viewport_poll_tick) rather than a
         # restarted single-shot -- a restart-on-every-move debounce would
         # never fire during a continuous drag (mouse-moves arrive every
@@ -611,16 +631,18 @@ class MapView(QGraphicsView):
         # the last (scene pos, modifiers) the tool hovered on the map, for refreshes.
         self._on_place_preview: Callable[[QPointF, object], None] = lambda pos, modifiers: None
         self._place_hover: tuple[QPointF, object] | None = None
-        # GH #172: Ctrl+wheel turns that ghost. Set by set_place_ghost_query()/set_place_rotate();
+        # GH #172: the wheel's rotate binding turns that ghost. Set by set_place_ghost_query()/set_place_rotate();
         # _place_wheel_accum is the sub-notch delta, dropped whenever the ghost goes.
         self._place_ghost_query: Callable[[], bool] = lambda: False
         self._on_place_rotate: Callable[[int], None] = lambda steps: None
         self._place_wheel_accum = 0
         # The Cliff tool's hover ghost, set by set_cliff_preview(): fn(tile) or fn(None) off the map.
         self._on_cliff_preview: Callable[[tuple[int, int] | None], None] = lambda tile: None
-        self._cliff_hover: tuple[int, int] | None = None
-        # GH #75's unit-drag hooks, set by set_unit_drag_hooks() for the same reason.
-        self._on_unit_click_release: Callable[[tuple[int, int]], None] = lambda key: None
+        # Its highlight's tiles in place of the brush diamond, see set_cliff_footprint().
+        self._cliff_footprint: tuple[tuple[int, int], ...] | None = None
+        self._cliff_hover = None
+        # The Move tool's press and GH #75's group test, set by set_unit_drag_hooks() for the same reason.
+        self._on_move_press: Callable = lambda pos, modifiers: None
         self._is_group_drag: Callable[[tuple[int, int]], bool] = lambda key: False
         # Draw Rectangle's Fill/Outline state, pushed down from the toolbar
         # combo by ViewerWindow.set_rect_filled() the same way set_brush()
@@ -633,11 +655,11 @@ class MapView(QGraphicsView):
         self._on_click_select = on_click_select
         # Phase 3.5b's b1.4/b1.5, the seventh and eighth injected callables.
         # on_unit_place(scene_pos, modifiers) fires on a Place-tool click;
-        # on_unit_move(key, scene_pos, modifiers) fires when a press-drag-
-        # release on an already-picked unit moves past _UNIT_DRAG_THRESHOLD_PX
+        # on_unit_move(key, scene_pos, modifiers) fires when a Move-tool
+        # press-drag-release on a unit moves past UNIT_DRAG_THRESHOLD_PX
         # (see mousePressEvent/mouseReleaseEvent) -- key is the (player_id,
-        # reference_id) pair picked at press time, resolved late by
-        # ViewerWindow exactly like on_click_select's own selection key.
+        # reference_id) pair on_move_press chose at press time, resolved late
+        # by ViewerWindow exactly like on_click_select's own selection key.
         self._on_unit_place = on_unit_place
         self._on_unit_move = on_unit_move
         # b1.5/b1.6, the ninth and tenth injected callables.
@@ -647,14 +669,13 @@ class MapView(QGraphicsView):
         self._on_unit_nudge = on_unit_nudge
         self._on_unit_delete = on_unit_delete
         # b2.3, the eleventh injected callable. on_marquee_select(keys,
-        # modifiers) fires once a completed marquee drag (a press-drag-
-        # release on EMPTY ground past UNIT_DRAG_THRESHOLD_PX, Pan tool,
-        # Units mode) is resolved to units -- keys are the (player_id,
-        # reference_id) pairs of every unit _units_in_scene_rect() found,
-        # already filter-respecting. A drag that never exceeds the threshold
-        # is a plain click, already handled by the on_click_select() call
-        # mousePressEvent makes unconditionally at press time (see that
-        # method's own comment on why the click fires regardless).
+        # modifiers) fires once a completed marquee drag (a Select-tool
+        # press-drag-release in Units mode that engaged, see
+        # _marquee_engaged()) is resolved to units. keys are the
+        # (player_id, reference_id) pairs of every unit _units_in_scene_rect()
+        # found, already filter-respecting. A drag that never engages is a
+        # plain click, already handled by the on_click_select() call
+        # mousePressEvent makes unconditionally at press time.
         self._on_marquee_select = on_marquee_select
         # Phase 2.8's Select tool, the twelfth injected callable.
         # on_region_selected(region | None) fires at the two moments a
@@ -730,10 +751,11 @@ class MapView(QGraphicsView):
         # scenario.player_colors, pushed by ViewerWindow (MapView holds no scenario).
         self._selection_player_colors: tuple | None = None
         self._selection_by_owner = settings.get_selection_by_owner()
-        # One item for every selected building's ring, created lazily on the
-        # first draw like the selection groups above.
-        self._range_ring_item: QGraphicsPathItem | None = None
+        # One item per colour group (_owner_group_key) for the selected buildings'
+        # rings, created lazily on the first draw like the selection groups above.
+        self._range_ring_items: dict = {}
         self._range_rings_enabled = settings.get_range_rings()
+        self._range_rings_by_owner = settings.get_range_rings_by_owner()
         # Memoized on the picked (player_id, reference_id) key, the same way
         # _highlight_key memoizes the tile highlight: mouseMoveEvent runs a
         # pick on every pixel, and rebuilding a 25-diamond path per pixel
@@ -743,20 +765,23 @@ class MapView(QGraphicsView):
         # set_unit_selection()'s own docstring for why MapView keeps a copy
         # at all rather than only ever being pushed one by ViewerWindow.
         self._unit_select_keys: list[tuple[int, int]] = []
-        # b1.5's move-by-drag: the unit key mousePressEvent picked (if any),
+        # b1.5's move-by-drag: the unit key a Move-tool press chose (if any),
         # and the press position, both set in the Units-mode branch and
         # consumed (cleared either way) by the matching mouseReleaseEvent --
-        # see _UNIT_DRAG_THRESHOLD_PX for why a press+release with no real
+        # see UNIT_DRAG_THRESHOLD_PX for why a press+release with no real
         # drag is a plain click, not a move.
         self._unit_drag_key: tuple[int, int] | None = None
         self._unit_drag_press_pos: QPointF | None = None
-        # b2.3's marquee: set only when a Units-mode press with the Pan tool
-        # lands on EMPTY ground (a press that hits a unit is b1.5's move-drag
-        # above, never both at once). Holds the PRESS-TIME device position;
-        # mouseReleaseEvent decides click vs. drag off the same
-        # UNIT_DRAG_THRESHOLD_PX b1.5 already uses, then converts start/end
-        # into a scene rect and hands it to _units_in_scene_rect().
+        # b2.3's marquee: set by every Select-tool press in Units mode, on a
+        # unit or not (a Move press arms the drag above instead, never both).
+        # Holds the PRESS-TIME device position; _marquee_engaged() decides
+        # click vs. rectangle, then mouseReleaseEvent converts start/end into
+        # a scene rect for _units_in_scene_rect(). _marquee_press_tile is the
+        # tile under a press that hit a unit, else None; _marquee_press_on_unit
+        # tells a hit over an unresolved pixel (a Stepped skirt) from a miss.
         self._marquee_start_pos: QPointF | None = None
+        self._marquee_press_tile: tuple[int, int] | None = None
+        self._marquee_press_on_unit = False
         self._marquee_item: QGraphicsRectItem | None = None
         self._stroke_active = False
         # True while this view's stroke holds gc disabled (_pause_gc_for_stroke).
@@ -891,6 +916,13 @@ class MapView(QGraphicsView):
         self._wheel_last_t = 0.0
         self._wheel_budget_t = 0.0
         self.set_zoom_anchor_mode(settings.get_zoom_centered_on_cursor())
+        # Settings > Keybinds' wheel rows, masked modifiers -> settings.WHEEL_ACTIONS id, and the
+        # brush hooks from set_wheel_brush_hooks(). _brush_wheel_accum is the sub-notch delta.
+        self._wheel_bindings: dict[int, str] = {}
+        self._wheel_brush_query: Callable[[], bool] = lambda: False
+        self._on_wheel_brush_step: Callable[[int], None] = lambda steps: None
+        self._brush_wheel_accum = 0
+        self.set_wheel_bindings(settings.get_wheel_bindings())
         self.setMouseTracking(True)
 
     def _rebuild_overlay_ink(self) -> None:
@@ -1015,8 +1047,9 @@ class MapView(QGraphicsView):
         if None in self._footprint_items:
             # Owner groups draw in player colours, which this setting does not reach.
             self._footprint_items[None].setPen(self._footprint_pen)
-        if self._range_ring_item is not None:
-            self._range_ring_item.setPen(self._range_ring_pen)
+        if None in self._range_ring_items:
+            # Owner groups draw in player colours, which this setting does not reach.
+            self._range_ring_items[None].setPen(self._range_ring_pen)
         if self._mirror_overlay_outline_item is not None:
             self._mirror_overlay_outline_item.setPen(self._mirror_overlay_outline_pen)
             self._mirror_overlay_fill_item.setBrush(QBrush(self._mirror_overlay_fill_color))
@@ -1100,6 +1133,19 @@ class MapView(QGraphicsView):
         self._zoom_on_cursor = centered_on_cursor
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
 
+    def set_wheel_bindings(self, slots: dict[str, str]) -> None:
+        """Settings > Keybinds' wheel rows: slot -> action, as
+        settings.get_wheel_bindings() returns them. Live on the next wheel event."""
+        self._wheel_bindings = {
+            modifiers: slots[slot] for slot, modifiers in self._WHEEL_SLOT_MODIFIERS.items() if slot in slots
+        }
+
+    def set_wheel_brush_hooks(self, query: Callable[[], bool], step: Callable[[int], None]) -> None:
+        """`query()` says whether the active tool has a brush size, and
+        `step(notches)` steps it, +1 per wheel-up notch, clamping at its bounds."""
+        self._wheel_brush_query = query
+        self._on_wheel_brush_step = step
+
     def set_brush(self, size: int, shape: str) -> None:
         """Updates the brush the hover-preview highlight (and, via
         ViewerWindow reading these same values back at stroke time, the
@@ -1134,7 +1180,7 @@ class MapView(QGraphicsView):
         self._on_place_preview = fn
 
     def set_place_ghost_query(self, fn: Callable[[], bool]) -> None:
-        """GH #172: `fn()` says whether Place Unit's ghost is showing, so Ctrl+wheel turns it."""
+        """GH #172: `fn()` says whether Place Unit's ghost is showing, so the wheel's rotate binding turns it."""
         self._place_ghost_query = fn
 
     def set_place_rotate(self, fn: Callable[[int], None]) -> None:
@@ -1142,7 +1188,7 @@ class MapView(QGraphicsView):
         self._on_place_rotate = fn
 
     def reset_place_wheel(self) -> None:
-        """Drops a half-turned Ctrl+wheel notch (a catalog pick change)."""
+        """Drops a half-turned notch of the wheel's rotate binding (a catalog pick change)."""
         self._place_wheel_accum = 0
 
     def set_cliff_preview(self, fn: Callable[[tuple[int, int] | None], None]) -> None:
@@ -1153,10 +1199,38 @@ class MapView(QGraphicsView):
 
     def refresh_cliff_ghost(self) -> None:
         """Re-runs the Cliff hover preview at the last hovered tile, for a
-        picker change with no mouse move. A no-op unless Cliff is the active
-        tool, no stroke is open and the cursor is over the map."""
+        picker change, a release or an undo with no mouse move. A no-op unless
+        Cliff is the active tool, no stroke is open and the cursor is over the map."""
         if self._cliff_hover is not None and self._tool == "cliff" and not self._stroke_active:
             self._on_cliff_preview(self._cliff_hover)
+
+    @property
+    def _cliff_hover(self) -> tuple[int, int] | None:
+        """The tile the Cliff tool last hovered, None off the map or once
+        another tool, mode or scene owns the cursor."""
+        return self._cliff_hover_tile
+
+    @_cliff_hover.setter
+    def _cliff_hover(self, tile: tuple[int, int] | None) -> None:
+        self._cliff_hover_tile = tile
+        if tile is None:
+            # A footprint belongs to a hover: every site that drops one drops the other.
+            self._cliff_footprint = None
+
+    def set_cliff_footprint(self, tiles) -> None:
+        """The tiles the Cliff tool's highlight covers in place of the brush
+        diamond: what a click would place on hover, the run's head mid-drag.
+        None (nothing placeable there) is the cursor tile, as for any brush."""
+        tiles = tuple(tiles) if tiles else None
+        if tiles == self._cliff_footprint:
+            return
+        self._cliff_footprint = tiles
+        if self._tool != "cliff":
+            return
+        if tiles is not None:
+            self._update_highlight(*tiles[0])
+        elif self._cliff_hover is not None:
+            self._update_highlight(*self._cliff_hover)
 
     def refresh_place_ghost(self) -> None:
         """Re-runs the Place Unit hover preview at the last hovered point with
@@ -1217,15 +1291,16 @@ class MapView(QGraphicsView):
         """Mirrors ViewerWindow's own self.mode -- phase 3's P3-d.
 
         Modes and tools are orthogonal in this class (Pan and every edit tool
-        exist in every mode; only reachability differs), and Units mode is
-        deliberately a MODE rather than a fifth tool: mousePressEvent branches
-        on self._tool through a CLICK_TOOLS/EDIT_TOOLS/fall-through-to-Pan
-        split, and threading a "select" tool into that split would fight its
-        structure for no benefit. A top-level mode branch is the clean cut.
+        exist in every mode; only reachability differs). Units mode has a
+        top-level branch in mousePressEvent/mouseMoveEvent, and inside it the
+        tool decides (TASK-252): Select picks, Move drags, Pan pans. The one
+        "select" tool means a tile region outside Units mode and units in it.
         """
         if mode == self._mode:
             return
         self._mode = mode
+        self._brush_wheel_accum = 0  # a half-stepped brush notch belongs to the mode being left
+        self._eyedrop_cycle = None
         # Same reasoning as the tool switch: a pending measurement has no owner
         # in the next mode. Pinned rulers stay.
         self._clear_ruler()
@@ -1242,6 +1317,7 @@ class MapView(QGraphicsView):
             self._place_hover = None
             self._cliff_hover = None
             self._marquee_start_pos = None
+            self._marquee_press_tile = None
             self._clear_marquee()
         # Defensive, mirroring the _unit_drag_key reset above: a mode
         # switch mid-drag reaches the tool through _update_tool_enabled's
@@ -1249,19 +1325,18 @@ class MapView(QGraphicsView):
         # already), so this is a second belt on the same trousers.
         self._cancel_shape()
         self._sync_stack_badges_visible()
-        # Units mode forces NoDrag regardless of the active tool (Pan is the
-        # only tool reachable there) -- without this a left click would fall
-        # through to ScrollHandDrag and pan instead of selecting.
+        # Units mode forces NoDrag for every tool but Pan. Without this a
+        # Select or Move press would fall through to ScrollHandDrag and pan.
         self._apply_drag_mode()
         self._apply_tool_cursor()
 
     def _apply_drag_mode(self) -> None:
-        # The Ruler needs NoDrag for the same reason Units mode does, and is
+        # The Ruler needs NoDrag for the same reason Select and Move do, and is
         # named explicitly because it is NOT in EDIT_TOOLS: left-dragging is
         # how a measurement is made, so leaving ScrollHandDrag on would pan
         # the view instead and the tool would never work at all.
         if (
-            self._mode == "units"
+            (self._mode == "units" and self._tool != "pan")
             or self._unit_picker_active
             or self._tile_picker_kind is not None
             or self._tool in EDIT_TOOLS
@@ -1352,23 +1427,33 @@ class MapView(QGraphicsView):
             self.scene().removeItem(self._tile_pick_item)
             self._tile_pick_item = None
 
-    def _picker_click(self, pos: QPointF) -> None:
-        """One pick: the unit under pos, walking down a stack on repeat clicks."""
+    def _cycle_pick(self, pos: QPointF, cycle_attr: str):
+        """One pick: (entry, cover tile) for the unit under pos, walking down a
+        stack on repeat clicks, or None on empty ground. `cycle_attr` names the
+        caller's own (cover tile, stack index) attribute."""
         found = self.pick_unit_cover_at(pos)
         if found is None:
-            return
+            return None
         entry, cover_tile = found
-        previous = self._picker_cycle
+        previous = getattr(self, cycle_attr)
         entry, index = unit_pick.stack_cycle_step(
             self.stack_group_at(cover_tile), entry, previous[1] if previous and previous[0] == cover_tile else None
         )
-        self._picker_cycle = (cover_tile, index) if index >= 0 else None
-        self.on_unit_pick(unit_pick.unit_key(entry.player_id, entry.unit))
+        setattr(self, cycle_attr, (cover_tile, index) if index >= 0 else None)
+        return entry, cover_tile
+
+    def _picker_click(self, pos: QPointF) -> None:
+        """Trigger Pick from map's click: reports the picked unit's key."""
+        found = self._cycle_pick(pos, "_picker_cycle")
+        if found is not None:
+            entry, _cover_tile = found
+            self.on_unit_pick(unit_pick.unit_key(entry.player_id, entry.unit))
 
     def set_unit_index(self, index) -> None:
         """Swaps the pick index (a filter change rebuilds it) and drops any
         hover/selection keys that the new index can no longer resolve."""
         self._unit_index = index
+        self._eyedrop_cycle = None  # the stacks it indexed are rebuilt below
         self.refresh_stack_groups()
         self._clear_unit_hover()
         self.refresh_unit_highlight()
@@ -1552,8 +1637,8 @@ class MapView(QGraphicsView):
 
     def _owner_group_key(self, player_id: int, by_owner: bool):
         """The owner's RGB, or None for the configured colour (`by_owner` off,
-        GAIA, or no colours pushed). Shared by the selection and the footprint
-        outlines, whose two by-owner toggles are independent."""
+        GAIA, or no colours pushed). Shared by the selection, the footprint
+        outlines and the range rings, whose three by-owner toggles are independent."""
         colors = self._selection_player_colors
         if not by_owner or colors is None or player_id == GAIA_PLAYER_ID:
             return None
@@ -1680,8 +1765,9 @@ class MapView(QGraphicsView):
         )
 
     def _draw_unit_range_rings(self, entries) -> None:
-        """One QPainterPath unioning every qualifying entry's ring, the shape
-        _draw_unit_selection() already uses for N units.
+        """One QPainterPath per owner colour group unioning that group's
+        qualifying rings, the shape _draw_unit_selection() already uses for N
+        units. Colour by Owner off is the one configured group (GH #156).
 
         The ring draws OVER the sprites, unlike the game's own, which
         composites its circle into the terrain so a palisade occludes it.
@@ -1690,22 +1776,31 @@ class MapView(QGraphicsView):
         if not self._range_rings_enabled:
             self._clear_unit_range_rings()
             return
-        polygons = [points for points in (self._range_ring_points(e) for e in entries) if points]
-        if not polygons:
+        paths: dict = {}
+        for entry in entries:
+            points = self._range_ring_points(entry)
+            if points:
+                key = self._owner_group_key(entry.player_id, self._range_rings_by_owner)
+                _add_closed_polygons(paths.setdefault(key, QPainterPath()), [points])
+        if not paths:
             self._clear_unit_range_rings()
             return
-        path = QPainterPath()
-        _add_closed_polygons(path, polygons)
-        if self._range_ring_item is None:
-            self._range_ring_item = self.scene().addPath(path, self._range_ring_pen)
-            self._range_ring_item.setZValue(self.RANGE_RING_Z)
-        else:
-            self._range_ring_item.setPath(path)
+        for key in [k for k in self._range_ring_items if k not in paths]:
+            self.scene().removeItem(self._range_ring_items.pop(key))
+        for key, path in paths.items():
+            item = self._range_ring_items.get(key)
+            if item is None:
+                # Cosmetic width 0 for an owner group too: see _range_ring_pen.
+                pen = self._range_ring_pen if key is None else QPen(QColor(*key), 0)
+                item = self._range_ring_items[key] = self.scene().addPath(path, pen)
+                item.setZValue(self.RANGE_RING_Z)
+            else:
+                item.setPath(path)
 
     def _clear_unit_range_rings(self) -> None:
-        if self._range_ring_item is not None:
-            self.scene().removeItem(self._range_ring_item)
-            self._range_ring_item = None
+        for item in self._range_ring_items.values():
+            self.scene().removeItem(item)
+        self._range_ring_items = {}
 
     def set_range_rings(self, enabled: bool) -> None:
         """Shows or hides View > Range Rings. Like set_footprint_outlines,
@@ -1715,6 +1810,11 @@ class MapView(QGraphicsView):
         self._range_rings_enabled = enabled
         if not enabled:
             self._clear_unit_range_rings()
+        self.refresh_unit_highlight()
+
+    def set_range_rings_by_owner(self, enabled: bool) -> None:
+        """GH #156: each ring in its owner's player colour, GAIA in the configured one."""
+        self._range_rings_by_owner = enabled
         self.refresh_unit_highlight()
 
     def refresh_unit_highlight(self) -> None:
@@ -1765,12 +1865,41 @@ class MapView(QGraphicsView):
             self.scene().removeItem(self._marquee_item)
             self._marquee_item = None
 
-    def set_unit_drag_hooks(self, on_click_release, is_group_drag) -> None:
-        """GH #75's two viewer hooks, a setter like set_place_shape_query:
-        on_click_release(key) ends a sub-threshold press on a unit, and
-        is_group_drag(key) says the drag moves a whole selection."""
-        self._on_unit_click_release = on_click_release
+    def set_unit_drag_hooks(self, on_move_press, is_group_drag) -> None:
+        """The Move tool's two viewer hooks, a setter like set_place_shape_query:
+        on_move_press(scene_pos, modifiers) returns the key a press drags (or
+        None), and is_group_drag(key) says the drag moves a whole selection (GH #75)."""
+        self._on_move_press = on_move_press
         self._is_group_drag = is_group_drag
+
+    def region_drag_live(self) -> bool:
+        """Whether a Select-tool region drag or pasted-region move is mid-gesture."""
+        return self._select_anchor is not None or self._move_anchor is not None
+
+    def _units_select(self) -> bool:
+        return self._mode == "units" and self._tool == TOOL_SELECT
+
+    def _units_move(self) -> bool:
+        return self._mode == "units" and self._tool == TOOL_MOVE
+
+    def _marquee_engaged(self, viewport_pos, tile) -> bool:
+        """Whether a Select-tool marquee is a rectangle yet rather than a click:
+        past UNIT_DRAG_THRESHOLD_PX and, for a press on a unit, off its tile
+        (an unresolved tile differs from a resolved one). The move branch draws and the release decides by it."""
+        start = self._marquee_start_pos
+        if start is None or (viewport_pos - start).manhattanLength() <= self.UNIT_DRAG_THRESHOLD_PX:
+            return False
+        return not self._marquee_press_on_unit or tile != self._marquee_press_tile
+
+    def _reset_unit_gesture(self) -> None:
+        """Drops whatever unit drag or marquee an earlier press left armed: a
+        release swallowed by another branch (Ruler, shapes) must not misroute this one."""
+        self._unit_drag_key = None
+        self._unit_drag_press_pos = None
+        self._marquee_start_pos = None
+        self._marquee_press_tile = None
+        self._clear_marquee()
+        self._pan_click_pos = None
 
     def _clamped_to_map_rect(self, pos: QPointF) -> QPointF:
         """pos pulled inside _map_rect, so a group release past the edge still commits."""
@@ -1921,7 +2050,14 @@ class MapView(QGraphicsView):
             corner_rise=None if cache is None else cache.corner_rise,
             terrain_tile=tile,
             farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
+            sprites_on=self._objects_after_terrain(),
         )
+
+    def _objects_after_terrain(self) -> bool:
+        """Whether the live cache paints objects after all terrain (TASK-133),
+        which pick's terrain occlusion has to follow (TASK-319)."""
+        cache = None if self._canvas_item is None else self._canvas_item._cache
+        return cache is not None and cache.with_units and cache.sprites_enabled
 
     def set_tool(self, tool: str) -> None:
         # Switching tools mid-drag (e.g. a keyboard shortcut fired while the
@@ -1946,6 +2082,11 @@ class MapView(QGraphicsView):
         # tool) must not linger until then.
         self._clear_highlight()
         self._clear_pan_highlight()
+        # Units mode's hover outline too: Pan shows none, so a switch to it
+        # with the cursor resting on a unit must not leave one behind.
+        self._clear_unit_hover()
+        # The Eyedropper's stack position belongs to the tool, as its hover outline does.
+        self._eyedrop_cycle = None
         # A pending measurement belongs to the Ruler, so leaving the tool
         # drops it. Finished ones are pinned and stay (GH #108/#109).
         if tool != TOOL_RULER:
@@ -1967,6 +2108,7 @@ class MapView(QGraphicsView):
         # not to the tool, so even switching between Line and Rectangle
         # drops it.
         self._cancel_shape()
+        self._brush_wheel_accum = 0  # a half-stepped brush notch belongs to the tool being left
         self._sync_pulse_timer()
         # Routed through _apply_drag_mode() rather than set here directly, so
         # Units mode's NoDrag can't be undone by a tool switch.
@@ -1984,9 +2126,14 @@ class MapView(QGraphicsView):
             return
         # Above the mode check, unlike every other tool: Units mode's
         # pointing hand otherwise wins and the Ruler loses its aiming cursor
-        # in the one mode where precision matters most.
-        if self._tool in (TOOL_RULER, TOOL_EYEDROPPER, TOOL_SELECT):
+        # in the one mode where precision matters most. Select picks units
+        # there, so it takes the pointing hand like the other unit tools.
+        if self._tool in (TOOL_RULER, TOOL_EYEDROPPER) or (self._tool == TOOL_SELECT and not self._units_select()):
             self.setCursor(Qt.CrossCursor)
+        elif self._units_move():
+            self.setCursor(Qt.SizeAllCursor)
+        elif self._mode == "units" and self._tool == "pan":
+            self.unsetCursor()  # the hand drag's own open/closed hand
         elif self._mode == "units":
             self.setCursor(Qt.PointingHandCursor)
         elif self._tool in EDIT_TOOLS:
@@ -2182,6 +2329,10 @@ class MapView(QGraphicsView):
                 if self._map_rect.contains(pos):
                     self._picker_click(pos)
             return
+        # No single tool arms every unit gesture field, so a stale drag or marquee
+        # from a swallowed release dies at the next left press, whichever tool presses.
+        if self._mode == "units" and event.button() == Qt.LeftButton:
+            self._reset_unit_gesture()
         # The Ruler, deliberately ABOVE the Units branch below rather than
         # beside the tool checks under it: that branch is independent of the
         # active tool, so it would otherwise swallow every ruler click in
@@ -2213,12 +2364,11 @@ class MapView(QGraphicsView):
                     self._update_ruler()
                     self._report_ruler(previous)
             return
-        # The Select tool, is_edit_tool=False like the Ruler above and given
-        # the same early, mode-independent priority (it only ever applies in
-        # Terrain mode in practice, via ToolDef.modes, but nothing here
-        # depends on that). Left button only: a rectangle drag has no
-        # meaningful right-button inverse.
-        if self._tool == TOOL_SELECT:
+        # The Select tool's region drag, is_edit_tool=False like the Ruler
+        # above and given the same early priority, in every mode but Units,
+        # where Select picks units in the Units branch below. Left button
+        # only: a rectangle drag has no meaningful right-button inverse.
+        if self._tool == TOOL_SELECT and self._mode != "units":
             if event.button() == Qt.LeftButton:
                 pos = self.mapToScene(event.pos())
                 if self._pos_on_map(pos):
@@ -2230,6 +2380,16 @@ class MapView(QGraphicsView):
                         self._select_anchor = tile
                         self._select_current = tile
                     self._update_region_overlay()
+            return
+        # The Eyedropper in Units mode picks a unit, above the Units branch, which would place one on
+        # any click_only tool's click. Left button, inside the canvas; Terrain mode goes on below.
+        if self._tool == TOOL_EYEDROPPER and self._mode == "units":
+            if event.button() == Qt.LeftButton and self._map_rect is not None:
+                pos = self.mapToScene(event.pos())
+                if self._map_rect.contains(pos):
+                    found = self._cycle_pick(pos, "_eyedrop_cycle")
+                    if found is not None:
+                        self.on_unit_eyedrop(*found, event.modifiers())
             return
         # Draw Line / Draw Rectangle, above the EDIT_TOOLS stroke branch
         # below (they are edit tools, so they would otherwise open a stroke)
@@ -2261,14 +2421,12 @@ class MapView(QGraphicsView):
                     self._shape_modifiers = event.modifiers()
                     self._update_shape_preview()
             return
-        # Units mode's selection click, deliberately ABOVE the CLICK_TOOLS/
-        # EDIT_TOOLS checks and independent of whatever tool is active (the
-        # Ruler is handled above; Pan and Place Unit are the only other tools
-        # reachable in Units mode -- Convert (b2.5) and the Eraser are excluded below so they
-        # fall through to the generic stroke branch further down instead,
-        # since a Convert drag is a mutation with its own undo record, not a
-        # selection gesture). Left button only: selection has no meaningful
-        # right-button inverse, and phase 3 mutates nothing for one to undo.
+        # Units mode's left press, ABOVE the CLICK_TOOLS/EDIT_TOOLS checks,
+        # gated by tool (TASK-252): Select picks, Move drags, Pan falls through
+        # to the hand drag. The Ruler and the Eyedropper are handled above;
+        # Convert (b2.5) and the Eraser are excluded so they reach the generic
+        # stroke branch further down, since their drag is a mutation with its
+        # own undo record, not a selection gesture. Left button only.
         if (
             self._mode == "units"
             and event.button() == Qt.LeftButton
@@ -2277,36 +2435,35 @@ class MapView(QGraphicsView):
         ):
             pos = self.mapToScene(event.pos())
             # Place Unit (b1.4) is click_only, so it's in CLICK_TOOLS -- and
-            # unambiguously so here, since no OTHER click_only tool is ever
-            # reachable in Units mode (Paint Can, the only other member, gates
-            # on Terrain mode). A place click is a distinct action from
-            # selection, not an additional effect of it.
+            # unambiguously so here: the Eyedropper, the other click_only tool
+            # reachable in Units mode, returned from its own branch above, and
+            # Paint Can and Create Objects gate on other modes. A place click
+            # is a distinct action from selection, not an additional effect of it.
             if self._tool in CLICK_TOOLS:
                 if self._pos_on_map(pos):
                     self._on_unit_place(pos, event.modifiers())
                 return
-            # b1.5's move-by-drag: remember what (if anything) this press hit
-            # and where, so mouseReleaseEvent can tell a plain click from a
-            # drag. The selection click itself still fires unconditionally --
-            # a press-then-tiny-jitter-then-release must still select.
-            #
-            # on_click_select's return IS the press's pick result: it returns
-            # the key it acted on, or None on empty ground, and it decides that
-            # from pick_unit_cover_at(), which pick_unit_at() is a one-line
-            # wrapper over. So a separate pick_unit_at() here was a second full
-            # unit pick per click (perf item: "a Units-mode CLICK does two full
-            # unit picks"), and its `selected_key or unit_key(entry...)`
-            # fallback was unreachable, since the two can only be None together.
-            # After a repeat click on a stack the key is a lower unit than the
-            # top one, which is exactly the one dragging must move.
-            selected_key = self._on_click_select(pos, event.modifiers())
-            self._unit_drag_key = selected_key
-            self._unit_drag_press_pos = event.pos()
-            # b2.3's marquee: only a candidate when the press hit nothing --
-            # a hit is already b1.5's move-drag above, and the two must never
-            # both be live (mouseReleaseEvent checks _unit_drag_key first).
-            self._marquee_start_pos = event.pos() if selected_key is None else None
-            return
+            # The ghost of a drag that never released; Place Unit keeps its hover ghost above.
+            self._clear_unit_ghost()
+            if self._units_select():
+                # The click fires at press; a press-then-jitter-then-release
+                # must still select. A press on a unit arms the marquee too,
+                # but it only engages once the cursor leaves that unit's tile.
+                # on_click_select's return IS the press's one unit pick.
+                selected_key = self._on_click_select(pos, event.modifiers())
+                self._marquee_start_pos = event.pos()
+                self._marquee_press_on_unit = selected_key is not None
+                self._marquee_press_tile = self._pick_tile(pos) if selected_key is not None else None
+                return
+            if self._units_move():
+                # b1.5's move-by-drag: the key to drag (None on empty ground)
+                # and where, so mouseReleaseEvent can tell a click from a drag.
+                self._unit_drag_key = self._on_move_press(pos, event.modifiers())
+                self._unit_drag_press_pos = event.pos()
+                return
+            if self._tool == "pan":
+                # Falls through to the hand drag; the release says whether it was a click.
+                self._pan_click_pos = event.pos()
         # Click-only tools (Paint Can) never open a stroke: one edit per
         # press, nothing per drag-entered tile. Handled here, above the
         # stroke block, so the shared begin_stroke/commit_stroke pair below
@@ -2408,7 +2565,8 @@ class MapView(QGraphicsView):
         # convention as the Ruler's endpoint) into a real region via
         # set_region(), then announces it -- the one path
         # ViewerWindow.on_region_selected() shares with Select All/Deselect.
-        if self._tool == TOOL_SELECT:
+        # Not in Units mode, where a Select release ends a marquee below.
+        if self._tool == TOOL_SELECT and self._mode != "units":
             if event.button() == Qt.LeftButton and self._move_anchor is not None:
                 anchor, current = self._move_anchor, self._move_current
                 self._move_anchor = None
@@ -2445,7 +2603,8 @@ class MapView(QGraphicsView):
             return
         # b1.5's move-by-drag: the matching half of the press-time bookkeeping
         # above. Cleared unconditionally either way -- a drag is decided once,
-        # here, never left pending for a later event.
+        # here, never left pending for a later event. Keyed on the state, not
+        # the tool, so a drag begun under Move still commits after a key switch.
         if event.button() == Qt.LeftButton and self._unit_drag_key is not None:
             key = self._unit_drag_key
             press_pos = self._unit_drag_press_pos
@@ -2468,21 +2627,19 @@ class MapView(QGraphicsView):
                     self._on_unit_move(key, self._clamped_to_map_rect(pos), event.modifiers())
                 elif self._pos_on_map(pos):
                     self._on_unit_move(key, pos, event.modifiers())
-            elif not moved:
-                self._on_unit_click_release(key)
             return
         # b2.3's marquee: the matching half of the press-time bookkeeping in
         # mousePressEvent, same decide-once-here shape as b1.5's move-drag
-        # above (and mutually exclusive with it -- see that branch's own
-        # comment). A drag that never exceeded the threshold was already a
-        # plain click, handled by mousePressEvent's unconditional
-        # on_click_select() call; nothing further to do here for that case.
+        # above (and mutually exclusive with it). A release that never
+        # engaged was already a plain click, handled by mousePressEvent's
+        # unconditional on_click_select() call; nothing further to do here.
         if event.button() == Qt.LeftButton and self._marquee_start_pos is not None:
+            engaged = self._marquee_engaged(event.pos(), self._pick_tile(self.mapToScene(event.pos())))
             start_pos = self._marquee_start_pos
             self._marquee_start_pos = None
+            self._marquee_press_tile = None
             self._clear_marquee()
-            moved = (event.pos() - start_pos).manhattanLength() > self.UNIT_DRAG_THRESHOLD_PX
-            if moved and self._map_rect is not None:
+            if engaged and self._map_rect is not None:
                 rect = QRectF(self.mapToScene(start_pos), self.mapToScene(event.pos())).normalized()
                 keys = self._units_in_scene_rect(rect)
                 self._on_marquee_select(keys, event.modifiers())
@@ -2497,6 +2654,17 @@ class MapView(QGraphicsView):
         if event.button() == self._stroke_button and self._stroke_active:
             self._end_stroke()
             return
+        # A Pan press in Units mode that never became a pan: a click, which
+        # the window answers with a one-time hint. At release, so a pan drag
+        # that starts on a unit says nothing.
+        if event.button() == Qt.LeftButton and self._pan_click_pos is not None:
+            press_pos, self._pan_click_pos = self._pan_click_pos, None
+            if (
+                self._mode == "units"
+                and self._tool == "pan"
+                and (event.pos() - press_pos).manhattanLength() <= self.UNIT_DRAG_THRESHOLD_PX
+            ):
+                self.on_pan_click(self.mapToScene(event.pos()))
         super().mouseReleaseEvent(event)
 
     # Arrow-key nudge deltas, in tiles -- Qt.Key -> (dx, dy). This MAPPING is
@@ -2800,6 +2968,7 @@ class MapView(QGraphicsView):
         # a cursor that has left the view.
         if self._marquee_start_pos is not None:
             self._marquee_start_pos = None
+            self._marquee_press_tile = None
             self._clear_marquee()
         # The ghost only, not _unit_drag_key: Qt's implicit grab still routes
         # the eventual release back here, so a drag that merely crosses the
@@ -2959,6 +3128,13 @@ class MapView(QGraphicsView):
         approximate outline is fine here since this path only ever feeds
         display, never a pick -- unlike _update_pan_highlight below, which
         stays exact."""
+        if self._tool == "cliff" and self._cliff_footprint is not None:
+            # The Cliff tool's own footprint, whichever tile the cursor is on:
+            # a per-move repaint or a revisited tile cannot put the diamond back.
+            key = ("cliff", self._cliff_footprint)
+            if key != self._highlight_key:
+                self._set_highlight_tiles(list(self._cliff_footprint), key)
+            return
         key = (tile_x, tile_y, self._brush_size, self._brush_shape)
         if key == self._highlight_key:
             return
@@ -3373,19 +3549,21 @@ class MapView(QGraphicsView):
             self.scene().removeItem(item)
         self._mirror_axis_items = []
 
-    def show_trigger_overlay(self, shapes: Sequence, emphasis: tuple[str, int] | None) -> None:
-        """GH #41: one trigger's areas, locations and runs, from
+    def show_trigger_overlay(self, shapes: Sequence, emphasis: Collection[tuple[str, int]] | None) -> None:
+        """GH #41: the selected triggers' areas, locations and runs, from
         trigger_geometry.TriggerShape snapshots. `emphasis` is the selected
-        entry's (kind, index): it draws at full strength and every other entry
-        dimmed; None draws everything at full strength. Walls are not drawn.
-        Referenced units ("unit" shapes) are outlined, never filled."""
+        entries' (kind, index) refs (GH #168): they draw at full strength and
+        every other entry dimmed; None or empty draws everything at full
+        strength. Walls are not drawn. Referenced units ("unit" shapes) are
+        outlined, never filled."""
         drawn = (trigger_geometry.SHAPE_AREA, trigger_geometry.SHAPE_LOCATION, trigger_geometry.SHAPE_UNIT)
         self._trigger_shapes = [s for s in shapes if s.shape in drawn]
-        self._trigger_emphasis = emphasis
+        # Empty folds into None, so "everything strong" has one representation.
+        self._trigger_emphasis = frozenset(emphasis) if emphasis else None
         self._rebuild_trigger_overlay()
 
     def clear_trigger_overlay(self) -> None:
-        """No single trigger selected, or its document went away. Idempotent."""
+        """No trigger selected, or its document went away. Idempotent."""
         self._trigger_shapes = []
         self._trigger_emphasis = None
         self._rebuild_trigger_overlay()
@@ -3473,11 +3651,13 @@ class MapView(QGraphicsView):
         units = {True: QPainterPath(), False: QPainterPath()}
         marks = {True: QPainterPath(), False: QPainterPath()}
         runs: list[tuple[QPointF, str]] = []
-        by_entry: dict[tuple[str, int], list] = {}
+        # Keyed on the trigger too: two triggers' ("effect", 1) must never pair into one run (GH #168).
+        by_entry: dict[tuple[int, tuple[str, int]], list] = {}
         for shape in self._trigger_shapes:
-            by_entry.setdefault(shape.entry_ref, []).append(shape)
-        for ref, shapes in by_entry.items():
-            strong = self._trigger_emphasis is None or ref == self._trigger_emphasis
+            by_entry.setdefault((shape.trigger_index, shape.entry_ref), []).append(shape)
+        for key, shapes in by_entry.items():
+            _trigger_index, entry_ref = key
+            strong = self._trigger_emphasis is None or entry_ref in self._trigger_emphasis
             # A location the entry's location object overrides draws dimmed: the hint that it is not the target.
             superseded = trigger_geometry.location_superseded(shapes)
             for shape in shapes:
@@ -3914,7 +4094,7 @@ class MapView(QGraphicsView):
         # and skips rebuilding an item that no longer exists.
         self._unit_hover_item = None
         self._unit_select_groups = {}
-        self._range_ring_item = None
+        self._range_ring_items = {}
         self._selection_player_colors = None
         self._unit_hover_key = None
         self._unit_select_keys = []
@@ -4243,7 +4423,7 @@ class MapView(QGraphicsView):
         # anything.
         self._unit_hover_item = None
         self._unit_select_groups = {}
-        self._range_ring_item = None
+        self._range_ring_items = {}
         # Mandatory, not tidiness: scene().clear() destroyed the C++ objects,
         # so a later removeItem() on one would raise. The pushed list itself
         # survives -- unlike the selection below, a stored camera view is
@@ -5171,21 +5351,69 @@ class MapView(QGraphicsView):
         mip = self._mip_for_zoom_factor(factor)
         return mip is not None and abs(mip - start) > 1
 
-    def _place_wheel_rotate(self, delta: int) -> None:
-        """Ctrl+wheel over Place Unit's ghost (GH #172): one step per whole
-        WHEEL_NOTCH_UNITS, high-res deltas accumulated, a reversal dropping the
-        stale residual as the zoom does. Scroll up is PLACE_WHEEL_DIRECTION."""
-        total = self._place_wheel_accum + delta
-        if self._place_wheel_accum and (self._place_wheel_accum > 0) != (delta > 0):
+    def _wheel_notches(self, accum: int, delta: int) -> tuple[int, int]:
+        """(whole notches, new residual) for a non-zoom wheel action's
+        accumulator: one step per whole WHEEL_NOTCH_UNITS, high-res deltas
+        accumulated, a reversal dropping the stale residual as the zoom does."""
+        total = accum + delta
+        if accum and (accum > 0) != (delta > 0):
             total = delta
         notches = int(total / self.WHEEL_NOTCH_UNITS)
-        self._place_wheel_accum = total - notches * self.WHEEL_NOTCH_UNITS
+        return notches, total - notches * self.WHEEL_NOTCH_UNITS
+
+    def _place_wheel_rotate(self, delta: int) -> None:
+        """The wheel's rotate binding (Ctrl+wheel by default) over Place Unit's
+        ghost (GH #172). Scroll up is PLACE_WHEEL_DIRECTION."""
+        notches, self._place_wheel_accum = self._wheel_notches(self._place_wheel_accum, delta)
         if notches:
             self._on_place_rotate(notches * self.PLACE_WHEEL_DIRECTION)
 
+    def _brush_wheel_step(self, delta: int) -> None:
+        """The wheel's brush-size binding: scroll up is one size bigger per
+        notch. At either bound the step does nothing, and never zooms instead."""
+        notches, self._brush_wheel_accum = self._wheel_notches(self._brush_wheel_accum, delta)
+        if notches:
+            self._on_wheel_brush_step(notches)
+
+    def _wheel_pan(self, action: str, delta: int) -> None:
+        """The wheel's pan bindings: WHEEL_PAN_NOTCH_PX per notch, scroll up
+        moving the view up (pan_vertical) or left (pan_horizontal)."""
+        if self._middle_drag_active:
+            return  # as _pan_step: two mechanisms, one pair of scrollbars
+        px = -round(delta * self.WHEEL_PAN_NOTCH_PX / self.WHEEL_NOTCH_UNITS)
+        if action == "pan_vertical":
+            self._scroll_by(0, px)
+        else:
+            self._scroll_by(px, 0)
+
+    def _wheel_delta(self, event) -> int:
+        """The event's vertical angleDelta, or its sideways one when Alt is
+        held and the vertical is 0: Qt 5's xcb and Windows plugins deliver
+        Alt+wheel transposed. A sideways tilt with no Alt stays 0."""
+        angle = event.angleDelta()
+        if angle.y() == 0 and event.modifiers() & Qt.AltModifier:
+            return angle.x()
+        return angle.y()
+
+    def _wheel_action(self, modifiers) -> str:
+        """The settings.WHEEL_ACTIONS id a wheel event runs, with "tool"
+        resolved. The slot is the exact modifier set, so any other combination
+        zooms, and a tool action with nothing to act on zooms too: rotate
+        needs Place Unit's ghost showing, brush_size a tool with a brush."""
+        action = self._wheel_bindings.get(int(modifiers) & self._WHEEL_MODIFIER_MASK, "zoom")
+        if action in ("tool", "rotate") and self._tool == "place_unit" and self._place_ghost_query():
+            return "rotate"
+        if action in ("tool", "brush_size") and self._wheel_brush_query():
+            return "brush_size"
+        if action in ("tool", "rotate", "brush_size"):
+            return "zoom"
+        return action
+
     def wheelEvent(self, event):
-        """Zooms by whole WHEEL_NOTCH_UNITS notches, at most one mip level
-        per gesture.
+        """Runs the wheel action bound to the event's modifiers (Settings >
+        Keybinds, see _wheel_action). The rest of this is the zoom action: it
+        zooms by whole WHEEL_NOTCH_UNITS notches, at most one mip level per
+        gesture.
 
         Accumulating angleDelta rather than taking every event as a full step
         is what keeps a high-resolution wheel or a trackpad, which sends many
@@ -5205,12 +5433,18 @@ class MapView(QGraphicsView):
         WHEEL_GESTURE_GAP_S has passed since the last crossing: a rate limit
         of one level per gap, never a stop (it used to refuse until the wheel
         went idle, 2026-09-30 stress log)."""
-        delta = event.angleDelta().y()
+        delta = self._wheel_delta(event)
         if delta == 0:
             return
-        # GH #172: before the gesture state, so turning the ghost spends no zoom budget.
-        if event.modifiers() & Qt.ControlModifier and self._tool == "place_unit" and self._place_ghost_query():
-            self._place_wheel_rotate(delta)
+        action = self._wheel_action(event.modifiers())
+        # Every other action returns before the gesture state, so it spends no zoom budget (GH #172).
+        if action != "zoom":
+            if action == "rotate":
+                self._place_wheel_rotate(delta)
+            elif action == "brush_size":
+                self._brush_wheel_step(delta)
+            elif action in ("pan_vertical", "pan_horizontal"):
+                self._wheel_pan(action, delta)
             event.accept()
             return
         now = time.monotonic()
@@ -5436,7 +5670,7 @@ class MapView(QGraphicsView):
             else:
                 self._clear_highlight()
             return
-        if self._tool == TOOL_SELECT:
+        if self._tool == TOOL_SELECT and self._mode != "units":
             self._clear_highlight()
             self._clear_pan_highlight()
             self._clear_unit_hover()
@@ -5459,11 +5693,15 @@ class MapView(QGraphicsView):
             else:
                 self.setCursor(Qt.CrossCursor)
             return
-        # Gated on MODE, not tool, so a unit pick costs nothing per pixel in
+        # Gated on MODE, so a unit pick costs nothing per pixel in
         # View/Terrain/Triggers. Both TILE highlights are cleared here: Units
         # mode addresses units, and leaving a tile cue on screen would suggest
-        # the click does something tile-shaped.
-        if self._mode == "units":
+        # the click does something tile-shaped. Pan is the exception: it only
+        # moves the camera, so with no drag or marquee still live from another
+        # tool it takes the final branch's tile cue, as in every other mode.
+        if self._mode == "units" and (
+            self._tool != "pan" or self._unit_drag_key is not None or self._marquee_start_pos is not None
+        ):
             self._clear_highlight()
             self._clear_pan_highlight()
             # Convert (b2.5) and the Eraser are mutating brushes like Draw/Elevate, not a
@@ -5518,9 +5756,13 @@ class MapView(QGraphicsView):
                 # band instead of the hover cue, for the same "no live
                 # preview of the eventual result" reason as the unit-drag
                 # branch above (the candidate set is resolved once, at
-                # release, not recomputed every frame).
+                # release, not recomputed every frame). Drawn only while it
+                # engages, the same test the release decides by.
                 self._clear_unit_hover()
-                self._update_marquee(self._marquee_start_pos, event.pos())
+                if self._marquee_engaged(event.pos(), tile):
+                    self._update_marquee(self._marquee_start_pos, event.pos())
+                else:
+                    self._clear_marquee()
                 return
             # Canvas containment, NOT `on_map`: in Stepped, on_map is
             # "screen_to_tile resolved a tile", which is False on a skirt
@@ -5537,6 +5779,10 @@ class MapView(QGraphicsView):
                 self._update_unit_hover(entry)
         elif self._tool in EDIT_TOOLS:
             self._clear_pan_highlight()
+            if self._tool == "cliff" and self._stroke_active:
+                # Kept current mid-stroke, so the ghost returns here at release.
+                # The backing field: the run's head footprint stays off the map.
+                self._cliff_hover_tile = tile if on_map else None
             if on_map:
                 with perf_trace.phase("highlight"):
                     self._update_highlight(*tile)
@@ -5549,6 +5795,7 @@ class MapView(QGraphicsView):
                 self._on_cliff_preview(self._cliff_hover)
         else:
             self._clear_highlight()
+            self._clear_unit_hover()  # Pan in Units mode outlines no unit
             if on_map:
                 self._update_pan_highlight(*tile)
             else:

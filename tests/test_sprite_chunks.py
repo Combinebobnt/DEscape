@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, render_cache, unit_sprites
+from descape import asset_source, iso_geometry, render, render_cache, unit_pick, unit_sprites
 from descape.terrain_palette import PLAYER_COLORS
 
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -344,6 +344,87 @@ def test_an_unresolvable_unit_keeps_its_coloured_mark(sprite_install):
     assert np.array_equal(np.any(with_sprites != bare, axis=-1), whole)
     assert np.array_equal(np.any(without != bare, axis=-1), whole & ~front)
     assert np.array_equal(with_sprites[~front], without[~front])
+
+
+@dataclass
+class _PickableUnit(Unit):
+    reference_id: int = 1
+
+
+def _picked(scn, style, mask, elevations, corner_rise, proj, sprites_on) -> np.ndarray:
+    """The pixels of `mask` where pick returns the scene's one unit, with the
+    terrain tile resolved the way MapView resolves it per style."""
+    index = unit_pick.build_index(scn)
+    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    ids = None
+    if style == "sloped":
+        ids = render.composite_ids_rect_sloped(scn, 0, 0, proj.canvas_w, proj.canvas_h, corner_rise, proj, tile_px)
+    out = np.zeros_like(mask)
+    for sy, sx in np.argwhere(mask).tolist():
+        tile = unit_pick.UNRESOLVED_TILE
+        if ids is not None:
+            tile_id = int(ids[sy, sx])
+            tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+        found = unit_pick.pick_unit(
+            index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj,
+            corner_rise=corner_rise, terrain_tile=tile, sprites_on=sprites_on,
+        )
+        out[sy, sx] = found is not None
+    return out
+
+
+def test_an_unresolvable_units_whole_mark_picks_with_sprites_on(sprite_install):
+    """TASK-319, pick follows paint: the previous test's mark paints its whole
+    diamond with sprites on, so all of it picks. Sprites off keeps the old
+    answer, the diamond minus the quarter the tile in front repaints."""
+    unit = _PickableUnit(4.0, 4.0, CONST + 1)
+    scn = _scenario([[], [unit]])
+    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render.tile_pixels_for_map(MAP_W, MAP_H))
+    base_y, base_x = render._unit_mark_base_iso(unit, 4, 4, proj, elevations)
+    whole = np.zeros((proj.canvas_h, proj.canvas_w), dtype=bool)
+    whole[base_y + dst_y, base_x + dst_x] = True
+    front_x, front_y = iso_geometry.tile_screen_origin(3, 4, 0, proj)
+    front = np.zeros_like(whole)
+    front[front_y + dst_y, front_x + dst_x] = True
+
+    on = _picked(scn, "stepped", whole, elevations, None, proj, sprites_on=True)
+    off = _picked(scn, "stepped", whole, elevations, None, proj, sprites_on=False)
+    assert (int(on.sum()), int(whole.sum())) == (1024, 1024)
+    assert np.array_equal(off, whole & ~front) and int(off.sum()) == 768
+
+
+@pytest.mark.parametrize("front_elevation", [0, 1], ids=["front-level", "front-raised"])
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_fallback_mark_picks_exactly_where_it_paints(sprite_install, style, front_elevation):
+    """Pick against the real render, sprites on and off, around the same mark
+    with the tile in front level or one step up. Raised, Stepped's front tile
+    stands strictly higher than the mark and covers it with sprites on too;
+    Sloped's does not (its lowest corner is the mark's own rise)."""
+    unit = _PickableUnit(4.0, 4.0, CONST + 1)
+    tiles = [Tile(x, y, front_elevation if (x, y) == (3, 4) else 0) for y in range(MAP_H) for x in range(MAP_W)]
+    scn = _Scenario(tiles, [[], [unit]])
+    corner_rise = None
+    if style == "stepped":
+        bare, elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=False)
+    else:
+        bare, elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn, with_units=False)
+    cx, cy = iso_geometry.map_point_to_screen(4.0, 4.0, 0, proj)
+    window = np.zeros((proj.canvas_h, proj.canvas_w), dtype=bool)
+    window[cy - 2 * proj.half_h : cy + 2 * proj.half_h, cx - 2 * proj.half_w : cx + 2 * proj.half_w] = True
+
+    for sprites_on in (False, True):
+        if style == "stepped":
+            img, _, _ = render.render_terrain_iso_with_proj(scn, with_sprites=sprites_on)
+        else:
+            img, _, _, _ = render.render_terrain_sloped_with_proj(scn, with_sprites=sprites_on)
+        painted = np.any(img[: proj.canvas_h] != bare[: proj.canvas_h], axis=-1)
+        assert painted.any() and not (painted & ~window).any(), "the window must hold the whole painted mark"
+        picked = _picked(scn, style, window, elevations, corner_rise, proj, sprites_on)
+        assert np.array_equal(picked, painted), (
+            f"sprites {'on' if sprites_on else 'off'}: {int((picked & ~painted).sum())} px pick but do not "
+            f"paint, {int((painted & ~picked).sum())} paint but do not pick"
+        )
 
 
 @pytest.mark.parametrize("span", [(1, 1), (3, 3), (5, 5)])

@@ -818,3 +818,204 @@ def test_shared_value_reads_through_a_version_tolerant_getattr() -> None:
 
     assert trigger_fields.shared_value([_Gated(), _Gated()], "gated") is None
     assert trigger_fields.shared_value([_FakeEffect(x=1)], "x", reader=lambda e, a: 7) == 7
+
+
+# -- unit fields captioned after their player (GH #212) ----------------------
+
+_UNIT_FIELDS = ("object_list_unit_id", "object_list_unit_id_2")
+
+# Every effect whose only unit field is its source player's. Spelled out, where
+# field_caption() is a rule: a library bump that adds a matching type fails
+# here and gets looked at instead of being captioned silently.
+_SOURCE_UNIT_TYPES = frozenset(
+    {
+        "attack_move",
+        "build_object",
+        "change_object_armor",
+        "change_object_attack",
+        "change_object_caption",
+        "change_object_cost",
+        "change_object_description",
+        "change_object_hp",
+        "change_object_name",
+        "change_object_player_color",
+        "change_object_player_name",
+        "change_object_range",
+        "change_object_speed",
+        "change_object_stance",
+        "change_ownership",
+        "counts_units_into_variable",
+        "create_object",
+        "create_object_armor",
+        "create_object_attack",
+        "damage_object",
+        "disable_object_deletion",
+        "disable_object_selection",
+        "disable_unit_attackable",
+        "disable_unit_targeting",
+        "enable/disable_object",
+        "enable_object_deletion",
+        "enable_object_selection",
+        "enable_unit_attackable",
+        "enable_unit_targeting",
+        "freeze_object",
+        "heal_object",
+        "kill_object",
+        "modify_attribute",
+        "modify_attribute_by_variable",
+        "modify_object_attribute",
+        "modify_object_attribute_by_variable",
+        "modify_variable_by_attribute",
+        "patrol",
+        "place_foundation",
+        "remove_object",
+        "set_building_gather_point",
+        "set_object_cost",
+        "stop_object",
+        "task_object",
+        "teleport_object",
+        "train_unit",
+        "unload",
+    }
+)
+
+# Effects with a unit field that keep the name-derived caption: the instruction
+# panel's icon, and the six two-unit effects that act on one player.
+_UNCAPTIONED_UNIT_TYPES = frozenset(
+    {
+        "display_instructions",
+        "add_train_location",
+        "change_train_location",
+        "change_object_icon",
+        "create_garrisoned_object",
+        "change_research_location",
+        "research_local_technology",
+    }
+)
+
+# (effect type, field) -> caption, for every pair whose label is not its name.
+_EXPECTED_CAPTIONS = {
+    **{(name, "object_list_unit_id"): "source player unit" for name in _SOURCE_UNIT_TYPES},
+    ("replace_object", "object_list_unit_id"): "source player unit",
+    ("replace_object", "object_list_unit_id_2"): "target player unit",
+}
+
+
+def test_the_captioned_fields_are_exactly_the_named_set_in_every_version() -> None:
+    """Swept over every shipped version, conditions included, like the
+    multiline sweep above: the caption is a rule over a type's own attribute
+    list, so each version's list has to be asked."""
+    assert len(_SOURCE_UNIT_TYPES) == 47
+    found = set()
+    unit_types = set()
+    offenders = []
+    for version, kind, raw in _every_shipped_vocabulary():
+        presentation = raw.get("-1", {}).get("attribute_presentation", {})
+        type_attribute = "condition_type" if kind == "conditions" else "effect_type"
+        names = set()
+        captioned = {}
+        for key, value in raw.items():
+            if key == "-1":
+                continue
+            entry = library_compat.VocabularyEntry(
+                id=int(key),
+                name=value["name"],
+                attributes=tuple(value.get("attributes", ())),
+                default_attributes=dict(value.get("default_attributes", {})),
+            )
+            names.add(entry.name)
+            for spec in trigger_fields.field_specs(entry, presentation, type_attribute):
+                if spec.name in _UNIT_FIELDS:
+                    unit_types.add((kind, entry.name))
+                if spec.label != spec.name.replace("_", " "):
+                    captioned[(entry.name, spec.name)] = spec.label
+        expected = (
+            {pair: caption for pair, caption in _EXPECTED_CAPTIONS.items() if pair[0] in names}
+            if kind == "effects"
+            else {}
+        )
+        if captioned != expected:
+            wrong = sorted(set(captioned.items()) ^ set(expected.items()))
+            offenders.append(f"{version}/{kind}: {wrong}")
+        found |= set(captioned)
+    assert offenders == [], f"wrong captions: {offenders}"
+    # Every named pair reaches a real spec in at least one shipped version.
+    assert found == set(_EXPECTED_CAPTIONS)
+    # And every type with a unit field is accounted for by name, the uncaptioned ones too.
+    named = _SOURCE_UNIT_TYPES | _UNCAPTIONED_UNIT_TYPES | {"replace_object"}
+    assert unit_types == {("effects", name) for name in named}
+    assert len(named) == len(_SOURCE_UNIT_TYPES) + len(_UNCAPTIONED_UNIT_TYPES) + 1, "a type is named twice"
+
+
+def _unit_spec(caption: str = "") -> FieldSpec:
+    return FieldSpec("object_list_unit_id", trigger_fields.REFERENCE, presentation="UnitInfo", caption=caption)
+
+
+def test_a_caption_is_not_part_of_a_specs_identity() -> None:
+    """Two types that caption the same field differently still share it in a
+    multi-selection, which shared_specs() decides by equality (GH #60)."""
+    plain = _unit_spec()
+    captioned = _unit_spec("source player unit")
+    assert plain.label == "object list unit id"
+    assert captioned.label == "source player unit"
+    assert captioned == plain
+    assert hash(captioned) == hash(plain)
+    assert len({plain, captioned, _unit_spec("target player unit")}) == 1
+
+
+def test_shared_specs_drops_a_caption_the_selection_disagrees_on() -> None:
+    plain = _unit_spec()
+    source = _unit_spec("source player unit")
+    target = _unit_spec("target player unit")
+    player = FieldSpec("source_player", trigger_fields.INT)
+
+    def labels(*lists) -> list[str]:
+        return [spec.label for spec in trigger_fields.shared_specs(lists)]
+
+    neutral = ["object list unit id", "source player"]
+    assert labels((source, player), (plain, player)) == neutral
+    assert labels((plain, player), (source, player)) == neutral
+    assert labels((source, player), (target, player)) == neutral
+    # The disagreement can sit in any list, not just the second.
+    assert labels((source, player), (source, player), (target, player)) == neutral
+    assert labels((source, player), (source, player)) == ["source player unit", "source player"]
+    assert labels((source, player), (source, player), (source, player)) == ["source player unit", "source player"]
+    # The neutral spec is still the same field to everything keyed on equality.
+    assert trigger_fields.shared_specs([(source, player), (plain, player)]) == (source, player)
+
+
+def test_replace_object_and_change_train_location_still_share_their_unit_field() -> None:
+    """The real pair behind the rule above: one captions the field, the other
+    does not, and the form over both shows the name-derived caption."""
+    vocabulary = library_compat.load_vocabulary("1.59")
+    by_name = {entry.name: entry for entry in vocabulary.effects.values()}
+    spec_lists = [
+        trigger_fields.field_specs(by_name[name], vocabulary.effect_presentation, "effect_type")
+        for name in ("replace_object", "change_train_location")
+    ]
+    assert [spec.label for spec in spec_lists[0] if spec.name in _UNIT_FIELDS] == [
+        "source player unit",
+        "target player unit",
+    ]
+    shared = {spec.name: spec.label for spec in trigger_fields.shared_specs(spec_lists)}
+    assert shared["object_list_unit_id"] == "object list unit id"
+    assert shared["object_list_unit_id_2"] == "object list unit id 2"
+
+
+def test_field_label_is_the_caption_or_the_name_derived_default() -> None:
+    kill = _entry(["effect_type", "object_list_unit_id", "source_player", "message"], name="kill_object")
+    assert trigger_fields.field_label(kill, "object_list_unit_id") == "source player unit"
+    assert trigger_fields.field_label(kill, "source_player") == "source player"
+    assert trigger_fields.field_label(kill, "message") == "message"
+    # An unknown type has no definition to ask.
+    assert trigger_fields.field_label(None, "object_list_unit_id") == "object list unit id"
+    icon = _entry(["effect_type", "object_list_unit_id", "source_player"], name="display_instructions")
+    assert trigger_fields.field_label(icon, "object_list_unit_id") == "object list unit id"
+    # The rule needs a source player, and a second unit field switches it off.
+    no_player = _entry(["effect_type", "object_list_unit_id"], name="kill_object")
+    assert trigger_fields.field_label(no_player, "object_list_unit_id") == "object list unit id"
+    two_units = _entry(
+        ["effect_type", "object_list_unit_id", "object_list_unit_id_2", "source_player"], name="change_train_location"
+    )
+    assert trigger_fields.field_label(two_units, "object_list_unit_id") == "object list unit id"
+    assert trigger_fields.field_label(two_units, "object_list_unit_id_2") == "object list unit id 2"

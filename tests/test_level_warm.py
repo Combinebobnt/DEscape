@@ -373,6 +373,27 @@ def test_a_unit_edit_mid_warm_drops_the_flat_result(sprite_install, mixed_scenar
     assert 1 not in cache._level_icon_layers
 
 
+@pytest.mark.parametrize("style", ["stepped", "flat"])
+def test_a_model_only_unit_mutation_mid_warm_installs_nothing(style, sprite_install, mixed_scenario, one_step_ticks) -> None:
+    """TASK-326 C: the Eraser and Convert mutate the model and reach the cache
+    only at their flush. No cache counter moves in that window, so the install
+    predicate has to see scenario.unit_gen, which every model mutator bumps."""
+    mixed_scenario.unit_gen = 0
+    cache = _iso_cache(mixed_scenario) if style == "stepped" else _flat_cache(mixed_scenario)
+    warmer = _warm(cache, [1])
+    _first_step(warmer)
+
+    del mixed_scenario.unit_manager.units[1][0]
+    mixed_scenario.unit_gen += 1
+    warmer.run_to_completion()
+
+    if style == "stepped":
+        assert cache._levels[1].sprites is None
+        assert cache._levels[1].gen != cache._source_gen
+    else:
+        assert 1 not in cache._level_icon_layers
+
+
 def test_cancel_drops_the_queue_without_installing(sprite_install, mixed_scenario, one_step_ticks) -> None:
     cache = _iso_cache(mixed_scenario)
     warmer = _warm(cache, [-1, 1])

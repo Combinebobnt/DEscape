@@ -1,10 +1,13 @@
 """Verifies tools/strip_units.py: the byte-patch splice that removes every
 unit from an .aoe2scenario file's Units section, originally written to
-prepare descape/templates/blank_120x120.aoe2scenario and the real 240x240/
-480x480 exports that have since moved to tests/fixtures/real_blank_*.
-aoe2scenario as byte oracles for descape/scenario_new.py (see that module's
-docstring) -- all three carried GRASS_GREEN ground-scatter doodads before
-stripping, not a genuinely blank map (see the tool's own module docstring).
+prepare three real 1.58 exports: the 120x120 one, now
+tests/fixtures/blank_120x120_v158.aoe2scenario (tools/gen_blank_template.py
+generates the shipped 1.59 descape/templates/blank_120x120.aoe2scenario from
+it), and the 240x240/480x480 ones that have since moved to
+tests/fixtures/real_blank_{240x240,480x480}.aoe2scenario as byte oracles for
+descape/scenario_new.py (see that module's docstring) -- all three carried
+GRASS_GREEN ground-scatter doodads before stripping, not a genuinely blank
+map (see the tool's own module docstring).
 
 Two tiers, same split as tests/test_write_path.py:
 
@@ -71,7 +74,7 @@ def test_shipped_template_is_unit_free(tiles: int) -> None:
     s = load_map_and_units(path)
 
     assert s.map_manager.map_width == s.map_manager.map_height == tiles
-    assert s.scenario_version == "1.58"
+    assert s.scenario_version == "1.59"
     assert s.terrain_write_supported
     assert all(t.terrain_id == 0 and t.elevation == 0 for t in s.map_manager.terrain)
     assert sum(len(units) for units in s.unit_manager.units) == 0

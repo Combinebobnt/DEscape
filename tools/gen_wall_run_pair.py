@@ -24,6 +24,11 @@ Three edits, all deliberately asymmetric so "did anything change" becomes
      integer and a radian file: one clicked onto the middle of a straight
      run along x, one across a run's bend where exactly one neighbouring
      wall reshapes. The walls under each gate are removed.
+  7. A Stone Gate moved 5 tiles along its run with "Moving a gate updates
+     walls" on (GH #194), in both an integer and a radian file. Here the
+     "before" already holds the gate, placed as in 6. The "after" has the four
+     walls under its new footprint removed and the four tiles it left filled
+     with the run's own wall.
 
 Writes into build/wall_run_pairs/, which is gitignored.
 """
@@ -38,7 +43,7 @@ sys.path.insert(0, str(ROOT))
 
 from descape import shape_tools, unit_sprites, wall_run
 from descape.edit_history import EditHistory
-from descape.render import occupied_tiles_for, unit_occupied_tiles, unit_tile_bounds
+from descape.render import occupied_tiles_for, span_anchor, unit_occupied_tiles, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
 from descape.unit_model import UnitEditModel
@@ -71,6 +76,12 @@ GATE_CASES = [
     ("gate_integer", "2_Joan_coop_1_v0_13.aoe2scenario"),
     ("gate_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
 ]
+# (label, source file): GH #194's gate moved GATE_MOVE_TILES along its run.
+GATE_MOVE_CASES = [
+    ("gate_move_integer", "2_Joan_coop_1_v0_13.aoe2scenario"),
+    ("gate_move_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
+]
+GATE_MOVE_TILES = 5
 
 
 def _busiest_wall(scenario, w: int, h: int):
@@ -213,6 +224,103 @@ def _gate_case(label: str, name: str) -> None:
     print(f"{label:8s} {name} (owner {PLAYER})\n" + "\n".join(lines) + f"\n         {before.name} / {after.name}")
 
 
+def _gate_move_site(scenario, w: int, h: int) -> tuple[int, int, int]:
+    """(low, ty, owner): the low tile of a gate footprint inside a straight x
+    run, and the player whose run it is. One wall of that one player on every
+    tile from low-1 to low+9, so the gate (low..low+3) has a wall past its low
+    end and, moved GATE_MOVE_TILES up, lands on four walls with one more past
+    them. Nothing else stands on the four tiles it leaves, and the site with
+    the fewest walls beside the run wins: those would reshape as it moves."""
+    _tiles, walls = wall_run.wall_scene(scenario, w, h)
+    owners: dict[tuple[int, int], list[int]] = {}
+    for wall in walls:
+        owners.setdefault((wall.tx, wall.ty), []).append(wall.player_id)
+    blocked = wall_run.blocked_tiles(scenario, w, h)
+    sites = []
+    for (low, ty), (owner, *stacked) in sorted(owners.items()):
+        # A GAIA gate would be an odd thing to look for in the game editor.
+        if stacked or owner == GAIA:
+            continue
+        if any(owners.get((low + dx, ty)) != [owner] for dx in range(-1, GATE_MOVE_TILES + 5)):
+            continue
+        if any((low + dx, ty) in blocked for dx in range(4)):
+            continue
+        beside = sum((low + dx, ty + dy) in owners for dx in range(-2, GATE_MOVE_TILES + 6) for dy in (-1, 1))
+        sites.append((beside, low, ty, owner))
+    if not sites:
+        raise SystemExit(f"no straight x run of {GATE_MOVE_TILES + 6} walls to move a gate along")
+    _n, low, ty, owner = min(sites)
+    return low, ty, owner
+
+
+def _gate_move_case(label: str, name: str) -> None:
+    src = ROOT / "examples" / name
+    loaded = load_map_and_units(src)
+    mm = loaded.map_manager
+    w, h = mm.map_width, mm.map_height
+    low, ty, owner = _gate_move_site(loaded, w, h)
+    x, y = span_anchor(low, ty, 4, 1)
+    old = set(occupied_tiles_for(STONE_GATE, x, y, w, h))
+    new = set(occupied_tiles_for(STONE_GATE, x + GATE_MOVE_TILES, y, w, h))
+
+    before = OUT / f"{label}_before.aoe2scenario"
+    after = OUT / f"{label}_after.aoe2scenario"
+    model = UnitEditModel(loaded)
+    history = EditHistory()
+    # The "before": the gate placed over the run, as a Place Unit click does (GH #159).
+    tiles, walls = wall_run.wall_scene(loaded, w, h)
+    placed = wall_run.plan_gate_over_walls(old, existing_tiles=tiles, existing_walls=walls)
+    model.begin_unit_edit(wall_run.touched_players(owner, placed))
+    gate = wall_run.apply_gate_plan(model, owner, STONE_GATE, x, y, placed)
+    model.commit_unit_edit("Place unit", history)
+    write_scenario(loaded, before, units=model)
+
+    # The "after": viewer.on_unit_move()'s plan-bearing branch, in its order.
+    plan = wall_run.scenario_gate_moves(
+        loaded, w, h, [(gate, x + GATE_MOVE_TILES, y)], removable=lambda unit: not model.referencing(unit)
+    )
+    assert plan, "the move planned nothing"
+    reshaped = ", ".join(
+        f"({int(u.x)}, {int(u.y)}) {unit_sprites.variant_index(u.rotation, 5)} -> {v}" for _p, u, v in plan.rewrites
+    ) or "none"
+    model.begin_unit_edit(sorted({owner} | wall_run.gate_move_players(plan)))
+    model.remove_many([unit for _p, unit in plan.removals])
+    model.set_position(gate, x + GATE_MOVE_TILES, y, gate.z)
+    wall_run.apply_gate_move_plan(model, plan)
+    model.commit_unit_edit("Move unit", history)
+    write_scenario(loaded, after, units=model)
+
+    # The M check, on the two files as written: 4 walls gone from under the
+    # gate, 4 new ones on the tiles it left, and nothing else moved.
+    def reread(path, footprint):
+        scenario = load_map_and_units(path)
+        gates = [
+            u for units in scenario.unit_manager.units for u in units
+            if u.unit_const == STONE_GATE and set(unit_occupied_tiles(u, w, h) or ()) == footprint
+        ]
+        assert len(gates) == 1, (path.name, len(gates))
+        _t, walls_back = wall_run.wall_scene(scenario, w, h)
+        return walls_back, sorted((wall.tx, wall.ty) for wall in walls_back)
+
+    _walls, tiles_before = reread(before, old)
+    walls_after, tiles_after = reread(after, new)
+    assert (len(plan.removals), len(plan.fills), plan.blocked) == (4, 4, 0), (len(plan.removals), len(plan.fills), plan.blocked)
+    assert set(tiles_before) - set(tiles_after) == new, "the walls under the moved gate were not all removed"
+    assert set(tiles_after) - set(tiles_before) == old, "the tiles the gate left were not all filled"
+    assert len(tiles_before) == len(tiles_after) and all(tiles_after.count(t) == 1 for t in old)
+    filled = sorted((wall.tx, wall.player_id, wall.unit) for wall in walls_after if (wall.tx, wall.ty) in old)
+    print(
+        f"{label:8s} {name} (owner {owner})\n"
+        f"         before: Stone Gate on tiles x {min(old)[0]}..{max(old)[0]} y {ty}, anchor ({x:g}, {y:g})\n"
+        f"         after:  moved +{GATE_MOVE_TILES} to tiles x {min(new)[0]}..{max(new)[0]} y {ty}, "
+        f"anchor ({x + GATE_MOVE_TILES:g}, {y:g})\n"
+        f"         {len(plan.removals)} walls removed under it, {len(plan.fills)} filled on x {min(old)[0]}..{max(old)[0]} "
+        f"(const {sorted({u.unit_const for _x, _p, u in filled})}, owner {sorted({p for _x, p, _u in filled})}, "
+        f"indices read back {[unit_sprites.variant_index(u.rotation, 5) for _x, _p, u in filled]}), reshaped: {reshaped}\n"
+        f"         {before.name} / {after.name}"
+    )
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for label, name, kind, owner in CASES:
@@ -262,6 +370,8 @@ def main() -> None:
         )
     for label, name in GATE_CASES:
         _gate_case(label, name)
+    for label, name in GATE_MOVE_CASES:
+        _gate_move_case(label, name)
 
 
 if __name__ == "__main__":

@@ -64,9 +64,11 @@ from descape.trigger_model import (
     EXEC_MODE_DISPLAY,
     EXEC_MODE_LEGACY,
     EXEC_MODE_UNKNOWN,
+    MOVE_FAR_STEPS,
     entry_display_order,
     exec_order_value,
     resolve_exec_mode,
+    section_edge_refusal,
     would_move_entries,
 )
 from descape.trigger_status import EntryStatus, Status
@@ -349,6 +351,26 @@ class _TriggerTree(_HScrollStableTreeWidget):
         self._select_all()
 
 
+class _MoveButton(QToolButton):
+    """A ▲▼ button that knows which modifiers its click carried (GH #211:
+    Shift moves five places, Ctrl to the top or bottom). Read off the mouse
+    release that clicks it, never QApplication.keyboardModifiers(), and
+    cleared once the click is delivered, so a keyboard activation or a
+    click() reads as a plain one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.click_modifiers = Qt.NoModifier
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.click_modifiers = event.modifiers()
+        try:
+            # clicked is emitted from inside the base handler.
+            super().mouseReleaseEvent(event)
+        finally:
+            self.click_modifiers = Qt.NoModifier
+
+
 class _LabelFitButton(QPushButton):
     """A push button that may shrink to its own label (GH #213). Fusion
     floors a labelled button's size hint at 80 px, which the entry row cannot
@@ -405,6 +427,10 @@ class TriggerPanel(QWidget):
     # Item column alone would hand a long name the whole pane and push Detail
     # off the right edge, which is what its old fixed width was working around.
     _MIN_DETAIL_WIDTH = 120
+
+    # Each pane's starting weight in the vertical split. Only the ratio counts, but
+    # QSplitter.setSizes() raises a value below a pane's minimum to it, which would skew it.
+    _SPLIT_WEIGHT = 10_000
 
     # A field the selected entries disagree on (GH #60). Never a value: the
     # widget showing it writes nothing until the user changes it.
@@ -524,7 +550,7 @@ class TriggerPanel(QWidget):
         self._on_entry_field_group = on_entry_field_group or (lambda *args: None)
         self._on_trigger_structural = on_trigger_structural or (lambda *args: None)
         self._on_entry_structural = on_entry_structural or (lambda *args, **kwargs: None)
-        # GH #213: (trigger_index, refs, delta), a display-order move of the selected entries.
+        # GH #213: (trigger_index, refs, delta[, to_edge]), a display-order move of the selected entries.
         self._on_entry_move = on_entry_move or (lambda *args: None)
         self._on_variable_structural = on_variable_structural or (lambda *args: None)
         # Fired when the trigger selection set changes, so the window can
@@ -686,6 +712,9 @@ class TriggerPanel(QWidget):
         self.splitter.addWidget(self._build_detail_pane())
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
+        # Equal halves to start with. Left alone, Qt splits by the two size hints (about
+        # 40:60), so a button row taken out of the tree pane gave the tree half its height.
+        self.splitter.setSizes([self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
 
         # Below the splitter rather than in either pane's button rows: a
         # variable belongs to the document, not to the selected trigger or
@@ -853,13 +882,22 @@ class TriggerPanel(QWidget):
         ):
             if op == "section_up":
                 self.reorder_buttons.addSpacing(6)
-            button = QToolButton()
+            # GH #211: ▲▼ read Shift and Ctrl off their own click; ⇈⇊ have one distance.
+            is_move = op in ("move_up", "move_down")
+            button = _MoveButton() if is_move else QToolButton()
             button.setText(glyph)
             # The glyph alone is no name for AT-SPI locators or screen readers.
             button.setAccessibleName(name)
             button.setToolTip(tip)
             button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-            button.clicked.connect(lambda checked=False, op=op: self._request_trigger_op(op))
+            if is_move:
+                button.clicked.connect(
+                    lambda checked=False, button=button, way=-1 if op == "move_up" else 1: self._move_clicked(
+                        button, way, entries=False
+                    )
+                )
+            else:
+                button.clicked.connect(lambda checked=False, op=op: self._request_trigger_op(op))
             setattr(self, attribute, button)
             self.reorder_buttons.addWidget(button)
         pane_layout.addLayout(self.reorder_buttons)
@@ -922,13 +960,17 @@ class TriggerPanel(QWidget):
             ("entry_move_up_button", "▲", "Move Entry Up", self._ENTRY_MOVE_UP_TIP, "move_up"),
             ("entry_move_down_button", "▼", "Move Entry Down", self._ENTRY_MOVE_DOWN_TIP, "move_down"),
         ):
-            button = QToolButton()
+            button = _MoveButton()
             button.setText(glyph)
             # Named apart from the trigger row's pair, for AT-SPI locators.
             button.setAccessibleName(name)
             button.setToolTip(tip)
             button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-            button.clicked.connect(lambda checked=False, op=op: self._request_entry_op(op))
+            button.clicked.connect(
+                lambda checked=False, button=button, way=-1 if op == "move_up" else 1: self._move_clicked(
+                    button, way, entries=True
+                )
+            )
             setattr(self, attribute, button)
             moves.addWidget(button)
         self.entry_buttons.addLayout(moves)
@@ -3414,6 +3456,20 @@ class TriggerPanel(QWidget):
         paste.setToolTip(self._clipboard_reason or "Paste the copied triggers below this one, or below a collapsed section's end")
         paste.setEnabled(can_edit and self._clipboard_ready and index is not None)
         paste.triggered.connect(lambda _=False, i=index: self._on_trigger_structural("paste", [self._paste_anchor_index(i)]))
+        # GH #211: the ▲▼ verbs and their Ctrl+click, on the selection, each under its own gate.
+        of_section = " of Section" if self._grouped else ""
+        up, down = self._trigger_move_reasons()
+        top, bottom = self._edge_move_reasons()
+        for text, tip, direction, edge, reason in (
+            ("Move Up", self._MOVE_UP_MENU_TIP, -1, False, up),
+            ("Move Down", self._MOVE_DOWN_MENU_TIP, 1, False, down),
+            (f"Move to Top{of_section}", self._MOVE_TOP_TIP, -1, True, top),
+            (f"Move to Bottom{of_section}", self._MOVE_BOTTOM_TIP, 1, True, bottom),
+        ):
+            move = menu.addAction(text)
+            move.setToolTip(tip + reason)
+            move.setEnabled(can_edit and not reason)
+            move.triggered.connect(lambda _=False, d=direction, e=edge: self._request_move(False, d, edge=e))
         menu.addSeparator()
         section = menu.addAction("Select Section")
         section.setToolTip("Select this section's divider and every trigger in it")
@@ -3460,11 +3516,17 @@ class TriggerPanel(QWidget):
             "paste", t, "effect", [], -1, anchor=a
         ))
         # GH #213: the ▲▼ buttons' verbs, on the selection, under the same gate.
+        # GH #211 adds their Ctrl+click, which that gate covers too.
         for text, tip, op, reason in zip(
-            ("Move Up", "Move Down"),
-            (self._ENTRY_MOVE_UP_TIP, self._ENTRY_MOVE_DOWN_TIP),
-            ("move_up", "move_down"),
-            self._entry_move_reasons(),
+            ("Move Up", "Move Down", "Move to Top", "Move to Bottom"),
+            (
+                self._ENTRY_MOVE_UP_MENU_TIP,
+                self._ENTRY_MOVE_DOWN_MENU_TIP,
+                self._ENTRY_MOVE_TOP_TIP,
+                self._ENTRY_MOVE_BOTTOM_TIP,
+            ),
+            ("move_up", "move_down", "move_top", "move_bottom"),
+            self._entry_move_reasons() * 2,
             strict=True,
         ):
             move = menu.addAction(text)
@@ -3601,8 +3663,9 @@ class TriggerPanel(QWidget):
         path is built speculatively, only if repopulate cost is measured and
         shown to matter.
 
-        `delta` must be +-1: Move Up/Down only ever swap adjacent display
-        slots (`moved_display_order()`'s own contract).
+        `delta` is the signed number of display slots: +-1 for Move Up/Down,
+        more for GH #211's five-place move. The caller keeps it inside the
+        list; a target row outside the tree patches nothing.
         """
         if self._grouped:
             self.show_scenario(self._loaded, self._pending_exec_order)
@@ -3619,26 +3682,49 @@ class TriggerPanel(QWidget):
         self.tree.takeTopLevelItem(row)
         self.tree.insertTopLevelItem(target, item)
 
-        # _item_for_index needs no correction: both items kept their identity,
-        # only their row changed, and the dict maps by identity, not row.
+        # _item_for_index needs no correction: every item kept its identity,
+        # only rows changed, and the dict maps by identity, not row.
+        # _display_sections is left alone too: the edge gate reads positions from _display_slots.
         position = self._display_position.get(trigger_index)
         if position is not None:
-            neighbor_position = position + delta
-            if 0 <= neighbor_position < len(self._display_slots):
-                neighbor_index = self._display_slots[neighbor_position]
-                self._display_slots[position] = neighbor_index
-                self._display_slots[neighbor_position] = trigger_index
-                self._display_position[trigger_index] = neighbor_position
-                self._display_position[neighbor_index] = position
-                # Both rows' position text is now stale; nothing else on this
-                # fast path would rewrite it.
-                item.setText(self._COL_POS, self._position_text(trigger_index))
-                neighbor_item = self._item_for_index.get(neighbor_index)
-                if neighbor_item is not None:
-                    neighbor_item.setText(self._COL_POS, self._position_text(neighbor_index))
+            landing = position + delta
+            if 0 <= landing < len(self._display_slots):
+                self._display_slots.insert(landing, self._display_slots.pop(position))
+                # Every row in the span shifted one slot, so its position text
+                # is stale; nothing else on this fast path would rewrite it.
+                with self._batched_trigger_restyle():
+                    for slot in range(min(position, landing), max(position, landing) + 1):
+                        index = self._display_slots[slot]
+                        self._display_position[index] = slot
+                        spanned = self._item_for_index.get(index)
+                        if spanned is not None:
+                            spanned.setText(self._COL_POS, self._position_text(index))
 
         self._set_current_trigger_item(item)
         self._update_buttons()
+
+    def show_moved_triggers(self, indices, delta: int) -> None:
+        """After a move of several slots or to a section edge (GH #211): the
+        moved rows selected and the block's leading row (the first going up,
+        the last going down) in view, its section expanded. The trigger-tree
+        twin of reselect_moved_entries(). Never reveal_trigger(), which
+        scrolls the row to the top of the view and so jumps the list on every
+        press. Selection only."""
+        moved = sorted(
+            (index for index in indices if index in self._item_for_index),
+            key=lambda index: self._display_position.get(index, index),
+        )
+        if not moved:
+            self.select_triggers(indices)
+            return
+        lead = self._item_for_index[moved[0] if delta < 0 else moved[-1]]
+        position = self._section_position(lead.parent())
+        if position is not None:
+            lead.parent().setExpanded(True)
+            # Explicit: under a filter the toggle handler is suppressed.
+            self._collapsed_keys.discard(trigger_organize.section_key(self._sections, position))
+        self.select_triggers(indices)
+        self.tree.scrollToItem(lead)
 
     def select_entry(self, kind: str, entry_index: int) -> None:
         self.select_entries([(kind, entry_index)])
@@ -3714,8 +3800,47 @@ class TriggerPanel(QWidget):
         self._entry_clipboard_ready = ready
         self._entry_clipboard_reason = reason
 
-    def _request_trigger_op(self, op: str) -> None:
+    def _move_clicked(self, button: _MoveButton, direction: int, entries: bool) -> None:
+        """A ▲▼ click (GH #211): plain is one place, Shift five, Ctrl the top
+        or the bottom. Ctrl wins when both are held."""
+        modifiers = button.click_modifiers
+        self._request_move(
+            entries, direction, far=bool(modifiers & Qt.ShiftModifier), edge=bool(modifiers & Qt.ControlModifier)
+        )
+
+    def request_move(self, direction: int, far: bool = False, edge: bool = False) -> None:
+        """The move shortcuts' entry point (GH #211): up (`direction` < 0) or
+        down, one place, five (`far`) or to the top or bottom (`edge`). Moves
+        the selected conditions and effects when the entry tree has the
+        focus, the selected triggers otherwise, through the buttons' own
+        request path and so under the same gate."""
+        self._request_move(self.entry_tree.hasFocus(), direction, far, edge)
+
+    def _request_move(self, entries: bool, direction: int, far: bool = False, edge: bool = False) -> None:
+        request = self._request_entry_op if entries else self._request_trigger_op
+        if edge:
+            request("move_top" if direction < 0 else "move_bottom")
+        elif far:
+            request("move_up" if direction < 0 else "move_down", MOVE_FAR_STEPS)
+        else:
+            request("move_up" if direction < 0 else "move_down")
+
+    def _request_trigger_op(self, op: str, arg=None) -> None:
         if not self._editable:
+            return
+        if op in ("move_up", "move_down", "move_top", "move_bottom"):
+            # GH #211: gated here, not only by a disabled button, since a shortcut has no button.
+            indices = self.selected_trigger_indices()
+            if not indices or not self._can_edit_now() or self._move_view_reason():
+                return
+            step = op in ("move_up", "move_down")
+            if step and self._trigger_move_reasons()[0 if op == "move_up" else 1]:
+                return
+            # An edge move that section_edge_refusal() refuses goes on: the window says why in the status bar.
+            if arg is None:
+                self._on_trigger_structural(op, indices)
+            else:
+                self._on_trigger_structural(op, indices, arg)
             return
         if op == "new":
             self._on_trigger_structural(op, ())
@@ -3732,7 +3857,7 @@ class TriggerPanel(QWidget):
             current = self.current_paste_anchor()
             self._on_trigger_structural(op, [] if current is None else [current])
             return
-        # GH #134: Duplicate and Delete take a collapsed section whole; Move stays header-only.
+        # GH #134: Duplicate and Delete take a collapsed section whole; Move (above) stays header-only.
         indices = self.selected_block_indices() if op in ("copy", "delete") else self.selected_trigger_indices()
         if not indices:
             return
@@ -3772,7 +3897,7 @@ class TriggerPanel(QWidget):
             return
         self._variables_dialog.set_variables(self.variable_rows(), editable=self._editable)
 
-    def _request_entry_op(self, op: str) -> None:
+    def _request_entry_op(self, op: str, arg=None) -> None:
         if not self._editable:
             return
         trigger_index = self.current_trigger_index()
@@ -3801,8 +3926,16 @@ class TriggerPanel(QWidget):
             return
         # The whole set, as one undo record (GH #60).
         refs = [(kind, entry_index) for kind, entry_index, _entry in entries]
-        if op in ("move_up", "move_down"):
-            self._on_entry_move(trigger_index, refs, -1 if op == "move_up" else 1)
+        if op in ("move_up", "move_down", "move_top", "move_bottom"):
+            up = op in ("move_up", "move_top")
+            # GH #211: gated here, not only by a disabled button, since a shortcut has no button.
+            if self._entry_move_reasons()[0 if up else 1]:
+                return
+            direction = -1 if up else 1
+            if op in ("move_top", "move_bottom"):
+                self._on_entry_move(trigger_index, refs, direction, True)
+            else:
+                self._on_entry_move(trigger_index, refs, direction * (arg or 1))
             return
         self._on_entry_structural(op, trigger_index, refs[0][0], refs, -1)
 
@@ -4038,13 +4171,20 @@ class TriggerPanel(QWidget):
         # editable flag it is handed.
         self.variables_button.setEnabled(has_document)
 
-    _ENTRY_MOVE_UP_TIP = "Move the selected conditions and effects up in display order"
-    _ENTRY_MOVE_DOWN_TIP = "Move the selected conditions and effects down in display order"
+    # GH #211: the ▲▼ tips name the modifier clicks; a menu entry ignores modifiers, so its tip does not.
+    _ENTRY_MOVE_UP_MENU_TIP = "Move the selected conditions and effects up in display order"
+    _ENTRY_MOVE_DOWN_MENU_TIP = "Move the selected conditions and effects down in display order"
+    _ENTRY_MOVE_UP_TIP = _ENTRY_MOVE_UP_MENU_TIP + ". Shift+click: five places. Ctrl+click: top of the list"
+    _ENTRY_MOVE_DOWN_TIP = _ENTRY_MOVE_DOWN_MENU_TIP + ". Shift+click: five places. Ctrl+click: bottom of the list"
+    _ENTRY_MOVE_TOP_TIP = "Move the selected conditions and effects to the top of their list"
+    _ENTRY_MOVE_BOTTOM_TIP = "Move the selected conditions and effects to the bottom of their list"
 
     def _entry_move_reasons(self) -> tuple[str, str]:
         """Why Move Entry Up and Move Entry Down are each off, "" when on (GH
         #213). The entry verbs' gate (an editable file, the picker closed, one
-        trigger), then an entry row selected that would_move_entries() that way."""
+        trigger), then an entry row selected that would_move_entries() that way.
+        A move to the top or bottom (GH #211) would change something exactly
+        when one step that way would, so this is its gate too."""
         if not self._editable or self._loaded is None:
             reason = " (this file's triggers cannot be edited)"
         elif self.detail_stack.currentIndex() == self._DETAIL_PICKER:
@@ -4063,13 +4203,21 @@ class TriggerPanel(QWidget):
             reason = " (select a condition or effect)"
         return (reason, reason)
 
-    _MOVE_UP_TIP = "Move the selected trigger up in display order"
-    _MOVE_DOWN_TIP = "Move the selected trigger down in display order"
+    # GH #211: the ▲▼ tips name the modifier clicks; a menu entry ignores modifiers, so its tip does not.
+    _MOVE_UP_MENU_TIP = "Move the selected trigger up in display order"
+    _MOVE_DOWN_MENU_TIP = "Move the selected trigger down in display order"
+    _MOVE_UP_TIP = _MOVE_UP_MENU_TIP + ". Shift+click: five places. Ctrl+click: top of its section"
+    _MOVE_DOWN_TIP = _MOVE_DOWN_MENU_TIP + ". Shift+click: five places. Ctrl+click: bottom of its section"
+    _MOVE_TOP_TIP = "Move the selected triggers to the top of their section, or of the list when there are no sections"
+    _MOVE_BOTTOM_TIP = (
+        "Move the selected triggers to the bottom of their section, or of the list when there are no sections"
+    )
 
-    def _update_reorder_buttons(self, base_ok: bool) -> None:
-        """Move Up/Down are display-order-only edits (moved_display_order(),
-        never reorder_triggers()), so they only make sense -- and are only
-        offered -- while the panel actually shows that order, unobstructed:
+    def _move_view_reason(self) -> str:
+        """Why no trigger can move for view reasons, or "". Moves are
+        display-order-only edits (never reorder_triggers()), so they only make
+        sense, and are only offered, while the panel shows that order
+        unobstructed:
 
         - sorted by File order, moving would relocate the trigger somewhere
           the user cannot currently see, since the tree isn't showing display
@@ -4077,41 +4225,67 @@ class TriggerPanel(QWidget):
         - filtered by text or by the 4c tag facet, both hide-only, so the
           adjacent display slot may be a hidden row and a swap into it would
           look like nothing happened.
+        """
+        if self._sort_mode != "display":
+            return " (switch to Display order to reorder)"
+        if self.filter_edit.text().strip() or self.tag_combo.currentData() is not None:
+            return " (clear the filter or tag to reorder)"
+        return ""
+
+    def _trigger_move_reasons(self) -> tuple[str, str]:
+        """Why Move Up and Move Down are each off, "" when on: the view gate,
+        then the block bounds. The leading member must have a slot above it,
+        the trailing one a slot below.
 
         Bounds come from `_display_position`/`_display_slots` (adjacency in
         display order), not tree geometry: grouped, the adjacent row in
         `self.tree` may belong to a different section's top-level item, where
         `indexOfTopLevelItem` would misread it as -1 or as an unrelated row.
-
-        Both disable with a tooltip saying why, rather than silently clearing
-        the sort/filter for the user.
         """
-        sorted_by_display = self._sort_mode == "display"
-        unfiltered = not self.filter_edit.text().strip() and self.tag_combo.currentData() is None
-        can_reorder = base_ok and sorted_by_display and unfiltered
-
-        # Block bounds: the leading member must have a slot above it, the
-        # trailing one a slot below.
+        view = self._move_view_reason()
+        if view:
+            return view, view
         positions = [
             self._display_position[index]
             for index in self.selected_trigger_indices()
             if index in self._display_position
         ]
-        count = len(self._display_slots)
-
-        self.trigger_move_up_button.setEnabled(can_reorder and bool(positions) and min(positions) > 0)
-        self.trigger_move_down_button.setEnabled(
-            can_reorder and bool(positions) and max(positions) < count - 1
+        if not positions:
+            return " (select a trigger first)", " (select a trigger first)"
+        return (
+            "" if min(positions) > 0 else " (already first)",
+            "" if max(positions) < len(self._display_slots) - 1 else " (already last)",
         )
 
-        if sorted_by_display and unfiltered:
-            reason = ""
-        elif not sorted_by_display:
-            reason = " (switch to Display order to reorder)"
-        else:
-            reason = " (clear the filter or tag to reorder)"
-        self.trigger_move_up_button.setToolTip(self._MOVE_UP_TIP + reason)
-        self.trigger_move_down_button.setToolTip(self._MOVE_DOWN_TIP + reason)
+    def _edge_move_reasons(self) -> tuple[str, str]:
+        """Why Move to Top and Move to Bottom are each off, "" when on (GH
+        #211): the view gate, then trigger_model.section_edge_refusal(), whose
+        wording the window's status line repeats. Positions come from
+        `_display_slots`, which a one-row move keeps current; the cached
+        partition supplies membership only."""
+        view = self._move_view_reason()
+        if view:
+            return view, view
+        indices = self.selected_trigger_indices()
+        if not indices:
+            return " (select a trigger first)", " (select a trigger first)"
+        top = section_edge_refusal(self._display_slots, self._display_sections, indices, True)
+        bottom = section_edge_refusal(self._display_slots, self._display_sections, indices, False)
+        return (f" ({top})" if top else "", f" ({bottom})" if bottom else "")
+
+    def _update_reorder_buttons(self, base_ok: bool) -> None:
+        """Move Up/Down follow _trigger_move_reasons(): both disable with a
+        tooltip saying why, rather than silently clearing the sort/filter for
+        the user. A button stays on while its Ctrl+click edge move is allowed
+        (a split block against the top still gathers); _request_trigger_op()
+        refuses the step itself."""
+        up, down = self._trigger_move_reasons()
+        # Only when a step is refused: each edge check builds a whole display order.
+        edge_up, edge_down = self._edge_move_reasons() if (up or down) else ("", "")
+        self.trigger_move_up_button.setEnabled(base_ok and not (up and edge_up))
+        self.trigger_move_down_button.setEnabled(base_ok and not (down and edge_down))
+        self.trigger_move_up_button.setToolTip(self._MOVE_UP_TIP + up)
+        self.trigger_move_down_button.setToolTip(self._MOVE_DOWN_TIP + down)
 
     _SECTION_UP_TIP = "Move the selected trigger's whole section above the section before it"
     _SECTION_DOWN_TIP = "Move the selected trigger's whole section below the section after it"

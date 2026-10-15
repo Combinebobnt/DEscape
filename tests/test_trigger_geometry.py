@@ -203,40 +203,69 @@ def test_the_fixture_geometry_reads_back_as_generated() -> None:
 # -- corpus -------------------------------------------------------------------
 
 
+# Per file, (areas, half-set coordinate groups), or None where parse_triggers()
+# gives up. The plan measured the 20 files before the 1.59 example joined.
+_JOINED_AFTER_THE_PLAN = "8tp3w9j.aoe2scenario"
+_GEOMETRY_PER_FILE = {
+    "0_June_Event_Scenario.aoe2scenario": (9, 0),
+    "2_Joan_coop_1_v0_13.aoe2scenario": None,
+    "2_Joan_coop_2_v0_15.aoe2scenario": (36, 0),
+    "2_Joan_coop_3_v0_14.aoe2scenario": None,
+    "2_Joan_coop_4_v0_13.aoe2scenario": None,
+    "2_Joan_coop_5_v0_13.aoe2scenario": (47, 0),
+    "2_Joan_coop_6_v0_14.aoe2scenario": None,
+    # Its 7 half-set groups are authored area_x set, area_y -1: no shape.
+    _JOINED_AFTER_THE_PLAN: (20, 7),
+    "C2_ElCid_coop_1_v0_16.aoe2scenario": (80, 0),
+    "C2_ElCid_coop_2_v0_13.aoe2scenario": (17, 0),
+    "C2_ElCid_coop_3_v0_12.aoe2scenario": (28, 0),
+    "C2_ElCid_coop_4_v0_13.aoe2scenario": (63, 0),
+    "C2_ElCid_coop_5_v0_14.aoe2scenario": (38, 0),
+    "C2_ElCid_coop_6_v0_13.aoe2scenario": (4, 0),
+    "F7_2_Dos Pilas (648).aoe2scenario": (14, 0),
+    "F7_3_York (865).aoe2scenario": (82, 0),
+    "R4_LeLoi_4.aoe2scenario": (38, 0),
+    "atilla_1_scn_resaved.aoe2scenario": (77, 0),
+    "blank_map.aoe2scenario": (0, 0),
+    "old-allies-final-v2.aoe2scenario": (895, 0),
+    "ring75_v0_scx_resaved.aoe2scenario": (0, 0),
+}
+
+
+def test_the_per_file_geometry_table_sums_to_the_plan() -> None:
+    """The plan's measurements: 16 of 20 files parse triggers, 1428 areas, zero half-set groups."""
+    planned = [row for name, row in _GEOMETRY_PER_FILE.items() if name != _JOINED_AFTER_THE_PLAN]
+    parsed = [row for row in planned if row is not None]
+    assert (len(planned), len(parsed)) == (20, 16)
+    assert (sum(a for a, _p in parsed), sum(p for _a, p in parsed)) == (1428, 0)
+
+
+def _measure_geometry(path: Path) -> tuple[int, int] | None:
+    loaded = load_map_and_units(path)
+    manager = parse_triggers(loaded)
+    if manager is None:
+        return None
+    areas = partial = 0
+    vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+    for index, trigger in enumerate(manager.triggers):
+        shapes = trigger_geometry.shapes_for_trigger(trigger, vocabulary, trigger_index=index)
+        areas += sum(s.shape == trigger_geometry.SHAPE_AREA for s in shapes)
+        for kind, list_name, type_attribute in trigger_geometry._KINDS:
+            definitions = vocabulary.conditions if kind == "condition" else vocabulary.effects
+            for entry in getattr(trigger, list_name):
+                for fields in trigger_geometry.coordinate_fields(definitions.get(getattr(entry, type_attribute))):
+                    set_count = sum(trigger_geometry._coordinate(entry, f) >= 0 for f in fields)
+                    partial += 0 < set_count < len(fields)
+    return areas, partial
+
+
 @pytest.mark.corpus
-def test_corpus_counts_match_the_plan() -> None:
-    """The plan's measurements: 16 of 20 files parse triggers, 1428 areas,
-    zero half-set groups, and the 4 unparseable files degrade to no shapes."""
-    examples = Path(__file__).resolve().parent.parent / "examples"
-    files = sorted(examples.glob("*.aoe2scenario"))
-    if len(files) != 20:
-        pytest.skip(f"expects the 20-file examples/ corpus, found {len(files)}")
-    areas = partial = parsed = 0
-    unparseable = []
-    for path in files:
-        loaded = load_map_and_units(path)
-        manager = parse_triggers(loaded)
-        if manager is None:
-            unparseable.append(path.name)
-            continue
-        parsed += 1
-        vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
-        for index, trigger in enumerate(manager.triggers):
-            shapes = trigger_geometry.shapes_for_trigger(trigger, vocabulary, trigger_index=index)
-            areas += sum(s.shape == trigger_geometry.SHAPE_AREA for s in shapes)
-            for kind, list_name, type_attribute in trigger_geometry._KINDS:
-                definitions = vocabulary.conditions if kind == "condition" else vocabulary.effects
-                for entry in getattr(trigger, list_name):
-                    for fields in trigger_geometry.coordinate_fields(definitions.get(getattr(entry, type_attribute))):
-                        set_count = sum(trigger_geometry._coordinate(entry, f) >= 0 for f in fields)
-                        partial += 0 < set_count < len(fields)
-    assert (parsed, areas, partial) == (16, 1428, 0)
-    assert sorted(unparseable) == [
-        "2_Joan_coop_1_v0_13.aoe2scenario",
-        "2_Joan_coop_3_v0_14.aoe2scenario",
-        "2_Joan_coop_4_v0_13.aoe2scenario",
-        "2_Joan_coop_6_v0_14.aoe2scenario",
-    ]
+def test_corpus_counts_match_the_plan(corpus_files) -> None:
+    """Every corpus file against its pinned row; an unpinned file fails with its measured row."""
+    measured = {path.name: _measure_geometry(path) for path in corpus_files}
+    unpinned = {name: row for name, row in measured.items() if name not in _GEOMETRY_PER_FILE}
+    assert not unpinned, f"pin these new files' rows in _GEOMETRY_PER_FILE: {unpinned}"
+    assert measured == {name: _GEOMETRY_PER_FILE[name] for name in measured}
 
 
 # -- referenced units (unit shapes) -------------------------------------------

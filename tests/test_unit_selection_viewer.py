@@ -190,18 +190,24 @@ def test_units_mode_survives_a_style_switch_and_rebuilds_its_index() -> None:
         _close(window)
 
 
-def test_units_mode_forces_nodrag_so_a_click_cannot_pan() -> None:
+def test_units_mode_is_nodrag_under_select_and_move_and_hand_drag_under_pan() -> None:
+    """TASK-252: Pan pans in Units mode too; Select and Move need the press."""
     from PyQt5.QtWidgets import QGraphicsView
 
     window = _window()
     try:
         assert window.map_view.dragMode() == QGraphicsView.ScrollHandDrag
         window.mode_combo.setCurrentText("Units")
-        assert window.map_view.dragMode() == QGraphicsView.NoDrag
-        # Pan is still nominally the active tool -- the mode, not the tool,
-        # is what has to win here.
         assert window._current_tool == "pan"
+        assert window.map_view.dragMode() == QGraphicsView.ScrollHandDrag
+        for action in (window.select_action, window.move_action):
+            action.setChecked(True)
+            assert window.map_view.dragMode() == QGraphicsView.NoDrag, action.text()
+        window.pan_action.setChecked(True)
+        assert window.map_view.dragMode() == QGraphicsView.ScrollHandDrag
+        window.select_action.setChecked(True)
         window.mode_combo.setCurrentText("View")
+        assert window._current_tool == "pan"
         assert window.map_view.dragMode() == QGraphicsView.ScrollHandDrag
     finally:
         _close(window)
@@ -278,6 +284,25 @@ def test_a_tree_shows_only_hit_points_no_combat_rows() -> None:
             assert not caption.isVisibleTo(window.left_stack)
             assert not value.isVisibleTo(window.left_stack)
     finally:
+        _close(window)
+
+
+def test_loading_an_install_path_refreshes_the_unit_cards(monkeypatch) -> None:
+    """TASK-337: the pending pick is sticky, so without this its card waits for the next pick."""
+    from descape import asset_source
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        calls: list[bool] = []
+        monkeypatch.setattr(asset_source, "validate_install_path", lambda path: (True, "ok"))
+        monkeypatch.setattr(asset_source, "set_install_path_override", lambda path: None)
+        monkeypatch.setattr(asset_source, "save_install_path_to_config", lambda path: None)
+        monkeypatch.setattr(window.units_panel, "refresh_thumbnails", lambda: calls.append(True))
+        dialog.install_path_edit.setText("/nonexistent/aoe2de")
+        dialog.load_install_path()
+        assert calls == [True]
+    finally:
+        dialog.close()
         _close(window)
 
 
@@ -543,6 +568,8 @@ def test_pick_unit_at_reuses_a_tile_it_is_handed_in_sloped() -> None:
         from descape import unit_pick
 
         window.terrain_style_combo.setCurrentText("Sloped")
+        # Sprites off: only there does any later tile occlude (TASK-319), which the near-corner check needs.
+        window.show_sprites_action.setChecked(False)
         mv = window.map_view
         index = unit_pick.build_index(window.scenario, UnitFilter())
         mv.set_unit_index(index)
@@ -816,6 +843,11 @@ def _entry_for_const(window, unit_const: int):
     return next(e for e in window.map_view._unit_index.entries if e.unit.unit_const == unit_const)
 
 
+def _ring_paths(mv) -> list:
+    """Every live ring group's path, one per colour group."""
+    return [item.path() for item in mv._range_ring_items.values()]
+
+
 def test_selecting_a_castle_draws_a_ring_in_the_configured_colour() -> None:
     from descape import settings
 
@@ -823,8 +855,8 @@ def test_selecting_a_castle_draws_a_ring_in_the_configured_colour() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
-        item = mv._range_ring_item
-        assert item is not None
+        assert list(mv._range_ring_items) == [None], "Colour by Owner is off by default"
+        item = mv._range_ring_items[None]
         assert not item.path().isEmpty()
         assert item.zValue() == mv.RANGE_RING_Z
         assert item.pen().color().name() == settings.get_overlay_color("range_ring")
@@ -842,7 +874,7 @@ def test_a_rangeless_building_and_a_non_building_draw_no_ring(unit_const: int) -
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, unit_const)])
         assert mv._unit_select_groups, "the selection itself should still be drawn"
-        assert mv._range_ring_item is None
+        assert mv._range_ring_items == {}
     finally:
         _close(window)
 
@@ -853,9 +885,11 @@ def test_a_castle_and_an_archer_together_draw_exactly_one_ring() -> None:
         mv = window.map_view
         castle = _entry_for_const(window, _CASTLE_CONST)
         mv.set_unit_selection([castle])
-        alone = mv._range_ring_item.path().elementCount()
+        (path,) = _ring_paths(mv)
+        alone = path.elementCount()
         mv.set_unit_selection([castle, _entry_for_const(window, _ARCHER_CONST)])
-        assert mv._range_ring_item.path().elementCount() == alone
+        (path,) = _ring_paths(mv)
+        assert path.elementCount() == alone
     finally:
         _close(window)
 
@@ -872,9 +906,9 @@ def test_two_selected_castles_draw_two_rings_and_deselecting_one_leaves_one() ->
         castles = [e for e in mv._unit_index.entries if e.unit.unit_const == _CASTLE_CONST]
         assert len(castles) == 2
         mv.set_unit_selection(castles)
-        assert _subpath_count(mv._range_ring_item.path()) == 2
+        assert [_subpath_count(path) for path in _ring_paths(mv)] == [2]
         mv.set_unit_selection(castles[1:])
-        assert _subpath_count(mv._range_ring_item.path()) == 1
+        assert [_subpath_count(path) for path in _ring_paths(mv)] == [1]
     finally:
         _close(window)
 
@@ -906,16 +940,19 @@ def test_nudging_a_castle_moves_its_ring_one_tile_and_undo_puts_it_back() -> Non
         key = unit_pick.unit_key(1, castle)
         window._selection = [key]
         mv.set_unit_selection([mv._unit_index.entry_for_key(key)])
-        before = mv._range_ring_item.path().boundingRect().center()
+        (path,) = _ring_paths(mv)
+        before = path.boundingRect().center()
         tp = mv._tile_pixels
 
         window.on_unit_nudge(1, 0, Qt.ShiftModifier)
-        moved = mv._range_ring_item.path().boundingRect().center()
+        (path,) = _ring_paths(mv)
+        moved = path.boundingRect().center()
         assert moved.x() - before.x() == pytest.approx(tp, abs=1.0)
         assert moved.y() == pytest.approx(before.y(), abs=1.0)
 
         window.undo()
-        restored = mv._range_ring_item.path().boundingRect().center()
+        (path,) = _ring_paths(mv)
+        restored = path.boundingRect().center()
         assert (restored.x(), restored.y()) == pytest.approx((before.x(), before.y()), abs=1.0)
     finally:
         _close(window)
@@ -931,8 +968,9 @@ def test_every_terrain_style_draws_the_ring(style: str) -> None:
         window.terrain_style_combo.setCurrentText(style)
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
-        assert mv._range_ring_item is not None, f"{style}: no ring"
-        assert not mv._range_ring_item.path().isEmpty()
+        paths = _ring_paths(mv)
+        assert len(paths) == 1, f"{style}: no ring"
+        assert not paths[0].isEmpty()
     finally:
         _close(window)
 
@@ -946,7 +984,8 @@ def test_the_ring_is_wider_than_the_buildings_own_footprint() -> None:
         mv = window.map_view
         entry = _entry_for_const(window, _CASTLE_CONST)
         mv.set_unit_selection([entry])
-        ring = mv._range_ring_item.path().boundingRect()
+        (path,) = _ring_paths(mv)
+        ring = path.boundingRect()
         footprint = mv._unit_path(entry).boundingRect()
         assert ring.width() > 3 * footprint.width()
         assert ring.center().x() == pytest.approx(footprint.center().x(), abs=2.0)
@@ -961,11 +1000,11 @@ def test_deselecting_and_leaving_units_mode_both_clear_the_ring() -> None:
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
         mv.set_unit_selection(None)
-        assert mv._range_ring_item is None
+        assert mv._range_ring_items == {}
 
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
         window.mode_combo.setCurrentText("View")
-        assert mv._range_ring_item is None
+        assert mv._range_ring_items == {}
     finally:
         _close(window)
 
@@ -975,14 +1014,14 @@ def test_the_toggle_drops_a_live_ring_and_puts_it_back() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
-        assert mv._range_ring_item is None, "no ring while View > Range Rings is off"
+        assert mv._range_ring_items == {}, "no ring while View > Range Rings > Show is off"
 
         window.range_rings_action.setChecked(True)
-        assert mv._range_ring_item is not None
-        assert not mv._range_ring_item.path().isEmpty()
+        (path,) = _ring_paths(mv)
+        assert not path.isEmpty()
 
         window.range_rings_action.setChecked(False)
-        assert mv._range_ring_item is None
+        assert mv._range_ring_items == {}
     finally:
         _close(window)
 
@@ -1009,7 +1048,7 @@ def test_a_colour_change_reinks_a_live_ring() -> None:
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
         settings.set_overlay_color("range_ring", "#ff00ff")
         mv.apply_overlay_colors()
-        assert mv._range_ring_item.pen().color().name() == "#ff00ff"
+        assert mv._range_ring_items[None].pen().color().name() == "#ff00ff"
     finally:
         _close(window)
 
@@ -1023,7 +1062,7 @@ def test_closing_the_scenario_leaves_no_stale_ring_ref() -> None:
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
         window.edit_history.mark_saved()
         window.close_scenario()
-        assert mv._range_ring_item is None
+        assert mv._range_ring_items == {}
     finally:
         _close(window)
 
@@ -1036,11 +1075,201 @@ def test_a_style_switch_under_a_live_selection_rebuilds_the_ring() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
-        assert mv._range_ring_item is not None
+        assert len(_ring_paths(mv)) == 1
         for style in ("Sloped", "Flat", "Stepped"):
             window.terrain_style_combo.setCurrentText(style)
             mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
-            assert mv._range_ring_item is not None, f"{style}: ring lost across the style switch"
-            assert not mv._range_ring_item.path().isEmpty()
+            paths = _ring_paths(mv)
+            assert len(paths) == 1, f"{style}: ring lost across the style switch"
+            assert not paths[0].isEmpty()
+    finally:
+        _close(window)
+
+
+# --- range rings coloured by owner (GH #156) ---------------------------
+
+
+def _owner_ring_window(by_owner: bool = True):
+    """A P1, a P2 and a GAIA Castle in Units mode with View > Range Rings >
+    Show on, and Colour by Owner on unless asked otherwise."""
+    window = _window(with_units=False)
+    units = window.scenario.unit_manager.units
+    units[1].append(SyntheticUnit(x=20.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=301))
+    units[2].append(SyntheticUnit(x=60.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=302))
+    units[GAIA_PLAYER_ID].append(SyntheticUnit(x=20.0, y=60.0, unit_const=_CASTLE_CONST, reference_id=303))
+    window.mode_combo.setCurrentText("Units")
+    window.range_rings_action.setChecked(True)
+    window.range_rings_by_owner_action.setChecked(by_owner)
+    return window
+
+
+def test_ring_owner_colour_defaults_off_and_the_ring_defaults_to_dark_gray(tmp_path) -> None:
+    from descape import settings
+
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_range_rings_by_owner() is False
+    assert settings.get_overlay_color("range_ring") == "#404040"
+
+
+def test_ring_owner_colour_round_trips_through_the_file(monkeypatch) -> None:
+    from descape import settings
+
+    settings.set_range_rings_by_owner(True)
+    monkeypatch.setattr(settings, "_range_rings_by_owner", None)
+    assert settings.get_range_rings_by_owner() is True
+    settings.set_range_rings_by_owner(False)
+    monkeypatch.setattr(settings, "_range_rings_by_owner", None)
+    assert settings.get_range_rings_by_owner() is False
+
+
+def test_range_rings_is_a_submenu_of_show_and_colour_by_owner() -> None:
+    from descape import settings
+
+    window = _owner_ring_window(by_owner=False)
+    try:
+        view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+        range_menu = next(a.menu() for a in view_menu.actions() if a.text() == "&Range Rings")
+        assert range_menu.actions() == [window.range_rings_action, window.range_rings_by_owner_action]
+        assert window.range_rings_action.text() == "&Show"
+        assert window.range_rings_action not in view_menu.actions(), "Show stayed in View itself"
+        assert window.range_rings_by_owner_action.isChecked() is False
+
+        window.range_rings_by_owner_action.setChecked(True)
+        assert settings.get_range_rings_by_owner() is True
+        assert window.map_view._range_rings_by_owner is True
+        row = ("view_range_rings_by_owner", "Range Rings: Colour by Owner", "")
+        assert row in settings.REBINDABLE_ACTIONS
+    finally:
+        _close(window)
+
+
+def test_a_window_reads_ring_owner_colour_from_config_without_writing_it(tmp_path) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    config = tmp_path / "config.yaml"
+    config.write_text("range_rings_by_owner: true\n")
+    before = config.read_bytes()
+    window = ViewerWindow()
+    try:
+        assert window.range_rings_by_owner_action.isChecked()
+        assert window.map_view._range_rings_by_owner is True
+        assert config.read_bytes() == before
+    finally:
+        _close(window)
+
+
+def test_owner_colour_off_draws_every_owners_ring_in_the_one_configured_group() -> None:
+    from descape import settings
+
+    window = _owner_ring_window(by_owner=False)
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1, 2)])
+        assert list(mv._range_ring_items) == [None]
+        item = mv._range_ring_items[None]
+        assert item.pen().color().name() == settings.get_overlay_color("range_ring")
+        assert _subpath_count(item.path()) == 3
+    finally:
+        _close(window)
+
+
+def test_a_player_1_castles_ring_is_player_1s_colour() -> None:
+    window = _owner_ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 1)])
+        p1 = tuple(window.scenario.player_colors[1])
+        assert list(mv._range_ring_items) == [p1]
+        item = mv._range_ring_items[p1]
+        assert _rgb(item.pen().color()) == p1
+        assert _rgb(item.pen().color()) != _rgb(mv._range_ring_pen.color())
+        assert item.pen().widthF() == 0, "a non-cosmetic ring thins unevenly around the ellipse"
+        assert item.zValue() == mv.RANGE_RING_Z
+        assert _subpath_count(item.path()) == 1
+    finally:
+        _close(window)
+
+
+def test_a_gaia_castles_ring_keeps_the_configured_colour() -> None:
+    window = _owner_ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, GAIA_PLAYER_ID)])
+        assert list(mv._range_ring_items) == [None]
+        assert mv._range_ring_items[None].pen().color() == mv._range_ring_pen.color()
+    finally:
+        _close(window)
+
+
+def test_two_owners_draw_two_ring_groups_and_toggling_off_collapses_them() -> None:
+    window = _owner_ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (1, 2)])
+        p1 = tuple(window.scenario.player_colors[1])
+        p2 = tuple(window.scenario.player_colors[2])
+        assert p1 != p2
+        assert set(mv._range_ring_items) == {p1, p2}
+        assert [_subpath_count(path) for path in _ring_paths(mv)] == [1, 1]
+        assert _rgb(mv._range_ring_items[p2].pen().color()) == p2
+        owner_items = list(mv._range_ring_items.values())
+
+        window.range_rings_by_owner_action.setChecked(False)
+        assert list(mv._range_ring_items) == [None]
+        assert [_subpath_count(path) for path in _ring_paths(mv)] == [2]
+        assert all(item.scene() is None for item in owner_items), "a dropped group left its item in the scene"
+
+        window.range_rings_by_owner_action.setChecked(True)
+        assert set(mv._range_ring_items) == {p1, p2}
+    finally:
+        _close(window)
+
+
+def test_a_colour_edit_recolours_a_live_ring() -> None:
+    from descape import player_fields
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    window = _owner_ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 1)])
+        (before,) = mv._range_ring_items
+        assert before != PLAYER_COLOR_BY_ID[5]
+        spec = next(s for s in player_fields.specs_for(window.scenario) if s.field_id == "color")
+        window.set_player_field(spec, 1, 5)
+        (key,) = mv._range_ring_items
+        assert key == PLAYER_COLOR_BY_ID[5]
+        assert _rgb(mv._range_ring_items[key].pen().color()) == PLAYER_COLOR_BY_ID[5]
+    finally:
+        _close(window)
+
+
+def test_an_appearance_change_reinks_only_the_configured_ring_group() -> None:
+    from descape import settings
+
+    window = _owner_ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1)])
+        p1 = tuple(window.scenario.player_colors[1])
+        assert set(mv._range_ring_items) == {None, p1}
+        settings.set_overlay_color("range_ring", "#ff00ff")
+        mv.apply_overlay_colors()
+        assert _rgb(mv._range_ring_items[None].pen().color()) == (255, 0, 255)
+        assert _rgb(mv._range_ring_items[p1].pen().color()) == p1
+    finally:
+        _close(window)
+
+
+def test_closing_the_scenario_leaves_no_stale_owner_ring_refs() -> None:
+    window = _owner_ring_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (1, 2)])
+        assert len(mv._range_ring_items) == 2
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert mv._range_ring_items == {}
     finally:
         _close(window)

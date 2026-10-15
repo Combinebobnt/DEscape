@@ -38,6 +38,16 @@ pytestmark = [
 
 BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120x120.aoe2scenario"
 TRIGGER_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+V158_DONOR = Path(__file__).resolve().parent / "fixtures" / "blank_120x120_v158.aoe2scenario"
+
+
+@pytest.fixture
+def new_maps_are_1_58(monkeypatch):
+    """File > New Map from the 1.58 donor, TRIGGER_FIXTURE's own version: the
+    shipped donor is 1.59, and a paste across versions is refused (TASK-345)."""
+    from descape import scenario_new
+
+    monkeypatch.setattr(scenario_new, "BLANK_TEMPLATE_PATH", V158_DONOR)
 
 
 @pytest.fixture(autouse=True)
@@ -1967,8 +1977,12 @@ def test_no_reorder_or_move_triggers_call_is_introduced() -> None:
     # The actual call shape (".reorder_triggers(" / ".move_triggers("), not a
     # bare word match -- this docstring itself names both methods by way of
     # explaining why they must not appear as calls.
-    # GH #133's Section Up/Down permute display order in their own helper.
-    source = inspect.getsource(ViewerWindow.trigger_structural_edit) + inspect.getsource(ViewerWindow._move_section)
+    # GH #133's Section Up/Down permute display order in their own helper, and so do GH #211's edge moves.
+    source = (
+        inspect.getsource(ViewerWindow.trigger_structural_edit)
+        + inspect.getsource(ViewerWindow._move_section)
+        + inspect.getsource(ViewerWindow._move_to_section_edge)
+    )
     assert ".reorder_triggers(" not in source
     assert ".move_triggers(" not in source
 
@@ -3401,6 +3415,27 @@ def test_a_retype_carries_the_shared_fields_and_reports_the_rest() -> None:
         window.close()
 
 
+def test_a_retype_names_a_dropped_field_by_the_old_types_caption() -> None:
+    """GH #212: Replace Object's second unit is "target player unit" on its
+    form, so the line saying it did not carry over calls it that too."""
+    window, indices = _facet_window(_REPLACE_OBJECT, {"object_list_unit_id": _ARCHER, "object_list_unit_id_2": _CASTLE})
+    try:
+        kill_object = _effect_type_id(window.trigger_panel, "kill_object")
+        window.entry_structural_edit("retype", 0, "effect", indices[0], kill_object)
+
+        fresh = _effects0(window)[indices[0]]
+        assert fresh.effect_type == kill_object
+        assert fresh.object_list_unit_id == _ARCHER, "the first unit is a field both types list"
+        reports = [line for line in window.status_log.toPlainText().splitlines() if line.startswith("Changed effect to")]
+        assert len(reports) == 1
+        # facet2 drops too; only the unit field's wording is this test's.
+        assert "did not carry over (target player unit" in reports[0]
+        assert "object list unit id" not in reports[0]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # -- multi-select and clipboard (GH #27/#28) ----------------------------------
 
 
@@ -3540,14 +3575,20 @@ def test_move_buttons_follow_the_block_bounds() -> None:
     window = _triggers_window()
     try:
         panel = window.trigger_panel
+        # The step gate; a split block's button stays on for its Ctrl+click gather (TASK-356).
         _ctrl_select(panel, 0, 2)
-        assert not panel.trigger_move_up_button.isEnabled(), "the leading member is at slot 0"
-        assert panel.trigger_move_down_button.isEnabled()
+        assert panel._trigger_move_reasons() == (" (already first)", ""), "the leading member is at slot 0"
+        assert panel.trigger_move_up_button.isEnabled() and panel.trigger_move_down_button.isEnabled()
         _ctrl_select(panel, 1, 3)
-        assert panel.trigger_move_up_button.isEnabled()
-        assert not panel.trigger_move_down_button.isEnabled(), "the trailing member is last"
+        assert panel._trigger_move_reasons() == ("", " (already last)"), "the trailing member is last"
+        assert panel.trigger_move_up_button.isEnabled() and panel.trigger_move_down_button.isEnabled()
         _ctrl_select(panel, 1, 2)
         assert panel.trigger_move_up_button.isEnabled() and panel.trigger_move_down_button.isEnabled()
+        # A gathered block at an end has nowhere to go that way.
+        _ctrl_select(panel, 0, 1)
+        assert not panel.trigger_move_up_button.isEnabled() and panel.trigger_move_down_button.isEnabled()
+        _ctrl_select(panel, 2, 3)
+        assert panel.trigger_move_up_button.isEnabled() and not panel.trigger_move_down_button.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -3735,7 +3776,7 @@ def test_a_clipboard_from_another_scenario_version_is_refused_out_loud(monkeypat
         window.close()
 
 
-def test_a_paste_into_another_file_reports_and_undoes_in_one_step() -> None:
+def test_a_paste_into_another_file_reports_and_undoes_in_one_step(new_maps_are_1_58) -> None:
     """GH #3 through the window: copy in the fixture, File > New Map, paste.
     Both outside links are cleared, variable 0 takes the source's name, and one
     undo removes the triggers and the name together."""
@@ -3746,6 +3787,7 @@ def test_a_paste_into_another_file_reports_and_undoes_in_one_step() -> None:
         window.copy_triggers()
         window.edit_history.mark_saved()
         window.new_map()
+        assert window.scenario.scenario_version == "1.58"
         window.mode_combo.setCurrentText("Triggers")
         assert panel.trigger_paste_button.isEnabled(), "the clipboard outlives the document"
 
@@ -3762,6 +3804,34 @@ def test_a_paste_into_another_file_reports_and_undoes_in_one_step() -> None:
         manager = window.trigger_edits.manager()
         assert (len(manager.triggers), len(manager.variables)) == (0, 0)
         assert not window.edit_history.is_dirty, "the paste was one undo step"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_paste_from_a_1_58_file_into_a_new_map_is_refused() -> None:
+    """TASK-345: File > New Map is a 1.59 document, so triggers copied from the
+    1.58 fixture are refused there. Paste stays enabled, says why, and
+    changes nothing (GH #3's refusal)."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 2, 3)
+        window.copy_triggers()
+        window.edit_history.mark_saved()
+        window.new_map()
+        window.mode_combo.setCurrentText("Triggers")
+        expected = "Copied from a 1.58 scenario; this one is 1.59."
+        assert panel.trigger_paste_button.isEnabled()
+        assert panel.trigger_paste_button.toolTip() == expected
+        assert window.paste_action.toolTip() == expected
+        window.status_log.clear()
+
+        panel.trigger_paste_button.click()
+        assert f"Cannot paste these triggers: {expected}" in window.status_log.toPlainText()
+        assert len(panel._manager().triggers) == 0
+        assert window.trigger_edits is None or not window.trigger_edits.has_edits
+        assert not window.edit_history.is_dirty, "no undo record was pushed"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -4603,7 +4673,7 @@ def test_the_sections_button_lists_every_section_and_stays_when_flat() -> None:
 
 def _roomy_tree(panel) -> None:
     """Give the trigger tree pane 500 px of the vertical split. At the default
-    1500x900 split two button rows leave the tree ~6 rows, so a test that
+    1500x900 split (equal halves) the tree shows ~10 rows, so a test that
     clicks a real row position needs the room to see it."""
     from PyQt5.QtWidgets import QApplication
 
@@ -5237,6 +5307,101 @@ def test_no_trigger_pane_button_clips_at_the_minimum_width() -> None:
         window.close()
 
 
+# -- TASK-285: the tree / detail split starts as equal halves --------------------
+
+
+def _assert_the_detail_pane_fits(panel) -> None:
+    """The detail pane, and each part of it down to the property form's scroll
+    area, has at least its own minimum size hint."""
+    detail = panel.splitter.widget(1)
+    needed = detail.minimumSizeHint().height()
+    assert panel.splitter.sizes()[1] >= needed, f"the detail pane gets {panel.splitter.sizes()[1]} px of its {needed}"
+    for name in ("entry_tree", "detail_stack", "property_area"):
+        widget = getattr(panel, name)
+        needed = widget.minimumSizeHint().height()
+        assert widget.height() >= needed, f"{name} gets {widget.height()} px of its {needed}"
+
+
+def test_the_trigger_tree_keeps_the_height_its_button_rows_gave_up() -> None:
+    """Five button rows left the tree viewport 70 px at this 1500x900 window.
+    TASK-212 and TASK-330 took three of them out, 99 px, but the splitter
+    shared its height by the panes' size hints, so the tree stood at 122 px."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _sectioned_window()
+    try:
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        top, bottom = panel.splitter.sizes()
+        assert abs(top - bottom) <= 1, f"the split starts as equal halves, not {top}:{bottom}"
+        viewport = panel.tree.viewport().height()
+        assert viewport >= 70 + 99, f"the tree viewport is {viewport} px (194 measured)"
+        _assert_the_detail_pane_fits(panel)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("height", [720, 660])
+def test_the_split_never_takes_the_detail_pane_below_its_minimum(height: int) -> None:
+    """720 is the app's default window. At 660 an equal half is less than the
+    detail pane's minimum, so the tree gives the difference back."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.shown_window(1280, height)
+    try:
+        window.load_scenario(TRIGGER_FIXTURE)
+        window.mode_combo.setCurrentText("Triggers")
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        top, bottom = panel.splitter.sizes()
+        minimum = panel.splitter.widget(1).minimumSizeHint().height()
+        assert top + bottom >= panel.splitter.widget(0).minimumSizeHint().height() + minimum, "fixture: both fit"
+        if height == 660:
+            assert (top + bottom) // 2 < minimum, "fixture: an equal half would be too little"
+            assert bottom == minimum and top < bottom
+        else:
+            assert abs(top - bottom) <= 1
+        _assert_the_detail_pane_fits(panel)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_dragging_the_tree_detail_handle_still_moves_and_keeps_the_split() -> None:
+    from PyQt5.QtCore import QEvent, QPoint, Qt
+    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtWidgets import QApplication
+
+    window = _sectioned_window()
+    try:
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        handle = panel.splitter.handle(1)
+        top, bottom = panel.splitter.sizes()
+        start = handle.rect().center()
+
+        def send(kind, pos, button, buttons) -> None:
+            event = QMouseEvent(kind, pos, handle.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+            QApplication.sendEvent(handle, event)
+
+        send(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        send(QEvent.MouseMove, start - QPoint(0, 40), Qt.NoButton, Qt.LeftButton)
+        send(QEvent.MouseButtonRelease, start - QPoint(0, 40), Qt.LeftButton, Qt.NoButton)
+        QApplication.processEvents()
+        assert panel.splitter.sizes() == [top - 40, bottom + 40]
+
+        # A later resize keeps the dragged proportion; it does not go back to the starting split.
+        window.resize(1500, 1000)
+        QApplication.processEvents()
+        grown_top, grown_bottom = panel.splitter.sizes()
+        assert grown_top + grown_bottom == top + bottom + 100
+        assert grown_bottom - grown_top >= bottom - top + 80
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def _saved_body(path: Path) -> bytes:
     from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 
@@ -5860,7 +6025,7 @@ def test_a_group_edit_writes_every_selected_entry_as_one_record() -> None:
         assert [_effects0(window)[i].object_list_unit_id for i in indices] == [_SCOUT] * 3
         assert [(_effects0(window)[i].location_x, _effects0(window)[i].location_y) for i in indices] == locations
         assert _record_count(window) == before + 1, "a group edit is one undo step"
-        assert window.edit_history.records[-1].label == "Set object list unit id on 3 entries"
+        assert window.edit_history.records[-1].label == "Set source player unit on 3 entries"
         assert panel.selected_entry_refs() == [("effect", i) for i in indices], "the set survives the edit"
 
         window.undo()
@@ -6269,7 +6434,10 @@ def test_gh137_the_trigger_menu_offers_cut_copy_paste_first() -> None:
         panel = window.trigger_panel
         panel.select_trigger(1)
         menu = panel.trigger_context_menu(panel._item_for_index[1])
-        assert _texts(menu) == ["Cut", "Copy", "Paste", "", "Select Section", "Select Tag"]
+        assert _texts(menu) == [
+            "Cut", "Copy", "Paste", "Move Up", "Move Down", "Move to Top", "Move to Bottom", "",
+            "Select Section", "Select Tag",
+        ]
         assert menu.toolTipsVisible()
         assert _action(menu, "Cut").isEnabled() and _action(menu, "Copy").isEnabled()
         assert not _action(menu, "Paste").isEnabled(), "nothing to paste yet"
@@ -6634,7 +6802,9 @@ def test_gh137_the_entry_menu_offers_cut_copy_paste_with_its_own_clipboard() -> 
         panel.select_trigger(3)
         _select_entries(panel, ("effect", 1), ("effect", 2))
         menu = panel.entry_context_menu(panel._entry_item_for("effect", 1))
-        assert _texts(menu) == ["Cut", "Copy", "Paste", "Move Up", "Move Down", "", "Select Same Type"]
+        assert _texts(menu) == [
+            "Cut", "Copy", "Paste", "Move Up", "Move Down", "Move to Top", "Move to Bottom", "", "Select Same Type",
+        ]
         assert menu.toolTipsVisible()
         assert _action(menu, "Cut").isEnabled() and _action(menu, "Copy").isEnabled()
         assert not _action(menu, "Paste").isEnabled(), "nothing to paste yet"
@@ -6746,7 +6916,7 @@ def test_gh137_a_refused_entry_paste_says_why_and_records_nothing() -> None:
         window.close()
 
 
-def test_gh137_an_entry_paste_into_another_file_reports_and_undoes_in_one_step(tmp_path: Path) -> None:
+def test_gh137_an_entry_paste_into_another_file_reports_and_undoes_in_one_step(tmp_path: Path, new_maps_are_1_58) -> None:
     from descape.scenario_io import load_map_and_units, parse_triggers
     from descape.scenario_write import write_scenario
 
@@ -6758,6 +6928,7 @@ def test_gh137_an_entry_paste_into_another_file_reports_and_undoes_in_one_step(t
         window.copy_entries_to_clipboard()
         window.edit_history.mark_saved()
         window.new_map()
+        assert window.scenario.scenario_version == "1.58"
         window.mode_combo.setCurrentText("Triggers")
         window.trigger_structural_edit("new", [])
         panel.select_trigger(0)
@@ -7445,6 +7616,25 @@ def test_replace_object_binds_facet2_to_its_second_unit() -> None:
         _row_widget(panel, "object_list_unit_id_2").committed.emit(_ARCHER)
         preview = _facet_preview(panel)
         assert preview.arrow_shown and preview.note_label.isHidden()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_replace_objects_unit_rows_are_captioned_after_their_player() -> None:
+    """GH #212: the first unit is the source player's and the second the
+    target player's, and the undo label follows the row caption."""
+    window, _indices = _facet_window(_REPLACE_OBJECT, {"object_list_unit_id": _ARCHER, "object_list_unit_id_2": _CASTLE})
+    try:
+        panel = window.trigger_panel
+        form = panel.property_form
+        assert form.labelForField(_row_widget(panel, "object_list_unit_id")).text() == "source player unit"
+        assert form.labelForField(_row_widget(panel, "object_list_unit_id_2")).text() == "target player unit"
+
+        unit = _row_widget(panel, "object_list_unit_id")
+        unit.line_edit.setText(str(_SCOUT))
+        unit.line_edit.editingFinished.emit()
+        assert window.edit_history.records[-1].label == "Set effect source player unit"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -8633,7 +8823,10 @@ def test_gh213_the_entry_move_buttons_and_menu_follow_the_selection(tmp_path: Pa
         _select_entries(panel, ("condition", 1))
         assert down.toolTip() == panel._ENTRY_MOVE_DOWN_TIP + " (already last)"
         menu = panel.entry_context_menu(panel._entry_item_for("condition", 1))
-        assert _action(menu, "Move Down").toolTip() == down.toolTip()
+        # The button's reason, without its modifier-click hints (TASK-356).
+        assert _action(menu, "Move Down").toolTip() == panel._ENTRY_MOVE_DOWN_MENU_TIP + " (already last)"
+        assert down.toolTip().startswith(panel._ENTRY_MOVE_DOWN_MENU_TIP + ". Shift+click")
+        assert not [a.text() for a in menu.actions() if "click" in a.toolTip()], "a menu entry ignores modifiers"
 
         # The type picker takes the lower pane, and the entry verbs with it.
         _select_entries(panel, ("condition", 0))
@@ -8771,6 +8964,786 @@ def test_gh213_repeated_moves_keep_the_scroll_and_the_moved_row_in_view() -> Non
             assert in_view(), f"click {click}"
         assert panel.selected_entry_refs() == [("effect", 20)]
     finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #211: five places, and the top and bottom of the section ----------------
+#
+# The shipped fixtures hold 4 and 8 triggers: too few to move five places with
+# room to spare, or to overflow the tree.
+
+_LONG_COUNT = 30
+
+
+def _save_long_fixture(tmp_path: Path, dividers: tuple[int, ...] = (), names: dict[int, str] | None = None) -> Path:
+    """The fixture grown to 30 triggers, as a real file. The new ones are
+    "t4" to "t29" in display order; `dividers` names those list indices as
+    section headers ("--- S10 ---") and `names` overrides any of them."""
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+    from descape.trigger_model import TriggerEditModel
+
+    wanted = {index: f"--- S{index} ---" for index in dividers} | (names or {})
+    assert all(index >= 4 for index in wanted), "only the added triggers are named here"
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    model = TriggerEditModel(loaded)
+
+    def grow(manager) -> None:
+        for index in range(len(manager.triggers), _LONG_COUNT):
+            manager.add_trigger(wanted.get(index, f"t{index}"))
+        manager.trigger_display_order = list(range(_LONG_COUNT))
+
+    model.structural_edit(grow)
+    base = tmp_path / "long.aoe2scenario"
+    write_scenario(loaded, base, triggers=model)
+    return base
+
+
+def _long_window(tmp_path: Path, dividers: tuple[int, ...] = (), names: dict[int, str] | None = None):
+    """Triggers mode on _save_long_fixture()'s file, so the history starts empty."""
+    window = _open(_save_long_fixture(tmp_path, dividers, names))
+    assert _order(window) == list(range(_LONG_COUNT)), "fixture assumption"
+    return window
+
+
+def _with_block_at(indices: list[int], slot: int) -> list[int]:
+    """The long fixture's identity order with `indices` taken out and put
+    back, as one block, at `slot` of what is left."""
+    rest = [index for index in range(_LONG_COUNT) if index not in indices]
+    return rest[:slot] + list(indices) + rest[slot:]
+
+
+def _modifier_click(button, modifiers) -> None:
+    """A real mouse click whose own events carry `modifiers`, which is where
+    the ▲▼ buttons read them. The caller releases the keys in its finally."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    QTest.mouseClick(button, Qt.LeftButton, modifiers)
+    QApplication.processEvents()
+
+
+def _release_modifiers(window) -> None:
+    """A QTest click or key with a modifier can leave it held for the next test."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    for key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta):
+        QTest.keyRelease(window, key)
+
+
+def _row_in_view(tree, item) -> bool:
+    rect = tree.visualItemRect(item)
+    return rect.height() > 0 and rect.top() >= 0 and rect.bottom() <= tree.viewport().height()
+
+
+def _last_label(window) -> str:
+    return window.edit_history.records[-1].label
+
+
+def test_gh211_shift_click_moves_a_trigger_five_places_in_one_record(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _long_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(20)
+        QApplication.processEvents()
+        assert panel.tree.verticalScrollBar().value() > 0, (
+            "fixture assumption: the triggers overflow the tree, and this row sits below the fold"
+        )
+
+        _modifier_click(panel.trigger_move_up_button, Qt.ShiftModifier)
+
+        assert _order(window) == _with_block_at([20], 15)
+        assert _record_count(window) == 1
+        assert _last_label(window) == "Move trigger 20 up 5 places"
+        assert panel.selected_trigger_indices() == [20] and panel.current_trigger_index() == 20
+        assert _row_in_view(panel.tree, panel._item_for_index[20])
+        window.undo()
+        assert _order(window) == list(range(_LONG_COUNT)), "one undo takes the five places back"
+        assert not window.edit_history.is_dirty
+
+        # Near the end the distance is the room that is left, and then the button is grey.
+        panel.select_trigger(26)
+        _modifier_click(panel.trigger_move_down_button, Qt.ShiftModifier)
+        assert _order(window) == _with_block_at([26], 29)
+        assert _last_label(window) == "Move trigger 26 down 3 places"
+        assert not panel.trigger_move_down_button.isEnabled()
+        records = _record_count(window)
+        _modifier_click(panel.trigger_move_down_button, Qt.ShiftModifier)
+        assert _record_count(window) == records
+
+        # click() is one place even though this button's last mouse click held Shift,
+        # and so is a mouse click with no modifier on its own event.
+        panel.select_trigger(10)
+        assert panel.trigger_move_up_button.click_modifiers == Qt.NoModifier
+        panel.trigger_move_up_button.click()
+        assert panel._display_position[10] == 9
+        _modifier_click(panel.trigger_move_up_button, Qt.NoModifier)
+        assert panel._display_position[10] == 8
+        assert _last_label(window) == "Move trigger 10 up"
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_split_selection_keeps_its_spacing_on_a_five_place_move(tmp_path: Path) -> None:
+    """The distance is capped by the leading member's room, exactly the ▲▼
+    gate, so the block never closes up against the end."""
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 2, 4)
+        _modifier_click(panel.trigger_move_up_button, Qt.ShiftModifier)
+        assert _order(window)[:6] == [2, 0, 4, 1, 3, 5]
+        assert _last_label(window) == "Move 2 triggers up 2 places"
+        assert panel.selected_trigger_indices() == [2, 4]
+        assert panel._trigger_move_reasons()[0] == " (already first)"
+        # Still on for the Ctrl+click gather (TASK-356).
+        assert panel.trigger_move_up_button.isEnabled()
+
+        _modifier_click(panel.trigger_move_down_button, Qt.ShiftModifier)
+        assert _order(window)[:9] == [0, 1, 3, 5, 6, 2, 7, 4, 8]
+        assert _last_label(window) == "Move 2 triggers down 5 places"
+        assert _record_count(window) == 2
+        window.undo()
+        assert _order(window)[:6] == [2, 0, 4, 1, 3, 5]
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_block_moved_five_down_ends_with_its_last_row_in_view(tmp_path: Path) -> None:
+    """The current row is the block's first, so the tree's own scroll follows
+    that one; going down it is the last row that leads."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _long_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 1, 7)
+        QApplication.processEvents()
+        assert not _row_in_view(panel.tree, panel._item_for_index[12]), "fixture assumption: slot 12 is below the fold"
+
+        _modifier_click(panel.trigger_move_down_button, Qt.ShiftModifier)
+
+        assert (panel._display_position[1], panel._display_position[7]) == (6, 12)
+        assert panel.selected_trigger_indices() == [1, 7]
+        assert _row_in_view(panel.tree, panel._item_for_index[7])
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_ctrl_click_goes_to_the_edge_of_the_triggers_own_section(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path, dividers=(10, 20))
+    try:
+        panel = window.trigger_panel
+        assert [s.header_index for s in panel._sections] == [None, 10, 20], "fixture assumption"
+        panel.select_trigger(15)
+        _modifier_click(panel.trigger_move_up_button, Qt.ControlModifier)
+        assert _order(window) == _with_block_at([15], 11), "just below its own divider"
+        assert _last_label(window) == "Move trigger 15 to the top of the section"
+        assert panel.selected_trigger_indices() == [15]
+        assert _row_in_view(panel.tree, panel._item_for_index[15])
+        assert _record_count(window) == 1
+
+        # Ctrl wins over Shift: the edge, not five places.
+        _modifier_click(panel.trigger_move_down_button, Qt.ControlModifier | Qt.ShiftModifier)
+        assert _order(window) == _with_block_at([15], 19), "the next row is the following divider"
+        assert _last_label(window) == "Move trigger 15 to the bottom of the section"
+        window.undo()
+        assert _order(window) == _with_block_at([15], 11)
+        window.undo()
+
+        # A split selection gathers into one block.
+        _ctrl_select(panel, 12, 17)
+        _modifier_click(panel.trigger_move_up_button, Qt.ControlModifier)
+        assert _order(window) == _with_block_at([12, 17], 11)
+        assert _last_label(window) == "Move 2 triggers to the top of the section"
+        assert panel.selected_trigger_indices() == [12, 17]
+        window.undo()
+
+        # The leading run's bottom stops before the first divider.
+        panel.select_trigger(3)
+        _modifier_click(panel.trigger_move_down_button, Qt.ControlModifier)
+        assert _order(window) == _with_block_at([3], 9)
+        assert panel._sections[0].member_indices == (0, 1, 2, 4, 5, 6, 7, 8, 9, 3)
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_refused_ctrl_click_records_nothing_and_says_why(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path, dividers=(10, 20))
+    try:
+        panel = window.trigger_panel
+        up, down = panel.trigger_move_up_button, panel.trigger_move_down_button
+        for selection, button, message in (
+            ([10], up, "Cannot move to the top: a section header moves with Section Up/Down"),
+            ([11], up, "Cannot move to the top: already there"),
+            ([19], down, "Cannot move to the bottom: already there"),
+            ([9, 11], down, "Cannot move to the bottom: the selection spans sections"),
+        ):
+            _ctrl_select(panel, *selection)
+            assert button.isEnabled(), "one place that way is still possible"
+            assert message not in _status(window)
+            _modifier_click(button, Qt.ControlModifier)
+            assert _status(window).splitlines().count(message) == 1
+            assert _record_count(window) == 0, message
+            assert _order(window) == list(range(_LONG_COUNT)), message
+        assert not window.edit_history.is_dirty
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task356_a_split_block_against_the_top_still_offers_ctrl_click(tmp_path: Path) -> None:
+    """One place up is refused, gathering at the top is not, so ▲ stays on for
+    the Ctrl+click its tooltip names; a plain click there still moves nothing."""
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        up, down = panel.trigger_move_up_button, panel.trigger_move_down_button
+        _ctrl_select(panel, 0, 2)
+        assert panel._trigger_move_reasons()[0] == " (already first)"
+        assert panel._edge_move_reasons()[0] == ""
+        assert up.isEnabled()
+
+        _modifier_click(up, Qt.NoModifier)
+        assert _record_count(window) == 0 and _order(window) == list(range(_LONG_COUNT))
+
+        _modifier_click(up, Qt.ControlModifier)
+        assert _order(window) == _with_block_at([0, 2], 0)
+        assert _record_count(window) == 1
+        # Gathered: both ways up are now refused, so ▲ goes grey.
+        assert not up.isEnabled() and down.isEnabled()
+
+        # The mirror case at the bottom.
+        window.undo()
+        last = _LONG_COUNT - 1
+        _ctrl_select(panel, last - 2, last)
+        assert down.isEnabled()
+        _modifier_click(down, Qt.NoModifier)
+        assert _record_count(window) == 1, "only the undone record"
+        _modifier_click(down, Qt.ControlModifier)
+        assert _order(window) == _with_block_at([last - 2, last], _LONG_COUNT - 2)
+        assert not down.isEnabled()
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_move_with_no_room_records_nothing(tmp_path: Path) -> None:
+    """No button allows it, but the funnel is public: a commit always pushes,
+    so a block already against the end must not open an edit."""
+    window = _long_window(tmp_path)
+    try:
+        window.trigger_structural_edit("move_up", [0])
+        window.trigger_structural_edit("move_up", [0, 2], 5)
+        window.trigger_structural_edit("move_down", [_LONG_COUNT - 1], 5)
+        window.trigger_structural_edit("move_top", [0])
+        window.trigger_structural_edit("move_bottom", [])
+        assert _record_count(window) == 0
+        assert _order(window) == list(range(_LONG_COUNT))
+        assert not window.edit_history.is_dirty and not window.windowTitle().startswith("*")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_flat_five_place_move_patches_the_tree_without_a_repopulate(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        before_items = [panel.tree.topLevelItem(i) for i in range(_LONG_COUNT)]
+        panel.select_trigger(0)
+        assert panel._edge_move_reasons() == (" (already there)", "")
+
+        _modifier_click(panel.trigger_move_down_button, Qt.ShiftModifier)
+
+        after_items = [panel.tree.topLevelItem(i) for i in range(_LONG_COUNT)]
+        assert [id(item) for item in after_items] == [
+            id(item) for item in (*before_items[1:6], before_items[0], *before_items[6:])
+        ], "a full repopulate would have replaced every QTreeWidgetItem"
+        assert _tree_order(panel) == _order(window) == _with_block_at([0], 5)
+        assert panel._display_slots == _order(window)
+        assert _positions(panel) == [str(p) for p in range(_LONG_COUNT)], "every row in the span is relabelled"
+        assert panel.selected_trigger_indices() == [0]
+
+        # The cached partition still lists trigger 0 first; the edge gate reads the order.
+        assert panel._edge_move_reasons() == ("", "")
+        top = _action(panel.trigger_context_menu(panel._item_for_index[0]), "Move to Top")
+        assert top.isEnabled()
+        top.trigger()
+        assert _order(window) == list(range(_LONG_COUNT))
+        assert _last_label(window) == "Move trigger 0 to the top"
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_grouped_five_place_move_across_a_divider_lands_expanded_and_in_view(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _long_window(tmp_path, dividers=(10, 20))
+    try:
+        panel = window.trigger_panel
+        panel._item_for_index[10].setExpanded(False)
+        assert ("--- S10 ---", 0) in panel._collapsed_keys, "fixture assumption: the section above is collapsed"
+        panel.select_trigger(22)
+        QApplication.processEvents()
+
+        _modifier_click(panel.trigger_move_up_button, Qt.ShiftModifier)
+
+        assert _order(window) == _with_block_at([22], 17)
+        item = panel._item_for_index[22]
+        assert item.parent() is panel._item_for_index[10], "it crossed the divider into the section above"
+        assert item.parent().isExpanded()
+        assert ("--- S10 ---", 0) not in panel._collapsed_keys
+        assert panel.selected_trigger_indices() == [22] and panel.current_trigger_index() == 22
+        assert _row_in_view(panel.tree, item)
+        assert _last_label(window) == "Move trigger 22 up 5 places"
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_a_saved_five_place_and_edge_move_change_only_the_display_order_bytes(tmp_path: Path) -> None:
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+
+    base = _save_long_fixture(tmp_path, dividers=(10, 20))
+    window = _open(base)
+    try:
+        names = _names(window)
+        window.trigger_structural_edit("move_down", [12], 5)
+        window.trigger_structural_edit("move_top", [25])
+        moved = _order(window)
+        assert moved[11:19] == [11, 13, 14, 15, 16, 17, 12, 18] and moved[20:23] == [20, 25, 21]
+        edited = tmp_path / "moved.aoe2scenario"
+        write_scenario(window.scenario, edited, triggers=window.trigger_edits)
+        regions = window.trigger_edits.regions
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    before, after = _saved_body(base), _saved_body(edited)
+    assert len(before) == len(after)
+    diffs = [i for i, (a, b) in enumerate(zip(before, after, strict=True)) if a != b]
+    assert diffs, "the moves changed no byte"
+    units_end = load_map_and_units(base).units_section_end
+    start, end = units_end + regions.triggers_end, units_end + regions.display_order_end
+    assert all(start <= i < end for i in diffs), "a byte outside the display-order array changed"
+    reloaded = _open(edited)
+    try:
+        assert _order(reloaded) == moved
+        assert _names(reloaded) == names
+    finally:
+        reloaded.close()
+
+
+def _move_menu_states(panel, index: int) -> dict[str, tuple[bool, str]]:
+    menu = panel.trigger_context_menu(panel._item_for_index[index])
+    return {a.text(): (a.isEnabled(), a.toolTip()) for a in menu.actions() if a.text().startswith("Move")}
+
+
+def test_gh211_the_trigger_menu_moves_follow_their_gates(tmp_path: Path) -> None:
+    window = _long_window(tmp_path, dividers=(10, 20), names={15: "[x] tagged"})
+    try:
+        panel = window.trigger_panel
+        # A menu entry ignores modifiers, so its tip names no Shift+ or Ctrl+click (TASK-356).
+        tips = (panel._MOVE_UP_MENU_TIP, panel._MOVE_DOWN_MENU_TIP, panel._MOVE_TOP_TIP, panel._MOVE_BOTTOM_TIP)
+        assert not [tip for tip in tips if "click" in tip]
+        texts = ("Move Up", "Move Down", "Move to Top of Section", "Move to Bottom of Section")
+
+        def states(*selection) -> list[tuple[bool, str]]:
+            _ctrl_select(panel, *selection)
+            found = _move_menu_states(panel, selection[0])
+            assert tuple(found) == texts
+            # Each entry is exactly its gate: enabled with no reason, and the reason on its tooltip.
+            reasons = (*panel._trigger_move_reasons(), *panel._edge_move_reasons())
+            assert list(found.values()) == [(not r, tip + r) for tip, r in zip(tips, reasons, strict=True)]
+            return [(enabled, tip[len(base):]) for (enabled, tip), base in zip(found.values(), tips, strict=True)]
+
+        on = (True, "")
+        assert states(15) == [on, on, on, on]
+        assert states(11) == [on, on, (False, " (already there)"), on]
+        assert states(19) == [on, on, on, (False, " (already there)")]
+        header = (False, " (a section header moves with Section Up/Down)")
+        assert states(10) == [on, on, header, header]
+        spans = (False, " (the selection spans sections)")
+        assert states(9, 11) == [on, on, spans, spans]
+        assert states(0) == [(False, " (already first)"), on, (False, " (already there)"), on]
+        assert states(29) == [on, (False, " (already last)"), on, (False, " (already there)")]
+        # A split block against the top: one place up is off, gathering at the top is not.
+        assert states(0, 2) == [(False, " (already first)"), on, on, on]
+
+        # The menu's verbs are the buttons' own.
+        _ctrl_select(panel, 15)
+        menu = panel.trigger_context_menu(panel._item_for_index[15])
+        _action(menu, "Move to Bottom of Section").trigger()
+        assert _order(window) == _with_block_at([15], 19)
+        _action(panel.trigger_context_menu(panel._item_for_index[15]), "Move Up").trigger()
+        assert _order(window) == _with_block_at([15], 18)
+        assert _record_count(window) == 2
+        window.undo()
+        window.undo()
+
+        # Off Display order, under a filter and under a tag nothing moves, and each says why.
+        panel.sort_combo.setCurrentIndex(1)
+        _ctrl_select(panel, 15)
+        found = _move_menu_states(panel, 15)
+        assert tuple(found) == ("Move Up", "Move Down", "Move to Top", "Move to Bottom"), "File order has no sections"
+        assert [enabled for enabled, _ in found.values()] == [False] * 4
+        assert all(tip.endswith(" (switch to Display order to reorder)") for _, tip in found.values())
+        panel.sort_combo.setCurrentIndex(0)
+
+        off = (False, " (clear the filter or tag to reorder)")
+        panel.filter_edit.setText("t")
+        assert states(15) == [off] * 4
+        panel.filter_edit.clear()
+        panel.set_tag_filter("x")
+        assert states(15) == [off] * 4
+        panel.set_tag_filter(None)
+        assert states(15) == [on, on, on, on]
+
+        # With the type picker up no trigger verb is offered, whatever the gates say.
+        panel._request_entry_op("new")
+        assert panel.picker_showing()
+        assert [enabled for enabled, _ in _move_menu_states(panel, 15).values()] == [False] * 4
+        panel._close_picker()
+        assert not window.edit_history.is_dirty and _order(window) == list(range(_LONG_COUNT))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_the_entry_menu_offers_top_and_bottom_under_the_move_gate(tmp_path: Path) -> None:
+    from test_trigger_write_path import ENTRY_ORDER_TRIGGER
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+
+        def edges(*refs) -> list[tuple[bool, str]]:
+            _select_entries(panel, *refs)
+            menu = panel.entry_context_menu(panel._entry_item_for(*refs[0]))
+            top, bottom = _action(menu, "Move to Top"), _action(menu, "Move to Bottom")
+            # The same gate as Move Up and Move Down, entry for entry.
+            assert (top.isEnabled(), bottom.isEnabled()) == _entry_menu_move_states(panel, refs[0])
+            assert top.toolTip().startswith(panel._ENTRY_MOVE_TOP_TIP)
+            assert bottom.toolTip().startswith(panel._ENTRY_MOVE_BOTTOM_TIP)
+            return [
+                (top.isEnabled(), top.toolTip()[len(panel._ENTRY_MOVE_TOP_TIP):]),
+                (bottom.isEnabled(), bottom.toolTip()[len(panel._ENTRY_MOVE_BOTTOM_TIP):]),
+            ]
+
+        # Conditions show as 2, 0, 3, 1 and effects as 4, 0, 6, 2, 5, 1, 3.
+        assert edges(("condition", 2)) == [(False, " (already first)"), (True, "")]
+        assert edges(("condition", 1)) == [(True, ""), (False, " (already last)")]
+        assert edges(("condition", 0)) == [(True, ""), (True, "")]
+        assert edges(("condition", 2), ("condition", 0)) == [(False, " (already first)"), (True, "")]
+        assert edges(("condition", 2), ("condition", 3)) == [(True, ""), (True, "")], "a split block gathers"
+
+        _select_entries(panel, ("condition", 3), ("effect", 2))
+        _action(panel.entry_context_menu(panel._entry_item_for("effect", 2)), "Move to Bottom").trigger()
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == ([2, 0, 1, 3], [4, 0, 6, 5, 1, 3, 2])
+        assert _last_label(window) == "Move 2 entries to the bottom"
+        assert _record_count(window) == 1
+        assert panel.selected_entry_refs() == [("condition", 3), ("effect", 2)]
+        assert edges(("condition", 3), ("effect", 2)) == [(True, ""), (False, " (already last)")]
+        window.undo()
+        assert not window.edit_history.is_dirty
+
+        # The type picker takes the lower pane, and the entry verbs with it.
+        _select_entries(panel, ("condition", 0))
+        item = panel._entry_item_for("condition", 0)
+        panel._request_entry_op("new")
+        menu = panel.entry_context_menu(item)
+        for text in ("Move to Top", "Move to Bottom"):
+            assert not _action(menu, text).isEnabled()
+            assert "close the type picker" in _action(menu, text).toolTip()
+        panel._request_entry_op("move_top")
+        assert not window.edit_history.is_dirty, "a gated panel must not reach the model"
+        panel._close_picker()
+        assert _types_of(window, ENTRY_ORDER_TRIGGER, "condition") == [10, 5, 6, 6], "the lists never move"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_modifier_clicks_move_each_kind_of_entry_inside_its_own_list(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window, _base = _ordered_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        # Conditions show as 2, 0, 3, 1 and effects as 4, 0, 6, 2, 5, 1, 3.
+        _select_entries(panel, ("effect", 0), ("condition", 2))
+
+        _modifier_click(panel.entry_move_down_button, Qt.ShiftModifier)
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == ([0, 3, 1, 2], [4, 6, 2, 5, 1, 3, 0])
+        assert _last_label(window) == "Move 2 entries down to 5 places"
+        assert _record_count(window) == 1
+        assert panel.selected_entry_refs() == [("condition", 2), ("effect", 0)]
+        assert _entry_move_states(panel) == (True, False)
+
+        _modifier_click(panel.entry_move_up_button, Qt.ControlModifier)
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == ([2, 0, 3, 1], [0, 4, 6, 2, 5, 1, 3])
+        assert _last_label(window) == "Move 2 entries to the top"
+        assert _record_count(window) == 2
+
+        # Ctrl wins over Shift, and a click with no modifier is still one place.
+        _modifier_click(panel.entry_move_down_button, Qt.ControlModifier | Qt.ShiftModifier)
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == ([0, 3, 1, 2], [4, 6, 2, 5, 1, 3, 0])
+        panel.entry_move_up_button.click()
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == ([0, 3, 2, 1], [4, 6, 2, 5, 1, 0, 3])
+        assert _last_label(window) == "Move 2 entries up"
+
+        for _ in range(4):
+            window.undo()
+        assert (_entry_rows(panel, "condition"), _entry_rows(panel, "effect")) == ([2, 0, 3, 1], [4, 0, 6, 2, 5, 1, 3])
+        assert not window.edit_history.is_dirty, "one record per click"
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_far_entry_moves_keep_the_scroll_and_the_moved_row_in_view() -> None:
+    """Each move rebuilds the entry tree, which leaves it scrolled to the top."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import brush
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        panel.select_entry("effect", 2)  # the fixture's Create Object
+        window.brush_size_spin.setValue(5)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(brush.BRUSH_SHAPE_SQUARE))
+        window.stamp_create_objects(50, 50)
+        QApplication.processEvents()
+        bar = panel.entry_tree.verticalScrollBar()
+        panel.select_entry("effect", 20)
+        QApplication.processEvents()
+        start = bar.value()
+        assert start > 0, "fixture assumption: the entries overflow the tree, and this row sits below the fold"
+        slot = _entry_rows(panel, "effect").index(20)
+        assert slot + 5 < len(_entry_rows(panel, "effect")) - 1, "fixture assumption: room for five places and more"
+        records = _record_count(window)
+
+        def in_view() -> bool:
+            return _row_in_view(panel.entry_tree, panel._entry_item_for("effect", 20))
+
+        _modifier_click(panel.entry_move_down_button, Qt.ShiftModifier)
+        assert _entry_rows(panel, "effect").index(20) == slot + 5
+        assert _last_label(window) == "Move effect down to 5 places"
+        assert bar.value() >= start, f"the list jumped up to {bar.value()}"
+        assert in_view()
+
+        _modifier_click(panel.entry_move_up_button, Qt.ControlModifier)
+        assert _entry_rows(panel, "effect")[0] == 20
+        assert _last_label(window) == "Move effect to the top"
+        assert in_view()
+
+        _modifier_click(panel.entry_move_down_button, Qt.ControlModifier)
+        assert _entry_rows(panel, "effect")[-1] == 20
+        assert _last_label(window) == "Move effect to the bottom"
+        assert in_view()
+        assert panel.selected_entry_refs() == [("effect", 20)]
+        assert _record_count(window) == records + 3
+
+        window.undo()
+        assert _entry_rows(panel, "effect")[0] == 20
+        window.undo()
+        assert _entry_rows(panel, "effect").index(20) == slot + 5
+        window.undo()
+        assert _entry_rows(panel, "effect").index(20) == slot
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _activate(window) -> None:
+    """Shortcut dispatch needs the active window, which offscreen show() alone does not make."""
+    from PyQt5.QtWidgets import QApplication
+
+    window.activateWindow()
+    QApplication.setActiveWindow(window)
+    QApplication.processEvents()
+    assert window.isActiveWindow()
+
+
+def _press(widget, key, modifiers) -> None:
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    QTest.keyClick(widget, key, modifiers)
+    QApplication.processEvents()
+
+
+def test_gh211_alt_up_moves_the_trigger_or_the_entry_under_the_focus() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _active_triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _focus_on(panel.tree)
+        _press(panel.tree, Qt.Key_Up, Qt.AltModifier)
+        assert _order(window) == [0, 1, 3, 2]
+        assert _last_label(window) == "Move trigger 3 up" and _record_count(window) == 1
+        assert panel.current_trigger_index() == 3, "the key moved the trigger, not the tree's cursor"
+        assert panel.tree.hasFocus()
+
+        # The entry tree has the focus: the same key moves the effect and leaves the triggers alone.
+        _select_entries(panel, ("effect", 2))
+        _focus_on(panel.entry_tree)
+        _press(panel.entry_tree, Qt.Key_Up, Qt.AltModifier)
+        assert _entry_rows(panel, "effect")[:3] == [0, 2, 1]
+        assert _last_label(window) == "Move effect up" and _record_count(window) == 2
+        assert _order(window) == [0, 1, 3, 2]
+        assert panel.selected_entry_refs() == [("effect", 2)]
+        _press(panel.entry_tree, Qt.Key_End, Qt.AltModifier)
+        assert _entry_rows(panel, "effect")[-1] == 2
+        assert _last_label(window) == "Move effect to the bottom"
+        _press(panel.entry_tree, Qt.Key_Up, Qt.AltModifier | Qt.ShiftModifier)
+        assert _entry_rows(panel, "effect").index(2) == 1
+        assert _last_label(window) == "Move effect up to 5 places"
+        assert _order(window) == [0, 1, 3, 2]
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_the_far_and_edge_keys_move_a_trigger_five_places_and_to_the_section_edge(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path, dividers=(10, 20))
+    try:
+        _activate(window)
+        panel = window.trigger_panel
+        panel.select_trigger(15)
+        _focus_on(panel.tree)
+        _press(panel.tree, Qt.Key_Down, Qt.AltModifier | Qt.ShiftModifier)
+        assert _order(window) == _with_block_at([15], 20), "five places, across the divider"
+        assert _last_label(window) == "Move trigger 15 down 5 places"
+        _press(panel.tree, Qt.Key_Home, Qt.AltModifier)
+        assert _order(window) == _with_block_at([15], 20), "it is the first trigger of its new section already"
+        assert "Cannot move to the top: already there" in _status(window).splitlines()
+        _press(panel.tree, Qt.Key_End, Qt.AltModifier)
+        assert _order(window) == _with_block_at([15], 29)
+        assert _last_label(window) == "Move trigger 15 to the bottom of the section"
+        _press(panel.tree, Qt.Key_Home, Qt.AltModifier)
+        assert _order(window) == _with_block_at([15], 20)
+        _press(panel.tree, Qt.Key_Down, Qt.AltModifier)
+        assert _order(window) == _with_block_at([15], 21)
+        assert _record_count(window) == 4
+        assert panel.selected_trigger_indices() == [15] and panel.tree.hasFocus()
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh211_alt_up_in_a_form_dropdown_moves_nothing() -> None:
+    """The shortcuts belong to the two trees. Anywhere else the key is the
+    focused widget's own, as Alt+Down is to a dropdown."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QComboBox
+
+    window = _active_triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 2))
+        combos = [c for c in panel.property_host.findChildren(QComboBox) if c.isEnabled() and c.isVisible()]
+        assert combos, "fixture assumption: this effect's form has a dropdown"
+        _focus_on(combos[0])
+        rows = _entry_rows(panel, "effect")
+        records = _record_count(window)
+
+        # One press: the dropdown takes the key as its own, which may rebuild the form.
+        _press(combos[0], Qt.Key_Up, Qt.AltModifier)
+
+        assert _order(window) == [0, 1, 2, 3]
+        assert _entry_rows(panel, "effect") == rows
+        assert not any(r.label.startswith("Move") for r in window.edit_history.records[records:])
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("view", ["file order", "filter", "tag", "type picker"])
+def test_gh211_alt_up_is_gated_like_the_move_buttons(tmp_path: Path, view: str) -> None:
+    """A shortcut has no disabled button in front of it, so the request path
+    itself refuses: nothing is recorded and the tree keeps its order."""
+    from PyQt5.QtCore import Qt
+
+    window = _tagged_window(tmp_path)
+    try:
+        _activate(window)
+        panel = window.trigger_panel
+        panel.select_trigger(2)
+        if view == "file order":
+            panel.sort_combo.setCurrentIndex(1)
+        elif view == "filter":
+            panel.filter_edit.setText("e")
+        elif view == "tag":
+            panel.set_tag_filter("D1")
+        else:
+            panel._request_entry_op("new")
+            assert panel.picker_showing()
+        panel.select_trigger(2)
+        _focus_on(panel.tree)
+        assert not panel.trigger_move_up_button.isEnabled(), "fixture assumption: the button is off here"
+        shown = _tree_order(panel)
+
+        for key, modifiers in (
+            (Qt.Key_Up, Qt.AltModifier),
+            (Qt.Key_Down, Qt.AltModifier),
+            (Qt.Key_Up, Qt.AltModifier | Qt.ShiftModifier),
+            (Qt.Key_Home, Qt.AltModifier),
+            (Qt.Key_End, Qt.AltModifier),
+        ):
+            _press(panel.tree, key, modifiers)
+
+        assert _record_count(window) == 0
+        assert _order(window) == [0, 1, 2, 3]
+        assert _tree_order(panel) == shown
+        assert not window.edit_history.is_dirty
+    finally:
+        _release_modifiers(window)
         window.edit_history.mark_saved()
         window.close()
 

@@ -361,4 +361,4 @@ def test_a_compressed_diagonal_cliff_drag_lays_the_tile_by_tile_chain() -> None:
 
 
 def test_a_one_tile_cliff_click_is_unchanged() -> None:
-    assert _cliff_drag([(30, 30)]) == [(_DEFAULT_CLIFF, 31.5, 31.5, float(_CLIFF_FRAME))]
+    assert _cliff_drag([(30, 30)]) == [(_DEFAULT_CLIFF, 30.5, 30.5, float(_CLIFF_FRAME))]

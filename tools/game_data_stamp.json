@@ -1,0 +1,23 @@
+{
+  "_comment": "What the committed descape/*.json game-data tables were generated from, and each table's sha256 (CRLF folded to LF). `refreshed` is the day a full regeneration first recorded this .dat and build id. Written by tools/regen_game_data.py: regenerate, never edit by hand.",
+  "dat": {
+    "sha256": "4aa2f0a719e88e5f1502517eddb27c669aeb40c2fe9d8c4f3eec7751c01e7baa",
+    "size": 12023754
+  },
+  "genieutils": "0.1.2",
+  "refreshed": "2026-10-13",
+  "steam_buildid": "25464371",
+  "tables": {
+    "building_art_map.json": "37e084e80fb34730ee7b19e5e28589f4e4d03477a9b742ac62500661cb8eb210",
+    "garrison_table.json": "5656574d39b676ec83cb64d532b15e0ae352c918a33f839a36296af31dfe1834",
+    "object_catalog.json": "8c7b13a9bbd75a9d761427d86f8b146cb5bb1ed9bc367d4aeaf9cea6545c2143",
+    "terrain_blend_map.json": "875762c76bcecbaa24a15314d1963fbc8f18cc1c7d398ed1405ebc66c7b6e3ff",
+    "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
+    "terrain_texture_map.json": "e10c3831211b693e4ac01efe3dbeff10e1c40a6d5c7ece42422c51a96caf639e",
+    "terrain_unit_map.json": "cfd8f0e22539f96f543dd754f76a27710d3f48c392fc2492d9079eeed584d9fb",
+    "tree_unit_ids.json": "7f67ea779b0e96b886b161c0165f3db079ea13be10ac9347851fc195eae34bfa",
+    "unit_graphic_map.json": "7b23f60c8a17be1a359cd58bb52a52d9a46779cc982157c721b7f41aa21cc990",
+    "unit_render_data.json": "474c287f29a94a042ab39b0eb9ea4f9087429809d32daecb004af41ac34d29f4",
+    "unit_stats.json": "7a0b22153c62c0b5681b66ec5258b2a0bbb9705caf8819ae9c6cade75795b8cf"
+  }
+}

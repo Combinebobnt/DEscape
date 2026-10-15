@@ -37,6 +37,7 @@ from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.trigger_model import (
     TriggerEditModel,
     TriggerEditsUnavailableError,
+    block_room,
     display_order_moved_to_slot,
     display_order_with_block_inserted,
     display_order_with_copies_inserted,
@@ -48,8 +49,10 @@ from descape.trigger_model import (
     moved_display_order,
     moved_display_order_block,
     moved_section_display_order,
+    moved_to_section_edge,
     paste_anchor,
     remove_entries,
+    section_edge_refusal,
     set_entry_order,
     would_move_entries,
 )
@@ -1498,6 +1501,46 @@ def test_a_section_move_on_both_leading_run_branches(name: str, has_leading_run:
     assert _check_section_moves_round_trip(path, tmp_path) == 2
 
 
+@pytest.mark.corpus
+@pytest.mark.parametrize("name", ["F7_3_York (865)", "old-allies-final-v2"])
+def test_an_edge_move_never_changes_any_sections_member_set(name: str) -> None:
+    """GH #211 on the same named pair: from every section, its first, middle
+    and last member and every other member go to the top and to the bottom.
+    The block lands at that edge and no section gains or loses a trigger."""
+    path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
+    if not path.exists():
+        pytest.skip(f"{path.name} is not in this corpus")
+    manager = parse_triggers(load_map_and_units(path))
+    assert manager is not None
+    names = [t.name or "" for t in manager.triggers]
+    order = list(manager.trigger_display_order)
+    parts = sections(names, order)
+    before = _section_members(names, order)
+    moves = 0
+    for position, section in enumerate(parts):
+        members = section.member_indices
+        if section.header_index is not None:
+            assert section_edge_refusal(order, parts, [section.header_index], True).startswith("a section header")
+        if not members:
+            continue
+        for indices in ([members[0]], [members[len(members) // 2]], [members[-1]], list(members[::2])):
+            for top in (True, False):
+                reason = section_edge_refusal(order, parts, indices, top)
+                if reason:
+                    assert reason == "already there", (name, section.title, indices, top)
+                    continue
+                moved = moved_to_section_edge(order, parts, indices, top)
+                assert sorted(moved) == sorted(order), "not a permutation of the input"
+                after = sections(names, moved)
+                assert [s.header_index for s in after] == [s.header_index for s in parts]
+                assert _section_members(names, moved) == before, (name, section.title, indices, top)
+                landed = after[position].member_indices
+                edge = landed[: len(indices)] if top else landed[len(landed) - len(indices) :]
+                assert list(edge) == [i for i in order if i in indices], (name, section.title, indices, top)
+                moves += 1
+    assert moves, f"{name}: no edge move ran"
+
+
 # -- the quantity cluster: an object_attributes switch must still save --------
 #
 # Trigger 1 is "Fixture: armour split": effect 0 is Modify Attribute on ARMOR
@@ -1637,6 +1680,56 @@ def test_moved_display_order_block_refuses_an_unknown_index() -> None:
         moved_display_order_block([0, 1, 2], [5], -1)
 
 
+# GH #211: several slots in one call, each pass exactly the one-slot move above.
+@pytest.mark.parametrize(
+    "indices,delta,expected",
+    [
+        ([6], -5, [0, 6, 1, 2, 3, 4, 5, 7]),
+        ([1], 5, [0, 2, 3, 4, 5, 6, 1, 7]),
+        # Clamped at each end.
+        ([2], -5, [2, 0, 1, 3, 4, 5, 6, 7]),
+        ([6], 5, [0, 1, 2, 3, 4, 5, 7, 6]),
+        # A split block with room keeps its spacing.
+        ([5, 7], -5, [5, 0, 7, 1, 2, 3, 4, 6]),
+        # Pressed against an end it closes up, then stops.
+        ([1, 3], -5, [1, 3, 0, 2, 4, 5, 6, 7]),
+        ([4, 6], 5, [0, 1, 2, 3, 5, 7, 4, 6]),
+        ([0, 1], -5, [0, 1, 2, 3, 4, 5, 6, 7]),
+        ([3], 0, [0, 1, 2, 3, 4, 5, 6, 7]),
+    ],
+)
+def test_moved_display_order_block_moves_several_slots(indices, delta, expected) -> None:
+    order = list(range(8))
+    assert moved_display_order_block(order, indices, delta) == expected
+    assert order == list(range(8)), "the input order is never written"
+    # The same as that many single presses.
+    pressed = order
+    for _ in range(abs(delta)):
+        pressed = moved_display_order_block(pressed, indices, 1 if delta > 0 else -1)
+    assert pressed == expected
+
+
+def test_moved_display_order_block_stops_at_the_first_pass_that_changes_nothing() -> None:
+    """A huge distance must cost the passes that move something, not one per slot asked for."""
+    assert moved_display_order_block([3, 2, 1, 0], [0], -(10**9)) == [0, 3, 2, 1]
+    assert moved_display_order_block([3, 2, 1, 0], [3, 1], 10**9) == [2, 0, 3, 1]
+
+
+def test_block_room_is_the_leading_members_distance_to_that_end() -> None:
+    order = [3, 2, 1, 0, 4, 5]
+    assert (block_room(order, [1], -1), block_room(order, [1], 1)) == (2, 3)
+    assert (block_room(order, [3], -1), block_room(order, [5], 1)) == (0, 0)
+    # A contiguous block (slots 1 and 2), then a split one (slots 1 and 4).
+    assert (block_room(order, [1, 2], -5), block_room(order, [1, 2], 5)) == (1, 3)
+    assert (block_room(order, [4, 2], -5), block_room(order, [4, 2], 5)) == (1, 1)
+    # Capped by its room, a split block moves without closing up.
+    assert moved_display_order_block(order, [4, 2], -min(5, block_room(order, [4, 2], -5))) == [2, 3, 1, 4, 0, 5]
+    with pytest.raises(IndexError):
+        block_room(order, [1, 9], -1)
+    with pytest.raises(IndexError):
+        block_room(order, [], 1)
+
+
 @pytest.mark.parametrize(
     ("order", "indices", "target", "expected"),
     [
@@ -1671,6 +1764,91 @@ def test_display_order_moved_to_slot_refuses_bad_input() -> None:
         display_order_moved_to_slot([0, 1, 2], [1], 4)
     with pytest.raises(IndexError):
         display_order_moved_to_slot([0, 1, 2], [1], -1)
+
+
+# GH #211: the top and the bottom of a trigger's own section. A leading run of
+# three, section A with three members, section B with one.
+_EDGE_NAMES = ["lead0", "lead1", "lead2", "--- A ---", "a0", "a1", "a2", "--- B ---", "b0"]
+_EDGE_ORDER = list(range(9))
+
+
+def _section_members(names: list[str], order: list[int]) -> dict[int | None, frozenset[int]]:
+    return {s.header_index: frozenset(s.member_indices) for s in sections(names, order)}
+
+
+@pytest.mark.parametrize(
+    "indices,top,expected",
+    [
+        # Inside its own section, just below the divider or just above the next one.
+        ([6], True, [0, 1, 2, 3, 6, 4, 5, 7, 8]),
+        ([4], False, [0, 1, 2, 3, 5, 6, 4, 7, 8]),
+        # The leading run: slot 0, and its bottom stops before the first divider.
+        ([2], True, [2, 0, 1, 3, 4, 5, 6, 7, 8]),
+        ([0], False, [1, 2, 0, 3, 4, 5, 6, 7, 8]),
+        # A split selection gathers into one block, in display order.
+        ([6, 4], True, [0, 1, 2, 3, 4, 6, 5, 7, 8]),
+        ([6, 4], False, [0, 1, 2, 3, 5, 4, 6, 7, 8]),
+        ([0, 2], False, [1, 0, 2, 3, 4, 5, 6, 7, 8]),
+    ],
+)
+def test_moved_to_section_edge_stays_inside_the_section(indices, top, expected) -> None:
+    parts = sections(_EDGE_NAMES, _EDGE_ORDER)
+    assert section_edge_refusal(_EDGE_ORDER, parts, indices, top) == ""
+    moved = moved_to_section_edge(_EDGE_ORDER, parts, indices, top)
+    assert moved == expected
+    assert _section_members(_EDGE_NAMES, moved) == _section_members(_EDGE_NAMES, _EDGE_ORDER)
+
+
+def test_a_file_with_no_sections_is_one_section_for_an_edge_move() -> None:
+    names = ["t0", "t1", "t2", "t3", "t4"]
+    order = [4, 3, 2, 1, 0]
+    parts = sections(names, order)
+    assert moved_to_section_edge(order, parts, [1], True) == [1, 4, 3, 2, 0]
+    assert moved_to_section_edge(order, parts, [3], False) == [4, 2, 1, 0, 3]
+    assert moved_to_section_edge(order, parts, [0, 3], True) == [3, 0, 4, 2, 1]
+
+
+@pytest.mark.parametrize(
+    "indices,top,reason",
+    [
+        ([3], True, "a section header moves with Section Up/Down"),
+        ([4, 3], False, "a section header moves with Section Up/Down"),
+        ([2, 4], True, "the selection spans sections"),
+        ([5, 8], False, "the selection spans sections"),
+        ([4], True, "already there"),
+        ([6], False, "already there"),
+        # A contiguous block already at the edge, and a one-member section either way.
+        ([4, 5], True, "already there"),
+        ([8], True, "already there"),
+        ([8], False, "already there"),
+    ],
+)
+def test_an_edge_move_is_refused_for_a_header_a_spanning_selection_or_no_change(indices, top, reason) -> None:
+    parts = sections(_EDGE_NAMES, _EDGE_ORDER)
+    assert section_edge_refusal(_EDGE_ORDER, parts, indices, top) == reason
+    with pytest.raises(ValueError, match=reason):
+        moved_to_section_edge(_EDGE_ORDER, parts, indices, top)
+    with pytest.raises(ValueError):
+        section_edge_refusal(_EDGE_ORDER, parts, [], top)
+
+
+def test_an_edge_move_reads_positions_from_the_order_not_from_a_stale_partition() -> None:
+    """The panel's cached partition keeps its old member order after a
+    one-row move patches the tree, so it may only supply membership."""
+    names = ["t0", "t1", "t2", "t3", "t4"]
+    stale = sections(names, [0, 1, 2, 3, 4])
+    order = [1, 2, 3, 4, 0]  # trigger 0 has since moved to the bottom
+    assert section_edge_refusal(order, stale, [0], False) == "already there"
+    assert section_edge_refusal(order, stale, [1], True) == "already there"
+    assert section_edge_refusal(order, stale, [0], True) == ""
+    assert moved_to_section_edge(order, stale, [0], True) == [0, 1, 2, 3, 4]
+    assert moved_to_section_edge(order, stale, [1], False) == [2, 3, 4, 0, 1]
+
+    # Sectioned: a member moved inside A, which the stale partition still lists first.
+    parts = sections(_EDGE_NAMES, _EDGE_ORDER)
+    moved = [0, 1, 2, 3, 5, 6, 4, 7, 8]
+    assert section_edge_refusal(moved, parts, [4], False) == "already there"
+    assert moved_to_section_edge(moved, parts, [4], True) == _EDGE_ORDER
 
 
 def test_display_order_with_block_inserted_lands_after_the_anchor() -> None:
@@ -1930,6 +2108,53 @@ def test_a_stale_entry_ref_moves_nothing() -> None:
     assert list(trigger.condition_order) == ENTRY_ORDERS["condition"]
 
 
+def test_move_entries_five_places_and_to_the_edge_stay_inside_each_list() -> None:
+    """GH #211. Conditions show as 2, 0, 3, 1 and effects as 4, 0, 6, 2, 5, 1, 3."""
+    trigger, _keep = _ordered_trigger()
+    listed = [id(entry) for entry in (*trigger.conditions, *trigger.effects)]
+
+    # Five down: effect 0 goes from slot 1 to slot 6, condition 2 has three slots below it.
+    refs = [("effect", 0), ("condition", 2)]
+    assert would_move_entries(trigger, refs, 5)
+    assert _entry_orders(trigger) == ENTRY_ORDERS, "the gate must not write"
+    assert move_entries(trigger, refs, 5)
+    assert _entry_orders(trigger) == {"condition": [0, 3, 1, 2], "effect": [4, 6, 2, 5, 1, 3, 0]}
+
+    # Five up: a split block closes up against the top and stops there.
+    assert move_entries(trigger, [("effect", 2), ("effect", 1)], -5)
+    assert _entry_orders(trigger) == {"condition": [0, 3, 1, 2], "effect": [2, 1, 4, 6, 5, 3, 0]}
+    assert not would_move_entries(trigger, [("effect", 2), ("effect", 1)], -5)
+
+    # To the edge: each kind's refs gather at the end of their own list.
+    refs = [("effect", 4), ("effect", 5), ("condition", 3)]
+    assert would_move_entries(trigger, refs, 1, to_edge=True)
+    assert move_entries(trigger, refs, 1, to_edge=True)
+    assert _entry_orders(trigger) == {"condition": [0, 1, 2, 3], "effect": [2, 1, 6, 3, 0, 4, 5]}
+    assert not would_move_entries(trigger, refs, 1, to_edge=True)
+    assert not move_entries(trigger, refs, 1, to_edge=True)
+    # And at the top. Effect 2 is already first, so only the conditions change.
+    refs = [("condition", 2), ("effect", 2)]
+    assert move_entries(trigger, refs, -1, to_edge=True)
+    assert _entry_orders(trigger) == {"condition": [2, 0, 1, 3], "effect": [2, 1, 6, 3, 0, 4, 5]}
+    # The one-step gate and the edge gate answer alike, both ways.
+    for check, delta in itertools.product([[("effect", 2), ("effect", 1)], [("effect", 5)], [("condition", 0)]], (-1, 1)):
+        assert would_move_entries(trigger, check, delta) == would_move_entries(trigger, check, delta, to_edge=True)
+
+    assert [id(entry) for entry in (*trigger.conditions, *trigger.effects)] == listed, "a move reordered a list"
+
+
+def test_a_stale_entry_ref_moves_nothing_to_the_edge_either() -> None:
+    trigger, _keep = _ordered_trigger()
+    assert not would_move_entries(trigger, [("condition", 9)], 1, to_edge=True)
+    assert not would_move_entries(trigger, [("effect", 0), ("condition", 9)], -1, to_edge=True)
+    assert not would_move_entries(trigger, [("effect", 0), ("effect", 7)], -5)
+    with pytest.raises(IndexError):
+        move_entries(trigger, [("condition", 9)], 1, to_edge=True)
+    with pytest.raises(IndexError):
+        move_entries(trigger, [("effect", 0), ("effect", 7)], -1, to_edge=True)
+    assert _entry_orders(trigger) == ENTRY_ORDERS
+
+
 def test_a_non_identity_entry_order_survives_the_write_path(tmp_path: Path) -> None:
     base = write_entry_order_fixture(tmp_path)
     loaded = load_map_and_units(base)
@@ -2051,6 +2276,29 @@ def test_a_move_through_the_funnel_reloads_and_leaves_the_lists_alone(tmp_path: 
         tmp_path, lambda w: w.entry_move(ENTRY_ORDER_TRIGGER, refs, 1)
     )
     assert orders == {"condition": [2, 0, 1, 3], "effect": [4, 2, 0, 6, 5, 1, 3]}
+    assert types == {"condition": [10, 5, 6, 6], "effect": [56, 19, 11, 14, 15, 12, 19]}, "the lists never move"
+    for kind, order in ENTRY_ORDERS.items():
+        assert after[kind] == [before[kind][order.index(index)] for index in orders[kind]]
+
+
+@pytest.mark.parametrize(
+    "delta,to_edge,expected",
+    [
+        (-1, True, {"condition": [3, 2, 0, 1], "effect": [0, 6, 4, 2, 5, 1, 3]}),
+        (1, True, {"condition": [2, 0, 1, 3], "effect": [4, 2, 5, 1, 3, 0, 6]}),
+        (5, False, {"condition": [2, 0, 1, 3], "effect": [4, 2, 5, 1, 3, 0, 6]}),
+        (-5, False, {"condition": [3, 2, 0, 1], "effect": [0, 6, 4, 2, 5, 1, 3]}),
+    ],
+    ids=["top", "bottom", "five down", "five up"],
+)
+def test_a_far_move_through_the_funnel_reloads_with_its_order(tmp_path: Path, delta, to_edge, expected) -> None:
+    """GH #211's edge and five-place moves, saved and reparsed. The helper also
+    checks that triggers 0 to 2 keep their bytes."""
+    refs = [("effect", 0), ("effect", 6), ("condition", 3)]
+    before, after, types, orders = _funnel_edit_and_reload(
+        tmp_path, lambda w: w.entry_move(ENTRY_ORDER_TRIGGER, refs, delta, to_edge)
+    )
+    assert orders == expected
     assert types == {"condition": [10, 5, 6, 6], "effect": [56, 19, 11, 14, 15, 12, 19]}, "the lists never move"
     for kind, order in ENTRY_ORDERS.items():
         assert after[kind] == [before[kind][order.index(index)] for index in orders[kind]]

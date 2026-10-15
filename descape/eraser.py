@@ -105,6 +105,8 @@ class EraseStroke:
     layer_cleared: int = 0
     pending_layer_tiles: list[int] = field(default_factory=list)  # cleared tile indices, not yet repainted
     pending_splices: list = field(default_factory=list)  # render_cache.UnitSplice, not yet repainted
+    # Resident mips not is_level_resident() at one of those erases: their layers can't size its repaint.
+    pending_stale_levels: set[int] = field(default_factory=set)
 
 
 def collect_hits(

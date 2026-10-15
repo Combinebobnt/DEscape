@@ -576,12 +576,14 @@ def pick_unit(
     corner_rise: np.ndarray | None = None,
     terrain_tile: tuple[int, int] | None = UNRESOLVED_TILE,
     farms_draped: bool = False,
+    sprites_on: bool = False,
 ) -> UnitEntry | None:
     """The topmost VISIBLE unit at canvas pixel (sx, sy), or None. A wrapper
     over pick_unit_cover(), which documents the parameters, so the occlusion
     rule lives in exactly one place."""
     found = pick_unit_cover(
-        index, style, sx, sy, tile_px, tile_w, tile_h, elevations, proj, corner_rise, terrain_tile, farms_draped
+        index, style, sx, sy, tile_px, tile_w, tile_h, elevations, proj, corner_rise, terrain_tile, farms_draped,
+        sprites_on,
     )
     return None if found is None else found[0]
 
@@ -599,6 +601,7 @@ def pick_unit_cover(
     corner_rise: np.ndarray | None = None,
     terrain_tile: tuple[int, int] | None = UNRESOLVED_TILE,
     farms_draped: bool = False,
+    sprites_on: bool = False,
 ) -> tuple[UnitEntry, tuple[int, int]] | None:
     """The topmost VISIBLE unit at canvas pixel (sx, sy) AND the footprint
     tile it was covering when it won, or None. That covering tile is what
@@ -633,6 +636,11 @@ def pick_unit_cover(
     SlopedChunkCache.sprites_enabled) so pick can never assume a drape the
     render isn't actually painting, or vice versa.
 
+    sprites_on (Stepped and Sloped): whether the render paints terrain first
+    and objects second (TASK-133), i.e. the live cache's with_units and
+    sprites_enabled. Step 2 below then follows that paint (TASK-319). Defaults
+    False, the sprites-off interleaved rule.
+
     Terrain occlusion, in this order (the ordering is the spec, not an
     implementation detail):
 
@@ -647,6 +655,17 @@ def pick_unit_cover(
        per footprint tile, each at its own depth.) Equal means the same
        tile, where the compositor paints terrain first and then that tile's
        units, so the unit wins.
+    3. With sprites_on, a later terrain tile no longer covers the winner by
+       painting after it: objects paint after all terrain, and a nearer tile
+       covers ink only where it stands strictly higher than the ink's base
+       (render._occlude_iso/_occlude_sloped). So step 2 discards only when the
+       terrain tile is also strictly higher than the winner's base rise, both
+       measured the way the paint measures them (_occluded_with_sprites).
+       Measured against the real render (TASK-319): exact wherever the
+       terrain tile is the true topmost one. Stepped keeps the skirt residual
+       below. Sloped misses a later tile that stands higher but is itself
+       overpainted by a nearer, lower one, which needs corner jumps of
+       several levels (measured only on random 0-7 level fields).
 
     Residual, documented rather than hidden: screen_to_tile() returns None
     on skirt-face pixels (phase 2's own accepted behavior). There, the unit
@@ -677,14 +696,50 @@ def pick_unit_cover(
 
     if found is None:
         return None
-    _winner, (cover_x, cover_y) = found
+    winner, (cover_x, cover_y) = found
 
     if terrain is None:
         return found
     tx, ty = terrain
     if (ty - tx, tx) > (cover_y - cover_x, cover_x):
+        if sprites_on and not _occluded_with_sprites(winner, terrain, style, elevations, proj, corner_rise):
+            return found
         return None
     return found
+
+
+def _occluded_with_sprites(
+    entry: UnitEntry,
+    terrain: tuple[int, int],
+    style: str,
+    elevations: np.ndarray | None,
+    proj: iso_geometry.IsoProjection,
+    corner_rise: np.ndarray | None,
+) -> bool:
+    """Step 3 of pick_unit_cover(): whether the later terrain tile under a
+    winner covers it in the sprites-on paint. A tile's height and an ink base
+    are the ones render._occlude_iso/_occlude_sloped and the objects pass use:
+    Stepped, elevation times elev_step for both (the mark's at its own tile);
+    Sloped, the tile's lowest corner, against the mark's own rise (a centred
+    1x1 mark's is its tile's lowest corner, but it never reaches here: its
+    membership already collapses onto the terrain tile).
+
+    A farm drapes as terrain, not ink, yet needs no case here: Sloped
+    collapses it onto the terrain tile too, and in Stepped only an off-centre
+    (span-1) diamond can meet a later tile that is not strictly higher, which
+    no draping const is."""
+    unit = entry.unit
+    tx, ty = terrain
+    if style == "sloped":
+        height = render._sloped_tile_floor(corner_rise, tx, ty)
+        if render._sloped_mark_conforms(unit):
+            base = render._sloped_tile_floor(corner_rise, entry.own_x, entry.own_y)
+        else:
+            base = unit_rise_px_for(entry, corner_rise)
+    else:
+        height = int(elevations[ty, tx]) * proj.elev_step
+        base = render._unit_mark_rise_iso(unit, proj, elevations)
+    return height > base
 
 
 def _is_multi_tile(unit) -> bool:

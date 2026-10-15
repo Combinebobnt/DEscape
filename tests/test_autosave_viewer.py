@@ -416,7 +416,7 @@ def test_browse_persists_the_folder_and_the_next_tick_writes_there(tmp_path, mon
 
 
 def test_a_subscribed_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypatch) -> None:
-    from descape.viewer import STATUS_ERROR_COLOR, SettingsDialog
+    from descape.viewer import SettingsDialog, status_color
 
     subscribed = tmp_path / "mods" / "subscribed" / "12345"
     subscribed.mkdir(parents=True)
@@ -428,7 +428,7 @@ def test_a_subscribed_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypat
         assert settings.get_autosave_dir() == ""
         assert not (tmp_path / "config.yaml").exists() or "autosave_dir" not in (tmp_path / "config.yaml").read_text()
         assert "mods/subscribed/" in dialog.autosave_dir_status_label.text()
-        assert STATUS_ERROR_COLOR in dialog.autosave_dir_status_label.styleSheet()
+        assert status_color(False, on_tab_page=True) in dialog.autosave_dir_status_label.styleSheet()
         assert "Autosave folder refused" in window.status_log.toPlainText()
     finally:
         dialog.close()

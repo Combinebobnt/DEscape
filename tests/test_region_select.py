@@ -81,7 +81,7 @@ def test_select_is_a_registered_tool() -> None:
     tool_ids = [t.tool_id for t in settings.TOOLS]
     assert "select" in tool_ids
     select = next(t for t in settings.TOOLS if t.tool_id == "select")
-    assert select.modes == ("terrain",)
+    assert select.modes == ("terrain", "units")  # units picked in Units mode (TASK-252)
     assert not select.is_edit_tool
     assert select.default_key == "S"
 
@@ -92,15 +92,16 @@ def test_keybind_rows_exist_with_the_expected_defaults() -> None:
     assert settings.get_keybind("edit_deselect") == "Ctrl+Shift+A"
 
 
-def test_mode_gating_hides_select_outside_terrain_mode() -> None:
+def test_mode_gating_shows_select_in_terrain_and_units_mode_only() -> None:
     window = _select_window()
     try:
         assert viewer_common.tool_applicable("select", "terrain")
-        assert not viewer_common.tool_applicable("select", "units")
+        assert viewer_common.tool_applicable("select", "units")
         assert not viewer_common.tool_applicable("select", "view")
-        for mode_text, mode_id in [("Units", "units"), ("View", "view")]:
-            window.mode_combo.setCurrentText(mode_text)
-            assert not window.select_action.isVisible(), mode_id
+        window.mode_combo.setCurrentText("Units")
+        assert window.select_action.isVisible()
+        window.mode_combo.setCurrentText("View")
+        assert not window.select_action.isVisible()
         window.mode_combo.setCurrentText("Terrain")
         assert window.select_action.isVisible()
     finally:

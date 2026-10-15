@@ -218,6 +218,11 @@ python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file 
 .venv/bin/python3 -m pytest tests/test_scenario_io.py -m "corpus or slow"
 ```
 
+Settings > Keybinds rebinds every shortcut and sets what the mouse wheel does
+over the map, alone or with Ctrl, Shift or Alt held (zoom, brush size, turning
+Place Unit's preview, panning, or nothing; by default it zooms, and Ctrl +
+wheel steps the brush size or turns the preview).
+
 Saving (Ctrl+S or File > Save) leaves a `.bak` and, on the first save of a
 given file, a one-time `.orig` snapshot beside it, so the write path always
 has something to fall back to. Settings > Saving can switch that pair off,
@@ -430,16 +435,38 @@ Typical Steam install locations, if you need a starting point for Browse…:
 is the one place that reads real `.dds` files from your configured install at
 runtime; nothing from that install gets copied into the repo or committed. The
 things that *are* committed are small factual correspondence tables (not
-asset content), the first of which is `descape/terrain_texture_map.json`: a plain
-factual `terrain_id -> filename` table (not asset content), extracted once via
-`tools/gen_terrain_texture_map.py` using
+asset content): the `descape/*.json` files that the `tools/gen_*.py`
+generators extract from the game's own `empires2_x2_p1.dat`, parsed with
 [genieutils-py](https://github.com/SiegeEngineers/genieutils-py) (`pip install
--r requirements-dev.txt`) to parse the real terrain table out of the game's own
-`empires2_x2_p1.dat` — confirmed to cover all 131 enabled terrain IDs with a
-real matching `.dds` file, cross-checked against several terrain IDs already
-known from real scenario data (e.g. `terrain_id=19` is `FOREST_PINE` in both
-AoE2ScenarioParser's enum and the `.dat` table's own terrain name). Only needed
-again if the game updates its terrain table; not a runtime dependency.
+-r requirements-dev.txt`). Neither genieutils-py nor an install is a runtime
+dependency. The tables only need regenerating when the game updates its data.
+
+They regenerate together with `tools/regen_game_data.py`. It runs every
+generator against your install, replaces the tables only if all of them
+succeed, and records what it ran against (the `.dat`'s hash and size, the
+Steam build id, each table's hash) in `tools/game_data_stamp.json`:
+
+```bash
+.venv/bin/python3 tools/regen_game_data.py            # regenerate every table and the stamp
+.venv/bin/python3 tools/regen_game_data.py --check    # would a regeneration reproduce the committed tables?
+.venv/bin/python3 tools/regen_game_data.py --status   # quick: install and tables against the stamp, no generator runs
+```
+
+One table is regenerated with `--only <script>` (e.g. `--only
+gen_unit_stats.py`) and committed together with the stamp: the test suite
+fails on a table whose hash the stamp does not carry, and `--only` refuses to
+run against a different game build than the stamp records. `--check` reports
+whether the tables still match an install: it exits 0 when a fresh
+regeneration reproduces them and the install matches the stamp, 1 when the
+game data is stale (a new game build counts, even with equal tables), and 2 when it
+cannot tell (no install found, or genieutils-py missing).
+
+The first of the tables is `descape/terrain_texture_map.json`: a plain factual
+`terrain_id -> filename` table from `tools/gen_terrain_texture_map.py`, naming
+a real `.dds` file for each enabled terrain and cross-checked against several
+terrain IDs already known from real scenario data (e.g. `terrain_id=19` is
+`FOREST_PINE` in both AoE2ScenarioParser's enum and the `.dat` table's own
+terrain name).
 
 `descape/terrain_classes.json` is the second, from the same `.dat` and the same
 kind of generator (`tools/gen_terrain_classes.py`): each terrain's water/land
@@ -462,6 +489,12 @@ from your install, groundwork for drawing real unit and building graphics
 instead of colored marks. Nothing calls it yet, so it has no effect on what
 the viewer draws today.
 
+## Contributing
+
+Report bugs and suggest features in
+[GitHub issues](https://github.com/Combinebobnt/DEscape/issues). Pull requests
+are welcome; read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
+
 ## License
 
 Copyright (C) 2026 Combinebobnt
@@ -480,13 +513,18 @@ regardless.
 The committed game-derived data files (`descape/terrain_texture_map.json`,
 `terrain_classes.json`, `terrain_blend_map.json`, `tree_unit_ids.json`, `unit_render_data.json`,
 `unit_graphic_map.json`, `unit_stats.json`, `object_catalog.json`) are factual id/name/filename correspondence tables, not
-game asset content. The four committed
-`.aoe2scenario` files (`descape/templates/blank_120x120.aoe2scenario` and the
-three blanks under `tests/fixtures/`) are unit-stripped exports of the in-game
-editor's own "Blank" map style - default structural data containing no authored
-scenario content. They are kept as real game exports rather than generated
-files because `tests/test_scenario_new.py` uses them as byte oracles (see
-`tests/README.md`). Nothing in this repository
+game asset content. The six committed blank
+`.aoe2scenario` files hold default structural data containing no authored
+scenario content. Four under `tests/fixtures/` (`blank_120x120_v158`,
+`golden_blank_120x120`, `real_blank_240x240` and `real_blank_480x480`) are
+unit-stripped exports of the in-game editor's own "Blank" map style, and
+`real_blank_120x120_v159` there is a blank map saved by the 1.59 game editor.
+`descape/templates/blank_120x120.aoe2scenario`, which every new map starts
+from, is the `blank_120x120_v158` export with its three version fields set to
+1.59 by `tools/gen_blank_template.py`. The exports and the game save are kept
+as real game files rather than generated ones because
+`tests/test_scenario_new.py` and `tests/test_blank_template.py` use them as
+byte oracles (see `tests/README.md`). Nothing in this repository
 grants any rights over Microsoft's Age of Empires II content; use of game
 assets from your own install is governed by Microsoft's Game Content Usage
 Rules.

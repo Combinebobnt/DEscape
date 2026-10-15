@@ -1,9 +1,11 @@
 """The rotation Place Unit gives the next unit it places (GH #172).
 
-Place Unit's hover ghost can be turned before a click, by Ctrl+wheel or the
-Rotate actions, and every click then places the unit exactly as the ghost
-shows it. This module holds that pending rotation and is the only source of
-the value both the ghost and the click write, so the two cannot disagree.
+Place Unit's hover ghost can be turned before a click, by the wheel's rotate
+binding (Ctrl+wheel by default) or the Rotate actions, or set by the
+Eyedropper's Units-mode pick (ViewerWindow.pick_unit_value), and every click then
+places the unit exactly as the ghost shows it. This module holds that pending
+rotation and is the only source of the value both the ghost and the click
+write, so the two cannot disagree.
 
 It follows the Rotate rules (ViewerWindow.on_unit_rotate) per const:
 

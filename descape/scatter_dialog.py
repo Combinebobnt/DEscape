@@ -125,6 +125,8 @@ class ScatterParams:
     jitter: float
     min_spacing: int
     move_selected: bool = False
+    # GH #164: a random pick's consts, rolled per copy; unit_const stays its rolled one for eligibility.
+    unit_consts: tuple[int, ...] | None = None
 
     def requested(self, eligible: int) -> int | None:
         """How many units were asked for, or None for a (lo, hi) range whose
@@ -142,7 +144,9 @@ class ScatterDialog(QDialog):
     It never touches the map. `params()` reads the live widget state, so a
     test can drive the widgets and call it directly. `unit_const` may be
     None (nothing picked in the Units panel), which leaves only the move
-    mode; `selected_units` are the units that mode would move.
+    mode; `selected_units` are the units that mode would move. A random pick
+    (GH #164) also passes its name as `object_label` and its consts as
+    `unit_consts`, which params() hands on.
     """
 
     def __init__(
@@ -157,12 +161,15 @@ class ScatterDialog(QDialog):
         labels=None,
         colors=None,
         selected_units=(),
+        object_label=None,
+        unit_consts=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Scatter Units in Region")
         self._scenario = scenario
         self._region = region
         self._unit_const = unit_const
+        self._unit_consts = None if unit_consts is None else tuple(unit_consts)
         self._selected = list(selected_units)
         # Computed once per mode, the first time Avoid is on, then kept for
         # this dialog's lifetime: occupied_tiles() walks all nine player lists.
@@ -176,6 +183,8 @@ class ScatterDialog(QDialog):
         layout.addWidget(self._build_mode_group())
         if unit_const is None:
             object_text = "Object: none chosen in the Units panel"
+        elif object_label:
+            object_text = f"Object: {object_label}"
         else:
             object_text = f"Object: {object_catalog.display_name(unit_const)} ({unit_const})"
         self.object_label = QLabel(object_text)
@@ -441,6 +450,7 @@ class ScatterDialog(QDialog):
             jitter=self.jitter_spin.value(),
             min_spacing=self.spacing_spin.value(),
             move_selected=self.move_mode(),
+            unit_consts=self._unit_consts,
         )
 
     def state(self) -> dict:

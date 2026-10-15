@@ -306,10 +306,10 @@ def test_activating_a_catalog_row_checks_place_unit_and_returns_focus_to_the_map
         QApplication.processEvents()
         assert window.isActiveWindow()
 
-        window.units_panel.catalog_view.tree.setFocus()
+        window.units_panel.catalog_view.list.setFocus()
         window.units_panel.catalog_view.select(_PLACE_CONST)
-        current = window.units_panel.catalog_view.tree.currentItem()
-        window.units_panel.catalog_view.tree.itemActivated.emit(current, 0)
+        current = window.units_panel.catalog_view.list.currentItem()
+        window.units_panel.catalog_view.list.itemActivated.emit(current)
         QApplication.processEvents()
 
         assert window.place_unit_action.isChecked()
@@ -500,6 +500,36 @@ def test_a_move_that_raises_after_patching_the_pick_index_drops_the_index(monkey
             window.on_unit_move(key, _pos_for_tile(window, 25, 30), Qt.NoModifier)
         assert window.map_view._unit_index is None
         assert window._stack_cycle is None
+    finally:
+        _close(window)
+
+
+def test_an_arrow_after_a_catalog_click_and_a_placement_nudges_the_placed_unit() -> None:
+    """GH #68: the common flow on the new browser list (click a row, place,
+    nudge): the arrow reaches the map, not the list's current row."""
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        window.show()
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        catalog = window.units_panel.catalog_view
+        catalog.select(_PLACE_CONST)
+        QTest.mouseClick(catalog.list.viewport(), Qt.LeftButton, Qt.NoModifier,
+                         catalog.list.visualItemRect(catalog.list.currentItem()).center())
+        catalog.list.itemActivated.emit(catalog.list.currentItem())
+        QApplication.processEvents()
+        window.on_unit_place(_pos_for_tile(window, 30, 30), Qt.NoModifier)
+        assert window._selection, window.status_log.toPlainText().splitlines()[-1]
+        key = window._selection[0]
+        start_x = window.map_view._unit_index.entry_for_key(key).unit.x
+        row = catalog.list.currentRow()
+        QTest.keyClick(QApplication.focusWidget(), Qt.Key_Right)
+        assert window.map_view._unit_index.entry_for_key(key).unit.x > start_x
+        assert catalog.list.currentRow() == row
     finally:
         _close(window)
 
@@ -3363,10 +3393,13 @@ def test_a_click_on_an_unstacked_unit_is_unchanged() -> None:
         _close(window)
 
 
-def _press_release(map_view, viewport_pos) -> None:
+def _press_release(window, viewport_pos, tool: str) -> None:
+    """A real press-release through MapView under `tool` ("select" or "move")."""
     from PyQt5.QtCore import QEvent
     from PyQt5.QtGui import QMouseEvent
 
+    getattr(window, f"{tool}_action").setChecked(True)
+    map_view = window.map_view
     for kind, button, buttons in (
         (QEvent.MouseButtonPress, Qt.LeftButton, Qt.LeftButton),
         (QEvent.MouseButtonRelease, Qt.LeftButton, Qt.NoButton),
@@ -3378,7 +3411,7 @@ def _press_release(map_view, viewport_pos) -> None:
             map_view.mouseReleaseEvent(event)
 
 
-def test_after_cycling_the_drag_key_names_the_selected_unit_not_the_top_one() -> None:
+def test_after_cycling_with_select_move_drags_the_selected_unit_not_the_top_one() -> None:
     from PyQt5.QtCore import QEvent
     from PyQt5.QtGui import QMouseEvent
 
@@ -3387,7 +3420,10 @@ def test_after_cycling_the_drag_key_names_the_selected_unit_not_the_top_one() ->
         tile, keys = _make_stack(window)
         map_view = window.map_view
         viewport_pos = conftest.viewport_pos(map_view, *tile)
-        _press_release(map_view, viewport_pos)
+        _press_release(window, viewport_pos, "select")
+        _press_release(window, viewport_pos, "select")
+        assert window._selection == [keys[1]]
+        window.move_action.setChecked(True)
         map_view.mousePressEvent(
             QMouseEvent(QEvent.MouseButtonPress, viewport_pos, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
         )
@@ -3397,7 +3433,8 @@ def test_after_cycling_the_drag_key_names_the_selected_unit_not_the_top_one() ->
         _close(window)
 
 
-def test_a_units_mode_press_picks_exactly_once(monkeypatch) -> None:
+@pytest.mark.parametrize("tool", ["select", "move"])
+def test_a_units_mode_press_picks_exactly_once(monkeypatch, tool) -> None:
     """mousePressEvent used to call pick_unit_at() and then hand the same
     scene pos to on_click_select(), which picks again through
     pick_unit_cover_at(). Two full unit picks per click, on a path that
@@ -3405,9 +3442,9 @@ def test_a_units_mode_press_picks_exactly_once(monkeypatch) -> None:
 
     Counted at unit_pick.pick_unit_cover, the single function both routes
     bottom out in, so this stays honest if either wrapper is renamed. Both
-    the hit and the miss are covered: the miss is what decides whether the
-    press arms a marquee, and it used to read `entry`, not the callback's
-    return."""
+    the hit and the miss are covered, per tool (TASK-252): Select arms the
+    marquee on a hit and a miss and never a drag key; Move arms a drag key
+    on a hit and nothing on a miss."""
     from PyQt5.QtCore import QEvent, QPointF
     from PyQt5.QtGui import QMouseEvent
 
@@ -3416,6 +3453,7 @@ def test_a_units_mode_press_picks_exactly_once(monkeypatch) -> None:
     window = _window()
     try:
         tile, _keys = _make_stack(window)
+        getattr(window, f"{tool}_action").setChecked(True)
         map_view = window.map_view
         calls = []
         real = unit_pick.pick_unit_cover
@@ -3428,8 +3466,8 @@ def test_a_units_mode_press_picks_exactly_once(monkeypatch) -> None:
             QMouseEvent(QEvent.MouseButtonPress, hit, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
         )
         assert len(calls) == 1, f"a press on a unit picked {len(calls)} times, expected 1"
-        assert map_view._unit_drag_key is not None
-        assert map_view._marquee_start_pos is None
+        assert (map_view._unit_drag_key is not None) == (tool == "move")
+        assert (map_view._marquee_start_pos is not None) == (tool == "select")
 
         calls.clear()
         # Far off the map, so the pick genuinely misses rather than landing
@@ -3440,7 +3478,7 @@ def test_a_units_mode_press_picks_exactly_once(monkeypatch) -> None:
         )
         assert len(calls) == 1, f"a press on empty ground picked {len(calls)} times, expected 1"
         assert map_view._unit_drag_key is None
-        assert map_view._marquee_start_pos is not None
+        assert (map_view._marquee_start_pos is not None) == (tool == "select")
     finally:
         _close(window)
 
@@ -3454,7 +3492,7 @@ def test_a_double_click_press_still_cycles() -> None:
         tile, keys = _make_stack(window)
         map_view = window.map_view
         viewport_pos = conftest.viewport_pos(map_view, *tile)
-        _press_release(map_view, viewport_pos)
+        _press_release(window, viewport_pos, "select")
         map_view.mouseDoubleClickEvent(
             QMouseEvent(QEvent.MouseButtonDblClick, viewport_pos, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
         )
@@ -3748,19 +3786,22 @@ def _place_at(window, pos, modifiers=Qt.NoModifier, const: int = _PLACE_CONST):
     return window.map_view._unit_index.entry_for_key(window._selection[0])
 
 
-def test_the_off_grid_checkbox_shows_only_for_place_unit() -> None:
+def test_the_off_grid_checkbox_shows_only_for_place_unit_and_move() -> None:
     """Asserted on the captured QAction handle, never on the widget's own
-    isVisible(): offscreen, a never-shown widget reads False unconditionally."""
+    isVisible(): offscreen, a never-shown widget reads False unconditionally.
+    Move shows it because a unit drag reads it (TASK-012)."""
     window = _window()
     try:
-        window._on_tool_selected("place_unit")
-        assert window.off_grid_param_action.isVisible()
-        assert window.off_grid_check.isEnabled()
-        assert window.tool_param_separator_action.isVisible()
+        for tool in ("place_unit", "move"):
+            getattr(window, f"{tool}_action").setChecked(True)
+            assert window.off_grid_param_action.isVisible(), tool
+            assert window.off_grid_check.isEnabled(), tool
+            assert window.tool_param_separator_action.isVisible(), tool
 
-        window._on_tool_selected("convert")
-        assert not window.off_grid_param_action.isVisible()
-        assert not window.off_grid_check.isEnabled()
+        for tool in ("convert", "select", "pan"):
+            getattr(window, f"{tool}_action").setChecked(True)
+            assert not window.off_grid_param_action.isVisible(), tool
+            assert not window.off_grid_check.isEnabled(), tool
     finally:
         _close(window)
 
@@ -3985,7 +4026,7 @@ def test_a_snapped_group_move_keeps_an_off_parity_members_half() -> None:
         _select_keys(window, keys)
         before = _positions(window, keys)
 
-        _gesture(window, (63, 63), (66, 65))
+        _gesture(window, (63, 63), (66, 65), tool="move")
 
         assert _positions(window, keys) == [(x + 3, y + 2) for x, y in before]
         assert _positions(window, keys)[0] == (66.5, 65.5)
@@ -4021,11 +4062,13 @@ def _positions(window, keys):
     return [(index.entry_for_key(k).unit.x, index.entry_for_key(k).unit.y) for k in keys]
 
 
-def _gesture(window, from_tile, to_tile=None, modifiers=Qt.NoModifier, to_scene=None) -> None:
-    """A real press(-move)-release through MapView; no `to_tile` is a plain click."""
+def _gesture(window, from_tile, to_tile=None, modifiers=Qt.NoModifier, to_scene=None, *, tool: str) -> None:
+    """A real press(-move)-release through MapView under `tool` ("select" or
+    "move"); no `to_tile` is a plain click."""
     from PyQt5.QtCore import QEvent
     from PyQt5.QtGui import QMouseEvent
 
+    getattr(window, f"{tool}_action").setChecked(True)
     view = window.map_view
     press = conftest.viewport_pos(view, *from_tile)
     if to_scene is not None:
@@ -4038,7 +4081,9 @@ def _gesture(window, from_tile, to_tile=None, modifiers=Qt.NoModifier, to_scene=
     view.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton, modifiers))
 
 
-def test_a_press_on_a_group_member_without_a_drag_collapses_on_release() -> None:
+def test_a_select_click_on_a_group_member_collapses_at_press() -> None:
+    """TASK-252: Select only selects, so nothing defers the collapse to the
+    release any more (GH #75's old pending collapse is gone)."""
     window = _window()
     try:
         _free_tiles(window, [(62, 62), (64, 62)])
@@ -4047,12 +4092,27 @@ def test_a_press_on_a_group_member_without_a_drag_collapses_on_release() -> None
         from PyQt5.QtCore import QEvent
         from PyQt5.QtGui import QMouseEvent
 
+        window.select_action.setChecked(True)
         view = window.map_view
         vp = conftest.viewport_pos(view, 64, 62)
         view.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, vp, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-        assert window._selection == keys, "the group must survive the press, or a drag can't move it"
+        assert window._selection == [keys[1]]
         view.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, vp, Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
         assert window._selection == [keys[1]]
+    finally:
+        _close(window)
+
+
+def test_a_move_click_on_a_group_member_leaves_the_group() -> None:
+    window = _window()
+    try:
+        _free_tiles(window, [(62, 62), (64, 62)])
+        keys = _add_units(window, [(_PLACE_CONST, 62.5, 62.5), (_PLACE_CONST, 64.5, 62.5)])
+        _select_keys(window, keys)
+        depth = window.edit_history.cursor
+        _gesture(window, (64, 62), tool="move")
+        assert window._selection == keys
+        assert window.edit_history.cursor == depth
     finally:
         _close(window)
 
@@ -4068,7 +4128,7 @@ def test_a_group_drag_moves_every_member_in_one_undo_record() -> None:
         before = _positions(window, keys)
         depth = window.edit_history.cursor
 
-        _gesture(window, (62, 62), (65, 64))
+        _gesture(window, (62, 62), (65, 64), tool="move")
 
         after = _positions(window, keys)
         # Whole-tile (3, 2), and the off-centre member keeps its sub-tile offset.
@@ -4094,7 +4154,7 @@ def test_the_edge_clamp_keeps_the_shape_even_on_an_off_map_release() -> None:
 
         tp = window.map_view._tile_pixels
         # Released well past the right edge: clamped, not cancelled.
-        _gesture(window, (w - 6, 60), to_scene=QPointF((w + 10) * tp, 60.5 * tp))
+        _gesture(window, (w - 6, 60), to_scene=QPointF((w + 10) * tp, 60.5 * tp), tool="move")
 
         after = _positions(window, keys)
         assert after == [(x + 3, y) for x, y in before], "the outer member stops on the last column"
@@ -4113,7 +4173,7 @@ def test_a_fully_clamped_group_drag_writes_nothing() -> None:
         before = _positions(window, keys)
         depth = window.edit_history.cursor
 
-        _gesture(window, (w - 3, 60), (w - 1, 60))
+        _gesture(window, (w - 3, 60), (w - 1, 60), tool="move")
 
         assert _positions(window, keys) == before
         assert window.edit_history.cursor == depth
@@ -4134,7 +4194,7 @@ def test_grabbing_a_houses_lower_tile_moves_the_group_exactly_one_tile() -> None
         window.map_view.scale(4.0, 4.0)
         window.map_view.centerOn(QPointF(63 * window.map_view._tile_pixels, 63 * window.map_view._tile_pixels))
 
-        _gesture(window, (62, 62), (63, 62))
+        _gesture(window, (62, 62), (63, 62), tool="move")
 
         assert _positions(window, keys) == [(x + 1, y) for x, y in before]
     finally:
@@ -4150,7 +4210,7 @@ def test_an_off_grid_group_drag_keeps_every_offset(monkeypatch) -> None:
         before = _positions(window, keys)
         monkeypatch.setattr(window.map_view, "_pick_map_point", lambda pos: (70.25, 66.75))
 
-        _gesture(window, (62, 62), (70, 66), modifiers=Qt.AltModifier)
+        _gesture(window, (62, 62), (70, 66), modifiers=Qt.AltModifier, tool="move")
 
         dx, dy = 70.25 - before[0][0], 66.75 - before[0][1]
         after = _positions(window, keys)
@@ -4160,7 +4220,7 @@ def test_an_off_grid_group_drag_keeps_every_offset(monkeypatch) -> None:
         _close(window)
 
 
-def test_a_click_on_a_stacked_group_member_carries_the_cycle_on_after_the_collapse() -> None:
+def test_a_select_click_on_a_stacked_group_member_carries_the_cycle_on_after_the_collapse() -> None:
     window = _window()
     try:
         tile, stack = _make_stack(window)
@@ -4169,11 +4229,11 @@ def test_a_click_on_a_stacked_group_member_carries_the_cycle_on_after_the_collap
         (loner,) = _add_units(window, [(_PLACE_CONST, other[0] + 0.5, other[1] + 0.5)])
         _select_keys(window, [stack[0], loner])
 
-        _gesture(window, tile)
+        _gesture(window, tile, tool="select")
         assert window._selection == [stack[0]]
         assert "1 of 3 stacked here" in window.status_log.toPlainText()
 
-        _gesture(window, tile)
+        _gesture(window, tile, tool="select")
         assert window._selection == [stack[1]]
     finally:
         _close(window)
@@ -4184,7 +4244,7 @@ def test_a_plain_drag_on_a_stack_still_pulls_one_unit_off() -> None:
     try:
         tile, stack = _make_stack(window)
         before = _positions(window, stack)
-        _gesture(window, tile, (tile[0] + 2, tile[1]))
+        _gesture(window, tile, (tile[0] + 2, tile[1]), tool="move")
         after = _positions(window, stack)
         assert sum(a != b for a, b in zip(after, before, strict=True)) == 1
     finally:
@@ -4206,7 +4266,7 @@ def test_select_whole_stack_widens_the_selection_and_a_drag_moves_all_of_it() ->
         assert "4 units selected (stack)" in window.status_log.toPlainText()
 
         before = _positions(window, stack)
-        _gesture(window, tile, (tile[0], tile[1] + 2))
+        _gesture(window, tile, (tile[0], tile[1] + 2), tool="move")
         assert _positions(window, stack) == [(x, y + 2) for x, y in before]
     finally:
         _close(window)
@@ -4399,6 +4459,46 @@ def test_the_same_seed_scatters_to_the_same_coordinates(monkeypatch) -> None:
         window.undo()
         window.scatter_units_in_region()
         assert sorted((u.x, u.y) for u in _gaia_fish(window)) == first
+    finally:
+        _close(window)
+
+
+def test_villager_random_scatters_a_seeded_mix_of_both_villagers(monkeypatch) -> None:
+    """GH #164: each scattered copy rolls, from the dialog's seed."""
+    from PyQt5.QtWidgets import QDialog
+
+    from descape import viewer as viewer_mod
+    from descape.place_random import RANDOM_VILLAGER
+
+    window = _window()
+    try:
+        window.units_panel.catalog_view.select(RANDOM_VILLAGER)
+        window.units_panel.select_owner(2)
+        window.on_region_selected(_POND)
+        labels = []
+
+        def fake_exec(dialog):
+            labels.append(dialog.object_label.text())
+            dialog.count_spin.setValue(40)
+            dialog.seed_spin.setValue(20261011)
+            return QDialog.Accepted
+
+        monkeypatch.setattr(viewer_mod.ScatterDialog, "exec_", fake_exec)
+        before = len(window.scenario.unit_manager.units[2])
+
+        def villagers():
+            return [u.unit_const for u in window.scenario.unit_manager.units[2][before:]]
+
+        window.scatter_units_in_region()
+        first = villagers()
+        assert len(first) == 40
+        assert set(first) == {83, 293}
+        assert labels == ["Object: Villager (Random)"]
+        assert "Scattered 40 x Villager (Random) for Player 2" in window.status_log.toPlainText()
+
+        window.undo()
+        window.scatter_units_in_region()
+        assert villagers() == first, "the same seed rolls the same mix"
     finally:
         _close(window)
 

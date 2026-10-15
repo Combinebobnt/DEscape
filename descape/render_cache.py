@@ -1155,7 +1155,13 @@ class _ChunkCacheBase:
         by its own edit, whose bbox covered its old and new extents, and
         evicting leaves nothing resident that shows the newer state. What
         the stale layer holds at these tiles is then either exactly what is
-        on screen or over-coverage."""
+        on screen or over-coverage.
+
+        That holds only for a caller that invalidates in the same handler as
+        its mutation. One that mutates first and invalidates later (the
+        Eraser's flush) must not trust a level that was stale, or had pending
+        elevation work, at the mutation: a composite in between rebuilds it
+        from the live scenario (TASK-318, viewer._erase_units())."""
         if self._extent_fallback(changed, mip):
             return REACH_FALLBACK
         _proj, sprites, building_bboxes, _rise, _top = self._unit_level_state(mip)
@@ -1389,6 +1395,13 @@ class _ChunkCacheBase:
         """
         self._mutation_epoch += 1
         self._refresh_source_caches()
+
+    def _model_unit_gen(self):
+        """scenario.unit_gen, which every UnitEditModel mutator bumps, or None
+        for a duck-typed test scenario without one (render._unit_gen_cached()'s
+        convention). A warm captures it at start and refuses to install across
+        a move (TASK-326)."""
+        return getattr(self.scenario, "unit_gen", None)
 
     def level_warm_job(self, mip: int) -> LevelWarmJob | None:
         """This level's sprite layer as a resumable warm, or None if there is
@@ -2282,7 +2295,18 @@ class _LeveledChunkCache(_ChunkCacheBase):
         a flush there would re-add it at its new tile on top of the old one.
         invalidate_units() needs no flush of its own: its splice reaches
         pending levels too (they are current), and the later flush then
-        reads consistent state."""
+        reads consistent state.
+
+        The Eraser and Convert break that precondition for up to a flush
+        interval: they mutate the model live and splice at their flush
+        (viewer._erase_units(), _convert_one()). A paint inside that window
+        still flushes here. Measured (TASK-326): an erased unit that shared a
+        pending tile cannot be located, so _elevation_splices() answers None
+        and the level rebuilds wholesale inside this call; a converted one
+        re-derives under its new owner. The flush's invalidate_units() then
+        leaves the level equal to a fresh cache's (pinned by
+        tests/test_stepped_defer_offscreen.py), so the cost is one in-paint
+        build, and the repaint is the Eraser's stale-level mark's (TASK-318)."""
         lvl = self._levels[mip]
         with perf_trace.level("flush", mip) as ev:
             # Cleared first so nothing reached from the splice below can re-enter.
@@ -2404,14 +2428,16 @@ class _LeveledChunkCache(_ChunkCacheBase):
         return sprites, memo, bboxes, grid
 
     def _rebuild_install(
-        self, mip: int, built: tuple, start_gen: int, start_epoch: int, heights: np.ndarray, extra_top: int
+        self, mip: int, built: tuple, start_gen: int, start_epoch: int, start_unit_gen, heights: np.ndarray,
+        extra_top: int,
     ) -> bool:
-        """A warm job's install: the four-check predicate (see level_warm_job),
+        """A warm job's install: the five-check predicate (see level_warm_job),
         then _commit_level(). heights and extra_top were captured with start_gen."""
         lvl = self._levels[mip]
         if (
             self._source_gen != start_gen
             or self._splice_epoch != start_epoch
+            or self._model_unit_gen() != start_unit_gen
             or lvl.gen == self._source_gen
             or self._level_heights(lvl) is not heights
         ):
@@ -2504,15 +2530,20 @@ class _LeveledChunkCache(_ChunkCacheBase):
         be pure overhead. None too when the level is already current, which
         is the common case for the level the opening paint just built.
 
-        **The install predicate is four checks, and `lvl.gen ==
+        **The install predicate is five checks, and `lvl.gen ==
         self._source_gen` is the one that isn't obvious.** The first two are
         staleness (the source moved under a warm that started before it, so
         the layer describes a scenario that no longer exists): a gen bump,
         or a splice (_splice_epoch), which moves units or elevations without
-        one. The third is the opposite case: a real paint got there first
+        one. The third is staleness on the model side: scenario.unit_gen
+        (_model_unit_gen()) moved, which catches a mutation the cache has not
+        heard of yet. The Eraser and Convert mutate mid-drag and splice only
+        at their flush, so neither counter above moves in between, and a
+        `del` under the walk's enumerate() cursor skips a unit (TASK-326). The
+        fourth is the opposite case: a real paint got there first
         and built an equivalent level, and overwriting it would throw away a
         layer already wired into the chunk cache to install a fresh copy of
-        the same thing. The fourth is staleness again: _level_heights() is no
+        the same thing. The fifth is staleness again: _level_heights() is no
         longer the array captured at start. Sloped replaces corner_rise on
         every elevation patch, even one whose splice is empty and moves
         neither counter; on Stepped it never fires.
@@ -2527,19 +2558,22 @@ class _LeveledChunkCache(_ChunkCacheBase):
             return None
         start_gen = self._source_gen
         start_epoch = self._splice_epoch
+        start_unit_gen = self._model_unit_gen()
         if lvl.gen == start_gen:
             return None
         heights, extra_top = self._level_heights(lvl), self._level_extra_top(lvl)
         # The walk and the assembly both step here; install only commits.
         return LevelWarmJob(
             gen=self._rebuild_walk(lvl),
-            install=lambda built: self._rebuild_install(mip, built, start_gen, start_epoch, heights, extra_top),
+            install=lambda built: self._rebuild_install(
+                mip, built, start_gen, start_epoch, start_unit_gen, heights, extra_top
+            ),
         )
 
     def _flush_warm_job(self, mip: int) -> LevelWarmJob:
         """level_warm_job() for a current level with pending tiles: the walk's
         payload is None when the flush left the level current, else
-        (rebuild, start_gen, start_epoch, heights, extra_top)."""
+        (rebuild, start_gen, start_epoch, start_unit_gen, heights, extra_top)."""
 
         def install(payload) -> bool:
             return payload is None or self._rebuild_install(mip, *payload)
@@ -2551,18 +2585,21 @@ class _LeveledChunkCache(_ChunkCacheBase):
         level stale, level_warm_job()'s sliced rebuild. Re-checks on its first
         step, since a paint may have flushed the level after start(). Safe
         between ticks: every mutation cancels warms before it runs and re-arms
-        after invalidate_units(), so units_by_tile agrees with the scenario."""
+        after invalidate_units(), so units_by_tile agrees with the scenario.
+        That covers the Eraser and Convert too, which cancel at their live
+        mutation and arm nothing until its flush (viewer._cancel_warms(),
+        TASK-326); unit_gen in the payload is the install's second line."""
         lvl = self._levels[mip]
         if lvl.gen == self._source_gen and lvl.pending_elev:
             self._flush_pending(mip)
         if lvl.gen == self._source_gen:
             return None
         # Captured after the flush: an under-cap one bumps _splice_epoch.
-        start_gen, start_epoch = self._source_gen, self._splice_epoch
+        start_gen, start_epoch, start_unit_gen = self._source_gen, self._splice_epoch, self._model_unit_gen()
         heights, extra_top = self._level_heights(lvl), self._level_extra_top(lvl)
         yield
         built = yield from self._rebuild_walk(lvl)
-        return built, start_gen, start_epoch, heights, extra_top
+        return built, start_gen, start_epoch, start_unit_gen, heights, extra_top
 
     def is_level_resident(self, mip: int) -> bool:
         """Mirrors level_warm_job()'s own staleness check (`lvl.gen ==
@@ -3305,16 +3342,24 @@ class FlatChunkCache(_ChunkCacheBase):
 
         _flat_unit_draws (measured 14.1ms) is not sliced and runs whole
         inside the install, same as Stepped's _building_bboxes_iso: only the
-        icon walk (~727ms cold) is worth resuming."""
+        icon walk (~727ms cold) is worth resuming.
+
+        scenario.unit_gen (_model_unit_gen()) is compared too, ahead of the
+        row-count assert: an Eraser or Convert mutation moves only the model
+        until its flush, so _unit_gen alone installs a walk built across it
+        (TASK-326)."""
         if not (self.with_units and self.sprites_enabled):
             return None
         if mip in self._level_icon_layers:
             return None
         start_gen = self._unit_gen
+        start_unit_gen = self._model_unit_gen()
         gen = render._flat_icon_layer_sliced(self.scenario, self._mip_tile_px[mip], self.unit_filter)
 
         def install(icons_and_rows: tuple[dict[int, unit_sprites.SpriteDraw], int]) -> bool:
-            if self._unit_gen != start_gen or mip in self._level_icon_layers:
+            if self._unit_gen != start_gen or self._model_unit_gen() != start_unit_gen:
+                return False
+            if mip in self._level_icon_layers:
                 return False
             self._install_icon_layer(mip, icons_and_rows)
             return True

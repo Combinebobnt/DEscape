@@ -36,9 +36,14 @@ from descape.options_model import (
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
 
+_V158_DONOR_PATH = Path(__file__).resolve().parent / "fixtures" / "blank_120x120_v158.aoe2scenario"
 
-def _loaded(path: Path = BLANK_TEMPLATE_PATH):
-    return load_map_and_units(path)
+
+@pytest.fixture(params=[BLANK_TEMPLATE_PATH, _V158_DONOR_PATH], ids=["template-1.59", "donor-1.58"])
+def _loaded(request):
+    """A fresh load per call, on each blank donor in turn: the shipped 1.59
+    template and the real 1.58 export it is generated from."""
+    return lambda: load_map_and_units(request.param)
 
 
 def _written_body(path: Path) -> bytes:
@@ -65,7 +70,7 @@ def _differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
 # -- construction -------------------------------------------------------------
 
 
-def test_player_fields_are_present_in_a_writable_model() -> None:
+def test_player_fields_are_present_in_a_writable_model(_loaded) -> None:
     loaded = _loaded()
     assert players_write_supported(loaded)
     model = OptionsEditModel(loaded)
@@ -74,7 +79,7 @@ def test_player_fields_are_present_in_a_writable_model() -> None:
     )
 
 
-def test_tribe_name_is_settable_as_of_step_3d() -> None:
+def test_tribe_name_is_settable_as_of_step_3d(_loaded) -> None:
     """c256 is a string codec; _original/_pending are int | str (step 3d),
     so tribe_name rides the same additive player-field set as every other
     Tier-1 spec."""
@@ -85,7 +90,7 @@ def test_tribe_name_is_settable_as_of_step_3d() -> None:
     assert model.current_value("player:tribe_name:1") == "Franks"
 
 
-def test_player_fields_are_absent_when_the_player_gate_fails() -> None:
+def test_player_fields_are_absent_when_the_player_gate_fails(_loaded) -> None:
     """An independent gate: corrupting the PlayerDataTwo anchor leaves the
     scalar rows and the Diplomacy grid constructible, and simply omits
     every per-player id rather than raising."""
@@ -107,7 +112,7 @@ def test_player_fields_are_absent_when_the_player_gate_fails() -> None:
 
 
 def test_a_model_with_no_player_edits_writes_the_same_file_as_no_model_at_all(
-    tmp_path: Path,
+    tmp_path: Path, _loaded
 ) -> None:
     loaded = _loaded()
     without = tmp_path / "without.aoe2scenario"
@@ -121,7 +126,7 @@ def test_a_model_with_no_player_edits_writes_the_same_file_as_no_model_at_all(
     assert with_model.read_bytes() == without.read_bytes()
 
 
-def test_a_player_field_set_back_to_its_stored_value_leaves_the_document_clean() -> None:
+def test_a_player_field_set_back_to_its_stored_value_leaves_the_document_clean(_loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     stored = model.original_value("player:base_priority:2")
@@ -136,7 +141,7 @@ def test_a_player_field_set_back_to_its_stored_value_leaves_the_document_clean()
 # -- 2. locality ------------------------------------------------------------
 
 
-def test_editing_an_unmirrored_field_changes_only_its_own_span(tmp_path: Path) -> None:
+def test_editing_an_unmirrored_field_changes_only_its_own_span(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     targets = player_fields.write_targets(loaded)
     (target,) = targets["player:base_priority:2"]
@@ -156,7 +161,7 @@ def test_editing_an_unmirrored_field_changes_only_its_own_span(tmp_path: Path) -
         assert target.offset <= start and end <= target.offset + target.length
 
 
-def test_editing_one_players_food_leaves_every_other_player_untouched(tmp_path: Path) -> None:
+def test_editing_one_players_food_leaves_every_other_player_untouched(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     stored = model.original_value("player:food:3")
@@ -172,7 +177,7 @@ def test_editing_one_players_food_leaves_every_other_player_untouched(tmp_path: 
 
 
 def test_editing_food_touches_only_the_primary_and_mirror_spans_gaia_untouched(
-    tmp_path: Path,
+    tmp_path: Path, _loaded
 ) -> None:
     """Plan verification item 4, the byte-level half: edit P3's food and
     confirm the written body's diff is confined to exactly the primary and
@@ -214,7 +219,7 @@ def test_editing_food_touches_only_the_primary_and_mirror_spans_gaia_untouched(
 
 
 def test_editing_food_patches_both_the_primary_and_the_player_data_4_mirror(
-    tmp_path: Path,
+    tmp_path: Path, _loaded
 ) -> None:
     loaded = _loaded()
     targets = player_fields.write_targets(loaded)
@@ -232,7 +237,7 @@ def test_editing_food_patches_both_the_primary_and_the_player_data_4_mirror(
     assert patches[mirror.offset] == struct.pack("<f", float(stored + 42))
 
 
-def test_editing_color_patches_the_player_data_3_mirror_too(tmp_path: Path) -> None:
+def test_editing_color_patches_the_player_data_3_mirror_too(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     targets = player_fields.write_targets(loaded)
     primary, mirror = targets["player:color:2"]
@@ -255,7 +260,7 @@ def test_editing_color_patches_the_player_data_3_mirror_too(tmp_path: Path) -> N
 # -- 4. round trip ------------------------------------------------------------
 
 
-def test_a_player_field_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
+def test_a_player_field_edit_reads_back_after_a_reload(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     stored = model.original_value("player:starting_age:4")
@@ -270,7 +275,7 @@ def test_a_player_field_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
     assert players_write_supported(reloaded)
 
 
-def test_a_tribe_name_edit_reads_back_after_a_reload(tmp_path: Path) -> None:
+def test_a_tribe_name_edit_reads_back_after_a_reload(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     model.set_value("player:tribe_name:6", "Mongols")
@@ -306,8 +311,8 @@ def _all_player_values(loaded) -> dict[tuple[str, int], int | str]:
         pytest.param("BRITON-CIV", id="same-length"),  # 10 -> 10, the delta-zero case
     ],
 )
-def test_a_civilization_edit_reads_back_after_a_reload(new_value: str, tmp_path: Path) -> None:
-    """BLANK_TEMPLATE_PATH is 1.58 (str16), so this exercises Step B's
+def test_a_civilization_edit_reads_back_after_a_reload(new_value: str, tmp_path: Path, _loaded) -> None:
+    """Both blank donors are 1.56+ (str16), so this exercises Step B's
     resizing splice, not Step A's plain byte patch. Confirms the edited
     field's new value, that every other field on every player is
     byte-for-byte unaffected, and that players_write_supported() still
@@ -335,7 +340,7 @@ def test_a_civilization_edit_reads_back_after_a_reload(new_value: str, tmp_path:
         assert after[key] == value, f"{key} changed: {value!r} -> {after[key]!r}"
 
 
-def test_civilization_and_architecture_are_independent_in_one_save(tmp_path: Path) -> None:
+def test_civilization_and_architecture_are_independent_in_one_save(tmp_path: Path, _loaded) -> None:
     """Editing P1's civilization must not touch P2's architecture, and vice
     versa -- both fields share player_data_1_splice()'s single combined
     region, so this is the test that would catch them clobbering each
@@ -363,7 +368,7 @@ def test_civilization_and_architecture_are_independent_in_one_save(tmp_path: Pat
 
 
 def test_a_civilization_edit_combined_with_a_messages_and_a_map_options_edit(
-    tmp_path: Path,
+    tmp_path: Path, _loaded
 ) -> None:
     """The case _patch_player_data_1()'s ordering (after _patch_messages())
     exists for: a civ resize plus a Messages edit plus a Map Options scalar
@@ -399,14 +404,14 @@ def test_a_civilization_edit_combined_with_a_messages_and_a_map_options_edit(
 # -- 5. the gates -------------------------------------------------------------
 
 
-def test_set_value_refuses_an_unrecognized_player_field() -> None:
+def test_set_value_refuses_an_unrecognized_player_field(_loaded) -> None:
     model = OptionsEditModel(_loaded())
     with pytest.raises(KeyError):
         model.set_value("player:food:9", 500)  # no player 9
 
 
 def test_the_write_path_re_gates_players_rather_than_trusting_construction(
-    tmp_path: Path,
+    tmp_path: Path, _loaded
 ) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
@@ -422,7 +427,7 @@ def test_the_write_path_re_gates_players_rather_than_trusting_construction(
 
 
 def test_a_players_only_failure_does_not_block_an_unrelated_scalar_save(
-    tmp_path: Path,
+    tmp_path: Path, _loaded
 ) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
@@ -443,7 +448,7 @@ def test_a_players_only_failure_does_not_block_an_unrelated_scalar_save(
 # -- 6. f32 exactness ---------------------------------------------------------
 
 
-def test_set_value_refuses_a_food_value_that_is_not_f32_exact() -> None:
+def test_set_value_refuses_a_food_value_that_is_not_f32_exact(_loaded) -> None:
     """food's mirror (player_data_4.food_duplicate) is f32; an integer above
     2**24 would silently desync the two stored copies."""
     model = OptionsEditModel(_loaded())
@@ -452,7 +457,7 @@ def test_set_value_refuses_a_food_value_that_is_not_f32_exact() -> None:
     model.set_value("player:food:1", 2**24)  # exact, must not raise
 
 
-def test_set_value_refuses_tribe_name_text_that_overflows_its_slot() -> None:
+def test_set_value_refuses_tribe_name_text_that_overflows_its_slot(_loaded) -> None:
     """tribe_name's DataHeader.tribe_names slot is a fixed 256-byte c256;
     text longer than the slot can hold must raise rather than silently
     overflowing into the next field."""
@@ -499,7 +504,7 @@ def _header_count(path: Path) -> int:
     return int.from_bytes(loaded.header_bytes[start:end], "little")
 
 
-def test_player_count_is_settable_and_normalises_back_out_of_pending() -> None:
+def test_player_count_is_settable_and_normalises_back_out_of_pending(_loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     original = model.original_value(player_fields.PLAYER_COUNT_FIELD_ID)
@@ -510,7 +515,7 @@ def test_player_count_is_settable_and_normalises_back_out_of_pending() -> None:
     assert not model.has_player_count_edit and not model.has_edits
 
 
-def test_setting_an_out_of_range_player_count_raises() -> None:
+def test_setting_an_out_of_range_player_count_raises(_loaded) -> None:
     model = OptionsEditModel(_loaded())
     with pytest.raises(ValueError):
         model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 9)
@@ -518,7 +523,7 @@ def test_setting_an_out_of_range_player_count_raises() -> None:
         model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 0)
 
 
-def test_the_player_count_is_absent_when_its_own_gate_fails() -> None:
+def test_the_player_count_is_absent_when_its_own_gate_fails(_loaded) -> None:
     """Independent of players_write_supported(): breaking only the header
     span leaves every per-player row settable and takes just this one
     away."""
@@ -534,7 +539,7 @@ def test_the_player_count_is_absent_when_its_own_gate_fails() -> None:
     assert model.has_player_edits
 
 
-def test_the_player_count_survives_a_per_player_gate_failure() -> None:
+def test_the_player_count_survives_a_per_player_gate_failure(_loaded) -> None:
     """The other direction: a PlayerDataTwo failure takes away the
     per-player rows but not this one, since `active` lives in DataHeader
     and the header count lives outside the body entirely."""
@@ -547,11 +552,11 @@ def test_the_player_count_survives_a_per_player_gate_failure() -> None:
     assert model.has_player_count_edit
 
 
-def test_a_clean_model_emits_no_header_patch() -> None:
+def test_a_clean_model_emits_no_header_patch(_loaded) -> None:
     assert OptionsEditModel(_loaded()).header_patch() is None
 
 
-def test_the_header_patch_is_the_same_width_as_the_field_it_replaces() -> None:
+def test_the_header_patch_is_the_same_width_as_the_field_it_replaces(_loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)
@@ -561,7 +566,7 @@ def test_the_header_patch_is_the_same_width_as_the_field_it_replaces() -> None:
     assert int.from_bytes(payload, "little") == 5
 
 
-def test_one_count_edit_patches_exactly_the_eight_active_flags(tmp_path: Path) -> None:
+def test_one_count_edit_patches_exactly_the_eight_active_flags(tmp_path: Path, _loaded) -> None:
     """Locality, the same shape the mirrored-field tests above use: nothing
     outside the eight `active` spans moves, and GAIA's own slot (index 8)
     is left alone."""
@@ -589,7 +594,7 @@ def test_one_count_edit_patches_exactly_the_eight_active_flags(tmp_path: Path) -
     )
 
 
-def test_a_count_edit_round_trips_through_both_buffers(tmp_path: Path) -> None:
+def test_a_count_edit_round_trips_through_both_buffers(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 6)
@@ -643,7 +648,7 @@ def test_a_count_edit_and_a_str16_civ_edit_in_one_save_both_land(tmp_path: Path)
     assert _header_count(out) == 2
 
 
-def test_a_count_edit_is_refused_when_its_gate_stops_verifying(tmp_path: Path) -> None:
+def test_a_count_edit_is_refused_when_its_gate_stops_verifying(tmp_path: Path, _loaded) -> None:
     """write_scenario()'s own re-gate, matching the Diplomacy/Players ones:
     the model already refused to offer this on a bad file, so reaching here
     means something changed under it."""
@@ -655,7 +660,7 @@ def test_a_count_edit_is_refused_when_its_gate_stops_verifying(tmp_path: Path) -
         write_scenario(loaded, tmp_path / "refused.aoe2scenario", options=model, backup=False)
 
 
-def test_a_count_edit_leaves_the_rest_of_the_header_alone(tmp_path: Path) -> None:
+def test_a_count_edit_leaves_the_rest_of_the_header_alone(tmp_path: Path, _loaded) -> None:
     loaded = _loaded()
     model = OptionsEditModel(loaded)
     model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, 5)

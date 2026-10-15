@@ -854,12 +854,23 @@ def test_the_reach_fallback_sentinel_is_one_named_object() -> None:
 FAR_OAK, BARE_LAYERED = (80, 60), (60, 90)
 
 
-def test_an_erase_flush_over_a_stale_level_still_repaints_its_erased_sprites(art, monkeypatch) -> None:
+class _NoMarks(set):
+    """A stroke's pending_stale_levels that ignores _erase_units()'s mark."""
+
+    def update(self, *_):
+        pass
+
+
+@pytest.mark.parametrize("mark", [True, False], ids=["mark", "no_mark"])
+def test_an_erase_flush_over_a_stale_level_still_repaints_its_erased_sprites(art, monkeypatch, mark) -> None:
     """Two flushes of one Eraser drag, Trees and Terrain Overlay ticked. The
     first is over the splice cap and evicts, which leaves the visible level
-    stale. The second takes one far oak and clears one layer: the unit step
-    has to read the oak's extent before the cleared tile's _apply_dirty()
-    rebuilds that level without it, or the oak stays in its resident chunk."""
+    stale. The second takes one far oak and clears one layer. The oak is
+    erased over that stale level, so _erase_units()'s mark sizes its batch
+    by reach (TASK-318). The `no_mark` case pins the flush's units-first
+    order: tiles first, the cleared tile's _apply_dirty() rebuilds the
+    level without the oak before the unit step reads it, and the oak stays
+    in its resident chunk."""
     monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
     _ratio(monkeypatch, "evict")
     window = _window("Stepped")
@@ -888,12 +899,124 @@ def test_an_erase_flush_over_a_stale_level_still_repaints_its_erased_sprites(art
         window._erase_refresh_timer.stop()
         window._flush_erase_refresh()
         _ratio(monkeypatch, "patch")
+        if not mark:
+            window._erase.pending_stale_levels = _NoMarks()
         window.on_edit_stroke_tiles([BARE_LAYERED, FAR_OAK], 0)
         window._erase_refresh_timer.stop()
+        assert bool(window._erase.pending_stale_levels) == mark
         window._flush_erase_refresh()
         assert mm.terrain[bare].layer == -1 and len(window.scenario.unit_manager.units[0]) == trees - 6
         _check(window, 0, "second flush")
         window.on_edit_stroke_end()
         _check(window, 0, "erase end")
+    finally:
+        conftest.close_window(window)
+
+
+def _stale_erase_window(style: str, monkeypatch, overlay: bool, extra_level: int | None = None):
+    """The flush test's setup up to its first, over-cap flush (TASK-318):
+    trees on STROKE_TILES and FAR_OAK, BARE_LAYERED layered when `overlay`,
+    mip 0 on screen. Leaves an Eraser stroke open with the visible level
+    stale and the patch ratio in force. extra_level is rendered whole before
+    the drag, so it is resident and goes stale too."""
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
+    _ratio(monkeypatch, "evict")
+    window = _window(style)
+    try:
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("draw")
+        window.paint_trees_check.setChecked(True)
+        window.paint_eye_candy_check.setChecked(False)
+        _show_level(window, monkeypatch, 0)
+        _draw(window, FOREST_OAK, STROKE_TILES)
+        _draw(window, FOREST_OAK, [FAR_OAK])
+        if overlay:
+            mm = window.scenario.map_manager
+            bare = BARE_LAYERED[1] * mm.map_width + BARE_LAYERED[0]
+            mm.terrain[bare].layer = FOREST_PALM
+            window._apply_dirty([bare])
+        _check(window, 0, "setup")
+        if extra_level is not None:
+            _level(window, extra_level)
+        window._on_tool_selected("eraser")
+        window.brush_size_spin.setValue(1)
+        targets = ("trees", "overlay") if overlay else ("trees",)
+        for name, action in window.eraser_target_actions.items():
+            action.setChecked(name in targets)
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tiles(STROKE_TILES[:5], 0)
+        window._erase_refresh_timer.stop()
+        window._flush_erase_refresh()
+        _ratio(monkeypatch, "patch")
+        assert not window._cache.is_level_resident(0), "the over-cap flush left the visible level current"
+    except BaseException:
+        conftest.close_window(window)
+        raise
+    return window
+
+
+def _assert_stale_with_oak_resident(window, mip: int) -> None:
+    """The precondition of every route: level `mip` is stale and FAR_OAK's
+    chunks there are still cached, so its rebuild can drop the oak under them."""
+    cache = window._cache
+    assert not cache.is_level_resident(mip), f"level {mip} is current"
+    box = cache._levels[mip].building_bboxes.get(FAR_OAK)
+    assert box is not None, f"level {mip}'s layer has no oak"
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, *box)
+    assert any(cache.has_chunk(mip, cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1)), (
+        f"the oak's chunks at level {mip} were evicted"
+    )
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_erase_then_a_paint_over_a_stale_level_repaints_the_erased_sprite(style, art, monkeypatch) -> None:
+    """TASK-318's paint route: a composite between an erase and its flush
+    rebuilds the stale visible level from the live scenario, so its layer no
+    longer holds the erased oak while the oak's chunk still shows it."""
+    window = _stale_erase_window(style, monkeypatch, overlay=False)
+    try:
+        window.on_edit_stroke_tiles([FAR_OAK], 0)
+        window._erase_refresh_timer.stop()
+        _assert_stale_with_oak_resident(window, 0)
+        _level(window, 0)
+        window._flush_erase_refresh()
+        _check(window, 0, "flush after a paint")
+        window.on_edit_stroke_end()
+        _check(window, 0, "erase end")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_erase_released_with_its_splices_pending_repaints_the_erased_sprite(style, art, monkeypatch) -> None:
+    """TASK-318's release route: the stroke end with the oak's splice still
+    pending and a layer cleared, so the end's tile patch could rebuild the
+    stale visible level before the unit step reads the oak's extent."""
+    window = _stale_erase_window(style, monkeypatch, overlay=True)
+    try:
+        window.on_edit_stroke_tiles([BARE_LAYERED, FAR_OAK], 0)
+        window._erase_refresh_timer.stop()
+        assert window._erase.pending_splices and window._erase.pending_layer_tiles
+        _assert_stale_with_oak_resident(window, 0)
+        window.on_edit_stroke_end()
+        _check(window, 0, "erase end")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_an_erase_then_a_zoom_onto_a_stale_level_repaints_the_erased_sprite(style, art, monkeypatch) -> None:
+    """TASK-318's zoom route: level -1 resident before the drag goes stale
+    with mip 0, becomes the visible level inside the erase-to-flush window,
+    and its paint rebuilds it without the oak."""
+    window = _stale_erase_window(style, monkeypatch, overlay=False, extra_level=-1)
+    try:
+        window.on_edit_stroke_tiles([FAR_OAK], 0)
+        window._erase_refresh_timer.stop()
+        _show_level(window, monkeypatch, -1)
+        _assert_stale_with_oak_resident(window, -1)
+        _level(window, -1)
+        window._flush_erase_refresh()
+        _check(window, -1, "flush after a zoom")
     finally:
         conftest.close_window(window)

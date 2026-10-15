@@ -7,6 +7,8 @@ before close() -- see tests/test_fill_tool.py's module docstring for why.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from descape.scenario_io import BLANK_TEMPLATE_PATH
@@ -310,6 +312,179 @@ def test_layer_target_on_a_file_with_no_layer_field_picks_the_base_terrain() -> 
         window.pick_tile_value(0, 0, 0)
 
         assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- Units mode: the click picks a unit ---------------------------------------
+
+_UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
+_ARCHER_TILE = (20, 20)  # Player 2's archer, reference_id 300
+_ARCHER_KEY = (2, 300)
+_EMPTY_TILE = (60, 60)
+
+
+def _units_window():
+    """The units fixture in Flat Units mode with Eyedropper active, shown so a
+    synthesized press maps through a real viewport."""
+    window = conftest.shown_window()
+    window.load_scenario(_UNITS_FIXTURE)
+    assert window.scenario is not None, "fixture failed to load"
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText("Flat")
+    window.mode_combo.setCurrentText("Units")
+    window.eyedropper_action.setChecked(True)
+    return window
+
+
+def _record_click_callbacks(view) -> dict[str, list]:
+    """Replaces every callback a press could reach with a recorder."""
+    calls: dict[str, list] = {"eyedrop": [], "place": [], "select": [], "edit": [], "stroke": []}
+    view.on_unit_eyedrop = lambda entry, tile, modifiers: calls["eyedrop"].append((entry, tile, modifiers))
+    view._on_unit_place = lambda pos, modifiers: calls["place"].append(pos)
+    view._on_click_select = lambda pos, modifiers: calls["select"].append(pos)
+    view._on_click_edit = lambda x, y, modifiers: calls["edit"].append((x, y))
+    view._on_stroke_start = lambda: calls["stroke"].append("start")
+    return calls
+
+
+def _press(view, viewport_pos, button=None, modifiers=None) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    button = Qt.LeftButton if button is None else button
+    modifiers = Qt.NoModifier if modifiers is None else modifiers
+    view.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, viewport_pos, button, button, modifiers))
+
+
+def test_eyedropper_is_visible_and_selectable_in_units_mode() -> None:
+    from descape import viewer_common
+
+    assert viewer_common.tool_applicable("eyedropper", "units")
+    assert viewer_common.tool_applicable("eyedropper", "terrain")
+    assert not viewer_common.tool_applicable("eyedropper", "view")
+    assert not viewer_common.tool_applicable("eyedropper", "triggers")
+
+    window = conftest.terrain_edit_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        assert window.eyedropper_action.isVisible()
+        assert window.eyedropper_action.isEnabled()
+
+        window.eyedropper_action.setChecked(True)
+        assert window._current_tool == "eyedropper"
+        assert window.map_view._tool == "eyedropper"
+        assert not window.pan_action.isChecked(), "nothing forces the tool back to Pan"
+
+        window.mode_combo.setCurrentText("View")
+        assert window.pan_action.isChecked()
+        assert not window.eyedropper_action.isVisible()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_units_mode_click_picks_a_unit_and_never_places_or_selects() -> None:
+    """The routing trap: Eyedropper is click_only, and the Units branch sends
+    every click_only tool's click to Place Unit."""
+    from PyQt5.QtCore import Qt
+
+    window = _units_window()
+    try:
+        view = window.map_view
+        units_before = sum(len(units) for units in window.scenario.unit_manager.units)
+        calls = _record_click_callbacks(view)
+
+        _press(view, conftest.viewport_pos(view, *_ARCHER_TILE))
+
+        assert calls["place"] == [], "the pick must not place a unit"
+        assert calls["select"] == [] and calls["edit"] == [] and calls["stroke"] == []
+        assert sum(len(units) for units in window.scenario.unit_manager.units) == units_before
+        assert len(calls["eyedrop"]) == 1
+        entry, tile, modifiers = calls["eyedrop"][0]
+        assert (entry.player_id, entry.unit.reference_id) == _ARCHER_KEY
+        assert tile == _ARCHER_TILE
+        assert not modifiers & Qt.ShiftModifier
+
+        _press(view, conftest.viewport_pos(view, *_ARCHER_TILE), modifiers=Qt.ShiftModifier)
+        assert len(calls["eyedrop"]) == 2
+        assert calls["eyedrop"][1][2] & Qt.ShiftModifier, "the handler reads Shift off the click"
+        assert calls["place"] == [] and calls["select"] == []
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_units_mode_right_click_off_map_click_or_empty_ground_picks_nothing() -> None:
+    from PyQt5.QtCore import QPointF, Qt
+
+    window = _units_window()
+    try:
+        view = window.map_view
+        calls = _record_click_callbacks(view)
+
+        _press(view, conftest.viewport_pos(view, *_ARCHER_TILE), button=Qt.RightButton)
+        assert all(not made for made in calls.values()), "a right click does nothing"
+
+        assert view.pick_unit_at(view.mapToScene(conftest.viewport_pos(view, *_EMPTY_TILE).toPoint())) is None
+        _press(view, conftest.viewport_pos(view, *_EMPTY_TILE))
+        assert all(not made for made in calls.values()), "empty ground picks nothing"
+
+        # Nothing can be hit off the canvas, so the pin is that the click is never hit-tested.
+        hit_tests: list = []
+        real_pick = view.pick_unit_cover_at
+        view.pick_unit_cover_at = lambda pos, *args: hit_tests.append(pos) or real_pick(pos, *args)
+        _press(view, conftest.viewport_pos(view, *_ARCHER_TILE))
+        assert len(hit_tests) == 1 and len(calls["eyedrop"]) == 1, "the control: an on-map click is hit-tested"
+        off_map = QPointF(view.mapFromScene(QPointF(-40.0, -40.0)))
+        assert not view._map_rect.contains(view.mapToScene(off_map.toPoint()))
+        _press(view, off_map)
+        assert len(hit_tests) == 1 and len(calls["eyedrop"]) == 1, "a click off the map does nothing"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_terrain_mode_click_still_picks_the_tile() -> None:
+    window = conftest.shown_terrain_window()
+    try:
+        window.eyedropper_action.setChecked(True)
+        view = window.map_view
+        eyedrops: list = []
+        view.on_unit_eyedrop = lambda *args: eyedrops.append(args)
+        tile = window.scenario.map_manager.terrain[0]
+        tile.terrain_id = _PICK_TERRAIN
+        tile.elevation = _PICK_ELEVATION
+
+        _press(view, conftest.polygon_viewport_pos(view, 0, 0))
+
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window.elevation_level_spin.value() == _PICK_ELEVATION
+        assert eyedrops == []
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_eyedropper_shows_its_params_in_terrain_mode_only() -> None:
+    """Level and the Target combo belong to the tile pick. In Units mode the
+    tool reads a unit into the sidebar and has no toolbar param at all."""
+    window = _edit_window()
+    try:
+        assert window.level_param_spin_action.isVisible()
+        assert window.terrain_target_param_action.isVisible()
+
+        window.mode_combo.setCurrentText("Units")
+        window.eyedropper_action.setChecked(True)
+        assert window._current_tool == "eyedropper"
+        assert not window.level_param_spin_action.isVisible()
+        assert not window.elevation_level_spin.isEnabled()
+        assert not window.terrain_target_param_action.isVisible()
+        assert not window.terrain_target_combo.isEnabled()
+        assert not window.tool_param_separator_action.isVisible()
+
+        window.mode_combo.setCurrentText("Terrain")
+        assert window._current_tool == "eyedropper", "applicable in Terrain too, so it stays"
+        assert window.level_param_spin_action.isVisible()
+        assert window.terrain_target_param_action.isVisible()
     finally:
         window.edit_history.mark_saved()
         window.close()

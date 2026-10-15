@@ -38,6 +38,8 @@ _STATES = (
     ("terrain_set_elevation", "Terrain", "set_level"),
     # GH #125's wall button sits on row 2 for every Units-mode tool.
     ("units_pan", "Units", ""),
+    ("units_select", "Units", "select"),
+    ("units_move", "Units", "move"),
     ("units_wall_rect", "Units", "wall_rect"),
 )
 

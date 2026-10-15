@@ -203,6 +203,7 @@ def test_gaia_rows_are_exactly_gaia_fields_and_empty_groups_are_hidden() -> None
         assert set(panel.current_values()) == GAIA_FIELDS
         assert _visible_groups(panel) == ["Identity", "Start"]
         assert panel.set_view_button is None
+        assert panel.centre_view_button is None
         for field_id in ("tribe_name", "personality", "player_type", "base_priority", "initial_view_x"):
             assert panel.widget_for(field_id) is None, field_id
 
@@ -731,6 +732,7 @@ def _pov_panel(loaded, editable: bool = True):
         on_go_to_view=lambda player_id: reported.append(("go", player_id)),
         on_reset_view=lambda player_id: reported.append(("reset", player_id)),
         on_player_selected=lambda player_id: reported.append(("selected", player_id)),
+        on_centre_view=lambda player_id: reported.append(("centre", player_id)),
     )
     panel.show_scenario(
         loaded, editable_fields=[s.field_id for s in specs_for(loaded)] if editable else []
@@ -744,16 +746,64 @@ def _loaded_blank():
     return load_map_and_units(BLANK_FIXTURE)
 
 
-def test_the_point_of_view_group_carries_three_buttons() -> None:
+def _pov_buttons(panel) -> list:
+    """The Point of View buttons in reading order: the 2x2 grid, row by row."""
+    return [
+        panel.set_view_button,
+        panel.centre_view_button,
+        panel.go_to_view_button,
+        panel.reset_view_button,
+    ]
+
+
+def test_the_point_of_view_group_carries_four_buttons() -> None:
     panel, _reported = _pov_panel(_loaded_blank())
     try:
-        labels = [
-            b.text()
-            for b in (panel.set_view_button, panel.go_to_view_button, panel.reset_view_button)
+        assert [b.text() for b in _pov_buttons(panel)] == [
+            "Set View",
+            "Set to Centre",
+            "Go to View",
+            "Reset View",
         ]
-        assert labels == ["Set View", "Go to View", "Reset View"]
         assert panel.set_view_button.isEnabled()
+        assert panel.centre_view_button.isEnabled()
         assert panel.reset_view_button.isEnabled()
+        # The blank fixture is 120x120, so its middle tile is (60, 60).
+        assert "the middle of the map (60, 60)" in panel.centre_view_button.toolTip()
+    finally:
+        panel.deleteLater()
+
+
+def test_the_point_of_view_buttons_sit_in_a_two_by_two_grid() -> None:
+    """Writers that take a position on top, the rest below (GH #157)."""
+    panel, _reported = _pov_panel(_loaded_blank())
+    try:
+        grid = panel.set_view_button.parentWidget().layout()
+        cells = {}
+        for button in _pov_buttons(panel):
+            row, column, _row_span, _column_span = grid.getItemPosition(grid.indexOf(button))
+            cells[button.text()] = (row, column)
+        assert cells == {
+            "Set View": (0, 0),
+            "Set to Centre": (0, 1),
+            "Go to View": (1, 0),
+            "Reset View": (1, 1),
+        }
+    finally:
+        panel.deleteLater()
+
+
+@pytest.mark.font_sensitive
+def test_the_point_of_view_button_grid_fits_min_useful_width() -> None:
+    """Four buttons in one row measured 394 px against a 320 px panel."""
+    from descape.players_panel import PlayersPanel
+
+    panel, _reported = _pov_panel(_loaded_blank())
+    try:
+        row = panel.centre_view_button.parentWidget()
+        assert all(button.parentWidget() is row for button in _pov_buttons(panel))
+        width = row.minimumSizeHint().width()
+        assert 0 < width <= PlayersPanel.MIN_USEFUL_WIDTH, f"the button grid demands {width} px"
     finally:
         panel.deleteLater()
 
@@ -789,6 +839,8 @@ def test_a_read_only_file_still_navigates_but_cannot_write() -> None:
     panel, _reported = _pov_panel(_loaded_blank(), editable=False)
     try:
         assert not panel.set_view_button.isEnabled()
+        assert not panel.centre_view_button.isEnabled()
+        assert "the middle of the map" not in panel.centre_view_button.toolTip()
         assert not panel.reset_view_button.isEnabled()
         # Go to View writes nothing, so a refused write path does not gate it.
         assert not panel.go_to_view_button.isEnabled(), "still unset on this file"
@@ -802,9 +854,11 @@ def test_each_button_reports_the_selected_player() -> None:
         panel.player_combo.setCurrentIndex(5)  # P5, after GAIA's row 0
         assert ("selected", 5) in reported
         panel.set_view_button.click()
+        panel.centre_view_button.click()
         panel.reset_view_button.click()
-        assert [entry for entry in reported if entry[0] in ("set", "reset")] == [
+        assert [entry for entry in reported if entry[0] in ("set", "centre", "reset")] == [
             ("set", 5),
+            ("centre", 5),
             ("reset", 5),
         ]
     finally:
@@ -843,6 +897,7 @@ def test_no_buttons_without_a_point_of_view_group() -> None:
         panel.show_scenario(loaded)
         assert panel.widget_for(player_fields.POV_X_FIELD) is None
         assert panel.set_view_button is None
+        assert panel.centre_view_button is None
         assert panel.go_to_view_button is None
         assert panel.reset_view_button is None
         assert panel.current_view() is None
@@ -938,7 +993,7 @@ def test_a_read_only_pov_row_keeps_its_gate_reason_tooltip() -> None:
 def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
     """The group and its buttons on every real file: absent on the files
     predating initial_player_views (the 1.37 one among them), present with
-    all three buttons everywhere else, the six C2_ElCid 1.41 scenarios
+    all four buttons everywhere else, the six C2_ElCid 1.41 scenarios
     included now that library_compat.fix_structure() frames them."""
     from descape import player_fields
     from descape.players_panel import PlayersPanel
@@ -956,6 +1011,7 @@ def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
             f"{scenario_path.name} (v{loaded.scenario_version}): rows {has_rows}, want {expected}"
         )
         assert (panel.set_view_button is not None) == expected
+        assert (panel.centre_view_button is not None) == expected
         assert (panel.go_to_view_button is not None) == expected
         assert (panel.reset_view_button is not None) == expected
     finally:

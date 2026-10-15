@@ -32,7 +32,7 @@ tests/test_private_api_guard.py needs no new names.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from functools import cache
 from typing import Any
@@ -192,7 +192,10 @@ class FieldSpec:
     is XS, PROSE or "" -- a mode rather than a bool, since the two multi-line
     kinds need different widgets (monospace and un-wrapped vs. proportional
     and wrapping) and different newline handling, while `if spec.multiline:`
-    still reads as "this field is multi-line".
+    still reads as "this field is multi-line". `caption` is a per-type form
+    caption that replaces the name-derived `label` (field_caption()); it is
+    left out of equality and hash, so shared_specs() still shares a field that
+    two types caption differently.
     """
 
     name: str
@@ -204,6 +207,7 @@ class FieldSpec:
     multiline: str = ""
     attribute: str = ""
     tooltip: str = ""
+    caption: str = field(default="", compare=False)
 
     def __post_init__(self) -> None:
         if not self.attribute:
@@ -211,7 +215,7 @@ class FieldSpec:
 
     @property
     def label(self) -> str:
-        return self.name.replace("_", " ")
+        return self.caption or self.name.replace("_", " ")
 
 
 _STRING_TABLE_TOOLTIP = (
@@ -378,6 +382,51 @@ PROSE_FIELDS = frozenset(
     }
 )
 
+# Effect unit fields captioned after the player whose unit they name (GH #212).
+# Keyed on the entry's name, like the two sets above.
+SOURCE_UNIT_CAPTION = "source player unit"
+TARGET_UNIT_CAPTION = "target player unit"
+
+# display_instructions' unit is the instruction panel's icon, not a player's unit.
+_UNIT_CAPTION_EXCLUDED = frozenset({"display_instructions"})
+
+# The one type whose two unit fields belong to two players. Every other
+# two-unit effect acts on one player and keeps both name-derived captions.
+_PAIRED_UNIT_CAPTIONS: Mapping[str, Mapping[str, str]] = {
+    "replace_object": {
+        "object_list_unit_id": SOURCE_UNIT_CAPTION,
+        "object_list_unit_id_2": TARGET_UNIT_CAPTION,
+    }
+}
+
+
+def field_caption(entry: VocabularyEntry, attribute: str) -> str:
+    """The per-type form caption of one (type, field) pair, or "" for the
+    name-derived default.
+
+    A rule rather than a list of type names: the only unit field of a type
+    that lists source_player is that player's unit. It runs for conditions
+    too and is inert there, since no condition lists the field.
+    """
+    paired = _PAIRED_UNIT_CAPTIONS.get(entry.name, {}).get(attribute, "")
+    if paired:
+        return paired
+    if (
+        attribute == "object_list_unit_id"
+        and entry.name not in _UNIT_CAPTION_EXCLUDED
+        and "source_player" in entry.attributes
+        and "object_list_unit_id_2" not in entry.attributes
+    ):
+        return SOURCE_UNIT_CAPTION
+    return ""
+
+
+def field_label(entry: VocabularyEntry | None, attribute: str) -> str:
+    """FieldSpec.label for a caller that holds a field name and not a spec.
+    None (a type the vocabulary does not list) gives the name-derived default."""
+    caption = field_caption(entry, attribute) if entry is not None else ""
+    return caption or attribute.replace("_", " ")
+
 
 def _multiline_mode(entry_name: str, attribute: str, kind: str) -> str:
     """XS, PROSE or "" for one (type, field) pair."""
@@ -422,6 +471,7 @@ def field_specs(
                 read_only=attribute in DISPLAY_ONLY or kind == UNSUPPORTED,
                 multiline=_multiline_mode(entry.name, attribute, kind),
                 attribute=_ATTRIBUTE_ALIASES.get(attribute, attribute),
+                caption=field_caption(entry, attribute),
             )
         )
     return tuple(specs)
@@ -468,12 +518,20 @@ def shared_specs(spec_lists: Sequence[Sequence[FieldSpec]]) -> tuple[FieldSpec, 
     and STR on others, and apply_quantity_cluster_rule() locks different
     cluster fields on two effects of the same type. One widget over two
     fields that only share a name would write the wrong kind of value.
+
+    A caption is not part of that equality, so a field two types caption
+    differently stays shared and takes the neutral name-derived caption.
     """
     lists = [tuple(specs) for specs in spec_lists]
     if not lists:
         return ()
-    others = [set(specs) for specs in lists[1:]]
-    return tuple(spec for spec in lists[0] if all(spec in other for other in others))
+    # Equal specs hash alike whatever their caption, so a dict hands back each list's own instance.
+    others = [{spec: spec for spec in specs} for specs in lists[1:]]
+    return tuple(
+        spec if all(other[spec].caption == spec.caption for other in others) else replace(spec, caption="")
+        for spec in lists[0]
+        if all(spec in other for other in others)
+    )
 
 
 def shared_value(

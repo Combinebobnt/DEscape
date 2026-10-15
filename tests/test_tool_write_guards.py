@@ -28,7 +28,7 @@ def _linked_subscribed_dir(tmp_path: Path) -> tuple[Path, Path]:
     return real, link
 
 
-@pytest.mark.parametrize("tool", ["gen_v159_fixture", "gen_units_fixture", "gen_trigger_fixture"])
+@pytest.mark.parametrize("tool", ["gen_v159_fixture", "gen_units_fixture", "gen_trigger_fixture", "gen_blank_template"])
 def test_a_fixture_generator_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch, tool) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module(tool)

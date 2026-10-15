@@ -667,11 +667,11 @@ POSITION_TRANSFORMS: dict[str, Callable[[float, float, int], tuple[float, float]
 # them -- Resolution 1's "axis-swapping class".
 AXIS_SWAPPING = frozenset({"r", "r3", "d", "a"})
 
-# Wall variant indices, from unit_sprites.wall_variant_from_neighbours: 0 is a
-# run along +-x, 1 a run along +-y. 2 (tower/corner/junction) is fixed by
-# every element, and 3/4 have no mask correspondence at all, so both pass
-# through -- the same measured decision wall_variant_from_neighbours makes by
-# returning None for mask 0.
+# Wall variant indices, from unit_sprites.wall_variant_from_neighbours8: 0 is
+# a run along +-x, 1 along +-y, 3 and 4 the two diagonal runs (NW-SE and
+# NE-SW), and 2 (tower/corner/junction/end) is fixed by every element. A D4
+# element permutes them through wall_index_image(). An angular element only
+# swaps 0 and 1, by nearest axis, and leaves 3 and 4 verbatim.
 _WALL_AXIS_SWAP = {0.0: 1.0, 1.0: 0.0}
 _WALL_ANGLE_COUNT = 5
 
@@ -960,12 +960,63 @@ def _image_on_map(unit_const: int, x: float, y: float, n: int) -> bool:
     return 0 <= low_x <= n - span_x and 0 <= low_y <= n - span_y
 
 
+@cache
+def _wall_index_table(name: str) -> dict[int, int]:
+    """Where D4 element `name` sends each wall index: every 8-neighbour mask
+    pushed through the element's linear part, read before and after by
+    wall_variant_from_neighbours8(). Derived, not hand-typed, and it raises if
+    two masks of one index disagree about its image."""
+    linear = _linear_part(name)
+    bit_at = {(dx, dy): bit for dx, dy, bit in unit_sprites.NEIGHBOUR_OFFSETS}
+    table: dict[int, int] = {}
+    for mask in range(1, 256):
+        index = unit_sprites.wall_variant_from_neighbours8(mask)
+        image_mask = 0
+        for dx, dy, bit in unit_sprites.NEIGHBOUR_OFFSETS:
+            if mask & bit:
+                image_mask |= bit_at[linear(dx, dy)]
+        image = unit_sprites.wall_variant_from_neighbours8(image_mask)
+        if table.setdefault(index, image) != image:
+            raise ValueError(f"wall index {index} has no single image under {name}")
+    return table
+
+
+def wall_index_image(index: float, element: str) -> float:
+    """Where D4 `element` sends a wall's literal shape index (0..4). The axis
+    runs 0 and 1 swap under the axis-swapping four, and the diagonal runs 3
+    and 4 swap under r, r3, mx and my. Index 2 and anything that is not a
+    whole index in 0..4 come back unchanged."""
+    if index not in (0.0, 1.0, 2.0, 3.0, 4.0):
+        return index
+    return float(_wall_index_table(element).get(int(index), int(index)))
+
+
+def walls_are_radian(units) -> bool:
+    """Whether `units` encode their wall shapes as radians rather than literal
+    indices (unit_sprites.file_is_radian() over the wall consts only)."""
+    rotations = [float(u.rotation) for u in units if unit_sprites.rotation_variant_eligible(u.unit_const)]
+    return unit_sprites.file_is_radian(rotations, _WALL_ANGLE_COUNT)
+
+
+def unit_image(unit, x: float, y: float, element: Element, n: int, file_radian: bool):
+    """(const, x, y, rotation) of `unit`'s image under `element` on an n x n
+    lattice, with the position passed in (a RegionUnit stores dx/dy). The
+    gate sibling first, then the position from that sibling's own span, then
+    the rotation: plan_mirror_units()' own order."""
+    new_const = (
+        reorient_gate_const(unit.unit_const, element) if gate_orientation.is_gate(unit.unit_const) else unit.unit_const
+    )
+    image_x, image_y = _image_position(unit.unit_const, x, y, n, element, new_const)
+    return new_const, image_x, image_y, _image_rotation(unit, element, file_radian)
+
+
 def _image_rotation(unit, element: Element, file_radian: bool) -> float:
     """An ANGLE const's facing goes through facing_image(); a wall's stored
-    run-direction index swaps with the axis, in a file that encodes it as a
-    literal index; every other rotation passes through verbatim. Under an
-    angular element "swaps with the axis" is nearest-axis (swaps_axes): a
-    60 or 120 degree turn lands nearer the other axis, 180 does not.
+    shape index goes through wall_index_image() under a D4 element, in a file
+    that encodes it as a literal index; every other rotation passes through
+    verbatim. Under an angular element only the axis runs swap, by nearest
+    axis (swaps_axes): a 60 or 120 degree turn lands nearer the other axis,
+    180 does not.
 
     ANGLE is decided by the const alone (unit_rotation.rotation_is_angle, the
     predicate Rotate uses), never by the player id, so GAIA's variant-index
@@ -981,12 +1032,13 @@ def _image_rotation(unit, element: Element, file_radian: bool) -> float:
     rotation = float(unit.rotation)
     if unit_rotation.rotation_is_angle(unit.unit_const):
         return facing_image(rotation, element, unit_rotation.angle_count_for(unit.unit_const))
-    if not swaps_axes(element) or file_radian:
-        return rotation
-    if not unit_sprites.rotation_variant_eligible(unit.unit_const):
+    if file_radian or not unit_sprites.rotation_variant_eligible(unit.unit_const):
         return rotation
     index = float(unit_sprites.variant_index(rotation, _WALL_ANGLE_COUNT))
-    return _WALL_AXIS_SWAP.get(index, rotation)
+    if isinstance(element, AngularElement):
+        return _WALL_AXIS_SWAP.get(index, rotation) if swaps_axes(element) else rotation
+    image = wall_index_image(index, element)
+    return rotation if image == index else image
 
 
 def _rotated_owner(player: int, player_ids: Sequence[int], steps: int) -> int:
@@ -1070,13 +1122,7 @@ def plan_mirror_units(
             unit for unit in removals if any(id(other) in kept for other in referencing(unit))
         )
 
-    eligible_rotations = [
-        float(unit.rotation)
-        for units in units_by_player
-        for unit in units
-        if unit_sprites.rotation_variant_eligible(unit.unit_const)
-    ]
-    file_radian = unit_sprites.file_is_radian(eligible_rotations, _WALL_ANGLE_COUNT)
+    file_radian = walls_are_radian(unit for units in units_by_player for unit in units)
 
     source_tiles: set[tuple[int, int]] = set()
     for unit in sources:

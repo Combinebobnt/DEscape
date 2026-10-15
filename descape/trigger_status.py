@@ -316,12 +316,19 @@ def _specs_by_name(kind: str, definition: VocabularyEntry, context: StatusContex
     return specs
 
 
+def _token_label(token: str, specs: Mapping[str, FieldSpec]) -> str:
+    """A table token as the form captions it: a field's own label, which a
+    type can caption (GH #212), else the token's name (area, location)."""
+    spec = specs.get(token)
+    return spec.label if spec is not None else _label(token)
+
+
 def _table_reasons(
     kind: str, requirement: Requirement, entry: Any, definition: VocabularyEntry, context: StatusContext
 ) -> list[str]:
     specs = _specs_by_name(kind, definition, context)
     reasons = [
-        f"missing {_label(token)}"
+        f"missing {_token_label(token, specs)}"
         for token in requirement.all
         if _token_state(token, entry, definition, specs, context) is False
     ]
@@ -333,7 +340,7 @@ def _table_reasons(
         if kept:
             groups.append(kept)
     if groups and not any(all(state for _token, state in group) for group in groups):
-        options = " or ".join(" + ".join(_label(token) for token, _state in group) for group in groups)
+        options = " or ".join(" + ".join(_token_label(token, specs) for token, _state in group) for group in groups)
         reasons.append(f"needs {options}")
     return reasons
 

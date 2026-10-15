@@ -26,6 +26,50 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Units mode object list rework** (GH #68, GH #6): Units, Buildings,
+  Heroes and Other buttons, a class filter, and icon, name or grid views
+  (remembered) for the object list. Portraits and thumbnails load without
+  stalling the window, and sprites with no portrait face the viewer.
+- **A card for the picked object** (GH #148): Units mode shows the picked
+  object's portrait, Unit ID and base stats on a card in the inspector while
+  nothing is selected, replacing the side sprite preview and the "Placing:"
+  line. A mixed selection counts its types, Range reads min-max where they
+  differ, and portraits wear the owner's player colour.
+- **Select and Move tools in Units mode** (GH #47): Select (S) picks units
+  by click, Ctrl/Shift-click, repeat clicks on a stack, or a box that can
+  start on top of a unit. Move (V) drags a unit, or the whole selection when
+  you grab a selected one, and shows Off-grid, Free placement and "Moving a
+  gate updates walls".
+- **Rotate and flip a pasted region** (GH #197): Rotate turns a just-pasted
+  region a quarter turn as a block, and Edit > Flip Selection mirrors it
+  left/right or top/bottom on screen. Walls, gates and unit facings turn
+  with it, and the paste plus every turn and move stays one undo step.
+- **Villager (Random)** (GH #164): a Units panel row that places a male or
+  female villager at random, in Place Unit and Scatter.
+- **Mouse wheel keybinds** (GH #172, GH #210): Settings > Keybinds opens
+  with four Mouse Wheel rows (Wheel, Ctrl + Wheel, Shift + Wheel,
+  Alt + Wheel), each a dropdown: Zoom, Brush size or rotate preview, Brush
+  size, Rotate preview, Pan up / down, Pan left / right, or Nothing. A change
+  applies at once, and an action with nothing to act on zooms. To size the
+  brush or turn Place Unit's preview with the plain wheel, set Wheel to
+  "Brush size or rotate preview" and Ctrl + Wheel to "Zoom". Two defaults
+  change: Ctrl + wheel in a brush tool steps the brush size instead of
+  zooming, and Alt + wheel zooms where it did nothing. Any other modifier
+  combination zooms, so Ctrl + Shift + wheel over the preview no longer
+  turns it.
+- **Eyedropper in Units mode**: click a placed unit to make its type, owner
+  and facing or variant the next Place Unit placement. Shift+click copies
+  the type only.
+- **Move a trigger five places, or to the top or bottom** (GH #211):
+  Shift+click on ▲ or ▼ moves the selected triggers five places, and
+  Ctrl+click moves them to the top or bottom of their own section (the whole
+  list in a file with no sections). The right-click menu gains Move Up, Move
+  Down, Move to Top and Move to Bottom. Conditions and effects get the same
+  clicks and menu entries inside their own list. Six shortcuts under
+  Settings > Keybinds > Triggers do it from the keyboard while the trigger
+  list or the condition/effect list has the focus: Alt+Up / Alt+Down (one
+  place), Alt+Shift+Up / Alt+Shift+Down (five), Alt+Home / Alt+End (top,
+  bottom). Each move is one undo step.
 - **Terrain blending** (GH #13): with textures on, each tile blends into
   higher-priority neighbouring terrain through the game's own transition
   masks, each reaching the neighbour fully at their shared edge, and a tile's layered
@@ -33,9 +77,10 @@ content, link the doc instead of summarizing it.
   terrain styles. A first pass, not an exact match for the game. Toggle it
   with View > Layers > Terrain Blending, remembered between launches.
 - **Cliff preview** (GH #128): with the Cliff tool, hovering the map shows
-  the picked piece where a click would place it, and a drag previews the
-  whole run it will lay. The preview clears on release, when the pointer
-  leaves the map, and on a tool switch.
+  what a click would place, centred on the cursor with its footprint
+  highlighted, and a drag previews the whole run it will lay. The preview
+  clears when the pointer leaves the map and on a tool switch, and returns
+  at the cursor after an undo.
 - **Eraser tool** (GH #184): a brush in Terrain and Units mode that deletes
   what is under it, one undo step per drag. Its Targets menu picks Units,
   Buildings, Trees, Terrain Overlay, Invisible Objects and Gaia Objects
@@ -83,8 +128,12 @@ content, link the doc instead of summarizing it.
 - **More player stats in View mode** (GH #145): units and buildings split by
   role, Water/Unique/Heroes rows, and for GAIA the resource piles, animals,
   cliffs, relics and the map's total food/wood/gold/stone.
-- **More UI themes**: Dim, High contrast dark/light, Solarized light/dark,
-  plus per-role custom chrome colours on top of any theme.
+- **More UI themes**: Dim, High contrast dark/light, Solarized light/dark and
+  a Wood and Dark Wood family after the in-game editor (each with red, blue,
+  green or purple buttons and selection), plus per-role custom chrome colours
+  on top of any theme. "Button" colours push buttons only; "Tabs and
+  drop-downs" colours tab pages, tab bars, drop-downs, tool buttons and table
+  headers.
 - **Export / Import theme** in Settings > Appearance: the look settings as a
   `.descape-theme.yaml` file, with a summary of what will change and what
   was skipped before applying.
@@ -93,8 +142,9 @@ content, link the doc instead of summarizing it.
   new ground takes the nearest edge's height, and objects pushed off the
   map (with their garrisons) are deleted after a count. Not undoable. Also
   `batch_api.resize_map()` for scripts.
-- **A Wall button on the Units tool options row** (GH #125): click for the
-  last wall you used, or its arrow for any of the 9 wall-family objects.
+- **A Wall button on the Place Unit and Wall Rectangle options row** (GH
+  #125, GH #190): click for the last wall you used, or its arrow for any of
+  the 9 wall-family objects. Convert and the other Units tools do not show it.
 - `tools/gen_blank_maps.py --sizes` accepts `WxH` and writes non-square
   blank maps with asymmetric terrain markers, for testing non-square
   support in-game.
@@ -208,16 +258,68 @@ content, link the doc instead of summarizing it.
   Capture Flag is disabled with a note on a scenario saved before 1.59,
   which has no such field. Batch scripts get `UnitEditModel.set_status()`
   and `set_capture_flag()`.
+- **Units mode: a "Moving a gate updates walls" option** (GH #194). With it
+  on, a dragged or nudged gate removes the walls under its new position,
+  fills the gap it left with the wall that continues its line, and reshapes
+  the walls beside both sites. A gate with no wall in line leaves a gap.
+- **Find and Replace: Go to** (GH #201): a Go to button on the Objects tab
+  centres the map on the highlighted result row, as a double-click does.
+- **Find and Replace: tick several rows at once** (GH #144): Shift+click or
+  Ctrl+click highlights several result rows on either tab; Space then ticks
+  or unticks them all, following the current row, and the right-click menu
+  has Tick selected and Untick selected.
+- **Map Analysis: Refresh** (GH #209): a Refresh button beside Close re-runs
+  the analysis on the map as it is now, keeping the selected finding, the
+  scroll position and collapsed checks.
+- **Range rings in player colour** (GH #156): View > Range Rings > Colour by
+  Owner draws each selected building's range ring in its owner's player
+  colour; GAIA keeps the Range ring colour from Settings > Appearance. Show
+  Range Rings moved into the new View > Range Rings submenu as Show, and the
+  default ring colour is now dark gray (a config that ever saved an overlay
+  colour keeps its ring colour until that row is reset in Settings >
+  Appearance).
+- **Players mode: Set to Centre** (GH #157) puts a player's starting camera
+  on the map's middle tile.
+- **`tools/regen_game_data.py`**: regenerates every `.dat`-derived
+  `descape/*.json` table together, records what it ran against in
+  `tools/game_data_stamp.json`. `--check` reports whether an install still
+  reproduces the committed tables, `--status` whether the install and the
+  tables still match the stamp.
 
 ### Changed
 
+- **Pan only pans in Units mode** (GH #47): a left-drag scrolls the view,
+  and Pan no longer selects or moves units; use Select and Move. The first
+  Pan click on a unit says so in the status line.
+- **Cliff drags follow the drag direction** (GH #44): a cliff piece's size
+  is which way its face points, so a run drawn toward screen-right (east or
+  south on the map) is front-facing and the same line drawn the other way is
+  back-facing, each one continuous wall. Corners turn in or out to match,
+  including the full-size corners a drag could not lay before.
+- **A Cliff drag started on an existing cliff continues it** (GH #44): press
+  on a cliff's end and drag on, and the run joins it as one wall. The old end
+  piece is reshaped into a straight or a corner where one exists at its size
+  (its frame only, in the same undo step as the run); where the join would
+  need a different-size piece it is left alone and the status line says so.
+- **The Cliff hover sits under the cursor** (GH #44): the ghost and a
+  highlight of the piece's whole footprint are centred on the hovered tile,
+  where the click places it, instead of hanging off to one side. The hover
+  also accounts for cliffs already beside it, so it shows what the click
+  will place.
+- **Effect unit fields say whose unit they are** (GH #212): an effect's unit
+  field reads "source player unit" in place of "object list unit id", and
+  Replace Object's second unit reads "target player unit", on the form, in
+  undo labels and in the status lines.
+- **Wood (red) is the default theme** for a config that names none. Light
+  stays in Settings > Appearance, and a config with the old `dark_mode` key
+  keeps its light or dark look.
 - **Place Unit and unit drags follow the game's placement rules** (GH #176,
   #177, #174): by default a click or a drag-move is refused on terrain the
   object can't stand on or on top of another object, and shore fish and
   docks need a beach beside them; the status line says why. A new **Free
   placement** checkbox lifts those rules and still snaps to the grid. The
   old Free placement checkbox is now **Off-grid** (Alt is still its one-off)
-  and lifts only the grid snap. Both show under Place Unit and under Pan in
+  and lifts only the grid snap. Both show under Place Unit and Move in
   Units mode. Wall runs, arrow nudges, Scatter and paste are not restricted.
 - **`tools/release_render_diff.py` compares against the latest release**
   (now v0.9) instead of v0.6. `--attribute` names the tiles, terrains and
@@ -394,9 +496,21 @@ content, link the doc instead of summarizing it.
   and asks first above 2000 layered tiles.
 - **Paste Region, and moving a pasted region, carry the copied layered
   terrain** instead of dropping it.
+- **Status text follows the theme.** Settings' install path status and Mirror
+  Map's "BLOCKED" summary were a fixed green `#4caf50` and red `#e05252`;
+  they are now shaded to stay readable on every theme, so they read darker
+  on Light and lighter on Dark than in v0.9.
+- **The trigger list starts taller**: the trigger list and the
+  conditions/effects pane below it now start as equal halves, so the list
+  keeps the height the removed button rows freed. Dragging the divider works
+  as before.
 
 ### Fixed
 
+- **Mirror Map gives diagonal walls the right shape** under West ↔ North,
+  West ↔ South, 4-way rotational, 4-way reflective (map axes) and 8-way, in
+  files that store wall shapes as whole numbers. They kept the old diagonal
+  and did not join. Modes 1, 2, 5 and 7 are unchanged.
 - **A selected building's range ring is centred on its footprint** (GH #200).
   A building stored half a tile off its usual grid position, such as a Town
   Center or Castle at `.5`, drew its ring half a tile away from its outline.
@@ -431,11 +545,11 @@ content, link the doc instead of summarizing it.
   and Scatter used to put them half a tile off it, so the game showed them
   shifted. Snapped placement now
   centres them on the cursor. Dragging a misplaced one once fixes it.
-- **Cliff drags connect at corners** (GH #44): a drag picks each piece's
-  size per junction from how real maps join cliffs, so L turns, zig-zags and
-  diagonal staircases draw one continuous wall instead of separate lumps. A
-  plain straight run uses the full-size piece; legs go thin where a corner
-  needs them to.
+- **Cliff drags connect at corners** (GH #44): a drag picks each piece from
+  how real maps join cliffs, so L turns, zig-zags and diagonal staircases
+  draw one continuous wall instead of separate lumps. Which pieces a run
+  uses follows the direction it was drawn in: the full-size rock face one
+  way, the thin ridge the other.
 - **Scenario version 1.41 files no longer misread their Map settings**:
   Point of View reads clean values and now appears on these files, as does
   Lock Co-op Alliances, and Collide & Correcting and Villager Force Drop no
@@ -498,6 +612,14 @@ content, link the doc instead of summarizing it.
   autosave of a file opened through a looped folder.
 - **Triggers: the property form is sized to its fields on entering
   Triggers mode**, instead of starting squeezed until something re-fit it.
+- **Triggers mode: selecting several conditions/effects highlights all of
+  them**, and selecting several triggers draws all their areas and
+  locations, up to 300 shapes (GH #168).
+- **File > New Map** now creates a version 1.59 scenario (it was 1.58), so
+  Capture Flag and the other 1.59-only fields work in a new map. Opening one
+  needs the September 2026 game update or newer. Triggers copied from a 1.58
+  scenario no longer paste into a new map (ones from a 1.59 scenario now
+  do). Maps made earlier stay 1.58 until re-saved in the game.
 
 ## [0.9] - 2026-10-01
 

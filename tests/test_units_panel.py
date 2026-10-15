@@ -26,6 +26,7 @@ from descape.unit_pick import UnitEntry
 from descape.units_panel import _ROTATION_TOOLTIP, UnitsPanel
 
 import conftest
+from conftest import _BUILDING_GREEN, _UNIT_RED, _fake_install
 
 pytestmark = [
     pytest.mark.gui,
@@ -308,35 +309,7 @@ def test_name_and_unit_id_sit_in_the_header_and_the_stats_note_is_a_tooltip() ->
 
 
 # -- GH #148: portrait and stat icons from a fake install ----------------------
-
-_UNIT_RED = (200, 10, 10, 255)
-_BUILDING_GREEN = (10, 200, 10, 255)
-_STAT_ICON_FILES = ("hp", "damage", "armor", "range-armor", "range")
-
-
-def _fake_install(tmp_path):
-    """Archer's unit portrait (017), a Castle portrait in buildings/ (007) and,
-    as a trap, a unit portrait 007 too; plus the five stat icons at 66 px."""
-    from PIL import Image
-
-    ingame = tmp_path / "AoE2DE" / "widgetui" / "textures" / "ingame"
-    for folder in ("units", "buildings", "staticons"):
-        (ingame / folder).mkdir(parents=True)
-    Image.new("RGBA", (32, 32), _UNIT_RED).save(ingame / "units" / "017_50730.DDS", format="DDS")
-    Image.new("RGBA", (32, 32), _UNIT_RED).save(ingame / "units" / "007_50730.DDS", format="DDS")
-    Image.new("RGBA", (32, 32), _BUILDING_GREEN).save(ingame / "buildings" / "007_castle.DDS", format="DDS")
-    for name in _STAT_ICON_FILES:
-        Image.new("RGBA", (66, 66), (30, 60, 90, 255)).save(ingame / "staticons" / f"{name}.png")
-    return tmp_path / "AoE2DE"
-
-
-@pytest.fixture
-def fake_install(tmp_path):
-    from descape import asset_source
-
-    asset_source.set_install_path_override(_fake_install(tmp_path))
-    yield
-    asset_source.set_install_path_override(None)
+# _fake_install and the fake_install fixture live in conftest.py, shared with test_unit_card.py.
 
 
 def _portrait_centre(panel) -> tuple[int, int, int, int]:
@@ -345,9 +318,15 @@ def _portrait_centre(panel) -> tuple[int, int, int, int]:
     return colour.red(), colour.green(), colour.blue(), colour.alpha()
 
 
+def _settle(panel) -> None:
+    """GH #68: portraits arrive from the shared loader's worker, not inside show_unit()."""
+    conftest.settle_thumbs(panel.thumb_loader)
+
+
 def test_an_install_gives_the_archer_its_portrait_and_icon_captions(fake_install) -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    _settle(panel)
     assert panel.portrait_source == "icon"
     assert panel.unit_portrait.isVisibleTo(panel)
     assert _portrait_centre(panel) == _UNIT_RED
@@ -361,6 +340,7 @@ def test_an_install_gives_the_archer_its_portrait_and_icon_captions(fake_install
 def test_a_castle_takes_the_building_portrait_not_unit_007(fake_install) -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=82))
+    _settle(panel)
     assert panel.portrait_source == "icon"
     assert _portrait_centre(panel) == _BUILDING_GREEN
 
@@ -368,9 +348,11 @@ def test_a_castle_takes_the_building_portrait_not_unit_007(fake_install) -> None
 def test_a_group_shows_the_portrait_only_for_one_shared_const(fake_install) -> None:
     panel = _panel()
     panel.show_group([_entry(reference_id=1), _entry(reference_id=2)])
+    _settle(panel)
     assert panel.portrait_source == "icon"
     assert panel.unit_portrait.isVisibleTo(panel)
     panel.show_group([_entry(reference_id=1), _entry(unit_const=_TREE_CONST, reference_id=2)])
+    _settle(panel)
     assert panel.unit_field_labels["name"].text() == "(mixed)"
     assert panel.portrait_source is None
     assert not panel.unit_portrait.isVisibleTo(panel)
@@ -384,11 +366,13 @@ def test_the_icons_follow_an_install_change(tmp_path) -> None:
     asset_source.set_install_path_override(_fake_install(tmp_path))
     try:
         panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+        _settle(panel)
         assert panel.unit_stat_rows["hp"][0].text() == ""
         assert panel.portrait_source == "icon"
     finally:
         asset_source.set_install_path_override(None)
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    _settle(panel)
     assert panel.unit_stat_rows["hp"][0].text() == "Hit points:"
     assert panel.portrait_source != "icon"
 
@@ -443,6 +427,7 @@ def test_the_real_install_gives_an_archer_its_portrait() -> None:
         pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
     panel = _panel()
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    _settle(panel)
     assert panel.portrait_source == "icon"
     assert not panel.unit_portrait.pixmap().isNull()
     assert all(not panel.unit_stat_rows[field_id][0].pixmap().isNull() for field_id in _STAT_CAPTIONS)
@@ -589,7 +574,7 @@ def test_activating_a_row_sets_the_pending_const_and_requests_placement() -> Non
     received = []
     panel = _panel(on_place_requested=received.append)
     panel.catalog_view.select(4)
-    panel.catalog_view.tree.itemActivated.emit(panel.catalog_view.tree.currentItem(), 0)
+    panel.catalog_view.list.itemActivated.emit(panel.catalog_view.list.currentItem())
     assert panel.selected_object_const() == 4
     assert received == [4]
 
@@ -597,16 +582,412 @@ def test_activating_a_row_sets_the_pending_const_and_requests_placement() -> Non
 def test_on_place_requested_default_is_a_no_op() -> None:
     panel = _panel()
     panel.catalog_view.select(4)
-    panel.catalog_view.tree.itemActivated.emit(panel.catalog_view.tree.currentItem(), 0)  # must not raise
+    panel.catalog_view.list.itemActivated.emit(panel.catalog_view.list.currentItem())  # must not raise
 
 
 def test_catalog_tree_uses_click_focus() -> None:
     """MapView's arrow-key unit nudge only fires while MapView itself has
-    focus -- an always-visible 1000+ row tree defaulting to Qt's normal
-    focus policy would silently steal it. See units_panel.py's own
-    _build_catalog_pane docstring."""
+    focus -- an always-visible list of hundreds of rows defaulting to Qt's
+    normal focus policy would silently steal it. See units_panel.py's own
+    _build_catalog_pane comment."""
     panel = _panel()
-    assert panel.catalog_view.tree.focusPolicy() == Qt.ClickFocus
+    assert panel.catalog_view.list.focusPolicy() == Qt.ClickFocus
+
+
+def test_a_category_switch_leaves_the_pending_object_alone() -> None:
+    """GH #68: categories, classes and the filter only browse; the pick is sticky."""
+    changed = []
+    panel = _panel(on_pending_changed=lambda: changed.append(True))
+    panel.select_object(_ARCHER_CONST)
+    changed.clear()
+    panel.catalog_view.category_buttons["Buildings"].click()
+    panel.catalog_view.class_combo.setCurrentIndex(1)
+    panel.catalog_view.display_buttons["names"].click()
+    assert panel.selected_object_const() == _ARCHER_CONST
+    assert panel.placing_card.const_label.text() == str(_ARCHER_CONST)
+    assert changed == []
+
+
+# --- GH #164: Villager (Random) ---------------------------------------------
+
+
+def _visible_catalog_values(panel) -> list[int]:
+    view = panel.catalog_view.list
+    return [view.item(i).data(Qt.UserRole) for i in range(view.count()) if not view.item(i).isHidden()]
+
+
+def _random_panel(seed=164, **kwargs):
+    import random
+
+    from descape.place_random import RANDOM_VILLAGER
+
+    panel = _panel(rng=random.Random(seed), **kwargs)
+    panel.catalog_view.filter_edit.setText("villager")
+    panel.catalog_view.select(RANDOM_VILLAGER)
+    return panel
+
+
+def test_filtering_villager_shows_the_random_row_beside_both_villagers() -> None:
+    from descape.place_random import RANDOM_VILLAGER
+
+    panel = _panel()
+    panel.catalog_view.filter_edit.setText("villager")
+    assert sorted(_visible_catalog_values(panel)) == sorted([83, 293, RANDOM_VILLAGER])
+
+
+def test_picking_villager_random_places_a_real_villager() -> None:
+    from descape.place_random import RANDOM_VILLAGER
+
+    panel = _random_panel()
+    assert panel.catalog_view.current_value() == RANDOM_VILLAGER
+    assert panel.selected_object_const() in (83, 293)
+    assert panel.placing_label.text() == "Placing: Villager (Random)"
+    assert panel.selected_object_label() == "Villager (Random)"
+    assert panel.selected_object_choices() == (83, 293)
+
+
+def test_reroll_pending_rolls_both_villagers_and_refreshes_the_ghost() -> None:
+    changed = []
+    panel = _random_panel(on_pending_changed=lambda: changed.append(True))
+    changed.clear()
+    rolled = set()
+    for _ in range(20):
+        panel.reroll_pending()
+        rolled.add(panel.selected_object_const())
+    assert rolled == {83, 293}
+    assert len(changed) == 20
+    assert panel.placing_label.text() == "Placing: Villager (Random)"
+
+
+def test_reroll_pending_is_a_no_op_for_a_real_pick() -> None:
+    changed = []
+    panel = _panel(on_pending_changed=lambda: changed.append(True))
+    panel.select_object(4)
+    changed.clear()
+    panel.reroll_pending()
+    assert panel.selected_object_const() == 4
+    assert changed == []
+    assert panel.selected_object_choices() == (4,)
+
+
+def test_a_real_pick_leaves_random_mode() -> None:
+    panel = _random_panel()
+    assert panel.pick_object(83)
+    assert panel.selected_object_const() == 83
+    assert panel.selected_object_choices() == (83,)
+    for _ in range(10):
+        panel.reroll_pending()
+        assert panel.selected_object_const() == 83
+    assert panel.placing_label.text() != "Placing: Villager (Random)"
+
+
+def test_nothing_picked_has_no_choices_or_label() -> None:
+    panel = _panel()
+    assert panel.selected_object_choices() is None
+    assert panel.selected_object_label() is None
+
+
+def test_the_placing_card_shows_villager_random_as_the_male_villager() -> None:
+    """GH #164 + TASK-337: the card names the pick and shows its preview
+    const's stats, not the roll; Unit ID lists both consts the next placement
+    may be (orchestrator ruling, 2026-10-14)."""
+    panel = _random_panel()
+    card = panel.placing_card
+    assert card.name_label.text() == "Placing: Villager (Random)"
+    assert card.const_label.text() == "83 / 293 (random)"
+    assert _shown_stats(card)["hp"] == "25"
+    assert card.minimumSizeHint().width() <= UnitsPanel.MIN_USEFUL_WIDTH
+    for _ in range(6):
+        panel.reroll_pending()
+        assert card.const_label.text() == "83 / 293 (random)"
+        assert _shown_stats(card)["hp"] == "25"
+
+
+# --- TASK-337: the placing card ------------------------------------------------
+
+
+def _shown_stats(card) -> dict[str, str]:
+    return {
+        field_id: value.text()
+        for field_id, (caption, value) in card.stat_rows.items()
+        if caption.isVisibleTo(card) and value.isVisibleTo(card)
+    }
+
+
+def _longest_entry():
+    from descape import object_catalog
+
+    return max((entry for entry in object_catalog.objects() if not entry.hidden), key=lambda entry: len(entry.name))
+
+
+def test_the_catalog_has_no_side_preview() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    assert getattr(panel.catalog_view, "preview", None) is None
+    assert panel.placing_card.isAncestorOf(panel.placing_label)
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 800)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        view = panel.catalog_view.list
+        right = view.mapTo(panel, view.rect().topRight()).x()
+        assert right == panel.width() - 1, "the list's right edge is the pane's"
+    finally:
+        panel.close()
+
+
+def test_picking_a_row_fills_the_placing_card() -> None:
+    panel = _panel()
+    panel.catalog_view.select(_ARCHER_CONST)
+    card = panel.placing_card
+    assert card.const_label.text() == str(_ARCHER_CONST)
+    assert _shown_stats(card) == {"hp": "30", "attack": "4", "melee_armour": "0", "pierce_armour": "0", "range": "4"}
+
+
+def test_a_filter_that_hides_the_pending_row_leaves_the_card_on_it() -> None:
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    text = panel.placing_label.text()
+    panel.catalog_view.filter_edit.setText("this matches nothing at all")
+    assert panel.placing_label.text() == text
+    assert panel.placing_card.const_label.text() == str(_ARCHER_CONST)
+
+
+def test_the_pick_and_the_map_selection_each_show_on_their_own_card() -> None:
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    panel.show_unit(_entry(unit_const=82))  # Castle
+    assert panel.placing_card.const_label.text() == str(_ARCHER_CONST)
+    assert panel.selection_card.const_label.text() == "82"
+    assert _shown_stats(panel.selection_card)["hp"] == "4800"
+    panel.show_unit(None)
+    assert panel.placing_card.const_label.text() == str(_ARCHER_CONST)
+    assert _shown_stats(panel.placing_card)["hp"] == "30"
+
+
+def test_the_two_cards_share_one_slot_in_the_inspector() -> None:
+    """A selection shows over the pick; the pick shows again once nothing is selected."""
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    assert panel.inspector_host.isAncestorOf(panel.placing_card)
+    assert panel.placing_card.isVisibleTo(panel)
+    assert not panel.selection_card.isVisibleTo(panel)
+    panel.show_unit(_entry(unit_const=82))
+    assert panel.selection_card.isVisibleTo(panel)
+    assert not panel.placing_card.isVisibleTo(panel)
+    panel.show_group([_entry(unit_const=82), _entry(unit_const=_ARCHER_CONST, reference_id=102)])
+    assert not panel.placing_card.isVisibleTo(panel)
+    panel.show_selection_count(0)
+    assert panel.placing_card.isVisibleTo(panel)
+    assert not panel.selection_card.isVisibleTo(panel)
+
+
+def _holed_install(tmp_path):
+    """The fake install, with the Archer's portrait opaque black but for a
+    transparent centre: DE leaves the player-colour region that way."""
+    from PIL import Image
+
+    root = _fake_install(tmp_path)
+    image = Image.new("RGBA", (32, 32), (0, 0, 0, 255))
+    image.paste((0, 0, 0, 0), (8, 8, 24, 24))
+    image.save(root / "widgetui" / "textures" / "ingame" / "units" / "017_50730.DDS", format="DDS")
+    return root
+
+
+def _centre(pixmap) -> tuple[int, int, int]:
+    image = pixmap.toImage()
+    colour = image.pixelColor(image.width() // 2, image.height() // 2)
+    return colour.red(), colour.green(), colour.blue()
+
+
+def test_portraits_fill_the_player_colour_region_with_the_owners_colour(tmp_path, monkeypatch) -> None:
+    from descape import asset_source
+    from descape.terrain_palette import PLAYER_COLORS
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.set_install_path_override(_holed_install(tmp_path))
+    try:
+        panel = _panel()
+        panel.select_object(_ARCHER_CONST)
+        _settle(panel)
+        assert panel.placing_card.portrait_source == "icon"
+        assert _centre(panel.placing_card.portrait.pixmap()) == PLAYER_COLORS[1]  # the Owner combo's default
+        panel.select_owner(2)
+        assert _centre(panel.placing_card.portrait.pixmap()) == PLAYER_COLORS[2]
+        colors = list(PLAYER_COLORS)
+        colors[2] = (10, 20, 30)
+        from descape import player_labels
+
+        panel.refresh_player_labels(player_labels.DEFAULT_LABELS, colors)
+        assert _centre(panel.placing_card.portrait.pixmap()) == (10, 20, 30), "the scenario's own colour"
+        panel.show_unit(_entry(player_id=3, unit_const=_ARCHER_CONST))
+        _settle(panel)
+        assert _centre(panel.unit_portrait.pixmap()) == colors[3]
+        panel.show_group([_entry(player_id=3), _entry(player_id=4, reference_id=102)])
+        assert _centre(panel.unit_portrait.pixmap()) == colors[GAIA_PLAYER_ID], "mixed owners: neutral"
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+def test_catalog_rows_fill_the_player_colour_region_with_the_owners_colour(tmp_path, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import asset_source, settings
+    from descape.terrain_palette import PLAYER_COLORS
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_units_catalog_mode", lambda: "icons")
+    asset_source.set_install_path_override(_holed_install(tmp_path))
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 800)
+    panel.show()
+    try:
+        panel.select_object(_ARCHER_CONST)
+        QApplication.processEvents()
+        _settle(panel)
+        view = panel.catalog_view
+        px = view.list.iconSize().width()
+
+        def row_centre():
+            return _centre(view._items[_ARCHER_CONST].icon().pixmap(px, px))
+
+        assert row_centre() == PLAYER_COLORS[1]
+        panel.select_owner(5)
+        assert row_centre() == PLAYER_COLORS[5]
+    finally:
+        panel.close()
+        asset_source.set_install_path_override(None)
+
+
+@pytest.mark.font_sensitive
+@pytest.mark.parametrize("with_install", [False, True])
+def test_the_placing_card_fits_the_floor(with_install, tmp_path, monkeypatch) -> None:
+    """With the longest name picked: the name elides, so it cannot widen the card."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.set_install_path_override(_fake_install(tmp_path) if with_install else None)
+    try:
+        panel = _panel()
+        longest = _longest_entry()
+        panel.select_object(longest.id)
+        assert panel.placing_label.text() == f"Placing: {longest.name}"
+        width = panel.placing_card.minimumSizeHint().width()
+        assert width <= UnitsPanel.MIN_USEFUL_WIDTH, f"placing card demands {width} px"
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+def test_refresh_thumbnails_reaches_both_cards(tmp_path) -> None:
+    from descape import asset_source
+
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    _settle(panel)
+    asset_source.set_install_path_override(_fake_install(tmp_path))
+    try:
+        panel.refresh_thumbnails()
+        _settle(panel)
+        for card in (panel.placing_card, panel.selection_card):
+            assert card.stat_rows["hp"][0].text() == ""
+            assert card.portrait_source == "icon"
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+def test_the_catalog_list_keeps_its_geometry_across_picks() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 800)
+    panel.show()
+    try:
+        geometries = {}
+        for const in (_ARCHER_CONST, _TREE_CONST, _longest_entry().id):
+            panel.select_object(const)
+            QApplication.processEvents()
+            QApplication.processEvents()
+            tree = panel.catalog_view.list
+            origin = tree.mapTo(panel, tree.rect().topLeft())
+            geometries[const] = (
+                tree.geometry().getRect(), (origin.x(), origin.y()), panel.placing_card.geometry().getRect()
+            )
+        assert len(set(geometries.values())) == 1, geometries
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("case", ["select_while_hidden", "scroll_after_the_pick"])
+def test_the_placing_cards_portrait_is_decoded_before_the_lists_viewport(case, fake_install, monkeypatch) -> None:
+    """The list asks for its viewport after the card asked: on a hidden pane
+    select()'s scrollToItem does (a shown list scrolls before the card asks),
+    and so does any scroll after a pick. The card is still served first."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import catalog_thumbs, object_catalog, unit_card
+
+    executor = conftest.ManualExecutor()
+    monkeypatch.setattr(catalog_thumbs, "_thumb_pool", lambda: executor)
+    town_center = 109  # far down Buildings, so select() scrolls the list
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 700)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        if case == "select_while_hidden":
+            panel.hide()
+        panel.select_object(town_center)
+        bar = panel.catalog_view.list.verticalScrollBar()
+        if case == "scroll_after_the_pick":
+            bar.setValue(bar.value() - bar.pageStep())
+        QApplication.processEvents()
+        assert bar.value() > 0, "the list scrolled, or this proves nothing"
+        for index, (_fn, _args, future) in enumerate(executor.submitted):
+            if not future.done():
+                executor.run(index)  # the one decode in flight before the card asked
+        served = len(executor.submitted)
+        deadline = 100
+        while len(executor.submitted) == served and deadline:
+            QApplication.processEvents()
+            deadline -= 1
+        _fn, (_install, icon, _building, px), _future = executor.submitted[served]
+        assert (icon, px) == (object_catalog.icon_for(town_center), unit_card.PORTRAIT_PX)
+    finally:
+        panel.close()
+
+
+def test_the_panel_stays_under_the_trigger_panels_minimum_height() -> None:
+    """The left stack's minimum is the tallest page's: the placing card must not make this page that one."""
+    from descape.trigger_panel import TriggerPanel
+
+    panel = _panel()
+    height = panel.minimumSizeHint().height()
+    assert height < TriggerPanel().minimumSizeHint().height()
+
+
+def test_the_placing_card_costs_the_catalog_pane_no_height() -> None:
+    """It shares the inspector's scrolled slot with the selection card (measured 348 px -> 231 px)."""
+    panel = _panel()
+    catalog_pane = panel.splitter.widget(0)
+    assert not catalog_pane.isAncestorOf(panel.placing_card)
+    assert panel.inspector_area.isAncestorOf(panel.placing_card)
+
+
+@pytest.mark.corpus
+def test_the_real_install_fills_the_placing_card_for_brasidas() -> None:
+    from descape import asset_source
+
+    if asset_source.get_install_path() is None:
+        pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    panel = _panel()
+    panel.select_object(2317)
+    card = panel.placing_card
+    assert _shown_stats(card)["hp"] == "500"
+    _settle(panel)
+    assert card.portrait_source == "icon"
+    assert not card.portrait.pixmap().isNull()
 
 
 # --- GH #71: group mode ------------------------------------------------------
@@ -645,7 +1026,8 @@ def test_show_group_marks_disagreeing_fields_mixed() -> None:
         ]
     )
     assert panel.unit_field_labels["name"].text() == "(mixed)"
-    assert panel.unit_field_labels["unit_const"].text() == "(mixed)"
+    # GH #68: the Unit ID row counts the types (two here: archer and tree).
+    assert panel.unit_field_labels["unit_const"].text() == "(mixed: 2 types)"
     assert panel.unit_field_editors["x"].text() == "(mixed)"
     combo = panel.unit_field_editors["player"]
     assert combo.currentText() == "(mixed)"
@@ -1455,3 +1837,50 @@ def test_pick_object_refuses_an_unknown_const() -> None:
     panel.select_object(4)
     assert not panel.pick_object(-12345)
     assert panel.selected_object_const() == 4
+
+
+def test_a_refused_pick_object_keeps_the_filter_and_the_hidden_box() -> None:
+    """TASK-356: the refusal cleared the filter while the status line said "unchanged"."""
+    panel = _panel()
+    panel.catalog_view.filter_edit.setText("wall")
+    panel.select_object(72)
+    assert not panel.pick_object(-12345)
+    assert panel.catalog_view.filter_edit.text() == "wall"
+    assert not panel.catalog_view.show_hidden_checkbox.isChecked()
+    assert panel.selected_object_const() == 72
+
+
+_EDITOR_HIDDEN_CONST = 118  # Builder: in the catalog, hidden from the in-game editor
+
+
+def test_pick_object_ticks_show_hidden_for_an_editor_hidden_const() -> None:
+    from descape import object_catalog
+
+    entry = object_catalog.entry(object_catalog.objects(), _EDITOR_HIDDEN_CONST)
+    assert entry is not None and entry.hidden, "the premise: a catalog row the box hides"
+    panel = _panel()
+    panel.select_object(4)
+    box = panel.catalog_view.show_hidden_checkbox
+    assert not box.isChecked()
+
+    assert panel.pick_object(_EDITOR_HIDDEN_CONST)
+
+    assert box.isChecked()
+    assert panel.selected_object_const() == _EDITOR_HIDDEN_CONST
+    assert panel.catalog_view.current_value() == _EDITOR_HIDDEN_CONST
+
+
+def test_select_object_now_ticks_show_hidden_itself() -> None:
+    """GH #68's select() contract: the browser shows hidden rows for a hidden
+    const, where ValuePickerView's select() could not land on one."""
+    panel = _panel()
+    panel.select_object(4)
+    panel.select_object(_EDITOR_HIDDEN_CONST)
+    assert panel.catalog_view.show_hidden_checkbox.isChecked()
+    assert panel.selected_object_const() == _EDITOR_HIDDEN_CONST
+
+
+def test_pick_object_leaves_show_hidden_alone_for_an_ordinary_const() -> None:
+    panel = _panel()
+    assert panel.pick_object(117)
+    assert not panel.catalog_view.show_hidden_checkbox.isChecked()

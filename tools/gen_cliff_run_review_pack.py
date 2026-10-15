@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Review pack for the Cliff tool's chain drag (TASK-113, GH #44): does a run
-the tool lays read as one continuous wall, and does each end piece match the
-wall it ends.
+"""Review pack for the Cliff tool's chain drag (GH #44): does a run the tool
+lays read as one continuous wall, does it keep one facing from end to end,
+and does a run continued off an existing cliff join it without a bump.
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
 its own script like tools/gen_blocker_review_pack.py. The runs come from
@@ -9,10 +9,20 @@ its own script like tools/gen_blocker_review_pack.py. The runs come from
 off-engine through the app's Stepped chunk cache with sprites on, on flat
 grass. Needs a configured AoE2:DE install for the cliff art and terrain.
 
+Six scenes: a straight drawn east (front-facing) and one drawn west
+(back-facing), one L drawn south then east and the same L drawn back (west
+then north), a run anchored on the end of an existing run, and a lone piece
+as the frame where no join exists to judge.
+
+Two injects. `wrong-side-leg` dresses every edge after a run's first turn for
+the other side, so one leg of an L is the rock face and the other the low
+ridge. `unrewritten-cap` leaves an existing end cap on its cap frame when a
+run joins it, so the old end still shows inside the wall.
+
 Run:
     tools/gen_cliff_run_review_pack.py --out-dir /tmp/somewhere
     tools/gen_cliff_run_review_pack.py --replica 1
-    tools/gen_cliff_run_review_pack.py --inject one-suffix
+    tools/gen_cliff_run_review_pack.py --inject wrong-side-leg
     tools/gen_cliff_run_review_pack.py --check      # writes nothing
 
 Writes <out-dir>/<pack id>/<opaque token>/ (default build/review_pack/, gitignored).
@@ -23,6 +33,7 @@ from __future__ import annotations
 import argparse
 import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,40 +55,74 @@ PICKED = 264  # Cliff (Default) 01, the picker's default piece
 PICKED_FRAME = 3
 GRASS = 0
 N, S, W, E = (0, -1), (0, 1), (-1, 0), (1, 0)
+_CARDINALS = (N, S, W, E)
 
-# frame id -> (press tile, steps, cursor tiles); steps None means a drag over the cursor tiles.
+
+@dataclass(frozen=True)
+class _Scene:
+    """One frame's strokes: `before` (press, steps) lays the cliffs already on
+    the map, then `press` and `steps` are the run under review."""
+
+    press: tuple[int, int]
+    steps: tuple
+    before: tuple | None = None
+
+
 _RUNS = {
-    "run_a": ((60, 56), [S, S, E, E], None),
-    "run_b": ((58, 56), [S, S, E, E, N, N], None),
-    "run_c": (None, None, [(56, 56), (65, 65)]),
-    "run_d": ((62, 60), [], None),
+    "run_a": _Scene((54, 60), (E, E, E, E)),
+    "run_b": _Scene((66, 60), (W, W, W, W)),
+    "run_c": _Scene((58, 56), (S, S, E, E)),
+    "run_d": _Scene((64, 62), (W, W, N, N)),
+    # A press on the south end of a three-piece run, continued in line.
+    "run_e": _Scene((61, 61), (S, S), before=((61, 55), (S, S))),
+    "run_f": _Scene((62, 60), ()),
 }
+_STRAIGHTS = ("run_a", "run_b")
+_TURNS = ("run_c", "run_d")
+_JOIN = "run_e"
+_LONE = "run_f"
 _PAD_PX = 20
 
 
-def _nodes(frame_id: str) -> list[cliff_chain.ChainNode]:
-    press, steps, cursor = _RUNS[frame_id]
+@dataclass(frozen=True)
+class _Cliff:
+    unit_const: int
+    rotation: int
+    x: float
+    y: float
+    bounds: tuple[int, int, int, int]
+
+
+def _stroke(existing, press, steps) -> cliff_chain.ChainStroke:
     stroke = cliff_chain.ChainStroke(
-        map_width=120, map_height=120, existing=[], fallback_const=PICKED, fallback_frame=PICKED_FRAME
+        map_width=120, map_height=120, existing=existing, fallback_const=PICKED, fallback_frame=PICKED_FRAME
     )
-    if cursor is None:
-        stroke.set_path(press, steps)
-    else:
-        for tile in cursor:
-            stroke.add_cursor_tile(*tile)
-    return stroke.nodes()
+    stroke.set_path(press, list(steps))
+    return stroke
 
 
-def _scenario(nodes):
+def _cliffs(frame_id: str) -> list[_Cliff]:
+    """Every cliff in the scene once its strokes are released: the earlier
+    run, with the frames the reviewed run's joins give it, then that run."""
+    scene = _RUNS[frame_id]
+    first = _stroke([], *scene.before).nodes() if scene.before else []
+    existing = [cliff_chain.ExistingCliff(n.unit_const, n.bounds, rotation=n.rotation) for n in first]
+    stroke = _stroke(existing, scene.press, scene.steps)
+    reshaped = {r.existing_index: r.rotation for r in stroke.rewrites()}
+    out = [_Cliff(n.unit_const, reshaped.get(i, n.rotation), n.x, n.y, n.bounds) for i, n in enumerate(first)]
+    return out + [_Cliff(n.unit_const, n.rotation, n.x, n.y, n.bounds) for n in stroke.nodes()]
+
+
+def _scenario(cliffs):
     base = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     for tile in base.map_manager.terrain:
         tile.elevation = 0
         tile.terrain_id = GRASS
     units = [[] for _ in base.unit_manager.units]
-    for i, node in enumerate(nodes):
+    for i, cliff in enumerate(cliffs):
         units[0].append(SimpleNamespace(
-            unit_const=node.unit_const, x=node.x, y=node.y, z=0.0, rotation=float(node.rotation),
-            initial_animation_frame=node.rotation, reference_id=7400 + i, status=2, garrisoned_in_id=-1,
+            unit_const=cliff.unit_const, x=cliff.x, y=cliff.y, z=0.0, rotation=float(cliff.rotation),
+            initial_animation_frame=cliff.rotation, reference_id=7400 + i, status=2, garrisoned_in_id=-1,
         ))
     return SimpleNamespace(
         map_manager=base.map_manager,
@@ -96,7 +141,7 @@ def _cache(scn):
 
 
 def _full(frame_id: str, box) -> np.ndarray:
-    return _cache(_scenario(_nodes(frame_id)))._composite_rect(0, *box).copy()
+    return _cache(_scenario(_cliffs(frame_id)))._composite_rect(0, *box).copy()
 
 
 def _search_box(frame_id: str):
@@ -106,8 +151,8 @@ def _search_box(frame_id: str):
     tiles = []
     for inject in (None, *INJECTS):
         with _patched(inject):
-            for node in _nodes(frame_id):
-                x0, x1, y0, y1 = node.bounds
+            for cliff in _cliffs(frame_id):
+                x0, x1, y0, y1 = cliff.bounds
                 tiles += [(x, y) for x in range(x0 - 2, x1 + 2) for y in range(y0 - 2, y1 + 2)]
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, tiles, 0)
     return max(0, x0), max(0, y0 - 6 * proj.half_h), x1, y1
@@ -133,44 +178,36 @@ def _boxes() -> dict[str, tuple[int, int, int, int]]:
 # ----------------------------------------------------------------- injects
 
 
-class _Tables(cliff_connectivity.ChainTables):
-    """The measured tables with each node's candidates narrowed by `pick`."""
+def _inject_wrong_side_leg():
+    """Coarse: every edge after a run's first turn is typed for the other
+    side, so the second leg's pieces are the wrong size for the first leg's
+    facing. The corner then has one leg of each type on arms no piece has,
+    and keeps the picked piece and frame. A straight has no turn to reach."""
+    real = cliff_chain._path_arms
 
-    def __init__(self, data, pick) -> None:
-        super().__init__(data)
-        self._pick = pick
+    def path_arms(steps, side):
+        turn = next((i for i in range(1, len(steps)) if steps[i] != steps[0]), len(steps))
+        arms = real(steps, side)
+        flipped = real(steps, -side)
+        for i in range(turn, len(steps)):
+            arms[i][steps[i]] = flipped[i][steps[i]]
+            back = (-steps[i][0], -steps[i][1])
+            arms[i + 1][back] = flipped[i + 1][back]
+        return arms
 
-    def candidates(self, dirset, allowed):
-        real = super().candidates(dirset, allowed)
-        return self._pick(self, dirset, real)
-
-
-def _tables_patch(pick):
-    data = cliff_connectivity._data()
-    return [(cliff_connectivity, "chain_tables", lambda: _Tables(data, pick))]
-
-
-def _inject_one_suffix():
-    """Coarse: one piece size for the whole stroke, the picked 01 (3x3) at
-    every node, the resolver this walk replaced. A node whose shape has no
-    01 row keeps the picked piece and frame."""
-    return _tables_patch(lambda _t, _d, real: [1])
+    return [(cliff_chain, "_path_arms", path_arms)]
 
 
-def _inject_majority():
-    """Each node on its own commonest suffix for its shape, ignoring its
-    neighbours (the 2026-09-20 replan whose gate failed)."""
-
-    def pick(t, dirset, real):
-        if not real:
-            return real
-        return [max(real, key=lambda s: (t.node_n.get((dirset, s), 0), -s))]
-
-    return _tables_patch(pick)
+def _inject_unrewritten_cap():
+    """Localized: a join reshapes nothing, so an existing end cap the run
+    continues stays on its end-cap frame inside the wall. One piece's frame,
+    and only where a scene has a cliff on the map before the run."""
+    return [(cliff_chain.ChainStroke, "rewrites", lambda _self: [])]
 
 
-INJECTS = {"one-suffix": _inject_one_suffix, "per-node-majority": _inject_majority}
-COARSE_INJECT = "one-suffix"
+INJECTS = {"wrong-side-leg": _inject_wrong_side_leg, "unrewritten-cap": _inject_unrewritten_cap}
+COARSE_INJECT = "wrong-side-leg"
+LOCALIZED_INJECT = "unrewritten-cap"
 
 
 @contextmanager
@@ -192,12 +229,8 @@ def _patched(inject: str | None):
 
 
 def _spec() -> rp.PackSpec:
-    frames = (
-        rp.Frame("run_a", "run_a.png", "raw", caption="Rock formations on flat grass, seen at an angle."),
-        rp.Frame("run_b", "run_b.png", "raw", caption="Rock formations on flat grass, seen at an angle."),
-        rp.Frame("run_c", "run_c.png", "raw", caption="Rock formations on flat grass, seen at an angle."),
-        rp.Frame("run_d", "run_d.png", "raw", caption="Rock formations on flat grass, seen at an angle."),
-    )
+    caption = "Rock formations on flat grass, seen at an angle."
+    frames = tuple(rp.Frame(fid, f"{fid}.png", "raw", caption=caption) for fid in _RUNS)
     wall = (
         "Each frame shows rock placed on flat grass. Small loose stones and pebbles scattered on the grass "
         "around the rock's base are part of the art, not rock formations: ignore them throughout. "
@@ -208,22 +241,38 @@ def _spec() -> rp.PackSpec:
         "frame all the large rock forms a single continuous mass, joined end to end, with no strip of grass "
         "running all the way through it; SPLIT if in any frame grass separates it into two or more masses."
     )
+    walls = (*_STRAIGHTS, *_TURNS)
     checks = (
-        rp.Check(id="q1", question=joined, frames=("run_a", "run_b", "run_c"), answers=("ONE", "SPLIT", "CANNOT-TELL")),
+        rp.Check(id="q1", question=joined, frames=(*walls, _JOIN), answers=("ONE", "SPLIT", "CANNOT-TELL")),
         rp.Check(
             id="q2",
             question=(
-                wall + "In each frame the rock forms a long wall; find its two free ends. First, for each frame "
-                "and each end, describe the last block of rock there and the stretch of wall leading up to it: is "
-                "the end block about as thick as that stretch, or clearly thicker (a bulky lump capping a thinner "
-                "wall)? Then: EVEN if at every free end in every frame the last block is no thicker than the wall "
-                "leading to it; BULGE if at any free end it is clearly thicker. Judge only the ends: a wall may "
-                "change thickness at a bend, so ignore thickness changes anywhere but the last block at a free end."
+                wall + "In each frame the rock forms one long wall, straight or with a single bend. A wall can be "
+                "one of two kinds: a tall rock face, standing several times higher above the grass than it is "
+                "deep, or a low ridge, a narrow strip standing only a little above the grass. First, for each "
+                "frame, follow the wall from one free end to the other and say which kind each stretch is. Then: "
+                "SAME if in every frame the whole wall is one kind from end to end; MIXED if in any frame one "
+                "stretch is a tall rock face and another stretch of the same wall is a low ridge. The blocks at "
+                "the two free ends and at a bend are shaped differently from the stretches between them: judge "
+                "only the stretches, not those blocks."
             ),
-            frames=("run_a", "run_b", "run_c"),
-            answers=("EVEN", "BULGE", "CANNOT-TELL"),
+            frames=walls,
+            answers=("SAME", "MIXED", "CANNOT-TELL"),
         ),
-        rp.Check(id="q3", question=joined, frames=("run_d",), answers=("ONE", "SPLIT", "CANNOT-TELL")),
+        rp.Check(
+            id="q3",
+            question=(
+                wall + "The rock in this frame forms one straight wall. First, follow its upper outline from one "
+                "free end to the other and describe it: where it runs level, and any place where it drops, "
+                "rounds off or steps before the wall carries on. Then: THROUGH if the wall carries on evenly "
+                "from one free end to the other, its only rounded-off ends being the two free ends; ENDED if "
+                "somewhere between the two free ends the wall rounds off or tapers as a free end does and then "
+                "starts again, as two walls set end to end would."
+            ),
+            frames=(_JOIN,),
+            answers=("THROUGH", "ENDED", "CANNOT-TELL"),
+        ),
+        rp.Check(id="q4", question=joined, frames=(_LONE,), answers=("ONE", "SPLIT", "CANNOT-TELL")),
     )
     return rp.PackSpec(
         id=PACK_ID,
@@ -262,16 +311,16 @@ def generate(out_dir: Path, inject: str | None, replica: int = 0) -> list[Path]:
     return written
 
 
-def _walls(nodes) -> int:
+def _walls(cliffs) -> int:
     """4-connected sprite-ink components at least one ground diamond in area
     (smaller ones are each piece's loose debris), pasted on flat ground."""
     proj = iso_geometry.canvas_size_and_origin(120, 120, 64, 0, 0)
     pastes = []
-    for node in nodes:
-        ax, ay = iso_geometry.map_point_to_screen(node.x, node.y, 0, proj)
+    for cliff in cliffs:
+        ax, ay = iso_geometry.map_point_to_screen(cliff.x, cliff.y, 0, proj)
         pastes.extend(
             (ax + p.dx - p.draw.hotspot_x, ay + p.dy - p.draw.hotspot_y, p.draw.rgba[..., 3] > 0)
-            for p in unit_sprites.sprite_pieces_for(node.unit_const, float(node.rotation), 0, proj.half_w)
+            for p in unit_sprites.sprite_pieces_for(cliff.unit_const, float(cliff.rotation), 0, proj.half_w)
         )
     x0, y0 = min(p[0] for p in pastes), min(p[1] for p in pastes)
     x1, y1 = max(p[0] + p[2].shape[1] for p in pastes), max(p[1] + p[2].shape[0] for p in pastes)
@@ -296,23 +345,53 @@ def _walls(nodes) -> int:
     return walls
 
 
-def _end_bulges(nodes) -> bool:
-    """Whether either end node is thicker (shorter footprint side) than its path neighbour."""
-    def thick(node):
-        x0, x1, y0, y1 = node.bounds
-        return min(x1 - x0, y1 - y0)
-
-    return len(nodes) > 1 and (thick(nodes[0]) > thick(nodes[1]) or thick(nodes[-1]) > thick(nodes[-2]))
+# Decoded ink height at the art's own scale (a tile 96 px wide): a front
+# straight's frames measure 192 px, a back straight's 85 to 90.
+_NATIVE_HALF_W = 48
+_FRONT_MIN_INK_PX = 150
+_BACK_MAX_INK_PX = 110
 
 
-# What each answer option rests on, per run: (walls > 1, an end bulges). run_d is the lone piece.
+def _arms(cliff, cliffs) -> set:
+    found = {cliff_connectivity.adjacency_dir(cliff.bounds, other.bounds) for other in cliffs if other is not cliff}
+    return found & set(_CARDINALS)
+
+
+def _mixed_facing(cliffs) -> bool:
+    """Whether the wall's straight stretches (pieces with two opposite
+    neighbours) hold both a rock face and a low ridge."""
+    front = back = False
+    for cliff in cliffs:
+        arms = _arms(cliff, cliffs)
+        if arms not in ({N, S}, {W, E}):
+            continue
+        (piece,) = unit_sprites.sprite_pieces_for(cliff.unit_const, float(cliff.rotation), 0, _NATIVE_HALF_W)
+        rows = np.nonzero((piece.draw.rgba[..., 3] > 0).any(axis=1))[0]
+        height = int(rows[-1] - rows[0] + 1)
+        front = front or height >= _FRONT_MIN_INK_PX
+        back = back or height <= _BACK_MAX_INK_PX
+    return front and back
+
+
+def _cap_inside(cliffs) -> bool:
+    """Whether a piece with two opposite neighbours is on an end-cap frame (16..23)."""
+    return any(cliff.rotation >= 16 and _arms(cliff, cliffs) in ({N, S}, {W, E}) for cliff in cliffs)
+
+
+# What each answer option rests on, per run: (walls > 1, mixed facing, an end
+# cap inside the wall). Measured, then pinned: a render or resolver change that
+# stops an inject producing its symptom fails --check instead of emptying a check.
+_CLEAN = dict.fromkeys(_RUNS, (False, False, False))
 _TOPOLOGY = {
-    None: {"run_a": (False, False), "run_b": (False, False), "run_c": (False, False), "run_d": (False, False)},
-    "one-suffix": {"run_a": (True, False), "run_b": (True, False), "run_c": (True, False), "run_d": (False, False)},
-    "per-node-majority": {
-        "run_a": (True, True), "run_b": (True, True), "run_c": (False, True), "run_d": (False, False),
-    },
+    None: _CLEAN,
+    "wrong-side-leg": {**_CLEAN, "run_c": (False, True, False), "run_d": (False, True, False)},
+    "unrewritten-cap": {**_CLEAN, "run_e": (False, False, True)},
 }
+
+
+def _measured(frame_id: str) -> tuple[bool, bool, bool]:
+    cliffs = _cliffs(frame_id)
+    return _walls(cliffs) > 1, _mixed_facing(cliffs), _cap_inside(cliffs)
 
 
 def _topology_failures() -> list[str]:
@@ -320,10 +399,10 @@ def _topology_failures() -> list[str]:
     for inject, expected in _TOPOLOGY.items():
         with _patched(inject):
             for fid, want in expected.items():
-                nodes = _nodes(fid)
-                got = (_walls(nodes) > 1, _end_bulges(nodes))
+                got = _measured(fid)
+                print(f"topology: {inject or 'clean'} {fid} (split, mixed, cap inside) {got}")
                 if got != want:
-                    out.append(f"{inject or 'clean'} {fid}: (split, bulge) {got}, expected {want}")
+                    out.append(f"{inject or 'clean'} {fid}: (split, mixed, cap inside) {got}, expected {want}")
     return out
 
 
@@ -358,18 +437,20 @@ def check() -> None:
                 touched[frame.id] = (n, rp.largest_component_px(mask))
         if not touched:
             failures.append(f"inject {name}: changed no pixels")
-        if "run_d" in touched:
+        if _LONE in touched:
             failures.append(f"inject {name}: reached the lone-piece frame")
         reach[name] = touched
         shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
         print(f"reach: {name} -> {shown or 'nothing'}")
-    for name, frames in (("one-suffix", ("run_a", "run_b", "run_c")), ("per-node-majority", ("run_a", "run_b"))):
+    # Each inject reaches its own frames and no other check's.
+    for name, frames in ((COARSE_INJECT, _TURNS), (LOCALIZED_INJECT, (_JOIN,))):
         failures.extend(f"inject {name}: did not reach {fid}" for fid in frames if fid not in reach[name])
+        failures.extend(f"inject {name}: reached {fid}" for fid in reach[name] if fid not in frames)
     failures.extend(_topology_failures())
-    coarse = reach[COARSE_INJECT]
-    for fid, (_px, comp) in reach["per-node-majority"].items():
-        if fid in coarse and comp >= coarse[fid][1]:
-            failures.append(f"inject per-node-majority: {fid} component {comp}px is not under the coarse inject's")
+    coarse = max((comp for _px, comp in reach[COARSE_INJECT].values()), default=0)
+    for fid, (_px, comp) in reach[LOCALIZED_INJECT].items():
+        if comp >= coarse:
+            failures.append(f"inject {LOCALIZED_INJECT}: {fid} component {comp}px is not under the coarse inject's {coarse}px")
     if failures:
         for f in failures:
             print(f"FAIL: {f}")

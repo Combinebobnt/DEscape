@@ -36,13 +36,29 @@ commands, and architecture.
     field also step cyclable members (trees, scenery) through their variants,
     but only via `UnitEditModel.set_variant()`, i.e. the *Cycle Variant*
     exception below with its scope unchanged; `set_rotation()` stays
-    ANGLE-only.
+    ANGLE-only. On a just-pasted region (GH #197) the Rotate actions edit no
+    unit at all: they go through the *Region turn* exception below.
+  - *Region turn's unit images* (GH #197: Rotate and Edit > Flip Selection
+    on a just-pasted region), via `region_transform.transform_block()`.
+    Scope: only a block being re-pasted in place of the paste it undoes,
+    every unit a NEW one `UnitEditModel.add()`ed, and only the eight D4
+    elements. The per-const rules are mirroring's (next bullet) because it
+    calls the same functions through `mirror_tools.unit_image()`: an ANGLE
+    facing through `facing_image()`, a wall's shape index through
+    `wall_index_image()` in an integer-encoded file only, a gate's
+    orientation through `reorient_gate_const()`, and every other rotation,
+    VARIANT and INERT alike, copied verbatim. `add()` is unvalidated, so the
+    guard is `transform_block()`, pinned by `tests/test_region_transform.py`.
   - *Map mirroring's unit images*, via `mirror_tools.plan_mirror_units()`.
     This one transforms nothing in place: it derives a NEW unit's rotation
     from its source's and `UnitEditModel.add()`s it, so there is no model
-    guard here, only the plan's own rule. A wall's stored run-direction index
-    (0 along x, 1 along y) swaps under the four axis-swapping D4 elements,
-    and only in a file that encodes the index as a literal integer (a
+    guard here, only the plan's own rule. A wall's stored shape index (0 a
+    run along x, 1 along y, 3 and 4 the two diagonal runs) goes through
+    `mirror_tools.wall_index_image()`, which derives each D4 element's
+    permutation from `unit_sprites.wall_variant_from_neighbours8()`: 0 and 1
+    swap under the four axis-swapping elements (`r`, `r3`, `d`, `a`), 3 and 4
+    swap under `r`, `r3`, `mx` and `my`, and 2 never changes. That happens
+    only in a file that encodes the index as a literal integer (a
     radian-encoded file carries no shape information there, measured). A
     real facing angle, only on the consts `unit_rotation.rotation_is_angle()`
     calls ANGLE (the predicate Rotate uses, never the player id), maps through
@@ -57,10 +73,11 @@ commands, and architecture.
     re-anchored around it on whole tiles, since AoE2 has no rotated
     footprint. A gate's image takes the orientation sibling nearest the
     rotated run direction (always 15 degrees off, never a tie), still via
-    `reorient_gate_const()`. A wall's run-direction index swaps when the
+    `reorient_gate_const()`. A wall's axis-run index (0 or 1) swaps when the
     element carries the x axis nearer the y axis (60 and 120 degrees and `a`
     do, 180 degrees and the other two reflections do not), under the same
-    integer-encoded-file rule. A facing angle rotates through
+    integer-encoded-file rule; the diagonal runs 3 and 4 stay verbatim in
+    the angular modes. A facing angle rotates through
     `facing_image()` with the angular element's own matrix.
   - *Cycle Variant*, via `UnitEditModel.set_variant()`, only on consts
     `descape/unit_variant.py` calls cyclable: VARIANT, at least two real
@@ -69,9 +86,14 @@ commands, and architecture.
     because the game re-derives their index from neighbours, so a written
     value would be overridden. It always writes a literal integer index: every
     corpus placement on a cyclable const stores one, never the radian form.
-  - *Place Unit's wall-run junction rewrites*, and its rewrites of the walls
+  - *Place Unit's wall-run junction rewrites*, its rewrites of the walls
     beside a gate it places (GH #159, which also removes the walls under the
-    gate's footprint), via
+    gate's footprint), and a gate move's rewrites of the walls beside its old
+    and new site when "Moving a gate updates walls" is ticked (GH #194, which
+    also removes the walls under the new footprint and fills the line the
+    gate left with new walls, `add_many()`ed with the same neighbour-derived
+    literal integer index and frame 0; the gate itself only changes
+    position), via
     `UnitEditModel.set_wall_variant()`, only on the 9 wall-family consts
     `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
     and only for an index in `0..4`. Those are the 8 walls plus Aqueduct
@@ -87,6 +109,24 @@ commands, and architecture.
     `initial_animation_frame` is not touched (it is 0 on all 8193 corpus wall
     placements). Gates are outside the scope and stay there: they have
     `angle_count == 1` and their orientation lives in the const.
+  - *Cliff drag's join rewrites* (GH #44), via
+    `UnitEditModel.set_cliff_frame()`, which raises outside its guard. The
+    guard: only the 96 cliff consts (`unit_sprites.cliff_consts()`), always
+    the literal integer, a frame inside the const's own frame count (and
+    never 24, which no family has), with `rotation` and
+    `initial_animation_frame` written together (they are equal on every
+    corpus cliff); the const and `x`/`y` are never touched. The trigger:
+    only a Cliff tool stroke (a drag, or a click, which is a one-tile
+    stroke), only an existing end cap or lone piece (at most one cardinal
+    neighbour) that gains exactly one cardinal neighbour from that stroke,
+    only when the new piece is shaped for that side with a leg of the same
+    type (tall or thin), and only the frame the measured shape table gives
+    for its new neighbours at its own size
+    (`cliff_connectivity.rewrite_frames()`, read by
+    `cliff_chain.ChainStroke.rewrites()`). Where that join would need a
+    different-size piece the old cliff is left alone. Allowed for the wall
+    bullet's reason: the value is derived from the neighbours the piece now
+    has, where an author-picked one is not.
   - *Replace* (Edit > Find and Replace, GH #144), via
     `UnitEditModel.replace_type()`, which changes a unit's const (see the
     const exceptions below) and so must decide what its `rotation` and
@@ -99,7 +139,9 @@ commands, and architecture.
     index exists in the new const, else `0.0`/`0`; `0.0`/`0` for every other
     pairing and for any target gate.
   - *Place Unit's placement rotation* (GH #172: the hover ghost turned by
-    Ctrl+wheel or the Rotate actions before a click). The value a new unit
+    the wheel's rotate binding, Ctrl+wheel by default, or the Rotate actions
+    before a click, or set by the Eyedropper's Units-mode pick,
+    `ViewerWindow.pick_unit_value()`). The value a new unit
     is `add()`ed with, and the ghost drawn with, comes only from
     `place_rotation.rotation_for()`. A non-GAIA ANGLE const gets a facing on
     its own frame grid (a GAIA one gets `0.0`, since GAIA creatables have no
@@ -147,6 +189,9 @@ commands, and architecture.
     gate's const, it `add()`s a *new* gate whose const comes from
     `mirror_tools.reorient_gate_const()` and whose anchor is re-derived from
     that sibling's own span.
+  - A region turn (GH #197) is not an exception either, for the same reason:
+    the turned block is re-pasted as *new* units, and a gate's const comes
+    from `reorient_gate_const()` through `mirror_tools.unit_image()`.
 - The same is true of walls, for a different reason, and it is confirmed
   in-game: a wall graphic's five stored frames are SHAPES (two diagonal runs, a
   tower, a flatter run, a narrow column), not five facings, so `rotation`
@@ -155,15 +200,19 @@ commands, and architecture.
   index as `k*2π/5` radians — so both must be read, and neither may have an
   angular zero-point offset applied. `unit_sprites.variant_index()` is the only
   correct reader; `angle_index()` mis-maps 3 and 4. A write path must pass the
-  field through verbatim here too, with the two exceptions listed above:
+  field through verbatim here too, with the exceptions listed above:
   `UnitEditModel.set_wall_variant()`, which writes the value derived from
-  the same neighbours the game would read, and *Replace*
+  the same neighbours the game would read; *Replace*
   (`UnitEditModel.replace_type()`, by `unit_model.replaced_rotation()`),
   which keeps a wall's index verbatim when the new const is also a wall and
-  writes `0.0` when a non-wall becomes a wall. A wall's correct stored value is also a
+  writes `0.0` when a non-wall becomes a wall; and the new wall images of
+  Map mirroring and a *Region turn* (GH #197), whose index goes through
+  `mirror_tools.wall_index_image()`, the element's permutation of that same
+  neighbour table, in an integer-encoded file only. A wall's correct stored value is also a
   function of its neighbours (98.9%/99.1% agreement between neighbour mask and
   stored index across the corpus), so rotating one would write a value the game
-  re-derives. Walls are VARIANT, and Rotate skips them.
+  re-derives. Walls are VARIANT, and Rotate skips them in a unit selection; a
+  Region turn re-pastes them as new walls instead.
 - **An existing unit's `garrisoned_in_id` changes only through
   `UnitEditModel.set_garrisoned_in()`** (GH #115), which splices the garrison
   reverse-map and raises outside its structural scope: never inside a
@@ -182,10 +231,18 @@ commands, and architecture.
   `tools/gen_unit_graphic_map.py`'s `_BODY_GRAPHIC_OVERRIDES` records the
   confirmed cases.
 
+## Contributing
+
+If you are working on a contribution for a pull request, follow
+`CONTRIBUTING.md`. Run `./run_all_tests.sh` (`run_all_tests.bat` on Windows)
+and report what it printed before calling a change done. The Hard rules above
+are not negotiable. A contributed PR leaves `CHANGELOG.md` alone.
+
 ## Changelog
 
 User-visible changes here mean behavior, rendering, the write path, or a new
-tool. `CHANGELOG.md` uses `MAJOR.MINOR` versioning (no patch number).
+tool. `CHANGELOG.md` uses `MAJOR.MINOR` versioning (no patch number). A
+contributed PR's entry is written by the maintainer at merge.
 
 ## Private maintainer repo
 

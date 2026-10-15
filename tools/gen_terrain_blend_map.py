@@ -19,6 +19,9 @@ re-measured, not papered over.
 
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install, only for regenerating this file if the game updates its terrain table.
+
+Normally run through tools/regen_game_data.py, which also restamps
+tools/game_data_stamp.json.
 """
 
 from __future__ import annotations
@@ -39,6 +42,12 @@ def main() -> None:
         "aoe2de_root",
         type=Path,
         help="Path to the AoE2DE install root (contains resources/_common/...)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "descape",
+        help="Where to write terrain_blend_map.json (default: descape/)",
     )
     args = parser.parse_args()
 
@@ -75,7 +84,8 @@ def main() -> None:
             print(line, file=sys.stderr)
         raise SystemExit("Refusing to write: re-measure before touching descape/terrain_blend.py.")
 
-    out_path = Path(__file__).resolve().parent.parent / "descape" / "terrain_blend_map.json"
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.out_dir / "terrain_blend_map.json"
     out = {
         "_comment": (
             "terrain_id -> {priority, blend_type, overlay_mask} for every enabled "

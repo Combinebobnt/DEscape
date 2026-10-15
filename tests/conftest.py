@@ -12,6 +12,7 @@ gui-tier tests that actually need it.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -51,6 +52,75 @@ def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     if start is not None:
         ranges.append((start, len(before)))
     return ranges
+
+
+# -- GH #148: a fake install with portraits and stat icons, for the unit cards --
+
+_UNIT_RED = (200, 10, 10, 255)
+_BUILDING_GREEN = (10, 200, 10, 255)
+_STAT_ICON_FILES = ("hp", "damage", "armor", "range-armor", "range")
+
+
+def _fake_install(tmp_path):
+    """Archer's unit portrait (017), a Castle portrait in buildings/ (007) and,
+    as a trap, a unit portrait 007 too; plus the five stat icons at 66 px."""
+    from PIL import Image
+
+    ingame = tmp_path / "AoE2DE" / "widgetui" / "textures" / "ingame"
+    for folder in ("units", "buildings", "staticons"):
+        (ingame / folder).mkdir(parents=True)
+    Image.new("RGBA", (32, 32), _UNIT_RED).save(ingame / "units" / "017_50730.DDS", format="DDS")
+    Image.new("RGBA", (32, 32), _UNIT_RED).save(ingame / "units" / "007_50730.DDS", format="DDS")
+    Image.new("RGBA", (32, 32), _BUILDING_GREEN).save(ingame / "buildings" / "007_castle.DDS", format="DDS")
+    for name in _STAT_ICON_FILES:
+        Image.new("RGBA", (66, 66), (30, 60, 90, 255)).save(ingame / "staticons" / f"{name}.png")
+    return tmp_path / "AoE2DE"
+
+
+class ManualExecutor:
+    """A catalog_thumbs.ThumbLoader executor that holds each submitted decode until the test runs it."""
+
+    def __init__(self):
+        self.submitted: list[tuple] = []
+
+    def submit(self, fn, *args):
+        from concurrent.futures import Future
+
+        future = Future()
+        self.submitted.append((fn, args, future))
+        return future
+
+    def run(self, index: int) -> None:
+        fn, args, future = self.submitted[index]
+        future.set_result(fn(*args))
+
+    def icons(self) -> list[int]:
+        return [args[1] for _fn, args, _future in self.submitted]
+
+
+def settle_thumbs(loader, timeout: float = 5.0) -> None:
+    """Pumps events until a catalog_thumbs.ThumbLoader has answered everything
+    asked of it: portraits decode on a worker thread (GH #68)."""
+    import time
+
+    from PyQt5.QtWidgets import QApplication
+
+    deadline = time.monotonic() + timeout
+    QApplication.processEvents()
+    while not loader.idle():
+        assert time.monotonic() < deadline, "the thumbnail loader never went idle"
+        time.sleep(0.002)
+        QApplication.processEvents()
+    QApplication.processEvents()
+
+
+@pytest.fixture
+def fake_install(tmp_path):
+    from descape import asset_source
+
+    asset_source.set_install_path_override(_fake_install(tmp_path))
+    yield
+    asset_source.set_install_path_override(None)
 
 # Re-exported so the many existing `conftest.scene_rect_to_array(...)` call
 # sites keep working; the implementation now lives in testkit/ so tools/
@@ -164,6 +234,38 @@ def close_window(window) -> None:
     pops a QMessageBox that blocks forever offscreen."""
     window.edit_history.mark_saved()
     window.close()
+
+
+@contextlib.contextmanager
+def restoring_app_theme():
+    """Yields the shared QApplication, then puts back all that viewer_dialogs.
+    apply_theme() changes on it: style, app palette, the QPushButton class
+    palette and the cached _LIGHT_PALETTE (cleared here, so the test captures
+    its own). A theme left applied recolours every later test's widgets on
+    that worker.
+
+    Qt has no call that removes a class palette, so the one saved at setup
+    (the app palette itself when none was set) is set back explicitly, after
+    the app palette: an app palette equal to the live one clears nothing."""
+    from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import viewer_dialogs
+
+    ensure_qapp()
+    app = QApplication.instance()
+    saved_palette = QPalette(app.palette())
+    saved_class_palette = QPalette(QApplication.palette("QPushButton"))
+    saved_style = app.style().objectName()
+    saved_light = viewer_dialogs._LIGHT_PALETTE
+    viewer_dialogs._LIGHT_PALETTE = None
+    try:
+        yield app
+    finally:
+        viewer_dialogs._LIGHT_PALETTE = saved_light
+        app.setStyle(saved_style)
+        app.setPalette(saved_palette)
+        app.setPalette(saved_class_palette, "QPushButton")
 
 
 def viewport_pos(map_view, tile_x: int, tile_y: int):

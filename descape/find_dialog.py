@@ -16,9 +16,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -31,6 +32,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QSpinBox,
     QStyle,
@@ -51,6 +53,7 @@ from descape.find_triggers import TriggerFindCriteria, TriggerHit, hits_to_csv
 from descape.scenario_write import WriteBlockedError
 from descape.value_picker import _configure_scrolling
 from descape.viewer_common import _add_player_item, _player_icon, _relabel_player_rows
+from descape.viewer_dialogs import status_text_color
 
 _KIND_LABELS = (
     ("trees", "Trees"),
@@ -61,10 +64,17 @@ _KIND_LABELS = (
 OBJECT_COLUMNS = ("Name", "ID", "Type id", "Owner", "X", "Y", "Z", "Caption", "In", "Holds", "Triggers", "Note")
 _COL_TRIGGERS = OBJECT_COLUMNS.index("Triggers")
 _COL_NOTE = OBJECT_COLUMNS.index("Note")
+_GOTO_TIP = "Centre the map on the highlighted row (a double-click does the same)"
+_GOTO_DISABLED_TIP = "Click a result row to highlight it first"
 _TRIGGERS_COLUMN_TIP = "Trigger conditions/effects naming this object. Blank until triggers are read (open the Triggers tab)"
 _GREY = QBrush(QColor(128, 128, 128))
-_ERROR_STYLE = "color: #c62828;"
+_ERROR_COLOR = "#c62828"
 AREA_WHOLE, AREA_REGION, AREA_CUSTOM = 0, 1, 2
+
+
+def _error_style() -> str:
+    """The pattern-error labels' sheet. Both sit on a tab page, and the shade follows the live theme."""
+    return f"color: {status_text_color(_ERROR_COLOR, on_tab_page=True)};"
 
 
 def confirm_with_choices(
@@ -137,6 +147,69 @@ def _player_text(labels, pid: int) -> str:
     return labels.text[pid] if 0 <= pid < len(labels.text) else f"P{pid}"
 
 
+def _shown(item: QTreeWidgetItem) -> bool:
+    """False for a hidden row or one under a collapsed or hidden ancestor."""
+    if item.isHidden():
+        return False
+    parent = item.parent()
+    while parent is not None:
+        if parent.isHidden() or not parent.isExpanded():
+            return False
+        parent = parent.parent()
+    return True
+
+
+class _CheckTree(QTreeWidget):
+    """A checkbox result list whose highlighted rows tick together (GH #144):
+    Space gives them all the opposite of the current row's state, and the
+    right-click menu ticks or unticks them, through the tab's one bulk write."""
+
+    def __init__(self, set_checked: Callable[[list, bool], None]):
+        super().__init__()
+        self._set_checked = set_checked
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_check_menu)
+
+    def highlighted_checkable(self) -> list[QTreeWidgetItem]:
+        """Drops hidden rows (a collapsed trigger's hits), as trigger_panel.selected_entry_refs() does."""
+        return [item for item in self.selectedItems() if item.flags() & Qt.ItemIsUserCheckable and _shown(item)]
+
+    def toggle_highlighted(self) -> bool:
+        """False with no tickable row highlighted: Space then stays Qt's own."""
+        items = self.highlighted_checkable()
+        if not items:
+            return False
+        current = self.currentItem()
+        if current is not None and any(item is current for item in items):
+            checked = current.checkState(0) != Qt.Checked
+        else:
+            # No lead row to follow: tick, unless every highlighted row is ticked already.
+            checked = any(item.checkState(0) != Qt.Checked for item in items)
+        self._set_checked(items, checked)
+        return True
+
+    def keyPressEvent(self, event) -> None:  # Qt override
+        # Ctrl+Space stays Qt's own: it adds the focused row to the highlight.
+        plain_space = event.key() == Qt.Key_Space and not event.modifiers() & Qt.ControlModifier
+        if plain_space and self.toggle_highlighted():
+            return
+        super().keyPressEvent(event)
+
+    def check_menu(self) -> QMenu:
+        """The right-click menu, built per click so its enabled state is current."""
+        menu = QMenu(self)
+        has = bool(self.highlighted_checkable())
+        for text, checked in (("Tick selected", True), ("Untick selected", False)):
+            action = menu.addAction(text)
+            action.setEnabled(has)
+            action.triggered.connect(lambda _=False, c=checked: self._set_checked(self.highlighted_checkable(), c))
+        return menu
+
+    def _show_check_menu(self, pos) -> None:
+        self.check_menu().exec_(self.viewport().mapToGlobal(pos))
+
+
 class _ObjectsTab(QWidget):
     def __init__(self, dialog: FindDialog):
         super().__init__(dialog)
@@ -161,7 +234,7 @@ class _ObjectsTab(QWidget):
         for box in (self.regex_box, self.case_box):
             box.toggled.connect(self._validate)
         self.pattern_error = QLabel("")
-        self.pattern_error.setStyleSheet(_ERROR_STYLE)
+        self.pattern_error.setStyleSheet(_error_style())
         self.pattern_error.setVisible(False)
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("Name:"))
@@ -257,7 +330,7 @@ class _ObjectsTab(QWidget):
         header_row.addWidget(self.check_all)
         header_row.addWidget(self.check_none)
 
-        self.tree = QTreeWidget()
+        self.tree = _CheckTree(self.set_items_checked)
         self.tree.setHeaderLabels(list(OBJECT_COLUMNS))
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
@@ -268,10 +341,14 @@ class _ObjectsTab(QWidget):
         self.tree.headerItem().setToolTip(_COL_TRIGGERS, _TRIGGERS_COLUMN_TIP)
         self.tree.itemDoubleClicked.connect(self._on_double_clicked)
         self.tree.itemChanged.connect(self._on_item_changed)
+        self.tree.currentItemChanged.connect(lambda _current, _previous: self._update_goto())
+        self.tree.itemSelectionChanged.connect(self._update_goto)
 
         # -- operations ----------------------------------------------------
         self.select_button = QPushButton("Select on Map")
         self.select_button.clicked.connect(self.select_on_map)
+        self.goto_button = QPushButton("Go to")
+        self.goto_button.clicked.connect(self.go_to_current)
         self.delete_button = QPushButton("Delete")
         self.delete_button.clicked.connect(self.delete_checked)
         self.export_button = QPushButton("Export CSV…")
@@ -289,6 +366,7 @@ class _ObjectsTab(QWidget):
         self.owner_apply.clicked.connect(self.change_owner)
         ops_row = QHBoxLayout()
         ops_row.addWidget(self.select_button)
+        ops_row.addWidget(self.goto_button)
         ops_row.addWidget(self.delete_button)
         ops_row.addWidget(self.export_button)
         ops_row.addStretch(1)
@@ -316,6 +394,7 @@ class _ObjectsTab(QWidget):
         self.set_region_available(False)
         self._rebuild_chips()
         self._update_ops()
+        self._update_goto()
 
     # -- search panel ----------------------------------------------------------
 
@@ -513,10 +592,42 @@ class _ObjectsTab(QWidget):
         self.checked = {row.key for row in self.rows if not row.duplicate_ref} if checked else set()
         self._update_ops()
 
+    def set_items_checked(self, items: Sequence[QTreeWidgetItem], checked: bool) -> None:
+        """Ticks or unticks these rows as one change: one _update_ops, not one per row."""
+        self._filling = True
+        try:
+            for item in items:
+                row = item.data(0, Qt.UserRole)
+                if isinstance(row, FindRow) and not row.duplicate_ref:
+                    item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+                    (self.checked.add if checked else self.checked.discard)(row.key)
+        finally:
+            self._filling = False
+        self._update_ops()
+
     def _on_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         row = item.data(0, Qt.UserRole)
         if isinstance(row, FindRow):
             self._dialog.callbacks.centre_on_key(row.key)
+
+    def go_to_current(self) -> None:
+        """Go to (GH #201): the highlighted row, never the ticked ones."""
+        item = self._goto_item()
+        if item is not None:
+            self._on_double_clicked(item, 0)
+
+    def _goto_item(self) -> QTreeWidgetItem | None:
+        """The current row if highlighted, else the first highlighted row (a Ctrl+click can unhighlight it)."""
+        current = self.tree.currentItem()
+        if current is not None and current.isSelected():
+            return current
+        selected = self.tree.selectedItems()
+        return min(selected, key=self.tree.indexOfTopLevelItem) if selected else None
+
+    def _update_goto(self) -> None:
+        has = self._goto_item() is not None
+        self.goto_button.setEnabled(has)
+        self.goto_button.setToolTip(_GOTO_TIP if has else _GOTO_DISABLED_TIP)
 
     def checked_rows(self) -> list[FindRow]:
         return [row for row in self.rows if row.key in self.checked and not row.duplicate_ref]
@@ -742,7 +853,7 @@ class _TriggersTab(QWidget):
         for box in (self.regex_box, self.case_box):
             box.toggled.connect(self._validate)
         self.pattern_error = QLabel("")
-        self.pattern_error.setStyleSheet(_ERROR_STYLE)
+        self.pattern_error.setStyleSheet(_error_style())
         self.pattern_error.setVisible(False)
         text_row = QHBoxLayout()
         text_row.addWidget(QLabel("Text:"))
@@ -800,7 +911,7 @@ class _TriggersTab(QWidget):
         header_row.addWidget(self.check_all)
         header_row.addWidget(self.check_none)
 
-        self.tree = QTreeWidget()
+        self.tree = _CheckTree(self.set_items_checked)
         self.tree.setHeaderLabels(list(TRIGGER_COLUMNS))
         self.tree.setUniformRowHeights(True)
         _configure_scrolling(self.tree)
@@ -1045,6 +1156,23 @@ class _TriggersTab(QWidget):
             self.checked_parents, self.checked_children = set(), set()
         self._update_ops()
 
+    def set_items_checked(self, items: Sequence[QTreeWidgetItem], checked: bool) -> None:
+        """Ticks or unticks these rows as one change: _update_ops rescans every hit, so once."""
+        self._filling = True
+        try:
+            for item in items:
+                data = item.data(0, _HIT_ROLE)
+                if isinstance(data, TriggerHit):
+                    (self.checked_children.add if checked else self.checked_children.discard)(data.location)
+                elif isinstance(data, tuple):
+                    (self.checked_parents.add if checked else self.checked_parents.discard)(data[1])
+                else:
+                    continue
+                item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+        finally:
+            self._filling = False
+        self._update_ops()
+
     def checked_hits(self, field_classes) -> list[TriggerHit]:
         return [h for h in self.hits if h.location in self.checked_children and h.field_class in field_classes]
 
@@ -1249,6 +1377,13 @@ class FindDialog(QDialog):
         tab.own_op = None
         if tab.initialized:
             tab.rerun(keep_checks=keep)
+
+    def changeEvent(self, event) -> None:
+        # Modeless, so it can be open across a theme change: the error colour is re-derived.
+        if event.type() == QEvent.PaletteChange and hasattr(self, "triggers_tab"):
+            for tab in (self.objects_tab, self.triggers_tab):
+                tab.pattern_error.setStyleSheet(_error_style())
+        super().changeEvent(event)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

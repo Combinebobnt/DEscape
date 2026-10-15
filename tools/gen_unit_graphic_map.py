@@ -276,6 +276,9 @@ frame. The generator fails unless the effect has an AtlasFile and no
 `ImageAngles` (per-angle frame runs, which the waterfalls use and
 descape.particle_art does not read). Every other particle-only const (FLAME,
 SMOKE, the seagulls, the waterfalls) is still skipped.
+
+Normally run through tools/regen_game_data.py, which also restamps
+tools/game_data_stamp.json.
 """
 
 from __future__ import annotations

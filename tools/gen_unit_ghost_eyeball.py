@@ -78,6 +78,7 @@ def _open_window(scenario_path: Path):
         window.close()
         raise SystemExit(f"{scenario_path} failed to load")
     window.mode_combo.setCurrentText("Units")
+    window.move_action.setChecked(True)  # a unit drag is the Move tool's (TASK-012)
     return window
 
 

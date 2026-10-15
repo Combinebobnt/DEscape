@@ -381,11 +381,12 @@ def test_leaving_and_reentering_the_same_tile_shows_the_ghost_again() -> None:
 @pytest.mark.parametrize("on_unit", [True, False], ids=["unit_drag", "marquee"])
 def test_a_keybound_switch_mid_drag_keeps_the_drag_or_marquee(on_unit) -> None:
     """Place Unit can be bound to a key, so the tool can change under a held
-    button; the next move must stay with the drag or marquee it began."""
+    button; the next move must stay with the drag or marquee it began. A
+    drag starts under Move, a marquee under Select (TASK-252)."""
     window = _window()
     try:
         view = window.map_view
-        window.pan_action.setChecked(True)
+        (window.move_action if on_unit else window.select_action).setChecked(True)
         if on_unit:
             entry = view._unit_index.entries[0]
             tile = (int(entry.unit.x), int(entry.unit.y))
@@ -539,6 +540,7 @@ def test_hovering_builds_no_unit_model_adds_no_unit_and_invalidates_no_cache() -
 _OAK = 349  # cyclable, 42 variants
 _STONE_GATE = 64
 _HOUSE = 33  # INERT: angle_count 1
+_FEMALE_VILLAGER = 293  # _UNIT_CONST's sibling under Villager (Random), GH #164
 
 
 @pytest.fixture
@@ -565,6 +567,7 @@ def rotating_install(tmp_path, monkeypatch):
                         "mirroring_mode": 0, "frame_count": 1, **extra}
 
     add(_UNIT_CONST, 16)
+    add(_FEMALE_VILLAGER, 16, colour_base=11)
     add(_OAK, 42, colour_base=3, rotation_is_variant=True)
     for i, const in enumerate(orientation_siblings(_STONE_GATE)):
         add(const, 1, colour_base=5 * i + 1)
@@ -638,6 +641,48 @@ def test_a_turned_ghost_is_the_unit_the_click_places_and_the_turn_persists(rotat
         scene = _hover_tile(window, 44, 44)
         second = _place_at(window, scene)
         assert second.unit.rotation == want, "the facing carries into the next placement"
+    finally:
+        _close(window)
+
+
+def _ghost_const(window) -> int:
+    """The const Place Unit's current ghost was built with (its memo key)."""
+    memo = window._place_ghost_memo
+    assert memo is not None and memo[1] is window.map_view._unit_ghost_item
+    return memo[0][1]
+
+
+def test_villager_random_ghost_is_each_clicks_villager_and_the_facing_survives_a_reroll(rotating_install) -> None:
+    """GH #164: the panel pre-rolls, so the ghost before each click is the
+    villager it places, and a re-roll after the click shows at once."""
+    import random
+
+    from descape.place_random import RANDOM_VILLAGER
+
+    window = _sprite_window(_UNIT_CONST)
+    try:
+        panel = window.units_panel
+        panel._rng = random.Random(164)
+        panel.catalog_view.select(RANDOM_VILLAGER)
+        view = window.map_view
+        _hover_tile(window, 30, 40)
+        window.rotate_place_ghost(steps=6)
+        facing = 6 * 2 * 3.141592653589793 / 16
+        placed, ghosts = [], {}
+        for i in range(10):
+            scene = _hover_tile(window, 30 + 2 * i, 40)
+            const, ghost = _ghost_const(window), _ghost_draws(view)
+            entry = _place_at(window, scene)
+            assert entry.unit.unit_const == const
+            assert ghost == _placed_draws(window, entry)
+            assert entry.unit.rotation == pytest.approx(facing), "the facing carries across a re-roll"
+            # Re-rolled with no mouse move: the ghost already shows the next pick.
+            assert _ghost_const(window) == panel.selected_object_const()
+            placed.append(entry.unit.unit_const)
+            ghosts[const] = ghost
+        assert set(placed) == {_UNIT_CONST, _FEMALE_VILLAGER}
+        assert ghosts[_UNIT_CONST] != ghosts[_FEMALE_VILLAGER], "the two sexes must look different here"
+        assert panel.catalog_view.current_value() == RANDOM_VILLAGER
     finally:
         _close(window)
 
@@ -864,5 +909,329 @@ def test_a_gaia_only_ghost_is_drawn_for_gaia_whatever_the_owner_combo(bush_insta
         as_player_1 = _placed_draws(window, dataclasses.replace(entry, player_id=1))
         assert ghost != as_player_1, "the team-colour mask must tell GAIA from Player 1"
         assert window.units_panel.owner_id() == 1
+    finally:
+        _close(window)
+
+
+# --- The Eyedropper in Units mode: a picked unit is the next placement -------
+
+_ARCHER = 4
+_ARCHER_KEY = (2, 300)  # Player 2's archer on tile (20, 20)
+_OAK_KEY = (0, 100)  # GAIA oak on (5, 5), stored variant 7
+_WALL_KEY = (0, 102)  # GAIA stone wall on (7, 5): a shape index, radian-encoded
+_FIXTURE_HOUSE_KEY = (1, 200)  # Player 1's house on (10, 10): one frame, nothing to turn
+_OFF_GRID_FACING = 2.4  # between frames 6 and 7 of the archer's 16
+
+
+def _eyedrop_window(const: int = _HOUSE):
+    """_window() with the Eyedropper active: `const` pending, owner Player 1."""
+    window = _window(const=const)
+    window.eyedropper_action.setChecked(True)
+    assert window.map_view._tool == "eyedropper"
+    return window
+
+
+def _fixture_entry(window, key):
+    entry = window.map_view._unit_index.entry_for_key(key)
+    assert entry is not None, f"the fixture has no unit {key}"
+    return entry
+
+
+def _stale_rotation(window):
+    """A pending rotation no fixture unit would produce, to see it survive a pick."""
+    from descape import place_rotation
+
+    window._place_rotation = place_rotation.PlaceRotation(facing=1.25, variant=3, variant_const=_OAK)
+    return window._place_rotation
+
+
+def test_an_eyedropped_unit_is_what_the_next_click_places() -> None:
+    import math
+
+    from descape import object_catalog, place_rotation
+
+    window = _eyedrop_window()
+    try:
+        entry = _fixture_entry(window, _ARCHER_KEY)
+        entry.unit.rotation = _OFF_GRID_FACING
+        records = len(window.edit_history.records)
+
+        window.pick_unit_value(entry, (20, 20), Qt.NoModifier)
+
+        panel = window.units_panel
+        assert panel.selected_object_const() == _ARCHER
+        assert panel.owner_id() == 2
+        assert window._place_rotation.facing == _OFF_GRID_FACING
+        name = object_catalog.display_name(_ARCHER)
+        assert f"Picked {name}, Player 2, facing 6/16 from (20, 20)" in _last_status(window)
+        assert len(window.edit_history.records) == records, "a pick is not an edit"
+        assert entry.unit.rotation == _OFF_GRID_FACING, "a pick reads the unit, it never rewrites it"
+
+        window.place_unit_action.setChecked(True)
+        placed = _place_at(window, _hover_tile(window, 40, 40))
+        assert (placed.unit.unit_const, placed.player_id) == (_ARCHER, 2)
+        assert placed.unit.rotation == place_rotation.rotation_for(window._place_rotation, _ARCHER, 2)
+        assert placed.unit.rotation == pytest.approx(6 * 2 * math.pi / 16), "snapped to the archer's own frames"
+    finally:
+        _close(window)
+
+
+def test_an_eyedropped_tree_carries_its_variant_into_the_next_placement() -> None:
+    window = _eyedrop_window()
+    try:
+        entry = _fixture_entry(window, _OAK_KEY)
+        assert entry.unit.rotation == 7.0
+
+        window.pick_unit_value(entry, (5, 5), Qt.NoModifier)
+
+        assert window.units_panel.selected_object_const() == _OAK
+        assert window.units_panel.owner_id() == 0
+        state = window._place_rotation
+        assert (state.variant, state.variant_const, state.facing) == (7, _OAK, 0.0)
+        assert "GAIA, variant 7/42 from (5, 5)" in _last_status(window)
+
+        window.place_unit_action.setChecked(True)
+        placed = _place_at(window, _hover_tile(window, 40, 40))
+        assert (placed.unit.unit_const, placed.player_id) == (_OAK, 0)
+        assert placed.unit.rotation == 7.0 and placed.unit.rotation == int(placed.unit.rotation)
+    finally:
+        _close(window)
+
+
+def test_an_eyedropped_gaia_unit_keeps_its_facing_but_places_facing_0() -> None:
+    """The pick stores the facing; rotation_for() alone decides what a click writes."""
+    import math
+    from types import SimpleNamespace
+
+    window = _eyedrop_window()
+    try:
+        gaia_archer = SimpleNamespace(player_id=0, unit=SimpleNamespace(unit_const=_ARCHER, rotation=_OFF_GRID_FACING))
+
+        window.pick_unit_value(gaia_archer, (3, 4), Qt.NoModifier)
+
+        assert window.units_panel.owner_id() == 0
+        assert window._place_rotation.facing == _OFF_GRID_FACING
+        window.place_unit_action.setChecked(True)
+        placed = _place_at(window, _hover_tile(window, 40, 40))
+        assert (placed.unit.unit_const, placed.player_id, placed.unit.rotation) == (_ARCHER, 0, 0.0)
+
+        window.units_panel.select_owner(1)
+        turned = _place_at(window, _hover_tile(window, 44, 44))
+        assert turned.unit.rotation == pytest.approx(6 * 2 * math.pi / 16), "the kept facing applies off GAIA"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize(
+    ("key", "tile"), [(_WALL_KEY, (7, 5)), (_FIXTURE_HOUSE_KEY, (10, 10))], ids=["wall", "single_frame"]
+)
+def test_an_eyedropped_wall_or_single_frame_object_leaves_the_pending_rotation_alone(key, tile) -> None:
+    window = _eyedrop_window(const=_UNIT_CONST)
+    try:
+        window.units_panel.select_owner(2)
+        before = _stale_rotation(window)
+        entry = _fixture_entry(window, key)
+
+        window.pick_unit_value(entry, tile, Qt.NoModifier)
+
+        assert window.units_panel.selected_object_const() == entry.unit.unit_const
+        assert window.units_panel.owner_id() == entry.player_id
+        assert window._place_rotation == before
+        status = _last_status(window)
+        assert "Picked" in status and "facing" not in status and "variant" not in status
+    finally:
+        _close(window)
+
+
+def test_a_shift_eyedrop_copies_the_type_and_nothing_else() -> None:
+    from descape import object_catalog
+
+    window = _eyedrop_window()
+    try:
+        before = _stale_rotation(window)
+        entry = _fixture_entry(window, _ARCHER_KEY)
+        entry.unit.rotation = _OFF_GRID_FACING
+
+        window.pick_unit_value(entry, (20, 20), Qt.ShiftModifier)
+
+        assert window.units_panel.selected_object_const() == _ARCHER
+        assert window.units_panel.owner_id() == 1, "Shift keeps the owner"
+        assert window._place_rotation == before, "Shift keeps the pending rotation"
+        assert f"Picked {object_catalog.display_name(_ARCHER)} from (20, 20)" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_eyedropping_a_type_the_catalog_lacks_changes_nothing() -> None:
+    from types import SimpleNamespace
+
+    window = _eyedrop_window()
+    try:
+        before = _stale_rotation(window)
+        stranger = SimpleNamespace(player_id=2, unit=SimpleNamespace(unit_const=-12345, rotation=2.0))
+
+        window.pick_unit_value(stranger, (3, 4), Qt.NoModifier)
+
+        assert window.units_panel.selected_object_const() == _HOUSE
+        assert window.units_panel.owner_id() == 1
+        assert window._place_rotation == before
+        assert "from (3, 4) (not in the catalog, unchanged)" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_the_units_eyedropper_works_on_a_file_whose_terrain_failed_verification() -> None:
+    """TASK-356: a Units-mode pick writes UI state only, so the terrain gate
+    is not its own; in Terrain mode the tool greys and hands over to Pan."""
+    window = _window(const=_HOUSE)
+    try:
+        assert window.mode == "units"
+        window.scenario.terrain_write_supported = False
+        window._update_tool_enabled()
+        assert window.eyedropper_action.isEnabled()
+        window.eyedropper_action.setChecked(True)
+        assert window.map_view._tool == "eyedropper"
+
+        view = window.map_view
+        pos = conftest.viewport_pos(view, 20, 20)
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        assert (window.units_panel.selected_object_const(), window.units_panel.owner_id()) == (_ARCHER, 2)
+
+        window.mode_combo.setCurrentText("Terrain")
+        assert not window.eyedropper_action.isEnabled()
+        assert window._current_tool == "pan"
+    finally:
+        _close(window)
+
+
+def test_a_refused_eyedrop_leaves_the_catalog_filter_as_it_was() -> None:
+    from types import SimpleNamespace
+
+    window = _eyedrop_window()
+    try:
+        view = window.units_panel.catalog_view
+        view.filter_edit.setText("house")
+        stranger = SimpleNamespace(player_id=2, unit=SimpleNamespace(unit_const=-12345, rotation=2.0))
+
+        window.pick_unit_value(stranger, (3, 4), Qt.NoModifier)
+
+        assert "(not in the catalog, unchanged)" in _last_status(window)
+        assert view.filter_edit.text() == "house"
+        assert not view.show_hidden_checkbox.isChecked()
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("modifiers", [Qt.NoModifier, Qt.ShiftModifier], ids=["plain", "shift"])
+def test_an_eyedrop_that_reveals_its_row_says_so(modifiers) -> None:
+    """TASK-356, as rotate_place_ghost's gate turn does: a pick that cleared the
+    filter or ticked the editor-hidden box names what it changed."""
+    from types import SimpleNamespace
+
+    from descape import constant_picker, object_catalog
+
+    window = _eyedrop_window()
+    try:
+        view = window.units_panel.catalog_view
+        view.filter_edit.setText("this matches nothing at all")
+        window.pick_unit_value(_fixture_entry(window, _ARCHER_KEY), (20, 20), modifiers)
+        assert window.units_panel.selected_object_const() == _ARCHER
+        assert _last_status(window).endswith("(cleared the catalog filter to show it)")
+
+        builder = SimpleNamespace(player_id=1, unit=SimpleNamespace(unit_const=118, rotation=0.0))
+        assert not view.show_hidden_checkbox.isChecked()
+        window.pick_unit_value(builder, (3, 4), modifiers)
+        assert window.units_panel.selected_object_const() == 118
+        assert _last_status(window).endswith(f'(ticked "{constant_picker.HIDDEN_LABEL}" to show it)')
+
+        # Neither changes on a second pick of a row already shown, so no note.
+        window.pick_unit_value(_fixture_entry(window, _ARCHER_KEY), (20, 20), modifiers)
+        assert "to show it" not in _last_status(window)
+
+        # A class filter that excludes the row is reset by select(), and said so.
+        archer_class = object_catalog.entry(object_catalog.objects(), _ARCHER).class_id
+        combo = view.class_combo
+        other = next(
+            i for i in range(combo.count()) if combo.itemData(i) is not None and combo.itemData(i) != archer_class
+        )
+        combo.setCurrentIndex(other)
+        window.pick_unit_value(_fixture_entry(window, _ARCHER_KEY), (20, 20), modifiers)
+        assert window.units_panel.selected_object_const() == _ARCHER
+        assert combo.currentData() is None
+        assert _last_status(window).endswith("(reset the class filter to show it)")
+    finally:
+        _close(window)
+
+
+def test_repeat_eyedropper_clicks_walk_down_a_stack() -> None:
+    """Real presses through MapView, so this is also the window's wiring."""
+    window = _eyedrop_window()
+    try:
+        view = window.map_view
+        tile = (40, 40)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Stack", [1, 2]):
+            model.add(1, _UNIT_CONST, 40.5, 40.5)
+            model.add(2, _ARCHER, 40.5, 40.5)
+            model.add(1, _ARCHER, 40.5, 40.5)
+        want = [(member.unit.unit_const, member.player_id) for member in view.stack_group_at(tile)]
+        assert len(set(want)) == 3, "each member must be tellable from the others"
+        units_before = sum(len(units) for units in window.scenario.unit_manager.units)
+        pos = conftest.viewport_pos(view, *tile)
+
+        got = []
+        for _ in range(4):
+            view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+            got.append((window.units_panel.selected_object_const(), window.units_panel.owner_id()))
+
+        assert got == [*want, want[0]]
+        assert view._eyedrop_cycle == (tile, 0)
+        assert view._picker_cycle is None, "Pick from map keeps a stack position of its own"
+        assert sum(len(units) for units in window.scenario.unit_manager.units) == units_before, "nothing placed"
+
+        # And the other way round: Pick from map starts at the top and leaves the Eyedropper's position.
+        picked: list = []
+        view.on_unit_pick = picked.append
+        scene = view.mapToScene(pos.toPoint())
+        view._picker_click(scene)
+        view._picker_click(scene)
+        keys = [(member.player_id, member.unit.reference_id) for member in view.stack_group_at(tile)]
+        assert picked == keys[:2]
+        assert view._eyedrop_cycle == (tile, 0)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("reset", ["tool", "mode", "unit_index"])
+def test_a_tool_mode_or_index_switch_restarts_the_eyedropper_at_the_top_of_a_stack(reset) -> None:
+    """TASK-356: the stack position outlived all three, so the next click picked
+    the unit under the one the hover outline shows."""
+    window = _eyedrop_window()
+    try:
+        view = window.map_view
+        tile = (40, 40)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Stack", [1, 2]):
+            model.add(1, _UNIT_CONST, 40.5, 40.5)
+            model.add(2, _ARCHER, 40.5, 40.5)
+        top = view.stack_group_at(tile)[0]
+        pos = conftest.viewport_pos(view, *tile)
+
+        def click():
+            view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+            return window.units_panel.selected_object_const(), window.units_panel.owner_id()
+
+        assert click() == (top.unit.unit_const, top.player_id)
+        assert view._eyedrop_cycle == (tile, 0)
+        if reset == "tool":
+            view.set_tool("pan")
+            view.set_tool("eyedropper")
+        elif reset == "mode":
+            view.set_mode("terrain")
+            view.set_mode("units")
+        else:
+            view.set_unit_index(view._unit_index)
+        assert view._eyedrop_cycle is None
+        assert click() == (top.unit.unit_const, top.player_id), "the next click starts at the top again"
     finally:
         _close(window)

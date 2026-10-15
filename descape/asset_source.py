@@ -256,7 +256,12 @@ def unit_icon_path(icon: int | None, building: bool = False) -> Path | None:
     """The portrait file for a catalog icon index, or None. A building looks
     in BUILDING_ICON_DIR by its "NNN_" prefix first, then falls back to the
     unit set. Extension case varies, so names are matched loosely."""
-    install = get_install_path()
+    return unit_icon_path_in(get_install_path(), icon, building)
+
+
+def unit_icon_path_in(install: Path | None, icon: int | None, building: bool = False) -> Path | None:
+    """unit_icon_path() under an install the caller passes, never read here:
+    the Units catalog's thumbnail worker resolves it on the GUI thread (GH #68)."""
     if install is None or icon is None or icon < 0:
         return None
     if building:
@@ -270,6 +275,62 @@ def unit_icon_path(icon: int | None, building: bool = False) -> Path | None:
     return path if path.is_file() else _find_file(folder, lambda name: name == wanted)
 
 
+def read_unit_icon_in(install: Path | None, icon: int | None, building: bool = False, px: int | None = None):
+    """get_unit_icon() under a passed install, uncached and thread-safe,
+    downscaled to fit px x px when px is given; or None."""
+    arr = _read_rgba(unit_icon_path_in(install, icon, building))
+    if arr is None or px is None:
+        return arr
+    import numpy as np
+    from PIL import Image
+
+    image = Image.fromarray(np.asarray(arr))
+    image.thumbnail((px, px), Image.LANCZOS)
+    return np.array(image)
+
+
+# A byte mask of an uncompressed DDS pixel format -> the byte it selects.
+_DDS_BYTE_MASKS = {0xFF: 0, 0xFF00: 1, 0xFF0000: 2, 0xFF000000: 3}
+_DDPF_ALPHAPIXELS = 0x1
+_DDPF_RGB = 0x40
+_DDS_HEADER_BYTES = 128
+
+
+def _read_dds_rgba_fast(path: Path):
+    """An uncompressed 32-bit DDS as RGBA through numpy, or None for any other
+    layout (Pillow decodes those). Pillow reads this layout with a pure-Python
+    decoder, about 60 ms per 256 px portrait and holding the GIL the whole
+    time, so a decode on the catalog's worker thread froze the GUI anyway
+    (measured, GH #68). Two thirds of the install's portraits are this layout."""
+    import struct
+
+    import numpy as np
+
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < _DDS_HEADER_BYTES or data[:4] != b"DDS ":
+        return None
+    height, width = struct.unpack_from("<2I", data, 12)
+    flags, fourcc, bits, *masks = struct.unpack_from("<I4s5I", data, 80)
+    if not flags & _DDPF_RGB or bits != 32 or fourcc != b"\0\0\0\0":
+        return None
+    count = width * height * 4
+    if width == 0 or height == 0 or len(data) < _DDS_HEADER_BYTES + count:
+        return None
+    channels = [_DDS_BYTE_MASKS.get(mask) for mask in masks[:3]]
+    if None in channels:
+        return None
+    pixels = np.frombuffer(data, np.uint8, count, _DDS_HEADER_BYTES).reshape(height, width, 4)
+    rgba = np.empty((height, width, 4), dtype=np.uint8)
+    for out, byte in enumerate(channels):
+        rgba[..., out] = pixels[..., byte]
+    alpha = _DDS_BYTE_MASKS.get(masks[3]) if flags & _DDPF_ALPHAPIXELS else None
+    rgba[..., 3] = 255 if alpha is None else pixels[..., alpha]
+    return rgba
+
+
 def _read_rgba(path: Path | None):
     """path decoded as a read-only (h, w, 4) uint8 RGBA array, or None."""
     if path is None:
@@ -277,6 +338,11 @@ def _read_rgba(path: Path | None):
     import numpy as np
     from PIL import Image
 
+    if path.suffix.lower() == ".dds":
+        arr = _read_dds_rgba_fast(path)
+        if arr is not None:
+            arr.flags.writeable = False
+            return arr
     try:
         with Image.open(path) as img:
             arr = np.array(img.convert("RGBA"))
@@ -603,6 +669,11 @@ _loaded: set[Path] = set()
 _prefetch_lock = threading.Lock()
 # Bumped by clear_install_caches(), so a load from before it is never served.
 _generation = 0
+
+
+def install_generation() -> int:
+    """How many times clear_install_caches() has run: a key that changes with the install (GH #148's portraits)."""
+    return _generation
 
 
 def _prefetch_pool():

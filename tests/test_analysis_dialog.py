@@ -93,6 +93,199 @@ def test_set_report_replaces_previous_rows() -> None:
     dialog.deleteLater()
 
 
+# --- Refresh (GH #209) ----------------------------------------------------------
+
+
+def _rows(dialog, label: str):
+    """The finding rows of the check labelled `label`, top to bottom."""
+    tree = dialog.tree
+    group = next(tree.topLevelItem(i) for i in range(tree.topLevelItemCount()) if tree.topLevelItem(i).text(0).startswith(label))
+    return group, [group.child(j) for j in range(group.childCount())]
+
+
+def test_refresh_button_sits_in_the_close_row_and_calls_on_refresh() -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QDialogButtonBox
+
+    from descape.analysis_dialog import AnalysisDialog
+
+    calls = []
+    dialog = AnalysisDialog(on_refresh=lambda: calls.append("refresh"))
+    box = dialog.findChild(QDialogButtonBox)
+    assert dialog.refresh_button.text() == "Refresh"
+    assert box.buttonRole(dialog.refresh_button) == QDialogButtonBox.ActionRole
+    assert dialog.refresh_button.toolTip()
+    assert not dialog.refresh_button.autoDefault(), "Enter must not start a re-run"
+    dialog.refresh_button.click()
+    assert calls == ["refresh"]
+    dialog.deleteLater()
+
+    bare = AnalysisDialog()
+    bare.refresh_button.click()
+    bare.deleteLater()
+
+
+def test_a_refill_keeps_the_current_finding_by_identity_not_by_row() -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtCore import Qt
+
+    from descape.analysis_dialog import AnalysisDialog
+    from descape.map_analysis import AnalysisReport, CheckResult, Finding
+
+    report, located, unlocated = _report()
+    selected = []
+    dialog = AnalysisDialog(on_select=selected.append)
+    dialog.set_report(report)
+    _group, rows = _rows(dialog, "Two findings")
+    dialog.tree.setCurrentItem(rows[1])
+    assert selected[-1] == unlocated
+
+    # A new finding above it: the same row number now holds another finding.
+    earlier = Finding("new, sorts first", "error", tile=(1, 1))
+    grown = AnalysisReport((CheckResult("Clean check"), CheckResult("Two findings", (earlier, located, unlocated))))
+    dialog.set_report(grown)
+    group, rows = _rows(dialog, "Two findings")
+    assert dialog.tree.currentItem() is rows[2]
+    assert dialog.tree.currentItem().data(0, Qt.UserRole) == unlocated
+    assert selected[-1] == unlocated, "the window hears about the kept row again, for its marker"
+
+    # The check's own row is kept by its label, though its text carries the count.
+    dialog.tree.setCurrentItem(group)
+    dialog.set_report(report)
+    group, rows = _rows(dialog, "Two findings")
+    assert dialog.tree.currentItem() is group and group.text(0) == "Two findings (2)"
+
+    # A fixed finding is gone: nothing is current, and nothing else is picked for it.
+    dialog.tree.setCurrentItem(rows[0])
+    dialog.set_report(AnalysisReport((CheckResult("Clean check"), CheckResult("Two findings", (unlocated,)))))
+    assert dialog.tree.currentItem() is None
+    assert selected[-1] is None
+    dialog.deleteLater()
+
+
+def test_a_refill_follows_a_moved_unit_and_leaves_a_collapsed_check_collapsed() -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtCore import Qt
+
+    from descape.analysis_dialog import AnalysisDialog
+    from descape.map_analysis import AnalysisReport, CheckResult, Finding
+
+    other = Finding("Oak at (5.5, 5.5)", "warning", unit_key=(0, 100))
+    before = Finding("Archer at (11.3, 10.5)", "warning", unit_key=(1, 201))
+    after = Finding("Archer at (14.3, 10.5)", "warning", unit_key=(1, 201))
+    noise = CheckResult("Elevation", (Finding("a", "error", tile=(1, 1)), Finding("b", "error", tile=(2, 2))))
+    dialog = AnalysisDialog()
+    dialog.set_report(AnalysisReport((noise, CheckResult("Off-grid units", (other, before)))))
+    elevation, _rows_e = _rows(dialog, "Elevation")
+    elevation.setExpanded(False)
+    dialog.tree.setCurrentItem(_rows(dialog, "Off-grid units")[1][1])
+
+    # Same unit in the same check, in another check (not kept) it would be a different finding.
+    dialog.set_report(AnalysisReport((noise, CheckResult("Off-grid units", (after, other)))))
+    group, rows = _rows(dialog, "Off-grid units")
+    assert dialog.tree.currentItem() is rows[0]
+    assert dialog.tree.currentItem().data(0, Qt.UserRole) == after
+    assert not _rows(dialog, "Elevation")[0].isExpanded(), "the collapsed check re-opened"
+    assert group.isExpanded()
+
+    dialog.set_report(AnalysisReport((noise, CheckResult("Other check", (after,)))))
+    assert dialog.tree.currentItem() is None
+    dialog.deleteLater()
+
+
+def test_a_refill_keeps_the_scroll_position_and_the_kept_row_in_view() -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.analysis_dialog import AnalysisDialog
+    from descape.map_analysis import AnalysisReport, CheckResult, Finding
+
+    findings = tuple(Finding(f"finding {i}", "warning", tile=(i, 0)) for i in range(80))
+    dialog = AnalysisDialog()
+    try:
+        dialog.set_report(AnalysisReport((CheckResult("Long check", findings),)))
+        dialog.show()
+        QApplication.processEvents()
+        tree, bar = dialog.tree, dialog.tree.verticalScrollBar()
+        assert bar.maximum() > 40, "the fixture must scroll"
+        bar.setValue(40)
+        tree.setCurrentItem(_rows(dialog, "Long check")[1][42])
+        assert bar.value() == 40, "row 42 is already in view at 40"
+
+        dialog.set_report(AnalysisReport((CheckResult("Long check", findings),)))
+        assert bar.value() == 40
+        assert tree.currentItem().text(1) == "finding 42"
+
+        # Nothing current: the position alone is kept.
+        tree.setCurrentItem(None)
+        dialog.set_report(AnalysisReport((CheckResult("Long check", findings),)))
+        assert bar.value() == 40 and tree.currentItem() is None
+
+        # Thirty rows above the kept one are fixed: the old position would hide it.
+        tree.setCurrentItem(_rows(dialog, "Long check")[1][42])
+        dialog.set_report(AnalysisReport((CheckResult("Long check", findings[30:]),)))
+        kept = tree.currentItem()
+        assert kept.text(1) == "finding 42"
+        assert tree.viewport().rect().contains(tree.visualItemRect(kept).center())
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_refresh_reruns_on_the_edited_map_and_keeps_the_row_its_ring_and_the_focus() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _marker_window()
+    try:
+        view = window.map_view
+        window.analysis_action.trigger()
+        dialog = window._analysis_dialog
+        _group, rows = _rows(dialog, "Illegal elevation steps")
+        before = len(rows)
+        kept = rows[-1].data(0, Qt.UserRole)
+        dialog.tree.setCurrentItem(rows[-1])
+        assert view._analysis_focus == kept.tile and len(view._analysis_markers) == 5
+
+        # A second bump, earlier in the scan: its findings land above the kept row.
+        mm = window.scenario.map_manager
+        mm.terrain[5 * mm.map_width + 5].elevation = 2
+        dialog.refresh_button.setFocus()
+        dialog.refresh_button.click()
+
+        assert window._analysis_dialog is dialog and dialog.isVisible()
+        _group, rows = _rows(dialog, "Illegal elevation steps")
+        assert len(rows) == 2 * before
+        assert view._analysis_markers == _expected_anchors(window) and len(view._analysis_markers) == 10
+        current = dialog.tree.currentItem()
+        assert current.data(0, Qt.UserRole) == kept and current is not rows[before - 1]
+        assert view._analysis_focus == kept.tile, "the kept row's marker lost its ring"
+        assert view.analysis_marker_item()._focus == _top_vertex(view, kept.tile)
+
+        # The window disabled itself, and the dialog with it, for the run.
+        assert window.isEnabled() and not window._busy
+        assert dialog.isEnabled() and dialog.refresh_button.isEnabled()
+        assert dialog.focusWidget() is dialog.refresh_button
+        assert not window.edit_history.is_dirty
+    finally:
+        conftest.close_window(window)
+
+
+def test_refresh_with_no_map_loaded_changes_nothing(monkeypatch) -> None:
+    window = _marker_window()
+    try:
+        window.analysis_action.trigger()
+        dialog = window._analysis_dialog
+        headline = dialog.headline.text()
+        count = dialog.tree.topLevelItemCount()
+        # Not reachable from the UI (closing the map closes the dialog); the callback must cope anyway.
+        monkeypatch.setattr(window, "scenario", None)
+        dialog.refresh_button.click()
+        assert dialog.headline.text() == headline and dialog.tree.topLevelItemCount() == count
+        assert dialog.isEnabled() and window.isEnabled() and not window._busy
+    finally:
+        conftest.close_window(window)
+
+
 def test_menu_action_is_gated_on_a_loaded_map_and_registered_as_a_keybind() -> None:
     from descape import settings
     from descape.viewer import ViewerWindow

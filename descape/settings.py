@@ -504,6 +504,8 @@ _footprint_by_owner: bool | None = None
 # its attack range. Persisted for the same passive-chrome reason, but OFF by
 # default -- it draws over the sprites, so it is opt-in rather than ambient.
 _range_rings: bool | None = None
+# GH #156: each ring in its owner's player colour. Off by default, like GH #143's.
+_range_rings_by_owner: bool | None = None
 # View > Player Cameras (GH #22): a camera glyph on each player's stored
 # starting view tile. Off by default for the same opt-in reason as the rings
 # above -- it draws over the map rather than beside it.
@@ -637,6 +639,21 @@ def set_range_rings(enabled: bool) -> None:
     _range_rings = enabled
     config = _load_config()
     config["range_rings"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_by_owner() -> bool:
+    global _range_rings_by_owner
+    if _range_rings_by_owner is None:
+        _range_rings_by_owner = bool(_load_config().get("range_rings_by_owner", False))
+    return _range_rings_by_owner
+
+
+def set_range_rings_by_owner(enabled: bool) -> None:
+    global _range_rings_by_owner
+    _range_rings_by_owner = enabled
+    config = _load_config()
+    config["range_rings_by_owner"] = enabled
     _save_config(config)
 
 
@@ -813,7 +830,7 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_stack", "Stacked-unit badge text", "#ffd24a"),
     ("unit_stack_background", "Stacked-unit badge background", "#000000"),
     ("footprint_outline", "Footprint outlines", "#c8c8c8"),
-    ("range_ring", "Range ring", "#9ee65a"),
+    ("range_ring", "Range ring", "#404040"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
     ("ruler_label", "Label text", "#ffbe6e"),
     ("ruler_label_outline", "Label outline", "#000000"),
@@ -1279,6 +1296,31 @@ def set_split_sizes(left: int, right: int) -> None:
     _save_config(config)
 
 
+# GH #68: how the Units panel's catalog lists objects. Category and class filter do not persist.
+UNITS_CATALOG_MODES = ("icons", "names", "grid")
+UNITS_CATALOG_MODE_DEFAULT = "icons"
+_units_catalog_mode: str | None = None
+
+
+def get_units_catalog_mode() -> str:
+    global _units_catalog_mode
+    if _units_catalog_mode is None:
+        value = _load_config().get("units_catalog_mode", UNITS_CATALOG_MODE_DEFAULT)
+        _units_catalog_mode = value if value in UNITS_CATALOG_MODES else UNITS_CATALOG_MODE_DEFAULT
+    return _units_catalog_mode
+
+
+def set_units_catalog_mode(mode: str) -> None:
+    """Raises ValueError, writing nothing, on a mode not in UNITS_CATALOG_MODES."""
+    global _units_catalog_mode
+    if mode not in UNITS_CATALOG_MODES:
+        raise ValueError(f"unknown units catalog mode {mode!r}")
+    _units_catalog_mode = mode
+    config = _load_config()
+    config["units_catalog_mode"] = mode
+    _save_config(config)
+
+
 # Map view vs. system log, inside the right pane. Their own constants rather
 # than reusing MIN_SPLIT_PANE, which is a width -- one name for both axes
 # would lie.
@@ -1477,6 +1519,9 @@ class ToolDef:
     # Whether this tool offers "Walls skip occupied tiles" (GH #124), for the
     # tools that commit wall runs. Session-only, like supports_off_grid.
     supports_skip_occupied: bool = False
+    # Whether this tool offers "Moving a gate updates walls" (GH #194), in
+    # Units mode only: the tool that drags units. Session-only, as above.
+    supports_gate_walls: bool = False
     # Which mode(s) this tool's toolbar button shows in; empty means every
     # mode. Drives viewer_common.tool_applicable() and
     # ViewerWindow._update_tool_enabled()'s per-mode visibility loop --
@@ -1535,23 +1580,30 @@ TOOLS: list[ToolDef] = [
         "cliff", "Cliff", stroke_label="Place cliff", default_key="",
         param_widget="cliff", modes=("terrain",),
     ),
+    # One Select in two modes, dispatched on mode like the Eraser: in Terrain
+    # it drags a tile rectangle for Copy/Paste Region (Phase 2.8), in Units it
+    # picks units by click, Ctrl/Shift click and marquee (TASK-252). One
+    # action is the only way to keep "S" in both, since key sequences are
+    # globally unique. is_edit_tool=False like Eyedropper/Ruler: the gesture
+    # is neither a stroke nor a click, so MapView routes it on its own.
+    ToolDef("select", "Select", is_edit_tool=False, default_key="S", modes=("terrain", "units")),
+    # Drags the unit under the cursor, or the whole selection when that unit
+    # is in it (GH #47). Not an edit tool: on_unit_move records the undo step.
+    # Off-grid, Free placement and gate walls apply to a drag, so they show here.
+    ToolDef(
+        "move", "Move", is_edit_tool=False, default_key="V", modes=("units",),
+        supports_off_grid=True, supports_unrestricted=True, supports_gate_walls=True,
+    ),
     # Pick a tile's terrain + elevation into the terrain picker and Level param
     # instead of hunting for them. Reads only -- is_edit_tool=False, no
     # undo record -- and click_only since a drag has no meaning for a pick.
-    # Terrain-mode only: the unit half is gated on a unit-placement tool
-    # existing first (there is no "current unit type" state to write into).
+    # In Units mode it picks a placed unit into the Units catalog instead (type,
+    # owner, facing or variant), on a MapView press branch of its own. After
+    # Select and Move so those two overflow last in Units mode.
     ToolDef(
         "eyedropper", "Eyedropper", is_edit_tool=False, default_key="I",
-        click_only=True, modes=("terrain",),
+        click_only=True, modes=("terrain", "units"),
     ),
-    # Phase 2.8's region select: drags a tile rectangle for Copy/Paste Region
-    # to act on. is_edit_tool=False like Eyedropper/Ruler -- the gesture is
-    # neither a stroke nor a click, so it gets its own mousePressEvent branch
-    # in map_view.py instead of riding EDIT_TOOLS/CLICK_TOOLS. Terrain-mode
-    # only even though a region carries units too -- see the phase's own plan
-    # for why (units still copy/paste; they render in every mode regardless
-    # of which mode the rectangle itself is drawn in).
-    ToolDef("select", "Select", is_edit_tool=False, default_key="S", modes=("terrain",)),
     # Measures, never mutates, so is_edit_tool=False puts it alongside Pan
     # rather than the edit tools. It took "R" from Elevate, which moved to the
     # "E" freed by the old mode_edit -> mode_terrain rename; see
@@ -1669,6 +1721,9 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("edit_scatter_units", "Scatter Units in Region…", ""),
     # GH #144, unbound like the openers around it and inside the edit_* run.
     ("edit_find_replace", "Find and Replace…", ""),
+    # GH #197's Flip Selection pair, unbound like Scatter and Find, inside the edit_* run.
+    ("edit_flip_horizontal", "Flip Horizontal", ""),
+    ("edit_flip_vertical", "Flip Vertical", ""),
     ("edit_settings", "Settings…", ""),
     # Map mirroring (Stage 1: terrain + elevation). Unbound like
     # view_distance_ticks below -- no default suggested, just user-bindable.
@@ -1707,6 +1762,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_selection_owner_colour", "Colour Selection by Owner", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_range_rings", "Range Rings", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_by_owner", "Range Rings: Colour by Owner", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_player_cameras", "Player Cameras", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
@@ -1808,6 +1865,15 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("unit_select_stack", "Select Whole Stack", "Ctrl+K"),
     # GH #125's wall button. Unbound: a duplicate key sequence silently disables both actions.
     ("unit_wall_pick", "Pick Last-Used Wall", ""),
+    # GH #211: move the selected triggers, or the selected conditions and effects when their
+    # list has the focus. Live in those two lists only (Alt+Down opens a focused dropdown).
+    # Kept no wider than the widest other label: a wider one narrows every key box in the tab.
+    ("trigger_move_up", "Move Trigger/Condition/Effect Up", "Alt+Up"),
+    ("trigger_move_down", "Move Trigger/Condition/Effect Down", "Alt+Down"),
+    ("trigger_move_up_far", "Move Trigger/Condition/Effect Up 5", "Alt+Shift+Up"),
+    ("trigger_move_down_far", "Move Trigger/Condition/Effect Down 5", "Alt+Shift+Down"),
+    ("trigger_move_top", "Move Trigger/Condition/Effect to Top", "Alt+Home"),
+    ("trigger_move_bottom", "Move Trigger/Condition/Effect to Bottom", "Alt+End"),
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
@@ -1985,6 +2051,81 @@ def keybind_holder(key_sequence: str, exclude: str = "") -> str | None:
         if action_id != exclude and keybinds.get(action_id, "") == key_sequence:
             return action_id
     return None
+
+
+# The mouse wheel over the map (Settings > Keybinds): one action per modifier
+# slot, matched on the exact modifier set. A registry of its own rather than
+# REBINDABLE_ACTIONS rows, since a wheel is not a key sequence. Two slots may
+# share an action, so there is no collision rule here.
+WHEEL_SLOTS: tuple[str, ...] = ("plain", "ctrl", "shift", "alt")
+WHEEL_SLOT_LABELS: dict[str, str] = {
+    "plain": "Wheel",
+    "ctrl": "Ctrl + Wheel",
+    "shift": "Shift + Wheel",
+    "alt": "Alt + Wheel",
+}
+# Dropdown order. "tool" is whichever of rotate and brush_size applies; a tool
+# action with nothing to act on zooms (see MapView._wheel_action).
+WHEEL_ACTIONS: tuple[str, ...] = (
+    "zoom",
+    "tool",
+    "brush_size",
+    "rotate",
+    "pan_vertical",
+    "pan_horizontal",
+    "none",
+)
+WHEEL_ACTION_LABELS: dict[str, str] = {
+    "zoom": "Zoom",
+    "tool": "Brush size or rotate preview",
+    "brush_size": "Brush size",
+    "rotate": "Rotate preview",
+    "pan_vertical": "Pan up / down",
+    "pan_horizontal": "Pan left / right",
+    "none": "Nothing",
+}
+DEFAULT_WHEEL_BINDINGS: dict[str, str] = {"plain": "zoom", "ctrl": "tool", "shift": "zoom", "alt": "zoom"}
+
+_wheel_bindings: dict[str, str] | None = None
+
+
+def _load_wheel_bindings() -> dict[str, str]:
+    global _wheel_bindings
+    if _wheel_bindings is None:
+        persisted = _load_config().get("wheel_bindings", {})
+        _wheel_bindings = dict(DEFAULT_WHEEL_BINDINGS)
+        if isinstance(persisted, dict):
+            for slot, action in persisted.items():
+                # Unknown slots are ignored; an unknown action keeps only its own slot's default.
+                if slot in DEFAULT_WHEEL_BINDINGS and isinstance(action, str) and action in WHEEL_ACTIONS:
+                    _wheel_bindings[slot] = action
+    return _wheel_bindings
+
+
+def get_wheel_bindings() -> dict[str, str]:
+    """A copy, slot -> action, with every WHEEL_SLOTS slot present."""
+    return dict(_load_wheel_bindings())
+
+
+def set_wheel_binding(slot: str, action: str) -> None:
+    """Raises ValueError, writing nothing, on an unknown slot or action.
+
+    The file holds overrides only: a slot set back to its default loses its
+    key and an empty mapping is dropped, so a later default change still
+    reaches a user who never moved that slot."""
+    if slot not in DEFAULT_WHEEL_BINDINGS:
+        raise ValueError(f"unknown wheel slot {slot!r}")
+    if action not in WHEEL_ACTIONS:
+        raise ValueError(f"unknown wheel action {action!r}")
+    bindings = _load_wheel_bindings()
+    bindings[slot] = action
+    overrides = {s: bindings[s] for s in WHEEL_SLOTS if bindings[s] != DEFAULT_WHEEL_BINDINGS[s]}
+    config = _load_config()
+    if overrides:
+        config["wheel_bindings"] = overrides
+    else:
+        config.pop("wheel_bindings", None)
+    _save_config(config)
 
 
 # -- Settings > Saving ------------------------------------------------------

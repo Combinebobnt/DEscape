@@ -220,6 +220,7 @@ _TOGGLE_ACTION_IDS = (
     "view_footprint_by_owner",
     "view_selection_owner_colour",
     "view_range_rings",
+    "view_range_rings_by_owner",
     "view_player_cameras",
     "view_trigger_overlay",
     "view_layer_terrain_textures",
@@ -552,7 +553,8 @@ def test_the_keybinds_search_box_filters_rows_by_label_or_key_and_hides_empty_se
             file_divider, file_header, _ = sections["<b>File</b>"]
             edit_divider, edit_header, _ = sections["<b>Edit</b>"]
             map_divider, map_header, _ = sections["<b>Map</b>"]
-            assert file_divider is None
+            wheel_divider, _wheel_header, _ = sections["<b>Mouse Wheel</b>"]
+            assert wheel_divider is None and file_divider is not None, "only the first section goes without a divider"
 
             def shown(action_id: str) -> bool:
                 return not dialog._keybind_edits[action_id].isHidden()
@@ -618,6 +620,280 @@ def test_rebinding_a_row_refilters_the_keybinds_search() -> None:
         window.close()
 
 
+# --- the Mouse Wheel rows (GH #172, GH #210) --------------------------------------
+
+
+def _stored_wheel_bindings() -> dict | None:
+    """The config file's own wheel_bindings mapping, or None when it has none."""
+    import yaml
+
+    from descape import settings
+
+    if not settings.CONFIG_PATH.is_file():
+        return None
+    return (yaml.safe_load(settings.CONFIG_PATH.read_text()) or {}).get("wheel_bindings")
+
+
+def _set_wheel_combo(dialog, slot: str, action: str) -> None:
+    from descape import settings
+
+    dialog._wheel_combos[slot].setCurrentIndex(settings.WHEEL_ACTIONS.index(action))
+
+
+def test_mouse_wheel_is_the_first_keybinds_section_and_headers_stay_unique() -> None:
+    from PyQt5.QtWidgets import QGridLayout, QLabel
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        divider, header, rows = dialog._keybind_sections[0]
+        assert header.text() == "<b>Mouse Wheel</b>" and divider is None
+        assert rows, "the Mouse Wheel section has no rows"
+        grid = header.parentWidget().layout()
+        assert isinstance(grid, QGridLayout)
+        assert grid.getItemPosition(grid.indexOf(header))[0] == 0, "Mouse Wheel is not the top row of the tab"
+        # Every later section now draws a divider, File included.
+        assert all(section[0] is not None for section in dialog._keybind_sections[1:])
+
+        # A second build, as test_keybinds_tab_renders_menu_section_headers does: still one header each.
+        keybinds_tab = dialog._build_keybinds_tab()
+        headers = [label.text() for label in keybinds_tab.findChildren(QLabel) if label.text().startswith("<b>")]
+        assert headers.count("<b>Mouse Wheel</b>") == 1
+        assert len(headers) == len(set(headers)), f"duplicate section header(s) in {headers}"
+        assert not dialog._wheel_note.text().startswith("<b>"), "the note would read as a section header"
+        assert dialog._wheel_note.wordWrap()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_the_wheel_combos_list_every_action_and_start_from_the_stored_values() -> None:
+    from PyQt5.QtWidgets import QPushButton
+
+    from descape import settings
+    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.viewer_common import NoWheelComboBox
+
+    settings.set_wheel_binding("plain", "tool")
+    settings.set_wheel_binding("alt", "none")
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            assert list(dialog._wheel_combos) == list(settings.WHEEL_SLOTS)
+            rows = dict(dialog._keybind_sections[0][2])
+            assert list(rows) == [f"wheel_{slot}" for slot in settings.WHEEL_SLOTS]
+            stored = settings.get_wheel_bindings()
+            assert stored == {"plain": "tool", "ctrl": "tool", "shift": "zoom", "alt": "none"}
+            for slot, combo in dialog._wheel_combos.items():
+                assert isinstance(combo, NoWheelComboBox)
+                assert [combo.itemData(i) for i in range(combo.count())] == list(settings.WHEEL_ACTIONS)
+                assert [combo.itemText(i) for i in range(combo.count())] == [
+                    settings.WHEEL_ACTION_LABELS[action] for action in settings.WHEEL_ACTIONS
+                ]
+                assert combo.currentData() == stored[slot]
+                label, row_combo, default_btn = rows[f"wheel_{slot}"]
+                assert label.text() == settings.WHEEL_SLOT_LABELS[slot] and row_combo is combo
+                assert isinstance(default_btn, QPushButton) and default_btn.text() == "Default"
+            # Building the rows is not a change: nothing was logged and nothing rewritten.
+            assert "Wheel binding changed" not in window.status_log.toPlainText()
+            assert _stored_wheel_bindings() == {"plain": "tool", "alt": "none"}
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
+    """TASK-356: at the dialog's default size the combo clipped "Brush size or
+    rotate preview" (190 px field, 225 px label at 96 DPI, offscreen Qt, pinned test font; 276 px after).
+    The wheel combos span the key-box and Default columns; Default sits in Clear's."""
+    from PyQt5.QtWidgets import QApplication, QStyle, QStyleOptionComboBox, QTabWidget
+
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        tabs = dialog.findChild(QTabWidget)
+        dialog.show()
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Keybinds"))
+        for _ in range(4):
+            QApplication.processEvents()
+        combo = dialog._wheel_combos["ctrl"]
+        assert combo.currentData() == settings.DEFAULT_WHEEL_BINDINGS["ctrl"]
+        option = QStyleOptionComboBox()
+        combo.initStyleOption(option)
+        field = combo.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, combo)
+        need = combo.fontMetrics().horizontalAdvance(combo.currentText())
+        assert field.width() - 2 >= need, f"a {field.width()} px field cuts {need} px of {combo.currentText()!r}"
+        # Default still sits beside its combo, in the grid row's last column.
+        _label, _combo, default_btn = next(w for row_id, w in dialog._keybind_sections[0][2] if row_id == "wheel_ctrl")
+        grid = combo.parentWidget().layout()
+        combo_row, combo_col, _rows, combo_span = grid.getItemPosition(grid.indexOf(combo))
+        assert default_btn.text() == "Default"
+        assert grid.getItemPosition(grid.indexOf(default_btn)) == (combo_row, combo_col + combo_span, 1, 1)
+        assert default_btn.geometry().left() > combo.geometry().right()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_a_wheel_combo_change_reaches_the_config_file_and_a_real_wheel_event() -> None:
+    from test_wheel_bindings import _scale, _terrain_window, _wheel_xy
+
+    from descape.viewer import SettingsDialog
+
+    window = _terrain_window("draw")
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            view = window.map_view
+            size, scale = window.brush_size_spin.value(), _scale(view)
+            _wheel_xy(view, (0, 120))
+            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9), "plain wheel should zoom by default"
+            scale = _scale(view)
+
+            _set_wheel_combo(dialog, "plain", "brush_size")
+            assert _stored_wheel_bindings() == {"plain": "brush_size"}
+            assert "Wheel binding changed: Wheel -> Brush size" in window.status_log.toPlainText()
+            _wheel_xy(view, (0, 120))
+            assert window.brush_size_spin.value() == size + 1, "the new binding is not live on the map"
+            assert _scale(view) == scale
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_wheel_default_button_restores_and_leaves_no_stored_key() -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        rows = dict(dialog._keybind_sections[0][2])
+        _set_wheel_combo(dialog, "plain", "none")
+        _set_wheel_combo(dialog, "ctrl", "zoom")
+        assert _stored_wheel_bindings() == {"plain": "none", "ctrl": "zoom"}
+        assert window.map_view._wheel_bindings[int(Qt.ControlModifier)] == "zoom"
+
+        rows["wheel_plain"][2].click()
+        assert dialog._wheel_combos["plain"].currentData() == "zoom"
+        assert _stored_wheel_bindings() == {"ctrl": "zoom"}
+
+        rows["wheel_ctrl"][2].click()
+        assert dialog._wheel_combos["ctrl"].currentData() == "tool"
+        assert _stored_wheel_bindings() is None, "a slot on its default left a stored key behind"
+        assert settings.get_wheel_bindings() == settings.DEFAULT_WHEEL_BINDINGS
+        assert window.map_view._wheel_bindings[int(Qt.ControlModifier)] == "tool"
+        assert window.map_view._wheel_bindings[int(Qt.NoModifier)] == "zoom"
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_two_wheel_slots_may_share_an_action_with_no_warning() -> None:
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        assert settings.get_wheel_bindings()["ctrl"] == "tool"
+        _set_wheel_combo(dialog, "plain", "tool")
+        _set_wheel_combo(dialog, "shift", "tool")
+        bindings = settings.get_wheel_bindings()
+        assert (bindings["plain"], bindings["ctrl"], bindings["shift"]) == ("tool", "tool", "tool")
+        assert [dialog._wheel_combos[slot].currentData() for slot in ("plain", "ctrl", "shift")] == ["tool"] * 3
+        assert dialog._keybind_warning_label.text() == ""
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_the_keybinds_search_finds_wheel_rows_by_slot_and_by_action_and_refilters() -> None:
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        sections = {header.text(): (divider, header) for divider, header, _rows in dialog._keybind_sections}
+        _, wheel_header = sections["<b>Mouse Wheel</b>"]
+        file_divider, file_header = sections["<b>File</b>"]
+        edit_divider, edit_header = sections["<b>Edit</b>"]
+        note = dialog._wheel_note
+
+        def shown_slots() -> list[str]:
+            return [slot for slot in settings.WHEEL_SLOTS if not dialog._wheel_combos[slot].isHidden()]
+
+        def search(text: str) -> list[str]:
+            dialog._keybind_filter_edit.setText(text)
+            return shown_slots()
+
+        assert search("WHEEL") == list(settings.WHEEL_SLOTS)
+        assert not wheel_header.isHidden() and not note.isHidden()
+        assert file_header.isHidden() and file_divider.isHidden()
+
+        assert search("ctrl") == ["ctrl"]  # the slot label
+        assert not wheel_header.isHidden() and not note.isHidden()
+        assert not file_header.isHidden() and not file_divider.isHidden(), "File follows a shown section"
+
+        assert search("zoom") == ["plain", "shift", "alt"]  # the dropdown's current action
+        assert search("brush") == ["ctrl"]
+        row_widgets = dict(dialog._keybind_sections[0][2])
+        assert all(widget.isHidden() for widget in row_widgets["wheel_plain"])
+        assert not any(widget.isHidden() for widget in row_widgets["wheel_ctrl"])
+
+        # Still searching "brush": a change re-filters, both ways.
+        _set_wheel_combo(dialog, "plain", "brush_size")
+        assert shown_slots() == ["plain", "ctrl"]
+        _set_wheel_combo(dialog, "ctrl", "zoom")
+        assert shown_slots() == ["plain"], "a row stayed shown by an action it no longer has"
+
+        assert search("undo") == []
+        assert wheel_header.isHidden() and note.isHidden(), "the note outlived its hidden section"
+        assert not edit_header.isHidden() and edit_divider.isHidden(), "the first shown section drew a divider"
+
+        assert search("no such keybind anywhere") == []
+        assert note.isHidden() and not dialog._keybind_no_match_label.isHidden()
+
+        assert search("") == list(settings.WHEEL_SLOTS)
+        assert not wheel_header.isHidden() and not note.isHidden()
+        assert not file_divider.isHidden() and dialog._keybind_no_match_label.isHidden()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("slot", ["plain", "ctrl"])
+@pytest.mark.parametrize("units", [-120, 120], ids=["down", "up"])
+def test_a_wheel_event_over_a_wheel_combo_leaves_it_unchanged(slot: str, units: int) -> None:
+    """Scrolling the tab over a row must scroll the tab, never rebind the row.
+    Plain sits on index 0, where a stock combo ignores wheel-up anyway, so
+    wheel-down is the half that tells the two apart."""
+    from PyQt5.QtCore import QPoint, QPointF, Qt
+    from PyQt5.QtGui import QWheelEvent
+
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        combo = dialog._wheel_combos[slot]
+        before = combo.currentIndex()
+        assert before == settings.WHEEL_ACTIONS.index(settings.DEFAULT_WHEEL_BINDINGS[slot])
+        center = QPointF(combo.rect().center())
+        event = QWheelEvent(
+            center, center, QPoint(0, 0), QPoint(0, units), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False
+        )
+        combo.wheelEvent(event)
+        assert combo.currentIndex() == before
+        assert not event.isAccepted(), "an accepted event never reaches the scroll area"
+        assert settings.get_wheel_bindings() == settings.DEFAULT_WHEEL_BINDINGS
+        assert _stored_wheel_bindings() is None
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_the_pan_actions_are_registered_and_default_to_the_arrow_keys() -> None:
     from descape import settings
 
@@ -640,6 +916,66 @@ def test_the_view_action_ids_form_one_contiguous_run() -> None:
     prefixes = [a.split("_", 1)[0] for a, _label, _default in settings.REBINDABLE_ACTIONS]
     view_positions = [i for i, p in enumerate(prefixes) if p == "view"]
     assert view_positions == list(range(view_positions[0], view_positions[-1] + 1))
+
+
+def test_gh211_the_trigger_move_shortcuts_are_six_tree_scoped_rows_under_one_header() -> None:
+    """Scoped to the trigger tree and the entry tree, never the window: a
+    window-wide Alt+Down would take the key from every dropdown in the trigger
+    form, where it opens the popup. No auto-repeat: each press is an undo record."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtWidgets import QLabel
+
+    from descape import settings
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    expected = [
+        ("trigger_move_up", "Alt+Up"),
+        ("trigger_move_down", "Alt+Down"),
+        ("trigger_move_up_far", "Alt+Shift+Up"),
+        ("trigger_move_down_far", "Alt+Shift+Down"),
+        ("trigger_move_top", "Alt+Home"),
+        ("trigger_move_bottom", "Alt+End"),
+    ]
+    rows = [(a, label, default) for a, label, default in settings.REBINDABLE_ACTIONS if a.startswith("trigger_")]
+    assert [(a, default) for a, _label, default in rows] == expected
+    for _action_id, label, _default in rows:
+        assert "Trigger" in label and "Condition/Effect" in label, label
+    ids = [a for a, _label, _default in settings.REBINDABLE_ACTIONS]
+    start = ids.index("trigger_move_up")
+    assert ids[start : start + len(expected)] == [a for a, _ in expected], "one contiguous run, so one header"
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        panel = window.trigger_panel
+        for action_id, default in expected:
+            action = window._keybind_actions[action_id]
+            assert action.shortcut() == QKeySequence(default), action_id
+            assert action.shortcut().toString() == default, "the default is in Qt's own spelling"
+            assert action.shortcutContext() == Qt.WidgetWithChildrenShortcut, action_id
+            assert not action.autoRepeat(), action_id
+            assert action.associatedWidgets() == [panel.tree, panel.entry_tree], action_id
+            assert action not in window.actions(), action_id
+        # The label column is as wide as its widest label, and the key boxes get what is left.
+        mine = {label for _action_id, label, _default in rows}
+        others = {label for _a, label, _d in settings.REBINDABLE_ACTIONS} - mine
+        assert max(QLabel(label).sizeHint().width() for label in mine) <= max(
+            QLabel(label).sizeHint().width() for label in others
+        ), "a trigger move label widens the Keybinds label column"
+        dialog = SettingsDialog(window)
+        try:
+            # A freshly built tab, as in the section-header test above.
+            keybinds_tab = dialog._build_keybinds_tab()
+            headers = [label.text() for label in keybinds_tab.findChildren(QLabel) if label.text().startswith("<b>")]
+            assert headers.count("<b>Triggers</b>") == 1, headers
+            for action_id, default in expected:
+                assert dialog._keybind_edits[action_id].keySequence() == QKeySequence(default), action_id
+        finally:
+            dialog.close()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
 
 
 def test_the_pan_ids_reach_map_view_rather_than_a_qaction_shortcut() -> None:

@@ -159,10 +159,17 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   Map` generates every size from (`descape/scenario_new.py` splices a resized
   terrain array into it; see that module's docstring) -- not test-only, so it
   lives with the other package data files instead of under `tests/`. Square,
-  scenario v1.58, `terrain_write_supported`, and **unit-free** -- stripped
-  from a real in-game "Blank" map export via `tools/strip_units.py`, since
-  that map style actually seeds sparse `GRASS_GREEN` ground-scatter doodads
-  rather than producing a literally empty map. `tests/fixtures/
+  scenario v1.59, `terrain_write_supported`, and **unit-free**. Derived, not
+  exported: `tools/gen_blank_template.py` generates it from the 1.58 donor
+  below by setting the three fields that carry a scenario's version
+  (`FileHeader.version`, `DataHeader.version` and the Triggers section's
+  `trigger_version`); regenerate with
+  `.venv/bin/python3 tools/gen_blank_template.py` and commit the result.
+  `tests/test_blank_template.py` pins it three ways: against a fresh
+  generator run, against the game-saved 1.59 oracle below, and against the
+  newest scenario version DEscape has a trigger vocabulary for, so a library
+  pin that brings a new version fails there until the template is
+  refreshed. `tests/fixtures/
   golden_blank_120x120.aoe2scenario` is the older, already-unit-free 120x120
   export that predates that discovery; kept as the strip tool's own no-op
   self-test golden reference (`tests/test_strip_units.py`).
@@ -183,17 +190,35 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   `tests/fixtures/`. A fixture *inside* `examples/` with real buildings/
   units/water/elevation variation would close it; see the plan's "Larger
   fixtures" section for the exact ask (not yet requested).
+- `tests/fixtures/blank_120x120_v158.aoe2scenario`: the 1.58 donor, and the
+  shipped template's own bytes until 1.59. A real in-game "Blank" map export,
+  unit-stripped via `tools/strip_units.py`, since that map style actually
+  seeds sparse `GRASS_GREEN` ground-scatter doodads rather than producing a
+  literally empty map. It is the source `tools/gen_blank_template.py` reads,
+  the donor of the three 1.58 fixtures below (`triggers_120x120`,
+  `find_triggers_120x120`, `units_120x120`), and the donor
+  `tests/test_scenario_new.py` reproduces the two real 1.58 exports from.
+  **A real export, never regenerated.**
+- `tests/fixtures/real_blank_120x120_v159.aoe2scenario`: a blank 120x120 map
+  saved by the 1.59 game editor, untouched. **A byte oracle**:
+  `tests/test_blank_template.py` requires the shipped template to equal it
+  except in three fields a template inherits from its own save (the save
+  timestamp, the stored filename and Player 1's editor camera, which was
+  moved off the centre in this save). The same comparison run on the 1.58
+  donor fails and names the three version fields, which is that test's
+  permanent negative control. Replace it only with a newer game save, never
+  with a generator run.
 - `tests/fixtures/real_blank_{240x240,480x480}.aoe2scenario` -- real
-  AoE2:DE "Blank" map exports (unit-stripped the same way as the donor
-  above), moved from `descape/templates/` once `descape/scenario_new.py`
+  AoE2:DE 1.58 "Blank" map exports (unit-stripped the same way as the 1.58
+  donor above), moved from `descape/templates/` once `descape/scenario_new.py`
   could reproduce them from the 120x120 donor. **Byte oracles, not
   regenerable assets** -- `tests/test_scenario_new.py`'s central test
-  reproduces them from the donor and compares byte-for-byte; regenerating
+  reproduces them from the 1.58 donor and compares byte-for-byte; regenerating
   these files *from* the donor would make that comparison a tautology and
   silently stop testing anything. If they're ever replaced, it must be with
   a fresh real game export, never a generator run.
 - `tests/fixtures/triggers_120x120.aoe2scenario` -- the default tier's only
-  scenario that actually has triggers. Generated from the 120x120 donor above
+  scenario that actually has triggers. Generated from the 1.58 donor above
   by `tools/gen_trigger_fixture.py`; regenerate with
   `.venv/bin/python3 tools/gen_trigger_fixture.py` and commit the result.
   **A test input, not a byte oracle** -- the opposite of `real_blank_*` below,
@@ -223,7 +248,7 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   fixture above exists: every other tracked fixture is unit-free (bar the
   trigger fixture's three, which only back its unit references), and a
   unit-free file passes every phase 3.5a write-path claim trivially.
-  Generated from the 120x120 donor by `tools/gen_units_fixture.py`;
+  Generated from the 1.58 donor by `tools/gen_units_fixture.py`;
   regenerate with `.venv/bin/python3 tools/gen_units_fixture.py` and commit
   the result. **A test input, not a byte oracle**, same convention as
   `triggers_120x120.aoe2scenario`. `tests/test_units_fixture.py` pins the
@@ -239,10 +264,11 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   library's (length 1 holding a NUL) -- same `_game_style_bytes()` helper
   the trigger fixture uses, now shared via `tools/_fixture_bytes.py`.
 - `tests/fixtures/v159_units_triggers.aoe2scenario` -- the default tier's
-  only scenario version 1.59 file, read through AoE2ScenarioParser's own
-  v1.59 definitions. Generated from the 120x120 donor
-  by `tools/gen_v159_fixture.py` (version fields patched to 1.59, then units
-  and triggers added through the library); regenerate with
+  only scenario version 1.59 file with units and triggers, read through
+  AoE2ScenarioParser's own v1.59 definitions. Generated from the shipped
+  1.59 template by `tools/gen_v159_fixture.py` (units and triggers added
+  through the library; the template already carries the version, trigger
+  version included); regenerate with
   `.venv/bin/python3 tools/gen_v159_fixture.py` and commit the result. **A
   test input, not a byte oracle.** `tests/test_v159_load_path.py` pins it
   against a fresh generator run. 11 units on GAIA and Players 1-2 carrying
@@ -315,8 +341,10 @@ the check itself.
 
 ## Adding a test
 
-See the parent migration plan's "What a new feature's test looks like"
-section for the per-TODO-version guidance. Rule of thumb: a check
+Test logic against synthetic data, or a file from `tests/fixtures/` (copied
+to `tmp_path` before anything writes to it), in the default tier. Mark a test `gui` only for the part
+that needs a live `ViewerWindow`, and `corpus` only when it needs the real
+scenario corpus. Rule of thumb: a check
 belongs in the default tier unless it needs the real corpus or takes more
 than a second. New `tools/verify_*.py` scripts are not the convention
 going forward.

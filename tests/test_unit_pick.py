@@ -1586,9 +1586,10 @@ def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) 
 
 
 # Per file, (groups, hidden units), re-measured rather than trusted. Summed over
-# the full corpus: 831 groups / 1152 hidden = the sizing plan's 826 / 1147 plus
+# the full corpus: 830 groups / 1151 hidden = the sizing plan's 826 / 1147 plus
 # its 5 duplicate-building cases, which that plan counted separately, less the
-# 2 old-allies groups GH #121 dissolved (a 1x1 unit on a now 3x1 blocker's point).
+# 2 old-allies groups GH #121 dissolved (a 1x1 unit on a now 3x1 blocker's point),
+# plus the 1 El Cid 4 group GH #178's 2x2 fish made (a Shore Fish under a Perch).
 _STACKS_PER_FILE = {
     "0_June_Event_Scenario.aoe2scenario": (14, 14),
     "2_Joan_coop_1_v0_13.aoe2scenario": (13, 14),
@@ -1600,7 +1601,7 @@ _STACKS_PER_FILE = {
     "C2_ElCid_coop_1_v0_16.aoe2scenario": (90, 92),
     "C2_ElCid_coop_2_v0_13.aoe2scenario": (19, 19),
     "C2_ElCid_coop_3_v0_12.aoe2scenario": (14, 26),
-    "C2_ElCid_coop_4_v0_13.aoe2scenario": (53, 53),
+    "C2_ElCid_coop_4_v0_13.aoe2scenario": (54, 54),  # (53, 53) before GH #178's 2x2 Perch at (60, 4)
     "C2_ElCid_coop_5_v0_14.aoe2scenario": (18, 18),
     "C2_ElCid_coop_6_v0_13.aoe2scenario": (17, 21),
     "F7_2_Dos Pilas (648).aoe2scenario": (91, 102),
@@ -1614,8 +1615,8 @@ _STACKS_PER_FILE = {
 
 
 def test_the_per_file_stack_table_sums_to_the_sizing_measurement() -> None:
-    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2
-    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2
+    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1
+    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1
 
 
 @pytest.mark.corpus

@@ -82,6 +82,7 @@ from AoE2ScenarioParser.objects.data_objects.unit import Unit
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
 from descape import (
+    cliff_catalog,
     garrison,
     gate_orientation,
     library_compat,
@@ -930,7 +931,9 @@ class UnitEditModel:
         assign the value as given (unit_variant.cycle_step()/random_variant()
         produce it), and refuse loudly, never a silent no-op, any const
         unit_variant.is_cyclable() rejects. Walls, cliffs and gates stay
-        verbatim because the game re-derives their index from neighbours.
+        verbatim because the game re-derives their index from neighbours; a
+        value derived from those neighbours goes through set_wall_variant()
+        or set_cliff_frame() instead.
         """
         if not unit_variant.is_cyclable(unit.unit_const):
             raise ValueError(
@@ -947,8 +950,10 @@ class UnitEditModel:
     def set_wall_variant(self, unit: Unit, index: int) -> None:
         """Writes a wall's neighbour-derived shape index to `rotation`, for
         Place Unit's wall-run junction rewrites (2026-09-19 wall-runs plan,
-        folded into Place Unit by GH #98) and the walls beside a gate Place
-        Unit puts over a run (GH #159, wall_run.apply_gate_plan).
+        folded into Place Unit by GH #98), the walls beside a gate Place
+        Unit puts over a run (GH #159, wall_run.apply_gate_plan) and the
+        walls beside a moved gate's old and new site (GH #194,
+        wall_run.apply_gate_move_plan).
 
         The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
         and the reason it is allowed at all: the game re-derives a wall's
@@ -985,6 +990,41 @@ class UnitEditModel:
         player, position = self._locate(unit)
         self._maybe_capture_field_delta(player, position, unit)
         unit.rotation = float(index)
+        self._blobs[player][position] = None
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def set_cliff_frame(self, unit: Unit, frame: int) -> None:
+        """Writes a cliff's shape frame to `rotation` and
+        `initial_animation_frame`, for a Cliff drag's join rewrites (GH #44):
+        an existing end cap or lone piece that gains a neighbour from the
+        drag takes the frame the measured shape table gives its new
+        neighbours at its own size (cliff_chain.ChainStroke.rewrites()).
+
+        An exception to AGENTS.md's "verbatim" rule on set_wall_variant()'s
+        ground: the value is derived from the neighbours the piece now has,
+        not picked. Deliberately not a loosening of set_variant(), which
+        still excludes cliffs.
+
+        Scope, refused loudly rather than silently no-op'd: a cliff const,
+        and a frame inside that const's own frame count and under 24 (with
+        no install frame_count() falls back to the .dat's 25, and no family
+        has a frame 24). Always the literal integer, and both fields
+        together: they are equal on every corpus cliff. The const, x, y, z
+        and reference_id are never touched.
+        """
+        if unit.unit_const not in unit_sprites.cliff_consts():
+            raise ValueError(
+                f"unit_const {unit.unit_const} is not a cliff const whose `rotation` is a "
+                f"neighbour-derived shape frame -- refusing to transform it"
+            )
+        limit = min(24, cliff_catalog.frame_count(unit.unit_const))
+        if frame not in range(limit):
+            raise ValueError(f"cliff frame must be 0..{limit - 1} for unit_const {unit.unit_const}, got {frame!r}")
+        player, position = self._locate(unit)
+        self._maybe_capture_field_delta(player, position, unit)
+        unit.rotation = float(frame)
+        unit.initial_animation_frame = int(frame)
         self._blobs[player][position] = None
         self._dirty = True
         self._bump_unit_gen()

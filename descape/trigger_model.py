@@ -443,19 +443,25 @@ def moved_section_display_order(
     return [index for block in blocks for index in block]
 
 
+# GH #211: how far Shift+click on ▲▼ and the "far" shortcuts move, as the game editor does.
+MOVE_FAR_STEPS = 5
+
+
 def moved_display_order_block(order: Sequence[int], indices: Sequence[int], delta: int) -> list[int]:
-    """A new display order with every member at list `indices` moved one
-    display slot by `delta` (+1 = Move Down, -1 = Move Up), keeping their
+    """A new display order with every member at list `indices` moved by
+    `delta` display slots (+1 = Move Down, -1 = Move Up), keeping their
     relative order. The selection may be non-contiguous.
 
     Generic over a permutation: `order` is trigger_display_order for the
     trigger list, or one trigger's condition_order / effect_order
     (move_entries(), GH #213).
 
-    Members are visited front-to-back for -1 and back-to-front for +1. One
-    whose neighbour in that direction is also selected and did not move, or
-    which sits at the boundary, stays put, so a block pressed against an end
-    compresses rather than wrapping. Raises IndexError when an index is not in
+    One pass moves every member one slot. Members are visited front-to-back
+    going up and back-to-front going down. One whose neighbour in that
+    direction is also selected and did not move, or which sits at the
+    boundary, stays put, so a block pressed against an end compresses rather
+    than wrapping. A larger `delta` (GH #211) is that many passes, stopping at
+    the first that changes nothing. Raises IndexError when an index is not in
     `order`, like moved_display_order(); button enablement is the guard.
     """
     moved = list(order)
@@ -463,17 +469,34 @@ def moved_display_order_block(order: Sequence[int], indices: Sequence[int], delt
     for index in wanted:
         if index not in moved:
             raise IndexError(f"index {index} is not in the display order")
-    slots = sorted(moved.index(index) for index in wanted)
-    if delta > 0:
-        slots.reverse()
-    blocked: set[int] = set()
-    for slot in slots:
-        target = slot + delta
-        if not 0 <= target < len(moved) or target in blocked:
-            blocked.add(slot)
-            continue
-        moved[slot], moved[target] = moved[target], moved[slot]
+    step = 1 if delta > 0 else -1
+    for _ in range(abs(delta)):
+        slots = sorted(moved.index(index) for index in wanted)
+        if step > 0:
+            slots.reverse()
+        blocked: set[int] = set()
+        for slot in slots:
+            target = slot + step
+            if not 0 <= target < len(moved) or target in blocked:
+                blocked.add(slot)
+                continue
+            moved[slot], moved[target] = moved[target], moved[slot]
+        if len(blocked) == len(slots):
+            break
     return moved
+
+
+def block_room(order: Sequence[int], indices: Sequence[int], delta: int) -> int:
+    """How many slots the block at list `indices` can move in `delta`'s
+    direction before its leading member (the lowest slot going up, the highest
+    going down) reaches that end of `order`. Moving at most this far keeps a
+    split selection's spacing. Raises IndexError when an index is not in
+    `order`, or there is none."""
+    wanted = set(indices)
+    slots = [slot for slot, index in enumerate(order) if index in wanted]
+    if not slots or len(slots) != len(wanted):
+        raise IndexError(f"indices {sorted(wanted)} are not all in the display order")
+    return min(slots) if delta < 0 else len(order) - 1 - max(slots)
 
 
 def display_order_moved_to_slot(
@@ -499,6 +522,57 @@ def display_order_moved_to_slot(
     at = target_slot - sum(1 for slot in range(target_slot) if order[slot] in wanted)
     rest[at:at] = block
     return rest
+
+
+def _section_edge_move(
+    order: Sequence[int], parts: Sequence[trigger_organize.Section], indices: Sequence[int], top: bool
+) -> tuple[str, list[int]]:
+    """(refusal, new order) for section_edge_refusal() and moved_to_section_edge()."""
+    wanted = set(indices)
+    if not wanted:
+        raise ValueError("no trigger to move")
+    if any(section.header_index in wanted for section in parts):
+        return "a section header moves with Section Up/Down", list(order)
+    homes = [section for section in parts if wanted.intersection(section.member_indices)]
+    if len(homes) != 1 or not wanted.issubset(homes[0].member_indices):
+        return "the selection spans sections", list(order)
+    home = homes[0]
+    if top:
+        target = 0 if home.header_index is None else list(order).index(home.header_index) + 1
+    else:
+        members = set(home.member_indices)
+        target = max(slot for slot, index in enumerate(order) if index in members) + 1
+    moved = display_order_moved_to_slot(order, indices, target)
+    return ("already there" if moved == list(order) else ""), moved
+
+
+def section_edge_refusal(
+    order: Sequence[int], parts: Sequence[trigger_organize.Section], indices: Sequence[int], top: bool
+) -> str:
+    """Why the triggers at list `indices` cannot move to the top (`top`) or
+    the bottom of their own section (GH #211), or "" when they can: a section
+    header is selected, the selection spans sections, or it is already there.
+    The one source of that wording, for the tooltips, menus and status line.
+
+    `parts` is a trigger_organize.sections() partition, read for membership
+    and header identity only. Where each trigger sits is read from `order`,
+    so a partition whose member order is stale still answers correctly.
+    Raises ValueError for an empty selection."""
+    return _section_edge_move(order, parts, indices, top)[0]
+
+
+def moved_to_section_edge(
+    order: Sequence[int], parts: Sequence[trigger_organize.Section], indices: Sequence[int], top: bool
+) -> list[int]:
+    """A new display order with the triggers at list `indices` gathered into
+    one block, in their current display order, just below their section's
+    divider (`top`; slot 0 for the leading section) or just past its last
+    member. Section membership never changes; a file with no divider is one
+    section. Raises ValueError where section_edge_refusal() gives a reason."""
+    refusal, moved = _section_edge_move(order, parts, indices, top)
+    if refusal:
+        raise ValueError(f"cannot move to the section's {'top' if top else 'bottom'}: {refusal}")
+    return moved
 
 
 def display_order_with_block_inserted(
@@ -612,7 +686,9 @@ def remove_entries(trigger, refs: Sequence[tuple[str, int]]) -> tuple[str, int] 
     return (first_kind, after[min(lowest, len(after) - 1)])
 
 
-def _moved_entry_orders(trigger, refs: Sequence[tuple[str, int]], delta: int) -> dict[str, list[int]]:
+def _moved_entry_orders(
+    trigger, refs: Sequence[tuple[str, int]], delta: int, to_edge: bool = False
+) -> dict[str, list[int]]:
     """The order each kind would get from move_entries(), for the kinds it changes."""
     moved = {}
     for kind in ENTRY_KINDS:
@@ -620,30 +696,38 @@ def _moved_entry_orders(trigger, refs: Sequence[tuple[str, int]], delta: int) ->
         if not indices:
             continue
         order = entry_display_order(trigger, kind)
-        target = moved_display_order_block(order, indices, delta)
+        # Here, for both branches: the slot helper raises ValueError, which the gate does not catch.
+        if any(index not in order for index in indices):
+            raise IndexError(f"no {kind} at one of {indices} (have {len(order)})")
+        if to_edge:
+            target = display_order_moved_to_slot(order, indices, 0 if delta < 0 else len(order))
+        else:
+            target = moved_display_order_block(order, indices, delta)
         if target != order:
             moved[kind] = target
     return moved
 
 
-def would_move_entries(trigger, refs: Sequence[tuple[str, int]], delta: int) -> bool:
+def would_move_entries(trigger, refs: Sequence[tuple[str, int]], delta: int, to_edge: bool = False) -> bool:
     """Whether move_entries() would change anything: the gate for the Move
     buttons, and for opening an undo record at all. False for a stale ref."""
     try:
-        return bool(_moved_entry_orders(trigger, refs, delta))
+        return bool(_moved_entry_orders(trigger, refs, delta, to_edge))
     except IndexError:
         return False
 
 
-def move_entries(trigger, refs: Sequence[tuple[str, int]], delta: int) -> bool:
-    """Move the conditions and effects at `refs` one display slot up (`delta`
-    -1) or down (+1), each kind as a block inside its own list
-    (moved_display_order_block()). Returns whether anything moved.
+def move_entries(trigger, refs: Sequence[tuple[str, int]], delta: int, to_edge: bool = False) -> bool:
+    """Move the conditions and effects at `refs` up (`delta` < 0) or down by
+    `abs(delta)` display slots, each kind as a block inside its own list
+    (moved_display_order_block()). With `to_edge` (GH #211) each kind's refs
+    go, gathered into one block, to the top or bottom of its list instead and
+    only `delta`'s sign is read. Returns whether anything moved.
 
     Permutes condition_order / effect_order only, never the lists, as the game
     editor does: a list index keeps naming the same entry.
     """
-    moved = _moved_entry_orders(trigger, refs, delta)
+    moved = _moved_entry_orders(trigger, refs, delta, to_edge)
     for kind, order in moved.items():
         set_entry_order(trigger, kind, order)
     return bool(moved)

@@ -63,12 +63,15 @@ UNRESTRICTED_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_u
 # Tools that offer "Walls skip occupied tiles" (GH #124); see
 # ToolDef.supports_skip_occupied.
 SKIP_OCCUPIED_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_skip_occupied)
-# The Ruler and Eyedropper are the only tools that are neither an edit tool
-# nor Pan, so they can't be recognised by set membership the way the four
-# sets above are.
+# Tools that offer "Moving a gate updates walls" (GH #194); see
+# ToolDef.supports_gate_walls.
+GATE_WALLS_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_gate_walls)
+# The tools that are neither an edit tool nor Pan, so they can't be
+# recognised by set membership the way the sets above are.
 TOOL_RULER = "ruler"
 TOOL_EYEDROPPER = "eyedropper"
 TOOL_SELECT = "select"
+TOOL_MOVE = "move"
 
 # Which mode(s) each tool's toolbar button shows in -- see
 # settings.ToolDef.modes.
@@ -254,6 +257,14 @@ class IndeterminateSpinBox(_IndeterminateMixin, QSpinBox):
 
 class IndeterminateDoubleSpinBox(_IndeterminateMixin, QDoubleSpinBox):
     pass
+
+
+class NoWheelComboBox(QComboBox):
+    """A combo the mouse wheel cannot change: the event is ignored, so the
+    scroll area the combo sits in scrolls instead of the choice moving."""
+
+    def wheelEvent(self, event) -> None:  # Qt override
+        event.ignore()
 
 
 class KeepOpenMenu(QMenu):

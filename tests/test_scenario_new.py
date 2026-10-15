@@ -13,6 +13,13 @@ real AoE2:DE exports (moved from descape/templates/, see scenario_io.py's
 BLANK_TEMPLATE_SIZES comment) that this module's splice reproduces
 byte-for-byte modulo exactly one deliberately-inherited field.
 
+Those two exports are 1.58 files, so that one test splices the 1.58 donor,
+tests/fixtures/blank_120x120_v158.aoe2scenario: the real export the shipped
+template was until 1.59, and the file tools/gen_blank_template.py now
+generates the shipped 1.59 template from. Every other test here runs on the
+shipped donor. tests/test_blank_template.py holds the 1.59 comparison, the
+shipped template against a blank map saved by the 1.59 game editor.
+
 These two fixtures are byte oracles, not regenerable assets. Regenerating them
 from the donor via this same generator would make the comparison a tautology
 and silently stop testing anything -- never do that; re-export from the real
@@ -49,6 +56,7 @@ from descape.scenario_write import _compress_bytes
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 REAL_ORACLE_PATHS = {240: FIXTURES / "real_blank_240x240.aoe2scenario", 480: FIXTURES / "real_blank_480x480.aoe2scenario"}
+V158_DONOR_PATH = FIXTURES / "blank_120x120_v158.aoe2scenario"
 
 DONOR_FILENAME_FIELD = b"blank120.aoe2scenario"
 
@@ -56,6 +64,12 @@ DONOR_FILENAME_FIELD = b"blank120.aoe2scenario"
 @pytest.fixture(scope="module")
 def donor():
     return load_map_and_units(BLANK_TEMPLATE_PATH)
+
+
+@pytest.fixture(scope="module")
+def v158_donor():
+    """The real 1.58 export, for the one test whose oracles are 1.58 exports."""
+    return load_map_and_units(V158_DONOR_PATH)
 
 
 def test_generate_120_is_byte_identity_with_donor(donor) -> None:
@@ -66,7 +80,8 @@ def test_generate_120_is_byte_identity_with_donor(donor) -> None:
 
 
 @pytest.mark.parametrize("tiles", sorted(REAL_ORACLE_PATHS))
-def test_generated_matches_real_game_export(donor, tiles: int) -> None:
+def test_generated_matches_real_game_export(v158_donor, tiles: int) -> None:
+    donor = v158_donor  # the real exports are 1.58, so the shipped 1.59 donor cannot reproduce them
     oracle = load_map_and_units(REAL_ORACLE_PATHS[tiles])
     generated = blank_body(donor, tiles)
 
@@ -233,7 +248,7 @@ def test_map_size_precedes_terrain_block_in_every_corpus_file(scenario_path) -> 
     raw (map_width, map_height) s32 pair sits at terrain_block_offset - 8 in
     every real file, not just the three templates this module was designed
     against. Confirmed passing on the full examples/ corpus (scenario
-    versions 1.37-1.58) -- this is what would catch a future DE scenario
+    versions 1.37-1.59) -- this is what would catch a future DE scenario
     version reordering Map's tail fields."""
     scenario = load_map_and_units(scenario_path)
     if not scenario.terrain_write_supported:
