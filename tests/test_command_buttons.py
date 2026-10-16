@@ -153,3 +153,37 @@ def test_home_slots_say_where_it_is_trained_today() -> None:
     assert command_buttons.home_slots(22, TECH) == ((_TOWN_CENTER, 6),)
     assert (command_buttons.BUILDER_UNIT, 1) in command_buttons.home_slots(_HOUSE, UNIT)
     assert command_buttons.home_slots(9999, UNIT) == ()
+
+
+# -- GH #230: the civ filter -----------------------------------------------------
+
+
+def _spanish():
+    from descape import civ_availability
+
+    return civ_availability.keeper(14, civ_availability.NO_OVERRIDES)
+
+
+def test_occupants_keeps_only_what_the_predicate_accepts() -> None:
+    castle = command_buttons.occupants(82, UNIT, keep=_spanish())
+    assert set(castle[1]) <= {771, 773} and 771 in castle[1]
+    assert command_buttons.occupants(82, UNIT)[1] != castle[1]
+
+
+def test_a_blocker_the_civ_lacks_does_not_hide_the_button() -> None:
+    """Cavalry Archer 39 sits at Archery Range button 3; Spanish have none."""
+    assert command_buttons.blocker(74, 87, 3) == 39
+    assert command_buttons.blocker(74, 87, 3, _spanish()) is None
+
+
+def test_a_unit_covers_the_techs_in_its_slot() -> None:
+    covered = command_buttons.covered_techs(12, 6)
+    assert 222 in covered, "Man-At-Arms at Barracks button 6"
+    assert command_buttons.covered_techs(12, 8) == ()
+    assert command_buttons.covered_techs(118, 1) == (), "the build menus hold no techs"
+
+
+def test_a_tech_is_hidden_by_a_unit_in_its_slot() -> None:
+    assert command_buttons.covering_unit(22, 12, 1) == 74, "Loom at Barracks button 1 sits under the Militia"
+    assert command_buttons.covering_unit(22, 109, 6) is None, "Loom already sits there"
+    assert command_buttons.covering_unit(22, 12, 8) is None

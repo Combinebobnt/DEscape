@@ -967,6 +967,8 @@ TRIGGER_STATUS_MARKER_DEFAULT = "color"
 _TRIGGER_STATUS_MARKER_IDS = tuple(mid for mid, _label in TRIGGER_STATUS_MARKERS)
 _trigger_status_marker: str | None = None
 _trigger_status_color_ok_rows: bool | None = None
+# GH #230: the button grid's "Show all triggers' changes" checkbox.
+_button_grid_all_triggers: bool | None = None
 
 
 def get_trigger_status_color_label(status_id: str) -> str:
@@ -1042,6 +1044,24 @@ def set_trigger_status_color_ok_rows(enabled: bool) -> None:
     _trigger_status_color_ok_rows = bool(enabled)
     config = _load_config()
     config["trigger_status_color_ok_rows"] = bool(enabled)
+    _save_config(config)
+
+
+def get_button_grid_all_triggers() -> bool:
+    """Whether the trigger editor's button grid also applies every other
+    train and research location effect for the same player (GH #230)."""
+    global _button_grid_all_triggers
+    if _button_grid_all_triggers is None:
+        raw = _load_config().get("button_grid_all_triggers", False)
+        _button_grid_all_triggers = raw if isinstance(raw, bool) else False
+    return _button_grid_all_triggers
+
+
+def set_button_grid_all_triggers(enabled: bool) -> None:
+    global _button_grid_all_triggers
+    _button_grid_all_triggers = bool(enabled)
+    config = _load_config()
+    config["button_grid_all_triggers"] = bool(enabled)
     _save_config(config)
 
 

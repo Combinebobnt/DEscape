@@ -86,6 +86,8 @@ UNIT_ICON_DIR = "widgetui/textures/ingame/units"
 UNIT_ICON_NAME = "{icon:03d}_50730.dds"
 # GH #148: buildings index a separate set, named "{icon:03d}_<name>.dds" (007_castle.DDS).
 BUILDING_ICON_DIR = "widgetui/textures/ingame/buildings"
+# GH #230: tech icons, named "{icon:03d}_<name>.DDS" like buildings (006_loom.DDS).
+TECH_ICON_DIR = "widgetui/textures/ingame/tech"
 # GH #148: the stat icons the game's editorbottomunitspanel.json uses, as plain 66 px RGBA PNGs.
 STAT_ICON_DIR = "widgetui/textures/ingame/staticons"
 # GH #20: particle effects, one <name>.json each. An effect's AtlasFile is relative to this folder.
@@ -172,6 +174,7 @@ def clear_install_caches() -> None:
     _forget_prefetches()
     _string_table.cache_clear()
     get_unit_icon.cache_clear()
+    get_tech_icon.cache_clear()
     get_stat_icon.cache_clear()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
@@ -358,6 +361,21 @@ def get_unit_icon(icon: int | None, building: bool = False):
     as a read-only (h, w, 4) uint8 RGBA array, or None (no install, no file,
     a decode failure)."""
     return _read_rgba(unit_icon_path(icon, building))
+
+
+def tech_icon_path(icon: int | None) -> Path | None:
+    """The tech icon file for a catalog tech icon index, by its "NNN_" prefix, or None."""
+    install = get_install_path()
+    if install is None or icon is None or icon < 0:
+        return None
+    prefix = f"{icon:03d}_"
+    return _find_file(install / TECH_ICON_DIR, lambda name: name.startswith(prefix) and name.endswith(".dds"))
+
+
+@lru_cache(maxsize=64)
+def get_tech_icon(icon: int | None):
+    """tech_icon_path() as get_unit_icon()'s read-only RGBA array, or None."""
+    return _read_rgba(tech_icon_path(icon))
 
 
 @lru_cache(maxsize=16)

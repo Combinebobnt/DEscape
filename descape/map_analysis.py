@@ -38,6 +38,28 @@ was missing in the official editor), so it is a WARNING. Its message states
 only that measured fact: whether the game drops such an object on its own
 is unconfirmed.
 
+GH #230's "Train and research buttons" check reports a Change Train
+Location, Add Train Location or Change Research Location effect whose button
+won't show or that takes another one away, one finding per effect with the
+worst reason first: the unit, tech or building is not available to the
+player's civ (civ_availability, which the game's behaviour matched on
+2026-10-16) or is in its Disables list (a building placed on the map counts
+as available), a lower-id unit the civ has hides it,
+a unit covers a tech in the slot or a tech lands under a unit (measured: a
+unit put on Barracks button 6 left Long Swordsman unresearchable, and
+Chemistry put on Barracks button 1 stayed under the Militia), a
+villager id or the builder's More/Cancel slot, and a value with no button,
+all WARNING. Value 0 (no button) is INFO, as it may be on purpose. A random
+or unset civ skips the civ reasons. A generic tech the player's starting age
+already researched (measured 2026-10-16) gets no button either, and is not
+covered by a unit. Moving or disabling the other unit
+anywhere in the file keeps the hidden and covered reasons quiet. A tech
+the file enables or researches makes the units it gives available. Measured
+(2026-10-16) on three private test scenarios: 5 warnings, all true (four
+buildings trained at Villager 293, an elite unit the file never enables);
+before the `gives` and placed-building rules it fired 21, 16 of them false.
+examples/ was not available for this measurement.
+
 Nothing here constructs an edit model, and nothing may be named verify_* or
 *_supported (both already mean byte-layout trust elsewhere).
 """
@@ -53,7 +75,8 @@ import numpy as np
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
-from descape import library_compat
+from descape import civ_availability, command_buttons, library_compat, object_catalog, train_locations
+from descape.command_buttons import TECH, UNIT
 from descape.fill_tools import connected_regions
 from descape.iso_geometry import MAX_ELEVATION, MIN_ELEVATION
 from descape.messages_fields import STRING_ID_UNSET
@@ -528,6 +551,89 @@ def check_stranded_units(loaded: LoadedScenario) -> CheckResult:
     return _capped(label, findings)
 
 
+def _location_label(edit: train_locations.LocationEdit) -> str:
+    return f"{edit.label} (effect {edit.index})"
+
+
+def _location_problem(
+    edit: train_locations.LocationEdit, loaded: LoadedScenario, overrides, moved_away, placed: frozenset[int]
+) -> tuple[str, Severity] | None:
+    """(reason, severity) for the worst thing wrong with `edit`'s button, or None."""
+    building, value, mover, kind = edit.building, edit.value, edit.mover, edit.kind
+    if value == 0:
+        return "button slot 0 gives no button", "info"
+    if command_buttons.slot(value) is None:
+        return f"button slot {value} is no button (1-15, or 21-35 for page 2)", "warning"
+    if building in command_buttons.VILLAGER_IDS:
+        return f"trained at Villager {building} moves nothing; use the builder (118)", "warning"
+    reserved = command_buttons.reserved_label(building, value)
+    if reserved:
+        return f"slot {value} is the build menu's {reserved} button, so it has no visible button", "warning"
+    civ = civ_availability.player_civ(loaded, edit.player)
+    civ_text = civ_availability.civ_name(loaded, edit.player)
+    start_age = civ_availability.player_start_age(loaded, edit.player)
+    name = object_catalog.tech_name(mover) if kind == TECH else object_catalog.display_name(mover)
+    reason = civ_availability.missing(civ, overrides, mover, kind, start_age)
+    if reason:
+        text = train_locations.missing_text(reason, kind, name, civ_text, edit.player, start_age)
+        how = train_locations.enable_hint(reason, kind)
+        return f"{text}, so it gets no button" + (f"; enable it with {how}" if how else ""), "warning"
+    if (
+        not command_buttons.is_builder(building)
+        and building not in placed
+        and not civ_availability.available(civ, overrides, building, UNIT)
+    ):
+        return f"{civ_text} can't build {object_catalog.display_name(building)}", "warning"
+
+    def keep(id_: int, item_kind: str) -> bool:
+        if (id_, item_kind) in moved_away or overrides.turned_off((id_, item_kind)):
+            return False
+        return not civ_availability.missing(civ, overrides, id_, item_kind, start_age)
+
+    where = f"{command_buttons.building_name(building)}, {command_buttons.slot_label(value)}"
+    if kind == UNIT:
+        hider = command_buttons.blocker(mover, building, value, keep)
+        if hider is not None:
+            return f"{name} is hidden by {object_catalog.display_name(hider)} (the lower id shows) at {where}", "warning"
+        if (building, value) not in command_buttons.home_slots(mover, UNIT):
+            covered = command_buttons.covered_techs(building, value, keep)
+            if covered:
+                names = ", ".join(object_catalog.tech_name(tech) for tech in covered)
+                return f"{name} covers {names} at {where}, so it can't be researched", "warning"
+    else:
+        hider = command_buttons.covering_unit(mover, building, value, keep)
+        if hider is not None:
+            return f"{name} is hidden by {object_catalog.display_name(hider)}, a unit in the slot at {where}", "warning"
+    return None
+
+
+def check_location_buttons(loaded: LoadedScenario) -> CheckResult:
+    label = "Train and research buttons"
+    manager = parse_triggers(loaded)
+    if manager is None:
+        return CheckResult(label, unavailable=_TRIGGERS_UNAVAILABLE)
+    edits = train_locations.location_edits(manager)
+    # A building placed on the map exists whatever the civ (Kreposts given to Magyars).
+    placed = frozenset(unit.unit_const for _player, unit in _all_units(loaded))
+    overrides: dict[int, civ_availability.Overrides] = {}
+    findings = []
+    for edit in edits:
+        if edit.mover < 0 or edit.building < 0:
+            continue
+        if edit.player not in overrides:
+            overrides[edit.player] = civ_availability.file_overrides(manager, loaded, edit.player)
+        moved_away = {
+            other.item
+            for other in train_locations.for_player(edits, edit.player)
+            if other is not edit and other.effect in train_locations.MOVES_AWAY
+        }
+        problem = _location_problem(edit, loaded, overrides[edit.player], moved_away, placed)
+        if problem is not None:
+            reason, severity = problem
+            findings.append(Finding(f"{_location_label(edit)}: {reason}", severity))
+    return _capped(label, findings)
+
+
 CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("elevation", check_elevation),
     ("off_map_units", check_off_map_units),
@@ -537,6 +643,7 @@ CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("gaia_only_ownership", check_gaia_only_ownership),
     ("trigger_display_order", check_trigger_display_order),
     ("trigger_references", check_trigger_references),
+    ("location_buttons", check_location_buttons),
     ("unit_references", check_unit_references),
     ("garrison_links", check_garrison_links),
     ("players_without_units", check_players_without_units),

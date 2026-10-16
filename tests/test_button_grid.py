@@ -58,7 +58,7 @@ def test_a_lower_id_replaces_the_slots_button() -> None:
     try:
         grid = _grid(window)
         assert not grid.isHidden()
-        assert grid.header_label.text() == "Trained at: Barracks"
+        assert grid.header_label.text() == "Trained at: Barracks (any civ: player 1's civ is random)"
         chosen = _cell(grid, 1, 2)
         assert chosen.isChecked() and [c for c in grid.cells if c.isChecked()] == [chosen]
         assert chosen.items == ((_KNIGHT, "unit"),) and not chosen.blocked
@@ -116,7 +116,7 @@ def test_the_grid_follows_unit_building_and_slot_edits() -> None:
         building.committed.emit(_STABLE)
         QApplication.processEvents()
         grid = _grid(window)
-        assert grid.header_label.text() == "Trained at: Stable"
+        assert grid.header_label.text() == "Trained at: Stable (any civ: player 1's civ is random)"
         assert _cell(grid, 1, 1).dimmed, "the scout's old Stable button moved away"
         assert "Moved away: Scout Cavalry" in _cell(grid, 1, 1).toolTip()
 
@@ -185,7 +185,7 @@ def test_the_dock_has_a_page_switch_and_opens_on_the_values_page() -> None:
     )
     try:
         grid = _grid(window)
-        assert grid.header_label.text() == "Researched at: Dock"
+        assert grid.header_label.text() == "Researched at: Dock (any civ: player 1's civ is random)"
         assert grid.page == "page 2"
         assert grid.page_buttons["page 1"].isVisible() and grid.page_buttons["page 2"].isChecked()
         chosen = _cell(grid, 2, 2)
@@ -223,7 +223,7 @@ def test_the_builder_has_economic_and_military_menus() -> None:
     )
     try:
         grid = _grid(window)
-        assert grid.header_label.text() == "Trained at: Villager build menu"
+        assert grid.header_label.text() == "Trained at: Villager build menu (any civ: player 1's civ is random)"
         assert grid.page == "military", "opens on the castle's own menu"
         assert grid.page_buttons["economic"].isVisible() and grid.page_buttons["military"].isVisible()
         assert _cell(grid, 3, 2).isChecked() and _cell(grid, 3, 2).items == ((_CASTLE, "unit"),)
@@ -402,5 +402,258 @@ def test_the_grid_takes_no_focus() -> None:
         grid = _grid(window)
         for widget in [grid, *grid.findChildren(QWidget)]:
             assert widget.focusPolicy() == Qt.NoFocus, widget
+    finally:
+        _close(window)
+
+
+# -- GH #230: civ filter, green frame, covered techs, all triggers' changes --------
+
+_CONQUISTADOR, _LONGBOWMAN, _MULE_CART = 771, 8, 1808
+_SPANISH, _BRITONS = 14, 1
+_TOWN_CENTER = 109
+
+
+@pytest.fixture
+def civs(monkeypatch):
+    """Player 1 Spanish, player 2 Britons, every other player random."""
+    from descape import civ_availability
+
+    real = civ_availability.player_civ_value
+    by_player = {1: _SPANISH, 2: _BRITONS}
+    monkeypatch.setattr(
+        civ_availability, "player_civ_value", lambda loaded, player: by_player.get(player) or real(loaded, player)
+    )
+
+
+def _ids(cell) -> set[int]:
+    return {id_ for id_, _kind in cell.items}
+
+
+def test_the_grid_shows_only_what_the_players_civ_has(civs) -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _CASTLE, "button_location": 5, "source_player": 1},
+    )
+    try:
+        grid = _grid(window)
+        assert grid.header_label.text() == "Trained at: Castle (Spanish)"
+        unique = _ids(_cell(grid, 1, 1))
+        assert _CONQUISTADOR in unique and _LONGBOWMAN not in unique
+        assert unique <= {_CONQUISTADOR, 773}, "only the Spanish unique unit and its elite"
+    finally:
+        _close(window)
+
+
+def test_the_civ_filter_follows_source_player(civs) -> None:
+    from PyQt5.QtWidgets import QApplication
+    from test_trigger_panel import _row_widget
+
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _CASTLE, "button_location": 5, "source_player": 1},
+    )
+    try:
+        combo = _row_widget(window.trigger_panel, "source_player")
+        combo.setCurrentIndex(combo.findData(2))
+        QApplication.processEvents()
+        grid = _grid(window)
+        assert grid.context.civ == _BRITONS
+        assert _LONGBOWMAN in _ids(_cell(grid, 1, 1)) and _CONQUISTADOR not in _ids(_cell(grid, 1, 1))
+
+        combo.setCurrentIndex(combo.findData(3))
+        QApplication.processEvents()
+        grid = _grid(window)
+        assert grid.header_label.text() == "Trained at: Castle (any civ: player 3's civ is random)"
+        assert {_LONGBOWMAN, _CONQUISTADOR} <= _ids(_cell(grid, 1, 1)), "a random civ filters nothing"
+    finally:
+        _close(window)
+
+
+def test_a_unit_the_civ_lacks_gets_no_button_and_a_red_frame(civs) -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _MULE_CART, "object_list_unit_id_2": _BARRACKS, "button_location": 8, "source_player": 1},
+    )
+    try:
+        cell = _cell(_grid(window), 2, 3)
+        assert cell.isChecked() and cell.unavailable and cell.frame == "problem"
+        assert cell.items == () and cell.ghost == (_MULE_CART, "unit"), "drawn dimmed so the slot shows what is missing"
+        assert cell.text().startswith("Mu"), "no install: its elided name"
+        assert "Spanish can't train Mule Cart" in cell.toolTip()
+    finally:
+        _close(window)
+
+
+def test_the_effects_own_button_gets_a_green_frame() -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
+    )
+    try:
+        grid = _grid(window)
+        assert [cell for cell in grid.cells if cell.frame] == [_cell(grid, 1, 2)]
+        assert _cell(grid, 1, 2).frame == "ok"
+        grid.grab()  # paints the frame without error
+    finally:
+        _close(window)
+
+
+def test_a_hidden_button_gets_a_red_frame() -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _SCOUT, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
+    )
+    try:
+        cell = _cell(_grid(window), 1, 2)
+        assert cell.blocked and cell.frame == "problem"
+    finally:
+        _close(window)
+
+
+def test_a_unit_on_a_techs_slot_says_it_covers_the_tech() -> None:
+    """In game, a Mule Cart at Barracks button 6 left Long Swordsman unresearchable."""
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 6}
+    )
+    try:
+        cell = _cell(_grid(window), 2, 1)
+        assert cell.items == ((_KNIGHT, "unit"),) and cell.frame == "problem", "red: it costs a tech"
+        assert (222, "tech") in cell.replaced
+        assert "can't be researched while this unit is here" in cell.toolTip()
+    finally:
+        _close(window)
+
+
+def test_a_tech_on_a_units_slot_is_covered() -> None:
+    window, _indices = _grid_window(
+        _CHANGE_RESEARCH, {"technology": _LOOM, "object_list_unit_id_2": _BARRACKS, "button_location": 1}
+    )
+    try:
+        cell = _cell(_grid(window), 1, 1)
+        assert cell.blocked and cell.frame == "problem"
+        assert cell.items[0] == (_MILITIA, "unit")
+        assert "a unit in the slot covers it" in cell.toolTip()
+    finally:
+        _close(window)
+
+
+def test_show_all_triggers_applies_the_players_other_effects() -> None:
+    from descape import settings
+
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _SCOUT, "object_list_unit_id_2": _BARRACKS, "button_location": 8, "source_player": 1},
+        {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 10, "source_player": 1},
+        {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 14, "source_player": 2},
+    )
+    try:
+        grid = _grid(window)
+        assert not grid.all_triggers and not grid.all_triggers_check.isHidden()
+        assert _KNIGHT not in _ids(_cell(grid, 2, 5))
+
+        grid.all_triggers_check.setChecked(True)
+        assert settings.get_button_grid_all_triggers() is True
+        knight = _cell(grid, 2, 5)
+        assert knight.items[0] == (_KNIGHT, "unit") and knight.frame == "ok"
+        assert ": Change Train Location: " in knight.toolTip() and knight.toolTip().startswith("Knight")
+        assert _cell(grid, 2, 3).frame == "ok", "the effect's own button keeps its frame"
+        assert _SPEARMAN in _ids(_cell(grid, 1, 2)) and not _cell(grid, 3, 4).frame, "player 2's effect is left out"
+
+        grid.all_triggers_check.setChecked(False)
+        assert settings.get_button_grid_all_triggers() is False
+        assert not _cell(grid, 2, 5).frame
+    finally:
+        _close(window)
+
+
+def test_a_tech_cell_uses_the_installs_tech_icon(monkeypatch) -> None:
+    import numpy as np
+
+    from descape import asset_source
+
+    seen = []
+
+    def icon(index):
+        seen.append(index)
+        return np.full((8, 8, 4), 200, dtype=np.uint8)
+
+    monkeypatch.setattr(asset_source, "get_tech_icon", icon)
+    window, _indices = _grid_window(
+        _CHANGE_RESEARCH, {"technology": _LOOM, "object_list_unit_id_2": _TOWN_CENTER, "button_location": 6}
+    )
+    try:
+        cell = _cell(_grid(window), 2, 1)
+        assert cell.items == ((_LOOM, "tech"),)
+        assert not cell.icon().isNull() and cell.text() == ""
+        assert 6 in seen, "Loom's catalog icon is 6 (006_loom.DDS)"
+    finally:
+        _close(window)
+
+
+def test_another_effects_hidden_button_gets_a_red_frame() -> None:
+    """A tech put on Barracks button 1 by another effect stays under the Militia (measured with Chemistry)."""
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 8, "source_player": 1},
+    )
+    try:
+        from test_trigger_panel import _appended_effects
+
+        _appended_effects(
+            window, _CHANGE_RESEARCH, [{"technology": _LOOM, "object_list_unit_id_2": _BARRACKS, "button_location": 1, "source_player": 1}]
+        )
+        window.trigger_panel.refresh_entries(select=("effect", _indices[0]))
+        grid = _grid(window)
+        grid.all_triggers_check.setChecked(True)
+        cell = _cell(grid, 1, 1)
+        assert cell.items[0] == (_MILITIA, "unit") and cell.frame == "problem"
+        assert "Loom here (hidden)" in cell.toolTip()
+        assert grid._placed_problem(((_KNIGHT, "unit"), (222, "tech")), (_KNIGHT, "unit")) == " (covers a tech)"
+    finally:
+        _close(window)
+
+
+def test_another_effects_unit_the_civ_lacks_gets_a_red_ghost(civs) -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 10, "source_player": 1},
+        {"object_list_unit_id": _MULE_CART, "object_list_unit_id_2": _BARRACKS, "button_location": 8, "source_player": 1},
+    )
+    try:
+        grid = _grid(window)
+        assert _cell(grid, 2, 3).ghost is None, "only with the toggle"
+        grid.all_triggers_check.setChecked(True)
+        cell = _cell(grid, 2, 3)
+        assert cell.items == () and cell.ghost == (_MULE_CART, "unit") and cell.frame == "problem"
+        assert "Mule Cart here, but Spanish can't train Mule Cart" in cell.toolTip()
+    finally:
+        _close(window)
+
+
+def test_the_toggle_sits_below_the_grid() -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
+    )
+    try:
+        grid = _grid(window)
+        layout = grid.layout()
+        assert layout.indexOf(grid.all_triggers_check) > layout.indexOf(grid.grid_host)
+    finally:
+        _close(window)
+
+
+def test_a_tech_the_starting_age_has_gets_a_red_cell_and_leaves_the_grid(monkeypatch) -> None:
+    from descape import civ_availability
+
+    monkeypatch.setattr(civ_availability, "player_start_age", lambda _loaded, player: 5 if player == 1 else None)
+    window, _indices = _grid_window(
+        _CHANGE_RESEARCH,
+        {"technology": _LOOM, "object_list_unit_id_2": _BARRACKS, "button_location": 8, "source_player": 1},
+    )
+    try:
+        grid = _grid(window)
+        cell = _cell(grid, 2, 3)
+        assert cell.unavailable and cell.frame == "problem" and cell.ghost == (_LOOM, "tech")
+        assert "player 1 starts in the Imperial Age, which already has Loom." in cell.toolTip()
+        assert "Enable it" not in cell.toolTip(), "nothing gives a researched tech's button back"
+        assert (222, "tech") not in _cell(grid, 2, 1).items, "Man-At-Arms is already researched"
     finally:
         _close(window)

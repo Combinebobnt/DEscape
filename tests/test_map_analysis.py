@@ -314,6 +314,132 @@ def test_unit_reference_to_an_unplaced_unit_is_reported_and_placed_one_is_not() 
     assert "unit id 99999" in result.findings[0].message
 
 
+# -- GH #230: train and research buttons -------------------------------------------
+
+_SPANISH = 14
+
+
+@pytest.fixture
+def spanish_p1(monkeypatch):
+    """Player 1 is Spanish; the fixture's other players stay random."""
+    from descape import civ_availability
+
+    real = civ_availability.player_civ_value
+    monkeypatch.setattr(
+        civ_availability, "player_civ_value", lambda loaded, player: _SPANISH if player == 1 else real(loaded, player)
+    )
+
+
+def _location_findings(*effects, player: int = 1, extra=None):
+    """Findings for one new trigger of Change Train Location (mover, building,
+    value) effects, or Change Research Location for a ("tech", id, building, value)."""
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    manager = parse_triggers(loaded)
+    trigger = manager.add_trigger("gh230")
+    for effect in effects:
+        if effect[0] == "tech":
+            _tag, tech, building, value = effect
+            trigger.new_effect.change_technology_location(
+                technology=tech, source_player=player, object_list_unit_id_2=building, button_location=value
+            )
+        else:
+            mover, building, value = effect
+            trigger.new_effect.change_train_location(
+                object_list_unit_id=mover, source_player=player, object_list_unit_id_2=building, button_location=value
+            )
+    if extra is not None:
+        extra(trigger)
+    result = map_analysis.check_location_buttons(loaded)
+    return [(f.severity, f.message) for f in result.findings]
+
+
+def test_location_buttons_is_unavailable_when_triggers_do_not_parse() -> None:
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    loaded.trigger_read_supported = False
+    assert map_analysis.check_location_buttons(loaded).unavailable
+
+
+def test_the_fixture_has_no_location_findings() -> None:
+    assert map_analysis.check_location_buttons(load_map_and_units(TRIGGERS_FIXTURE)).is_clean
+
+
+@pytest.mark.parametrize(
+    ("effect", "severity", "text"),
+    [
+        ((74, 12, 0), "info", "button slot 0 gives no button"),
+        ((74, 12, 17), "warning", "button slot 17 is no button"),
+        ((84, 83, 1), "warning", "trained at Villager 83 moves nothing"),
+        ((82, 118, 14), "warning", "the build menu's More button"),
+        ((448, 12, 2), "warning", "(the lower id shows)"),
+        ((38, 12, 6), "warning", "so it can't be researched"),
+        (("tech", 22, 12, 1), "warning", "a unit in the slot"),
+    ],
+)
+def test_each_location_reason_is_reported(effect, severity, text) -> None:
+    findings = _location_findings(effect)
+    assert len(findings) == 1
+    assert findings[0][0] == severity and text in findings[0][1]
+    assert findings[0][1].startswith('Trigger 4 "gh230": ')
+
+
+def test_a_unit_the_civ_lacks_is_a_warning_unless_the_file_enables_it(spanish_p1) -> None:
+    mule_cart = (1808, 12, 8)
+    [(severity, message)] = _location_findings(mule_cart)
+    assert severity == "warning" and "Spanish can't train" in message and "Enable/Disable Object" in message
+    enable = lambda t: t.new_effect.enable_disable_object(object_list_unit_id=1808, source_player=1, enabled=1)  # noqa: E731
+    assert _location_findings(mule_cart, extra=enable) == []
+
+
+def test_a_random_civ_skips_the_civ_reasons() -> None:
+    assert _location_findings((1808, 12, 8)) == []
+
+
+def test_a_building_the_civ_lacks_is_a_warning_unless_one_is_placed(spanish_p1, monkeypatch) -> None:
+    krepost = (74, 1251, 1)
+    [(_severity, message)] = _location_findings(krepost)
+    assert "Spanish can't build" in message
+    monkeypatch.setattr(map_analysis, "_all_units", lambda _loaded: [(1, SimpleNamespace(unit_const=1251))])
+    assert _location_findings(krepost) == []
+
+
+def test_a_unit_in_the_disables_list_is_a_warning(monkeypatch) -> None:
+    from descape import disables_fields
+
+    monkeypatch.setattr(
+        disables_fields, "current_ids", lambda _l, category, player: (38,) if (category, player) == ("units", 1) else ()
+    )
+    [(_severity, message)] = _location_findings((38, 101, 7))
+    assert "in player 1's Disables list" in message
+
+
+def test_moving_or_disabling_the_blocker_keeps_it_quiet() -> None:
+    """Militia at Archery Range button 3 sits under the Cavalry Archer (39)."""
+    militia = (74, 87, 3)
+    assert "(the lower id shows)" in _location_findings(militia)[0][1]
+    assert _location_findings(militia, (39, 82, 35)) == [], "the Cavalry Archer moves to an empty Castle slot"
+    disable = lambda t: t.new_effect.enable_disable_object(object_list_unit_id=39, source_player=1, enabled=0)  # noqa: E731
+    assert _location_findings(militia, extra=disable) == []
+
+
+def test_a_blocker_the_civ_lacks_does_not_hide_the_button(spanish_p1) -> None:
+    """Cavalry Archer 39 sits at Archery Range button 3; Spanish have none."""
+    militia = (74, 87, 3)
+    assert _location_findings(militia) == []
+    assert "(the lower id shows)" in _location_findings(militia, player=2)[0][1]
+
+
+def test_a_tech_the_starting_age_already_has_is_a_warning(monkeypatch) -> None:
+    from descape import civ_availability
+
+    monkeypatch.setattr(civ_availability, "player_start_age", lambda _loaded, player: 5 if player == 1 else None)
+    [(severity, message)] = _location_findings(("tech", 22, 12, 8))
+    assert severity == "warning"
+    assert message.endswith("player 1 starts in the Imperial Age, which already has Loom, so it gets no button")
+    assert _location_findings(("tech", 47, 12, 8)) == [], "Chemistry is an Imperial Age tech"
+    [(_severity, covers)] = _location_findings((38, 12, 7))
+    assert "covers Halberdier at" in covers, "the Pikeman upgrade there is already researched; Halberdier is not"
+
+
 # -- garrison links -------------------------------------------------------------
 
 
