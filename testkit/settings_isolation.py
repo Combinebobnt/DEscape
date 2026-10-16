@@ -71,6 +71,8 @@ MEMOIZED_GLOBALS = (
     "_range_rings_by_owner",
     "_camera_markers",
     "_trigger_overlay",
+    "_trigger_area_edit",
+    "_trigger_area_tile_borders",
     "_stack_badge_position",
     "_autosave_dir_refused",
     "_footprint_merged",

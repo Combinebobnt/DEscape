@@ -568,6 +568,10 @@ _camera_markers: bool | None = None
 # patrol runs on the map. ON by default, unlike the two above: it draws nothing
 # until a trigger is selected in the Triggers panel, so it costs nothing idle.
 _trigger_overlay: bool | None = None
+# GH #229's Edit Area toggle (Pan drags the selected trigger area) and its Tile
+# borders option (a one-tile resize border). Both off by default.
+_trigger_area_edit: bool | None = None
+_trigger_area_tile_borders: bool | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
 
@@ -738,6 +742,36 @@ def set_trigger_overlay(enabled: bool) -> None:
     _trigger_overlay = enabled
     config = _load_config()
     config["trigger_overlay"] = enabled
+    _save_config(config)
+
+
+def get_trigger_area_edit() -> bool:
+    global _trigger_area_edit
+    if _trigger_area_edit is None:
+        _trigger_area_edit = bool(_load_config().get("trigger_area_edit", False))
+    return _trigger_area_edit
+
+
+def set_trigger_area_edit(enabled: bool) -> None:
+    global _trigger_area_edit
+    _trigger_area_edit = enabled
+    config = _load_config()
+    config["trigger_area_edit"] = enabled
+    _save_config(config)
+
+
+def get_trigger_area_tile_borders() -> bool:
+    global _trigger_area_tile_borders
+    if _trigger_area_tile_borders is None:
+        _trigger_area_tile_borders = bool(_load_config().get("trigger_area_tile_borders", False))
+    return _trigger_area_tile_borders
+
+
+def set_trigger_area_tile_borders(enabled: bool) -> None:
+    global _trigger_area_tile_borders
+    _trigger_area_tile_borders = enabled
+    config = _load_config()
+    config["trigger_area_tile_borders"] = enabled
     _save_config(config)
 
 

@@ -262,6 +262,14 @@ camera_markers: false
 # Triggers panel. Default: true.
 trigger_overlay: true
 
+# Triggers mode's Edit Area toggle: with Pan, drag the selected trigger area's
+# middle to move it, or its edges and corners to resize it. Default: false.
+trigger_area_edit: false
+
+# Edit Area's Tile borders option: the outer ring of tiles resizes instead of
+# a thin border. Default: false.
+trigger_area_tile_borders: false
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
