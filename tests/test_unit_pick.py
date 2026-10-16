@@ -26,7 +26,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render, unit_pick
+from descape import iso_geometry, render, unit_kind, unit_pick
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
@@ -1790,6 +1790,47 @@ def test_hidden_count_is_not_member_count_minus_one() -> None:
     scn = _stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST), (10.5, 9.5, _BUILDING_CONST))
     (members, hidden), = stack_scan(build_index(scn)).values()
     assert (len(members), hidden) == (3, 1)
+
+
+# GH #193: passable eye candy never stacks; obstacles still do.
+_GRASS_CONST = 301  # Grass Patch Green
+_ROCK_CONST = 623  # Rock 1
+
+
+def test_the_stack_test_consts_are_what_they_say() -> None:
+    assert _GRASS_CONST in unit_kind.passable_eye_candy_consts()
+    assert _ROCK_CONST in unit_kind.obstacle_consts()
+    assert _PLAIN_CONST not in unit_kind.eye_candy_consts()
+    for const in (_GRASS_CONST, _ROCK_CONST):
+        assert render.tile_span(const, render.NON_BUILDING_SPAN) == (1, 1)
+
+
+def test_grass_under_a_building_is_not_a_stack() -> None:
+    scn = _stack_scenario((9.5, 9.5, _GRASS_CONST), (11.5, 11.5, _GRASS_CONST), (10.5, 10.5, _BUILDING_CONST))
+    assert stack_groups(build_index(scn)) == {}
+
+
+def test_a_unit_on_two_stacked_grass_tufts_is_not_a_stack() -> None:
+    scn = _stack_scenario((6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _PLAIN_CONST))
+    assert stack_groups(build_index(scn)) == {}
+
+
+@pytest.mark.parametrize("grass_first", [True, False])
+def test_a_unit_and_grass_at_one_point_are_not_a_stack(grass_first: bool) -> None:
+    pair = [(6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _PLAIN_CONST)]
+    assert stack_groups(build_index(_stack_scenario(*(pair if grass_first else pair[::-1])))) == {}
+
+
+def test_grass_beside_a_unit_under_a_building_is_left_out_of_the_stack() -> None:
+    scn = _stack_scenario((9.5, 9.5, _GRASS_CONST), (9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
+    (members, hidden), = stack_scan(build_index(scn)).values()
+    assert [e.unit.reference_id for e in members] == [3, 2]
+    assert hidden == 1
+
+
+def test_a_rock_under_a_building_still_stacks() -> None:
+    groups = stack_groups(build_index(_stack_scenario((9.5, 9.5, _ROCK_CONST), (10.5, 10.5, _BUILDING_CONST))))
+    assert _group_refs(groups, (9, 9)) == [2, 1]
 
 
 @pytest.mark.parametrize("style", ["flat", "stepped"])

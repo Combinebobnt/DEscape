@@ -806,12 +806,18 @@ def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry],
     len(members) - 1 in general (two slabs over one 1x1 hide one unit
     between three members)."""
     groups: dict[tuple[int, int], tuple[list[UnitEntry], int]] = {}
+    eye_candy = unit_kind.passable_eye_candy_consts()
     for tile, orders in index.by_tile.items():
         if len(orders) < 2:
             continue
         # by_tile is the unnarrowed bbox rect; the sparse diagonal gates must
         # not produce a phantom group on a gap tile.
-        bucket = [index.entries[o] for o in orders if render.unit_occupies_tile(index.entries[o].unit, *tile)]
+        bucket = [
+            index.entries[o]
+            for o in orders
+            if index.entries[o].unit.unit_const not in eye_candy
+            and render.unit_occupies_tile(index.entries[o].unit, *tile)
+        ]
         if len(bucket) < 2:
             continue
         members: set[int] = set()
@@ -840,6 +846,10 @@ def stack_groups(index: UnitIndex) -> dict[tuple[int, int], list[UnitEntry]]:
     different sub-tile positions are deliberately not stacked. Members are
     the hidden units and the units hiding them, never an unrelated occupant
     that merely overlaps the tile.
+
+    Passable eye candy (grass, plants, rubble) never stacks, on either side
+    (GH #193): it hides nothing worth finding and badged every building on
+    grass. Obstacles still stack, since they block placement.
 
     Accepted residuals: a unit standing on a farm counts as stacked even in
     Sloped with sprites on, where the farm is draped and the unit visible;
