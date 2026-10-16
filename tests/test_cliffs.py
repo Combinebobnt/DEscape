@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render, unit_rotation, unit_sprites
 from descape.scenario_io import load_map_and_units
 
 # Two cliff consts whose graphics bracket the angle_count-vs-real-frames
@@ -38,6 +38,7 @@ MARBLE_CLIFF = 2178  # n_cliff_marble_x1: angle_count 25, 23 real frames
 
 TREE_CONST = 349  # oak: 42 variants, was drawing variant 0 before Tier B (see below)
 CREATABLE_GAIA_CONST = 705  # Cow Black and White: type 70, angle_count > 1 -- stays ANGLE
+INERT_CONST = 33  # b_scen_fortress_x1: neither ANGLE nor variant-indexed
 
 
 @dataclass
@@ -74,14 +75,23 @@ def test_a_gaia_tree_now_keeps_its_stored_rotation():
     assert render.stored_rotation(0, Unit(TREE_CONST, 19.0)) == 19.0
 
 
-def test_a_gaia_creatable_unit_still_zeroes():
-    """The narrowing is to non-creatable graphics, not to GAIA generally: a
-    GAIA-placed but creatable unit (e.g. wildlife) stays on the angle_index()
-    path, so its rotation keeps zeroing under the "we don't know a facing
-    from an angle offset for this GAIA unit" rule. Asserted so a later
-    widening past creatable units is a decision rather than an accident."""
+def test_a_gaia_creatable_unit_keeps_its_facing():
+    """GH #217: a GAIA creatable's rotation is a real facing, and the game
+    draws it (checked in the official editor and in a scenario DEscape
+    wrote), so an ANGLE const keeps its stored value on the angle_index()
+    path like a player's unit does."""
     assert not unit_sprites.rotation_is_variant(CREATABLE_GAIA_CONST)
-    assert render.stored_rotation(0, Unit(CREATABLE_GAIA_CONST, 3.0)) == 0.0
+    assert unit_rotation.rotation_is_angle(CREATABLE_GAIA_CONST)
+    assert render.stored_rotation(0, Unit(CREATABLE_GAIA_CONST, 3.0)) == 3.0
+
+
+def test_a_gaia_const_that_is_neither_angle_nor_variant_still_zeroes():
+    """The widening stops at ANGLE: a GAIA const whose rotation is neither a
+    facing nor a variant index keeps the safe 0.0, so a later widening past
+    it is a decision rather than an accident."""
+    assert not unit_sprites.rotation_is_variant(INERT_CONST)
+    assert not unit_rotation.rotation_is_angle(INERT_CONST)
+    assert render.stored_rotation(0, Unit(INERT_CONST, 7.0)) == 0.0
 
 
 def test_a_non_gaia_units_rotation_was_never_touched():

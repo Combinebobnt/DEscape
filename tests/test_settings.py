@@ -574,6 +574,27 @@ def test_migration_does_not_write_to_disk(tmp_path: Path) -> None:
     assert (tmp_path / "config.yaml").read_text() == "keybinds:\n  tool_elevation: R\n"
 
 
+def test_a_config_predating_gh207_gets_ctrl_0_on_show_gaia(tmp_path: Path) -> None:
+    """set_keybind pinned filter_show_gaia: '' before GH #207 gave it Ctrl+0;
+    without the migration only Ctrl+1..8 would reach this user."""
+    _write_config(tmp_path, "keybinds:\n  filter_show_gaia: ''\n  tool_pan: M\n")
+    assert settings.get_keybind("filter_show_gaia") == "Ctrl+0"
+    assert settings.get_keybind("filter_player_1") == "Ctrl+1"
+
+
+def test_the_show_gaia_migration_does_not_fire_twice(tmp_path: Path) -> None:
+    """A config naming filter_player_1 was written after GH #207: a cleared Show GAIA there is deliberate."""
+    _write_config(tmp_path, "keybinds:\n  filter_show_gaia: ''\n  filter_player_1: Ctrl+1\n")
+    assert settings.get_keybind("filter_show_gaia") == ""
+
+
+def test_the_show_gaia_migration_yields_to_a_users_own_ctrl_0(tmp_path: Path) -> None:
+    """The migrated value counts as a default, so a pre-GH #207 custom Ctrl+0 elsewhere keeps it."""
+    _write_config(tmp_path, "keybinds:\n  filter_show_gaia: ''\n  tool_pan: Ctrl+0\n")
+    assert settings.get_keybind("tool_pan") == "Ctrl+0"
+    assert settings.get_keybind("filter_show_gaia") == ""
+
+
 def test_a_config_with_no_keybinds_block_gets_the_new_defaults(tmp_path: Path) -> None:
     _write_config(tmp_path, "theme: dark\n")
     assert settings.get_keybind("tool_elevation") == "E"
@@ -916,6 +937,35 @@ def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> N
     assert settings.get_pan_speed() == settings.PAN_SPEED_MAX
 
 
+def test_wall_opacity_defaults_and_round_trips(tmp_path: Path, monkeypatch) -> None:
+    assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_DEFAULT_PCT
+    settings.set_wall_opacity_pct(30)
+    monkeypatch.setattr(settings, "_wall_opacity_pct", None)
+    assert settings.get_wall_opacity_pct() == 30
+    assert "wall_opacity_pct: 30" in (tmp_path / "config.yaml").read_text()
+    assert settings.get_view_layers().wall_opacity_pct == 30
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("wall_opacity_pct: 0\n", view_layers.WALL_OPACITY_MIN_PCT),
+    ("wall_opacity_pct: 100\n", view_layers.WALL_OPACITY_MAX_PCT),
+    ("wall_opacity_pct: half\n", view_layers.WALL_OPACITY_DEFAULT_PCT),
+    ("wall_opacity_pct:\n", view_layers.WALL_OPACITY_DEFAULT_PCT),
+])
+def test_an_out_of_range_or_malformed_wall_opacity_falls_back_on_read(
+    tmp_path: Path, raw: str, expected: int
+) -> None:
+    _write_config(tmp_path, raw)
+    assert settings.get_wall_opacity_pct() == expected
+
+
+def test_the_wall_opacity_setter_clamps_rather_than_writing_an_illegal_value() -> None:
+    settings.set_wall_opacity_pct(view_layers.WALL_OPACITY_MAX_PCT + 50)
+    assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_MAX_PCT
+    settings.set_wall_opacity_pct(-5)
+    assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_MIN_PCT
+
+
 # The refused saved value behind get_autosave_dir()'s "", so a restart can still say why.
 
 
@@ -1156,3 +1206,17 @@ def test_setting_an_unknown_view_layer_raises_and_writes_nothing(tmp_path: Path)
     with pytest.raises(ValueError):
         settings.set_view_layer("bogus_layer", True)
     assert not (tmp_path / "config.yaml").exists()
+
+
+def test_mod_art_exclusions_round_trip_through_the_file(tmp_path: Path, monkeypatch) -> None:
+    assert settings.get_mod_art_excluded() == frozenset()
+    settings.set_mod_art_excluded({"subscribed//2_B", "local//1_A"})
+    monkeypatch.setattr(settings, "_mod_art_excluded", None)
+    assert settings.get_mod_art_excluded() == {"subscribed//2_B", "local//1_A"}
+    assert "mod_art_excluded:\n- local//1_A\n- subscribed//2_B\n" in (tmp_path / "config.yaml").read_text()
+
+
+@pytest.mark.parametrize("raw", ["mod_art_excluded: subscribed//x\n", "mod_art_excluded: [3, null]\n"])
+def test_a_malformed_mod_art_exclusion_list_reads_as_nothing_excluded(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, raw)
+    assert settings.get_mod_art_excluded() == frozenset()

@@ -34,7 +34,7 @@ from uuid import uuid4
 
 import numpy as np
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
-from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer, QUrl
 from PyQt5.QtGui import (
     QColor,
     QFont,
@@ -119,6 +119,7 @@ from descape import (
     library_compat,
     map_analysis,
     margin_warm,
+    mod_graphics,
     object_catalog,
     option_fields,
     perf_trace,
@@ -327,6 +328,12 @@ _FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
 
 # GH #88: the tools whose water lays an auto-beach ring (Draw's stroke, the two shape commits).
 _AUTO_BEACH_TOOLS = ("draw", "draw_line", "draw_rect")
+
+
+def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
+    """GH #221: the local .aoe2scenario files among dropped URLs, in drop order."""
+    paths = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
+    return [path for path in paths if path.suffix.lower() == ".aoe2scenario"]
 
 
 def _new_map_tip(tiles: int) -> str:
@@ -585,7 +592,7 @@ _DEFAULT_WALL_CONST = 117  # Stone Wall
 _CLIFF_HOVER_PARTS_MAX = 64
 # The tools the wall button keeps active when it re-picks the wall.
 _WALL_TOOLS = ("place_unit", "wall_rect")
-# TASK-288: Place Unit and Scatter coerced a resource or tree to GAIA.
+# TASK-288: Place Unit and Scatter coerced a GAIA-only object to GAIA.
 _GAIA_ONLY_PLACED_SUFFIX = " (GAIA-only, so placed for GAIA)"
 
 
@@ -916,6 +923,7 @@ class SettingsDialog(QDialog):
 
         self._add_install_section(layout)
         self._add_profile_section(layout)
+        self._add_mod_art_section(layout)
 
         if sys.platform.startswith("linux"):
             self.xwayland_checkbox = QCheckBox("X11 compatibility on Wayland (takes effect next launch)")
@@ -1119,6 +1127,32 @@ class SettingsDialog(QDialog):
         pan_row.addWidget(self.pan_speed_slider, stretch=1)
         pan_row.addWidget(self.pan_speed_value_label)
         layout.addLayout(pan_row)
+
+        wall_row = QHBoxLayout()
+        wall_row.addWidget(QLabel("Wall opacity:"))
+        self.wall_opacity_slider = QSlider(Qt.Horizontal)
+        self.wall_opacity_slider.setRange(view_layers.WALL_OPACITY_MIN_PCT, view_layers.WALL_OPACITY_MAX_PCT)
+        self.wall_opacity_slider.setTickInterval(10)
+        self.wall_opacity_slider.setTickPosition(QSlider.TicksBelow)
+        self.wall_opacity_slider.setSingleStep(5)
+        self.wall_opacity_slider.setPageStep(10)
+        self.wall_opacity_slider.setToolTip(
+            "How opaque walls and gates draw while View > Layers > Translucent "
+            "Walls is on. Lower shows more of the units behind a wall line. "
+            "Where two wall pieces' art overlaps, the overlap reads darker."
+        )
+        self.wall_opacity_slider.setValue(settings.get_wall_opacity_pct())
+        self.wall_opacity_value_label = QLabel()
+        self._update_wall_opacity_label(settings.get_wall_opacity_pct())
+        # Debounced like the sliders above: with the layer on, each apply rebuilds every wall sprite.
+        self._wall_opacity_apply_timer = QTimer(self)
+        self._wall_opacity_apply_timer.setSingleShot(True)
+        self._wall_opacity_apply_timer.timeout.connect(self._apply_wall_opacity)
+        self.wall_opacity_slider.valueChanged.connect(self._on_wall_opacity_slider_changed)
+        self.wall_opacity_slider.sliderReleased.connect(self._apply_wall_opacity)
+        wall_row.addWidget(self.wall_opacity_slider, stretch=1)
+        wall_row.addWidget(self.wall_opacity_value_label)
+        layout.addLayout(wall_row)
 
         layout.addWidget(self._build_overlay_colors_group())
         layout.addWidget(self._build_trigger_status_group())
@@ -1916,6 +1950,25 @@ class SettingsDialog(QDialog):
         # tick, so the new value is live on the next hold with no wiring.
         settings.set_pan_speed(self.pan_speed_slider.value())
 
+    def _update_wall_opacity_label(self, pct: int) -> None:
+        suffix = " (default)" if pct == view_layers.WALL_OPACITY_DEFAULT_PCT else ""
+        self.wall_opacity_value_label.setText(f"{pct}%{suffix}")
+
+    def _on_wall_opacity_slider_changed(self, value: int) -> None:
+        self._update_wall_opacity_label(value)
+        if self.wall_opacity_slider.isSliderDown():
+            return
+        self._wall_opacity_apply_timer.start(200)
+
+    def _apply_wall_opacity(self) -> None:
+        value = self.wall_opacity_slider.value()
+        settings.set_wall_opacity_pct(value)
+        # _apply_layers() disables the window, and this dialog with it, which drops the slider's focus.
+        had_focus = self.wall_opacity_slider.hasFocus()
+        self._window.set_wall_opacity_pct(value)
+        if had_focus:
+            self.wall_opacity_slider.setFocus()
+
     # action_id prefix (before the first "_") -> section header text. Covers
     # today's sections (REBINDABLE_ACTIONS's "file_*"/"edit_*"/"view_*"/
     # "help_*"/"mode_*"/"tool_*"/"adjust_*" entries); an unlisted future
@@ -2447,8 +2500,61 @@ class SettingsDialog(QDialog):
 
         self._refresh_profile_section(refill_field=True)
 
+    def _add_mod_art_section(self, layout: QVBoxLayout) -> None:
+        """Every scanned mod that ships art, in the game's mod order (top
+        wins), ticked when View > Layers > Mod Art draws it (TASK-378). A tick
+        applies at once; an unticked mod stays off even if it is reinstalled."""
+        label = QLabel("Mod art drawn by View > Layers > Mod Art (the top mod wins where two ship one file):")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.mod_art_list = QListWidget()
+        self.mod_art_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.mod_art_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.mod_art_list.setWordWrap(False)
+        self.mod_art_list.itemChanged.connect(self._on_mod_art_item_changed)
+        layout.addWidget(self.mod_art_list)
+        self._refresh_mod_art_list()
+
+    def _refresh_mod_art_list(self) -> None:
+        view = self.mod_art_list
+        excluded = settings.get_mod_art_excluded()
+        view.blockSignals(True)
+        view.clear()
+        for mod in mod_graphics.mods_with_art():
+            item = QListWidgetItem(mod.title)
+            item.setData(Qt.UserRole, mod.status_path)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked if mod.status_path in excluded else Qt.Checked)
+            order = "not in the game's mod list" if mod.priority is None else f"priority {mod.priority} in the game's mod list"
+            item.setToolTip(
+                f"{mod.status_path}, {order}\n"
+                f"{mod.sld} .sld and {mod.smx} .smx sprites, {mod.textures} terrain textures"
+            )
+            view.addItem(item)
+        if view.count() == 0:
+            placeholder = QListWidgetItem("No enabled mod in the profile folder above ships art.")
+            placeholder.setFlags(Qt.NoItemFlags)
+            view.addItem(placeholder)
+        view.blockSignals(False)
+        self._fit_list_height(view)
+
+    def _on_mod_art_item_changed(self, item: QListWidgetItem) -> None:
+        status_path = item.data(Qt.UserRole)
+        if status_path is None:
+            return
+        drawn = item.checkState() == Qt.Checked
+        excluded = set(settings.get_mod_art_excluded())
+        if drawn:
+            excluded.discard(status_path)
+        else:
+            excluded.add(status_path)
+        settings.set_mod_art_excluded(excluded)
+        self._window._apply_mod_art_change(f"Mod art from {item.text()}: {'on' if drawn else 'off'}")
+
     def _fit_profile_list_height(self) -> None:
-        view = self.profile_roots_list
+        self._fit_list_height(self.profile_roots_list)
+
+    def _fit_list_height(self, view: QListWidget) -> None:
         row = view.sizeHintForRow(0) if view.count() else view.fontMetrics().height()
         bar = view.horizontalScrollBar().sizeHint().height()
         view.setFixedHeight(row * self._PROFILE_LIST_ROWS + bar + 2 * view.frameWidth())
@@ -2497,6 +2603,9 @@ class SettingsDialog(QDialog):
         )
         self.profile_skipped_label.setVisible(bool(skipped))
         self._fit_profile_list_height()
+        # Built after this section on open; refreshed with it on every later profile or install change.
+        if hasattr(self, "mod_art_list"):
+            self._refresh_mod_art_list()
 
     def browse_profile_path(self) -> None:
         start_dir = self.profile_path_edit.text().strip() or str(Path.home())
@@ -2519,13 +2628,13 @@ class SettingsDialog(QDialog):
             self._window._log_status(f"Profile folder rejected ({text})")
             return
         asset_source.save_profile_path_to_config(path)
-        self._window._log_status(f"Profile folder set to {path}")
+        self._window._apply_mod_art_change(f"Profile folder set to {path}", rescan=True)
         self._refresh_profile_section(refill_field=True)
         self._window.invalidate_ai_choices()  # Personality rescans the new folder's AIs
 
     def use_auto_profile_path(self) -> None:
         asset_source.save_profile_path_to_config(None)
-        self._window._log_status("Profile folder: auto-detect")
+        self._window._apply_mod_art_change("Profile folder: auto-detect", rescan=True)
         self._refresh_profile_section(refill_field=True)
         self._window.invalidate_ai_choices()
 
@@ -2880,6 +2989,14 @@ class ViewerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # Mod Art (TASK-378) is module state the renderers read. Seeded before any panel: the
+        # Terrain panel's swatches resolve textures at construction, and that lookup is cached.
+        mod_graphics.set_enabled(settings.get_view_layers().mod_art)
+        mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        asset_source.clear_art_caches()
+        # (mod_graphics.generation(), whether any scanned mod ships art), for the row's greying.
+        self._mod_art_available: tuple[int, bool] | None = None
+
         # Tool-overflow state (Stage 3 of the tool-overflow plan). Set
         # before the resize() call below: that call fires resizeEvent(),
         # which calls _apply_toolbar_overflow(), before _build_toolbar()
@@ -2951,6 +3068,8 @@ class ViewerWindow(QMainWindow):
         # them regardless of enabled state. This flag is what actually
         # makes such a call a no-op rather than a reentrant interleave.
         self._busy = False
+        # GH #221: a .aoe2scenario dropped anywhere on the window opens it.
+        self.setAcceptDrops(True)
         # Seconds the last load's pre-freeze gc.collect() took (_freeze_loaded_document).
         self._load_gc_collect_s: float | None = None
         # Tools > Map Analysis results, modeless and reused; see _show_analysis().
@@ -3836,31 +3955,8 @@ class ViewerWindow(QMainWindow):
         )
         view_menu.addAction(self.selection_owner_colour_action)
 
-        # GH #49. Persisted passive chrome like the two above, but off by
-        # default: it draws over the sprites, so it is opt-in.
-        range_menu = KeepOpenMenu("&Range Rings", view_menu)
-        view_menu.addMenu(range_menu)
-        range_menu.menuAction().setToolTip("Attack-range circles around selected buildings, and their colour")
-        self.range_rings_action = QAction(
-            "&Show", self, checkable=True, checked=settings.get_range_rings()
-        )
-        self.range_rings_action.setToolTip(
-            "In Units mode, a circle around each selected building showing its attack range. "
-            "Buildings only, and only ones that have a range. No technology or trigger "
-            "effects are applied."
-        )
-        range_menu.addAction(self.range_rings_action)
-        self.range_rings_by_owner_action = QAction(
-            "Colour by O&wner", self, checkable=True, checked=settings.get_range_rings_by_owner()
-        )
-        self.range_rings_by_owner_action.setToolTip(
-            "Each ring in its owner's player colour. GAIA keeps the Range ring colour "
-            "from Settings > Appearance."
-        )
-        range_menu.addAction(self.range_rings_by_owner_action)
-
         # GH #22. Persisted passive chrome, off by default for the same
-        # reason as the rings: it draws on the map rather than beside it.
+        # reason as the rings below: it draws on the map rather than beside it.
         # Not mode-gated -- a starting camera belongs to the scenario, not to
         # Players mode; only the emphasis on the selected player is.
         self.player_cameras_action = QAction(
@@ -3885,6 +3981,60 @@ class ViewerWindow(QMainWindow):
             "condition or effect is drawn strongest."
         )
         view_menu.addAction(self.trigger_overlay_action)
+
+        # GH #49. Persisted passive chrome, but off by default: it draws over
+        # the sprites, so it is opt-in.
+        range_menu = KeepOpenMenu("&Range Rings", view_menu)
+        view_menu.addMenu(range_menu)
+        range_menu.menuAction().setToolTip(
+            "Attack-range circles around buildings, sight circles around map revealers, and their colour"
+        )
+        self.range_rings_action = QAction(
+            "&Selected Buildings", self, checkable=True, checked=settings.get_range_rings()
+        )
+        self.range_rings_action.setToolTip(
+            "In Units mode, a circle around each selected building showing its attack range. "
+            "Buildings only, and only ones that have a range. No technology or trigger "
+            "effects are applied."
+        )
+        range_menu.addAction(self.range_rings_action)
+        # GH #155 / #153: always-on layers that follow the unit index, not the selection.
+        self.range_rings_buildings_action = QAction(
+            "All &Buildings", self, checkable=True, checked=settings.get_range_rings_buildings()
+        )
+        self.range_rings_buildings_action.setToolTip(
+            "A circle around every building that has a range, selected or not, in every mode. "
+            "Siege units are not included. No technology or trigger effects are applied."
+        )
+        range_menu.addAction(self.range_rings_buildings_action)
+        self.range_rings_selected_revealers_action = QAction(
+            "Selected &Map Revealers", self, checkable=True, checked=settings.get_range_rings_selected_revealers()
+        )
+        self.range_rings_selected_revealers_action.setToolTip(
+            "In Units mode, a circle around each selected map revealer showing the area it reveals "
+            "(its line of sight, e.g. 4, 10 or 20 tiles). Invisible Objects have no sight radius in "
+            "the game data, so they draw none; trigger changes are not applied."
+        )
+        range_menu.addAction(self.range_rings_selected_revealers_action)
+        self.range_rings_revealers_action = QAction(
+            "All Map &Revealers", self, checkable=True, checked=settings.get_range_rings_revealers()
+        )
+        self.range_rings_revealers_action.setToolTip(
+            "A circle around every map revealer showing the area it reveals (its line of sight, "
+            "e.g. 4, 10 or 20 tiles), in every mode. Invisible Objects have no sight radius in the "
+            "game data, so they draw none; trigger changes are not applied. Hidden while Show "
+            "Invisible Objects is off."
+        )
+        range_menu.addAction(self.range_rings_revealers_action)
+        range_menu.addSeparator()
+        self.range_rings_by_owner_action = QAction(
+            "Colour by O&wner", self, checkable=True, checked=settings.get_range_rings_by_owner()
+        )
+        self.range_rings_by_owner_action.setToolTip(
+            "Each ring in its owner's player colour. GAIA keeps the Range ring colour "
+            "from Settings > Appearance."
+        )
+        range_menu.addAction(self.range_rings_by_owner_action)
 
         # The ruler strip of tick marks outside the map border. Deliberately
         # NOT gated by mode or terrain style, unlike its two neighbours
@@ -3923,6 +4073,9 @@ class ViewerWindow(QMainWindow):
         self.selection_owner_colour_action.toggled.connect(self._on_selection_owner_colour_toggled)
         self.range_rings_action.toggled.connect(self._on_range_rings_toggled)
         self.range_rings_by_owner_action.toggled.connect(self._on_range_rings_by_owner_toggled)
+        self.range_rings_buildings_action.toggled.connect(self._on_range_rings_buildings_toggled)
+        self.range_rings_revealers_action.toggled.connect(self._on_range_rings_revealers_toggled)
+        self.range_rings_selected_revealers_action.toggled.connect(self._on_range_rings_selected_revealers_toggled)
         self.player_cameras_action.toggled.connect(self._on_player_cameras_toggled)
         self.trigger_overlay_action.toggled.connect(self._on_trigger_overlay_toggled)
         for tiles, action in self.distance_tick_interval_actions.items():
@@ -5069,11 +5222,18 @@ class ViewerWindow(QMainWindow):
         self._unit_filter = self._current_unit_filter()
 
     def _needs_unit_index(self) -> bool:
-        """Units mode needs the pick index, and so does View > Footprint
-        Outlines, which is reachable from every mode. Without the second
-        term the overlay silently draws nothing outside Units mode, since
-        the index is built on demand rather than at load."""
-        return self.mode == "units" or settings.get_footprint_outlines() or self._unit_picker is not None
+        """Units mode needs the pick index, and so do View > Footprint
+        Outlines and the always-on Range Rings layers (GH #153 / #155), which
+        are reachable from every mode. Without those terms the overlays
+        silently draw nothing outside Units mode, since the index is built on
+        demand rather than at load."""
+        return (
+            self.mode == "units"
+            or settings.get_footprint_outlines()
+            or settings.get_range_rings_revealers()
+            or settings.get_range_rings_buildings()
+            or self._unit_picker is not None
+        )
 
     def _rebuild_unit_index(self) -> None:
         """Rebuilds the pick index for the current scenario + filter and hands
@@ -5404,7 +5564,7 @@ class ViewerWindow(QMainWindow):
         if object_id is None:
             self._log_status("Place Unit: choose an object first")
             return
-        # TASK-288: resources and trees always go to GAIA, whatever the combo says.
+        # TASK-288: GAIA-only objects always go to GAIA, whatever the combo says.
         chosen = self.units_panel.owner_id()
         player = unit_kind.placement_owner(object_id, chosen)
         # GH #172: the same value on_place_preview's ghost was built with.
@@ -5565,6 +5725,7 @@ class ViewerWindow(QMainWindow):
             view._terrain_style,
             self._layers.tree_scale,
             self._layers.hero_glow,
+            self._layers.wall_alpha,
             id(view._iso_elevations),
         )
         # Snapped, the point only changes on a tile crossing (half-tile on an even span).
@@ -5630,8 +5791,6 @@ class ViewerWindow(QMainWindow):
             status = f"Placement: {_unit_name(new_const)}"
             if had_filter and not self.units_panel.catalog_view.filter_edit.text():
                 status += " (cleared the catalog filter to show it)"
-        elif outcome == place_rotation.GAIA_NO_FACING:
-            status = f"Placement: GAIA units have no facing, so {name} places facing 0"
         elif outcome == place_rotation.NOTHING:
             status = f"Placement: {name} has no facing or variant to rotate"
         else:
@@ -6659,6 +6818,7 @@ class ViewerWindow(QMainWindow):
             # would drag a tree at full size and snap it small on drop.
             tree_scale=self._layers.tree_scale,
             hero_glow=self._layers.hero_glow,
+            wall_alpha=self._layers.wall_alpha,
         )
 
     def _ghost_sprites_on(self) -> bool:
@@ -7570,6 +7730,30 @@ class ViewerWindow(QMainWindow):
         repaint from the now-empty cache."""
         self._layers = dataclasses.replace(self._layers, **{layer_id: on})
         settings.set_view_layer(layer_id, on)
+        label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
+        if layer_id == "mod_art":
+            self._apply_mod_art_change(f"{label}: {'on' if on else 'off'}")
+            return
+        self._apply_layers(f"{label}: {'on' if on else 'off'}", drape_outlines=layer_id == "farm_overlay")
+        if layer_id in ("terrain_textures", "terrain_blend"):
+            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
+            self._update_tool_enabled()
+
+    def set_wall_opacity_pct(self, pct: int) -> None:
+        """Settings > Appearance's wall opacity (GH #35), already persisted by
+        the caller. With Translucent Walls off the drawn wall_alpha is
+        unchanged, so only the window's copy updates: set_layers() would miss
+        its equality guard on the raw pct and evict the whole canvas for no
+        visible change."""
+        old_alpha = self._layers.wall_alpha
+        self._layers = dataclasses.replace(self._layers, wall_opacity_pct=pct)
+        if self._layers.wall_alpha != old_alpha:
+            self._apply_layers(f"Wall opacity: {pct}%")
+
+    def _apply_layers(self, status: str, drape_outlines: bool = False) -> None:
+        """Pushes self._layers into the live cache and repaints, logging
+        `status` with the time it took. See _on_layer_toggled() for the order.
+        drape_outlines re-derives the draped farms' per-tile outlines (Farm Overlay)."""
         self._cancel_warms()
         if self.scenario is None or self._cache is None:
             self._update_tool_enabled()
@@ -7585,7 +7769,7 @@ class ViewerWindow(QMainWindow):
             t0 = time.perf_counter()
             self._cache.set_layers(self._layers)
             self.map_view.invalidate_region((0, 0, *self._cache.canvas_dims(0)))
-            if layer_id == "farm_overlay":
+            if drape_outlines:
                 # A draped farm outlines per tile in Stepped and Sloped (TASK-015).
                 self.map_view.refresh_drape_outlines()
             elapsed = time.perf_counter() - t0
@@ -7593,11 +7777,49 @@ class ViewerWindow(QMainWindow):
             self._busy = was_busy
             QApplication.restoreOverrideCursor()
             self.setEnabled(True)
-        label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
-        self._log_status(f"{label}: {'on' if on else 'off'} (applied in {elapsed:.2f}s)")
-        if layer_id in ("terrain_textures", "terrain_blend"):
-            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
+        self._log_status(f"{status} (applied in {elapsed:.2f}s)")
+
+    def _apply_mod_art_change(self, status: str, *, rescan: bool = False) -> None:
+        """The one path for a Mod Art toggle, a Settings opt-out and a profile
+        folder change (TASK-378): mod_graphics takes the window's state, every
+        art cache drops, and the map, swatches and thumbnails redraw from the
+        files that now win. rescan also forgets the scanned mod folders."""
+        if rescan:
+            mod_graphics.clear()
+        toggled = mod_graphics.set_enabled(self._layers.mod_art)
+        mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        if not (toggled or mod_graphics.enabled()):
+            # Off before and after (an opt-out or a profile change): nothing drawn changes.
             self._update_tool_enabled()
+            self._log_status(status)
+            return
+        self._cancel_warms()
+        asset_source.clear_art_caches()
+        t0 = time.perf_counter()
+        # Walks every active mod file once (TASK-378 review): here, not inside the next edit's dirty bbox.
+        unit_sprites.sprite_reach()
+        reach_elapsed = time.perf_counter() - t0
+        self.refresh_map()
+        self.terrain_panel.view.refresh_swatches()
+        self.units_panel.refresh_thumbnails()
+        if self.scenario is None:
+            self._update_tool_enabled()  # refresh_map() re-gates when a map is open
+        self._log_status(f"{status}. {self._mod_art_status() or 'Mod art: none drawn'} (reach {reach_elapsed:.2f}s)")
+
+    def _mod_art_status(self) -> str:
+        """"Mod art: N mods" while any mod's art can draw, else "", so a
+        mod-derived render never goes unsaid in the log."""
+        if not mod_graphics.enabled():
+            return ""
+        count = sum(not mod.excluded for mod in mod_graphics.mods_with_art())
+        return f"Mod art: {count} mod{'s' if count != 1 else ''}" if count else ""
+
+    def _has_mod_art(self) -> bool:
+        """Whether any scanned mod ships art, cached per mod_graphics.generation()."""
+        generation = mod_graphics.generation()
+        if self._mod_art_available is None or self._mod_art_available[0] != generation:
+            self._mod_art_available = (generation, bool(mod_graphics.mods_with_art()))
+        return self._mod_art_available[1]
 
     def _filter_summary(self) -> str:
         if self._unit_filter.is_default:
@@ -8632,6 +8854,9 @@ class ViewerWindow(QMainWindow):
             "view_selection_owner_colour": self.selection_owner_colour_action,
             "view_range_rings": self.range_rings_action,
             "view_range_rings_by_owner": self.range_rings_by_owner_action,
+            "view_range_rings_buildings": self.range_rings_buildings_action,
+            "view_range_rings_revealers": self.range_rings_revealers_action,
+            "view_range_rings_selected_revealers": self.range_rings_selected_revealers_action,
             "view_player_cameras": self.player_cameras_action,
             "view_trigger_overlay": self.trigger_overlay_action,
             **{f"view_layer_{lid}": action for lid, action in self.layer_actions.items()},
@@ -8679,6 +8904,8 @@ class ViewerWindow(QMainWindow):
             self._keybind_actions[f"tool_{tool.tool_id}"] = getattr(self, f"{tool.tool_id}_action")
         for pid, action in self.player_select_actions.items():
             self._keybind_actions[f"player_select_{pid}"] = action
+        for pid, action in self.player_actions.items():
+            self._keybind_actions[f"filter_player_{pid}"] = action
         for action_id in self._keybind_actions:
             self.apply_keybind(action_id)
 
@@ -8787,6 +9014,22 @@ class ViewerWindow(QMainWindow):
     def _on_range_rings_by_owner_toggled(self, checked: bool) -> None:
         settings.set_range_rings_by_owner(checked)
         self.map_view.set_range_rings_by_owner(checked)
+
+    def _on_range_rings_selected_revealers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_selected_revealers(checked)
+        self.map_view.set_range_rings_selected_revealers(checked)
+
+    def _on_range_rings_buildings_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_buildings(checked)
+        if checked and self._needs_unit_index():
+            self._rebuild_unit_index()
+        self.map_view.set_ring_layer_buildings(checked)
+
+    def _on_range_rings_revealers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_revealers(checked)
+        if checked and self._needs_unit_index():
+            self._rebuild_unit_index()
+        self.map_view.set_ring_layer_revealers(checked)
 
     def _on_player_cameras_toggled(self, checked: bool) -> None:
         settings.set_camera_markers(checked)
@@ -10193,6 +10436,7 @@ class ViewerWindow(QMainWindow):
         self.map_view.refresh_unit_highlight()
         # Here, not in set_selection_player_colors(): _rebuild_unit_index() pushes colours too.
         self.map_view.refresh_footprint_owner_colors()
+        self.map_view.refresh_ring_layer_owner_colors()
         # An in-flight warm is walking unit data this recolour just changed;
         # re-armed below, same as _after_unit_mutation()'s own third
         # invalidation.
@@ -10716,6 +10960,8 @@ class ViewerWindow(QMainWindow):
             enabled, tip = view_layers.availability(
                 spec, style=self._render_style, sprites_enabled=self._sprites_enabled, has_map=has_map,
                 terrain_textures=self._layers.terrain_textures,
+                # Only asked with a map open, so the first mod-folder scan never lands on startup.
+                has_mod_art=has_map and self._has_mod_art(),
             )
             action = self.layer_actions[spec.layer_id]
             action.setEnabled(enabled)
@@ -12872,8 +13118,8 @@ class ViewerWindow(QMainWindow):
 
         Reads the unit and writes UI state only, so there is no undo record.
         What a later click stores still comes from place_rotation.rotation_for()
-        alone, which is why a GAIA unit's facing may be kept here: it places 0.0.
-        Walls, gates, cliffs and single-frame consts leave the rotation alone."""
+        alone, a GAIA unit's facing included (GH #217). Walls, gates, cliffs
+        and single-frame consts leave the rotation alone."""
         if self.scenario is None:
             return
         unit = entry.unit
@@ -17380,6 +17626,7 @@ class ViewerWindow(QMainWindow):
                 )
             finally:
                 self._busy = False
+            unit_sprites.sprite_reach()  # an install or mod-art change resets it; see load_scenario()
             # Re-gate too, not just re-render. "Show sprites" is the one action
             # whose enablement depends on the install path, and its greyed-out
             # tooltip tells the user to go configure one -- so without this,
@@ -17434,6 +17681,46 @@ class ViewerWindow(QMainWindow):
         if not self._confirm_discard_changes():
             return
         self.load_scenario(Path(path_str))
+
+    def _drop_paths(self, event) -> list[Path]:
+        """The scenario files a drag carries, or [] when it can't open one now."""
+        if self._busy or not event.mimeData().hasUrls() or not event.possibleActions() & Qt.CopyAction:
+            return []
+        return dropped_scenario_paths(event.mimeData().urls())
+
+    @staticmethod
+    def _accept_as_copy(event) -> None:
+        # Never Move (Shift-drag): Explorer deletes the source after a Move result, and opening consumes nothing.
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+
+    def dragEnterEvent(self, event) -> None:
+        if self._drop_paths(event):
+            self._accept_as_copy(event)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:
+        paths = self._drop_paths(event)
+        if not paths:
+            event.ignore()
+            return
+        self._accept_as_copy(event)
+        # Deferred: the discard prompt's modal loop inside dropEvent would stall the drag source.
+        QTimer.singleShot(0, lambda: self._open_dropped(paths))
+
+    def _open_dropped(self, paths: list[Path]) -> None:
+        if self._busy or not self._confirm_discard_changes():
+            return
+        before = self.scenario
+        self.load_scenario(paths[0])
+        if len(paths) > 1 and self.scenario is not before:
+            message = f"Opened {paths[0].name}; skipped {len(paths) - 1} other dropped file(s)"
+            self._log_status(message)
+            self.statusBar().showMessage(message)
 
     def _clear_recent_files(self) -> None:
         settings.clear_recent_files()
@@ -17807,6 +18094,10 @@ class ViewerWindow(QMainWindow):
                 f"tile_px={tile_px}, style={self._style_log_label}) "
                 f"in {total_elapsed:.2f}s ({generate_part}parse {parse_elapsed:.2f}s, prepare {elapsed:.2f}s)"
             )
+            if mod_line := self._mod_art_status():
+                self._log_status(mod_line)
+            # Walks every active mod file once per mod-art change (cached after): here, not in the first edit.
+            unit_sprites.sprite_reach()
             # Only now, with that line printed, may the follow-up drain. No
             # paint at all (a window never shown) means no second line.
             self._pending_paint_report["ready"] = True

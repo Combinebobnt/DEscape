@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Regenerates descape/unit_stats.json: per-unit_const base in-game stats (hit
-points, attack, melee armour, pierce armour, range), extracted from the
+points, attack, melee armour, pierce armour, range) plus a separate line of
+sight map (GH #153's map revealer rings), extracted from the
 game's own unit table via genieutils-py -- not game asset content itself,
 same reasoning as terrain_texture_map.json / tree_unit_ids.json /
 unit_render_data.json.
@@ -10,11 +11,13 @@ unit_render_data.json.
 strict superset: 2,642 non-None units vs 2,137 for British, and there are zero
 consts a playable civ has that Gaia lacks. A playable civ would drop every
 GAIA-only object (trees, huntables, mines) -- exactly what this repo renders
-most. Gaia's values are also safe for the six fields emitted here: only 13
-consts differ between Gaia and British at all (e.g. herdables/sheep such as
+most. Gaia's values are also safe for the six stats fields: only 13 consts
+differ between Gaia and British at all (e.g. herdables/sheep such as
 305/594/833, at line_of_sight 3.0 vs 2.0), and all 13 differ in
-`line_of_sight` only -- not one of the fields this table emits. HP, attack,
-armour and range are byte-identical between the two.
+`line_of_sight` only. HP, attack, armour and range are byte-identical between
+the two. `line_of_sight` IS emitted (the `"line_of_sight"` map), and on those
+13 herdables Gaia's value is the one kept; every map revealer (class 30) is
+identical across civs, which is what the map revealer rings read.
 
 **Field homes differ between two dataclasses -- the wrong-field bug this
 script is most likely to ship:**
@@ -44,6 +47,10 @@ sentinel a reader could mistake for real data:
   e.g. House's melee armour, is real data, not a bug). `displayed_*` is
   literally the field the game's own panel uses; second-guessing it is how a
   confident-but-wrong display gets shipped.
+- `line_of_sight` from `Unit.line_of_sight` goes in its own top-level
+  `"line_of_sight"` map (const -> LOS), only where `> 0`, NOT inside the
+  `"stats"` entries: the Units card shows its stats grid whenever a const's
+  stats dict is non-empty, and a LOS key would give every scenery object one.
 - JSON keys use genieutils' own British spelling (`melee_armour`,
   `pierce_armour`) so a misread field is visible at a glance.
 
@@ -87,9 +94,12 @@ def main() -> None:
     units = data.civs[0].units
 
     stats: dict[str, dict[str, float]] = {}
+    line_of_sight: dict[str, float] = {}
     for unit_const, unit in enumerate(units):
         if unit is None:
             continue
+        if unit.line_of_sight > 0:
+            line_of_sight[str(unit_const)] = unit.line_of_sight
         entry: dict[str, float] = {}
         if unit.hit_points > 0:
             entry["hp"] = unit.hit_points
@@ -110,12 +120,13 @@ def main() -> None:
             {
                 "_comment": "unit_const -> base in-game stats -- see tools/gen_unit_stats.py",
                 "stats": dict(sorted(stats.items(), key=lambda kv: int(kv[0]))),
+                "line_of_sight": dict(sorted(line_of_sight.items(), key=lambda kv: int(kv[0]))),
             },
             indent=2,
         )
         + "\n"
     )
-    print(f"Wrote {len(stats)} unit stat entries to {out_path}")
+    print(f"Wrote {len(stats)} unit stat entries and {len(line_of_sight)} line of sight entries to {out_path}")
 
 
 if __name__ == "__main__":

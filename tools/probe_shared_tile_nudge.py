@@ -182,6 +182,7 @@ def _analyse_splice_on_copies(window, entry) -> None:
                 u2,
                 cache.layers.tree_scale,
                 cache.layers.hero_glow,
+                cache.layers.wall_alpha,
             )
             bbx = render._building_bbox_for(u2, mm.map_width, mm.map_height, proj, cache.elevations, extra)
             print(
@@ -206,6 +207,7 @@ def _analyse_splice_on_copies(window, entry) -> None:
             cache.layers.farm_overlay,
             cache.layers.tree_scale,
             cache.layers.hero_glow,
+            cache.layers.wall_alpha,
         )
         _mip, bb_real, sprites_real, *_ = _visible_level(cache, window)
         diffs = [

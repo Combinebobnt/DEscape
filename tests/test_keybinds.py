@@ -57,9 +57,8 @@ def test_every_menu_command_is_rebindable_or_explicitly_exempt() -> None:
     try:
         bound = {id(action) for action in window._keybind_actions.values()}
         # Each exemption is a deliberate "not a command" call: preset sizes
-        # beside file_new/file_new_default, and per-player filter toggles.
+        # beside file_new/file_new_default.
         exempt = {id(a) for a in window.new_size_actions if a is not window.new_action}
-        exempt |= {id(a) for a in window.player_actions.values()}
 
         missing: list[str] = []
 
@@ -221,6 +220,9 @@ _TOGGLE_ACTION_IDS = (
     "view_selection_owner_colour",
     "view_range_rings",
     "view_range_rings_by_owner",
+    "view_range_rings_buildings",
+    "view_range_rings_revealers",
+    "view_range_rings_selected_revealers",
     "view_player_cameras",
     "view_trigger_overlay",
     "view_layer_terrain_textures",
@@ -228,6 +230,8 @@ _TOGGLE_ACTION_IDS = (
     "view_layer_farm_overlay",
     "view_layer_small_trees",
     "view_layer_hero_glow",
+    "view_layer_translucent_walls",
+    "view_layer_mod_art",
     "help_perf_trace",
     "filter_show_gaia",
     "filter_show_trees",
@@ -237,6 +241,7 @@ _TOGGLE_ACTION_IDS = (
     "filter_show_obstacles",
     "filter_show_invisible",
     "filter_show_garrisoned",
+    *(f"filter_player_{pid}" for pid in range(1, 9)),
 )
 
 
@@ -386,6 +391,63 @@ def test_player_select_action_count_matches_max_player_id() -> None:
 
     count = len([a for a, _, _ in settings.REBINDABLE_ACTIONS if a.startswith("player_select_")])
     assert count == viewer.MAX_PLAYER_ID + 1
+
+
+def test_owner_filter_actions_default_to_ctrl_digit() -> None:
+    """GH #207: Ctrl+1..8 toggle each player's Filters checkbox, Ctrl+0 Show GAIA."""
+    from descape import settings
+    from descape.viewer import GAIA_PLAYER_ID, MAX_PLAYER_ID, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        assert settings.get_keybind("filter_show_gaia") == "Ctrl+0"
+        assert window.show_gaia_action.shortcut().toString() == "Ctrl+0"
+        for pid in range(GAIA_PLAYER_ID + 1, MAX_PLAYER_ID + 1):
+            assert settings.get_keybind(f"filter_player_{pid}") == f"Ctrl+{pid}"
+            assert window._keybind_actions[f"filter_player_{pid}"] is window.player_actions[pid]
+            assert window.player_actions[pid].shortcut().toString() == f"Ctrl+{pid}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_filter_player_action_count_matches_max_player_id() -> None:
+    from descape import settings, viewer
+
+    count = len([a for a, _, _ in settings.REBINDABLE_ACTIONS if a.startswith("filter_player_")])
+    assert count == viewer.MAX_PLAYER_ID
+
+
+def test_default_ctrl_digit_hides_and_shows_that_player() -> None:
+    """Pressing the shipped Ctrl+3 drops player 3 from the live unit filter, and again restores it."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+        assert window._unit_filter.players is None
+
+        QTest.keyClick(window, Qt.Key_3, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert not window.player_actions[3].isChecked()
+        assert window._unit_filter.players == frozenset({1, 2, 4, 5, 6, 7, 8})
+
+        QTest.keyClick(window, Qt.Key_3, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert window.player_actions[3].isChecked()
+        assert window._unit_filter.players is None
+    finally:
+        if not window.player_actions[3].isChecked():
+            window.player_actions[3].trigger()
+        conftest.close_window(window)
 
 
 def test_select_player_in_units_mode_sets_owner_combo_only() -> None:

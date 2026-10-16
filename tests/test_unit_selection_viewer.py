@@ -1014,7 +1014,7 @@ def test_the_toggle_drops_a_live_ring_and_puts_it_back() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
-        assert mv._range_ring_items == {}, "no ring while View > Range Rings > Show is off"
+        assert mv._range_ring_items == {}, "no ring while View > Range Rings > Selected Buildings is off"
 
         window.range_rings_action.setChecked(True)
         (path,) = _ring_paths(mv)
@@ -1034,7 +1034,7 @@ def test_the_toggle_persists_and_is_rebindable() -> None:
         assert settings.get_range_rings() is False
         window.range_rings_action.setChecked(True)
         assert settings.get_range_rings() is True
-        assert ("view_range_rings", "Range Rings", "") in settings.REBINDABLE_ACTIONS
+        assert ("view_range_rings", "Range Rings: Selected Buildings", "") in settings.REBINDABLE_ACTIONS
     finally:
         _close(window)
 
@@ -1122,16 +1122,29 @@ def test_ring_owner_colour_round_trips_through_the_file(monkeypatch) -> None:
     assert settings.get_range_rings_by_owner() is False
 
 
-def test_range_rings_is_a_submenu_of_show_and_colour_by_owner() -> None:
+def test_range_rings_is_a_submenu_of_three_layers_and_colour_by_owner() -> None:
     from descape import settings
 
     window = _owner_ring_window(by_owner=False)
     try:
         view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
         range_menu = next(a.menu() for a in view_menu.actions() if a.text() == "&Range Rings")
-        assert range_menu.actions() == [window.range_rings_action, window.range_rings_by_owner_action]
-        assert window.range_rings_action.text() == "&Show"
-        assert window.range_rings_action not in view_menu.actions(), "Show stayed in View itself"
+        actions = range_menu.actions()
+        assert actions[:4] == [
+            window.range_rings_action,
+            window.range_rings_buildings_action,
+            window.range_rings_selected_revealers_action,
+            window.range_rings_revealers_action,
+        ]
+        assert actions[4].isSeparator()
+        assert actions[5:] == [window.range_rings_by_owner_action]
+        assert window.range_rings_revealers_action.text() == "All Map &Revealers"
+        view_actions = view_menu.actions()
+        position = {a: i for i, a in enumerate(view_actions)}
+        ticks = next(a for a in view_actions if a.text() == "&Distance Ticks")
+        assert position[window.trigger_overlay_action] < position[range_menu.menuAction()] < position[ticks]
+        assert window.range_rings_action.text() == "&Selected Buildings"
+        assert window.range_rings_action not in view_menu.actions(), "the toggle stayed in View itself"
         assert window.range_rings_by_owner_action.isChecked() is False
 
         window.range_rings_by_owner_action.setChecked(True)
@@ -1271,5 +1284,429 @@ def test_closing_the_scenario_leaves_no_stale_owner_ring_refs() -> None:
         window.edit_history.mark_saved()
         window.close_scenario()
         assert mv._range_ring_items == {}
+    finally:
+        _close(window)
+
+
+# --- always-on ring layer: All Buildings and Map Revealers (GH #153 / #155) ---
+
+
+_MAP_REVEALER_CONST = 837  # LOS 4
+_GIANT_MAP_REVEALER_CONST = 1775  # LOS 20
+_TREBUCHET_CONST = 42  # mobile siege: a BUILDING_TILE_SPANS member, not a Show Buildings one
+
+
+def _layer_window(*units):
+    """Blank template in Flat, left in View mode (Units never entered), with
+    `units` as (player_id, x, y, unit_const) and Footprint Outlines off."""
+    from descape import settings
+
+    window = _window(with_units=False)
+    for ref, (player_id, x, y, unit_const) in enumerate(units, start=400):
+        window.scenario.unit_manager.units[player_id].append(
+            SyntheticUnit(x=x, y=y, unit_const=unit_const, reference_id=ref)
+        )
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText("Flat")
+    assert window.mode == "view"
+    assert settings.get_footprint_outlines() is False
+    return window
+
+
+def _layer_subpaths(mv, key=None) -> list:
+    """One QPolygonF per ring in the layer's `key` group."""
+    return list(mv._ring_layer_items[key].path().toSubpathPolygons())
+
+
+def test_ring_layer_toggles_default_off_and_round_trip_through_the_file(monkeypatch) -> None:
+    from descape import settings
+
+    assert settings.get_range_rings_revealers() is False
+    assert settings.get_range_rings_buildings() is False
+    settings.set_range_rings_revealers(True)
+    settings.set_range_rings_buildings(True)
+    monkeypatch.setattr(settings, "_range_rings_revealers", None)
+    monkeypatch.setattr(settings, "_range_rings_buildings", None)
+    assert settings.get_range_rings_revealers() is True
+    assert settings.get_range_rings_buildings() is True
+
+
+def test_ring_layer_toggles_are_rebindable() -> None:
+    from descape import settings
+
+    assert ("view_range_rings_buildings", "Range Rings: All Buildings", "") in settings.REBINDABLE_ACTIONS
+    assert ("view_range_rings_revealers", "Range Rings: All Map Revealers", "") in settings.REBINDABLE_ACTIONS
+    row = ("view_range_rings_selected_revealers", "Range Rings: Selected Map Revealers", "")
+    assert row in settings.REBINDABLE_ACTIONS
+
+
+def test_map_revealers_ring_outside_units_mode_at_their_line_of_sight() -> None:
+    from descape import settings
+
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST), (0, 70.5, 70.5, _GIANT_MAP_REVEALER_CONST))
+    try:
+        mv = window.map_view
+        assert mv._ring_layer_items == {}
+        window.range_rings_revealers_action.setChecked(True)
+        assert settings.get_range_rings_revealers() is True
+        assert window.mode == "view", "the toggle must not need Units mode"
+        assert list(mv._ring_layer_items) == [None]
+        item = mv._ring_layer_items[None]
+        assert item.zValue() == mv.RANGE_RING_Z
+        assert item.pen().color().name() == settings.get_overlay_color("range_ring")
+        tp = mv._tile_pixels
+        widths = sorted(polygon.boundingRect().width() for polygon in _layer_subpaths(mv))
+        assert widths == pytest.approx([2 * 4.0 * tp, 2 * 20.0 * tp], abs=1.0)
+
+        window.range_rings_revealers_action.setChecked(False)
+        assert mv._ring_layer_items == {}
+        assert item.scene() is None
+    finally:
+        _close(window)
+
+
+def test_all_buildings_rings_an_unselected_castle_but_not_a_trebuchet() -> None:
+    window = _layer_window((1, 20.0, 20.0, _CASTLE_CONST), (1, 60.5, 60.5, _TREBUCHET_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_buildings_action.setChecked(True)
+        (ring,) = _layer_subpaths(mv)
+        assert ring.boundingRect().width() == pytest.approx(2 * 10.0 * mv._tile_pixels, abs=1.0)
+        assert mv._unit_select_keys == [], "nothing is selected"
+    finally:
+        _close(window)
+
+
+def test_the_two_layer_toggles_are_independent() -> None:
+    window = _layer_window((1, 20.0, 20.0, _CASTLE_CONST), (0, 70.5, 70.5, _MAP_REVEALER_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_buildings_action.setChecked(True)
+        assert len(_layer_subpaths(mv)) == 1
+        window.range_rings_revealers_action.setChecked(True)
+        assert len(_layer_subpaths(mv)) == 2
+        window.range_rings_buildings_action.setChecked(False)
+        (ring,) = _layer_subpaths(mv)
+        assert ring.boundingRect().width() == pytest.approx(2 * 4.0 * mv._tile_pixels, abs=1.0)
+    finally:
+        _close(window)
+
+
+def test_show_invisible_objects_off_hides_the_revealer_rings() -> None:
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_revealers_action.setChecked(True)
+        assert len(_layer_subpaths(mv)) == 1
+        window.show_invisible_action.setChecked(False)
+        assert mv._ring_layer_items == {}
+        window.show_invisible_action.setChecked(True)
+        assert len(_layer_subpaths(mv)) == 1
+    finally:
+        _close(window)
+
+
+def test_colour_by_owner_splits_the_revealer_rings_by_player() -> None:
+    window = _layer_window(
+        (1, 20.5, 20.5, _MAP_REVEALER_CONST),
+        (2, 60.5, 60.5, _MAP_REVEALER_CONST),
+        (0, 90.5, 90.5, _MAP_REVEALER_CONST),
+    )
+    try:
+        mv = window.map_view
+        window.range_rings_revealers_action.setChecked(True)
+        assert len(_layer_subpaths(mv)) == 3
+        window.range_rings_by_owner_action.setChecked(True)
+        p1 = tuple(window.scenario.player_colors[1])
+        p2 = tuple(window.scenario.player_colors[2])
+        assert set(mv._ring_layer_items) == {None, p1, p2}
+        assert _rgb(mv._ring_layer_items[p1].pen().color()) == p1
+        assert mv._ring_layer_items[p2].pen().widthF() == 0
+        assert [len(_layer_subpaths(mv, key)) for key in (None, p1, p2)] == [1, 1, 1]
+        window.range_rings_by_owner_action.setChecked(False)
+        assert list(mv._ring_layer_items) == [None]
+    finally:
+        _close(window)
+
+
+def test_an_appearance_change_reinks_the_layers_configured_group() -> None:
+    from descape import settings
+
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_revealers_action.setChecked(True)
+        settings.set_overlay_color("range_ring", "#ff00ff")
+        mv.apply_overlay_colors()
+        assert mv._ring_layer_items[None].pen().color().name() == "#ff00ff"
+    finally:
+        _close(window)
+
+
+def test_a_colour_edit_recolours_an_owner_coloured_layer_ring() -> None:
+    from descape import player_fields
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    window = _layer_window((1, 20.5, 20.5, _MAP_REVEALER_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_revealers_action.setChecked(True)
+        window.range_rings_by_owner_action.setChecked(True)
+        (before,) = mv._ring_layer_items
+        assert before != PLAYER_COLOR_BY_ID[5]
+        spec = next(s for s in player_fields.specs_for(window.scenario) if s.field_id == "color")
+        window.set_player_field(spec, 1, 5)
+        assert list(mv._ring_layer_items) == [PLAYER_COLOR_BY_ID[5]]
+    finally:
+        _close(window)
+
+
+def test_a_style_switch_and_closing_the_scenario_keep_the_layer_consistent() -> None:
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_revealers_action.setChecked(True)
+        window.mode_combo.setCurrentText("Terrain")
+        for style in ("Sloped", "Stepped", "Flat"):
+            old = mv._ring_layer_items[None]
+            window.terrain_style_combo.setCurrentText(style)
+            item = mv._ring_layer_items[None]
+            assert item is not old, f"{style}: the layer was not rebuilt"
+            assert item.scene() is mv.scene()
+            assert not item.path().isEmpty()
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert mv._ring_layer_items == {}
+    finally:
+        _close(window)
+
+
+def _fixture_window():
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    window.load_scenario(_UNITS_FIXTURE)
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText("Flat")
+    return window
+
+
+def test_a_unit_edit_and_its_undo_in_terrain_mode_keep_the_revealer_rings() -> None:
+    """Real UnitEditModel edits outside Units mode: each one rebuilds the
+    index through _after_unit_mutation(), which has to land on the layer."""
+    window = _fixture_window()
+    try:
+        window.mode_combo.setCurrentText("Terrain")
+        window.range_rings_revealers_action.setChecked(True)
+        mv = window.map_view
+        before = len(_layer_subpaths(mv)) if mv._ring_layer_items else 0
+        model = window._ensure_unit_edits()
+        assert model is not None
+        with window._unit_edit(model, "Place revealer", [0]):
+            model.add(0, _MAP_REVEALER_CONST, 30.5, 30.5)
+        with window._unit_edit(model, "Place revealer", [0]):
+            model.add(0, _GIANT_MAP_REVEALER_CONST, 60.5, 60.5)
+        assert window.mode == "terrain"
+        assert len(_layer_subpaths(mv)) == before + 2
+        window.undo()
+        assert len(_layer_subpaths(mv)) == before + 1
+    finally:
+        _close(window)
+
+
+def test_nudging_a_revealer_moves_its_layer_ring() -> None:
+    """A Units-mode nudge patches the index in place (refresh_after_index_patch)."""
+    from PyQt5.QtCore import Qt
+
+    from descape import unit_pick
+
+    window = _fixture_window()
+    try:
+        window.range_rings_revealers_action.setChecked(True)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Place revealer", [0]):
+            revealer = model.add(0, _MAP_REVEALER_CONST, 30.5, 30.5)
+        window.mode_combo.setCurrentText("Units")
+        mv = window.map_view
+        key = unit_pick.unit_key(0, revealer)
+        tp = mv._tile_pixels
+
+        def ring_centre():
+            # The ring around (30.5, 30.5): the subpath whose centre is nearest it.
+            centres = [polygon.boundingRect().center() for polygon in _layer_subpaths(mv)]
+            return min(centres, key=lambda c: abs(c.x() - 30.5 * tp) + abs(c.y() - 30.5 * tp))
+
+        before = ring_centre()
+        assert (before.x(), before.y()) == pytest.approx((30.5 * tp, 30.5 * tp), abs=1.0)
+        window._selection = [key]
+        mv.set_unit_selection([mv._unit_index.entry_for_key(key)])
+        window.on_unit_nudge(1, 0, Qt.ShiftModifier)
+        moved = ring_centre()
+        assert (moved.x(), moved.y()) == pytest.approx((31.5 * tp, 30.5 * tp), abs=1.0)
+    finally:
+        _close(window)
+
+
+def test_an_elevation_stroke_with_outlines_off_rebuilds_the_layer_once() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST))
+    try:
+        window.terrain_style_combo.setCurrentText("Stepped")
+        window.range_rings_revealers_action.setChecked(True)
+        window.show()
+        QApplication.processEvents()
+        mv = window.map_view
+        rebuilds = []
+        real_refresh = mv.refresh_ring_layer
+        mv.refresh_ring_layer = lambda: (rebuilds.append(1), real_refresh())[1]
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        for step in range(8):
+            window.on_edit_stroke_tile(20 + step, 20, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        assert len(rebuilds) == 1
+        assert len(_layer_subpaths(mv)) == 1
+    finally:
+        mv.refresh_ring_layer = real_refresh
+        _close(window)
+
+
+def test_an_elevation_stroke_under_a_revealer_moves_its_ring_to_the_new_height() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST))
+    try:
+        window.terrain_style_combo.setCurrentText("Stepped")
+        window.range_rings_revealers_action.setChecked(True)
+        window.show()
+        QApplication.processEvents()
+        mv = window.map_view
+        (before,) = [polygon.boundingRect() for polygon in _layer_subpaths(mv)]
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(20, 20, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        (after,) = [polygon.boundingRect() for polygon in _layer_subpaths(mv)]
+        assert after.center().x() == pytest.approx(before.center().x())
+        assert after.center().y() < before.center().y(), "the ring stayed at the old height"
+    finally:
+        _close(window)
+
+
+def test_a_window_opened_with_a_ring_toggle_saved_on_draws_the_layer_without_entering_units_mode(tmp_path) -> None:
+    from descape import settings
+    from descape.edit_history import EditHistory
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+    from descape.unit_model import UnitEditModel
+    from descape.viewer import ViewerWindow
+
+    loaded = load_map_and_units(_UNITS_FIXTURE)
+    model = UnitEditModel(loaded)
+    model.begin_unit_edit([1])
+    model.add(1, _CASTLE_CONST, 60.0, 60.0)
+    model.commit_unit_edit("Place castle", EditHistory())
+    with_castle = tmp_path / "castle.aoe2scenario"
+    write_scenario(loaded, with_castle, units=model, backup=False)
+
+    settings.set_range_rings_buildings(True)
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        assert window.range_rings_buildings_action.isChecked()
+        window.load_scenario(with_castle)
+        assert window.mode == "view"
+        assert window.map_view._ring_layer_items.get(None) is not None
+        assert _layer_subpaths(window.map_view)
+    finally:
+        _close(window)
+
+
+def test_a_rebuild_reuses_unchanged_ring_polygons_and_a_style_switch_drops_them() -> None:
+    window = _layer_window((0, 20.5, 20.5, _MAP_REVEALER_CONST), (1, 40.0, 40.0, _CASTLE_CONST))
+    try:
+        mv = window.map_view
+        window.range_rings_revealers_action.setChecked(True)
+        window.range_rings_buildings_action.setChecked(True)
+        before = dict(mv._ring_layer_polygons)
+        assert len(before) == 2
+        mv.refresh_ring_layer()
+        assert all(mv._ring_layer_polygons[key] is polygon for key, polygon in before.items())
+        window.terrain_style_combo.setCurrentText("Stepped")
+        assert len(mv._ring_layer_polygons) == 2
+        assert not any(polygon is before.get(key) for key, polygon in mv._ring_layer_polygons.items())
+        window.range_rings_revealers_action.setChecked(False)
+        assert len(mv._ring_layer_polygons) == 1, "a ring no longer drawn is not kept"
+    finally:
+        _close(window)
+
+
+# --- Selected Map Revealers ---------------------------------------------------
+
+
+def _selected_revealer_window(selected_revealers: bool = True, selected_buildings: bool = False):
+    """A P1 map revealer and Castle in Units mode, Flat, with only the selection toggles asked for."""
+    window = _layer_window((1, 20.5, 20.5, _MAP_REVEALER_CONST), (1, 60.0, 60.0, _CASTLE_CONST))
+    window.mode_combo.setCurrentText("Units")
+    window.range_rings_selected_revealers_action.setChecked(selected_revealers)
+    window.range_rings_action.setChecked(selected_buildings)
+    return window
+
+
+def test_selected_map_revealers_defaults_off_and_round_trips_through_the_file(monkeypatch) -> None:
+    from descape import settings
+
+    assert settings.get_range_rings_selected_revealers() is False
+    settings.set_range_rings_selected_revealers(True)
+    monkeypatch.setattr(settings, "_range_rings_selected_revealers", None)
+    assert settings.get_range_rings_selected_revealers() is True
+
+
+def test_a_selected_revealer_rings_at_its_line_of_sight() -> None:
+    window = _selected_revealer_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _MAP_REVEALER_CONST)])
+        (path,) = _ring_paths(mv)
+        assert path.boundingRect().width() == pytest.approx(2 * 4.0 * mv._tile_pixels, abs=1.0)
+        assert mv._ring_layer_items == {}, "the always-on layer stays off"
+        mv.set_unit_selection([_entry_for_const(window, _CASTLE_CONST)])
+        assert mv._range_ring_items == {}, "a Castle needs Selected Buildings"
+    finally:
+        _close(window)
+
+
+def test_selected_buildings_alone_does_not_ring_a_selected_revealer() -> None:
+    window = _selected_revealer_window(selected_revealers=False, selected_buildings=True)
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, _MAP_REVEALER_CONST)])
+        assert mv._range_ring_items == {}
+    finally:
+        _close(window)
+
+
+def test_the_two_selection_toggles_ring_a_mixed_selection_independently() -> None:
+    window = _selected_revealer_window(selected_buildings=True)
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for_const(window, c) for c in (_MAP_REVEALER_CONST, _CASTLE_CONST)])
+        assert [_subpath_count(path) for path in _ring_paths(mv)] == [2]
+        window.range_rings_action.setChecked(False)
+        (path,) = _ring_paths(mv)
+        assert _subpath_count(path) == 1
+        assert path.boundingRect().width() == pytest.approx(2 * 4.0 * mv._tile_pixels, abs=1.0)
+        window.range_rings_selected_revealers_action.setChecked(False)
+        assert mv._range_ring_items == {}
+        window.range_rings_selected_revealers_action.setChecked(True)
+        assert len(_ring_paths(mv)) == 1
     finally:
         _close(window)

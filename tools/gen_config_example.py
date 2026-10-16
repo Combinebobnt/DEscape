@@ -156,6 +156,11 @@ elev_step_pct: {iso_geometry.ELEV_STEP_DEFAULT_PCT}
 # Default: {settings.PAN_SPEED_DEFAULT}.
 pan_speed: {settings.PAN_SPEED_DEFAULT}
 
+# Opacity of walls and gates in percent while View > Layers > Translucent
+# Walls is on, Settings > Appearance. Clamped to {view_layers.WALL_OPACITY_MIN_PCT}-{view_layers.WALL_OPACITY_MAX_PCT} on read.
+# Default: {view_layers.WALL_OPACITY_DEFAULT_PCT}.
+wall_opacity_pct: {view_layers.WALL_OPACITY_DEFAULT_PCT}
+
 # Anchor mouse-wheel zoom under the cursor (true) or the view center
 # (false). Default: true.
 zoom_centered_on_cursor: true
@@ -203,6 +208,13 @@ terrain_style: {settings.TERRAIN_STYLE_DEFAULT}
 view_layers:
 {view_layers_block}
 
+# Mods whose art View > Layers > Mod Art skips, Settings > General > Mod art,
+# as the game's mods/mod-status.json Path strings. A listed mod that is no
+# longer installed stays listed, so it stays off if resubscribed.
+# Default: [] (every enabled mod's art draws). The value below is only an example.
+# mod_art_excluded:
+#   - subscribed//12345_Example Mod
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false
@@ -246,12 +258,29 @@ grid_overlay: false
 grid_follow_elevation: true
 
 # A circle around each selected building showing its attack range, View >
-# Range Rings. Buildings only, and only ones with a range. Default: false.
+# Range Rings > Selected Buildings. Buildings only, and only ones with a
+# range. Default: false.
 range_rings: false
 
 # Each ring in its owner's player colour, View > Range Rings > Colour by
-# Owner. GAIA keeps the overlay_colors range_ring colour. Default: false.
+# Owner. Applies to every ring layer. GAIA keeps the overlay_colors
+# range_ring colour. Default: false.
 range_rings_by_owner: false
+
+# A circle around every building that has a range, selected or not, in every
+# mode, View > Range Rings > All Buildings. Siege units are not included.
+# Default: false.
+range_rings_buildings: false
+
+# A circle around each selected map revealer showing the area it reveals
+# (its line of sight), View > Range Rings > Selected Map Revealers.
+# Default: false.
+range_rings_selected_revealers: false
+
+# A circle around every map revealer showing the area it reveals (its line of
+# sight), in every mode, View > Range Rings > All Map Revealers. Hidden while
+# Show Invisible Objects is off. Default: false.
+range_rings_revealers: false
 
 # A camera glyph on each player's stored starting view tile, View > Player
 # Cameras. Default: false.

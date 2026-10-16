@@ -247,6 +247,15 @@ def test_checking_show_hidden_reveals_editor_hidden_objects() -> None:
     assert not child.isHidden()
 
 
+def test_the_gunpowder_keg_shows_without_the_hidden_box() -> None:
+    """GH #208: the .dat hides 2607, the official editor does not."""
+    dialog = _dialog()
+    assert not dialog.show_hidden_checkbox.isChecked()
+    child = _child_for(dialog, 2607)
+    assert child is not None
+    assert not child.isHidden()
+
+
 def test_unchecking_show_hidden_hides_them_again() -> None:
     dialog = _dialog()
     dialog.show_hidden_checkbox.setChecked(True)

@@ -314,7 +314,7 @@ def test_objects_lists_the_patchs_dat_only_objects(id_: int, category: str) -> N
     assert found.hidden is False
 
 
-@pytest.mark.parametrize("id_", [621, 35, 2607])
+@pytest.mark.parametrize("id_", [621, 35])
 def test_objects_leaves_out_editor_hidden_dat_only_ids(id_: int) -> None:
     dat_entry = object_catalog._dat_entry("objects", id_)
     assert dat_entry is not None and dat_entry["hidden"] is True
@@ -322,13 +322,25 @@ def test_objects_leaves_out_editor_hidden_dat_only_ids(id_: int) -> None:
     assert object_catalog.entry(object_catalog.objects(), id_) is None
 
 
-def test_objects_adds_exactly_the_editor_visible_dat_only_ids() -> None:
+def test_objects_lists_the_gunpowder_keg_as_the_official_editor_does() -> None:
+    """GH #208: the .dat hides 2607, but the official editor lists it under
+    Other, so the picker does too, without "Show editor-hidden objects"."""
+    assert object_catalog._dat_entry("objects", 2607)["hidden"] is True
+    assert 2607 not in _library_categories()
+    found = object_catalog.entry(object_catalog.objects(), 2607)
+    assert found is not None
+    assert found.category == "Others"
+    assert found.hidden is False
+    assert found.class_id == 64
+
+
+def test_objects_adds_exactly_the_editor_visible_dat_only_ids_and_the_keg() -> None:
     table = object_catalog._dat_table()["objects"]
     library = _library_categories()
     expected = {int(k) for k, v in table.items() if int(k) not in library and not v["hidden"]}
     assert len(expected) == 64  # measured 2026-09-27, unchanged by the 2026-10-07 regen
     added = {e.id for e in object_catalog.objects()} - set(library)
-    assert added == expected
+    assert added == expected | {2607}
 
 
 def test_display_name_names_a_dat_only_const_with_no_install() -> None:

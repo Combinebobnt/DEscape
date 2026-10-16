@@ -86,7 +86,10 @@ def synthetic_textures(monkeypatch):
 def ink_sprite(monkeypatch):
     """CONST resolves to INK at every scale; nothing else resolves."""
 
-    def pieces(unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None):
+    def pieces(
+        unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
+        wall_alpha=1.0,
+    ):
         if unit_const != CONST:
             return []
         return [unit_sprites.SpritePiece(unit_sprites.SpriteDraw(INK, *HOTSPOT), 0, 0)]
@@ -284,7 +287,10 @@ DOODAD = 744  # MNTN3, a 6x6 footprint
 def doodad_sprite(monkeypatch):
     """DOODAD resolves to INK; nothing else resolves."""
 
-    def pieces(unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None):
+    def pieces(
+        unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
+        wall_alpha=1.0,
+    ):
         if unit_const != DOODAD:
             return []
         return [unit_sprites.SpritePiece(unit_sprites.SpriteDraw(INK, *HOTSPOT), 0, 0)]

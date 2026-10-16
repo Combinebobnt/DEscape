@@ -185,7 +185,7 @@ BUILDING_TILE_SPANS membership with walls as a sub-count: net of walls, the two
 differ by exactly the 10 mobile-siege consts plus 1192. GH #143's "exclude
 buildings" should reuse this set.
 
-## gaia_only_consts(): resources and trees (TASK-288)
+## gaia_only_consts(): resources, trees and the Gunpowder Keg (TASK-288)
 
 The consts a new placement (Place Unit, Scatter) always gives to GAIA,
 whatever the owner combo says, and whose reassignment to a player gets a
@@ -197,6 +197,11 @@ examples/ corpus: all 4,099 placements of the resource classes (fish
 placements are GAIA. The rule is by class, not "all type 10": player-owned
 eye candy does exist (FLARE4 697 x230, rubble 863/864/865/144/1497, STATUE
 1279, IMPALED 1315), so those stay out.
+
+Plus _GAIA_ONLY_EXTRA_CONSTS, named rather than derived from a class: the
+Gunpowder Keg 2607 (GH #208), which the official editor drops when it is set
+to a player (the PR #223 contributor's in-game check). The corpus agrees: all
+20 keg placements, in 2 of the 21 files, are GAIA (measured 2026-10-15).
 
 ## Two documented non-changes
 
@@ -240,6 +245,8 @@ _EYE_CANDY_TYPE = 10
 _RESOURCE_CLASSES = frozenset({5, 7, 8, 31, 32, 33, 40, 41, 48, 63})
 # Minus 40/41, the hidden PILE*/P* piles: never placed in the corpus, no resource.
 _GAIA_ONLY_CLASSES = _RESOURCE_CLASSES - {40, 41}
+# Gunpowder Keg: the official editor drops it when a player owns it (GH #208).
+_GAIA_ONLY_EXTRA_CONSTS = frozenset({2607})
 # unit_filter.GAIA_PLAYER_ID, repeated so this module stays a leaf (test pins the two).
 _GAIA_PLAYER_ID = 0
 
@@ -364,9 +371,10 @@ def mobile_unit_consts() -> frozenset[int]:
 @lru_cache(maxsize=1)
 def gaia_only_consts() -> frozenset[int]:
     """Every const a new placement gives to GAIA (TASK-288): the resource
-    classes minus the hidden piles, plus trees. See the module docstring."""
+    classes minus the hidden piles, plus trees and _GAIA_ONLY_EXTRA_CONSTS.
+    See the module docstring."""
     resources = {const for const, entry in _objects().items() if entry.get("class") in _GAIA_ONLY_CLASSES}
-    return frozenset(resources | TREE_UNIT_IDS)
+    return frozenset(resources | TREE_UNIT_IDS | _GAIA_ONLY_EXTRA_CONSTS)
 
 
 def placement_owner(unit_const: int, owner: int) -> int:

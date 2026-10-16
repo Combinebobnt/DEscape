@@ -112,7 +112,7 @@ def test_gating_matches_the_registry_in_every_style(sprite_install) -> None:
             for spec in view_layers.LAYERS:
                 expected, tip = view_layers.availability(
                     spec, style=window._render_style,
-                    sprites_enabled=window._sprites_enabled, has_map=True,
+                    sprites_enabled=window._sprites_enabled, has_map=True, has_mod_art=False,
                 )
                 action = window.layer_actions[spec.layer_id]
                 assert action.isEnabled() is expected, (style, spec.layer_id)
@@ -439,4 +439,288 @@ def test_the_drag_ghost_takes_the_windows_own_layer_value(sprite_install, monkey
         window._drag_ghost_sprite_draws(entry, ghost)
         assert seen[-1] == 1.0
     finally:
+        conftest.close_window(window)
+
+
+TRANSLUCENT_WALLS_LAYER = "translucent_walls"
+
+
+def test_the_translucent_walls_toggle_reaches_the_live_cache_and_survives_a_style_switch(sprite_install) -> None:
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
+        assert window._cache.layers.translucent_walls is True
+        for style in ("Flat", "Stepped", "Sloped"):
+            window.terrain_style_combo.setCurrentText(style)
+            assert window._layers.translucent_walls is True, style
+            assert window._cache.layers.translucent_walls is True, style
+        window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(False)
+        assert window._cache.layers.wall_alpha == 1.0
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_drag_ghost_takes_the_windows_own_wall_alpha(sprite_install, monkeypatch) -> None:
+    """test_the_drag_ghost_takes_the_windows_own_layer_value's shape: without
+    it a dragged wall or gate shows opaque."""
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.show_sprites_action.setChecked(True)
+        seen: list[float] = []
+        monkeypatch.setattr(
+            viewer, "unit_sprite_draws_at",
+            lambda *args, **kwargs: (seen.append(kwargs["wall_alpha"]), [])[1],
+        )
+        monkeypatch.setattr(window, "_ghost_rotation_override", lambda entry: None)
+        ghost = SimpleNamespace(x=5.5, y=5.5, unit_const=CONST, rotation=0.0, reference_id=1)
+        entry = SimpleNamespace(player_id=1)
+
+        window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
+        window._drag_ghost_sprite_draws(entry, ghost)
+        assert seen[-1] == window._layers.wall_opacity_pct / 100
+
+        window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(False)
+        window._drag_ghost_sprite_draws(entry, ghost)
+        assert seen[-1] == 1.0
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_opacity_setting_reaches_the_cache_only_while_translucent_walls_is_on(
+    sprite_install, monkeypatch
+) -> None:
+    """With the row off the drawn alpha is unchanged, so set_layers() is not
+    called at all: its equality guard would miss on the raw pct and evict the
+    whole canvas for nothing."""
+    window = conftest.blank_window()
+    dialog = viewer.SettingsDialog(window)
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        calls = []
+        real = type(window._cache).set_layers
+        monkeypatch.setattr(
+            type(window._cache), "set_layers",
+            lambda self, layers: (calls.append(layers), real(self, layers))[1],
+        )
+        dialog.wall_opacity_slider.setValue(30)
+        dialog._apply_wall_opacity()
+        assert settings.get_wall_opacity_pct() == 30
+        assert window._layers.wall_opacity_pct == 30
+        assert calls == []
+
+        window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
+        assert window._cache.layers.wall_alpha == 0.3
+        dialog.wall_opacity_slider.setValue(70)
+        dialog._apply_wall_opacity()
+        assert len(calls) == 2
+        assert window._cache.layers.wall_alpha == 0.7
+    finally:
+        dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_the_opacity_slider_keeps_focus_through_an_applied_step(sprite_install) -> None:
+    """_apply_layers() disables the window, and the modal dialog with it, so
+    a keyboard user's next arrow press would go nowhere."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.blank_window()
+    dialog = viewer.SettingsDialog(window)
+    try:
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
+        dialog.show()
+        dialog.activateWindow()
+        QApplication.setActiveWindow(dialog)
+        QApplication.processEvents()
+        dialog.wall_opacity_slider.setFocus()
+        QApplication.processEvents()
+        assert dialog.wall_opacity_slider.hasFocus()
+        dialog.wall_opacity_slider.setValue(40)
+        dialog._apply_wall_opacity()
+        QApplication.processEvents()
+        assert window._cache.layers.wall_alpha == 0.4
+        assert dialog.wall_opacity_slider.hasFocus()
+    finally:
+        dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_the_window_starts_with_the_saved_wall_opacity(sprite_install) -> None:
+    settings.set_wall_opacity_pct(25)
+    window = conftest.blank_window()
+    try:
+        assert window._layers.wall_opacity_pct == 25
+        assert window._cache.layers.wall_opacity_pct == 25
+    finally:
+        conftest.close_window(window)
+
+
+MOD_ART_LAYER = "mod_art"
+MOD_STATUS_PATH = "subscribed//1_Green"
+
+
+@pytest.fixture
+def mod_art_profile(sprite_install, monkeypatch):
+    """sprite_install plus a profile whose one mod replaces FILE_NAME with a
+    1-frame .smx in plain green (no playercolor, so no tint can fake it)."""
+    from test_smx_decoder import DRAW, _file, _frame
+
+    palettes = sprite_install / "resources" / "_common" / "palettes"
+    palettes.mkdir(parents=True)
+    rows = "\n".join("0 250 0" for _ in range(1024))
+    (palettes / "b_scen.pal").write_text(f"JASC-PAL\n0100\n1024\n{rows}\n")
+    (palettes / "palettes.conf").write_text("28,b_scen.pal\n")
+    profile = sprite_install / "profile"
+    graphics = profile / "7656" / "mods" / "subscribed" / "1_Green" / "resources" / "_common" / "drs" / "graphics"
+    graphics.mkdir(parents=True)
+    rows = [(0, [(DRAW, [(1, 0)] * 48)])] * 24
+    (graphics / f"{FILE_NAME}.smx").write_bytes(_file(_frame(rows, width=48, hotspot=(24, 12))))
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(profile))
+    return MOD_STATUS_PATH
+
+
+def _unit_draws(window) -> list:
+    from descape.render_cache import FlatChunkCache
+
+    if isinstance(window._cache, FlatChunkCache):
+        return list(window._cache._level_icons(0).values())
+    return [draw for draws in window._cache._level(0).sprites.by_anchor.values() for draw, *_ in draws]
+
+
+def _draws_mod_green(window) -> bool:
+    draws = _unit_draws(window)
+    assert draws, "the unit must draw something either way"
+    return any(
+        ((d.rgba[..., 1] > 200) & (d.rgba[..., 0] < 60) & (d.rgba[..., 2] < 60) & (d.rgba[..., 3] > 0)).any()
+        for d in draws
+    )
+
+
+def _mod_art_window(style: str):
+    from test_sprite_edit_bbox import Unit
+
+    window = conftest.blank_window()
+    # Player 2: the install sprite's full playercolor mask tints it red, never green.
+    window.scenario.unit_manager.units[2].append(Unit(20.5, 20.5, CONST))
+    window.terrain_style_combo.setCurrentText(style)
+    if style == "Flat":
+        window.iso_action.setChecked(False)
+    window.show_sprites_action.setChecked(True)
+    window.refresh_map()
+    return window
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Flat"])
+def test_the_mod_art_toggle_and_an_opt_out_redraw_from_the_files_that_win(mod_art_profile, style) -> None:
+    """TASK-378: the toggle and Settings' per-mod tick both go through
+    _apply_mod_art_change(), which must rebuild Stepped's sprites and Flat's
+    icons from the new art, not recomposite the old."""
+    from PyQt5.QtCore import Qt
+
+    window = _mod_art_window(style)
+    dialog = None
+    try:
+        action = window.layer_actions[MOD_ART_LAYER]
+        assert action.isEnabled() and action.isChecked()
+        assert window._mod_art_status() == "Mod art: 1 mod"
+        assert _draws_mod_green(window)
+        action.setChecked(False)
+        assert not _draws_mod_green(window)
+        assert window._mod_art_status() == ""
+        assert settings.get_view_layers().mod_art is False
+        action.setChecked(True)
+        assert _draws_mod_green(window)
+
+        dialog = viewer.SettingsDialog(window)
+        item = dialog.mod_art_list.item(0)
+        assert item.data(Qt.UserRole) == mod_art_profile and item.checkState() == Qt.Checked
+        item.setCheckState(Qt.Unchecked)
+        assert settings.get_mod_art_excluded() == {mod_art_profile}
+        assert not _draws_mod_green(window)
+        assert action.isChecked() and action.isEnabled(), "an opt-out leaves the row alone"
+        item.setCheckState(Qt.Checked)
+        assert _draws_mod_green(window)
+    finally:
+        if dialog is not None:
+            dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_a_window_opened_with_mod_art_persisted_off_draws_install_art(mod_art_profile) -> None:
+    from descape import mod_graphics
+
+    settings.set_view_layer(MOD_ART_LAYER, False)
+    window = _mod_art_window("Stepped")
+    try:
+        assert not window.layer_actions[MOD_ART_LAYER].isChecked()
+        assert not mod_graphics.enabled()
+        assert not _draws_mod_green(window)
+    finally:
+        conftest.close_window(window)
+
+
+def test_mod_art_is_greyed_when_no_mod_ships_art(sprite_install) -> None:
+    window = conftest.blank_window()
+    try:
+        action = window.layer_actions[MOD_ART_LAYER]
+        assert not action.isEnabled() and action.toolTip().startswith("No enabled mod ships art")
+        assert action.isChecked(), "greying never unchecks"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_window_seeds_mod_art_opt_outs_and_textures_before_any_panel(mod_art_profile) -> None:
+    """The seed runs before TerrainPanel, whose swatches resolve (and cache)
+    texture paths at construction; a persisted opt-out reaches the first render."""
+    from PIL import Image
+
+    from descape import mod_graphics
+
+    textures = sprite_install_profile_textures(mod_art_profile)
+    names = set(asset_source._terrain_texture_map().values())
+    for name in names:
+        Image.new("RGB", (4, 4), (0, 250, 0)).save(textures / name, format="DDS")
+    window = _mod_art_window("Stepped")
+    try:
+        for tid, name in asset_source._terrain_texture_map().items():
+            assert asset_source.get_terrain_texture_path(tid) == textures / name, tid
+    finally:
+        conftest.close_window(window)
+
+    settings.set_mod_art_excluded({mod_art_profile})
+    window = _mod_art_window("Stepped")
+    try:
+        assert mod_graphics.enabled() and window.layer_actions[MOD_ART_LAYER].isChecked()
+        assert not _draws_mod_green(window)
+    finally:
+        conftest.close_window(window)
+
+
+def sprite_install_profile_textures(status_path: str):
+    import os
+    from pathlib import Path
+
+    folder = status_path.split("//")[1]
+    root = Path(os.environ["AOE2DE_PROFILE_PATH"]) / "7656" / "mods" / "subscribed" / folder / "resources" / "_common"
+    textures = root / "terrain" / "textures" / "2x"
+    textures.mkdir(parents=True, exist_ok=True)
+    return textures
+
+
+def test_a_profile_change_rescans_the_mod_folders(mod_art_profile, tmp_path, monkeypatch) -> None:
+    window = _mod_art_window("Stepped")
+    dialog = viewer.SettingsDialog(window)
+    try:
+        assert _draws_mod_green(window)
+        empty = tmp_path / "empty_profile"
+        (empty / "7656").mkdir(parents=True)
+        monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(empty))
+        dialog.use_auto_profile_path()
+        assert not _draws_mod_green(window)
+        assert dialog.mod_art_list.item(0).data(0x0100) is None  # Qt.UserRole: the placeholder row
+    finally:
+        dialog.deleteLater()
         conftest.close_window(window)

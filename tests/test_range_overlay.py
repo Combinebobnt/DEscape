@@ -21,6 +21,10 @@ _HOUSE_CONST = 70  # 2x2, range 0.0
 _ARCHER_CONST = 4  # range 4.0, but not a building
 _WATCH_TOWER_CONST = 79  # 1x1, range 8.0
 _POENARI_CONST = 445  # 4x4, displayed range 0.0, max_range 8.0 (GH #111)
+_MAP_REVEALER_CONSTS = {837: 4.0, 1774: 10.0, 1775: 20.0}  # small, medium, giant LOS
+_PLACEHOLDER_CONST = 1543  # class 30 like a revealer, but LOS 0
+_INVISIBLE_OBJECT_A_CONST = 1291  # class 38, LOS 0
+_TREBUCHET_CONST = 42  # in BUILDING_TILE_SPANS, but mobile siege
 
 _TILE_PX = 64
 _MAP = 64
@@ -49,6 +53,51 @@ def test_the_ring_reads_reach_not_the_displayed_range() -> None:
     """GH #111: Poenari Castle's panel range is 0, but it shoots to 8."""
     span = terrain_palette.BUILDING_TILE_SPANS[_POENARI_CONST]
     assert range_overlay.ring_radius_for_const(_POENARI_CONST) == range_overlay.ring_radius_tiles(8.0, span)
+
+
+# --- the always-on layer's radius rules (GH #153 / #155) ---------------------
+
+
+@pytest.mark.parametrize(("unit_const", "radius"), sorted(_MAP_REVEALER_CONSTS.items()))
+def test_a_map_revealer_rings_at_its_plain_line_of_sight(unit_const: int, radius: float) -> None:
+    assert range_overlay.revealer_radius_for_const(unit_const) == radius
+
+
+@pytest.mark.parametrize("unit_const", [_PLACEHOLDER_CONST, _INVISIBLE_OBJECT_A_CONST, _CASTLE_CONST])
+def test_a_placeholder_an_invisible_object_and_a_castle_are_not_revealers(unit_const: int) -> None:
+    assert range_overlay.revealer_radius_for_const(unit_const) is None
+
+
+def test_each_persistent_toggle_draws_only_its_own_layer() -> None:
+    revealer = next(iter(_MAP_REVEALER_CONSTS))
+    castle = range_overlay.ring_radius_for_const(_CASTLE_CONST)
+    off = {"revealers": False, "buildings": False}
+    assert range_overlay.persistent_ring_radius(revealer, **off) is None
+    assert range_overlay.persistent_ring_radius(_CASTLE_CONST, **off) is None
+    assert range_overlay.persistent_ring_radius(revealer, revealers=True, buildings=False) == 4.0
+    assert range_overlay.persistent_ring_radius(_CASTLE_CONST, revealers=True, buildings=False) is None
+    assert range_overlay.persistent_ring_radius(revealer, revealers=False, buildings=True) is None
+    assert range_overlay.persistent_ring_radius(_CASTLE_CONST, revealers=False, buildings=True) == castle
+    assert range_overlay.persistent_ring_radius(revealer, revealers=True, buildings=True) == 4.0
+    assert range_overlay.persistent_ring_radius(_CASTLE_CONST, revealers=True, buildings=True) == castle
+
+
+def test_each_selection_toggle_rings_only_its_own_kind() -> None:
+    revealer = next(iter(_MAP_REVEALER_CONSTS))
+    castle = range_overlay.ring_radius_for_const(_CASTLE_CONST)
+    assert range_overlay.selection_ring_radius(_CASTLE_CONST, buildings=True, revealers=False) == castle
+    assert range_overlay.selection_ring_radius(revealer, buildings=True, revealers=False) is None
+    assert range_overlay.selection_ring_radius(_CASTLE_CONST, buildings=False, revealers=True) is None
+    assert range_overlay.selection_ring_radius(revealer, buildings=False, revealers=True) == 4.0
+    assert range_overlay.selection_ring_radius(_INVISIBLE_OBJECT_A_CONST, buildings=True, revealers=True) is None
+    assert range_overlay.selection_ring_radius(_TREBUCHET_CONST, buildings=True, revealers=True) is not None
+
+
+def test_all_buildings_leaves_out_mobile_siege() -> None:
+    """A trebuchet is in BUILDING_TILE_SPANS (the selection ring still rings
+    it), but not a Show Buildings member, so All Buildings skips it."""
+    assert range_overlay.ring_radius_for_const(_TREBUCHET_CONST) is not None
+    assert range_overlay.persistent_ring_radius(_TREBUCHET_CONST, revealers=True, buildings=True) is None
 
 
 # --- sampling ----------------------------------------------------------------

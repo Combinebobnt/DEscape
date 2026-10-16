@@ -111,6 +111,34 @@ def set_pan_speed(value: int) -> None:
     _save_config(config)
 
 
+# View > Layers > Translucent Walls' opacity, Settings > Appearance (GH #35).
+# The bounds live in view_layers, which stays a leaf.
+_wall_opacity_pct: int | None = None
+
+
+def get_wall_opacity_pct() -> int:
+    """Translucent Walls' opacity in percent, clamped into
+    [WALL_OPACITY_MIN_PCT, WALL_OPACITY_MAX_PCT] and falling back to
+    WALL_OPACITY_DEFAULT_PCT if never set or malformed."""
+    global _wall_opacity_pct
+    if _wall_opacity_pct is None:
+        raw = _load_config().get("wall_opacity_pct", view_layers.WALL_OPACITY_DEFAULT_PCT)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = view_layers.WALL_OPACITY_DEFAULT_PCT
+        _wall_opacity_pct = max(view_layers.WALL_OPACITY_MIN_PCT, min(view_layers.WALL_OPACITY_MAX_PCT, value))
+    return _wall_opacity_pct
+
+
+def set_wall_opacity_pct(value: int) -> None:
+    global _wall_opacity_pct
+    _wall_opacity_pct = max(view_layers.WALL_OPACITY_MIN_PCT, min(view_layers.WALL_OPACITY_MAX_PCT, int(value)))
+    config = _load_config()
+    config["wall_opacity_pct"] = _wall_opacity_pct
+    _save_config(config)
+
+
 # App-chrome theme, Settings > Appearance: a themes.PRESETS id plus per-role
 # overrides. See viewer_dialogs.apply_theme() for what it does and doesn't
 # affect. Replaces the old `dark_mode` bool, migrated on read below.
@@ -343,7 +371,7 @@ def _load_view_layers() -> dict[str, bool]:
 
 
 def get_view_layers() -> view_layers.LayerState:
-    return view_layers.LayerState(**_load_view_layers())
+    return view_layers.LayerState(**_load_view_layers(), wall_opacity_pct=get_wall_opacity_pct())
 
 
 def set_view_layer(layer_id: str, on: bool) -> None:
@@ -354,6 +382,27 @@ def set_view_layer(layer_id: str, on: bool) -> None:
     layers[layer_id] = bool(on)
     config = _load_config()
     config["view_layers"] = dict(layers)
+    _save_config(config)
+
+
+# Settings > General's Mod art opt-outs (TASK-378): mod-status.json Path strings
+# ("subscribed//<folder>") whose art the Mod Art layer skips. A mod that is gone stays listed.
+_mod_art_excluded: frozenset[str] | None = None
+
+
+def get_mod_art_excluded() -> frozenset[str]:
+    global _mod_art_excluded
+    if _mod_art_excluded is None:
+        raw = _load_config().get("mod_art_excluded", [])
+        _mod_art_excluded = frozenset(str(p) for p in raw if isinstance(p, str)) if isinstance(raw, list) else frozenset()
+    return _mod_art_excluded
+
+
+def set_mod_art_excluded(status_paths) -> None:
+    global _mod_art_excluded
+    _mod_art_excluded = frozenset(str(p) for p in status_paths)
+    config = _load_config()
+    config["mod_art_excluded"] = sorted(_mod_art_excluded)
     _save_config(config)
 
 
@@ -560,6 +609,11 @@ _footprint_by_owner: bool | None = None
 _range_rings: bool | None = None
 # GH #156: each ring in its owner's player colour. Off by default, like GH #143's.
 _range_rings_by_owner: bool | None = None
+# GH #153 / #155: always-on rings that follow the unit index, not the selection. Off by default.
+_range_rings_revealers: bool | None = None
+_range_rings_buildings: bool | None = None
+# Rings on selected map revealers, beside Selected Buildings (_range_rings). Off by default.
+_range_rings_selected_revealers: bool | None = None
 # View > Player Cameras (GH #22): a camera glyph on each player's stored
 # starting view tile. Off by default for the same opt-in reason as the rings
 # above -- it draws over the map rather than beside it.
@@ -708,6 +762,51 @@ def set_range_rings_by_owner(enabled: bool) -> None:
     _range_rings_by_owner = enabled
     config = _load_config()
     config["range_rings_by_owner"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_revealers() -> bool:
+    global _range_rings_revealers
+    if _range_rings_revealers is None:
+        _range_rings_revealers = bool(_load_config().get("range_rings_revealers", False))
+    return _range_rings_revealers
+
+
+def set_range_rings_revealers(enabled: bool) -> None:
+    global _range_rings_revealers
+    _range_rings_revealers = enabled
+    config = _load_config()
+    config["range_rings_revealers"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_buildings() -> bool:
+    global _range_rings_buildings
+    if _range_rings_buildings is None:
+        _range_rings_buildings = bool(_load_config().get("range_rings_buildings", False))
+    return _range_rings_buildings
+
+
+def set_range_rings_buildings(enabled: bool) -> None:
+    global _range_rings_buildings
+    _range_rings_buildings = enabled
+    config = _load_config()
+    config["range_rings_buildings"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_selected_revealers() -> bool:
+    global _range_rings_selected_revealers
+    if _range_rings_selected_revealers is None:
+        _range_rings_selected_revealers = bool(_load_config().get("range_rings_selected_revealers", False))
+    return _range_rings_selected_revealers
+
+
+def set_range_rings_selected_revealers(enabled: bool) -> None:
+    global _range_rings_selected_revealers
+    _range_rings_selected_revealers = enabled
+    config = _load_config()
+    config["range_rings_selected_revealers"] = enabled
     _save_config(config)
 
 
@@ -1815,9 +1914,15 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_selection_owner_colour", "Colour Selection by Owner", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
-    ("view_range_rings", "Range Rings", ""),
+    ("view_range_rings", "Range Rings: Selected Buildings", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_range_rings_by_owner", "Range Rings: Colour by Owner", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_buildings", "Range Rings: All Buildings", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_revealers", "Range Rings: All Map Revealers", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_selected_revealers", "Range Rings: Selected Map Revealers", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_player_cameras", "Player Cameras", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
@@ -1873,10 +1978,12 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # (Shift added, mnemonic letter kept) rather than picking an unrelated
     # free letter.
     ("mode_messages", "Messages Mode", "Ctrl+Shift+M"),
-    # The Filters popup's toggles (_build_filters_button). All ship unbound,
-    # same reasoning as view_distance_ticks above -- these are per-session,
-    # not-persisted toggles, and no default was requested for them.
-    ("filter_show_gaia", "Show GAIA", ""),
+    # The Filters popup's toggles (_build_filters_button). The other kind toggles ship
+    # unbound, same reasoning as view_distance_ticks above -- these are
+    # per-session, not-persisted toggles, and no default was requested for them.
+    # GH #207 requested Ctrl+digit for the owner toggles: GAIA has no player
+    # checkbox, so Ctrl+0 goes on Show GAIA.
+    ("filter_show_gaia", "Show GAIA", "Ctrl+0"),
     ("filter_show_trees", "Show Trees", ""),
     ("filter_show_walls", "Show Walls", ""),
     ("filter_show_buildings", "Show Buildings", ""),
@@ -1884,6 +1991,11 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_show_obstacles", "Show Obstacles", ""),
     ("filter_show_invisible", "Show Invisible Objects", ""),
     ("filter_show_garrisoned", "Show Garrisoned Units", ""),
+] + [
+    # range(1, 9) rather than unit_filter.MAX_PLAYER_ID, as with player_select_ below.
+    (f"filter_player_{pid}", f"Show Player {pid}", f"Ctrl+{pid}")
+    for pid in range(1, 9)
+] + [
     ("filter_all_players", "All Players", ""),
     ("filter_no_players", "No Players", ""),
     ("filter_show_all", "Show All (Filters)", ""),
@@ -1980,6 +2092,19 @@ def _migrate_elevate_off_r(keybinds: dict[str, str], persisted: dict) -> None:
         keybinds["tool_elevation"] = "E"
 
 
+def _migrate_show_gaia_ctrl_0(keybinds: dict[str, str], persisted: dict) -> None:
+    """GH #207 gave Show GAIA the default Ctrl+0, beside the new Ctrl+1..8
+    player toggles. A config written before that pins filter_show_gaia: ''
+    (set_keybind writes every action), which would leave Ctrl+0 alone unbound.
+    One-shot by the same guard shape as _migrate_elevate_off_r: such a config
+    cannot name filter_player_1. Also rewrites the `persisted` copy, so
+    _reconcile_load_time_collisions does not treat the '' as a deliberate
+    choice and clear a user's own Ctrl+0 elsewhere. Same accepted limitation:
+    a deliberately cleared Show GAIA gets Ctrl+0 too."""
+    if "filter_player_1" not in persisted and persisted.get("filter_show_gaia") == "":
+        keybinds["filter_show_gaia"] = persisted["filter_show_gaia"] = _DEFAULT_KEYBINDS["filter_show_gaia"]
+
+
 def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -> None:
     """General counterpart to _migrate_elevate_off_r: a code update can add or
     move a DEFAULT keybind that collides with an unrelated action's persisted
@@ -2049,6 +2174,7 @@ def _load_keybinds() -> dict[str, str]:
         for action_id in _RETIRED_KEYBINDS:
             _keybinds.pop(action_id, None)
         _migrate_elevate_off_r(_keybinds, persisted)
+        _migrate_show_gaia_ctrl_0(_keybinds, persisted)
         _reconcile_load_time_collisions(_keybinds, persisted)
     return _keybinds
 

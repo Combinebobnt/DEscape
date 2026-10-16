@@ -555,7 +555,19 @@ def _isolated_settings(tmp_path, monkeypatch):
     for name in settings_isolation.MEMOIZED_GLOBALS:
         monkeypatch.setattr(settings_module, name, None)
     # Settings > General lists content_roots(), so a developer's AOE2DE_PROFILE_PATH must not reach it (GH #126).
+    # setenv first so teardown restores "unset" even after testkit.isolate_settings() sets it (TASK-378).
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", "")
     monkeypatch.delenv("AOE2DE_PROFILE_PATH", raising=False)
+    # Mod art (TASK-378) is module state the viewer switches on; every test starts with it off.
+    from descape import mod_graphics
+
+    mod_graphics.reset()
+    # A window turns it on, and with AOE2DE_INSTALL_PATH set the profile autodetects to this
+    # machine's own mods; only a test that names a profile in AOE2DE_PROFILE_PATH gets any.
+    real_roots = mod_graphics._candidate_roots
+    monkeypatch.setattr(
+        mod_graphics, "_candidate_roots", lambda: real_roots() if os.environ.get("AOE2DE_PROFILE_PATH") else []
+    )
     # pytest-qt processes events after this fixture's teardown, so a live warm tick can cache the
     # real config's install between tests; clear it here, not only on teardown.
     asset_source_module.clear_install_caches()

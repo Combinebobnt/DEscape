@@ -22,9 +22,12 @@ from descape import (
     composite_backend,
     grid_overlay,
     iso_geometry,
+    mod_graphics,
     settings,
     terrain_blend,
     terrain_style,
+    unit_kind,
+    unit_rotation,
     unit_sprites,
 )
 from descape.grid_overlay import DEFAULT_GRID, GridBake
@@ -70,22 +73,16 @@ def _sprite_reach_px(proj: iso_geometry.IsoProjection) -> tuple[int, int, int, i
     The tile radius above is no substitute, and not because it is slightly too
     small: it models the terrain diamond, skirt and contact shadow, and no unit
     PIXEL extent at all. Sprites reach 404/700/424/316 native px from their
-    hotspot (unit_sprites.MAX_SPRITE_REACH_*), which the elevation sweep
+    hotspot (unit_sprites.sprite_reach(): MAX_SPRITE_REACH_* widened by any
+    active mod art), which the elevation sweep
     happens to cover horizontally and badly under-covers upward.
 
     Integer ceil of reach * sprite_scale, plus 1px: sprite_for() rounds the
     scaled width and the scaled hotspot INDEPENDENTLY, so the scaled reach on
     the far side can come out one pixel past (w - hx) * scale."""
     scale = unit_sprites.sprite_scale(proj.half_w)
-    return tuple(
-        math.ceil(reach * scale) + 1
-        for reach in (
-            unit_sprites.MAX_SPRITE_REACH_LEFT,
-            unit_sprites.MAX_SPRITE_REACH_UP,
-            unit_sprites.MAX_SPRITE_REACH_RIGHT,
-            unit_sprites.MAX_SPRITE_REACH_DOWN,
-        )
-    )
+    left, right, up, down = unit_sprites.sprite_reach()
+    return tuple(math.ceil(reach * scale) + 1 for reach in (left, up, right, down))
 
 # Pixels per tile side. >1 so real per-tile texture crops (see
 # asset_source.get_terrain_texture_array) show actual detail instead of
@@ -4140,6 +4137,7 @@ def unit_sprite_draws_at(
     rotation_override: float | None = None,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_alpha: float = 1.0,
 ) -> list[tuple[object, int, int]]:
     """Every sprite piece `unit` would paint at its own stored position, as
     (draw, px, py) triples in canvas pixels, ordered the way the composite
@@ -4161,11 +4159,12 @@ def unit_sprite_draws_at(
 
     tree_scale must be the WINDOW's current View > Layers value: a ghost left
     on the default 1.0 would drag a tree at full size and snap it small on
-    drop. hero_glow likewise, or a hero would lose its ring mid-drag."""
+    drop. hero_glow likewise, or a hero would lose its ring mid-drag, and
+    wall_alpha, or a wall would drag opaque."""
     overrides = {} if rotation_override is None else {(player_id, 0): rotation_override}
     contribution = _resolve_unit_sprite(
         scenario, proj, elevations, UnitFilter(), corner_rise, overrides, False,
-        player_id, 0, unit, tree_scale, hero_glow,
+        player_id, 0, unit, tree_scale, hero_glow, wall_alpha,
     )
     if contribution is None:
         return []
@@ -4270,7 +4269,7 @@ def stored_rotation(player_id: int, unit) -> float:
     scan). Any connectivity-derived override is applied by the caller, on top
     of this.
 
-    **GAIA's `rotation` is not an angle** -- AGENTS.md's hard rule: for ~65% of
+    **GAIA's `rotation` is often not an angle** -- AGENTS.md's hard rule: for ~65% of
     GAIA objects it is a graphic-VARIANT index (trees, doodads, cliffs), with
     integer values well outside [0, 2*pi). Feeding one to angle_index() gets a
     scrambled frame or an out-of-file index, so GAIA resolved at 0.0
@@ -4283,16 +4282,19 @@ def stored_rotation(player_id: int, unit) -> float:
     angle_index(). Tier B made that known-set generated (unit_graphic_map.json's
     `rotation_is_variant` field, from the .dat's own unit.type != 70) rather
     than the two hand-kept frozensets Track A2 shipped with, which is what
-    fixed trees drawing variant 0 in every map. Everything GAIA owns that is
-    still creatable (unit.type == 70) keeps zeroing, since for those the field
-    is a real angle a GAIA placement has no camera-relative facing to apply.
-    Zeroing is the safe default precisely because it is the "we don't know
-    what this integer means" answer.
+    fixed trees drawing variant 0 in every map.
+
+    GH #217 widened it to the ANGLE consts (unit_rotation.rotation_is_angle(),
+    the predicate set_rotation() and Rotate use): a GAIA creatable's rotation
+    is a real facing, and the game draws it, checked in the official editor
+    and in a scenario DEscape wrote. Only a GAIA const that is neither keeps
+    zeroing, the safe "we don't know what this integer means" answer.
 
     A1 and A2 are one change, not two: un-zeroing a cliff without cliffs in the
     variant set sends rotation 6.0 through angle_index() to index 24, past the
     24-frame file, and 246 corpus placements degrade to coloured marks."""
-    if player_id == 0 and not unit_sprites.rotation_is_variant(unit.unit_const):
+    const = unit.unit_const
+    if player_id == 0 and not (unit_sprites.rotation_is_variant(const) or unit_rotation.rotation_is_angle(const)):
         return 0.0
     return float(unit.rotation)
 
@@ -4877,6 +4879,7 @@ def sprite_draws_by_anchor(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_alpha: float = 1.0,
 ) -> SpriteLayer:
     """Resolves every visible unit to a real .sld sprite or a farm-terrain
     override, or leaves it to the coloured mark.
@@ -4886,9 +4889,10 @@ def sprite_draws_by_anchor(
     frame that fails to decode -- is simply absent from every field here,
     which is exactly what makes the sprite/farm path strictly additive.
 
-    **GAIA's `rotation` is never treated as an angle.** For GAIA objects it is
-    a tree/doodad graphic-variant index (integers well outside [0, 2*pi)), so
-    they resolve at angle 0 -- see AGENTS.md's hard rule.
+    **GAIA's `rotation` goes through stored_rotation().** For GAIA variant
+    consts it is a tree/doodad graphic-variant index (integers well outside
+    [0, 2*pi)), for GAIA ANGLE consts a facing (GH #217) -- see AGENTS.md's
+    hard rule.
 
     corner_rise (Track P3-g6): pass Sloped's (h+1, w+1) corner-rise field to
     anchor sprites at iso_geometry.unit_rise_px() -- the same surface
@@ -4913,9 +4917,12 @@ def sprite_draws_by_anchor(
     hero_glow=True (View > Layers > Hero Glow) rings HERO_GLOW_CONSTS art in
     gold. Off by default here, so a caller that never names it stays
     byte-identical; the chunk caches pass their LayerState's own value, which
-    defaults on. The bboxes widen with the ring the same way."""
+    defaults on. The bboxes widen with the ring the same way.
+
+    wall_alpha < 1.0 (View > Layers > Translucent Walls) fades
+    unit_kind.wall_consts() art (GH #35); see unit_sprites.sprite_pieces_for()."""
     return _drain(sprite_draws_by_anchor_sliced(
-        scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow
+        scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow, wall_alpha,
     ))
 
 
@@ -4961,6 +4968,7 @@ def _resolve_unit_sprite(
     unit,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_alpha: float = 1.0,
 ) -> _SpriteContribution | None:
     """Resolves ONE unit to its sprite or farm-terrain-override contribution
     -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
@@ -4979,7 +4987,9 @@ def _resolve_unit_sprite(
     re-derived, and deliberately not terrain_units.TREE_CONSTS, which is that
     set intersected with the auto-place table and so a strict subset. This is
     where the "which consts" decision lives; unit_sprites just takes a float.
-    `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39)."""
+    `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39), and
+    `wall_alpha` to unit_kind.wall_consts(), the set
+    Filters' Show Walls owns, gates included (GH #35)."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     half_w = proj.half_w
@@ -4991,12 +5001,15 @@ def _resolve_unit_sprite(
     rotation = stored_rotation(player_id, unit)
     rotation = overrides.get((player_id, i), rotation)
     team_index = scenario.team_indices[player_id]
+    # Short-circuits, so the wall set is only looked up with the wall row on.
+    is_faded_wall = wall_alpha < 1.0 and unit.unit_const in unit_kind.wall_consts()
     pieces = unit_sprites.sprite_pieces_for(
         unit.unit_const, rotation, team_index, half_w,
         tree_scale if unit.unit_const in TREE_UNIT_IDS else 1.0,
         getattr(unit, "reference_id", None),
         hero_glow=hero_glow and unit.unit_const in HERO_GLOW_CONSTS,
         art=player_art_for(scenario, player_id),
+        wall_alpha=wall_alpha if is_faded_wall else 1.0,
     )
     # A pasture (DRAPED_SPRITE_CONSTS) carries both: its drape plus its annex-tree art.
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
@@ -5100,8 +5113,13 @@ class SpriteMemo:
     entries: dict = field(default_factory=dict)
 
 
-def _sprite_memo_invariants(proj, mm, corner_rise, with_farms, tree_scale, hero_glow) -> tuple:
-    return (proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow)
+def _sprite_memo_invariants(
+    proj, mm, corner_rise, with_farms, tree_scale, hero_glow, wall_alpha=1.0
+) -> tuple:
+    return (
+        proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow, wall_alpha,
+        mod_graphics.generation(),
+    )
 
 
 def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, player_id: int, i: int, unit) -> tuple:
@@ -5167,6 +5185,7 @@ def sprite_draws_by_anchor_sliced(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_alpha: float = 1.0,
     memo: SpriteMemo | None = None,
 ) -> Generator[object, None, SpriteLayer | tuple[SpriteLayer, SpriteMemo]]:
     """sprite_draws_by_anchor() as a resumable generator -- one yield per
@@ -5201,7 +5220,7 @@ def sprite_draws_by_anchor_sliced(
     farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
     if memo is not None:
         invariants = _sprite_memo_invariants(
-            proj, scenario.map_manager, corner_rise, with_farms, tree_scale, hero_glow
+            proj, scenario.map_manager, corner_rise, with_farms, tree_scale, hero_glow, wall_alpha,
         )
         old = memo.entries if memo.invariants == invariants else {}
         entries: dict[int, tuple] = {}
@@ -5215,7 +5234,7 @@ def sprite_draws_by_anchor_sliced(
             if memo is None:
                 contribution = _resolve_unit_sprite(
                     scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                    player_id, i, unit, tree_scale, hero_glow,
+                    player_id, i, unit, tree_scale, hero_glow, wall_alpha,
                 )
             else:
                 if not unit_filter.matches(player_id, unit):
@@ -5231,7 +5250,7 @@ def sprite_draws_by_anchor_sliced(
                 else:
                     contribution = _resolve_unit_sprite(
                         scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                        player_id, i, unit, tree_scale, hero_glow,
+                        player_id, i, unit, tree_scale, hero_glow, wall_alpha,
                     )
                 entries[id(unit)] = (unit, key, contribution)
             if contribution is not None:

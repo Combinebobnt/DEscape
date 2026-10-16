@@ -200,6 +200,20 @@ def _no_blocker_spans() -> None:
     terrain_palette.BLOCKER_TILE_SPANS = {}
 
 
+def _v09_gaia_facing() -> None:
+    """Put the pre-GH #217 facing back: a GAIA unit whose rotation is not a variant index draws facing 0."""
+    from descape import render, unit_sprites
+
+    _require(render, "stored_rotation")
+
+    def stored_rotation(player_id: int, unit) -> float:
+        if player_id == 0 and not unit_sprites.rotation_is_variant(unit.unit_const):
+            return 0.0
+        return float(unit.rotation)
+
+    render.stored_rotation = stored_rotation
+
+
 def _no_doodad_spans() -> None:
     """Put the pre-TASK-134 doodad footprint back: a mountain, ruin or other large class-14 doodad marks one tile."""
     from descape import terrain_palette
@@ -305,6 +319,12 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         "TASK-134: mountains, ruins and other large scenery cover their real footprint",
         since="v0.9", control_file=LELOI, must_fail=SPRITES_OFF | {("flat", True)},
         patch=_no_doodad_spans,
+    ),
+    Neutralization(
+        "gaia-facing",
+        "GH #217 (PR #218): GAIA creatables such as wildlife draw their stored facing",
+        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
+        patch=_v09_gaia_facing,
     ),
     Neutralization(
         "paint-order",

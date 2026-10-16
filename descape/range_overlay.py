@@ -15,14 +15,22 @@ states for the Ruler ("AoE2 resolves unit range on the ground plane, so a
 unit standing on a hill is not further away"). Only the height the ring is
 DRAWN at follows the building, and that is one value for the whole ring,
 passed in by the caller.
+
+The always-on layer (GH #153 / #155) rings every unit in the index, not just
+the selection, under two independent toggles. All Buildings uses the same
+radius rule as the selection ring, limited to unit_kind.building_consts() so
+mobile siege drops out. Map Revealers rings each class-30 revealer at its
+plain line of sight from its stored point, no span term: revealers are 0.1
+collision point objects. Invisible Objects carry LOS 0 in the .dat, so they
+draw none.
 """
 
 from __future__ import annotations
 
 import math
 
-from descape import iso_geometry, terrain_palette
-from descape.unit_stats_table import unit_stats
+from descape import iso_geometry, terrain_palette, unit_kind
+from descape.unit_stats_table import line_of_sight, unit_stats
 
 # Samples per ring, rounded UP to a multiple of eight. Eight, not four:
 # sampling from theta 0 in 90-degree steps hits the tile-space axis extremes,
@@ -67,6 +75,43 @@ def ring_radius_for_const(unit_const: int) -> float | None:
     if range_tiles <= 0.0:
         return None
     return ring_radius_tiles(range_tiles, span)
+
+
+def revealer_radius_for_const(unit_const: int) -> float | None:
+    """A map revealer's ring radius, or None for any other const.
+
+    The one named place the revealer rule lives, like ring_radius_tiles(), so
+    an in-game comparison can flip it in a single edit: plain LOS from the
+    stored point. Membership is a rule, not a list: a "revealer" invisible
+    category with LOS > 0, which drops the LOS-0 placeholders."""
+    if unit_kind.invisible_category(unit_const) != "revealer":
+        return None
+    return line_of_sight(unit_const)
+
+
+def persistent_ring_radius(unit_const: int, *, revealers: bool, buildings: bool) -> float | None:
+    """The always-on layer's radius for `unit_const` under its two toggles,
+    or None when neither draws it."""
+    if revealers:
+        radius = revealer_radius_for_const(unit_const)
+        if radius is not None:
+            return radius
+    if buildings and unit_const in unit_kind.building_consts():
+        return ring_radius_for_const(unit_const)
+    return None
+
+
+def selection_ring_radius(unit_const: int, *, buildings: bool, revealers: bool) -> float | None:
+    """The selection ring's radius for a selected `unit_const` under Selected
+    Buildings and Selected Map Revealers, or None when neither draws it.
+    Buildings keep ring_radius_for_const()'s rule, mobile siege included."""
+    if buildings:
+        radius = ring_radius_for_const(unit_const)
+        if radius is not None:
+            return radius
+    if revealers:
+        return revealer_radius_for_const(unit_const)
+    return None
 
 
 def ring_segments(radius_tiles: float) -> int:

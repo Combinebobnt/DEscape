@@ -616,3 +616,208 @@ def test_the_drag_ghost_path_takes_the_layer(fake_trees) -> None:
     )
     assert full and small
     assert small[0][0].rgba.shape[:2] < full[0][0].rgba.shape[:2]
+
+
+# --- Translucent Walls (GH #35) ------------------------------------------
+# The Small Trees tests above, class for class, scoped to
+# unit_kind.wall_consts() rather than TREE_UNIT_IDS, with a gate in the set.
+
+WALL_CONST = 117  # stone wall
+GATE_CONST = 64  # a stone gate orientation, span (4, 1)
+WALL_TILE, NON_WALL_TILE = (4, 4), (12, 12)
+TRANSLUCENT = LayerState(translucent_walls=True)
+
+
+def _wall_scenario() -> FakeScenario:
+    tiles = [
+        SyntheticTile(x=x, y=y, elevation=(x + y) % 3, terrain_id=BACKGROUND_TERRAIN)
+        for y in range(MAP_H)
+        for x in range(MAP_W)
+    ]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [
+        PlacedUnit(x=4.5, y=4.5, unit_const=WALL_CONST, reference_id=1),
+        PlacedUnit(x=9.0, y=8.5, unit_const=GATE_CONST, reference_id=2),
+        PlacedUnit(x=12.5, y=12.5, unit_const=NON_TREE_CONST, reference_id=3),
+    ]
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+@pytest.fixture
+def fake_walls(tmp_path, monkeypatch):
+    """fake_trees' shape: one synthetic sprite behind a real wall, a real
+    gate and a non-wall const, so only the wall-set test in
+    render._resolve_unit_sprite() can tell them apart."""
+    from descape import unit_kind
+
+    assert {WALL_CONST, GATE_CONST} <= unit_kind.wall_consts()
+    assert NON_TREE_CONST not in unit_kind.wall_consts(), "the scoping control is a wall"
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    (graphics / f"{SPRITE_FILE}.sld").write_bytes(build_sld(1, canvas=SPRITE_CANVAS))
+    entry = {"graphic_id": 1, "file_name": SPRITE_FILE, "angle_count": 1,
+             "mirroring_mode": 6, "frame_count": 1}
+    monkeypatch.setattr(
+        unit_sprites, "graphic_map",
+        lambda: {WALL_CONST: entry, GATE_CONST: entry, NON_TREE_CONST: entry},
+    )
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def _wall_layer(scn, **kwargs) -> render.SpriteLayer:
+    elevations, proj = render.elevations_and_proj(scn)
+    return render.sprite_draws_by_anchor(scn, proj, elevations, **kwargs)
+
+
+def _draws_equal(a, b) -> bool:
+    return len(a) == len(b) and all(
+        (pa[1:], pa[0].hotspot_x, pa[0].hotspot_y) == (pb[1:], pb[0].hotspot_x, pb[0].hotspot_y)
+        and np.array_equal(pa[0].rgba, pb[0].rgba)
+        for pa, pb in zip(a, b, strict=True)
+    )
+
+
+def test_translucent_walls_fades_walls_and_gates_and_leaves_every_other_unit_alone(fake_walls) -> None:
+    scn = _wall_scenario()
+    plain = _wall_layer(scn)
+    styled = _wall_layer(scn, wall_alpha=0.5)
+    assert set(plain.by_anchor) == set(styled.by_anchor)
+    gate_tiles = set(plain.by_anchor) - {WALL_TILE, NON_WALL_TILE}
+    assert len(gate_tiles) == 1, plain.by_anchor.keys()
+
+    assert _draws_equal(plain.by_anchor[NON_WALL_TILE], styled.by_anchor[NON_WALL_TILE])
+    for tile in (WALL_TILE, *gate_tiles):
+        draw, styled_draw = plain.by_anchor[tile][0][0], styled.by_anchor[tile][0][0]
+        assert styled_draw.rgba.shape == draw.rgba.shape, tile
+        assert int(styled_draw.rgba[..., 3].max()) == 128, tile
+
+
+def test_wall_alpha_of_one_is_byte_identical_to_omitting_it(fake_walls) -> None:
+    scn = _wall_scenario()
+    omitted = _wall_layer(scn)
+    passed = _wall_layer(scn, wall_alpha=1.0)
+    assert omitted.bboxes == passed.bboxes
+    for tile, draws in omitted.by_anchor.items():
+        assert _draws_equal(draws, passed.by_anchor[tile]), tile
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache])
+def test_translucent_walls_round_trips_byte_identically(builder, fake_walls) -> None:
+    cache = builder(_wall_scenario(), sprites=True)
+    before = _whole_canvas(cache).copy()
+
+    cache.set_layers(TRANSLUCENT)
+    assert not np.array_equal(before, _whole_canvas(cache)), "the wall layer must actually repaint"
+
+    cache.set_layers(LayerState())
+    assert np.array_equal(before, _whole_canvas(cache))
+
+
+def test_translucent_walls_survives_a_unit_splice(fake_walls) -> None:
+    """A splice re-resolves the moved wall alone, so a site left on the 1.0
+    default would draw it opaque the first time it moves."""
+    scn = _wall_scenario()
+    cache = _iso_cache(scn, sprites=True)
+    _whole_canvas(cache)
+    cache.set_layers(TRANSLUCENT)
+    _whole_canvas(cache)
+    expected = _wall_layer(scn, wall_alpha=TRANSLUCENT.wall_alpha)
+    styled = expected.by_anchor[WALL_TILE][0][0]
+
+    wall = scn.unit_manager.units[1][0]
+    wall.x, wall.y = 6.5, 6.5
+    splice = render_cache.UnitSplice(
+        player_id=1, index=0, unit=wall,
+        old_own_tile=WALL_TILE, new_own_tile=(6, 6),
+        old_tiles=frozenset({WALL_TILE}), new_tiles=frozenset({(6, 6)}),
+    )
+    cache.invalidate_units([splice])
+    _whole_canvas(cache)
+
+    level = cache._level(0)
+    assert WALL_TILE not in level.sprites.by_anchor
+    assert np.array_equal(level.sprites.by_anchor[(6, 6)][0][0].rgba, styled.rgba)
+
+
+@pytest.mark.parametrize("build", [_iso_cache, _sloped_cache], ids=["Stepped", "Sloped"])
+def test_translucent_walls_applies_at_every_mip_level(fake_walls, build) -> None:
+    cache = build(_wall_scenario(), sprites=True)
+    levels = sorted(cache._mip_tile_px)
+    assert len(levels) > 1, f"enumerated only {levels} -- test would be vacuous"
+    fine, coarse = min(levels), max(levels)
+
+    fine_before = _level_canvas(cache, fine).copy()
+    cache.set_layers(TRANSLUCENT)
+    coarse_styled = _level_canvas(cache, coarse).copy()
+    assert not np.array_equal(fine_before, _level_canvas(cache, fine)), f"level {fine} kept stale walls"
+
+    cache.set_layers(LayerState())
+    assert np.array_equal(fine_before, _level_canvas(cache, fine))
+    assert not np.array_equal(coarse_styled, _level_canvas(cache, coarse)), (
+        f"level {coarse} ignored the layer being restored"
+    )
+
+
+def test_flat_ignores_translucent_walls(fake_walls) -> None:
+    cache = _flat_cache(_wall_scenario(), sprites=True)
+    before = _whole_canvas(cache).copy()
+    cache.set_layers(TRANSLUCENT)
+    assert np.array_equal(before, _whole_canvas(cache))
+
+
+@pytest.mark.parametrize("unit_index", [0, 1], ids=["wall", "gate"])
+def test_the_drag_ghost_path_takes_wall_alpha(fake_walls, unit_index) -> None:
+    scn = _wall_scenario()
+    elevations, proj = render.elevations_and_proj(scn)
+    unit = scn.unit_manager.units[1][unit_index]
+
+    full = render.unit_sprite_draws_at(scn, proj, elevations, None, 1, unit)
+    styled = render.unit_sprite_draws_at(scn, proj, elevations, None, 1, unit, wall_alpha=0.5)
+    assert full and len(styled) == 1
+    assert int(styled[0][0].rgba[..., 3].max()) == 128
+
+
+def test_an_opacity_change_rebuilds_sprites_only_while_translucent_walls_is_on(fake_walls, monkeypatch) -> None:
+    """The caches compare the derived wall_alpha, not the raw pct, so the
+    slider moved with the row off costs no sprite rebuild."""
+    cache = _iso_cache(_wall_scenario(), sprites=True)
+    _whole_canvas(cache)
+    rebuilds = []
+    real = cache._refresh_unit_sources
+    monkeypatch.setattr(cache, "_refresh_unit_sources", lambda: (rebuilds.append(1), real())[1])
+
+    cache.set_layers(LayerState(wall_opacity_pct=30))
+    assert rebuilds == []
+
+    cache.set_layers(LayerState(translucent_walls=True, wall_opacity_pct=30))
+    faded = _whole_canvas(cache).copy()
+    assert len(rebuilds) == 1
+    cache.set_layers(LayerState(translucent_walls=True, wall_opacity_pct=70))
+    assert len(rebuilds) == 2
+    assert not np.array_equal(faded, _whole_canvas(cache))
+
+
+def test_wall_alpha_maps_the_row_and_the_opacity_to_a_factor() -> None:
+    assert LayerState().wall_alpha == 1.0
+    assert LayerState(wall_opacity_pct=30).wall_alpha == 1.0
+    assert LayerState(translucent_walls=True, wall_opacity_pct=30).wall_alpha == 0.3
+
+
+def test_mod_art_greys_only_without_a_mod_that_ships_art() -> None:
+    """TASK-378: on by default, in every style and with sprites off (it also
+    swaps terrain textures), greyed only when no scanned mod ships art."""
+    spec = next(s for s in LAYERS if s.layer_id == "mod_art")
+    assert spec.default is True and DEFAULT_LAYERS.mod_art is True
+    assert spec.styles is None and not spec.requires_sprites
+    assert availability(spec, style="flat", sprites_enabled=False, has_map=True) == (True, spec.tooltip)
+    enabled, tip = availability(spec, style="stepped", sprites_enabled=True, has_map=True, has_mod_art=False)
+    assert not enabled and tip.startswith("No enabled mod ships art")
+    assert availability(spec, style="stepped", sprites_enabled=True, has_map=False, has_mod_art=False)[1] == (
+        "Open a map first"
+    )
+    other = next(s for s in LAYERS if s.layer_id == "hero_glow")
+    assert availability(other, style="stepped", sprites_enabled=True, has_map=True, has_mod_art=False)[0]

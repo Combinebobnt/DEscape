@@ -37,9 +37,11 @@ multiply by one RGB per player:
 
 TEAM_COLORS below are the game's own, read from its
 resources/_common/palettes/spritecolors.json. The 256-entry playercolor_*.pal
-files are the legacy SLP path and must NOT be used here: their entries 128..255
-are all black, while MAIN's luminance under the mask reaches 247, so indexing
-them by luminance paints most sprites black.
+files are the legacy SLP path and must NOT be used for the tint: their entries
+128..255 are all black, while MAIN's luminance under the mask reaches 247, so
+indexing them by luminance paints most sprites black. (A mod's .smx stores a
+real playercolor index per pixel; smx_decoder turns that into MAIN's grey from
+playercolor_white.pal, and the tint above then applies unchanged.)
 """
 
 from __future__ import annotations
@@ -60,12 +62,14 @@ from descape import (
     debug_log,
     editor_markers,
     gate_orientation,
+    mod_graphics,
     particle_art,
     terrain_palette,
     unit_kind,
     unit_rotation,
 )
 from descape.sld_decoder import LayerKind, SLDError, load_sld
+from descape.smx_decoder import load_smx
 
 GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
 BUILDING_ART_PATH = Path(__file__).resolve().parent / "building_art_map.json"
@@ -80,8 +84,9 @@ NATIVE_TILE_W = 96
 
 # How far the farthest sprite's pixels reach past its own hotspot, per side, in
 # the same native px NATIVE_TILE_W is in -- so a canvas-pixel padding is
-# reach * sprite_scale(half_w). descape/render.py's _sprite_reach_px is the only
-# consumer: it turns these into the per-side widening an edit's dirty bbox needs
+# reach * sprite_scale(half_w). sprite_reach() is the only reader (it widens them
+# by the active mods' art), and descape/render.py's _sprite_reach_px turns that
+# into the per-side widening an edit's dirty bbox needs
 # so a sprite standing on a dirty tile cannot escape it and leave a stale
 # fragment behind.
 #
@@ -391,6 +396,15 @@ class _ByteLRU(OrderedDict):
 
 _native_cache = _ByteLRU(NATIVE_CACHE_BYTES)
 _sld_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
+# The mod file drawing a stem (mod_graphics), walked, keyed like _sld_index_cache;
+# its bytes share _sld_bytes_cache under a ("mod", file_name) key.
+_mod_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
+# (mod_graphics.generation(), (left, right, up, down)) of the active mods' reach.
+_mod_reach: tuple[int, tuple[int, int, int, int]] | None = None
+# Stems whose mod file's frame count fits neither mapping, logged once each.
+_mod_mismatch_logged: set[str] = set()
+# Stems an active mod draws as no ink (an open town centre's blank back piece): a deliberate gap, not missing art.
+_mod_blank_stems: set[str] = set()
 _sld_bytes_cache = _ByteLRU(SLD_BYTES_CACHE_BYTES)
 _scaled_cache = _ByteLRU(SCALED_CACHE_BYTES)
 _icon_cache = _ByteLRU(ICON_CACHE_BYTES)
@@ -430,8 +444,13 @@ def clear_caches() -> None:
     install path -- a cached array outlives the file it came from otherwise,
     and every one of these remembers MISSES too, so a first-time install
     configuration would keep serving "no sprite" without this."""
+    global _mod_reach
     _native_cache.clear()
     _sld_index_cache.clear()
+    _mod_index_cache.clear()
+    _mod_reach = None
+    _mod_mismatch_logged.clear()
+    _mod_blank_stems.clear()
     _sld_bytes_cache.clear()
     _scaled_cache.clear()
     _icon_cache.clear()
@@ -572,9 +591,10 @@ def angle_index(
     reasons. Re-measure FLAT_ANGLE_ZERO_OFFSET_DEG to something non-zero and
     the two diverge on exactly those angle_counts.
 
-    GAIA is the caller's problem, not this function's: a GAIA object's
-    `rotation` is a doodad graphic-variant index, not an angle (see AGENTS.md's
-    hard rule), so it must never be passed here.
+    GAIA is the caller's problem, not this function's: a GAIA variant const's
+    `rotation` is a graphic-variant index, not an angle (see AGENTS.md's hard
+    rule), so only render.stored_rotation()'s value may be passed here, which
+    is an angle for GAIA ANGLE consts since GH #217.
     """
     if angle_count <= 1:
         return 0
@@ -1060,6 +1080,70 @@ def _sld_index(file_name: str):
     return sld
 
 
+def _mod_index(file_name: str):
+    """(walked file holding no bytes, path, "sld" | "smx") for the active mod
+    file drawing this stem, or None: mod art off, no mod ships it, or it won't
+    read. Pixels only: frame counts and every dispatch guard stay on the
+    install file (_sld_index), so a cosmetic mod can never move them."""
+    resolved = mod_graphics.resolve_sprite(file_name)
+    if resolved is None:
+        return None
+    path, fmt = resolved
+    hit = _mod_index_cache.get_or_none(file_name)
+    # Keyed by stem, so an entry from a mod that no longer wins (an opt-out) is re-walked.
+    if hit is not None and hit[1] == path:
+        return None if hit[0] is _MISS else hit
+    walked = load_sld(path) if fmt == "sld" else load_smx(path)
+    value = (_MISS if walked is None else walked, path, fmt)
+    if walked is not None:
+        _sld_bytes_cache.put(("mod", file_name), walked.release_data())
+    _mod_index_cache.put(file_name, value)
+    return None if walked is None else value
+
+
+def _mod_frame_index(file_name: str, frame_index: int, install_count: int, mod_count: int) -> int | None:
+    """The mod file's frame for an install frame index: the same index when the
+    counts match, frame 0 of a 1-frame replacement, else None (the install
+    draws; a modulo would turn a unit to the wrong facing)."""
+    if mod_count == install_count:
+        return frame_index
+    if mod_count == 1:
+        return 0
+    if file_name not in _mod_mismatch_logged:
+        _mod_mismatch_logged.add(file_name)
+        debug_log.log(f"mod art: {file_name} has {mod_count} frames against the install's {install_count}; drawing the install's")
+    return None
+
+
+def _mod_bytes(path: Path, file_name: str) -> bytes:
+    key = ("mod", file_name)
+    data = _sld_bytes_cache.get_or_none(key)
+    if data is None:
+        data = path.read_bytes()
+        _sld_bytes_cache.put(key, data)
+    return data
+
+
+def _decode_mod_frame(file_name: str, frame_index: int, install_count: int):
+    """The active mod's decoded frame for this install frame, or None when no
+    mod applies or its layout does not map (the install draws). Raises
+    SLDError/OSError like decode_frame()."""
+    mod = _mod_index(file_name)
+    if mod is None:
+        return None
+    walked, path, fmt = mod
+    mapped = _mod_frame_index(file_name, frame_index, install_count, walked.frame_count)
+    if mapped is None:
+        return None
+    kinds = (LayerKind.MAIN, LayerKind.PLAYERCOLOR)
+    data = _mod_bytes(path, file_name)
+    if fmt == "sld":
+        return walked.decode_frame(mapped, data, kinds=kinds, window_to_main=True)
+    return walked.decode_frame(
+        mapped, data, mod_graphics.palettes(), kinds=kinds, shades=mod_graphics.player_shades()
+    )
+
+
 def _sld_bytes(directory: Path, file_name: str) -> bytes:
     """The file's bytes for a decode: the ones its walk read while they are
     still cached, else a fresh read. A fresh read of a file that changed since
@@ -1107,28 +1191,106 @@ def _native_frame(file_name: str, frame_index: int):
         _native_cache.put(key, _MISS)
         return None
     try:
-        frame = sld.decode_frame(
-            frame_index,
-            _sld_bytes(directory, file_name),
-            kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
-            window_to_main=True,
-        )
+        frame = _decode_mod_frame(file_name, frame_index, sld.frame_count)
+    except (SLDError, OSError) as exc:
+        debug_log.log(f"mod art: {file_name} frame {frame_index} failed to decode, drawing the install's: {exc}")
+        frame = None
+    from_mod = frame is not None
+    try:
+        if frame is None:
+            frame = sld.decode_frame(
+                frame_index,
+                _sld_bytes(directory, file_name),
+                kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
+                window_to_main=True,
+            )
     except (SLDError, OSError) as exc:
         debug_log.log(f"sprite: {file_name} frame {frame_index} failed to decode: {exc}")
-        _native_cache.put(key, _MISS)
-        return None
-    if frame.main is None:
         _native_cache.put(key, _MISS)
         return None
     # DAMAGE is deliberately not composited: it is a packed mask that BC1
     # happens to carry, not colour. SHADOW and OUTLINE are likewise skipped.
     # Neither DAMAGE nor SHADOW is even decoded any more: see kinds= above.
-    value = _cropped_to_ink(frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y)
+    value = None if frame.main is None else _cropped_to_ink(
+        frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y
+    )
     if value is None:
+        if from_mod:
+            _mod_blank_stems.add(file_name)
         _native_cache.put(key, _MISS)
         return None
     _native_cache.put(key, value)
     return value
+
+
+def referenced_entries() -> list[tuple[str, int, int]]:
+    """Every (file_name, dx, dy) a unit can draw: unit_graphic_map.json's
+    entries and pieces plus every per-civ building entry, each at its own
+    offset from the unit's anchor (tools/scan_sprite_reach.py's input)."""
+    entries: set[tuple[str, int, int]] = set()
+    per_civ = [e for art in building_art().civ_art.values() for e in art.values()]
+    for entry in [*graphic_map().values(), *per_civ]:
+        # A single-graphic entry's own dx/dy (a fish body, GH #178) moves it like a piece's.
+        entries.add((entry["file_name"], *_body_offset(entry)))
+        for piece in entry.get("pieces", ()):
+            entries.add((piece["file_name"], piece["dx"], piece["dy"]))
+    return sorted(entries)
+
+
+def _walked_reach(walked, fmt: str, dx: int, dy: int) -> tuple[int, int, int, int]:
+    """(left, right, up, down) of every frame's MAIN box from the hotspot moved
+    by (dx, dy), as tools/scan_sprite_reach.py measures the install."""
+    reach = [0, 0, 0, 0]
+    for frame in walked.frames:
+        hx, hy = frame.hotspot_x + dx, frame.hotspot_y + dy
+        if fmt == "smx":
+            if frame.main_offset is None:
+                continue
+            box = (0, 0, frame.width, frame.height)
+        else:
+            main = next((layer for layer in frame.layers if layer.kind == LayerKind.MAIN), None)
+            if main is None:
+                continue
+            box = (main.x1, main.y1, main.width, main.height)
+        x1, y1, width, height = box
+        sides = (hx - x1, x1 + width - hx, hy - y1, y1 + height - hy)
+        reach = [max(old, new) for old, new in zip(reach, sides, strict=True)]
+    return tuple(reach)
+
+
+def _active_mod_reach() -> tuple[int, int, int, int]:
+    """The farthest any active mod's drawn art reaches, (left, right, up,
+    down) native px; zeros when mod art is off. Recomputed per
+    mod_graphics.generation()."""
+    global _mod_reach
+    generation = mod_graphics.generation()
+    if _mod_reach is not None and _mod_reach[0] == generation:
+        return _mod_reach[1]
+    reach = (0, 0, 0, 0)
+    if mod_graphics.enabled():
+        for name, dx, dy in referenced_entries():
+            mod = _mod_index(name)
+            if mod is None:
+                continue
+            install_count = sld_frame_count(name)
+            if install_count is None or _mod_frame_index(name, 0, install_count, mod[0].frame_count) is None:
+                continue
+            reach = tuple(max(a, b) for a, b in zip(reach, _walked_reach(mod[0], mod[2], dx, dy), strict=True))
+    _mod_reach = (generation, reach)
+    return reach
+
+
+def sprite_reach() -> tuple[int, int, int, int]:
+    """(left, right, up, down) native px a sprite can reach from its anchor:
+    MAX_SPRITE_REACH_* (read at call time, so a test can patch them), widened
+    by the active mods' art."""
+    mods = _active_mod_reach()
+    return (
+        max(MAX_SPRITE_REACH_LEFT, mods[0]),
+        max(MAX_SPRITE_REACH_RIGHT, mods[1]),
+        max(MAX_SPRITE_REACH_UP, mods[2]),
+        max(MAX_SPRITE_REACH_DOWN, mods[3]),
+    )
 
 
 def _cropped_to_ink(main: np.ndarray, playercolor: np.ndarray | None, hx: int, hy: int):
@@ -1472,6 +1634,7 @@ def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
     art: tuple[int | None, int] | None = None,
+    wall_alpha: float = 1.0,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -1509,6 +1672,11 @@ def sprite_pieces_for(
     B) resolves to its editor-only marker instead, one piece at (0, 0).
 
     `art` as sprite_for()'s.
+
+    `wall_alpha` (View > Layers > Translucent Walls, GH #35) below 1.0
+    returns _wall_draw()'s one flattened piece at (0, 0) instead, or [] if it
+    fails. tree_scale and hero_glow are ignored there; the caller decides
+    which consts get each.
     """
     category = unit_kind.invisible_category(unit_const)
     if category is not None:
@@ -1517,6 +1685,17 @@ def sprite_pieces_for(
     entry = _entry_for_art(unit_const, art)
     if entry is None:
         return []
+    if wall_alpha < 1.0:
+        draw = _wall_draw(unit_const, entry, rotation, team_index, half_w, seed, wall_alpha)
+        return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
+    return _opaque_pieces(unit_const, entry, rotation, team_index, half_w, tree_scale, seed, hero_glow)
+
+
+def _opaque_pieces(
+    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int, tree_scale: float,
+    seed: int | None, hero_glow: bool,
+) -> list[SpritePiece]:
+    """sprite_pieces_for()'s pieces for a resolved entry, with no wall alpha."""
     pieces_data = entry.get("pieces")
     if not pieces_data:
         draw = _draw_for_entry(
@@ -1535,7 +1714,7 @@ def sprite_pieces_for(
         if draw is None:
             # Marked, not positional: depth order can (and for a town centre's
             # back piece, does) place the parent anywhere but index 0.
-            if piece.get("parent"):
+            if piece.get("parent") and piece["file_name"] not in _mod_blank_stems:
                 return []
             continue
         slot = piece.get("slot")
@@ -1631,7 +1810,7 @@ def _native_pieces_for(
         native = _native_piece(piece["unit_id"], piece, rotation, angle_offset_deg, seed, index)
         if native is None:
             # Marked parent, not list position -- see sprite_pieces_for().
-            if piece.get("parent"):
+            if piece.get("parent") and piece["file_name"] not in _mod_blank_stems:
                 return []
             continue
         result.append(_NativePiece(*native, int(piece["dx"]), int(piece["dy"])))
@@ -1645,10 +1824,18 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     A single piece IS the assembly -- returned as-is rather than copied
     through a composite. _build_icon() no longer sends it here (it tints a
     single piece at whichever size is smaller), but the case stays exact."""
+    assembled = _assembled_with_origin(pieces)
+    return None if assembled is None else assembled[0]
+
+
+def _assembled_with_origin(pieces: list[SpritePiece]) -> tuple[np.ndarray, int, int] | None:
+    """_assembled_native()'s array plus its (ox, oy): where its top-left sits
+    relative to the unit's anchor, so the anchor is pixel (-ox, -oy)."""
     if not pieces:
         return None
     if len(pieces) == 1:
-        return pieces[0].draw.rgba
+        piece = pieces[0]
+        return piece.draw.rgba, piece.dx - piece.draw.hotspot_x, piece.dy - piece.draw.hotspot_y
 
     rects = []
     for piece in pieces:
@@ -1661,7 +1848,54 @@ def _assembled_native(pieces: list[SpritePiece]) -> np.ndarray | None:
     out = np.zeros((max(r[3] for r in rects) - oy, max(r[2] for r in rects) - ox, 4), dtype=np.uint8)
     for piece, (x0, y0, _x1, _y1) in zip(pieces, rects, strict=True):
         _source_over(out, y0 - oy, x0 - ox, piece.draw.rgba)
-    return out
+    return out, ox, oy
+
+
+def _wall_draw(
+    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
+    seed: int | None, alpha: float,
+) -> SpriteDraw | None:
+    """A wall or gate's whole composite as one tinted, scaled SpriteDraw with
+    Translucent Walls' alpha applied (GH #35). None on any failure
+    sprite_for() lists, or a lost parent piece.
+
+    The opaque path's own scaled pieces, flattened, so the alpha is uniform
+    within the unit and a flag over a tower or a pillar over a gate does not
+    stack. Flattening after the resize keeps every pixel where the layer-off
+    draw puts it; a native-scale flatten rounds one union hotspot instead of
+    each piece's, which moved composites by up to 1px. No wall or gate piece
+    has a depth slot, so flattening changes no draw order. Then the alpha
+    multiply, as round(a * alpha).
+
+    Cached in _scaled_cache under a key of its own, for the reasons
+    _draw_for_entry() gives for its own. _frame_key() resolves every piece's
+    frame, a seeded one included; _art_key() tells two owners' art apart."""
+    team_slot = team_index % len(TEAM_COLORS)
+    key = (
+        "wall", unit_const, _art_key(entry), _body_offset(entry),
+        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha,
+    )
+    hit = _scaled_cache.get_or_none(key)
+    if hit is not None:
+        return None if hit is _MISS else hit
+    draw = _build_wall_draw(unit_const, entry, rotation, team_slot, half_w, seed, alpha)
+    _scaled_cache.put(key, _MISS if draw is None else draw)  # see _MISS
+    return draw
+
+
+def _build_wall_draw(
+    unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
+    seed: int | None, alpha: float,
+) -> SpriteDraw | None:
+    """_wall_draw()'s uncached body."""
+    pieces = _opaque_pieces(unit_const, entry, rotation, team_index, half_w, 1.0, seed, False)
+    assembled = _assembled_with_origin(pieces)
+    if assembled is None:
+        return None
+    rgba, ox, oy = assembled
+    rgba = rgba.copy()
+    rgba[..., 3] = np.rint(rgba[..., 3] * alpha).astype(np.uint8)
+    return SpriteDraw(rgba=rgba, hotspot_x=-ox, hotspot_y=-oy)
 
 
 def _frame_key(

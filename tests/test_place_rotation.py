@@ -10,7 +10,6 @@ import pytest
 from descape import gate_orientation, unit_rotation, unit_sprites, unit_variant
 from descape.place_rotation import (
     CYCLED,
-    GAIA_NO_FACING,
     GATE,
     NOTHING,
     TURNED,
@@ -89,12 +88,12 @@ def test_every_angle_value_is_exactly_on_the_consts_grid() -> None:
         assert 0.0 <= value < 2 * math.pi
 
 
-def test_gaia_angle_does_not_turn_and_places_zero() -> None:
-    turned, _, _ = step(PlaceRotation(), ARCHER, P1, 3)
-    state, const, outcome = step(turned, ARCHER, GAIA, 1)
-    assert (state, const, outcome) == (turned, ARCHER, GAIA_NO_FACING)
-    assert rotation_for(turned, ARCHER, GAIA) == 0.0
-    assert rotation_for(turned, ARCHER, P1) != 0.0, "the stored facing survives for the next owner"
+def test_gaia_angle_turns_and_places_its_facing_like_a_player() -> None:
+    """GH #217: GAIA creatables have a facing the game draws, so the owner no longer matters."""
+    state, const, outcome = step(PlaceRotation(), ARCHER, GAIA, 3)
+    assert (const, outcome) == (ARCHER, TURNED)
+    assert rotation_for(state, ARCHER, GAIA) == pytest.approx(2 * math.pi * 3 / 16)
+    assert rotation_for(state, ARCHER, GAIA) == rotation_for(state, ARCHER, P1)
 
 
 # --- Cyclable -----------------------------------------------------------------
@@ -126,6 +125,17 @@ def test_a_variant_is_always_a_literal_integer_and_gaia_still_cycles() -> None:
         assert isinstance(value, float) and value == int(value)
         assert 0 <= value < 42
     assert steps_for_coarse(OAK, 1) == unit_rotation.quarter_turn_steps(42)
+
+
+def test_gh217_changes_only_angle_consts_for_gaia() -> None:
+    """GH #217 widened GAIA to ANGLE only: a GAIA variant index (well outside
+    [0, 2pi)) and an INERT const place exactly what a player's would."""
+    state, _, outcome = step(PlaceRotation(), OAK, GAIA, 41)
+    assert outcome == CYCLED
+    assert rotation_for(state, OAK, GAIA) == rotation_for(state, OAK, P1) == 41.0
+    start = PlaceRotation(facing=2.0, variant=4, variant_const=HOUSE)
+    assert step(start, HOUSE, GAIA, 1) == step(start, HOUSE, P1, 1) == (start, HOUSE, NOTHING)
+    assert rotation_for(start, HOUSE, GAIA) == rotation_for(start, HOUSE, P1) == 0.0
 
 
 def test_a_variant_does_not_leak_into_the_facing_and_back() -> None:

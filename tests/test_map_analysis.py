@@ -202,7 +202,7 @@ def test_player_owned_forage_bush_is_one_warning() -> None:
     result = map_analysis.check_gaia_only_ownership(loaded)
     assert [(f.unit_key, f.severity, f.tile) for f in result.findings] == [((2, 300), "warning", (20, 30))]
     assert result.findings[0].message == (
-        "Player 2 object 59 (id 300) at (20.5, 30.5) is a resource or tree; game-made files only give those to GAIA"
+        "Player 2 object 59 (id 300) at (20.5, 30.5) is GAIA-only; game-made files only give those to GAIA"
     )
 
 

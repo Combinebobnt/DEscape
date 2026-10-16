@@ -757,13 +757,20 @@ def test_an_inert_pick_does_not_turn_and_says_why() -> None:
         _close(window)
 
 
-def test_gaia_angle_does_not_turn_but_a_gaia_tree_still_cycles(rotating_install) -> None:
+def test_gaia_angle_turns_and_draws_its_facing_and_a_gaia_tree_still_cycles(rotating_install) -> None:
+    """GH #217: a GAIA creatable turns like a player's, and the placed unit draws the turned ghost."""
     window = _sprite_window(_UNIT_CONST, owner=0)
     try:
+        view = window.map_view
         scene = _hover_tile(window, 40, 40)
+        before = _ghost_draws(view)
         window.rotate_place_ghost(steps=3)
-        assert "GAIA units have no facing" in _last_status(window)
-        assert _place_at(window, scene).unit.rotation == 0.0
+        ghost = _ghost_draws(view)
+        assert ghost != before, "the turn must change the GAIA ghost"
+        assert "facing 3/16" in _last_status(window)
+        entry = _place_at(window, scene)
+        assert entry.unit.rotation == pytest.approx(3 * 2 * 3.141592653589793 / 16)
+        assert ghost == _placed_draws(window, entry)
 
         window.units_panel._set_pending_object(_OAK)
         scene = _hover_tile(window, 44, 44)
@@ -998,8 +1005,8 @@ def test_an_eyedropped_tree_carries_its_variant_into_the_next_placement() -> Non
         _close(window)
 
 
-def test_an_eyedropped_gaia_unit_keeps_its_facing_but_places_facing_0() -> None:
-    """The pick stores the facing; rotation_for() alone decides what a click writes."""
+def test_an_eyedropped_gaia_unit_places_its_snapped_facing() -> None:
+    """The pick stores the facing; rotation_for() alone decides what a click writes, GAIA included (GH #217)."""
     import math
     from types import SimpleNamespace
 
@@ -1013,11 +1020,12 @@ def test_an_eyedropped_gaia_unit_keeps_its_facing_but_places_facing_0() -> None:
         assert window._place_rotation.facing == _OFF_GRID_FACING
         window.place_unit_action.setChecked(True)
         placed = _place_at(window, _hover_tile(window, 40, 40))
-        assert (placed.unit.unit_const, placed.player_id, placed.unit.rotation) == (_ARCHER, 0, 0.0)
+        assert (placed.unit.unit_const, placed.player_id) == (_ARCHER, 0)
+        assert placed.unit.rotation == pytest.approx(6 * 2 * math.pi / 16), "snapped to the archer's 16-frame grid"
 
         window.units_panel.select_owner(1)
         turned = _place_at(window, _hover_tile(window, 44, 44))
-        assert turned.unit.rotation == pytest.approx(6 * 2 * math.pi / 16), "the kept facing applies off GAIA"
+        assert turned.unit.rotation == placed.unit.rotation, "the owner does not change the facing"
     finally:
         _close(window)
 

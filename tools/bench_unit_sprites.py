@@ -51,6 +51,10 @@ one IsoChunkCache builds every Stepped level coarsest to finest through
 _level(), as a load followed by zooming in does, then a fresh IsoChunkCache
 builds them again with the process-wide sprite caches kept (pass `rewarm`,
 the floor a level still costs when a paint reaches it before its warm).
+
+`--mod-art` replaces all of the above with the cosmetic-mod row (see
+bench_mod_art): the cold Stepped sprite layer with Mod Art off against on,
+the first sprite_reach() walk after a change, and .smx against .sld decode.
 """
 
 from __future__ import annotations
@@ -296,16 +300,24 @@ class _WalkCounter:
     def __init__(self):
         self.paths: list[str] = []
         self.reads = 0
+        # A mod's .smx walks (TASK-378), through unit_sprites.load_smx; read by --mod-art only.
+        self.smx_paths: list[str] = []
         self._real = None
+        self._real_smx = None
         self._real_read = None
 
     def __enter__(self):
         self._real = real = unit_sprites.load_sld
+        self._real_smx = real_smx = unit_sprites.load_smx
         self._real_read = real_read = Path.read_bytes
 
         def counted(*args, **kwargs):
             self.paths.append(str(args[0]))
             return real(*args, **kwargs)
+
+        def counted_smx(*args, **kwargs):
+            self.smx_paths.append(str(args[0]))
+            return real_smx(*args, **kwargs)
 
         def counted_read(path):
             if path.suffix == ".sld":
@@ -313,11 +325,13 @@ class _WalkCounter:
             return real_read(path)
 
         unit_sprites.load_sld = counted
+        unit_sprites.load_smx = counted_smx
         Path.read_bytes = counted_read
         return self
 
     def __exit__(self, *_exc):
         unit_sprites.load_sld = self._real
+        unit_sprites.load_smx = self._real_smx
         Path.read_bytes = self._real_read
 
     def take(self) -> tuple[int, int, int]:
@@ -326,6 +340,77 @@ class _WalkCounter:
         self.paths.clear()
         self.reads = 0
         return walks, files, reads
+
+
+MOD_ART_ROUNDS = 3
+
+
+def bench_mod_art(path: Path) -> str:
+    """The TASK-378 row: the cold Stepped sprite layer with Mod Art off and
+    on, alternated MOD_ART_ROUNDS times (min of each, after
+    asset_source.clear_art_caches(), the apply path's own drop), against the
+    plan's 1.5x budget; the first sprite_reach() after a change; and frame 0
+    decode time of every drawn stem a mod ships as .smx against its install
+    .sld. Mods come from the profile content_roots finds (AOE2DE_PROFILE_PATH)."""
+    from descape import mod_graphics
+    from descape.sld_decoder import LayerKind
+
+    scenario = load_map_and_units(path)
+    elevations, proj, _tile_px = _projection(scenario)
+    active = [m for m in mod_graphics.mods_with_art() if not m.excluded]
+    lines = [f"  {path.name}", f"    active art mods {len(active)}: " + ", ".join(m.title for m in active)]
+
+    def cold(on: bool) -> tuple[float, int, int]:
+        mod_graphics.set_enabled(on)
+        asset_source.clear_art_caches()
+        with _WalkCounter() as counter:
+            elapsed = _time(lambda: render.sprite_draws_by_anchor(scenario, proj, elevations))
+        return elapsed, len(counter.paths), len(counter.smx_paths)
+
+    runs = {False: [], True: []}
+    for _ in range(MOD_ART_ROUNDS):
+        for on in (False, True):
+            runs[on].append(cold(on))
+    off, on = min(runs[False]), min(runs[True])
+    ratio = on[0] / off[0] if off[0] else float("inf")
+    lines.append(
+        f"    cold layer build: off {_ms(off[0])} ({off[1]} .sld walks) | on {_ms(on[0])} "
+        f"({on[1]} .sld, {on[2]} .smx walks) | {ratio:.2f}x (budget 1.50x)"
+        + ("  <-- OVER BUDGET" if ratio > 1.5 else "")
+    )
+
+    mod_graphics.set_enabled(True)
+    asset_source.clear_art_caches()
+    reach = _time(unit_sprites.sprite_reach)
+    lines.append(f"    first sprite_reach() after a change: {_ms(reach)}, reach {unit_sprites.sprite_reach()}")
+
+    kinds = (LayerKind.MAIN, LayerKind.PLAYERCOLOR)
+    smx_times, sld_times = [], []
+    for name in sorted({name for name, _dx, _dy in unit_sprites.referenced_entries()}):
+        mod = unit_sprites._mod_index(name)
+        install = unit_sprites._sld_index(name)
+        if mod is None or mod[2] != "smx" or install is None:
+            continue
+        walked, mod_path, _fmt = mod
+        mod_data = mod_path.read_bytes()
+        install_data = (unit_sprites._graphics_dir() / f"{name}.sld").read_bytes()
+        smx_times.append(_time(lambda w=walked, d=mod_data: w.decode_frame(
+            0, d, mod_graphics.palettes(), kinds=kinds, shades=mod_graphics.player_shades()
+        )))
+        sld_times.append(_time(lambda s=install, d=install_data: s.decode_frame(
+            0, d, kinds=kinds, window_to_main=True
+        )))
+    if smx_times:
+        smx_mean, sld_mean = sum(smx_times) / len(smx_times), sum(sld_times) / len(sld_times)
+        lines.append(
+            f"    frame 0 decode over {len(smx_times)} drawn .smx stems: smx mean {_ms(smx_mean)} "
+            f"(max {_ms(max(smx_times))}) | install sld mean {_ms(sld_mean)} (max {_ms(max(sld_times))})"
+        )
+    else:
+        lines.append("    no drawn stem has a mod .smx here")
+    mod_graphics.set_enabled(False)
+    asset_source.clear_art_caches()
+    return "\n".join(lines)
 
 
 def _cold_level_order(levels: list[int], level_a: int | None) -> list[int]:
@@ -484,9 +569,13 @@ def main() -> None:
         "--ladder", action="store_true",
         help="Only the zoom-in row: every Stepped level coarsest to finest on one cache, then again on a fresh one",
     )
+    parser.add_argument(
+        "--mod-art", action="store_true",
+        help="Only the TASK-378 row: cold Stepped layer with Mod Art off vs on, first reach walk, .smx vs .sld decode",
+    )
     args = parser.parse_args()
-    if args.ladder and args.cold_levels:
-        parser.error("--ladder and --cold-levels are separate modes")
+    if sum((args.ladder, args.cold_levels, args.mod_art)) > 1:
+        parser.error("--ladder, --cold-levels and --mod-art are separate modes")
 
     if args.install:
         asset_source.set_install_path_override(args.install)
@@ -511,7 +600,9 @@ def main() -> None:
     )
     worsts = []
     for path in files:
-        if args.ladder:
+        if args.mod_art:
+            print(bench_mod_art(path))
+        elif args.ladder:
             print(bench_ladder(path))
         elif args.cold_levels:
             print(bench_cold_levels(path, args.level))
