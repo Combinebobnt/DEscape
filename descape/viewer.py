@@ -128,6 +128,7 @@ from descape import (
     player_fields,
     player_labels,
     player_stats,
+    qt_messages,
     qt_platform,
     region_clipboard,
     region_transform,
@@ -18530,6 +18531,7 @@ def main() -> None:
     platform_line = qt_platform.apply_default(prefer_xcb=settings.get_xwayland_on_wayland())
     if platform_line is not None:
         debug_log.log(platform_line)
+    qt_messages.install()
     app = QApplication(sys.argv)
     debug_log.log(f"Qt platform: {QApplication.platformName()}")
     # Wayland's app_id, matching packaging/DEscape.desktop (StartupWMClass is X11-only).
