@@ -17940,6 +17940,9 @@ def main() -> None:
     platform_line = qt_platform.apply_default(prefer_xcb=settings.get_xwayland_on_wayland())
     if platform_line is not None:
         debug_log.log(platform_line)
+    theme_line = qt_platform.apply_default_theme()
+    if theme_line is not None:
+        debug_log.log(theme_line)
     app = QApplication(sys.argv)
     debug_log.log(f"Qt platform: {QApplication.platformName()}")
     # Wayland's app_id, matching packaging/DEscape.desktop (StartupWMClass is X11-only).
