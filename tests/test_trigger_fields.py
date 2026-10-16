@@ -880,24 +880,28 @@ _SOURCE_UNIT_TYPES = frozenset(
 )
 
 # Effects with a unit field that keep the name-derived caption: the instruction
-# panel's icon, and the six two-unit effects that act on one player.
+# panel's icon, and the three two-unit effects that act on one player.
 _UNCAPTIONED_UNIT_TYPES = frozenset(
     {
         "display_instructions",
-        "add_train_location",
-        "change_train_location",
         "change_object_icon",
         "create_garrisoned_object",
-        "change_research_location",
         "research_local_technology",
     }
 )
+
+# GH #169: the command-button effects, captioned by what moves where.
+_LOCATION_TYPES = frozenset({"add_train_location", "change_train_location", "change_research_location"})
 
 # (effect type, field) -> caption, for every pair whose label is not its name.
 _EXPECTED_CAPTIONS = {
     **{(name, "object_list_unit_id"): "source player unit" for name in _SOURCE_UNIT_TYPES},
     ("replace_object", "object_list_unit_id"): "source player unit",
     ("replace_object", "object_list_unit_id_2"): "target player unit",
+    **{(name, "object_list_unit_id"): "unit to train" for name in ("add_train_location", "change_train_location")},
+    **{(name, "object_list_unit_id_2"): "trained at" for name in ("add_train_location", "change_train_location")},
+    ("change_research_location", "object_list_unit_id_2"): "researched at",
+    **{(name, "button_location"): "button slot" for name in _LOCATION_TYPES},
 }
 
 
@@ -942,9 +946,11 @@ def test_the_captioned_fields_are_exactly_the_named_set_in_every_version() -> No
     # Every named pair reaches a real spec in at least one shipped version.
     assert found == set(_EXPECTED_CAPTIONS)
     # And every type with a unit field is accounted for by name, the uncaptioned ones too.
-    named = _SOURCE_UNIT_TYPES | _UNCAPTIONED_UNIT_TYPES | {"replace_object"}
+    named = _SOURCE_UNIT_TYPES | _UNCAPTIONED_UNIT_TYPES | _LOCATION_TYPES | {"replace_object"}
     assert unit_types == {("effects", name) for name in named}
-    assert len(named) == len(_SOURCE_UNIT_TYPES) + len(_UNCAPTIONED_UNIT_TYPES) + 1, "a type is named twice"
+    assert len(named) == (
+        len(_SOURCE_UNIT_TYPES) + len(_UNCAPTIONED_UNIT_TYPES) + len(_LOCATION_TYPES) + 1
+    ), "a type is named twice"
 
 
 def _unit_spec(caption: str = "") -> FieldSpec:
@@ -984,14 +990,14 @@ def test_shared_specs_drops_a_caption_the_selection_disagrees_on() -> None:
     assert trigger_fields.shared_specs([(source, player), (plain, player)]) == (source, player)
 
 
-def test_replace_object_and_change_train_location_still_share_their_unit_field() -> None:
+def test_replace_object_and_change_object_icon_still_share_their_unit_field() -> None:
     """The real pair behind the rule above: one captions the field, the other
     does not, and the form over both shows the name-derived caption."""
     vocabulary = library_compat.load_vocabulary("1.59")
     by_name = {entry.name: entry for entry in vocabulary.effects.values()}
     spec_lists = [
         trigger_fields.field_specs(by_name[name], vocabulary.effect_presentation, "effect_type")
-        for name in ("replace_object", "change_train_location")
+        for name in ("replace_object", "change_object_icon")
     ]
     assert [spec.label for spec in spec_lists[0] if spec.name in _UNIT_FIELDS] == [
         "source player unit",
@@ -1015,7 +1021,37 @@ def test_field_label_is_the_caption_or_the_name_derived_default() -> None:
     no_player = _entry(["effect_type", "object_list_unit_id"], name="kill_object")
     assert trigger_fields.field_label(no_player, "object_list_unit_id") == "object list unit id"
     two_units = _entry(
-        ["effect_type", "object_list_unit_id", "object_list_unit_id_2", "source_player"], name="change_train_location"
+        ["effect_type", "object_list_unit_id", "object_list_unit_id_2", "source_player"], name="change_object_icon"
     )
     assert trigger_fields.field_label(two_units, "object_list_unit_id") == "object list unit id"
     assert trigger_fields.field_label(two_units, "object_list_unit_id_2") == "object list unit id 2"
+
+
+# -- GH #169: the command-button effects -------------------------------------
+
+
+def test_button_location_lists_no_button_and_both_pages() -> None:
+    choices = trigger_fields.enum_choices("ButtonLocation")
+    assert len(choices) == 31
+    assert [value for _label, value in choices] == [0, *range(1, 16), *range(21, 36)]
+    labels = {value: label for label, value in choices}
+    assert labels[0] == "no button"
+    assert labels[1] == "row 1, col 1"
+    assert labels[7] == "row 2, col 2"
+    assert labels[15] == "row 3, col 5"
+    assert labels[24] == "page 2, row 1, col 4"
+    assert labels[35] == "page 2, row 3, col 5"
+
+
+def test_button_location_stays_a_combo_with_a_tooltip() -> None:
+    """31 rows is over PICKER_MIN_CHOICES, but the button grid is its picker."""
+    vocabulary = library_compat.load_vocabulary("1.59")
+    by_name = {entry.name: entry for entry in vocabulary.effects.values()}
+    for name in _LOCATION_TYPES:
+        specs = trigger_fields.field_specs(by_name[name], vocabulary.effect_presentation, "effect_type")
+        spec = next(spec for spec in specs if spec.name == "button_location")
+        assert spec.kind == trigger_fields.ENUM
+        assert len(spec.choices) >= trigger_fields.PICKER_MIN_CHOICES
+        assert not trigger_fields.wants_picker(spec)
+        assert "command panel" in spec.tooltip
+        assert all(not other.tooltip for other in specs if other.name != "button_location")

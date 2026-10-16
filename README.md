@@ -281,6 +281,11 @@ Settings > Appearance > Trigger status switches the colours to tick and cross
 icons (or both, or off), stops marking rows that pass so only problems stand
 out, and changes the two colours.
 
+**Button slots.** Change Train Location, Add Train Location and Change
+Research Location show the building's command buttons under the button slot
+field, as they will look after the trigger fires; click a cell to pick that
+slot.
+
 For XS scripts in Script Call triggers, including scripts longer than the
 in-game editor accepts, see `docs/XS_SCRIPTING.md`.
 

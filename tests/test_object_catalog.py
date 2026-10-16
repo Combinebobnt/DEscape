@@ -396,6 +396,34 @@ def test_every_restriction_in_use_has_a_row_of_known_terrains() -> None:
     assert 22 in rows[13] and 0 not in rows[13]
 
 
+# --- GH #169: the command-button keys -----------------------------------------
+
+
+def test_objects_and_techs_carry_their_command_buttons() -> None:
+    """Militia 74 is Barracks 12 button 1, Loom 22 is Town Center 109 button 6,
+    and the builder unit 118 trains House 70 on the economic page (2) and
+    Barracks on the military one (10)."""
+    objects = object_catalog.dat_objects()
+    assert objects[74]["train"] == [[12, 1]]
+    assert "interface_kind" not in objects[74]
+    assert object_catalog.dat_techs()[22]["research"] == [[109, 6]]
+    assert [118, 1] in objects[70]["train"] and objects[70]["interface_kind"] == 2
+    assert [118, 1] in objects[12]["train"] and objects[12]["interface_kind"] == 10
+
+
+def test_the_command_button_keys_are_omitted_when_empty() -> None:
+    """Every pair names a building and a real button; 0 (no button) is dropped."""
+    rows = [*object_catalog.dat_objects().values(), *object_catalog.dat_techs().values()]
+    for row in rows:
+        for building, button in row.get("train", []) + row.get("research", []):
+            assert building >= 0 and button >= 1
+        assert row.get("train", [0]) and row.get("research", [0])
+    assert all(
+        "interface_kind" not in row or any(b == 118 for b, _n in row["train"])
+        for row in object_catalog.dat_objects().values()
+    )
+
+
 def test_a_missing_json_still_gives_the_library_only_catalog(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(object_catalog, "_CATALOG_JSON_PATH", tmp_path / "absent.json")
     object_catalog._dat_table.cache_clear()

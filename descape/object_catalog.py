@@ -80,6 +80,12 @@ def dat_objects() -> dict[int, dict]:
     return {int(k): dict(v) for k, v in _dat_table()["objects"].items()}
 
 
+def dat_techs() -> dict[int, dict]:
+    """tech_id -> the committed .dat row for every tech, or {} with no
+    generated table. A fresh dict of fresh rows, as dat_objects()."""
+    return {int(k): dict(v) for k, v in _dat_table().get("techs", {}).items()}
+
+
 def dat_terrains() -> dict[int, dict]:
     """terrain_id -> the committed `{string_id, code, hidden}` row for every
     enabled .dat terrain, or {} with no generated table. A fresh dict, so a

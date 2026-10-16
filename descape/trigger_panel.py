@@ -40,6 +40,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
+    button_grid,
     library_compat,
     messages_fields,
     object_catalog,
@@ -50,6 +51,7 @@ from descape import (
     trigger_status,
     unit_references,
 )
+from descape.button_grid import ButtonGrid
 from descape.constant_picker import CatalogLineEdit
 from descape.facet_preview import FacetPreview
 from descape.instruction_preview import InstructionPreview
@@ -650,6 +652,7 @@ class TriggerPanel(QWidget):
         # GH #167: the facet-direction preview and the field it sits under, or None and "".
         self._facet_preview: FacetPreview | None = None
         self._facet_preview_field = ""
+        self._button_grid: ButtonGrid | None = None
         self._rows: list[tuple] = []
         # The (kind, index) refs the property form was last built for. None
         # means "holds nothing", so the next sync always repopulates.
@@ -2360,6 +2363,9 @@ class TriggerPanel(QWidget):
             self._facet_preview.detach()
         self._facet_preview = None
         self._facet_preview_field = ""
+        if self._button_grid is not None:
+            self._button_grid.detach()
+        self._button_grid = None
         while self.property_form.rowCount():
             row = self.property_form.takeRow(0)
             # A spanning addRow(widget) row fills only one of the two.
@@ -2553,6 +2559,11 @@ class TriggerPanel(QWidget):
                     self._facet_preview = FacetPreview()
                     self._facet_preview_field = spec.name
                     self.property_form.addRow(self._facet_preview)
+                button_grid_effect = self._button_grid_effect(entries) if spec.name == "button_location" else ""
+                if button_grid_effect and self._button_grid is None:
+                    # GH #169: the building's panel, directly under the slot it sets.
+                    self._button_grid = ButtonGrid()
+                    self.property_form.addRow(self._button_grid)
                 if len(refs) == 1 and kind != "trigger":
                     self._add_group_row(spec, specs, refs)
             self._update_group_rows()
@@ -2562,6 +2573,11 @@ class TriggerPanel(QWidget):
                 single = _entry if len(entries) == 1 else None
                 self._facet_preview.bind(
                     fields, facet, self._FACET_UNITS[facet], self._read, single, self._fit_property_height
+                )
+            if self._button_grid is not None:
+                fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
+                self._button_grid.bind(
+                    fields, self._button_grid_effect(entries), self._read, _entry, self._fit_property_height
                 )
             if len(entries) == 1 and kind == "effect" and self._read(_entry, "effect_type") == self._DISPLAY_INSTRUCTIONS:
                 self._add_instruction_preview(_entry)
@@ -2574,6 +2590,20 @@ class TriggerPanel(QWidget):
     _DISPLAY_INSTRUCTIONS = 20
     # GH #167: Create Object's facet and Replace Object's facet2, each with the unit it turns.
     _FACET_UNITS: ClassVar[dict[str, str]] = {"facet": "object_list_unit_id", "facet2": "object_list_unit_id_2"}
+
+    def _button_grid_effect(self, entries) -> str:
+        """The button grid's effect name for a one-effect form of a type it
+        covers (GH #169), or "" for anything else."""
+        if len(entries) != 1:
+            return ""
+        kind, _index, entry = entries[0]
+        if kind != "effect":
+            return ""
+        definition = self._definition_for(kind, entry)
+        name = "" if definition is None else definition.name
+        return name if name in self._BUTTON_GRID_TYPES else ""
+
+    _BUTTON_GRID_TYPES = frozenset(button_grid.EFFECT_MOVERS)
 
     def _add_instruction_preview(self, entry) -> None:
         """GH #140: a full-width, observe-only preview row under the fields."""
