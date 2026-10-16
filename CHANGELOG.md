@@ -226,6 +226,9 @@ content, link the doc instead of summarizing it.
   player and GAIA units not at their tile's centre (info, one row each).
 - **Map Analysis flags resources and trees owned by a player** (warning,
   GH #206): game-made files only give those to GAIA.
+- **Map Analysis lists objects in invalid positions** (GH #173): units on
+  terrain they can't stand on (warning), buildings on terrain they can't
+  stand on (info) and units overlapping another object (info).
 - **Players mode lists GAIA** (GH #187), with the settings the in-game
   editor offers for it: civilization, architecture, the two locks, starting
   age, resources, colour and pop limit.
@@ -285,6 +288,20 @@ content, link the doc instead of summarizing it.
   `tools/game_data_stamp.json`. `--check` reports whether an install still
   reproduces the committed tables, `--status` whether the install and the
   tables still match the stamp.
+- **A radial facing dial beside the unit Rotation field**: facings and gate
+  orientations, following Flat or iso view.
+- **More brush shapes**: Rounded square, Square outline, Circle outline,
+  Plus and two Line brushes join Square and Circle for every brush tool. An
+  outline gets a Thickness (1-4) beside Shape. Lines follow the tile axes,
+  so they are diagonals in the isometric views. Raising elevation with a
+  hollow shape fills holes up to two tiles wide.
+- **Settable Player Type** (GH #126): Players mode sets a player to Either or
+  Computer. Settings > General gains an AoE2DE profile folder field with a
+  list of the folders scanned for content, and a custom Personality's
+  tooltip names the folder it came from.
+- **Terrain picker as a grid** (GH #161): a List/Grid switch beside the
+  terrain filter shows terrains as captioned swatches under category
+  headings. The swatch size is in Settings > Appearance.
 
 ### Changed
 
@@ -504,9 +521,32 @@ content, link the doc instead of summarizing it.
   conditions/effects pane below it now start as equal halves, so the list
   keeps the height the removed button rows freed. Dragging the divider works
   as before.
+- **Units inspector arrows move a group instead of aligning it** (GH #154):
+  with several units selected, the X, Y and Z arrows, Up/Down and the wheel
+  shift every unit by one step and stop at the map edge. Typing a value
+  still sets them all.
 
 ### Fixed
 
+- **Save As adds the file to File > Open Recent** (GH #215), so a new map is
+  listed after its first save.
+- **Settings > Keybinds no longer clips the Mouse Wheel dropdowns** on
+  systems with short font names.
+- **Mountains, ruins and other large scenery** select, outline and block on
+  their real footprint.
+- **Farms show their farm texture in top-down Flat** (GH #150): with Show
+  sprites and Farm Terrain Overlay on, a placed farm paints its footprint as
+  farm terrain with a 1px owner-colour outline, as in Stepped and Sloped,
+  and a unit standing on it can be clicked.
+- **Clicking a unit on a farm in Stepped** selects the unit even when the
+  farm was placed later or the unit reaches onto the next farm tile, and a
+  farm's hover outline follows its tiles on uneven ground. With Farm Terrain
+  Overlay off, Stepped and Sloped pick a farm as the diamond they draw. A
+  selected or hovered farm's outline redraws when Show sprites or Farm
+  Terrain Overlay is toggled.
+- **Clicking a shared tile picks the unit drawn on top** right after placing
+  a unit, pasting into a garrison or garrisoning a unit for any player but
+  the last, and stacks list in paint order.
 - **Mirror Map gives diagonal walls the right shape** under West ↔ North,
   West ↔ South, 4-way rotational, 4-way reflective (map axes) and 8-way, in
   files that store wall shapes as whole numbers. They kept the old diagonal
@@ -609,7 +649,9 @@ content, link the doc instead of summarizing it.
   that cannot be resolved is refused with a "cannot be resolved" message
   instead of an internal error. A looped autosave folder is refused with the
   same reason and autosaves go to the default folder, as does the sidecar
-  autosave of a file opened through a looped folder.
+  autosave of a file opened through a looped folder. This also holds when
+  running from source on Python 3.13 or newer, and for Find's CSV export and
+  theme export.
 - **Triggers: the property form is sized to its fields on entering
   Triggers mode**, instead of starting squeezed until something re-fit it.
 - **Triggers mode: selecting several conditions/effects highlights all of

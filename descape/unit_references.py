@@ -155,8 +155,13 @@ def _ids(value: Any) -> tuple[int, ...]:
 
 def references_in(entry: Any, definition: Any, presentation: Mapping[str, str]) -> dict[str, tuple[int, ...]]:
     """field -> the set ids it holds, in stored order. Fields holding nothing are omitted."""
+    return ids_in(entry, unit_reference_fields(definition, presentation))
+
+
+def ids_in(entry: Any, fields: Iterable[str]) -> dict[str, tuple[int, ...]]:
+    """references_in() over fields already known to hold unit ids (unit_reference_fields())."""
     found = {}
-    for attribute in unit_reference_fields(definition, presentation):
+    for attribute in fields:
         ids = _ids(_read(entry, attribute))
         if ids:
             found[attribute] = ids

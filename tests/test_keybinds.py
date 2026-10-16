@@ -709,6 +709,7 @@ def test_the_wheel_combos_list_every_action_and_start_from_the_stored_values() -
 def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
     """TASK-356: at the dialog's default size the combo clipped "Brush size or
     rotate preview" (190 px field, 225 px label at 96 DPI, offscreen Qt, pinned test font; 276 px after).
+    Those numbers are this machine's font list: the font picker sets the dialog's width (TASK-375).
     The wheel combos span the key-box and Default columns; Default sits in Clear's."""
     from PyQt5.QtWidgets import QApplication, QStyle, QStyleOptionComboBox, QTabWidget
 
@@ -735,6 +736,40 @@ def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
         assert default_btn.text() == "Default"
         assert grid.getItemPosition(grid.indexOf(default_btn)) == (combo_row, combo_col + combo_span, 1, 1)
         assert default_btn.geometry().left() > combo.geometry().right()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_every_wheel_combo_fits_its_longest_label_at_the_minimum_dialog_width() -> None:
+    """TASK-375: with short installed font names the font picker no longer widened
+    Settings, and the wheel combos shrank to a 104 px field (DejaVu-only fontconfig,
+    96 DPI, offscreen Qt). Pinning the picker narrow takes the machine's font list out."""
+    from PyQt5.QtWidgets import QApplication, QScrollArea, QStyle, QStyleOptionComboBox, QTabWidget
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        dialog.ui_font_combo.setFixedWidth(60)
+        # Appearance stays a hidden tab, so its row's cached minimum (735 px) only re-measures when activated.
+        dialog.ui_font_combo.parentWidget().layout().activate()
+        tabs = dialog.findChild(QTabWidget)
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Keybinds"))
+        dialog.resize(dialog.minimumSizeHint())
+        dialog.show()
+        for _ in range(4):
+            QApplication.processEvents()
+        assert dialog.width() == dialog.minimumSizeHint().width()
+        scroll = tabs.currentWidget().findChild(QScrollArea)
+        assert scroll.horizontalScrollBar().maximum() == 0, "the Keybinds tab scrolls sideways"
+        for slot, combo in dialog._wheel_combos.items():
+            option = QStyleOptionComboBox()
+            combo.initStyleOption(option)
+            field = combo.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, combo)
+            metrics = combo.fontMetrics()
+            longest = max((combo.itemText(i) for i in range(combo.count())), key=metrics.horizontalAdvance)
+            need = metrics.horizontalAdvance(longest)
+            assert field.width() - 2 >= need, f"{slot}: a {field.width()} px field cuts {need} px of {longest!r}"
     finally:
         dialog.close()
         conftest.close_window(window)

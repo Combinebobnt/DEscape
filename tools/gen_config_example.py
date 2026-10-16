@@ -50,6 +50,8 @@ _ELEV_STEP_STOP_COUNT = len(settings.ELEV_STEP_PCT_STOPS)
 _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
 _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
+_TERRAIN_PICKER_MODE_IDS = " or ".join(mid for mid, _label in settings.TERRAIN_PICKER_MODES)
+_TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_SWATCH_SIZES)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
 _UNITS_CATALOG_MODES = ", ".join(settings.UNITS_CATALOG_MODES)
@@ -122,7 +124,8 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # Path to your AoE2:DE profile folder, the one holding numeric per-account
 # folders with resources/ and mods/ inside. Only read, never written, and
 # optional: without it only the install's own content is offered. Also
-# settable via the AOE2DE_PROFILE_PATH env var (checked first). Default:
+# settable from Settings > General's profile folder row, or via the
+# AOE2DE_PROFILE_PATH env var (checked first, overrides both). Default:
 # detected, as %USERPROFILE%\\Games\\Age of Empires 2 DE on Windows, or on
 # Linux as the Proton prefix beside aoe2de_install's Steam library
 # (steamapps/compatdata/{content_roots.AOE2DE_STEAM_APP_ID}/pfx/drive_c/users/steamuser/Games/...).
@@ -225,6 +228,15 @@ stack_badges: true
 # badge inside the tile; above is the original look.
 # Default: {settings.STACK_BADGE_POSITION_DEFAULT}.
 stack_badge_position: {settings.STACK_BADGE_POSITION_DEFAULT}
+
+# How Terrain mode's picker shows terrains, switched by the List/Grid buttons
+# beside its filter box: {_TERRAIN_PICKER_MODE_IDS}. Anything else falls back to the
+# default on read. Default: {settings.TERRAIN_PICKER_MODE_DEFAULT}.
+terrain_picker_mode: {settings.TERRAIN_PICKER_MODE_DEFAULT}
+
+# The terrain grid's swatch size in px, Settings > Appearance: {_TERRAIN_GRID_SWATCH_SIZES}.
+# Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.
+terrain_grid_swatch_px: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}
 
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.

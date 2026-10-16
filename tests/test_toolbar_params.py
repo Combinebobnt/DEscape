@@ -127,6 +127,54 @@ def test_tool_param_visibility_matches_active_tool(tool: str) -> None:
         window.close()
 
 
+@pytest.mark.parametrize("tool", list(_EXPECTED_PARAM))
+def test_thickness_shows_for_an_outline_shape_on_a_brush_tool_only(tool: str) -> None:
+    """TASK-257: Thickness is visible and enabled iff the brush is and the shape is an outline."""
+    from descape import brush
+
+    window = conftest.terrain_edit_window()
+    try:
+        window._on_tool_selected(tool)
+        expected_brush = _expected_brush(tool, window)
+        for shape in brush.BRUSH_SHAPES:
+            window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(shape))
+            expected = expected_brush and shape in brush.OUTLINE_SHAPES
+            assert window.brush_thickness_spin_action.isVisible() == expected, (tool, shape)
+            assert window.brush_thickness_label_action.isVisible() == expected, (tool, shape)
+            assert window.brush_thickness_spin.isEnabled() == expected, (tool, shape)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_shape_combo_lists_every_shape_and_the_line_labels_follow_the_view() -> None:
+    from descape import brush
+
+    window = conftest.terrain_edit_window()
+    try:
+        combo = window.brush_shape_combo
+        assert [combo.itemData(i) for i in range(combo.count())] == list(brush.BRUSH_SHAPES)
+        assert combo.currentIndex() == 0
+
+        def lines() -> list[str]:
+            return [combo.itemText(combo.findData(s)) for s in (brush.BRUSH_SHAPE_LINE_X, brush.BRUSH_SHAPE_LINE_Y)]
+
+        assert window._terrain_style == "stepped"
+        assert lines() == ["Line /", "Line \\"]
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        assert lines() == ["Line -", "Line |"]
+        # Flat with Isometric View on renders through the isometric path, so the lines are diagonals again.
+        window.iso_action.setChecked(True)
+        assert lines() == ["Line /", "Line \\"]
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Stepped")
+        assert lines() == ["Line /", "Line \\"]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def _placement_boxes(window) -> tuple[bool, bool]:
     return window.unrestricted_param_action.isVisible(), window.off_grid_param_action.isVisible()
 

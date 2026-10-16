@@ -231,6 +231,121 @@ def test_off_map_player_owned_forage_bush_is_still_reported() -> None:
     assert _unit_keys(map_analysis.check_gaia_only_ownership, loaded) == [(2, 300)]
 
 
+# -- objects in invalid positions (GH #173) ----------------------------------------
+
+_FISHING_SHIP, _BRIDGE_MIDDLE, _MAP_REVEALER, _STONE_WALL = 13, 606, 837, 117
+_WATER_DEEP, _BEACH = 22, 2
+
+
+@pytest.fixture
+def _no_install_env(monkeypatch):
+    """Messages are asserted by name, and AOE2DE_INSTALL_PATH would swap in the install's."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
+def _rows(check, loaded) -> list[tuple[tuple[int, int] | None, str, tuple[int, int] | None]]:
+    return [(f.unit_key, f.severity, f.tile) for f in check(loaded).findings]
+
+
+def _set_terrain(loaded, terrain_id: int, tiles) -> None:
+    for x, y in tiles:
+        _tile(loaded, x, y).terrain_id = terrain_id
+
+
+@pytest.mark.usefixtures("_no_install_env")
+def test_a_unit_on_deep_water_is_one_warning() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_units_on_wrong_terrain(loaded).is_clean
+    _set_terrain(loaded, _WATER_DEEP, [(20, 20)])
+    result = map_analysis.check_units_on_wrong_terrain(loaded)
+    assert _rows(map_analysis.check_units_on_wrong_terrain, loaded) == [((2, 300), "warning", (20, 20))]
+    assert result.findings[0].message == "Player 2 unit 4 (id 300) at (20.5, 20.5): Archer can't stand on Water Deep"
+
+
+@pytest.mark.usefixtures("_no_install_env")
+def test_a_fishing_ship_is_reported_on_grass_and_clean_on_water() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 300, _FISHING_SHIP, 20.5, 20.5)
+    result = map_analysis.check_units_on_wrong_terrain(loaded)
+    assert [f.unit_key for f in result.findings] == [(2, 300)]
+    assert result.findings[0].message.endswith(": Fishing Ship can't stand on Grass 1")
+    _set_terrain(loaded, _WATER_DEEP, [(20, 20)])
+    assert map_analysis.check_units_on_wrong_terrain(loaded).is_clean
+
+
+def test_garrisoned_and_off_map_units_are_not_on_wrong_terrain() -> None:
+    """Villager 203 is inside House 200 at (12.5, 10.5): it stands wherever its host does."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _set_terrain(loaded, _WATER_DEEP, [(12, 10)])
+    assert map_analysis.check_units_on_wrong_terrain(loaded).is_clean
+    _flood_with_water(loaded)
+    _unit(loaded, 300).x = -3.5
+    # Archer 201 stands on House 200's foundation, which a land unit passes.
+    assert [f.unit_key for f in map_analysis.check_units_on_wrong_terrain(loaded).findings] == [(2, 301)]
+
+
+def test_a_unit_on_a_bridge_over_shallow_water_is_clean_until_the_bridge_goes() -> None:
+    """The bridge at (21, 20.5) covers tiles 20..21 x 19..21: Archer 300 and Villager 301 stand on it."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _set_terrain(loaded, _WATER, [(x, y) for x in range(19, 23) for y in range(18, 23)])
+    _place(loaded, 102, _BRIDGE_MIDDLE, 21.0, 20.5)
+    assert map_analysis.check_units_on_wrong_terrain(loaded).is_clean
+    _unit(loaded, 102).unit_const = _STONE_WALL
+    assert [f.unit_key for f in map_analysis.check_units_on_wrong_terrain(loaded).findings] == [(2, 300), (2, 301)]
+
+
+def test_a_house_on_water_is_not_a_unit_finding() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _set_terrain(loaded, _WATER_DEEP, [(10, 11)])  # under House 200, not under Archer 201 at (11, 10)
+    assert map_analysis.check_units_on_wrong_terrain(loaded).is_clean
+    assert [f.unit_key for f in map_analysis.check_buildings_on_wrong_terrain(loaded).findings] == [(1, 200)]
+
+
+@pytest.mark.usefixtures("_no_install_env")
+def test_a_house_with_one_beach_footprint_tile_is_one_info() -> None:
+    """House 200 at (10.5, 10.5) is drawn on tiles 10..11 x 10..11."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_buildings_on_wrong_terrain(loaded).is_clean
+    _set_terrain(loaded, _BEACH, [(10, 11)])
+    result = map_analysis.check_buildings_on_wrong_terrain(loaded)
+    assert _rows(map_analysis.check_buildings_on_wrong_terrain, loaded) == [((1, 200), "info", (10, 10))]
+    assert result.findings[0].message == "Player 1 building 70 (id 200) at (10.5, 10.5): House can't stand on Beach"
+    assert map_analysis.check_units_on_wrong_terrain(loaded).is_clean
+
+
+@pytest.mark.usefixtures("_no_install_env")
+def test_the_fixture_archer_overlapping_its_house_is_the_one_overlap() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    result = map_analysis.check_overlapping_units(loaded)
+    assert _rows(map_analysis.check_overlapping_units, loaded) == [((1, 201), "info", (11, 10))]
+    assert result.findings[0].message == (
+        "Player 1 unit 4 (id 201) at (11.5, 10.5) overlaps House (Player 1) at (10.5, 10.5)"
+    )
+
+
+def test_two_units_on_one_point_give_one_finding_each() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _unit(loaded, 301).x = 20.5
+    keys = [f.unit_key for f in map_analysis.check_overlapping_units(loaded).findings]
+    assert keys == [(1, 201), (2, 300), (2, 301)]
+
+
+def test_a_unit_on_a_map_revealer_does_not_overlap_it() -> None:
+    """Map Revealers are invisible: solid for Place Unit, not a blocker here."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 102, _MAP_REVEALER, 20.5, 20.5)
+    assert [f.unit_key for f in map_analysis.check_overlapping_units(loaded).findings] == [(1, 201)]
+
+
+def test_a_garrisoned_unit_neither_overlaps_nor_blocks() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _unit(loaded, 203).x, _unit(loaded, 203).y = 20.5, 20.5  # still garrisoned in House 200
+    assert [f.unit_key for f in map_analysis.check_overlapping_units(loaded).findings] == [(1, 201)]
+
+
 # -- elevation ------------------------------------------------------------------
 
 
@@ -510,3 +625,10 @@ def test_shipping_scenarios_have_no_off_grid_building_warning(scenario_path: Pat
 def test_shipping_scenarios_have_no_player_owned_gaia_only_object(scenario_path: Path) -> None:
     loaded = load_map_and_units(scenario_path)
     assert [f.message for f in map_analysis.check_gaia_only_ownership(loaded).findings] == []
+
+
+@pytest.mark.corpus
+def test_shipping_scenarios_have_no_unit_on_wrong_terrain(scenario_path: Path) -> None:
+    """GH #173: the WARNING row. 0 of 21 examples/ files on 2026-10-13."""
+    loaded = load_map_and_units(scenario_path)
+    assert [f.message for f in map_analysis.check_units_on_wrong_terrain(loaded).findings] == []

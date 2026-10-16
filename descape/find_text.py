@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from descape.scenario_io import is_workshop_subscribed, names_workshop_subscribed
+from descape.scenario_io import is_workshop_subscribed, names_workshop_subscribed, resolve_detecting_loops
 from descape.scenario_write import WriteBlockedError
 
 
@@ -40,8 +40,8 @@ def refuse_forbidden_path(path: Path | str) -> Path:
     resolved = None
     if not names_workshop_subscribed(path):
         try:
-            resolved = path.resolve()
-        except (OSError, RuntimeError) as e:
+            resolved = resolve_detecting_loops(path)
+        except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
             raise WriteBlockedError(
                 f"Refusing to write to a path that cannot be resolved ({e}), so it can't be"
                 f" shown to be outside a subscribed-mods (mods/subscribed/) folder: {path}"

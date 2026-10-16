@@ -1,8 +1,10 @@
 """The two restrictions "Free placement" lifts (GH #176/#177, GH #174): the
 terrain an object may stand on and the objects it may not overlap. Qt-free.
 viewer.py asks refusal() for a Place Unit click and move_refusal() for a
-drag-move, and nothing else does: wall runs, nudges, Scatter, paste and the
-batch API stay unrestricted.
+drag-move: wall runs, nudges, Scatter, paste and the batch API stay
+unrestricted. Map Analysis (GH #173) is the second reader: it applies
+terrain_refusal() and BlockerGrid to the units a file already holds, and only
+it passes laid_terrain(), so a unit on a bridge is not on water there.
 
 Both rules read the game's own .dat, committed in object_catalog.json.
 
@@ -24,7 +26,12 @@ _PASSABLE_BUILDING_CLASSES names the ones that really are passable; the 15
 Town Centers and the Wonder shell (class 3) stay solid, since the game
 obstructs them through annexes; and the rest (trophies, spawners, empty
 annexes) are 1x1 with no clearance, so they have no shape either way. Fish
-have obstruction 0 and are not buildings, so fish and farms both stack.
+have obstruction 0 and are not buildings, so fish and farms both stack. A
+class-14 doodad with a footprint (DOODAD_TILE_SPANS: mountains, ruins,
+TASK-134) keeps its clearance box rather than its span: it is the game's own
+rule, equals the span for 35 of the 46, and is what lets mountains overlap as
+real maps have them (a mountain's box is 4x4 inside its 6x6 footprint). The
+terrain rule reads the whole drawn footprint, as for every object.
 
 Unknown data never refuses: a const or a terrain id the catalog lacks passes.
 Units a Filters toggle hides still block, as in wall_run.blocked_tiles(), and
@@ -37,7 +44,14 @@ import math
 from functools import lru_cache
 
 from descape import object_catalog, render, terrain_catalog
-from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, name_for_terrain_id, tile_span
+from descape.terrain_palette import (
+    BUILDING_TILE_OFFSETS,
+    BUILDING_TILE_SPANS,
+    DOODAD_TILE_SPANS,
+    FOUNDATION_TERRAIN,
+    name_for_terrain_id,
+    tile_span,
+)
 from descape.unit_filter import GAIA_PLAYER_ID
 
 # The .dat's Beach restriction row. No object uses it; it is what "a shore" widens to.
@@ -83,9 +97,29 @@ def _terrain_name(terrain_id: int) -> str:
 # --- terrain -------------------------------------------------------------------
 
 
-def _footprint_refusal(scenario, unit_const: int, tiles) -> str | None:
+def laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
+    """tile -> the foundation terrain ids (FOUNDATION_TERRAIN) of the
+    buildings standing on it, garrisoned ones excluded. A bridge lays 28
+    (`Water 2D, Bridge`), which the land rows pass, over the shallow water or
+    beach a file stores under it. No corpus mobile unit stands on a bridge
+    tile, so what this changes rests on the .dat, not on a measurement."""
+    mm = scenario.map_manager
+    laid: dict[tuple[int, int], set[int]] = {}
+    for units in scenario.unit_manager.units:
+        for unit in units:
+            terrain_id = FOUNDATION_TERRAIN.get(unit.unit_const)
+            if terrain_id is None or unit.garrisoned_in_id != -1:
+                continue
+            tiles = render.occupied_tiles_for(unit.unit_const, unit.x, unit.y, mm.map_width, mm.map_height)
+            for tile in tiles or ():
+                laid.setdefault(tile, set()).add(terrain_id)
+    return {tile: frozenset(ids) for tile, ids in laid.items()}
+
+
+def _footprint_refusal(scenario, unit_const: int, tiles, laid=None) -> str | None:
     """The first footprint tile whose terrain `unit_const`'s restriction row
-    does not pass, as a message, or None."""
+    does not pass, as a message, or None. A tile whose stored terrain is
+    refused still passes when `laid` (laid_terrain()) holds one the row passes."""
     passable = _restrictions().get(_objects().get(unit_const, {}).get("restriction"))
     if passable is None:
         return None
@@ -94,6 +128,8 @@ def _footprint_refusal(scenario, unit_const: int, tiles) -> str | None:
     for tx, ty in tiles:
         terrain_id = mm.terrain[ty * mm.map_width + tx].terrain_id
         if terrain_id in known and terrain_id not in passable:
+            if laid and not passable.isdisjoint(laid.get((tx, ty), ())):
+                continue
             return f"{object_catalog.display_name(unit_const)} can't stand on {_terrain_name(terrain_id)}"
     return None
 
@@ -123,14 +159,15 @@ def _shore_refusal(scenario, unit_const: int, tiles) -> str | None:
     return f"{object_catalog.display_name(unit_const)} needs a beach tile beside it"
 
 
-def terrain_refusal(scenario, unit_const: int, x: float, y: float) -> str | None:
+def terrain_refusal(scenario, unit_const: int, x: float, y: float, laid=None) -> str | None:
     """Why `unit_const` cannot stand at (x, y) on this map's terrain, or None.
-    An off-map point is not this rule's to refuse."""
+    An off-map point is not this rule's to refuse. `laid` is laid_terrain()'s
+    map; refusal() passes none, so Place Unit and Move ignore foundations."""
     mm = scenario.map_manager
     tiles = render.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
     if tiles is None:
         return None
-    return _footprint_refusal(scenario, unit_const, tiles) or _shore_refusal(scenario, unit_const, tiles)
+    return _footprint_refusal(scenario, unit_const, tiles, laid) or _shore_refusal(scenario, unit_const, tiles)
 
 
 # --- objects -------------------------------------------------------------------
@@ -154,7 +191,7 @@ def _shape(unit_const: int):
     offsets = BUILDING_TILE_OFFSETS.get(unit_const)
     if offsets is not None:
         return span, offsets, None
-    if span != render.NON_BUILDING_SPAN:
+    if span != render.NON_BUILDING_SPAN and unit_const not in DOODAD_TILE_SPANS:
         # DEscape's span, not clearance: 2 * clearance equals it for 419 of 491 buildings, and gates differ.
         return span, None, (span[0] / 2, span[1] / 2)
     clearance = entry.get("clearance")
@@ -182,8 +219,9 @@ def boxes(unit_const: int, x: float, y: float) -> tuple[Box, ...]:
     obstruction_type) or membership of BUILDING_TILE_SPANS, minus
     _PASSABLE_BUILDING_CLASSES. Fish are neither, so they stack. A diagonal
     gate is one unit square per footprint tile; any other footprint wider
-    than 1x1 is one box of its span centred on (x, y); everything else is
-    its `clearance` box, and nothing when that is zero (birds, butterflies).
+    than 1x1 is one box of its span centred on (x, y), except a doodad's;
+    everything else, doodads included, is its `clearance` box, and nothing
+    when that is zero (birds, butterflies).
     """
     return _boxes_for(_shape(unit_const), x, y)
 

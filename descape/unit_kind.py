@@ -111,14 +111,13 @@ GH #149 collision probe, not yet run):
 A mismatch there moves that const across the rule with an explicit exception
 list here, not a change of basis.
 
-**Known limitation:** wall_run.blocked_tiles() treats an obstacle as
-occupying only its 1x1 anchor tile, the footprint every non-building gets
-(tile_span(..., NON_BUILDING_SPAN)) apart from the cliffs, blockers and
-deep-water fish that have span tables of their own. About 25 of the 131 are bigger: 3x3
-mountains, the 2.5-tile Theatre and Stonehenge, the 2x2 CastleRuins and MRKT,
-the 1.5-tile ruins and burned buildings. A wall run can pass through their
-outer tiles until obstacles get real spans (gen_unit_render_data.py's span
-tables, which would also change drawing and picking).
+**Footprints (TASK-134):** wall_run.blocked_tiles() blocks an obstacle's
+whole footprint, tile_span(). 44 of the 131 are wider than 1x1 through
+terrain_palette.DOODAD_TILE_SPANS (gen_unit_render_data.py's "doodad_spans",
+a class-14 collision_size rule): 6x6 mountains, the 5x5 Theatre and
+Stonehenge, the 4x4 CastleRuins and MRKT, 3x3 and 2x2 ruins, rock formations
+and burned buildings. The other two doodads with a span, PandaRock 2082 and
+HowlerMonkey 2585, are type 20 and not obstacles. The rest stay 1x1.
 
 ## invisible_consts(): no .dat standing graphic, 115 consts
 

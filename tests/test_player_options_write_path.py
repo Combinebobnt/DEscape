@@ -672,3 +672,128 @@ def test_a_count_edit_leaves_the_rest_of_the_header_alone(tmp_path: Path, _loade
     assert len(written) == len(loaded.header_bytes)
     assert written[:start] == loaded.header_bytes[:start]
     assert written[end:] == loaded.header_bytes[end:]
+
+
+# -- GH #126 follow-ups: Player Type (player_data_1.human) --------------------
+#
+# Every test runs on a mixed-length player_data_1 (test_player_write_path's
+# fixture): on the blank donors every entry has one length, so a wrong
+# _array_target() route would stay green there.
+
+
+def _mixed(tmp_path: Path):
+    from test_player_write_path import mixed_length_player_data_1
+
+    return mixed_length_player_data_1(tmp_path)
+
+
+def _every_value(loaded) -> dict[tuple[str, int], int | str]:
+    """_all_player_values() plus GAIA's own rows."""
+    values = _all_player_values(loaded)
+    for spec in player_fields.specs_for_player(loaded, 0):
+        values[(spec.field_id, 0)] = player_fields.current_value(loaded, spec, 0)
+    return values
+
+
+def _human(loaded, player_id: int) -> int:
+    spec = next(s for s in player_fields.specs_for(loaded) if s.field_id == "human")
+    return player_fields.current_value(loaded, spec, player_id)
+
+
+def test_player_type_round_trips_either_computer_either(tmp_path: Path) -> None:
+    source = _mixed(tmp_path)
+    loaded = load_map_and_units(source)
+    assert _human(loaded, 3) == 1
+    model = OptionsEditModel(loaded)
+    model.set_value("player:human:3", 0)
+    computer = tmp_path / "computer.aoe2scenario"
+    write_scenario(loaded, computer, options=model, backup=False)
+
+    reloaded = load_map_and_units(computer)
+    assert _human(reloaded, 3) == 0
+    assert players_write_supported(reloaded)
+    model = OptionsEditModel(reloaded)
+    assert model.original_value("player:human:3") == 0
+    model.set_value("player:human:3", 1)
+    either = tmp_path / "either.aoe2scenario"
+    write_scenario(reloaded, either, options=model, backup=False)
+    assert _written_body(either) == _written_body(source)
+
+
+def test_a_player_type_edit_changes_only_its_own_four_bytes(tmp_path: Path) -> None:
+    """Every other player, GAIA, and P3's other player_data_1 fields stay byte-identical."""
+    loaded = load_map_and_units(_mixed(tmp_path))
+    (target,) = player_fields.write_targets(loaded)["player:human:3"]
+    base = tmp_path / "base.aoe2scenario"
+    write_scenario(loaded, base, backup=False)
+    model = OptionsEditModel(loaded)
+    model.set_value("player:human:3", 0)
+    edited = tmp_path / "edited.aoe2scenario"
+    write_scenario(loaded, edited, options=model, backup=False)
+
+    ranges = _differing_ranges(_written_body(base), _written_body(edited))
+    assert ranges, "no bytes changed"
+    for start, end in ranges:
+        assert target.offset <= start and end <= target.offset + target.length
+
+
+@pytest.mark.parametrize("civ_player", [3, 2], ids=["other-player", "same-player"])
+def test_a_player_type_and_a_civ_edit_in_one_save_both_land(civ_player: int, tmp_path: Path) -> None:
+    """The in-place `human` patch runs before player_data_1_splice(), which
+    rebuilds the array from the patched body, so neither edit drops the other."""
+    loaded = load_map_and_units(_mixed(tmp_path))
+    before = _every_value(loaded)
+    model = OptionsEditModel(loaded)
+    model.set_value("player:human:2", 0)
+    model.set_value(f"player:civilization:{civ_player}", "MIRROR-RANDOM-CIV")
+    out = tmp_path / "both.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+
+    reloaded = load_map_and_units(out)
+    assert players_write_supported(reloaded)
+    after = _every_value(reloaded)
+    changed = {("human", 2): 0, ("civilization", civ_player): "MIRROR-RANDOM-CIV"}
+    for key, value in before.items():
+        assert after[key] == changed.get(key, value), key
+
+
+@pytest.mark.corpus
+def test_a_player_type_edit_round_trips_on_ring75(tmp_path: Path) -> None:
+    """A real mixed-length 1.56+ file, whose P2 stores Computer (0)."""
+    if not _STR16_CIV_PATH.exists():
+        pytest.skip("examples/ corpus not present")
+    loaded = load_map_and_units(_STR16_CIV_PATH)
+    entries = loaded._scenario.sections["DataHeader"].retriever_map["player_data_1"].data
+    assert len({e.byte_length for e in entries}) > 1
+    before = _every_value(loaded)
+    assert before[("human", 2)] == 0
+    model = OptionsEditModel(loaded)
+    model.set_value("player:human:2", 1)
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model, backup=False)
+
+    reloaded = load_map_and_units(out)
+    assert players_write_supported(reloaded)
+    after = _every_value(reloaded)
+    for key, value in before.items():
+        assert after[key] == (1 if key == ("human", 2) else value), key
+
+
+def test_an_unknown_stored_player_type_survives_an_unrelated_save(tmp_path: Path) -> None:
+    """A value other than 0/1 (none in the corpus) is kept verbatim, as the
+    panel's "unknown (v)" row shows it, until the user picks Either or Computer."""
+    loaded = load_map_and_units(_mixed(tmp_path))
+    model = OptionsEditModel(loaded)
+    model.set_value("player:human:4", 7)
+    odd = tmp_path / "odd.aoe2scenario"
+    write_scenario(loaded, odd, options=model, backup=False)
+
+    reloaded = load_map_and_units(odd)
+    assert _human(reloaded, 4) == 7
+    model = OptionsEditModel(reloaded)
+    model.set_value("player:human:3", 0)
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(reloaded, out, options=model, backup=False)
+    final = load_map_and_units(out)
+    assert _human(final, 4) == 7
+    assert _human(final, 3) == 0

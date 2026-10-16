@@ -38,8 +38,9 @@ class TerrainPanel(QWidget):
     MIN_USEFUL_WIDTH = FontScaledWidth(440)
 
     terrain_changed = pyqtSignal(int)
+    display_mode_changed = pyqtSignal(str)  # the List/Grid buttons (GH #161), "list" or "grid"
 
-    def __init__(self, current_id: int | None = None, parent=None):
+    def __init__(self, current_id: int | None = None, parent=None, *, display_mode: str = "list", swatch_px: int = 48):
         super().__init__(parent)
         # Never None past here: an empty default_group expands every group and decodes all 85 textures.
         current_id = default_terrain_id() if current_id is None else current_id
@@ -51,11 +52,13 @@ class TerrainPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.view = TerrainPickerView(current_id)
+        self.view = TerrainPickerView(current_id, display_mode=display_mode, swatch_px=swatch_px)
         self.view.filter_edit.setPlaceholderText("Filter terrains…")
         # ClickFocus, as UnitsPanel's catalog: a focus-follows-click tree would eat MapView's arrow keys.
         self.view.tree.setFocusPolicy(Qt.ClickFocus)
+        self.view.grid.setFocusPolicy(Qt.ClickFocus)
         self.view.current_changed.connect(self._on_current_changed)
+        self.view.display_mode_changed.connect(self.display_mode_changed.emit)
         layout.addWidget(self.view, stretch=1)
 
         self.note_label = QLabel(SHARED_TEXTURE_NOTE)
@@ -108,6 +111,17 @@ class TerrainPanel(QWidget):
             self._terrain_id = terrain_id
             self.terrain_changed.emit(terrain_id)
         return True
+
+    # -- presentation ----------------------------------------------------------
+
+    def display_mode(self) -> str:
+        return self.view.display_mode()
+
+    def set_display_mode(self, mode: str) -> None:
+        self.view.set_display_mode(mode)
+
+    def set_grid_swatch_px(self, px: int) -> None:
+        self.view.set_grid_swatch_px(px)
 
     # -- hover readout -------------------------------------------------------
 

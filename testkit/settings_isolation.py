@@ -82,6 +82,8 @@ MEMOIZED_GLOBALS = (
     "_trigger_status_color_ok_rows",
     "_terrain_style",
     "_view_layers",
+    "_terrain_picker_mode",
+    "_terrain_grid_swatch_px",
 )
 
 

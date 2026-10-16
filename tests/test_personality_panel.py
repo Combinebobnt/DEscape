@@ -159,6 +159,30 @@ def test_an_unresolvable_ai_is_refused_and_its_row_disabled(fake_roots) -> None:
         conftest.close_window(window)
 
 
+def test_a_custom_rows_tooltip_names_its_folder(fake_roots) -> None:
+    """GH #126 follow-up: a unique name's label carries no source, so the tooltip
+    does; a disabled row keeps its reason first."""
+    from PyQt5.QtCore import Qt
+
+    install, mod = fake_roots
+    window = _players_window()
+    try:
+        combo = _combo(window)
+        unique = combo.findData(_key(window, LONG_NAME))
+        assert combo.itemText(unique) == LONG_NAME
+        assert combo.itemData(unique, Qt.ToolTipRole) == f"From {mod.label}: {mod.common / 'ai' / LONG_NAME}"
+        broken = combo.findData(_key(window, "Broken.ai"))
+        _pick(window, _key(window, "Broken.ai"))
+        combo = _combo(window)
+        tip = combo.itemData(broken, Qt.ToolTipRole)
+        assert tip.startswith("Cannot be used: Broken.ai: missing include missing.per")
+        assert tip.endswith(f"\nFrom Install: {install.common / 'ai' / 'Broken.ai'}")
+        for key in (ai_scripts.KEY_STANDARD, ai_scripts.KEY_NONE):
+            assert not combo.itemData(combo.findData(key), Qt.ToolTipRole)
+    finally:
+        conftest.close_window(window)
+
+
 def test_custom_rows_are_disabled_when_the_library_does_not_verify(fake_roots, monkeypatch) -> None:
     import descape.viewer as viewer_module
 

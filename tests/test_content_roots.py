@@ -1,6 +1,7 @@
 """descape/content_roots.py: install/profile/mod discovery against fake trees
 under tmp_path. _isolated_settings (conftest.py, autouse) redirects
-CONFIG_PATH, so a test sees no config unless it writes one."""
+CONFIG_PATH and drops AOE2DE_PROFILE_PATH, so a test sees no config and no
+profile override unless it sets one."""
 
 from __future__ import annotations
 
@@ -9,7 +10,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 from descape import asset_source, content_roots
@@ -25,9 +25,10 @@ from descape.content_roots import (
 roots_of = content_roots.content_roots
 
 
-@pytest.fixture(autouse=True)
-def _no_profile_env(monkeypatch):
-    monkeypatch.delenv(content_roots.PROFILE_ENV_VAR, raising=False)
+def test_conftest_drops_the_profile_env_var() -> None:
+    import os
+
+    assert content_roots.PROFILE_ENV_VAR not in os.environ
 
 
 def _touch(path: Path, data: bytes = b"") -> Path:
@@ -187,6 +188,69 @@ def test_profile_path_windows(tmp_path, monkeypatch):
     assert profile_path(None, platform="win32") is None
     target.mkdir(parents=True)
     assert profile_path(None, platform="win32") == target
+
+
+def _write_config(**keys) -> None:
+    asset_source.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    asset_source.CONFIG_PATH.write_text(yaml.safe_dump(keys))
+
+
+def test_profile_source_auto_and_none(tmp_path):
+    install = _install(tmp_path)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_NONE, None)
+    _profile(tmp_path).mkdir(parents=True)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_AUTO, None)
+
+
+def test_profile_source_config_then_env_beats_it(tmp_path, monkeypatch):
+    install = _install(tmp_path)
+    _profile(tmp_path).mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    _write_config(aoe2de_profile=str(cfg_dir))
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_CONFIG, str(cfg_dir))
+    monkeypatch.setenv(content_roots.PROFILE_ENV_VAR, str(env_dir))
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_ENV, str(env_dir))
+
+
+def test_profile_source_invalid_explicit_paths(tmp_path, monkeypatch):
+    """An explicit non-folder never falls through to auto-detect, so it is reported as such."""
+    install = _install(tmp_path)
+    _profile(tmp_path).mkdir(parents=True)
+    missing = str(tmp_path / "missing")
+    _write_config(aoe2de_profile=missing)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_CONFIG_INVALID, missing)
+    assert profile_path(install, platform="linux") is None
+    monkeypatch.setenv(content_roots.PROFILE_ENV_VAR, missing)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_ENV_INVALID, missing)
+
+
+def test_skipped_mods_lists_disabled_mods_that_exist(tmp_path):
+    _install_dir, profile = _full_tree(tmp_path)
+    status_path = profile / "7656" / "mods" / "mod-status.json"
+    status = json.loads(status_path.read_text())
+    status["Mods"].append({"Enabled": False, "Path": "subscribed//78_Gone"})  # not on disk
+    status["Mods"].append({"Enabled": False, "Path": "local//Local Thing"})
+    _touch(status_path, json.dumps(status).encode())
+    assert content_roots.skipped_mods(profile) == [("local", "Local Thing"), ("subscribed", "34_Off AI")]
+    kept = {r.mod_id for r in roots_of(_install_dir, profile) if r.mod_id}
+    assert kept.isdisjoint({"34_Off AI", "Local Thing"})
+
+
+def test_skipped_mods_none_without_a_status_file(tmp_path):
+    _install_dir, profile = _full_tree(tmp_path)
+    (profile / "7656" / "mods" / "mod-status.json").unlink()
+    assert content_roots.skipped_mods(profile) == []
+    assert content_roots.skipped_mods(tmp_path / "missing") == []
+
+
+def test_has_profile_ids(tmp_path):
+    _install_dir, profile = _full_tree(tmp_path)
+    assert content_roots.has_profile_ids(profile)
+    assert not content_roots.has_profile_ids(profile / "logs")
+    assert not content_roots.has_profile_ids(tmp_path / "missing")
 
 
 _WRITE_CALLS = re.compile(

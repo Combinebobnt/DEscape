@@ -17,6 +17,8 @@ from descape.scenario_io import load_map_and_units
 from descape.scenario_write import WriteBlockedError
 from descape.terrain_palette import TREE_UNIT_IDS
 
+import conftest
+
 UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
 _ARCHER = 4
@@ -215,6 +217,19 @@ def test_csv_refuses_mods_subscribed(tmp_path) -> None:
     with pytest.raises(WriteBlockedError):
         find_objects.rows_to_csv(_find(_scene()), target)
     assert not target.exists()
+
+
+@pytest.mark.parametrize("py313_resolve", [False, True])
+def test_csv_refuses_a_looped_path(tmp_path, monkeypatch, py313_resolve) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    loop = conftest.symlink_loop(out)
+    rows = _find(_scene())
+    if py313_resolve:
+        conftest.resolve_like_py313(monkeypatch)
+    with pytest.raises(WriteBlockedError, match="cannot be resolved"):
+        find_objects.rows_to_csv(rows, loop / "found.csv")
+    assert sorted(p.name for p in out.iterdir()) == ["loop-a", "loop-b"]
 
 
 def test_csv_writes_into_compatdata(tmp_path) -> None:

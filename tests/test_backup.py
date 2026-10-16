@@ -8,6 +8,7 @@ blocked save leaves the document dirty.
 
 from __future__ import annotations
 
+import errno
 import shutil
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 import descape.backup as backup_module
 from descape.backup import BackupFailedError, bak_path, make_backups, orig_path
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
-from descape.scenario_io import TEMPLATE_DIR, load_map_and_units, names_workshop_subscribed
+from descape.scenario_io import TEMPLATE_DIR, load_map_and_units, names_workshop_subscribed, resolve_detecting_loops
 from descape.scenario_write import WriteBlockedError, write_scenario
 
 import conftest
@@ -248,6 +249,51 @@ def test_a_looped_save_path_is_refused_with_zero_backups(tmp_path) -> None:
     for p in (a, b):
         assert not bak_path(p).exists() and not bak_path(p).is_symlink()
         assert not orig_path(p).exists() and not orig_path(p).is_symlink()
+
+
+def test_a_looped_save_path_is_refused_when_resolve_does_not_raise(tmp_path, monkeypatch) -> None:
+    """Python 3.13+ semantics: non-strict resolve() returns a loop unresolved
+    instead of raising. Pins the stat() check on 3.11, where a real loop raises anyway."""
+    a, b = tmp_path / "a.aoe2scenario", tmp_path / "b.aoe2scenario"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    s = load_map_and_units(FIXTURE_PATH)
+    _flip_one_tile(s)
+
+    conftest.resolve_like_py313(monkeypatch)
+    with pytest.raises(WriteBlockedError, match="cannot be resolved"):
+        write_scenario(s, a)
+    assert a.is_symlink() and b.is_symlink()
+    for p in (a, b):
+        assert not bak_path(p).exists() and not bak_path(p).is_symlink()
+        assert not orig_path(p).exists() and not orig_path(p).is_symlink()
+
+
+@pytest.mark.parametrize("py313_resolve", [False, True])
+def test_resolve_detecting_loops_raises_on_every_loop_shape(tmp_path, monkeypatch, py313_resolve) -> None:
+    """Bare, with a missing tail (the Save As case), and with a ".." after the
+    loop, which 3.13+ resolve() applies as text to land on a plain missing path."""
+    a = conftest.symlink_loop(tmp_path)
+    if py313_resolve:
+        conftest.resolve_like_py313(monkeypatch)
+    for path in (a, a / "new.aoe2scenario", a / ".." / "new.aoe2scenario"):
+        with pytest.raises((OSError, RuntimeError)) as info:  # 3.11's real resolve() raises RuntimeError first
+            resolve_detecting_loops(path)
+        if py313_resolve:
+            assert info.value.errno == errno.ELOOP
+
+
+def test_resolve_detecting_loops_returns_a_missing_or_plain_path(tmp_path) -> None:
+    plain = tmp_path / "plain.aoe2scenario"
+    plain.write_bytes(b"")
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path)
+    assert resolve_detecting_loops(plain) == plain.resolve()
+    assert resolve_detecting_loops(tmp_path / "missing" / "new.aoe2scenario") == (
+        tmp_path / "missing" / "new.aoe2scenario"
+    ).resolve()
+    assert resolve_detecting_loops(link / "plain.aoe2scenario") == plain.resolve()
+    assert resolve_detecting_loops(plain / "child.aoe2scenario") == plain.resolve() / "child.aoe2scenario"  # ENOTDIR
 
 
 def test_backup_failure_aborts_the_save(tmp_path, monkeypatch) -> None:

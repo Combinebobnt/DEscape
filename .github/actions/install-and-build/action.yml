@@ -1,0 +1,15 @@
+name: Install dependencies and build the native kernel
+description: >
+  Installs requirements.txt plus requirements-dev.txt (the build set and the
+  test tools, with their pins), then builds the native composite kernel in
+  place. Run after actions/checkout and actions/setup-python.
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+    - name: Build native kernel
+      shell: bash
+      run: python tools/build_native.py

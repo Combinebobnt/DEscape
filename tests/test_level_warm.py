@@ -282,7 +282,12 @@ def test_a_warm_installs_a_flat_icon_layer(sprite_install, mixed_scenario) -> No
 
     _warm(cache, [1]).run_to_completion()
 
-    assert cache._level_icon_layers[1], "installed an empty icon layer -- vacuous"
+    warmed = cache._level_icon_layers[1]
+    assert warmed, "installed an empty icon layer -- vacuous"
+    # The warm walk must take the cache's Farm Overlay value, as _level_icons() does (GH #150).
+    assert cache.layers.farm_overlay and any(draw is render.FLAT_DRAPED for draw in warmed.values())
+    fresh = _flat_cache(mixed_scenario)._level_icons(1)
+    assert {row: _draw_key(d) for row, d in warmed.items()} == {row: _draw_key(d) for row, d in fresh.items()}
 
 
 def test_nothing_is_queued_with_sprites_off(mixed_scenario) -> None:

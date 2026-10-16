@@ -233,25 +233,26 @@ def test_greying_never_mutates_the_state(sprite_install) -> None:
     looks tidy and silently flips the toggle on a style round trip.
 
     Isometric View has to come OFF for the Flat leg: left on (the default),
-    Flat renders through IsoChunkCache and the farm layer stays live, so the
-    greying half of this test would never fire."""
+    Flat renders through IsoChunkCache and Small Trees stays live, so the
+    greying half of this test would never fire. Small Trees, not the farm
+    row, which top-down Flat drapes too since GH #150."""
     window = conftest.blank_window()
     try:
         window.terrain_style_combo.setCurrentText("Stepped")
-        window.layer_actions[FARM_LAYER].setChecked(False)
-        assert window._layers.farm_overlay is False
+        window.layer_actions[SMALL_TREES_LAYER].setChecked(True)
+        assert window._layers.small_trees is True
 
         window.terrain_style_combo.setCurrentText("Flat")
         window.iso_action.setChecked(False)
         assert window._render_style == "flat", "fixture no longer reaches real Flat"
-        assert not window.layer_actions[FARM_LAYER].isEnabled()
-        assert window.layer_actions[FARM_LAYER].isChecked() is False
-        assert window._layers.farm_overlay is False
+        assert not window.layer_actions[SMALL_TREES_LAYER].isEnabled()
+        assert window.layer_actions[SMALL_TREES_LAYER].isChecked() is True
+        assert window._layers.small_trees is True
 
         window.terrain_style_combo.setCurrentText("Stepped")
-        assert window.layer_actions[FARM_LAYER].isEnabled()
-        assert window.layer_actions[FARM_LAYER].isChecked() is False
-        assert window._cache.layers.farm_overlay is False
+        assert window.layer_actions[SMALL_TREES_LAYER].isEnabled()
+        assert window.layer_actions[SMALL_TREES_LAYER].isChecked() is True
+        assert window._cache.layers.small_trees is True
     finally:
         conftest.close_window(window)
 
@@ -321,6 +322,92 @@ def test_the_small_trees_state_survives_a_style_switch(sprite_install) -> None:
             window.terrain_style_combo.setCurrentText(style)
             assert window._layers.small_trees is True, style
             assert window._cache.layers.small_trees is True, style
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_pick_drapes_farms_only_under_the_renders_own_three_gates(sprite_install, style) -> None:
+    """TASK-015: MapView._farms_draped() is the live cache's units shown,
+    sprites on and Farm Overlay on, in Stepped as well as Sloped."""
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        mv = window.map_view
+        assert mv._canvas_item._cache is window._cache
+        window.show_sprites_action.setChecked(True)
+        window.layer_actions[FARM_LAYER].setChecked(True)
+        assert window._cache.with_units and mv._farms_draped() is True
+
+        window.layer_actions[FARM_LAYER].setChecked(False)
+        assert mv._farms_draped() is False
+        window.layer_actions[FARM_LAYER].setChecked(True)
+        window.show_sprites_action.setChecked(False)
+        assert mv._farms_draped() is False
+    finally:
+        conftest.close_window(window)
+
+
+def test_pick_drapes_farms_in_top_down_flat_under_the_same_gates(sprite_install) -> None:
+    """GH #150: top-down Flat drapes too, so pick follows the same gates."""
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.show_sprites_action.setChecked(True)
+        window.layer_actions[FARM_LAYER].setChecked(True)
+        assert window._render_style == "stepped"  # Flat + Isometric View renders through IsoChunkCache
+        assert window.map_view._farms_draped() is True
+        window.iso_action.setChecked(False)
+        assert window._render_style == "flat"
+        assert window.map_view._canvas_item._cache is window._cache
+        assert window.map_view._farms_draped() is True
+        window.layer_actions[FARM_LAYER].setChecked(False)
+        assert window.map_view._farms_draped() is False
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("toggle", ["farm_overlay", "sprites"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_farms_selection_and_hover_follow_a_drape_toggle(sprite_install, style, toggle) -> None:
+    """TASK-015: a draped farm outlines per tile at each tile's own height,
+    so Farm Overlay and Show sprites change its shape on uneven ground. The
+    selection must redraw on the toggle, and the hover must not keep its
+    old path through its same-unit memo on the next move."""
+    from PyQt5.QtGui import QPainterPath
+
+    window = conftest.blank_window()
+    try:
+        mm = window.scenario.map_manager
+        for tile in mm.terrain:
+            tile.elevation = (tile.x // 2 + tile.y // 3) % 3
+        window._ensure_unit_edits().add(1, 50, 60.5, 60.5)
+        window.terrain_style_combo.setCurrentText(style)
+        window.refresh_map()  # the blank template already opens in Stepped
+        window.show_sprites_action.setChecked(True)
+        window.layer_actions[FARM_LAYER].setChecked(True)
+        window._rebuild_unit_index()
+        mv = window.map_view
+        entry = next(e for e in mv._unit_index.entries if e.unit.unit_const == 50)
+        assert mv._farms_draped() is True
+
+        mv.set_unit_selection([entry])
+        mv._update_unit_hover(entry)
+        (outline,) = [group[2] for group in mv._unit_select_groups.values()]
+        draped = QPainterPath(outline.path())
+        assert mv._unit_hover_item.path() == draped
+
+        if toggle == "farm_overlay":
+            window.layer_actions[FARM_LAYER].setChecked(False)
+        else:
+            window.show_sprites_action.setChecked(False)
+        assert mv._farms_draped() is False
+        plain = mv._unit_path(entry)
+        assert plain != draped, "the farm must straddle levels, or the toggle changes nothing to see"
+        (outline,) = [group[2] for group in mv._unit_select_groups.values()]
+        assert outline.path() == plain, "the selection kept the draped outline"
+        mv._update_unit_hover(entry)  # the cursor's next move, still on the farm
+        assert mv._unit_hover_item.path() == plain, "the hover kept the draped outline"
     finally:
         conftest.close_window(window)
 

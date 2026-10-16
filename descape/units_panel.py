@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import random
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QBrush, QFont, QPalette
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QComboBox,
     QDoubleSpinBox,
     QGridLayout,
@@ -44,6 +45,7 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     catalog_thumbs,
+    facing_dial,
     gate_orientation,
     object_catalog,
     place_random,
@@ -78,7 +80,9 @@ _ROTATION_TOOLTIP = (
     "scenery show their graphic variant number instead, and gates their "
     "orientation, 0 to 3 in the order Rotate steps. Walls and cliffs store a "
     "graphic-variant index the game derives itself, and single-frame objects "
-    "have nothing to change: both are shown raw and not editable."
+    "have nothing to change: both are shown raw and not editable. For facings "
+    "and gates, the dial beside the number points the way the unit faces on "
+    "the map: click or drag it to turn, or scroll over it to step."
 )
 
 # GH #186: how a CHOICE row reads its raw value. getattr and capture_flag_of
@@ -130,6 +134,34 @@ _GROUP_VARIANT_NOTE = (
     "Typing a Rotation picks that variant for the {turned} selected {objects} with graphic variants. "
     "The other {skipped} of {total} (walls, cliffs, gates, single-frame objects) keep theirs."
 )
+# GH #154: on X, Y and Z while a group is shown.
+_GROUP_STEP_TOOLTIP = "Arrows move every selected unit by one step. A typed value sets them all."
+
+
+class _CoordSpinBox(QDoubleSpinBox):
+    """X/Y/Z's editor. In a group (GH #154) every step, from the arrows, the
+    keys or the wheel, is reported as a relative `stepped` delta instead of
+    moving the value, so the selection keeps its formation."""
+
+    stepped = pyqtSignal(float)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.relative_steps = False
+
+    def stepBy(self, steps: int) -> None:
+        if not self.relative_steps:
+            super().stepBy(steps)
+            return
+        # Text typed but not committed lands first, as Qt's own stepBy() does.
+        self.interpretText()
+        self.stepped.emit(steps * self.singleStep())
+
+    def stepEnabled(self):
+        # The viewer owns the edge rule; both arrows stay live on the "(mixed)" sentinel.
+        if self.relative_steps and not self.isReadOnly():
+            return QAbstractSpinBox.StepUpEnabled | QAbstractSpinBox.StepDownEnabled
+        return super().stepEnabled()
 
 
 def _rotate_tail(units) -> str:
@@ -196,6 +228,7 @@ class UnitsPanel(QWidget):
         on_garrison_cut=None,
         codec_field_supported=None,
         rng=None,
+        on_unit_field_step=None,
     ):
         super().__init__()
         # GH #164: rolls a random pick's real const; injectable so a test can seed it.
@@ -213,6 +246,8 @@ class UnitsPanel(QWidget):
         # same contract MapOptionsPanel/TriggerPanel/PlayersPanel's
         # callbacks have.
         self._on_unit_field = on_unit_field or (lambda *args: None)
+        # GH #154: a group's X/Y/Z step, as (spec, delta): move every member by delta.
+        self._on_unit_field_step = on_unit_field_step or (lambda *args: None)
         self._on_place_requested = on_place_requested or (lambda *args: None)
         # GH #128: the picked object or the owner changed, so Place Unit's ghost re-resolves.
         self._on_pending_changed = on_pending_changed or (lambda *args: None)
@@ -500,11 +535,24 @@ class UnitsPanel(QWidget):
                 spin = QSpinBox()
                 spin.setWrapping(True)
                 spin.setKeyboardTracking(False)  # see the FLOAT branch below
+                # TASK-023: the dial only drives the spinbox, which stays the one emitter.
+                dial = facing_dial.FacingDial()
+                dial.on_commit = spin.setValue
+                dial.on_step = spin.stepBy
+                # Before _field_changed, and read live: an edit's re-populate may set a newer value.
+                spin.valueChanged.connect(lambda _value: self._sync_rotation_dial_value())
                 spin.valueChanged.connect(
                     lambda value, s=spec: self._field_changed(s, value)
                 )
-                grid.addWidget(spin, row, 1)
+                cell = QWidget()
+                cell_layout = QHBoxLayout(cell)
+                cell_layout.setContentsMargins(0, 0, 0, 0)
+                cell_layout.addWidget(spin, 1)
+                cell_layout.addWidget(dial, 0)
+                grid.addWidget(cell, row, 1)
                 self.unit_field_editors[spec.field_id] = spin
+                self.unit_rotation_dial = dial
+                self.unit_rotation_cell = cell
                 self._mixed_sentinels[spec.field_id] = -1
             elif spec.kind == unit_fields.CHOICE:
                 # GH #186. Never in _mixed_sentinels: a -1 sentinel would swallow
@@ -519,8 +567,8 @@ class UnitsPanel(QWidget):
                 )
                 grid.addWidget(combo, row, 1)
                 self.unit_field_editors[spec.field_id] = combo
-            else:  # FLOAT
-                spin = QDoubleSpinBox()
+            else:  # FLOAT: X, Y or Z
+                spin = _CoordSpinBox()
                 spin.setDecimals(spec.decimals)
                 # Initial only: the map-derived range is applied at populate.
                 spin.setRange(spec.minimum, spec.maximum)
@@ -533,6 +581,7 @@ class UnitsPanel(QWidget):
                 spin.valueChanged.connect(
                     lambda value, s=spec: self._field_changed(s, value)
                 )
+                spin.stepped.connect(lambda delta, s=spec: self._field_stepped(s, delta))
                 grid.addWidget(spin, row, 1)
                 self.unit_field_editors[spec.field_id] = spin
                 self._mixed_sentinels[spec.field_id] = None
@@ -694,8 +743,10 @@ class UnitsPanel(QWidget):
     def show_group(self, entries) -> None:
         """2+ selected units (GH #71): the same grid, each field showing the
         members' common value or "(mixed)". A typed value then applies to
-        every member (ViewerWindow._on_unit_field_changed). Reference ID and
-        Garrisoned in are per-unit only, so their rows are hidden."""
+        every member (ViewerWindow._on_unit_field_changed), while a step on
+        X, Y or Z shifts every member by that step (GH #154, reported through
+        on_unit_field_step). Reference ID and Garrisoned in are per-unit only,
+        so their rows are hidden."""
         # A garrison is per-host, so the block has nothing to say about a
         # 2+ selection (GH #42), like Reference ID and Garrisoned in.
         self.hide_garrison()
@@ -719,6 +770,8 @@ class UnitsPanel(QWidget):
             self._set_group_owner({entry.player_id for entry in entries})
             for field_id, values in coords.items():
                 self._set_group_spin(field_id, values)
+                self.unit_field_editors[field_id].relative_steps = True
+                self.unit_field_editors[field_id].setToolTip(_GROUP_STEP_TOOLTIP)
             self._apply_choice_fields(units)
             self._apply_conditional_fields(units)
         finally:
@@ -743,6 +796,9 @@ class UnitsPanel(QWidget):
                 self._strip_choice_extras(spec)
         for field_id in self._mixed_sentinels:
             self._set_spin_mixed(field_id, False)
+        for field_id in ("x", "y", "z"):
+            self.unit_field_editors[field_id].relative_steps = False
+            self.unit_field_editors[field_id].setToolTip("")
         for field_id in ("reference_id", "garrisoned_in_id"):
             self.unit_field_captions[field_id].setVisible(True)
             self.unit_field_labels[field_id].setVisible(True)
@@ -948,6 +1004,24 @@ class UnitsPanel(QWidget):
                 editor.setRange(editor.minimum(), len(_GATE_ORIENTATION_NAMES) - 1)
                 self._set_group_spin(spec.field_id, [_gate_index(unit) for unit in writable])
                 editor.setToolTip(self._gate_tooltip(writable))
+            # TASK-023: shown and hidden with the spinbox, so a read-only label never sits under an empty cell.
+            self.unit_rotation_cell.setVisible(allowed)
+            dial = self.unit_rotation_dial
+            dial_shown = allowed and mode in ("facing", "gate")
+            dial.setVisible(dial_shown)
+            if dial_shown:
+                dial.set_mode(mode, editor.maximum() + 1)
+                dial.setToolTip(editor.toolTip())
+                self._sync_rotation_dial_value()
+
+    def _sync_rotation_dial_value(self) -> None:
+        """The dial follows the spinbox; its "(mixed)" sentinel (-1) shows no pointer."""
+        value = self.unit_field_editors["rotation"].value()
+        self.unit_rotation_dial.set_value(None if value < 0 else value)
+
+    def set_rotation_projection(self, flat: bool) -> None:
+        """TASK-023: draw the dial as a plain circle (Flat) or with the iso 2:1 squash."""
+        self.unit_rotation_dial.set_flat(flat)
 
     @staticmethod
     def _facing_tooltip(units, scale: int) -> str:
@@ -1146,3 +1220,8 @@ class UnitsPanel(QWidget):
         if value is None or value == self._mixed_sentinels.get(spec.field_id):
             return
         self._on_unit_field(spec, value)
+
+    def _field_stepped(self, spec: unit_fields.UnitFieldSpec, delta: float) -> None:
+        if self._populating:
+            return
+        self._on_unit_field_step(spec, delta)

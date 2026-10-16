@@ -16,11 +16,12 @@ decoding 85 .dds files the moment the view is built.
 
 from __future__ import annotations
 
-from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QImage, QPixmap
-from PyQt5.QtWidgets import QApplication, QTreeWidgetItem
+from PyQt5.QtWidgets import QApplication, QButtonGroup, QHBoxLayout, QStackedWidget, QToolButton, QTreeWidgetItem
 
 from descape import asset_source, terrain_catalog, terrain_palette
+from descape.swatch_grid import SwatchGridView
 from descape.value_picker import PickerItem, ValuePickerView
 
 HIDDEN_LABEL = "Show unused / moddable terrains"
@@ -106,9 +107,18 @@ class TerrainPickerView(ValuePickerView):
     A plain always-visible widget, not a dialog: TerrainPanel embeds one as
     the Terrain-mode sidebar page. Being long-lived is what refresh_swatches()
     below exists for.
+
+    Two presentations behind the List/Grid buttons beside the filter (GH
+    #161): the tree, and `self.grid`, a SwatchGridView. The tree stays the one
+    source of truth for selection and filtering, so select(), current_value()
+    and current_changed mean the same in both modes; the grid mirrors it.
     """
 
-    def __init__(self, current_id: int | None = None, parent=None):
+    display_mode_changed = pyqtSignal(str)
+
+    def __init__(self, current_id: int | None = None, parent=None, *, display_mode: str = "list", swatch_px: int = 48):
+        self._mode = "list"
+        self._mirroring = False
         # default_group is load-bearing, not a nicety: ValuePickerView
         # expands EVERY group when it is empty, and an all-expanded tree
         # decodes all 85 distinct textures at once -- measured at 2.8s cold,
@@ -122,6 +132,7 @@ class TerrainPickerView(ValuePickerView):
             preview=_terrain_preview,
             parent=parent,
         )
+        self._build_grid(swatch_px)
         self.tree.setIconSize(QSize(ROW_ICON_PX, ROW_ICON_PX))
         # ValuePickerView turns uniform row heights ON, which is right for
         # its text-only consumers and wrong here: Qt fixes that height from
@@ -142,6 +153,112 @@ class TerrainPickerView(ValuePickerView):
 
         if current_id is not None:
             self.select(current_id)
+        if display_mode != "list":
+            self.set_display_mode(display_mode)
+
+    # -- the grid -------------------------------------------------------------
+
+    def _build_grid(self, swatch_px: int) -> None:
+        """The stack (tree, grid) in the tree's place, and the List/Grid buttons beside the filter."""
+        # Looked up at call time, so a test's monkeypatched swatch_pixmap reaches the grid too.
+        hook = lambda value: swatch_pixmap(value)  # noqa: E731, PLW0108
+        self.grid = SwatchGridView(items_for(), swatch=hook, swatch_px=swatch_px)
+        self.stack = QStackedWidget()
+        self._tree_row.removeWidget(self.tree)
+        self.stack.addWidget(self.tree)
+        self.stack.addWidget(self.grid)
+        self._tree_row.insertWidget(0, self.stack, stretch=1)
+
+        layout = self.layout()
+        filter_row = QHBoxLayout()
+        layout.removeWidget(self.filter_edit)
+        filter_row.addWidget(self.filter_edit, stretch=1)
+        self.mode_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for mode, label, tip in (("list", "List", "Show terrains as a list"),
+                                 ("grid", "Grid", "Show terrains as a grid of swatches")):
+            button = QToolButton()
+            button.setText(label)
+            button.setToolTip(tip)
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(lambda _checked, m=mode: self.set_display_mode(m))
+            group.addButton(button)
+            filter_row.addWidget(button)
+            self.mode_buttons[mode] = button
+        self.mode_buttons["list"].setChecked(True)
+        layout.insertLayout(0, filter_row)
+
+        self.grid.picked.connect(self._on_grid_picked)
+        self.grid.activated.connect(self.activated.emit)
+        self.tree.currentItemChanged.connect(lambda *_: self._mirror_to_grid())
+        # The base __init__ filtered before the grid existed.
+        self._apply_filter(self.filter_edit.text())
+        self._mirror_to_grid()
+
+    def display_mode(self) -> str:
+        return self._mode
+
+    def set_display_mode(self, mode: str) -> None:
+        """Flag, then page, then the new page's own upkeep: with the flag
+        flipped last, the expand Qt performs on show would hit
+        _populate_icons' grid-mode return and leave rows iconless."""
+        if mode not in ("list", "grid"):
+            raise ValueError(f"display mode must be 'list' or 'grid', got {mode!r}")
+        if mode == self._mode:
+            return
+        self._mode = mode
+        self.stack.setCurrentWidget(self.grid if mode == "grid" else self.tree)
+        self.mode_buttons[mode].setChecked(True)
+        if mode == "list":
+            if self.preview is not None:
+                self.preview.show()
+            for i in range(self.tree.topLevelItemCount()):
+                group = self.tree.topLevelItem(i)
+                if group.isExpanded():
+                    self._populate_icons(group)
+            if self.tree.currentItem() is not None:
+                self.tree.scrollToItem(self.tree.currentItem())
+        else:
+            # The grid needs the width the 64 px side preview takes.
+            if self.preview is not None:
+                self.preview.hide()
+            self.grid.scroll_to_value(self.grid.current_value())
+        self.display_mode_changed.emit(mode)
+
+    def set_grid_swatch_px(self, px: int) -> None:
+        self.grid.set_swatch_px(px)
+
+    def _on_grid_picked(self, value: int) -> None:
+        self._mirroring = True
+        try:
+            self.select(value)
+        finally:
+            self._mirroring = False
+
+    def _mirror_to_grid(self) -> None:
+        # A heading or a filtered-away row leaves the grid's frame on the armed terrain (TerrainPanel's sticky rule).
+        if self._mirroring or not hasattr(self, "grid"):
+            return
+        value = self.current_value()
+        if value is not None:
+            self.grid.set_current_value(value)
+
+    def _apply_filter(self, text: str) -> None:
+        super()._apply_filter(text)
+        if not hasattr(self, "grid"):
+            return
+        shown = set()
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            if group.isHidden():
+                continue
+            for c in range(group.childCount()):
+                child = group.child(c)
+                if not child.isHidden():
+                    shown.add(child.data(0, Qt.UserRole))
+        self.grid.set_visible_values(shown)
 
     def refresh_swatches(self) -> None:
         """Drop every row icon and redecode the expanded groups.
@@ -162,8 +279,13 @@ class TerrainPickerView(ValuePickerView):
             if group.isExpanded():
                 self._populate_icons(group)
         self._update_preview()
+        self.grid.refresh_swatches()
 
     def _populate_icons(self, group: QTreeWidgetItem) -> None:
+        # In Grid the tree is hidden, and select() still expands groups: decoding them
+        # here would stall under a wait cursor for rows nobody sees. List mode catches up.
+        if self._mode == "grid":
+            return
         pending = [
             child
             for c in range(group.childCount())
@@ -179,6 +301,7 @@ class TerrainPickerView(ValuePickerView):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             for child in pending:
-                child.setIcon(0, QIcon(swatch_pixmap(child.data(0, Qt.UserRole), ROW_ICON_PX)))
+                # The 64 px swatch, drawn at ROW_ICON_PX by the view: list, preview and grid share one decode.
+                child.setIcon(0, QIcon(swatch_pixmap(child.data(0, Qt.UserRole))))
         finally:
             QApplication.restoreOverrideCursor()

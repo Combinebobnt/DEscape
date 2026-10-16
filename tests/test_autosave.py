@@ -24,7 +24,7 @@ DOC_ID = "0123456789abcdef"
 
 
 def _symlink_loop(tmp_path: Path) -> Path:
-    """loop-a -> loop-b -> loop-a: Python 3.11's resolve() raises RuntimeError on it."""
+    """loop-a -> loop-b -> loop-a: scenario_io.resolve_detecting_loops() raises on it."""
     a, b = tmp_path / "loop-a", tmp_path / "loop-b"
     a.symlink_to(b)
     b.symlink_to(a)

@@ -231,16 +231,15 @@ def test_terrain_textures_is_available_in_every_style_and_sprite_state(style, sp
     [
         ("stepped", True, True),
         ("sloped", True, True),
-        ("flat", True, False),
+        ("flat", True, True),
         ("stepped", False, False),
         ("sloped", False, False),
         ("flat", False, False),
     ],
 )
-def test_farm_overlay_needs_an_iso_style_and_sprites(style, sprites_enabled, expected) -> None:
-    """Both gates are facts about the render, not policy: Flat composites
-    through unit_draws/icons and never builds the SpriteLayer that carries
-    farm_by_tile, and neither iso cache builds one with sprites off."""
+def test_farm_overlay_needs_sprites_in_every_style(style, sprites_enabled, expected) -> None:
+    """A fact about the render, not policy: every cache builds its drape
+    only with sprites on (top-down Flat too, since GH #150)."""
     spec = next(s for s in LAYERS if s.layer_id == "farm_overlay")
     enabled, tip = availability(spec, style=style, sprites_enabled=sprites_enabled, has_map=True)
     assert enabled is expected
@@ -381,7 +380,7 @@ def test_farm_overlay_off_drops_the_terrain_override_and_the_paint_skip(
     assert not off.skip_ids
 
 
-@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache])
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
 def test_farm_overlay_round_trips_byte_identically(builder, fake_farm, monkeypatch) -> None:
     """The trap this covers is specific to the farm half: it is decided
     where the SpriteLayer is BUILT, so set_layers() has to bump the source
@@ -422,16 +421,53 @@ def test_farm_overlay_survives_a_unit_splice(fake_farm, monkeypatch) -> None:
     assert not _farm_sprites(cache).farm_by_tile
 
 
-def test_flat_ignores_the_farm_layer_rather_than_pretending_to_apply_it(monkeypatch) -> None:
-    """Flat has no farm path, which is why view_layers greys the row there
-    instead of letting it be a silent no-op -- set_sprites_enabled()'s own
-    documented trap. Pinned so a future Flat farm path has to update the
-    registry row deliberately."""
+def test_flat_farm_overlay_off_drops_the_drape_and_restores_the_rect(fake_farm, monkeypatch) -> None:
+    """Flat's leg of the off test above (GH #150): with the layer off there
+    is no drape and the farm is its plain owner-coloured rect again."""
     _install_textures(monkeypatch)
-    cache = _flat_cache(_scenario(with_farm=True), sprites=True)
-    before = _whole_canvas(cache).copy()
+    scn = _scenario(with_farm=True)
+    cache = _flat_cache(scn, sprites=True)
+    _whole_canvas(cache)
+    assert cache._farm_tiles, "fixture built no Flat drape -- test would be vacuous"
+
     cache.set_layers(LayerState(farm_overlay=False))
-    assert np.array_equal(before, _whole_canvas(cache))
+    off = _whole_canvas(cache)
+    assert cache._farm_tiles is None
+    rect = render.overlay_units(render.render_terrain(scn), scn, with_sprites=True)
+    assert np.array_equal(off, rect)
+
+
+@pytest.mark.parametrize("op", ["move", "add"])
+def test_flat_farm_overlay_off_survives_a_unit_splice(fake_farm, monkeypatch, op) -> None:
+    """Flat's twin of test_farm_overlay_survives_a_unit_splice: the row
+    splice re-resolves the edited farm's icon (a rewritten row, or an
+    inserted one), and a hardcoded with_farms there would give it
+    FLAT_DRAPED, dropping its rect with no drape under it."""
+    _install_textures(monkeypatch)
+    scn = _scenario(with_farm=True)
+    cache = _flat_cache(scn, sprites=True)
+    cache.set_layers(LayerState(farm_overlay=False))
+    _whole_canvas(cache)
+    assert 0 in cache._level_icon_layers, "level 0's icons were never built, so the splice patches nothing"
+
+    if op == "move":
+        unit = scn.unit_manager.units[1][0]
+        tiles = tuple(render.unit_occupied_tiles(unit, MAP_W, MAP_H))
+        own = (int(unit.x), int(unit.y))
+        splice = render_cache.UnitSplice(1, 0, unit, own, own, tiles, tiles)
+    else:
+        unit = PlacedUnit(x=10.0, y=10.0, unit_const=FAKE_FARM_CONST, reference_id=9)
+        scn.unit_manager.units[2].append(unit)
+        tiles = tuple(render.unit_occupied_tiles(unit, MAP_W, MAP_H))
+        splice = render_cache.UnitSplice(2, 0, unit, None, (int(unit.x), int(unit.y)), (), tiles)
+    assert cache.can_splice([splice]), "fixture is not testing the splice path"
+    cache.invalidate_units([splice])
+    cache.patch_rects(render.flat_tile_rects(splice.changed_tiles, tile_pixels_for_map(MAP_W, MAP_H)))
+
+    assert cache._farm_tiles is None
+    assert not any(draw is render.FLAT_DRAPED for draw in cache._level_icon_layers[0].values())
+    rect = render.overlay_units(render.render_terrain(scn), scn, with_sprites=True)
+    assert np.array_equal(_whole_canvas(cache), rect)
 
 
 # --- the small-trees layer ----------------------------------------------

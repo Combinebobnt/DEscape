@@ -805,6 +805,7 @@ class MapView(QGraphicsView):
         # is loaded) previews correctly with no special-casing.
         self._brush_size = brush.BRUSH_SIZE_MIN
         self._brush_shape = brush.BRUSH_SHAPE_SQUARE
+        self._brush_thickness = brush.BRUSH_THICKNESS_MIN
         # Set by set_source() alongside each render, cleared by clear_image()
         # -- needed to clip the brush footprint the same way
         # ViewerWindow.on_edit_stroke_tile clips a single tile today.
@@ -813,7 +814,7 @@ class MapView(QGraphicsView):
         # Memoizes the last highlight built, so mouseMoveEvent's per-pixel
         # calls into _update_highlight() don't rebuild an up-to-81-tile
         # QPainterPath every time the mouse moves within the same tile.
-        self._highlight_key: tuple[int, int, int, str] | None = None
+        self._highlight_key: tuple[int, int, int, str, int] | None = None
         self._map_rect: QRectF | None = None
         # Set by set_source() just before it calls set_isometric(), consumed
         # (and cleared) by set_isometric() itself -- see set_source()'s
@@ -1146,14 +1147,16 @@ class MapView(QGraphicsView):
         self._wheel_brush_query = query
         self._on_wheel_brush_step = step
 
-    def set_brush(self, size: int, shape: str) -> None:
+    def set_brush(self, size: int, shape: str, thickness: int = brush.BRUSH_THICKNESS_MIN) -> None:
         """Updates the brush the hover-preview highlight (and, via
         ViewerWindow reading these same values back at stroke time, the
         actual edit) uses. Only the preview needs to react here -- the
         active stroke's own footprint is computed fresh per cursor tile in
-        ViewerWindow.on_edit_stroke_tile, not cached."""
+        ViewerWindow.on_edit_stroke_tile, not cached. `thickness` counts for
+        an outline shape only (brush.OUTLINE_SHAPES)."""
         self._brush_size = size
         self._brush_shape = shape
+        self._brush_thickness = thickness
         self._highlight_key = None  # force the next _update_highlight to rebuild
 
     def set_rect_filled(self, filled: bool) -> None:
@@ -1459,6 +1462,15 @@ class MapView(QGraphicsView):
         self.refresh_unit_highlight()
         self.refresh_footprint_overlay()
 
+    def refresh_drape_outlines(self) -> None:
+        """For a Show sprites or Farm Overlay toggle: a draped farm's outline
+        shape follows both (TASK-015), so the hover, the selection and the
+        footprint outlines are redrawn. The hover memo is dropped too, or a
+        cursor resting on the farm keeps its old path."""
+        self._clear_unit_hover()
+        self.refresh_unit_highlight()
+        self.refresh_footprint_overlay()
+
     def refresh_after_index_patch(self) -> None:
         """For a caller that patched _unit_index in place rather than
         swapping it: everything derived from the index, which is the stacks
@@ -1582,7 +1594,7 @@ class MapView(QGraphicsView):
             self._iso_elevations,
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
-            farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
+            farms_draped=self._farms_draped(),
         )
 
     def _unit_path(self, entry) -> QPainterPath | None:
@@ -2049,9 +2061,18 @@ class MapView(QGraphicsView):
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
             terrain_tile=tile,
-            farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
+            farms_draped=self._farms_draped(),
             sprites_on=self._objects_after_terrain(),
         )
+
+    def _farms_draped(self) -> bool:
+        """Whether the live cache drapes farms as terrain, in any style: the
+        render's own three gates (units shown, sprites on, Farm Overlay
+        layer), so pick and highlight follow the paint (TASK-015, GH #150)."""
+        if self._canvas_item is None:
+            return False
+        cache = self._canvas_item._cache
+        return cache is not None and cache.farms_draped()
 
     def _objects_after_terrain(self) -> bool:
         """Whether the live cache paints objects after all terrain (TASK-133),
@@ -2519,6 +2540,7 @@ class MapView(QGraphicsView):
                     self._pause_gc_for_stroke()
                     perf_trace.begin_drag(
                         f"{self._brush_size} {self._brush_shape}"
+                        + (f" t{self._brush_thickness}" if self._brush_shape in brush.OUTLINE_SHAPES else "")
                         if brush_applicable(self._tool, rect_filled=self._rect_filled)
                         else None
                     )
@@ -3117,7 +3139,7 @@ class MapView(QGraphicsView):
         borders included (one addPolygon() per tile into a single
         QPainterPath, deliberately not .simplified(): a bounding outline
         would misrepresent a circle brush's actual footprint). Memoized on
-        (tile_x, tile_y, size, shape) since this runs on every pixel of
+        (tile_x, tile_y, size, shape, thickness) since this runs on every pixel of
         mouseMoveEvent -- see _highlight_key's own comment in __init__.
 
         Passes coarse=True to _tile_polygon (draw-perf plan item 3): in
@@ -3135,14 +3157,15 @@ class MapView(QGraphicsView):
             if key != self._highlight_key:
                 self._set_highlight_tiles(list(self._cliff_footprint), key)
             return
-        key = (tile_x, tile_y, self._brush_size, self._brush_shape)
+        key = (tile_x, tile_y, self._brush_size, self._brush_shape, self._brush_thickness)
         if key == self._highlight_key:
             return
         if self._map_width is None or self._map_height is None:
             tiles = [(tile_x, tile_y)]
         else:
             tiles = brush.brush_tiles(
-                tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height
+                tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height,
+                self._brush_thickness,
             )
         self._set_highlight_tiles(tiles, key)
 
@@ -3208,7 +3231,7 @@ class MapView(QGraphicsView):
         out: dict[tuple[int, int], None] = {}
         for tx, ty in tiles:
             for tile in brush.brush_tiles(
-                tx, ty, self._brush_size, self._brush_shape, self._map_width, self._map_height
+                tx, ty, self._brush_size, self._brush_shape, self._map_width, self._map_height, self._brush_thickness
             ):
                 out[tile] = None
         return list(out)
@@ -3275,6 +3298,7 @@ class MapView(QGraphicsView):
             *self._shape_span(),
             self._brush_size,
             self._brush_shape,
+            self._brush_thickness,
             self._rect_filled,
             self._tool,
         )

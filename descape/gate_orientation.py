@@ -56,6 +56,8 @@ _CODE_RE = re.compile(r"^([PSCF]?)GT([ABCD])([ABCX])(\d*)$")
 # Cycle order, by run direction rather than alphabetically: A (+x) -> C (+x+y)
 # -> B (+y) -> D (+x-y), 45 degrees per step.
 _ORIENTATIONS = ("A", "C", "B", "D")
+# World run angle per cycle step: orientation i runs along i * 45 degrees (either end).
+RUN_ANGLE_STEP_DEG = 45
 
 # The coarse Rotate multiplier, unit_rotation.quarter_turn_steps()' gate
 # counterpart: a step is 45 degrees, so a quarter turn is two of them.

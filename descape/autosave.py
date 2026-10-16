@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from descape import asset_source
-from descape.scenario_io import TEMPLATE_DIR, is_in_game_profile, is_workshop_subscribed
+from descape.scenario_io import TEMPLATE_DIR, is_in_game_profile, is_workshop_subscribed, resolve_detecting_loops
 
 AUTOSAVE_SUFFIX = ".autosave"
 AUTOSAVE_DIRNAME = "autosave"
@@ -73,8 +73,8 @@ def autosave_dir_refusal(path: Path) -> str | None:
     if not path.is_absolute():
         return "it is not an absolute path"
     try:
-        resolved = path.resolve()
-    except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
+        resolved = resolve_detecting_loops(path)
+    except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
         return f"it cannot be resolved ({e})"
     if is_workshop_subscribed(path, resolved):
         return "it is in a subscribed-mods (mods/subscribed/) folder, which the game's mod manager re-syncs"
@@ -123,7 +123,7 @@ def doc_key(path: Path | None, doc_id: str) -> str:
     if path is None:
         return hashlib.sha1(f"untitled:{doc_id}".encode(), usedforsecurity=False).hexdigest()[:12]
     try:
-        keyed = path.resolve()
+        keyed = resolve_detecting_loops(path)
     except (OSError, RuntimeError):  # a symlink loop: key on the path as given
         keyed = path.absolute()
     return hashlib.sha1(str(keyed).encode(), usedforsecurity=False).hexdigest()[:12]
@@ -144,13 +144,13 @@ def _falls_back_to_central(source: Path | None) -> bool:
     if source is None:
         return True
     try:
-        resolved = source.resolve()
+        resolved = resolve_detecting_loops(source)
         return (
             is_workshop_subscribed(source, resolved)
             or is_in_game_profile(source)
             or resolved.parent == TEMPLATE_DIR.resolve()
         )
-    except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
+    except (OSError, RuntimeError):  # a symlink loop raises on every Python version
         return True
 
 

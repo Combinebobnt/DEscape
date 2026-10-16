@@ -414,10 +414,13 @@ content is offered. It is usually found on its own: on Windows at
 `%USERPROFILE%\Games\Age of Empires 2 DE`, and on Linux in the Proton prefix
 beside the install's Steam library
 (`steamapps/compatdata/813780/pfx/drive_c/users/steamuser/Games/Age of Empires 2 DE`).
-To point DEscape elsewhere, set `aoe2de_profile` in `config.yaml` or the
-`AOE2DE_PROFILE_PATH` environment variable (checked first). Players mode's
-Personality list is built from these folders: the install's AIs, plus any in
-your profile and enabled mods.
+To point DEscape elsewhere, use **Settings > General**'s profile folder row
+(Browse…, then Load; Use auto-detect goes back to finding it on its own),
+set `aoe2de_profile` in `config.yaml`, or set the `AOE2DE_PROFILE_PATH`
+environment variable (checked first, and it overrides the Settings row). The
+same tab lists every folder DEscape scans and how many mods the game's mod
+list has disabled. Players mode's Personality list is built from these
+folders: the install's AIs, plus any in your profile and enabled mods.
 
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`

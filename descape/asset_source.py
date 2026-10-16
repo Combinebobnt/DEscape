@@ -416,6 +416,22 @@ def save_install_path_to_config(path: Path) -> None:
     write_config_file(CONFIG_PATH, config)
 
 
+def save_profile_path_to_config(path: Path | None) -> None:
+    """Persists the AoE2:DE profile folder (content_roots.PROFILE_CONFIG_KEY) the
+    same read-modify-write way; None removes the key, back to auto-detect."""
+    config = {}
+    if CONFIG_PATH.is_file():
+        try:
+            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        except (yaml.YAMLError, OSError):
+            config = {}
+    if path is None:
+        config.pop("aoe2de_profile", None)
+    else:
+        config["aoe2de_profile"] = str(path)
+    write_config_file(CONFIG_PATH, config)
+
+
 @lru_cache(maxsize=256)
 def get_terrain_texture_path(terrain_id: int) -> Path | None:
     """Returns the real .dds path for a terrain_id, or None if unavailable --

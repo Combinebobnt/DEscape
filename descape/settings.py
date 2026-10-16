@@ -495,6 +495,60 @@ def set_stack_badge_position(position: str) -> None:
     _save_config(config)
 
 
+# GH #161: the Terrain-mode picker as a list or a grid of swatches, switched in
+# the panel itself. A layout choice, so not part of a theme file.
+TERRAIN_PICKER_MODES: list[tuple[str, str]] = [("list", "List"), ("grid", "Grid")]
+TERRAIN_PICKER_MODE_DEFAULT = "list"
+_TERRAIN_PICKER_MODE_IDS = tuple(mid for mid, _label in TERRAIN_PICKER_MODES)
+_terrain_picker_mode: str | None = None
+
+
+def get_terrain_picker_mode() -> str:
+    """One of TERRAIN_PICKER_MODES' ids; an off-list value falls back to the default."""
+    global _terrain_picker_mode
+    if _terrain_picker_mode is None:
+        raw = _load_config().get("terrain_picker_mode")
+        _terrain_picker_mode = raw if raw in _TERRAIN_PICKER_MODE_IDS else TERRAIN_PICKER_MODE_DEFAULT
+    return _terrain_picker_mode
+
+
+def set_terrain_picker_mode(mode: str) -> None:
+    if mode not in _TERRAIN_PICKER_MODE_IDS:
+        raise ValueError(f"terrain_picker_mode must be one of {list(_TERRAIN_PICKER_MODE_IDS)}, got {mode!r}")
+    global _terrain_picker_mode
+    _terrain_picker_mode = mode
+    config = _load_config()
+    config["terrain_picker_mode"] = mode
+    _save_config(config)
+
+
+# GH #161: the terrain grid's swatch size, Settings > Appearance. 64 is the
+# ceiling: swatches decode at 64 px, so anything larger would upscale.
+TERRAIN_GRID_SWATCH_SIZES: tuple[int, ...] = (32, 48, 64)
+TERRAIN_GRID_SWATCH_PX_DEFAULT = 48
+_terrain_grid_swatch_px: int | None = None
+
+
+def get_terrain_grid_swatch_px() -> int:
+    """One of TERRAIN_GRID_SWATCH_SIZES; an off-list value falls back to the default."""
+    global _terrain_grid_swatch_px
+    if _terrain_grid_swatch_px is None:
+        raw = _load_config().get("terrain_grid_swatch_px")
+        valid = isinstance(raw, int) and not isinstance(raw, bool) and raw in TERRAIN_GRID_SWATCH_SIZES
+        _terrain_grid_swatch_px = raw if valid else TERRAIN_GRID_SWATCH_PX_DEFAULT
+    return _terrain_grid_swatch_px
+
+
+def set_terrain_grid_swatch_px(px: int) -> None:
+    if isinstance(px, bool) or px not in TERRAIN_GRID_SWATCH_SIZES:
+        raise ValueError(f"terrain_grid_swatch_px must be one of {list(TERRAIN_GRID_SWATCH_SIZES)}, got {px!r}")
+    global _terrain_grid_swatch_px
+    _terrain_grid_swatch_px = px
+    config = _load_config()
+    config["terrain_grid_swatch_px"] = px
+    _save_config(config)
+
+
 # View > Colour Selection by Owner: the Units-mode selection outline takes each
 # owner's player colour (GAIA keeps unit_select). Persisted, on by default.
 _selection_by_owner: bool | None = None
@@ -2268,10 +2322,11 @@ def set_autosave_location(value: str) -> None:
 def _is_default_autosave_dir(value: str) -> bool:
     # Imported here, not at module level: autosave pulls scenario_io and the parser.
     from descape import autosave
+    from descape.scenario_io import resolve_detecting_loops
 
     try:
-        return Path(value).resolve() == autosave.autosave_dir().resolve()
-    except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
+        return resolve_detecting_loops(value) == autosave.autosave_dir().resolve()
+    except (OSError, RuntimeError):  # a symlink loop raises on every Python version
         return False
 
 

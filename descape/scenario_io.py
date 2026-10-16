@@ -31,11 +31,13 @@ terrain block in place and recompressing is.
 from __future__ import annotations
 
 import contextlib
+import errno
 import gc
 import io
 import itertools
 import json
 import operator
+import os
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -115,14 +117,29 @@ def names_workshop_subscribed(path: Path | str) -> bool:
     return _has_consecutive_parts(path, WORKSHOP_SUBSCRIBED_PARTS)
 
 
+def resolve_detecting_loops(path: Path | str) -> Path:
+    """Path(path).resolve(), but raising on a symlink loop on every Python.
+    A missing tail still returns the resolved path, as resolve() does."""
+    resolved = Path(path).resolve()
+    # 3.13+ resolve() no longer raises on a loop, and applies a ".." after one as text, so stat both.
+    for p in (path, resolved):
+        try:
+            os.stat(p)
+        except OSError as e:
+            if e.errno == errno.ELOOP or getattr(e, "winerror", None) == 1921:  # ERROR_CANT_RESOLVE_FILENAME
+                raise
+    return resolved
+
+
 def is_workshop_subscribed(path: Path | str, resolved: Path | None = None) -> bool:
     """True if `path`, as written or resolved through symlinks, has the
     consecutive parts mods/subscribed: a link into one carries them only once
-    resolved. `resolved` reuses a caller's own resolve(); resolve() errors propagate."""
+    resolved. `resolved` reuses a caller's own resolve(); resolve errors,
+    a symlink loop included, propagate."""
     if names_workshop_subscribed(path):
         return True
     if resolved is None:
-        resolved = Path(path).resolve()
+        resolved = resolve_detecting_loops(path)
     return names_workshop_subscribed(resolved)
 
 
@@ -138,8 +155,8 @@ def is_in_game_profile(path: Path | str) -> bool:
     if check(path):
         return True
     try:
-        return check(Path(path).resolve())
-    except (OSError, RuntimeError):  # 3.11 raises RuntimeError on a symlink loop
+        return check(resolve_detecting_loops(path))
+    except (OSError, RuntimeError):  # a symlink loop raises on every Python version
         return True
 
 # The donor blank map descape/scenario_new.py splices to build every File > New

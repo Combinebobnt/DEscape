@@ -1884,3 +1884,425 @@ def test_pick_object_leaves_show_hidden_alone_for_an_ordinary_const() -> None:
     panel = _panel()
     assert panel.pick_object(117)
     assert not panel.catalog_view.show_hidden_checkbox.isChecked()
+
+
+# --- TASK-023: the facing dial beside the Rotation spinbox ------------------
+
+
+def _dial(panel):
+    return panel.unit_rotation_dial
+
+
+def _dial_shown(panel) -> bool:
+    return _dial(panel).isVisibleTo(panel.unit_inspector_grid)
+
+
+def _send_mouse(widget, kind, point, buttons) -> None:
+    """A real QMouseEvent: QTest.mouseMove carries no held button on a QWidget."""
+    from PyQt5.QtCore import QEvent, QPointF
+    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtWidgets import QApplication
+
+    event_type = {"press": QEvent.MouseButtonPress, "move": QEvent.MouseMove, "release": QEvent.MouseButtonRelease}[kind]
+    button = Qt.NoButton if kind == "move" else Qt.LeftButton
+    local = QPointF(point)
+    event = QMouseEvent(event_type, local, local, widget.mapToGlobal(point.toPoint()), button, buttons, Qt.NoModifier)
+    QApplication.sendEvent(widget, event)
+
+
+def _click(dial, point) -> None:
+    _send_mouse(dial, "press", point, Qt.LeftButton)
+    _send_mouse(dial, "release", point, Qt.NoButton)
+
+
+def _wheel(dial, units: int) -> None:
+    from PyQt5.QtCore import QPoint, QPointF
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    centre = QPointF(dial.rect().center())
+    event = QWheelEvent(centre, centre, QPoint(0, 0), QPoint(0, units), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(dial, event)
+
+
+def _recording_panel():
+    received = []
+    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+    return panel, received
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        pytest.param([{"unit_const": _ARCHER_CONST}], id="archer"),
+        pytest.param([{"unit_const": _GATE_CONST}], id="gate"),
+        pytest.param([{"unit_const": _GATE_CONST}, {"unit_const": 88}], id="gate-group"),
+    ],
+)
+def test_the_dial_shows_for_facings_and_gates(entries) -> None:
+    panel = _panel()
+    if len(entries) == 1:
+        panel.show_unit(_entry(**entries[0]))
+    else:
+        panel.show_group([_entry(**kwargs) for kwargs in entries])
+    assert _dial_shown(panel)
+    assert _rotation_spin(panel).isVisibleTo(panel.unit_inspector_grid)
+    assert _dial(panel).accessibleName() == "Rotation dial"
+    assert _dial(panel).toolTip() == _rotation_spin(panel).toolTip()
+    assert _dial(panel).focusPolicy() == Qt.NoFocus
+
+
+@pytest.mark.parametrize(
+    ("unit_const", "editable"),
+    [(_TREE_CONST, True), (_WALL_CONST, False), (_BARRACKS_CONST, False)],
+    ids=["tree", "wall", "inert"],
+)
+def test_the_dial_hides_for_variants_and_read_only_consts(unit_const: int, editable: bool) -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_ARCHER_CONST))
+    panel.show_unit(_entry(unit_const=unit_const, rotation=3.0))
+    assert not _dial_shown(panel)
+    assert _rotation_spin(panel).isVisibleTo(panel.unit_inspector_grid) is editable
+    assert panel.unit_field_labels["rotation"].isVisibleTo(panel.unit_inspector_grid) is not editable
+
+
+def test_the_dial_takes_the_selections_mode_and_count() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TREBUCHET_CONST, rotation=math.pi))
+    assert (_dial(panel).mode, _dial(panel).count, _dial(panel).value) == ("facing", 32, 16)
+    panel.show_unit(_entry(unit_const=88))  # stone gate, orientation 2
+    assert (_dial(panel).mode, _dial(panel).count, _dial(panel).value) == ("gate", 4, 2)
+    panel.show_unit(_entry(rotation=3 * 2 * math.pi / 16))
+    assert (_dial(panel).mode, _dial(panel).count, _dial(panel).value) == ("facing", 16, 3)
+
+
+@pytest.mark.parametrize("flat", [False, True])
+@pytest.mark.parametrize("facing", [0, 3, 8, 13])
+def test_a_click_on_a_spoke_sets_that_facing_once(flat: bool, facing: int) -> None:
+    panel, received = _recording_panel()
+    panel.set_rotation_projection(flat)
+    panel.show_unit(_entry(rotation=5 * 2 * math.pi / 16))
+    _click(_dial(panel), _dial(panel).spoke_point(facing))
+    expected = [] if facing == 5 else [("rotation", facing)]
+    assert received == expected
+    assert _rotation_spin(panel).value() == facing
+    assert _dial(panel).value == facing
+
+
+def test_a_click_on_the_current_facing_records_nothing() -> None:
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(rotation=5 * 2 * math.pi / 16))
+    _click(_dial(panel), _dial(panel).spoke_point(5))
+    assert received == []
+
+
+def test_a_drag_across_three_spokes_commits_once_with_the_release_spoke() -> None:
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(2), Qt.LeftButton)
+    _send_mouse(dial, "move", dial.spoke_point(3), Qt.LeftButton)
+    assert dial.shown_value == 3, "the drag previews the spoke under the cursor"
+    assert received == [] and _rotation_spin(panel).value() == 0
+    _send_mouse(dial, "move", dial.spoke_point(4), Qt.LeftButton)
+    _send_mouse(dial, "release", dial.spoke_point(4), Qt.NoButton)
+    assert received == [("rotation", 4)]
+    assert dial.shown_value == 4
+
+
+def test_a_click_on_a_gate_axis_picks_that_orientation_from_either_end() -> None:
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(unit_const=_GATE_CONST))  # orientation 0
+    dial = _dial(panel)
+    _click(dial, dial.spoke_point(3))
+    _click(dial, _opposite(dial, dial.spoke_point(1)))
+    assert received == [("rotation", 3), ("rotation", 1)]
+
+
+def test_a_press_at_the_centre_commits_nothing() -> None:
+    from PyQt5.QtCore import QPointF
+
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _click(dial, QPointF(dial.width() / 2, dial.height() / 2))
+    assert received == []
+
+
+def test_wheel_up_from_the_last_facing_wraps_one_call_per_notch() -> None:
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(rotation=15 * 2 * math.pi / 16))
+    _wheel(_dial(panel), 120)
+    _wheel(_dial(panel), 120)
+    _wheel(_dial(panel), -120)
+    assert received == [("rotation", 0), ("rotation", 1), ("rotation", 0)]
+
+
+def test_a_mixed_group_dial_has_no_pointer_and_a_click_sets_one_value() -> None:
+    panel, received = _recording_panel()
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    assert _rotation_spin(panel).text() == "(mixed)"
+    assert _dial(panel).value is None and _dial(panel).shown_value is None
+    _click(_dial(panel), _dial(panel).spoke_point(6))
+    assert received == [("rotation", 6)]
+
+
+def test_populating_moves_the_dial_and_records_nothing() -> None:
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(rotation=3 * 2 * math.pi / 16))
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    panel.show_unit(_entry(unit_const=_GATE_CONST))
+    panel.show_group([_entry(rotation=math.pi), _entry(rotation=math.pi)])
+    assert _dial(panel).value == 8
+    panel.show_unit(None)
+    assert received == []
+
+
+def test_set_rotation_projection_moves_the_spokes_and_records_nothing() -> None:
+    panel, received = _recording_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    iso = _dial(panel).spoke_point(2)
+    panel.set_rotation_projection(True)
+    flat = _dial(panel).spoke_point(2)
+    assert (iso.x(), iso.y()) != pytest.approx((flat.x(), flat.y()), abs=2)
+    assert _dial(panel).flat is True
+    assert received == []
+
+
+def _dial_ink(panel):
+    """The dial painted on its own, as a numpy array, with the panel's highlight colour."""
+    from PyQt5.QtGui import QImage, QPalette
+
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    dial = _dial(panel)
+    image = dial.grab().toImage().convertToFormat(QImage.Format_RGB888)
+    highlight = dial.palette().color(QPalette.Highlight)
+    return qimage_rgb888_to_array(image), (highlight.red(), highlight.green(), highlight.blue())
+
+
+def _highlight_near(panel, point, radius=2) -> bool:
+    array, rgb = _dial_ink(panel)
+    x, y = round(point.x()), round(point.y())
+    patch = array[max(0, y - radius): y + radius + 1, max(0, x - radius): x + radius + 1, :3]
+    return bool((abs(patch.astype(int) - rgb).sum(axis=2) < 30).any())
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_the_pointer_is_painted_along_the_current_spoke(flat: bool) -> None:
+    panel = _panel()
+    panel.set_rotation_projection(flat)
+    panel.show_unit(_entry(rotation=3 * 2 * math.pi / 16))
+    dial = _dial(panel)
+    assert _highlight_near(panel, dial.spoke_point(3, 0.5))
+    assert not _highlight_near(panel, dial.spoke_point(11, 0.5))
+
+
+def test_a_mixed_group_paints_no_pointer() -> None:
+    panel = _panel()
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    array, rgb = _dial_ink(panel)
+    assert not (abs(array[:, :, :3].astype(int) - rgb).sum(axis=2) < 30).any()
+
+
+def _opposite(dial, point):
+    from PyQt5.QtCore import QPointF
+
+    return QPointF(dial.width() - point.x(), dial.height() - point.y())
+
+
+def test_the_gate_dial_highlights_the_current_axis_end_to_end() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=88))  # orientation 2
+    dial = _dial(panel)
+    end = dial.spoke_point(2, 0.6)
+    assert _highlight_near(panel, end)
+    assert _highlight_near(panel, _opposite(dial, end))
+    assert not _highlight_near(panel, dial.spoke_point(0, 0.6))
+
+
+def _shown_panel(entry):
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 900)
+    panel.show()
+    QApplication.processEvents()
+    panel.show_unit(entry)
+    QApplication.processEvents()
+    return panel
+
+
+def _row_height(panel, field_id: str) -> int:
+    """A grid row's laid-out height: its caption fills the cell vertically."""
+    return panel.unit_field_captions[field_id].height()
+
+
+@pytest.mark.font_sensitive
+@pytest.mark.parametrize("unit_const", [_ARCHER_CONST, _GATE_CONST])
+def test_the_dial_row_fits_the_floor_with_no_horizontal_scrollbar(unit_const: int) -> None:
+    panel = _shown_panel(_entry(unit_const=unit_const))
+    try:
+        assert _dial(panel).isVisible()
+        assert panel.inspector_area.horizontalScrollBar().maximum() == 0
+        assert panel.minimumSizeHint().width() <= UnitsPanel.MIN_USEFUL_WIDTH
+        dial = _dial(panel).geometry()
+        assert panel.unit_rotation_cell.rect().contains(dial)
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("unit_const", [_WALL_CONST, _BARRACKS_CONST])
+def test_nothing_covers_a_read_only_rotation_label(unit_const: int) -> None:
+    """The label's GH #147 tooltip and text selection need the mouse: no empty dial cell on top of it."""
+    panel = _shown_panel(_entry(unit_const=unit_const, rotation=3.0))
+    try:
+        label = panel.unit_field_labels["rotation"]
+        assert label.isVisible()
+        centre = label.mapTo(panel.unit_inspector_grid, label.rect().center())
+        assert panel.unit_inspector_grid.childAt(centre) is label
+    finally:
+        panel.close()
+
+
+def test_a_variant_or_read_only_rotation_row_is_as_tall_as_before_the_dial() -> None:
+    """The hidden dial takes no height: a tree's row is as tall as the X spinbox row, a wall's as Reference ID's label row."""
+    tree = _shown_panel(_entry(unit_const=_TREE_CONST, rotation=3.0))
+    wall = _shown_panel(_entry(unit_const=_WALL_CONST, rotation=3.0))
+    archer = _shown_panel(_entry())
+    try:
+        assert _row_height(tree, "rotation") == _row_height(tree, "x") > 0
+        assert _row_height(wall, "rotation") == _row_height(wall, "reference_id") > 0
+        assert _row_height(archer, "rotation") >= _dial(archer).height()
+    finally:
+        for panel in (tree, wall, archer):
+            panel.close()
+
+
+# --- GH #154: a group's X/Y/Z steps shift every member ----------------------
+
+
+def _step_panel(**kwargs):
+    """A map-sized panel recording both callbacks, in call order, into one list."""
+    calls = []
+    panel = _map_panel(
+        on_unit_field=lambda spec, value: calls.append(("set", spec.field_id, value)),
+        on_unit_field_step=lambda spec, delta: calls.append(("step", spec.field_id, delta)),
+        **kwargs,
+    )
+    return panel, calls
+
+
+def _mixed_x_group(panel) -> None:
+    panel.show_group([_entry(x=4.5), _entry(x=9.5)])
+    assert panel.unit_field_editors["x"].text() == "(mixed)"
+
+
+def test_a_group_step_reports_a_delta_and_leaves_the_mixed_field_alone() -> None:
+    panel, calls = _step_panel()
+    _mixed_x_group(panel)
+    spin = panel.unit_field_editors["x"]
+    spin.stepBy(1)
+    spin.stepBy(-1)
+    assert calls == [("step", "x", 1.0), ("step", "x", -1.0)]
+    assert spin.text() == "(mixed)"
+
+
+def test_both_arrows_are_live_on_the_group_sentinel_but_not_on_a_single_units_minimum() -> None:
+    from PyQt5.QtWidgets import QAbstractSpinBox
+
+    panel, _calls = _step_panel()
+    _mixed_x_group(panel)
+    spin = panel.unit_field_editors["x"]
+    assert spin.stepEnabled() == QAbstractSpinBox.StepUpEnabled | QAbstractSpinBox.StepDownEnabled
+    panel.show_unit(_entry(x=0.0))
+    assert spin.value() == spin.minimum() == 0.0
+    assert spin.stepEnabled() == QAbstractSpinBox.StepUpEnabled
+
+
+def _wheel_spin(spin, units: int) -> None:
+    from PyQt5.QtCore import QPoint, QPointF
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    centre = QPointF(spin.rect().center())
+    event = QWheelEvent(centre, centre, QPoint(0, 0), QPoint(0, units), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(spin, event)
+
+
+def test_keys_and_the_wheel_on_a_shown_group_field_report_relative_steps() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    panel, calls = _step_panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 900)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        _mixed_x_group(panel)
+        spin = panel.unit_field_editors["x"]
+        for key in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown):
+            QTest.keyClick(spin, key)
+        _wheel_spin(spin, 120)
+        _wheel_spin(spin, -120)
+        assert calls == [("step", "x", -1.0), ("step", "x", 1.0), ("step", "x", -10.0), ("step", "x", 1.0),
+                         ("step", "x", -1.0)]
+        assert spin.text() == "(mixed)"
+    finally:
+        panel.close()
+
+
+def test_a_group_that_agrees_still_steps_and_the_panel_keeps_the_value() -> None:
+    panel, calls = _step_panel()
+    panel.show_group([_entry(x=4.5, y=8.5), _entry(x=4.5, y=12.5)])
+    spin = panel.unit_field_editors["x"]
+    assert spin.value() == 4.5
+    spin.stepBy(1)
+    assert calls == [("step", "x", 1.0)]
+    assert spin.value() == 4.5
+
+
+def test_z_steps_relatively_and_rotation_still_sets_a_value() -> None:
+    panel, calls = _step_panel()
+    panel.show_group([_entry(z=1.0), _entry(z=3.0)])
+    panel.unit_field_editors["z"].stepBy(1)
+    panel.unit_field_editors["rotation"].stepBy(1)
+    assert calls == [("step", "z", 1.0), ("set", "rotation", 1)]
+
+
+def test_a_single_unit_steps_absolutely_as_before() -> None:
+    panel, calls = _step_panel()
+    panel.show_unit(_entry(x=4.5))
+    panel.unit_field_editors["x"].stepBy(1)
+    assert calls == [("set", "x", 5.5)]
+
+
+def test_leaving_group_mode_drops_relative_steps_and_the_tooltip() -> None:
+    panel, _calls = _step_panel()
+    coords = [panel.unit_field_editors[field_id] for field_id in ("x", "y", "z")]
+    for leave in (lambda: panel.show_unit(_entry()), panel.clear):
+        _mixed_x_group(panel)
+        assert all(spin.relative_steps and spin.toolTip().startswith("Arrows move every") for spin in coords)
+        leave()
+        assert not any(spin.relative_steps or spin.toolTip() for spin in coords)
+
+
+def test_text_typed_but_not_committed_lands_before_the_step() -> None:
+    panel, calls = _step_panel()
+    _mixed_x_group(panel)
+    spin = panel.unit_field_editors["x"]
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin, "50")
+    assert calls == [], "keyboard tracking is off: nothing lands until a commit"
+    QTest.keyClick(spin, Qt.Key_Up)
+    assert calls == [("set", "x", 50.0), ("step", "x", 1.0)]
+
+
+def test_a_populate_reports_no_step() -> None:
+    panel, calls = _step_panel()
+    _mixed_x_group(panel)
+    panel._populating = True
+    try:
+        panel.unit_field_editors["x"].stepBy(1)
+    finally:
+        panel._populating = False
+    assert calls == []

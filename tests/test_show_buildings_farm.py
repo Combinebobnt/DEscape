@@ -2,9 +2,8 @@
 Overlay drape, in every view mode.
 
 The iso paths run UnitFilter.matches() before the farm override
-(render._resolve_unit_sprite), but nothing pinned it. Flat has no farm path at
-all (no SpriteLayer, so no farm_by_tile), so there a farm is a plain mark the
-filter already drops; that is confirmed here rather than assumed.
+(render._resolve_unit_sprite), but nothing pinned it. Top-down Flat drapes
+through render.flat_farm_tiles() since GH #150, which runs the same filter.
 
 The real FARM const (50) is used, not a synthetic one: the gate is a
 building_consts() membership test, and FARM resolves no .sld but does carry a
@@ -121,11 +120,24 @@ def test_toggling_show_buildings_on_a_live_cache_drops_and_restores_the_drape(bu
     assert np.array_equal(before, _whole_canvas(cache))
 
 
-def test_flat_has_no_drape_and_a_hidden_farm_leaves_the_bare_map(textures) -> None:
-    shown = _whole_canvas(_flat_cache(_scenario(with_farm=True), sprites=True))
-    hidden = _whole_canvas(
-        _flat_cache(_scenario(with_farm=True), sprites=True, unit_filter=UnitFilter(show_buildings=False))
-    )
+def test_a_hidden_farm_loses_its_flat_drape_too(textures) -> None:
+    """GH #150 gave top-down Flat a drape, so the filter must drop it there too."""
+    shown = _flat_cache(_scenario(with_farm=True), sprites=True)
+    shown_canvas = _whole_canvas(shown).copy()
+    assert shown._farm_tiles, "the default filter built no Flat drape -- test would be vacuous"
+    hidden = _flat_cache(_scenario(with_farm=True), sprites=True, unit_filter=UnitFilter(show_buildings=False))
+    hidden_canvas = _whole_canvas(hidden)
+    assert not hidden._farm_tiles
     empty = _whole_canvas(_flat_cache(_scenario(with_farm=False), sprites=True))
-    assert not np.array_equal(shown, empty), "the farm drew nothing in Flat -- test would be vacuous"
-    assert np.array_equal(hidden, empty)
+    assert not np.array_equal(shown_canvas, empty), "the farm drew nothing in Flat -- test would be vacuous"
+    assert np.array_equal(hidden_canvas, empty)
+
+
+def test_toggling_show_buildings_on_a_live_flat_cache_drops_and_restores_the_drape(textures) -> None:
+    cache = _flat_cache(_scenario(with_farm=True), sprites=True)
+    before = _whole_canvas(cache).copy()
+    cache.set_unit_filter(UnitFilter(show_buildings=False))
+    _whole_canvas(cache)
+    assert not cache._farm_tiles
+    cache.set_unit_filter(UnitFilter())
+    assert np.array_equal(before, _whole_canvas(cache))

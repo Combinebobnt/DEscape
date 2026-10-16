@@ -1,0 +1,273 @@
+"""Settings > General's AoE2:DE profile folder row and its scanned-folders list
+(GH #126 follow-up). conftest's _isolated_settings redirects config.yaml and
+drops AOE2DE_PROFILE_PATH; each test builds a fake profile under tmp_path."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+import yaml
+
+import conftest
+
+pytestmark = [
+    pytest.mark.gui,
+    pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
+]
+
+
+@pytest.fixture(autouse=True)
+def _no_real_install(monkeypatch):
+    """A run with AOE2DE_INSTALL_PATH set (the corpus tier's) would auto-detect the real profile."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+    yield
+    asset_source.clear_install_caches()
+
+
+def _profile_tree(root: Path) -> Path:
+    """A profile with accounts 0 and 7656; 7656 has one enabled and one disabled mod."""
+    profile = root / "Age of Empires 2 DE"
+    (profile / "0" / "resources" / "_common").mkdir(parents=True)
+    mods = profile / "7656" / "mods"
+    for name in ("12_Alpha AI", "34_Off AI"):
+        (mods / "subscribed" / name / "resources" / "_common").mkdir(parents=True)
+    status = {"Mods": [
+        {"Enabled": True, "Path": "subscribed//12_Alpha AI"},
+        {"Enabled": False, "Path": "subscribed//34_Off AI"},
+    ]}
+    (mods / "mod-status.json").write_text(json.dumps(status))
+    return profile
+
+
+def _config() -> dict:
+    from descape import asset_source
+
+    if not asset_source.CONFIG_PATH.is_file():
+        return {}
+    return yaml.safe_load(asset_source.CONFIG_PATH.read_text()) or {}
+
+
+def _list_texts(dialog) -> list[str]:
+    view = dialog.profile_roots_list
+    return [view.item(i).text() for i in range(view.count())]
+
+
+@pytest.fixture
+def opened(monkeypatch):
+    """(dialog, window, rescans), with invalidate_ai_choices() counted."""
+    dialog, window = conftest.dialog_and_window()
+    rescans: list[bool] = []
+    monkeypatch.setattr(window, "invalidate_ai_choices", lambda: rescans.append(True))
+    yield dialog, window, rescans
+    dialog.close()
+    conftest.close_window(window)
+
+
+def test_with_nothing_configured_the_row_says_so(opened) -> None:
+    dialog, _window, _rescans = opened
+    assert dialog.profile_path_edit.text() == ""
+    assert dialog.profile_path_edit.isEnabled()
+    assert not dialog.profile_auto_button.isEnabled()
+    assert "No profile folder found" in dialog.profile_status_label.text()
+    assert _list_texts(dialog) == ["Nothing yet: set the install path above."]
+    assert not dialog.profile_skipped_label.isVisibleTo(dialog)
+
+
+def test_load_writes_the_key_lists_the_folders_and_rescans(opened, tmp_path) -> None:
+    from descape import content_roots
+
+    dialog, window, rescans = opened
+    profile = _profile_tree(tmp_path)
+    dialog.profile_path_edit.setText(str(profile))
+    dialog.load_profile_path()
+
+    assert _config()[content_roots.PROFILE_CONFIG_KEY] == str(profile)
+    assert content_roots.profile_path() == profile
+    assert rescans == [True]
+    assert dialog.profile_status_label.text() == "From config.yaml."
+    assert dialog._profile_status_ok
+    assert dialog.profile_auto_button.isEnabled()
+    assert _list_texts(dialog) == [
+        f"Profile 0: {profile / '0'}",
+        f"Profile 7656: {profile / '7656'}",
+        f"Mod (subscribed): 12_Alpha AI: {profile / '7656' / 'mods' / 'subscribed' / '12_Alpha AI'}",
+    ]
+    assert dialog.profile_skipped_label.text() == "1 mod disabled in the game's mod list is skipped."
+    assert not dialog.profile_skipped_label.isHidden()
+    assert f"Profile folder set to {profile}" in window.status_log.toPlainText()
+
+
+@pytest.mark.parametrize("kind", ["no-numeric-folder", "not-a-folder", "empty"])
+def test_load_refuses_a_folder_without_a_profile_id(opened, tmp_path, kind: str) -> None:
+    dialog, _window, rescans = opened
+    if kind == "no-numeric-folder":
+        folder = tmp_path / "Games"
+        (folder / "logs").mkdir(parents=True)
+        text = str(folder)
+    elif kind == "not-a-folder":
+        text = str(tmp_path / "missing")
+    else:
+        text = "   "
+    dialog.profile_path_edit.setText(text)
+    dialog.load_profile_path()
+    assert _config() == {}
+    assert rescans == []
+    assert dialog._profile_status_ok is False
+    expected = "Enter or browse" if kind == "empty" else "Nothing saved"
+    assert expected in dialog.profile_status_label.text()
+
+
+def test_use_auto_detect_removes_the_key(tmp_path, monkeypatch) -> None:
+    from descape import asset_source, content_roots
+
+    profile = _profile_tree(tmp_path)
+    asset_source.save_profile_path_to_config(profile)
+    asset_source.save_install_path_to_config(tmp_path / "AoE2DE")  # other keys survive
+    dialog, window = conftest.dialog_and_window()
+    try:
+        rescans: list[bool] = []
+        monkeypatch.setattr(window, "invalidate_ai_choices", lambda: rescans.append(True))
+        assert dialog.profile_path_edit.text() == str(profile)
+        assert dialog.profile_auto_button.isEnabled()
+        dialog.profile_auto_button.click()
+        assert content_roots.PROFILE_CONFIG_KEY not in _config()
+        assert _config()["aoe2de_install"] == str(tmp_path / "AoE2DE")
+        assert rescans == [True]
+        assert not dialog.profile_auto_button.isEnabled()
+        assert dialog.profile_path_edit.text() == ""
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_a_missing_config_folder_is_reported_and_can_be_cleared(tmp_path) -> None:
+    from descape import asset_source
+
+    missing = tmp_path / "gone"
+    asset_source.save_profile_path_to_config(missing)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        assert dialog.profile_path_edit.text() == str(missing)
+        assert dialog.profile_status_label.text() == (
+            f"config.yaml points at {missing}, which is not a folder, so no profile is scanned."
+        )
+        assert dialog._profile_status_ok is False
+        assert dialog.profile_auto_button.isEnabled()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("valid", [True, False], ids=["folder", "not-a-folder"])
+def test_the_env_var_disables_the_row(tmp_path, monkeypatch, valid: bool) -> None:
+    from descape import content_roots
+
+    target = _profile_tree(tmp_path) if valid else tmp_path / "missing"
+    monkeypatch.setenv(content_roots.PROFILE_ENV_VAR, str(target))
+    dialog, window = conftest.dialog_and_window()
+    try:
+        for widget in (dialog.profile_path_edit, dialog.profile_browse_button,
+                       dialog.profile_load_button, dialog.profile_auto_button):
+            assert not widget.isEnabled()
+        assert dialog.profile_path_edit.text() == str(target)
+        assert content_roots.PROFILE_ENV_VAR in dialog.profile_status_label.text()
+        assert dialog._profile_status_ok is valid
+        assert len(_list_texts(dialog)) == (3 if valid else 1)
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_an_install_load_refreshes_the_auto_detected_profile(tmp_path, monkeypatch) -> None:
+    """Auto-detect derives the profile from the install's Steam library."""
+    from descape import asset_source, content_roots
+
+    steamapps = tmp_path / "steamapps"
+    install = steamapps / "common" / "AoE2DE"
+    install.mkdir(parents=True)
+    profile = steamapps / content_roots._PROTON_PROFILE_SUBPATH
+    (profile / "0").mkdir(parents=True)
+    monkeypatch.setattr(asset_source, "_override_path", None)  # restored after the test
+    monkeypatch.setattr(asset_source, "validate_install_path", lambda path: (True, "ok"))
+    monkeypatch.setattr(asset_source, "save_install_path_to_config", lambda path: None)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        assert dialog.profile_path_edit.text() == ""
+        dialog.install_path_edit.setText(str(install))
+        dialog.load_install_path()
+        assert dialog.profile_path_edit.text() == str(profile)
+        assert dialog.profile_status_label.text() == "Auto-detected from the install."
+        assert _list_texts(dialog) == [f"Install: {install}", f"Profile 0: {profile / '0'}"]
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+        asset_source.clear_install_caches()
+
+
+def test_the_scrolled_general_tab_still_paints_the_tab_page(opened) -> None:
+    """Its status labels are shaded for the tab page (status_color(on_tab_page=True));
+    a plain scroll area would paint the window colour under them instead."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QApplication, QTabWidget
+
+    from descape.viewer_dialogs import painted_tab_page
+
+    dialog, _window, _rescans = opened
+    dialog.findChild(QTabWidget).setCurrentIndex(0)
+    dialog.show()
+    for _ in range(4):
+        QApplication.processEvents()
+    image = dialog.grab().toImage()
+    page = dialog.profile_status_label.parentWidget()
+    corner = page.mapTo(dialog, QPoint(2, 2))
+    assert image.pixelColor(corner).name() == painted_tab_page(QApplication.palette())
+
+
+def test_a_theme_change_restyles_the_profile_status_line() -> None:
+    """Light to parchment, as test_themes' install-label twin: their status colours differ."""
+    from descape import settings
+    from descape.viewer import status_color
+    from descape.viewer_dialogs import apply_theme
+
+    with conftest.restoring_app_theme() as app:
+        apply_theme(app, "light", {})
+        dialog, window = conftest.dialog_and_window()
+        try:
+            ok = dialog._profile_status_ok
+            before = dialog.profile_status_label.styleSheet()
+            assert before == f"color: {status_color(ok, on_tab_page=True)};"
+            settings.set_theme("editor_parchment_red")
+            apply_theme(app, "editor_parchment_red", {})
+            after = dialog.profile_status_label.styleSheet()
+            assert after != before
+            assert after == f"color: {status_color(ok, on_tab_page=True)};"
+        finally:
+            dialog.close()
+            conftest.close_window(window)
+
+
+def test_long_paths_scroll_inside_the_list_not_the_dialog(opened, tmp_path) -> None:
+    """The list keeps a capped height and a long path never widens the dialog."""
+    from PyQt5.QtWidgets import QApplication, QTabWidget
+
+    dialog, _window, _rescans = opened
+    width_before = dialog.minimumSizeHint().width()
+    deep = tmp_path.joinpath(*(["a_rather_long_folder_name"] * 12))
+    profile = _profile_tree(deep)
+    dialog.profile_path_edit.setText(str(profile))
+    dialog.load_profile_path()
+    tabs = dialog.findChild(QTabWidget)
+    tabs.setCurrentIndex(0)
+    dialog.show()
+    for _ in range(4):
+        QApplication.processEvents()
+    view = dialog.profile_roots_list
+    assert dialog.minimumSizeHint().width() == width_before
+    assert view.horizontalScrollBar().maximum() > 0
+    assert view.height() == view.maximumHeight()
+    assert view.height() >= dialog._PROFILE_LIST_ROWS * view.sizeHintForRow(0)

@@ -88,6 +88,111 @@ def test_new_map_does_not_touch_recent_files(tmp_path) -> None:
         window.close()
 
 
+def _answer_save_dialog(monkeypatch, dest: Path) -> None:
+    import descape.viewer as viewer_module
+
+    monkeypatch.setattr(viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
+
+
+def _recent_menu_names(window) -> list[str]:
+    return [a.text() for a in window.recent_menu.actions() if a.data()]
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_gh215_new_map_then_save_as_lists_the_file(tmp_path, monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    dest = tmp_path / "fresh.aoe2scenario"
+    _answer_save_dialog(monkeypatch, dest)
+    window = ViewerWindow()
+    try:
+        window.new_map()
+        window.save_as()
+        assert dest.is_file()
+        assert settings.get_recent_files() == [str(dest)]
+        assert _recent_menu_names(window) == [dest.name]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_gh215_save_on_a_new_map_falls_through_to_save_as_and_lists_the_file(tmp_path, monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    dest = tmp_path / "first_save.aoe2scenario"
+    _answer_save_dialog(monkeypatch, dest)
+    window = ViewerWindow()
+    try:
+        window.new_map()
+        window.save()
+        assert settings.get_recent_files() == [str(dest)]
+        assert _recent_menu_names(window) == [dest.name]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_gh215_save_as_under_a_new_name_puts_it_first(tmp_path, monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    source = _copy_fixture(tmp_path, "source.aoe2scenario")
+    dest = tmp_path / "renamed.aoe2scenario"
+    _answer_save_dialog(monkeypatch, dest)
+    window = ViewerWindow()
+    try:
+        window.load_scenario(source)
+        window.save_as()
+        assert settings.get_recent_files() == [str(dest), str(source)]
+        assert _recent_menu_names(window) == [dest.name, source.name]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_gh215_a_blocked_save_as_lists_nothing(tmp_path, monkeypatch) -> None:
+    conftest.ensure_qapp()
+    import descape.viewer as viewer_module
+    from descape.viewer import ViewerWindow
+
+    blocked = tmp_path / "mods" / "subscribed" / "x.aoe2scenario"
+    blocked.parent.mkdir(parents=True)
+    _answer_save_dialog(monkeypatch, blocked)
+    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: None))
+    window = ViewerWindow()
+    try:
+        window.new_map()
+        window.save_as()
+        assert not blocked.exists()
+        assert settings.get_recent_files() == []
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_gh215_an_autosave_slot_never_enters_recent_files(tmp_path) -> None:
+    from descape import autosave
+
+    window = conftest.blank_window(load=False)
+    try:
+        window.new_map()
+        tiles = window.scenario.map_manager.terrain
+        new_terrain = 15 if tiles[0].terrain_id == 2 else 2
+        window.edit_history.apply("paint", tiles, lambda: setattr(tiles[0], "terrain_id", new_terrain))
+        window._autosave_tick()
+        assert len(list(autosave.autosave_dir().glob(f"*{autosave.AUTOSAVE_SUFFIX}"))) == 1
+        assert settings.get_recent_files() == []
+    finally:
+        conftest.close_window(window)
+
+
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_recent_menu_skips_a_file_that_no_longer_exists(tmp_path) -> None:
