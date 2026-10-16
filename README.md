@@ -31,6 +31,11 @@ First-run notes:
   (Ubuntu 20.04, Debian 10, RHEL 8 or later); the v0.7 builds need 2.35
   (Ubuntu 22.04, Debian 12, Fedora 36 or later). On an older distro they fail
   with a `GLIBC_2.xx not found` error; run from source there instead.
+- **Linux file dialogs:** when xdg-desktop-portal is running (most KDE and
+  GNOME desktops), Open, Save As and the folder pickers use the desktop's own
+  dialog; otherwise Qt's. To keep Qt's dialog anyway, start DEscape with an
+  empty `QT_QPA_PLATFORMTHEME=` (for example
+  `QT_QPA_PLATFORMTHEME= ./LAUNCH_DEscape_LinuxMac.sh`).
 - **Windows:** the build is not code-signed, so SmartScreen may show "Windows
   protected your PC". Choose More info, then Run anyway. A console window opens
   alongside the editor; that is expected.
@@ -281,6 +286,11 @@ a condition or effect of a type DEscape does not know is left unmarked.
 Settings > Appearance > Trigger status switches the colours to tick and cross
 icons (or both, or off), stops marking rows that pass so only problems stand
 out, and changes the two colours.
+
+**Button slots.** Change Train Location, Add Train Location and Change
+Research Location show the building's command buttons under the button slot
+field, as they will look after the trigger fires; click a cell to pick that
+slot.
 
 For XS scripts in Script Call triggers, including scripts longer than the
 in-game editor accepts, see `docs/XS_SCRIPTING.md`.

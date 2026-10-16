@@ -37,6 +37,13 @@ and `side_terrain` lists the non-negative ids of `placement_side_terrain`
 `terrain_restrictions` section maps each restriction id a named object uses,
 plus the Beach row 2 that the shore rule reads, to the enabled terrain ids
 its .dat row passes (a value above 0).
+GH #169's command-button keys, each omitted when empty: an object's `train`
+lists `[building, button]` for each .dat `creatable.train_locations` entry
+with a building id >= 0 and a button >= 1 (1..15 the 3x5 grid, 21..35 a
+second page; 0 is no button), and a tech's `research` lists its
+`research_locations` the same way. An object trained at the builder task
+unit 118 (a building in a villager's build menu) also carries its raw
+`interface_kind`, which picks the menu page: 2 economic, 10 military.
 Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
@@ -91,7 +98,22 @@ def _object_entries(units: list, blank_ids: frozenset[int]) -> dict[str, dict]:
         side_terrain = [terrain_id for terrain_id in unit.placement_side_terrain if terrain_id >= 0]
         if side_terrain:
             entries[str(unit_const)]["side_terrain"] = side_terrain
+        if unit.creatable is not None:
+            train = _button_slots((loc.unit_id, loc.button_id) for loc in unit.creatable.train_locations)
+            if train:
+                entries[str(unit_const)]["train"] = train
+                if any(building == _BUILDER_UNIT for building, _button in train):
+                    entries[str(unit_const)]["interface_kind"] = unit.interface_kind
     return entries
+
+
+# The villager task unit the .dat trains every building at (VMBLD).
+_BUILDER_UNIT = 118
+
+
+def _button_slots(locations) -> list[list[int]]:
+    """[building, button] for each (building, button) pair with a building and a real button."""
+    return [[building, button] for building, button in locations if building >= 0 and button >= 1]
 
 
 # The .dat's Beach restriction row. No object uses it, but it is the shore a
@@ -156,6 +178,9 @@ def _tech_entries(techs: list) -> dict[str, dict]:
             "icon": tech.icon_id,
             "code": tech.name,
         }
+        research = _button_slots((loc.location_id, loc.button_id) for loc in tech.research_locations)
+        if research:
+            entries[str(tech_id)]["research"] = research
     return entries
 
 

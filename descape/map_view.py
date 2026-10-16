@@ -400,6 +400,15 @@ class MapView(QGraphicsView):
     TRIGGER_DIM_PEN_ALPHA = 110
     # A location mark is its tile's own polygon shrunk to this fraction.
     TRIGGER_LOCATION_SCALE = 0.6
+    # GH #229: the edge and corner grab bands' screen width.
+    AREA_EDIT_BAND_PX = 6
+    # Each grab zone's drag direction in map axes, for its on-screen cursor.
+    _AREA_ZONE_AXES: ClassVar[dict[str, tuple[int, int]]] = {
+        "w": (1, 0), "e": (1, 0), "n": (0, 1), "s": (0, 1),
+        "nw": (1, 1), "se": (1, 1), "ne": (1, -1), "sw": (1, -1),
+    }
+    # A screen direction in 45 degree steps counter-clockwise from the x axis.
+    _SIZE_CURSORS = (Qt.SizeHorCursor, Qt.SizeBDiagCursor, Qt.SizeVerCursor, Qt.SizeFDiagCursor)
 
     # Map mirroring's (Stage 1) live preview overlay in MirrorDialog: the
     # shaded source slice and, in Flat mode only, the mode's own symmetry
@@ -555,6 +564,19 @@ class MapView(QGraphicsView):
         self._tile_pick_anchor: tuple[int, int] | None = None
         # Its own scene item, not the trigger overlay, which the View toggle hides.
         self._tile_pick_item: QGraphicsPathItem | None = None
+        # GH #229's Edit Area: the one area the mouse may move or resize (pushed by
+        # the window), the zone under the cursor, a live drag's (zone, start tile,
+        # coords) and its last tile, and the release's write. The drag previews
+        # through the pick's item above; the two are never live together.
+        self._area_edit: tuple[int, int, int, int] | None = None
+        # Its Move, Resize and Tile borders options: which zones grab, and how wide.
+        self._area_move = True
+        self._area_resize = True
+        self._area_tile_borders = False
+        self._area_hover: str | None = None
+        self._area_drag: tuple[str, tuple[int, int], tuple[int, int, int, int]] | None = None
+        self._area_drag_end: tuple[int, int] | None = None
+        self.on_area_edit = lambda x1, y1, x2, y2: None
         # (cover tile, stack index) of the last pick, so a repeat click walks the stack.
         self._picker_cycle: tuple[tuple[int, int], int] | None = None
         # The Eyedropper's Units-mode pick: on_unit_eyedrop(entry, cover_tile, modifiers),
@@ -1342,6 +1364,7 @@ class MapView(QGraphicsView):
         # forced-back-to-Pan path (which calls set_tool, which cancels
         # already), so this is a second belt on the same trousers.
         self._cancel_shape()
+        self._cancel_area_drag()
         self._sync_stack_badges_visible()
         # Units mode forces NoDrag for every tool but Pan. Without this a
         # Select or Move press would fall through to ScrollHandDrag and pan.
@@ -1357,6 +1380,8 @@ class MapView(QGraphicsView):
             (self._mode == "units" and self._tool != "pan")
             or self._unit_picker_active
             or self._tile_picker_kind is not None
+            or self._area_hover is not None
+            or self._area_drag is not None
             or self._tool in EDIT_TOOLS
             or self._tool == TOOL_RULER
             or self._tool == TOOL_EYEDROPPER
@@ -1373,6 +1398,7 @@ class MapView(QGraphicsView):
             return
         self._unit_picker_active = active
         self._picker_cycle = None
+        self._cancel_area_drag()
         if not active:
             self._clear_unit_hover()
         self._apply_drag_mode()
@@ -1384,6 +1410,7 @@ class MapView(QGraphicsView):
     def set_tile_picker(self, kind: str | None) -> None:
         """GH #138: "point" picks one tile (on_tile_pick), "rect" one dragged
         rectangle (on_rect_pick), None disarms. The window forces Pan first."""
+        self._cancel_area_drag()
         self._tile_picker_kind = kind
         self._tile_pick_anchor = None
         self._clear_tile_pick_preview()
@@ -1392,6 +1419,109 @@ class MapView(QGraphicsView):
 
     def tile_picker_kind(self) -> str | None:
         return self._tile_picker_kind
+
+    def set_area_edit(self, coords: tuple[int, int, int, int] | None) -> None:
+        """GH #229: the inclusive area (x1, y1, x2, y2) a Pan drag may move or
+        resize, or None. Pushed by the window; a change drops a live drag."""
+        if coords == self._area_edit:
+            return
+        self._area_edit = coords
+        self._cancel_area_drag()
+
+    def area_edit(self) -> tuple[int, int, int, int] | None:
+        return self._area_edit
+
+    def set_area_edit_options(self, move: bool, resize: bool, tile_borders: bool) -> None:
+        """Edit Area's options. Resize off makes the whole area the move zone, Move
+        off leaves only the edges and corners, Tile borders makes the border at
+        least one tile wide on an axis 3+ tiles long. A change drops a live drag."""
+        options = (move, resize, tile_borders)
+        if options == (self._area_move, self._area_resize, self._area_tile_borders):
+            return
+        self._area_move, self._area_resize, self._area_tile_borders = options
+        self._cancel_area_drag()
+
+    def _area_edit_live(self) -> bool:
+        return (
+            self._area_edit is not None
+            and (self._area_move or self._area_resize)
+            and self._tool == "pan"
+            and self._tile_picker_kind is None
+            and not self._unit_picker_active
+        )
+
+    def _map_axes_on_screen(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """One tile along map x and along map y as viewport-pixel vectors, through
+        the whole view transform (an iso view is squashed vertically)."""
+        if self._terrain_style == "flat" or self._iso_proj is None:
+            step = self._tile_pixels or 1
+            axes = ((step, 0.0), (0.0, step))
+        else:
+            hw, hh = self._iso_proj.half_w, self._iso_proj.half_h
+            axes = ((hw, -hh), (hw, hh))
+        t = self.transform()
+        return tuple((x * t.m11() + y * t.m21(), x * t.m12() + y * t.m22()) for x, y in axes)
+
+    def _area_band_tiles(self) -> float:
+        """AREA_EDIT_BAND_PX in tiles, across the narrower of a tile's two edge spacings."""
+        (ax, ay), (bx, by) = self._map_axes_on_screen()
+        area = abs(ax * by - ay * bx)
+        across = area / max(math.hypot(ax, ay), math.hypot(bx, by)) if area else 1.0
+        return self.AREA_EDIT_BAND_PX / across
+
+    def _area_hit(self, pos: QPointF) -> str | None:
+        """The live area's grab zone under scene-space pos, or None."""
+        if not self._area_edit_live():
+            return None
+        point = self._pick_map_point(pos) or self.ground_map_point(pos)
+        if point is None:
+            return None
+        # Resize off means no border at all, Tile borders included.
+        band = self._area_band_tiles() if self._area_resize else 0.0
+        tile_borders = self._area_tile_borders and self._area_resize
+        zone = trigger_geometry.area_hit_zone(self._area_edit, point, band, tile_borders)
+        return None if zone == trigger_geometry.ZONE_MOVE and not self._area_move else zone
+
+    def _area_zone_cursor(self, zone: str) -> Qt.CursorShape:
+        """The resize cursor along the zone's ON-SCREEN drag direction, so an
+        iso map's diagonal edges read right."""
+        if zone == trigger_geometry.ZONE_MOVE:
+            return Qt.SizeAllCursor
+        ax, ay = self._AREA_ZONE_AXES[zone]
+        (ex, ey), (fx, fy) = self._map_axes_on_screen()
+        sx, sy = ax * ex + ay * fx, ax * ey + ay * fy
+        return self._SIZE_CURSORS[round(math.degrees(math.atan2(-sy, sx)) / 45) % 4]
+
+    def _set_area_hover(self, zone: str | None) -> None:
+        if zone == self._area_hover:
+            return
+        self._area_hover = zone
+        self._apply_drag_mode()
+        self._apply_tool_cursor()
+
+    def _cancel_area_drag(self) -> None:
+        """Drops a GH #229 drag with no write, and the hover zone with it."""
+        if self._area_drag is not None:
+            self._area_drag = None
+            self._area_drag_end = None
+            self._clear_tile_pick_preview()
+        self._area_hover = None
+        self._apply_drag_mode()
+        self._apply_tool_cursor()
+
+    def _dragged_area(self) -> tuple[int, int, int, int]:
+        zone, start, coords = self._area_drag
+        return trigger_geometry.dragged_area(coords, zone, start, self._area_drag_end, self._map_width, self._map_height)
+
+    def _update_area_drag_preview(self) -> None:
+        rect = self._trigger_area_rect(self._dragged_area())
+        self._show_tile_pick_path(
+            self._rect_ring_path(rect) if rect is not None else QPainterPath(),
+            self._trigger_outline_pens[True],
+            QBrush(self._trigger_fill_colors[True]),
+            self.TRIGGER_AREA_Z,
+            self._overlay_opacity("trigger_area"),
+        )
 
     def _tile_pick_sample(self, pos: QPointF) -> tuple[int, int] | None:
         """A rect drag's tile under scene-space pos: _pick_tile on the map, else
@@ -1428,6 +1558,12 @@ class MapView(QGraphicsView):
                 path.addPolygon(polygon)
                 path.closeSubpath()
             pen, brush, z, opacity = self._trigger_run_pens[True], QBrush(Qt.NoBrush), self.TRIGGER_MARK_Z, 1.0
+        self._show_tile_pick_path(path, pen, brush, z, opacity)
+
+    def _show_tile_pick_path(self, path: QPainterPath, pen, brush: QBrush, z: float, opacity: float) -> None:
+        scene = self.scene()
+        if scene is None:
+            return
         item = self._tile_pick_item
         if item is None:
             item = scene.addPath(path, pen, brush)
@@ -2251,6 +2387,7 @@ class MapView(QGraphicsView):
         # drops it.
         self._cancel_shape()
         self._brush_wheel_accum = 0  # a half-stepped brush notch belongs to the tool being left
+        self._cancel_area_drag()
         self._sync_pulse_timer()
         # Routed through _apply_drag_mode() rather than set here directly, so
         # Units mode's NoDrag can't be undone by a tool switch.
@@ -2265,6 +2402,10 @@ class MapView(QGraphicsView):
             return
         if self._unit_picker_active:
             self.setCursor(Qt.PointingHandCursor)
+            return
+        zone = self._area_drag[0] if self._area_drag is not None else self._area_hover
+        if zone is not None:
+            self.setCursor(self._area_zone_cursor(zone))
             return
         # Above the mode check, unlike every other tool: Units mode's
         # pointing hand otherwise wins and the Ruler loses its aiming cursor
@@ -2471,6 +2612,23 @@ class MapView(QGraphicsView):
                 if self._map_rect.contains(pos):
                     self._picker_click(pos)
             return
+        # GH #229: with Pan, a left press on the live area's middle, edge or corner
+        # starts a move or resize; elsewhere it pans. A right press mid-drag cancels it.
+        if self._area_drag is not None:
+            if event.button() == Qt.RightButton:
+                self._cancel_area_drag()
+            return
+        if event.button() == Qt.LeftButton and self._area_edit_live():
+            pos = self.mapToScene(event.pos())
+            zone = self._area_hit(pos)
+            start = self._tile_pick_sample(pos) if zone is not None else None
+            if start is not None:
+                self._area_drag = (zone, start, self._area_edit)
+                self._area_drag_end = start
+                self._apply_drag_mode()
+                self._apply_tool_cursor()
+                self._update_area_drag_preview()
+                return
         # No single tool arms every unit gesture field, so a stale drag or marquee
         # from a swallowed release dies at the next left press, whichever tool presses.
         if self._mode == "units" and event.button() == Qt.LeftButton:
@@ -2692,6 +2850,19 @@ class MapView(QGraphicsView):
                     min(anchor[0], end[0]), min(anchor[1], end[1]), max(anchor[0], end[0]), max(anchor[1], end[1])
                 )
             return
+        # GH #229's drag writes once, here, and only a real change.
+        if self._area_drag is not None:
+            if event.button() == Qt.LeftButton:
+                pos = self.mapToScene(event.pos())
+                end = self._tile_pick_sample(pos)
+                if end is not None:
+                    self._area_drag_end = end
+                coords, area = self._area_drag[2], self._dragged_area()
+                self._cancel_area_drag()
+                if area != coords:
+                    self.on_area_edit(*area)
+                self._set_area_hover(self._area_hit(pos))
+            return
         # A left release only ever DECIDES for the Ruler; the endpoint was
         # already placed by mouseMoveEvent, so there is nothing to redraw. A
         # release inside the start tile deliberately leaves the session
@@ -2858,6 +3029,9 @@ class MapView(QGraphicsView):
             return
         if event.key() == Qt.Key_Escape and self._unit_picker_active:
             self.on_unit_picker_cancel()
+            return
+        if event.key() == Qt.Key_Escape and self._area_drag is not None:
+            self._cancel_area_drag()
             return
         # Above the Ruler's own Escape below: the two are never live at once
         # (different tools), so order is arbitrary, but a mutating tool's
@@ -3092,9 +3266,11 @@ class MapView(QGraphicsView):
         # Hover only -- a selection deliberately survives the cursor leaving
         # the map, the same way it survives moving onto empty ground.
         self._clear_unit_hover()
-        # A tile pick's hover goes; a held rect drag does not, its release still commits.
-        if self._tile_pick_anchor is None:
+        # A tile pick's hover goes; a held rect or area drag does not, its release still commits.
+        if self._tile_pick_anchor is None and self._area_drag is None:
             self._clear_tile_pick_preview()
+        if self._area_drag is None:
+            self._set_area_hover(None)
         # Defensive: a drag that exits the widget bounds without a release
         # (Qt usually still routes the eventual release back here via its
         # implicit mouse grab during a press-drag, but this covers the case
@@ -4251,6 +4427,7 @@ class MapView(QGraphicsView):
         # Same for GH #138's pick preview; a held rect drag has no map left to commit against.
         self._tile_pick_item = None
         self._tile_pick_anchor = None
+        self._cancel_area_drag()
         self._unit_index = None
         # scene().clear() destroyed these too. Dropped outright, unlike
         # set_source()'s own region handling below: File > Close leaves no
@@ -4597,6 +4774,7 @@ class MapView(QGraphicsView):
         # GH #138's pick preview went too; a held rect drag's anchor is in the old projection.
         self._tile_pick_item = None
         self._tile_pick_anchor = None
+        self._cancel_area_drag()
         # The ghost went with it too, and the drag behind it means nothing
         # against a new scenario -- dropped, not re-anchored, so the release
         # commits nothing (see keyPressEvent's Escape branch for the other
@@ -5774,6 +5952,20 @@ class MapView(QGraphicsView):
             else:
                 self._update_tile_pick_preview(tile if on_map and tile is not None and self._on_map(tile) else None)
             return
+        # GH #229: a live drag redraws its preview, clamped like a rect pick; else the hover zone.
+        # A move with the button up means its release was swallowed: the drag dies unwritten.
+        if self._area_drag is not None and not event.buttons() & Qt.LeftButton:
+            self._cancel_area_drag()
+        if self._area_drag is not None:
+            self._clear_highlight()
+            self._clear_pan_highlight()
+            end = self._tile_pick_sample(pos)
+            if end is not None:
+                self._area_drag_end = end
+            self._update_area_drag_preview()
+            return
+        if self._area_edit is not None:
+            self._set_area_hover(self._area_hit(pos))
         # Pick from map's hover, the Units-mode unit cue in whatever mode is showing.
         if self._unit_picker_active:
             self._clear_highlight()

@@ -3378,6 +3378,12 @@ class ViewerWindow(QMainWindow):
         # or None. Held here, not read off the panel, so an undo in View mode can
         # re-derive it while the panel sits unrefreshed.
         self._trigger_overlay_ref: tuple[tuple[int, ...], frozenset[tuple[str, int]]] | None = None
+        # The shapes the overlay last drew, and GH #229's Edit Area target in them:
+        # (trigger index, entry kind, entry index, area coords), or None.
+        self._trigger_overlay_shapes: list[trigger_geometry.TriggerShape] = []
+        self._area_edit_target: tuple | None = None
+        # Edit Area's own enable gate, Create Objects' trigger_editable.
+        self._area_edit_editable = False
         self.map_options_panel = MapOptionsPanel(on_option_field=self.set_option_field)
         self.players_panel = PlayersPanel(
             on_player_field=self.set_player_field,
@@ -3554,6 +3560,7 @@ class ViewerWindow(QMainWindow):
         self.map_view.on_unit_picker_cancel = self._on_unit_picker_cancel
         self.map_view.on_tile_pick = self._on_tile_picked
         self.map_view.on_rect_pick = self._on_rect_picked
+        self.map_view.on_area_edit = self._on_area_edited
         self.map_view.on_tile_picker_cancel = self.disarm_unit_picker
         self.map_view.on_unit_eyedrop = self.pick_unit_value
         self._build_keybind_actions()
@@ -3941,6 +3948,7 @@ class ViewerWindow(QMainWindow):
         )
         self.stack_badges_action.setToolTip(
             "In Units mode, a count over every spot where a unit is hidden under another. "
+            "Grass and other passable eye candy never counts as hidden. "
             "Click the spot repeatedly to cycle through the stack."
         )
         view_menu.addAction(self.stack_badges_action)
@@ -8252,7 +8260,6 @@ class ViewerWindow(QMainWindow):
         )
         tool_group.addAction(self.create_objects_action)
         toolbar.addAction(self.create_objects_action)
-
         # Every tool action's only host has been this toolbar up to now.
         # Stage 3's overflow button moves some of these into a QMenu instead
         # (toolbar.removeAction()), and a QAction with no host at all can't
@@ -8619,6 +8626,36 @@ class ViewerWindow(QMainWindow):
         )
         self.gate_walls_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.gate_walls_param_action = param_toolbar.addWidget(self.gate_walls_check)
+
+        # GH #229, under Pan in Triggers mode: Edit Area (saved) lets Pan drag the shown
+        # entry's area; Move and Resize (session-only) pick which parts grab, and Tile
+        # borders (saved) widens the resize border. The last three grey out while it is off.
+        self.area_edit_check = QCheckBox("Edit Area")
+        self.area_edit_check.setToolTip(
+            "Drag the selected trigger area's middle to move it, or its edges and corners to "
+            "resize it -- one undo step per drag"
+        )
+        self.area_edit_check.setChecked(settings.get_trigger_area_edit())
+        self.area_edit_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.area_edit_check.toggled.connect(self._on_area_edit_toggled)
+        self._area_option_params = [(param_toolbar.addWidget(self.area_edit_check), self.area_edit_check)]
+        self._area_option_params.append((param_toolbar.addSeparator(), None))
+        self.area_move_check = QCheckBox("Move")
+        self.area_move_check.setToolTip("Drag the middle of the area to move it")
+        self.area_move_check.setChecked(True)
+        self.area_resize_check = QCheckBox("Resize")
+        self.area_resize_check.setToolTip("Drag an edge or corner of the area to resize it")
+        self.area_resize_check.setChecked(True)
+        self.area_tile_borders_check = QCheckBox("Tile borders")
+        self.area_tile_borders_check.setToolTip(
+            "Resize from the whole outer ring of tiles instead of a thin border, on sides at least 3 tiles long"
+        )
+        self.area_tile_borders_check.setChecked(settings.get_trigger_area_tile_borders())
+        for check in (self.area_move_check, self.area_resize_check, self.area_tile_borders_check):
+            check.setEnabled(False)  # re-gated by _update_tool_enabled()
+            check.toggled.connect(self._on_area_options_toggled)
+            self._area_option_params.append((param_toolbar.addWidget(check), check))
+        self.map_view.set_area_edit_options(True, True, self.area_tile_borders_check.isChecked())
 
         # GH #108/#109: removes every pinned ruler. Shown with the Ruler only,
         # enabled only while one exists (re-gated by _on_pinned_rulers_changed too).
@@ -9046,6 +9083,84 @@ class ViewerWindow(QMainWindow):
         if checked and ref is not None and len(ref[0]) > 1:
             # A union is not derived while the overlay is off (_refresh_trigger_overlay()).
             self._refresh_trigger_overlay()
+        self._push_area_edit_target()
+
+    def _on_area_edit_toggled(self, checked: bool) -> None:
+        settings.set_trigger_area_edit(checked)
+        self._update_tool_enabled()
+        if checked and self.mode == "triggers" and self._area_edit_target is None:
+            self._log_status("Select one condition or effect with an area to move or resize it")
+
+    def _area_options_shown(self) -> bool:
+        """Edit Area's four checkboxes: under Pan in Triggers mode."""
+        return self.mode == "triggers" and self._current_tool == "pan"
+
+    def _area_edit_on(self) -> bool:
+        return self.area_edit_check.isChecked() and self.area_edit_check.isEnabled()
+
+    def _regate_area_options(self) -> None:
+        self.area_edit_check.setEnabled(self._area_options_shown() and self._area_edit_editable)
+        on = self._area_edit_on()
+        self.area_move_check.setEnabled(on)
+        self.area_resize_check.setEnabled(on)
+        # It only shapes the resize border.
+        self.area_tile_borders_check.setEnabled(on and self.area_resize_check.isChecked())
+
+    def _on_area_options_toggled(self) -> None:
+        tile_borders = self.area_tile_borders_check.isChecked()
+        if tile_borders != settings.get_trigger_area_tile_borders():
+            settings.set_trigger_area_tile_borders(tile_borders)
+        self._regate_area_options()
+        self.map_view.set_area_edit_options(
+            self.area_move_check.isChecked(), self.area_resize_check.isChecked(), tile_borders
+        )
+
+    def _push_area_edit_target(self) -> None:
+        """GH #229: hands the map view the one area Edit Area may drag, or None.
+        Live only with the box ticked, in Triggers mode with the overlay shown and
+        Pan active, and for the form's one entry whose area is set and on the map.
+        The map view itself stands down while a pick is armed."""
+        target = None
+        ref = self._trigger_overlay_ref
+        loaded = self.scenario
+        if (
+            self._area_edit_on()
+            and self.mode == "triggers"
+            and self.trigger_overlay_action.isChecked()
+            and self._current_tool == "pan"
+            and loaded is not None
+            and ref is not None
+            and len(ref[0]) == 1
+            and len(ref[1]) == 1
+        ):
+            (index,), (entry_ref,) = ref[0], tuple(ref[1])
+            mm = loaded.map_manager
+            for shape in self._trigger_overlay_shapes:
+                if (
+                    shape.trigger_index == index
+                    and shape.entry_ref == entry_ref
+                    and shape.fields == trigger_geometry.AREA_FIELDS
+                ):
+                    x1, y1, x2, y2 = shape.coords
+                    if 0 <= x1 <= x2 < mm.map_width and 0 <= y1 <= y2 < mm.map_height:
+                        target = (index, *entry_ref, shape.coords)
+                    break
+        previous = self._area_edit_target
+        self._area_edit_target = target
+        if previous is not None and target is not None and previous[:3] != target[:3]:
+            # Another entry with the same area: a live drag belongs to the old one.
+            self.map_view.set_area_edit(None)
+        self.map_view.set_area_edit(None if target is None else target[3])
+
+    def _on_area_edited(self, x1: int, y1: int, x2: int, y2: int) -> None:
+        """GH #229's release: one "Move Area" or "Resize Area" record, through GH #138's funnel."""
+        target = self._area_edit_target
+        if target is None or not self.trigger_panel.is_pick_target_current(target):
+            return
+        old = target[3]
+        moved = (x2 - x1, y2 - y1) == (old[2] - old[0], old[3] - old[1])
+        values = dict(zip(trigger_geometry.AREA_FIELDS, (x1, y1, x2, y2), strict=True))
+        self.set_entry_field_group(target[0], (target[1], target[2]), values, "Move Area" if moved else "Resize Area")
 
     def _on_trigger_selection_changed(self) -> None:
         """The panel's selection-set callback: Copy gating, and the overlay,
@@ -9315,6 +9430,10 @@ class ViewerWindow(QMainWindow):
             self._refresh_trigger_overlay()
 
     def _refresh_trigger_overlay(self) -> None:
+        self._trigger_overlay_shapes = self._draw_trigger_overlay()
+        self._push_area_edit_target()
+
+    def _draw_trigger_overlay(self) -> list[trigger_geometry.TriggerShape]:
         """Re-derives the overlay from a fresh parse_triggers(), never a held
         manager (the library's field gating is process-global). Read-only, so
         it never goes through TriggerEditModel.
@@ -9328,10 +9447,10 @@ class ViewerWindow(QMainWindow):
         # trigger_read_supported first: a ref only exists once the panel parsed.
         if ref is None or loaded is None or loaded.trigger_read_supported is not True:
             self.map_view.clear_trigger_overlay()
-            return
+            return []
         if len(ref[0]) > 1 and not self.trigger_overlay_action.isChecked():
             self.map_view.clear_trigger_overlay()
-            return
+            return []
         manager = parse_triggers(loaded)
         indices, emphasis = ref
         if (
@@ -9341,7 +9460,7 @@ class ViewerWindow(QMainWindow):
         ):
             self._trigger_overlay_ref = None
             self.map_view.clear_trigger_overlay()
-            return
+            return []
         vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
         references = self._unit_reference_index()
         shapes = []
@@ -9362,8 +9481,9 @@ class ViewerWindow(QMainWindow):
                     f"Trigger overlay hidden: the {len(indices)} selected triggers have more than "
                     f"{MAX_OVERLAY_SHAPES} areas, locations and units to draw"
                 )
-                return
+                return []
         self.map_view.show_trigger_overlay(shapes, emphasis or None)
+        return shapes
 
     def _on_distance_tick_interval(self, tiles: int) -> None:
         settings.set_distance_tick_interval(tiles)
@@ -10879,6 +10999,7 @@ class ViewerWindow(QMainWindow):
         # clicks, so the template itself is validated per click instead.
         trigger_editable = has_map and self.mode == "triggers" and self.trigger_panel._editable
         self.create_objects_action.setEnabled(trigger_editable)
+        self._area_edit_editable = trigger_editable
         # Cycle Variant needs a selection as well as Units mode -- it acts on
         # what is already selected rather than on a click, so with nothing
         # selected there is no target and the button should say so by being
@@ -11191,6 +11312,11 @@ class ViewerWindow(QMainWindow):
         self.wall_pick_param_action.setVisible(wall_pick_ok)
         self.wall_pick_button.setEnabled(wall_pick_ok)
 
+        area_param_ok = self._area_options_shown()
+        for action, _check in self._area_option_params:
+            action.setVisible(area_param_ok)
+        self._regate_area_options()
+
         ruler_param_ok = self._current_tool == "ruler" and self.ruler_action.isEnabled()
         self.clear_rulers_param_action.setVisible(ruler_param_ok)
         self.ruler_hint_param_action.setVisible(ruler_param_ok)
@@ -11200,7 +11326,7 @@ class ViewerWindow(QMainWindow):
             terrain_param_ok or level_param_ok or convert_param_ok or eraser_param_ok
             or cliff_param_ok or brush_ok or select_param_ok or rect_param_ok
             or beach_param_ok or unrestricted_ok or off_grid_ok or ruler_param_ok or skip_occupied_ok
-            or wall_pick_ok or gate_walls_ok
+            or wall_pick_ok or gate_walls_ok or area_param_ok
         )
 
         # Stage 3: mode may have just changed which tools are applicable,
@@ -11208,6 +11334,7 @@ class ViewerWindow(QMainWindow):
         # Tools button's own label should track -- both are this function's
         # business already, so recompute overflow membership here too.
         self._apply_toolbar_overflow()
+        self._push_area_edit_target()
 
     def _sync_map_view_brush(self) -> None:
         """Pushes the toolbar's current brush size/shape into MapView's
@@ -18530,6 +18657,9 @@ def main() -> None:
     platform_line = qt_platform.apply_default(prefer_xcb=settings.get_xwayland_on_wayland())
     if platform_line is not None:
         debug_log.log(platform_line)
+    theme_line = qt_platform.apply_default_theme()
+    if theme_line is not None:
+        debug_log.log(theme_line)
     app = QApplication(sys.argv)
     debug_log.log(f"Qt platform: {QApplication.platformName()}")
     # Wayland's app_id, matching packaging/DEscape.desktop (StartupWMClass is X11-only).

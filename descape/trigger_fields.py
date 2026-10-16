@@ -45,7 +45,7 @@ from AoE2ScenarioParser.objects.data_objects.effect import (
 )
 from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
 
-from . import library_compat, object_catalog, scenario_io
+from . import command_buttons, library_compat, object_catalog, scenario_io
 from .library_compat import VocabularyEntry
 
 # -- kinds -------------------------------------------------------------------
@@ -188,7 +188,7 @@ class FieldSpec:
     meaning "unset", or None for kinds that have no such value. `attribute`
     is the library attribute read and written, when it differs from `name`
     ("" means the same). `tooltip` goes on the form row's label and editor
-    when non-empty; vocabulary-derived specs leave it empty. `multiline`
+    when non-empty; vocabulary-derived specs carry field_tooltip()'s. `multiline`
     is XS, PROSE or "" -- a mode rather than a bool, since the two multi-line
     kinds need different widgets (monospace and un-wrapped vs. proportional
     and wrapping) and different newline handling, while `if spec.multiline:`
@@ -288,12 +288,18 @@ def trigger_specs(scenario_version: str) -> tuple[FieldSpec, ...]:
     )
 
 
+BUTTON_LOCATION = "ButtonLocation"
+
+
 def enum_choices(presentation: str) -> tuple[tuple[str, int], ...]:
     """(label, value) pairs for a combo-box presentation, ordered by value.
 
     Iterating the class yields canonical members only, so an alias cannot
     produce two rows with the same value.
     """
+    if presentation == BUTTON_LOCATION:
+        # GH #169: the library lists only page 1, under r1c1-style names.
+        return tuple((command_buttons.slot_label(value), value) for value in (0, *command_buttons.button_values()))
     enum_type = _ENUM_TYPES.get(presentation)
     if enum_type is None:
         return ()
@@ -311,7 +317,8 @@ def wants_picker(spec: FieldSpec) -> bool:
     """Whether an editable field gets the type-ahead ValueLineEdit picker
     instead of a QComboBox. Only ENUM fields qualify; the presentation stays
     in _ENUM_TYPES and `choices` stays populated either way."""
-    return spec.kind == ENUM and len(spec.choices) >= PICKER_MIN_CHOICES
+    # ButtonLocation stays a combo: the button grid under it is its picker (GH #169).
+    return spec.kind == ENUM and len(spec.choices) >= PICKER_MIN_CHOICES and spec.presentation != BUTTON_LOCATION
 
 
 def resolve_reference(presentation: str, value: Any) -> str:
@@ -400,6 +407,40 @@ _PAIRED_UNIT_CAPTIONS: Mapping[str, Mapping[str, str]] = {
 }
 
 
+# GH #169: the three command-button effects say what moves where.
+_LOCATION_CAPTIONS: Mapping[str, Mapping[str, str]] = {
+    "change_train_location": {
+        "object_list_unit_id": "unit to train",
+        "object_list_unit_id_2": "trained at",
+        "button_location": "button slot",
+    },
+    "add_train_location": {
+        "object_list_unit_id": "unit to train",
+        "object_list_unit_id_2": "trained at",
+        "button_location": "button slot",
+    },
+    "change_research_location": {
+        "object_list_unit_id_2": "researched at",
+        "button_location": "button slot",
+    },
+}
+
+_BUTTON_LOCATION_TOOLTIP = (
+    "Where the button sits in the building's command panel: rows top to bottom, columns left "
+    "to right. 0 gives no button. When two buttons share a slot, the lower unit id shows. Page 2 "
+    "is a building's second page, as on the Dock. For a villager's build menu, train the building at the builder "
+    "(118); its row 3, col 4 and col 5 are the menu's own buttons."
+)
+_FIELD_TOOLTIPS: Mapping[str, Mapping[str, str]] = {
+    name: {"button_location": _BUTTON_LOCATION_TOOLTIP} for name in _LOCATION_CAPTIONS
+}
+
+
+def field_tooltip(entry: VocabularyEntry, attribute: str) -> str:
+    """The per-type form tooltip of one (type, field) pair, or ""."""
+    return _FIELD_TOOLTIPS.get(entry.name, {}).get(attribute, "")
+
+
 def field_caption(entry: VocabularyEntry, attribute: str) -> str:
     """The per-type form caption of one (type, field) pair, or "" for the
     name-derived default.
@@ -408,7 +449,9 @@ def field_caption(entry: VocabularyEntry, attribute: str) -> str:
     that lists source_player is that player's unit. It runs for conditions
     too and is inert there, since no condition lists the field.
     """
-    paired = _PAIRED_UNIT_CAPTIONS.get(entry.name, {}).get(attribute, "")
+    paired = _PAIRED_UNIT_CAPTIONS.get(entry.name, {}).get(attribute, "") or _LOCATION_CAPTIONS.get(
+        entry.name, {}
+    ).get(attribute, "")
     if paired:
         return paired
     if (
@@ -471,6 +514,7 @@ def field_specs(
                 read_only=attribute in DISPLAY_ONLY or kind == UNSUPPORTED,
                 multiline=_multiline_mode(entry.name, attribute, kind),
                 attribute=_ATTRIBUTE_ALIASES.get(attribute, attribute),
+                tooltip=field_tooltip(entry, attribute),
                 caption=field_caption(entry, attribute),
             )
         )

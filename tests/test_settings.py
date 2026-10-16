@@ -1220,3 +1220,21 @@ def test_mod_art_exclusions_round_trip_through_the_file(tmp_path: Path, monkeypa
 def test_a_malformed_mod_art_exclusion_list_reads_as_nothing_excluded(tmp_path: Path, raw: str) -> None:
     _write_config(tmp_path, raw)
     assert settings.get_mod_art_excluded() == frozenset()
+
+
+# --- GH #229: Edit Area -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("getter", "setter", "key"),
+    [
+        ("get_trigger_area_edit", "set_trigger_area_edit", "trigger_area_edit"),
+        ("get_trigger_area_tile_borders", "set_trigger_area_tile_borders", "trigger_area_tile_borders"),
+    ],
+)
+def test_edit_area_settings_default_off_and_round_trip(tmp_path: Path, monkeypatch, getter, setter, key) -> None:
+    assert getattr(settings, getter)() is False
+    getattr(settings, setter)(True)
+    monkeypatch.setattr(settings, f"_{key}", None)
+    assert getattr(settings, getter)() is True
+    assert f"{key}: true" in (tmp_path / "config.yaml").read_text()

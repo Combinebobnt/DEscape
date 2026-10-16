@@ -10,7 +10,7 @@
   "tables": {
     "building_art_map.json": "37e084e80fb34730ee7b19e5e28589f4e4d03477a9b742ac62500661cb8eb210",
     "garrison_table.json": "5656574d39b676ec83cb64d532b15e0ae352c918a33f839a36296af31dfe1834",
-    "object_catalog.json": "8c7b13a9bbd75a9d761427d86f8b146cb5bb1ed9bc367d4aeaf9cea6545c2143",
+    "object_catalog.json": "837a2f3aa66b3ca350e358d9380fa8e420acf455b3e9cfaa7e7c6fefc0ba62f7",
     "terrain_blend_map.json": "875762c76bcecbaa24a15314d1963fbc8f18cc1c7d398ed1405ebc66c7b6e3ff",
     "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
     "terrain_texture_map.json": "e10c3831211b693e4ac01efe3dbeff10e1c40a6d5c7ece42422c51a96caf639e",

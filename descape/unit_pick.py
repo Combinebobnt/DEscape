@@ -806,6 +806,7 @@ def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry],
     len(members) - 1 in general (two slabs over one 1x1 hide one unit
     between three members)."""
     groups: dict[tuple[int, int], tuple[list[UnitEntry], int]] = {}
+    eye_candy = unit_kind.passable_eye_candy_consts()
     for tile, orders in index.by_tile.items():
         if len(orders) < 2:
             continue
@@ -817,7 +818,7 @@ def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry],
         members: set[int] = set()
         hidden = 0
         for under in bucket:
-            if (under.own_x, under.own_y) != tile:
+            if (under.own_x, under.own_y) != tile or under.unit.unit_const in eye_candy:
                 continue
             hiders = [top.order for top in bucket if top.rank > under.rank and _hides(top, under)]
             if hiders:
@@ -840,6 +841,12 @@ def stack_groups(index: UnitIndex) -> dict[tuple[int, int], list[UnitEntry]]:
     different sub-tile positions are deliberately not stacked. Members are
     the hidden units and the units hiding them, never an unrelated occupant
     that merely overlaps the tile.
+
+    Passable eye candy (grass, plants, rubble) is never a hidden member (GH
+    #193): it hides nothing worth finding and badged every building on grass.
+    It still counts as the top of a stack, since a tuft at a unit's exact point
+    that paints later hides that unit. Obstacles stack both ways, since they
+    block placement.
 
     Accepted residuals: a unit standing on a farm counts as stacked even in
     Sloped with sprites on, where the farm is draped and the unit visible;

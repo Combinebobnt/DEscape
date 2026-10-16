@@ -240,3 +240,66 @@ def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
     else:
         return None
     return ruler.measure(origin, destination)
+
+
+# GH #229's drag zones: the middle, then edges and corners named for the
+# side they grab in map axes (n/s the y-min/y-max side, w/e the x-min/x-max).
+ZONE_MOVE = "move"
+AREA_ZONES = (ZONE_MOVE, "n", "s", "w", "e", "nw", "ne", "sw", "se")
+
+
+def area_hit_zone(
+    coords: Sequence[int], point: tuple[float, float], band: float, tile_borders: bool = False
+) -> str | None:
+    """Which part of an inclusive area (x1, y1, x2, y2) the fractional map
+    point is over, or None outside it. Each edge band is `band` tiles wide,
+    capped at a third of the span so a 1x1 area keeps a middle to grab.
+    `tile_borders` widens it to at least one tile, only on an axis 3 or more
+    tiles long, so the area still keeps a middle tile."""
+    x1, y1, x2, y2 = coords
+    lo_x, hi_x = min(x1, x2), max(x1, x2) + 1
+    lo_y, hi_y = min(y1, y2), max(y1, y2) + 1
+    px, py = point
+    if not (lo_x <= px < hi_x and lo_y <= py < hi_y):
+        return None
+    bx, by = (
+        min(max(1.0, band) if tile_borders and span >= 3 else band, span / 3)
+        for span in (hi_x - lo_x, hi_y - lo_y)
+    )
+    ns = "n" if py - lo_y < by else "s" if hi_y - py < by else ""
+    we = "w" if px - lo_x < bx else "e" if hi_x - px < bx else ""
+    return ns + we or ZONE_MOVE
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return min(max(value, low), high)
+
+
+def dragged_area(
+    coords: Sequence[int],
+    zone: str,
+    start_tile: tuple[int, int],
+    end_tile: tuple[int, int],
+    map_w: int,
+    map_h: int,
+) -> tuple[int, int, int, int]:
+    """The min/max area a drag from start_tile to end_tile makes of `coords`.
+    A move keeps the size and shifts the whole area no further than the map
+    edge; a resize shifts the grabbed sides by the same delta, clamped to the
+    map, and may cross the opposite side."""
+    x1, x2 = sorted((coords[0], coords[2]))
+    y1, y2 = sorted((coords[1], coords[3]))
+    dx, dy = end_tile[0] - start_tile[0], end_tile[1] - start_tile[1]
+    if zone == ZONE_MOVE:
+        dx = _clamp(dx, -x1, map_w - 1 - x2)
+        dy = _clamp(dy, -y1, map_h - 1 - y2)
+        return (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
+    if "w" in zone:
+        x1 = _clamp(x1 + dx, 0, map_w - 1)
+    elif "e" in zone:
+        x2 = _clamp(x2 + dx, 0, map_w - 1)
+    if "n" in zone:
+        y1 = _clamp(y1 + dy, 0, map_h - 1)
+    elif "s" in zone:
+        y2 = _clamp(y2 + dy, 0, map_h - 1)
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))

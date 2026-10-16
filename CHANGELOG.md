@@ -335,9 +335,25 @@ content, link the doc instead of summarizing it.
   by default, remembered and rebindable. The two All rings follow the unit
   filters (Show Buildings, Show Invisible Objects). Colour by Owner applies to every ring, and the submenu now sits
   below Show Trigger Overlay. (contributed by @teslatankx, #222)
+- **Button slot grid for train and research location effects** (GH #169):
+  Change Train Location, Add Train Location and Change Research Location
+  label their fields "unit to train", "trained at" or "researched at" and
+  "button slot", name each slot, and show the building's command panel as
+  it will look after the trigger fires. Clicking a cell sets the slot.
+  (contributed by @teslatankx, #228)
+- **Move and resize a trigger area on the map** (GH #229): in Triggers mode
+  with Pan, tick Edit Area and drag the selected condition or effect's area
+  by its middle to move it, or by an edge or corner to resize it, one undo
+  step per drag. Move, Resize and Tile borders pick what grabs.
+  (contributed by @teslatankx, #232)
 
 ### Changed
 
+- **Linux uses the desktop's own file dialogs** (GH #220): when
+  xdg-desktop-portal is running, Open, Save As and the folder and export
+  pickers show the KDE or GNOME dialog instead of Qt's. Starting DEscape with
+  an empty `QT_QPA_PLATFORMTHEME=` keeps Qt's. (contributed by @teslatankx,
+  #233)
 - **Pan only pans in Units mode** (GH #47): a left-drag scrolls the view,
   and Pan no longer selects or moves units; use Select and Move. The first
   Pan click on a unit says so in the status line.
@@ -567,6 +583,10 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **No stacked-unit badge for grass and other eye candy** (GH #193): a
+  building or unit standing on grass, plants or rubble no longer shows a
+  stack count. Rocks and other obstacles still do. (contributed by
+  @teslatankx, #235)
 - **Save As adds the file to File > Open Recent** (GH #215), so a new map is
   listed after its first save.
 - **Settings > Keybinds no longer clips the Mouse Wheel dropdowns** on

@@ -26,13 +26,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render, unit_pick
+from descape import iso_geometry, render, unit_kind, unit_pick
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
 from descape.unit_pick import (
     build_index,
     pick_unit,
+    stack_cycle_step,
     stack_groups,
     stack_scan,
     unit_key,
@@ -1792,6 +1793,53 @@ def test_hidden_count_is_not_member_count_minus_one() -> None:
     assert (len(members), hidden) == (3, 1)
 
 
+# GH #193: passable eye candy never stacks; obstacles still do.
+_GRASS_CONST = 301  # Grass Patch Green
+_ROCK_CONST = 623  # Rock 1
+
+
+def test_the_stack_test_consts_are_what_they_say() -> None:
+    assert _GRASS_CONST in unit_kind.passable_eye_candy_consts()
+    assert _ROCK_CONST in unit_kind.obstacle_consts()
+    assert _PLAIN_CONST not in unit_kind.eye_candy_consts()
+    for const in (_GRASS_CONST, _ROCK_CONST):
+        assert render.tile_span(const, render.NON_BUILDING_SPAN) == (1, 1)
+
+
+def test_grass_under_a_building_is_not_a_stack() -> None:
+    scn = _stack_scenario((9.5, 9.5, _GRASS_CONST), (11.5, 11.5, _GRASS_CONST), (10.5, 10.5, _BUILDING_CONST))
+    assert stack_groups(build_index(scn)) == {}
+
+
+def test_a_unit_on_two_stacked_grass_tufts_is_not_a_stack() -> None:
+    scn = _stack_scenario((6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _PLAIN_CONST))
+    assert stack_groups(build_index(scn)) == {}
+
+
+def test_a_unit_on_grass_at_one_point_is_not_a_stack() -> None:
+    assert stack_groups(build_index(_stack_scenario((6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _PLAIN_CONST)))) == {}
+
+
+def test_grass_painted_over_a_unit_at_one_point_still_stacks() -> None:
+    """The tuft would otherwise win every click and the unit could not be reached."""
+    groups = stack_groups(build_index(_stack_scenario((6.5, 6.5, _PLAIN_CONST), (6.5, 6.5, _GRASS_CONST))))
+    assert _group_refs(groups, (6, 6)) == [2, 1]
+    picked = groups[(6, 6)][0]
+    assert stack_cycle_step(groups[(6, 6)], picked, 0)[0].unit.reference_id == 1
+
+
+def test_grass_beside_a_unit_under_a_building_is_left_out_of_the_stack() -> None:
+    scn = _stack_scenario((9.5, 9.5, _GRASS_CONST), (9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
+    (members, hidden), = stack_scan(build_index(scn)).values()
+    assert [e.unit.reference_id for e in members] == [3, 2]
+    assert hidden == 1
+
+
+def test_a_rock_under_a_building_still_stacks() -> None:
+    groups = stack_groups(build_index(_stack_scenario((9.5, 9.5, _ROCK_CONST), (10.5, 10.5, _BUILDING_CONST))))
+    assert _group_refs(groups, (9, 9)) == [2, 1]
+
+
 @pytest.mark.parametrize("style", ["flat", "stepped"])
 def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) -> None:
     scn = _stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
@@ -1875,34 +1923,38 @@ def test_an_appended_slab_does_not_hide_a_later_players_unit() -> None:
 # 2 old-allies groups GH #121 dissolved (a 1x1 unit on a now 3x1 blocker's point),
 # plus the 1 El Cid 4 group GH #178's 2x2 fish made (a Shore Fish under a Perch),
 # plus the 51 groups TASK-134's doodad footprints made (a 1x1 unit under a later
-# mountain or ruin; +4 more in 8tp3w9j, which this table does not list).
+# mountain or ruin; +4 more in 8tp3w9j, which this table does not list), less the
+# 219 groups / 260 hidden GH #193 dropped over these files (passable eye candy is
+# never a hidden member). Comments give each row before GH #193.
 _STACKS_PER_FILE = {
-    "0_June_Event_Scenario.aoe2scenario": (14, 14),
-    "2_Joan_coop_1_v0_13.aoe2scenario": (13, 14),
-    "2_Joan_coop_2_v0_15.aoe2scenario": (8, 8),
-    "2_Joan_coop_3_v0_14.aoe2scenario": (5, 5),
+    "0_June_Event_Scenario.aoe2scenario": (13, 13),  # (14, 14)
+    "2_Joan_coop_1_v0_13.aoe2scenario": (7, 7),  # (13, 14)
+    "2_Joan_coop_2_v0_15.aoe2scenario": (6, 6),  # (8, 8)
+    "2_Joan_coop_3_v0_14.aoe2scenario": (1, 1),  # (5, 5)
     "2_Joan_coop_4_v0_13.aoe2scenario": (3, 3),
-    "2_Joan_coop_5_v0_13.aoe2scenario": (38, 44),
-    "2_Joan_coop_6_v0_14.aoe2scenario": (21, 25),
-    "C2_ElCid_coop_1_v0_16.aoe2scenario": (90, 92),
-    "C2_ElCid_coop_2_v0_13.aoe2scenario": (21, 21),  # (19, 19) before TASK-134's doodad spans
-    "C2_ElCid_coop_3_v0_12.aoe2scenario": (14, 26),
-    "C2_ElCid_coop_4_v0_13.aoe2scenario": (54, 54),  # (53, 53) before GH #178's 2x2 Perch at (60, 4)
-    "C2_ElCid_coop_5_v0_14.aoe2scenario": (18, 18),
-    "C2_ElCid_coop_6_v0_13.aoe2scenario": (17, 21),
-    "F7_2_Dos Pilas (648).aoe2scenario": (92, 103),  # (91, 102) before TASK-134
-    "F7_3_York (865).aoe2scenario": (85, 93),
-    "R4_LeLoi_4.aoe2scenario": (201, 441),  # (162, 402) before TASK-134
-    "atilla_1_scn_resaved.aoe2scenario": (83, 96),  # (82, 95) before TASK-134
+    "2_Joan_coop_5_v0_13.aoe2scenario": (15, 16),  # (38, 44)
+    "2_Joan_coop_6_v0_14.aoe2scenario": (12, 15),  # (21, 25)
+    "C2_ElCid_coop_1_v0_16.aoe2scenario": (88, 89),  # (90, 92)
+    "C2_ElCid_coop_2_v0_13.aoe2scenario": (20, 20),  # (21, 21); (19, 19) before TASK-134's doodad spans
+    "C2_ElCid_coop_3_v0_12.aoe2scenario": (9, 10),  # (14, 26)
+    "C2_ElCid_coop_4_v0_13.aoe2scenario": (47, 47),  # (54, 54); (53, 53) before GH #178's 2x2 Perch at (60, 4)
+    "C2_ElCid_coop_5_v0_14.aoe2scenario": (8, 8),  # (18, 18)
+    "C2_ElCid_coop_6_v0_13.aoe2scenario": (5, 5),  # (17, 21)
+    "F7_2_Dos Pilas (648).aoe2scenario": (80, 90),  # (92, 103); (91, 102) before TASK-134
+    "F7_3_York (865).aoe2scenario": (74, 81),  # (85, 93)
+    "R4_LeLoi_4.aoe2scenario": (131, 355),  # (201, 441); (162, 402) before TASK-134
+    "atilla_1_scn_resaved.aoe2scenario": (54, 67),  # (83, 96); (82, 95) before TASK-134
     "blank_map.aoe2scenario": (0, 0),
-    "old-allies-final-v2.aoe2scenario": (104, 124),  # (98, 118) before GH #121, (96, 116) before TASK-134
+    # (104, 124); (98, 118) before GH #121, (96, 116) before TASK-134. Two of
+    # its stacks are grass painted over a unit at its exact point.
+    "old-allies-final-v2.aoe2scenario": (89, 109),
     "ring75_v0_scx_resaved.aoe2scenario": (0, 0),
 }
 
 
 def test_the_per_file_stack_table_sums_to_the_sizing_measurement() -> None:
-    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1 + 51
-    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1 + 51
+    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1 + 51 - 219
+    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1 + 51 - 260
 
 
 @pytest.mark.corpus

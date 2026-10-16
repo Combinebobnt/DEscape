@@ -7715,6 +7715,39 @@ def test_the_sprite_comes_from_the_install_and_is_cached_per_facet(monkeypatch) 
         window.close()
 
 
+# -- GH #169: the button grid under button_location ------------------------------
+
+
+@pytest.mark.parametrize("type_id", [46, 47, 102])
+def test_the_button_grid_sits_under_button_location(type_id: int) -> None:
+    window, _indices = _facet_window(type_id, {"button_location": 1})
+    try:
+        panel = window.trigger_panel
+        grid = panel._button_grid
+        assert grid is not None
+        form = panel.property_form
+        assert _form_row_of(form, grid) == _form_row_of(form, _row_widget(panel, "button_location")) + 1
+        assert form.labelForField(_row_widget(panel, "button_location")).text() == "button slot"
+        _assert_form_rows_do_not_overlap(form)
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_other_effects_get_no_button_grid() -> None:
+    from descape.button_grid import ButtonGrid
+
+    window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _ARCHER})
+    try:
+        panel = window.trigger_panel
+        assert panel._button_grid is None
+        assert panel.property_host.findChildren(ButtonGrid) == []
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # -- GH #134: a collapsed section header counts as its whole section ------------
 
 
