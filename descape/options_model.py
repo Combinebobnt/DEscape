@@ -39,7 +39,10 @@ per-player disable lists are variable-length and so ride a region splice
 descape/disables_fields.py. Each player's AI personality (GH #126) patches
 its ai_type byte in place but rides two splices for the rest:
 serialize_personality_resize() (PlayerDataTwo's names and embedded scripts)
-and serialize_ai_library_resize() (the Files AI script library).
+and serialize_ai_library_resize() (the Files AI script library). The XS
+script name (GH #216) rides two splices of its own:
+serialize_script_name_resize() (Map.script_name) and
+serialize_script_path_resize() (Files.script_file_path).
 """
 
 from __future__ import annotations
@@ -55,7 +58,7 @@ from descape.diplomacy_fields import (
     stance_offsets,
     verify_diplomacy_block,
 )
-from descape.option_fields import OptionFieldSpec, current_value, specs_for
+from descape.option_fields import TEXT, OptionFieldSpec, current_value, specs_for
 from descape.scenario_io import LoadedScenario, retriever_length
 
 # The LoadedScenario attribute holding the trusted byte offset, within
@@ -120,35 +123,48 @@ def field_offsets(
     offering a partial write surface for just the sections that did verify.
     Specs whose section is "Triggers" (legacy_exec_order) are silently
     skipped: that field's offset is trigger_model.py's concern, not this
-    module's.
+    module's. So are TEXT specs (script_name), which are not byte-patched:
+    see script_name_layout().
     """
     by_section: dict[str, list[OptionFieldSpec]] = {}
     for spec in specs:
-        if spec.section not in _ANCHOR_ATTR:
+        if spec.section not in _ANCHOR_ATTR or spec.kind == TEXT:
             continue
         by_section.setdefault(spec.section, []).append(spec)
 
     offsets: dict[OptionFieldSpec, FieldOffset] = {}
     all_available = True
     for section, section_specs in by_section.items():
-        anchor = _anchor(loaded, section)
-        if anchor < 0:
+        wanted = {spec.retriever: spec for spec in section_specs}
+        found = _section_offsets(loaded, section, wanted.keys())
+        if found is None:
             all_available = False
             continue
-        retriever_map = loaded._scenario.sections[section].retriever_map
-        excluded = _ANCHOR_EXCLUDES_TAIL.get(section, ())
-        names = [name for name in retriever_map if name not in excluded]
-        wanted = {spec.retriever: spec for spec in section_specs}
-        pos = anchor
-        for name in reversed(names):
-            length = retriever_length(retriever_map[name])
-            pos -= length
-            spec = wanted.pop(name, None)
-            if spec is not None:
-                offsets[spec] = FieldOffset(pos, length)
-            if not wanted:
-                break
+        for name, fo in found.items():
+            offsets[wanted[name]] = fo
     return offsets, all_available
+
+
+def _section_offsets(loaded: LoadedScenario, section: str, names) -> dict[str, FieldOffset] | None:
+    """The backward walk from `section`'s anchor for the retrievers `names`,
+    or None when the anchor cannot be trusted."""
+    anchor = _anchor(loaded, section)
+    if anchor < 0:
+        return None
+    retriever_map = loaded._scenario.sections[section].retriever_map
+    excluded = _ANCHOR_EXCLUDES_TAIL.get(section, ())
+    wanted = set(names)
+    offsets: dict[str, FieldOffset] = {}
+    pos = anchor
+    for name in reversed([name for name in retriever_map if name not in excluded]):
+        if not wanted:
+            break
+        length = retriever_length(retriever_map[name])
+        pos -= length
+        if name in wanted:
+            wanted.discard(name)
+            offsets[name] = FieldOffset(pos, length)
+    return offsets
 
 
 def verify_options_block(loaded: LoadedScenario, specs: Sequence[OptionFieldSpec]) -> bool:
@@ -308,6 +324,85 @@ def disables_write_supported(loaded: LoadedScenario) -> bool:
     return disables_fields.verify_disables_block(loaded)
 
 
+SCRIPT_NAME_FIELD_ID = "script_name"
+# Longest name whose script_file_path (name + ".xs" + NUL) still fits a str16.
+SCRIPT_NAME_MAX_BYTES = 0x7FFF - len(".xs") - 1
+
+
+@dataclass(frozen=True)
+class ScriptNameLayout:
+    name: FieldOffset  # Map.script_name's str16, load-time offsets
+    path: FieldOffset  # Files.script_file_path's str16, load-time offsets
+
+
+def _str16_payload(body: bytes, span: FieldOffset) -> bytes | None:
+    if span.length < 2:
+        return None
+    (length,) = struct.unpack_from("<h", body, span.offset)
+    if length < 0 or 2 + length != span.length:
+        return None
+    return bytes(body[span.offset + 2 : span.offset + span.length])
+
+
+def script_name_layout(loaded: LoadedScenario) -> ScriptNameLayout | None:
+    """The verified Map.script_name and Files.script_file_path spans, or None
+    (fail closed) (GH #216).
+
+    None before scenario 1.40 (no retriever) and wherever Files does not
+    verify (player_fields.files_layout(), which forces the lazy trigger
+    parse). Map.script_name's span comes from the same backward walk as the
+    scalars and must hold exactly the parsed name with no trailing NUL; the
+    path's raw payload must be the parsed path, with or without the one
+    trailing NUL the library strips on read.
+    """
+    retriever = loaded._scenario.sections["Map"].retriever_map.get(SCRIPT_NAME_FIELD_ID)
+    if retriever is None or not isinstance(retriever.data, str):
+        return None
+    found = _section_offsets(loaded, "Map", (SCRIPT_NAME_FIELD_ID,))
+    if not found:
+        return None
+    name = found[SCRIPT_NAME_FIELD_ID]
+    body = loaded.decompressed_body
+    if _str16_payload(body, name) != retriever.data.encode("utf-8"):
+        return None
+    files = player_fields.files_layout(loaded)
+    if files is None or "script_file_path" not in files:
+        return None
+    path = files["script_file_path"]
+    parsed_path = loaded._scenario.sections["Files"].retriever_map["script_file_path"].data
+    payload = _str16_payload(body, path)
+    if not isinstance(parsed_path, str) or payload is None:
+        return None
+    if payload not in (parsed_path.encode("utf-8"), parsed_path.encode("utf-8") + b"\x00"):
+        return None
+    return ScriptNameLayout(name, path)
+
+
+def script_name_write_supported(loaded: LoadedScenario) -> bool:
+    """Whether the Script filename row can be written back: a gate of its
+    own, so a Files failure greys only that row."""
+    return script_name_layout(loaded) is not None
+
+
+def script_name_refusal(value) -> str | None:
+    """Why `value` cannot be stored as a script name, or None. Empty is
+    allowed: it clears the setting."""
+    if not isinstance(value, str):
+        return f"{value!r} is not text"
+    if "\x00" in value:
+        return "it contains a NUL character"
+    if "/" in value or "\\" in value:
+        return "it is a file name, not a path: no / or \\"
+    if len(value.encode("utf-8")) > SCRIPT_NAME_MAX_BYTES:
+        return f"it is over {SCRIPT_NAME_MAX_BYTES} bytes"
+    return None
+
+
+def script_path_for(name: str) -> str:
+    """Files.script_file_path for `name`, the library's own rule."""
+    return f"{name}.xs" if name else ""
+
+
 class OptionsEditModel:
     """Per-document map-option edit state: which scalars the user changed, and
     the byte patches that writes them back.
@@ -456,6 +551,15 @@ class OptionsEditModel:
                 player_fields.personality_field_id(p) for p in range(1, player_fields.NUM_PLAYERS + 1)
             )
 
+        # GH #216 Script filename: a seventh additive entry, seeded from the
+        # parsed Map value; its gate (script_name_layout(), which forces the
+        # trigger parse) is resolved on the first set, not here.
+        self._script_name_layout: ScriptNameLayout | None = None
+        self._script_name_checked = False
+        map_name = loaded._scenario.sections["Map"].retriever_map.get(SCRIPT_NAME_FIELD_ID)
+        if map_name is not None and isinstance(map_name.data, str):
+            self._original[SCRIPT_NAME_FIELD_ID] = map_name.data
+
         # field_id -> the value the user set, present only while it differs
         # from what the file holds. Setting a field back to its original value
         # removes it, so a change made and undone leaves has_edits False rather
@@ -538,6 +642,20 @@ class OptionsEditModel:
             self._custom_supported = self.personality_supported and personality_custom_supported(self.loaded)
         return self._custom_supported
 
+    @property
+    def script_name_supported(self) -> bool:
+        """script_name_write_supported() for this file, computed once."""
+        if not self._script_name_checked:
+            self._script_name_checked = True
+            if SCRIPT_NAME_FIELD_ID in self._original:
+                self._script_name_layout = script_name_layout(self.loaded)
+        return self._script_name_layout is not None
+
+    @property
+    def has_script_name_edit(self) -> bool:
+        """The signal scenario_write.py re-gates script_name_write_supported() on."""
+        return SCRIPT_NAME_FIELD_ID in self._pending
+
     def original_personality(self, player_id: int) -> AiChoice:
         return self._personality_choices[self._original[player_fields.personality_field_id(player_id)]]
 
@@ -616,6 +734,18 @@ class OptionsEditModel:
                 self._pending[field_id] = ids
             return
 
+        if field_id == SCRIPT_NAME_FIELD_ID:
+            if not self.script_name_supported:
+                raise KeyError("Script filename is not writable on this file")
+            refusal = script_name_refusal(value)
+            if refusal is not None:
+                raise ValueError(f"{value!r} cannot be a script filename: {refusal}")
+            if value == self._original[field_id]:
+                self._pending.pop(field_id, None)
+            else:
+                self._pending[field_id] = value
+            return
+
         if field_id in self._personality_field_ids:
             # The value is a cached choice key; set_personality() is the
             # front door, and an undo/redo replays a key it already cached.
@@ -677,6 +807,9 @@ class OptionsEditModel:
                 # Skipped explicitly rather than by relying on this chain's
                 # ordering -- these ids are in neither _offsets nor
                 # _player_targets, so the final `else` would KeyError.
+                continue
+            if field_id == SCRIPT_NAME_FIELD_ID:
+                # Variable-length: rides the two script splices instead.
                 continue
             if field_id in self._personality_field_ids:
                 # Only the ai_type byte is fixed-width; name and text ride
@@ -820,6 +953,27 @@ class OptionsEditModel:
                 parts.append(player_fields.AI_FILE_UNKNOWN + player_fields.encode_str32(choice.text))
         start, end = layout.region
         return start, end, b"".join(parts)
+
+    def serialize_script_name_resize(self) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) in load-time offsets for Map.script_name,
+        or None with no pending name. Stored as typed, no trailing NUL."""
+        if not self.has_script_name_edit:
+            return None
+        span = self._script_name_layout.name
+        value = self._pending[SCRIPT_NAME_FIELD_ID]
+        return span.offset, span.offset + span.length, player_fields.encode_name_str16(value, "script name")
+
+    def serialize_script_path_resize(self) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) in load-time offsets for
+        Files.script_file_path, or None with no pending name. name + ".xs"
+        with one trailing NUL, as the 1.59 editor writes it; an empty path
+        is the bare prefix, as every corpus file without a script stores it."""
+        if not self.has_script_name_edit:
+            return None
+        span = self._script_name_layout.path
+        path = script_path_for(self._pending[SCRIPT_NAME_FIELD_ID])
+        replacement = player_fields.encode_name_str16(path, "script path", trailing_nul=bool(path))
+        return span.offset, span.offset + span.length, replacement
 
     def serialize_ai_library_resize(self) -> tuple[int, int, bytes] | None:
         """(start, end, replacement) in *load-time* offsets for the Files

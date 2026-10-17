@@ -1698,16 +1698,17 @@ def _library_name_matches(payload: bytes, value) -> bool:
     return payload in (encoded, encoded + b"\x00")
 
 
-def ai_library_layout(loaded: LoadedScenario) -> AiLibraryLayout | None:
-    """The verified Files.ai_files library spans, or None (fail closed).
+def files_layout(loaded: LoadedScenario) -> dict[str, FieldOffset] | None:
+    """Every Files retriever's raw span, in declaration order, or None (fail
+    closed).
 
     Runs parse_triggers() (memoized) since Files is only reached through
     it, so None on a file whose trigger parse fails (the 1.54/3.9 set) and
     on a structure with no Files section (1.36/1.37, v1.21). Otherwise a
     forward walk of every Files retriever from files_section_start, str
     prefixes read raw, must land on files_section_end, which must be the end
-    of the body; ai_files_present/number_of_ai_files must agree with the
-    parsed entry count; and every entry's raw name must match its parsed one.
+    of the body. Shared by ai_library_layout() and the script name gate
+    (options_model.script_name_layout()).
     """
     if parse_triggers(loaded) is None:
         return None
@@ -1716,13 +1717,10 @@ def ai_library_layout(loaded: LoadedScenario) -> AiLibraryLayout | None:
     body = loaded.decompressed_body
     if files_section is None or start < 0 or end != len(body):
         return None
-    retrievers = files_section.retriever_map
-    if not retrievers.keys() >= _AI_LIBRARY_WANTED:
-        return None
 
     offsets: dict[str, FieldOffset] = {}
     pos = start
-    for name, retriever in retrievers.items():
+    for name, retriever in files_section.retriever_map.items():
         next_pos = _raw_retriever_end(body, pos, retriever)
         if next_pos is None:
             return None
@@ -1730,6 +1728,21 @@ def ai_library_layout(loaded: LoadedScenario) -> AiLibraryLayout | None:
         pos = next_pos
     if pos != end:
         return None
+    return offsets
+
+
+def ai_library_layout(loaded: LoadedScenario) -> AiLibraryLayout | None:
+    """The verified Files.ai_files library spans, or None (fail closed).
+
+    files_layout() must verify; ai_files_present/number_of_ai_files must
+    agree with the parsed entry count; and every entry's raw name must match
+    its parsed one.
+    """
+    offsets = files_layout(loaded)
+    if offsets is None or not offsets.keys() >= _AI_LIBRARY_WANTED:
+        return None
+    retrievers = loaded._scenario.sections["Files"].retriever_map
+    body = loaded.decompressed_body
 
     present, count, array = offsets["ai_files_present"], offsets["number_of_ai_files"], offsets["ai_files"]
     if present.length != _U32.size or count.length not in (0, _U32.size):
@@ -1766,15 +1779,17 @@ def verify_ai_library_block(loaded: LoadedScenario) -> bool:
     return ai_library_layout(loaded) is not None
 
 
-def encode_name_str16(value: str) -> bytes:
-    """An ai_names value as stored: signed int16 length + UTF-8, no trailing
-    NUL (ai_names is in the library's no-trailing-NUL list). Sibling to
-    _encode_str16(), which only accepts Civilization members."""
+def encode_name_str16(value: str, what: str = "AI name", trailing_nul: bool = False) -> bytes:
+    """An ai_names value (or Map.script_name, Files.script_file_path) as
+    stored: signed int16 length + UTF-8, no trailing NUL unless asked for
+    (all three are in the library's no-trailing-NUL list; the 1.59 editor
+    still ends script_file_path with one). Sibling to _encode_str16(), which
+    only accepts Civilization members."""
     if not isinstance(value, str) or "\x00" in value:
-        raise ValueError(f"{value!r} is not a storable AI name")
-    payload = value.encode("utf-8")
+        raise ValueError(f"{value!r} is not a storable {what}")
+    payload = value.encode("utf-8") + (b"\x00" if trailing_nul else b"")
     if len(payload) > _STR16_MAX_PAYLOAD:
-        raise ValueError(f"AI name is {len(payload)} bytes, over the str16 limit")
+        raise ValueError(f"{what} is {len(payload)} bytes, over the str16 limit")
     return _STR_PREFIX_STRUCTS[2].pack(len(payload)) + payload
 
 

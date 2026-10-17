@@ -92,6 +92,13 @@ which ends the body, so it is addressed from the end), _patch_disables()
 below Options and above Messages), _patch_messages(), then
 _patch_player_data_1() (offset 0).
 
+GH #216's script filename adds two more, one at each end. The full order is
+now: _assemble_body(), _patch_script_file_path() (Files.script_file_path,
+translated by the assemble shift like the library below it),
+_patch_ai_library(), _patch_script_name() (Map.script_name, below Options and
+above Units), _patch_disables(), _patch_personality(), _patch_messages(), then
+_patch_player_data_1().
+
 See tests/test_write_path.py, tests/test_trigger_write_path.py,
 tests/test_units_write_path.py, and tests/test_player_write_path.py for the
 evidence.
@@ -116,6 +123,7 @@ from descape.options_model import (
     personality_write_supported,
     player_count_write_supported,
     players_write_supported,
+    script_name_write_supported,
 )
 from descape.scenario_io import (
     _LAYER_OFFSET,
@@ -412,6 +420,50 @@ def _patch_ai_library(body: bytes, scenario: LoadedScenario, options: OptionsEdi
         "something patched inside the Files library before its splice"
     )
     return body[: start + shift] + replacement
+
+
+def _patch_script_file_path(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with Files.script_file_path spliced for a pending
+    script name; a no-op without one. Right after _assemble_body(), whose
+    shift it translates by (Files ends the body), and before
+    _patch_ai_library(), which is addressed from the end and so is not moved
+    by this splice. Refuses a span outside Files."""
+    resize = options.serialize_script_path_resize()
+    if resize is None:
+        return body
+    start, end, replacement = resize
+    original = scenario.decompressed_body
+    if not (0 <= scenario.files_section_start <= start <= end <= scenario.files_section_end):
+        raise WriteBlockedError(
+            f"A script path splice at {start}..{end} falls outside the Files region "
+            f"this write path owns ({scenario.files_section_start}..{scenario.files_section_end})."
+        )
+    shift = len(body) - len(original)
+    assert body[start + shift : end + shift] == original[start:end], (
+        "something patched inside script_file_path before its splice"
+    )
+    return body[: start + shift] + replacement + body[end + shift :]
+
+
+def _patch_script_name(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with Map.script_name spliced for a pending script name;
+    a no-op without one. Map sits below Options and above Units, so this runs
+    after every downstream splice and before _patch_disables(), and every
+    offset it uses is still load-time. Refuses a span outside Map's head
+    (between Options and the terrain block)."""
+    resize = options.serialize_script_name_resize()
+    if resize is None:
+        return body
+    start, end, replacement = resize
+    if not (0 <= scenario.options_section_end <= start <= end <= scenario.terrain_block_offset):
+        raise WriteBlockedError(
+            f"A script name splice at {start}..{end} falls outside the Map region "
+            f"this write path owns ({scenario.options_section_end}..{scenario.terrain_block_offset})."
+        )
+    assert body[start:end] == scenario.decompressed_body[start:end], (
+        "something patched inside script_name before its splice"
+    )
+    return body[:start] + replacement + body[end:]
 
 
 def _patch_personality(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
@@ -795,6 +847,11 @@ def build_patched(
                     "This file's AI script library no longer verifies -- splicing "
                     "would land at an offset that can't be trusted."
                 )
+        if options.has_script_name_edit and not script_name_write_supported(scenario):
+            raise WriteBlockedError(
+                "This file's script filename fields no longer verify -- splicing "
+                "would land at an offset that can't be trusted."
+            )
         header_bytes = _patch_header_player_count(header_bytes, options)
         patched_body = _patch_options(patched_body, scenario, options)
 
@@ -832,12 +889,14 @@ def build_patched(
     patched_body = _assemble_body(scenario, patched_body, units, triggers)
 
     if options is not None:
+        patched_body = _patch_script_file_path(patched_body, scenario, options)
         patched_body = _patch_ai_library(patched_body, scenario, options)
-    # Every splice from here on sits upstream of Map, so the terrain block
+    # Every splice from here on sits upstream of the terrain block, so it
     # moves by exactly their summed length change.
     length_before_upstream = len(patched_body)
 
     if options is not None:
+        patched_body = _patch_script_name(patched_body, scenario, options)
         # Runs unconditionally, like _patch_player_data_1() below and for the
         # same reason: serialize_disables_resize() already no-ops cleanly for
         # a model with no pending disable-list edit, and this keeps the whole

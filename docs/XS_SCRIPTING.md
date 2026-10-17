@@ -50,12 +50,15 @@ Both exist only from scenario version 1.40 onward. Older structure versions
 store none of these fields.
 
 DEscape edits the trigger-level surface in Triggers mode, through the same
-write path as every other trigger field. The file-level surface is
-**read-only**: the info panel shows the attached script name and the size of
-any embedded script. It is not editable because `script_name` is a
-variable-length string placed before the terrain data inside `Map`, so
-changing its length would move every later offset a save patches by
-position.
+write path as every other trigger field. On the file-level surface, the
+**script name is editable** in Map Options (Script filename), and the info
+panel shows it with the size of any embedded script. A save writes it the
+way the 1.59 editor does: `script_name` as typed, and `script_file_path` as
+the name plus `.xs` and one trailing NUL (empty for no script). Both are
+length-prefixed strings, so each is a resizing splice in the write path's
+descending offset order. The editor never embeds the file's content, even
+with the `.xs` present, so `script_file_content` stays **read-only** and is
+passed through verbatim.
 
 ## 3. The in-game character limit
 

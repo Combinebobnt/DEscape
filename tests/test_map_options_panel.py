@@ -54,9 +54,11 @@ def _shown_value(panel, spec) -> int:
     A QLabel row is the out-of-range case: the file holds a value no editor on
     that row could hold, so it is shown as stored.
     """
-    from PyQt5.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QSpinBox
+    from PyQt5.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QLineEdit, QSpinBox
 
     widget = panel.widget_for(spec.field_id)
+    if isinstance(widget, QLineEdit):
+        return widget.text()
     if isinstance(widget, QCheckBox):
         return int(widget.isChecked())
     if isinstance(widget, QComboBox):
@@ -67,6 +69,29 @@ def _shown_value(panel, spec) -> int:
         return int(widget.text())
     assert isinstance(widget, QSpinBox), f"{spec.field_id} built a {type(widget).__name__}"
     return widget.value()
+
+
+def _raw_value(loaded, spec):
+    """option_fields.current_value(), as an int except on a TEXT row."""
+    from descape import option_fields
+
+    value = option_fields.current_value(loaded, spec)
+    return value if spec.kind == option_fields.TEXT else int(value)
+
+
+def _browse(widget) -> None:
+    """Set a row's widget to the value it already shows, as tabbing through does."""
+    from PyQt5.QtWidgets import QCheckBox, QComboBox, QLineEdit
+
+    if isinstance(widget, QCheckBox):
+        widget.setChecked(widget.isChecked())
+    elif isinstance(widget, QComboBox):
+        widget.setCurrentIndex(widget.currentIndex())
+    elif isinstance(widget, QLineEdit):
+        widget.setText(widget.text())
+        widget.editingFinished.emit()
+    else:
+        widget.setValue(widget.value())
 
 
 def _is_read_only(widget) -> bool:
@@ -285,18 +310,16 @@ def test_every_row_shows_the_files_own_value() -> None:
     read back the value option_fields.current_value() reports for it -- a
     populate that quietly defaulted a field would be invisible until step 3
     saved that default over the user's data."""
-    from descape import option_fields
-
     window = _options_window(TRIGGER_FIXTURE)
     try:
         panel = window.map_options_panel
         for spec in panel._specs:
-            raw = int(option_fields.current_value(window.scenario, spec))
+            raw = _raw_value(window.scenario, spec)
             shown = _shown_value(panel, spec)
             assert shown == raw, f"{spec.field_id} shows {shown}, file holds {raw}"
-        # 15, not 19: the four Diplomacy-group scalars moved to
+        # 16, not 20: the four Diplomacy-group scalars moved to
         # DiplomacyPanel (step 5) and no longer count here.
-        assert len(panel._specs) == 15, f"{len(panel._specs)} rows -- the spec list changed"
+        assert len(panel._specs) == 16, f"{len(panel._specs)} rows -- the spec list changed"
     finally:
         _close(window)
 
@@ -572,7 +595,7 @@ def test_browsing_every_row_reports_no_edit() -> None:
     shipped read-only -- a disabled widget emits no signal, so it passed with
     the guards deleted.
     """
-    from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel
+    from PyQt5.QtWidgets import QApplication, QLabel
 
     reported = []
     window = _options_window(TRIGGER_FIXTURE)
@@ -584,12 +607,7 @@ def test_browsing_every_row_reports_no_edit() -> None:
             widget = panel.widget_for(spec.field_id)
             if isinstance(widget, QLabel):
                 continue
-            if isinstance(widget, QCheckBox):
-                widget.setChecked(widget.isChecked())
-            elif isinstance(widget, QComboBox):
-                widget.setCurrentIndex(widget.currentIndex())
-            else:
-                widget.setValue(widget.value())
+            _browse(widget)
             widget.setFocus()
             QApplication.processEvents()
         assert reported == [], f"browsing reported edits: {reported}"
@@ -607,7 +625,7 @@ def test_browsing_every_row_saves_byte_identically(tmp_path) -> None:
     on a file the user only looked at. Run against the trigger fixture rather
     than the blank template for exactly that reason.
     """
-    from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel
+    from PyQt5.QtWidgets import QApplication, QLabel
 
     from descape.scenario_io import load_map_and_units
     from descape.scenario_write import write_scenario
@@ -623,12 +641,7 @@ def test_browsing_every_row_saves_byte_identically(tmp_path) -> None:
             if isinstance(widget, QLabel):
                 continue
             widget.setFocus()
-            if isinstance(widget, QCheckBox):
-                widget.setChecked(widget.isChecked())
-            elif isinstance(widget, QComboBox):
-                widget.setCurrentIndex(widget.currentIndex())
-            else:
-                widget.setValue(widget.value())
+            _browse(widget)
             QApplication.processEvents()
 
         assert window.option_edits is None, "browsing built an options model"
@@ -1268,7 +1281,6 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
     """
     from PyQt5.QtWidgets import QLabel
 
-    from descape import option_fields
     from descape.map_options_panel import MapOptionsPanel
 
     window = _window()
@@ -1293,14 +1305,15 @@ def test_map_options_panel_populates_every_corpus_file(scenario_path) -> None:
         # this environment carries), not a guess: 0_June_Event_Scenario
         # loses all four version-gated rows at once (ai_map_type,
         # lock_coop_alliances, secondary_game_modes, legacy_exec_order),
-        # landing at exactly 15 - 4 = 11. The six C2_ElCid_coop_* 1.41
+        # landing at exactly 15 - 4 = 11 before Script filename (1.40+)
+        # was added. The six C2_ElCid_coop_* 1.41
         # files keep lock_coop_alliances and lose the other three.
         assert len(panel._specs) >= 11, (
             f"{scenario_path.name} built only {len(panel._specs)} rows"
         )
         for spec in panel._specs:
             widget = panel.widget_for(spec.field_id)
-            raw = int(option_fields.current_value(window.scenario, spec))
+            raw = _raw_value(window.scenario, spec)
             shown = _shown_value(panel, spec)
             expected = (
                 spec.sentinel_display
@@ -1564,3 +1577,124 @@ def test_a_stored_custom_value_under_conquest_is_still_shown() -> None:
         assert not widget.isEnabled()
     finally:
         _close(window)
+
+
+# --- Script filename (GH #216) -----------------------------------------------
+
+
+def _type_script_name(window, text: str) -> None:
+    widget = _row(window, "script_name")
+    widget.setText(text)
+    widget.editingFinished.emit()
+
+
+def test_the_script_filename_row_is_an_editable_line_edit() -> None:
+    from PyQt5.QtWidgets import QLineEdit
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        widget = _row(window, "script_name")
+        assert isinstance(widget, QLineEdit)
+        assert widget.text() == ""
+        assert widget.isEnabled()
+        assert widget.toolTip() == _spec_tip("script_name")
+    finally:
+        _close(window)
+
+
+def test_editing_the_script_filename_records_one_undo_step() -> None:
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        _type_script_name(window, "probe")
+        # A second editingFinished with the same text (Enter, then focus loss) is no second step.
+        _row(window, "script_name").editingFinished.emit()
+        assert window.option_edits.current_value("script_name") == "probe"
+        assert len(window.edit_history.records) == 1
+        assert window.edit_history.records[0].kind == "options"
+        assert window.edit_history.is_dirty
+        assert "XS script file: probe" in window._info_text()
+
+        window.undo()
+        assert _row(window, "script_name").text() == ""
+        assert not window.option_edits.has_edits
+        assert not window.edit_history.is_dirty
+        assert "XS script file: (none)" in window._info_text()
+
+        window.redo()
+        assert _row(window, "script_name").text() == "probe"
+        assert window.option_edits.current_value("script_name") == "probe"
+    finally:
+        _close(window)
+
+
+def test_a_typed_xs_extension_is_dropped() -> None:
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        _type_script_name(window, "probe.XS")
+        assert window.option_edits.current_value("script_name") == "probe"
+        assert _row(window, "script_name").text() == "probe"
+    finally:
+        _close(window)
+
+
+def test_a_refused_script_filename_records_nothing_and_resets_the_row() -> None:
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        _type_script_name(window, "dir/probe")
+        assert window.edit_history.records == []
+        assert not window.edit_history.is_dirty
+        assert _row(window, "script_name").text() == ""
+    finally:
+        _close(window)
+
+
+def test_a_gated_script_filename_row_is_read_only_and_says_why(monkeypatch) -> None:
+    """Its own gate: a Files failure greys only this row."""
+    from descape import viewer
+    from descape.viewer import ViewerWindow
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        monkeypatch.setattr(viewer, "script_name_write_supported", lambda *_: False)
+        window._show_map_options()
+        row = _row(window, "script_name")
+        assert not row.isEnabled()
+        assert row.toolTip() == ViewerWindow._SCRIPT_NAME_READ_ONLY
+        assert _row(window, "collide_and_correct").isEnabled()
+        assert "script_name" not in window._editable_option_fields()
+        assert "collide_and_correct" in window._editable_option_fields()
+    finally:
+        _close(window)
+
+
+def test_an_unverifiable_options_block_greys_the_script_row_with_the_scalars(monkeypatch) -> None:
+    from descape.viewer import ViewerWindow
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        monkeypatch.setattr(window.scenario, "terrain_block_offset", -1)
+        window._show_map_options()
+        assert _row(window, "script_name").toolTip() == ViewerWindow._SCALARS_READ_ONLY
+    finally:
+        _close(window)
+
+
+def test_saving_a_script_filename_writes_it(tmp_path, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QFileDialog
+
+    from descape.scenario_io import load_map_and_units, parse_triggers, xs_attachment
+
+    out = tmp_path / "saved.aoe2scenario"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        _type_script_name(window, "probe")
+        window.save_as()
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+    reloaded = load_map_and_units(out)
+    parse_triggers(reloaded)
+    assert xs_attachment(reloaded) == ("probe", 0)
+    assert reloaded._scenario.sections["Files"].retriever_map["script_file_path"].data == "probe.xs"
