@@ -257,6 +257,10 @@ def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
     scenario_version. F7_3_York is the file that settles this: scenario
     version 1.55, but its trigger version is below 4.5, so legacy_exec_order
     consumes zero bytes there despite the version implying otherwise.
+
+    A retriever whose data is not an int is treated as absent too: the
+    library types secondary_game_modes as raw bytes on 1.49 files (GH #240),
+    so that row is left out rather than crashing current_value().
     """
     out = []
     for spec in _SPECS:
@@ -267,6 +271,8 @@ def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
         if retriever is None:
             continue
         if retriever_length(retriever) == 0:
+            continue
+        if not isinstance(retriever.data, int):
             continue
         out.append(spec)
     return tuple(out)

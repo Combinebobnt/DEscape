@@ -94,6 +94,16 @@ def test_a_zero_length_retriever_is_treated_as_absent() -> None:
     assert "all_techs" in ids
 
 
+def test_a_bytes_retriever_is_treated_as_absent() -> None:
+    """The 1.49 shape (GH #240): the library types secondary_game_modes as
+    raw type "4" there, so its data is four bytes, not an int."""
+    raw = b"\x00\x00\x00\x00"
+    loaded = _stub_loaded({("Map", "secondary_game_modes"): _StubRetriever(raw, data=raw)})
+    ids = {s.field_id for s in specs_for(loaded)}
+    assert "secondary_game_modes" not in ids
+    assert "no_waves_on_shore" in ids
+
+
 def test_current_value_reads_the_stub_data() -> None:
     loaded = _stub_loaded({("Map", "collide_and_correct"): _StubRetriever(b"\x01", data=1)})
     spec = next(s for s in specs_for(loaded) if s.field_id == "collide_and_correct")
@@ -105,7 +115,8 @@ def test_current_value_raises_rather_than_return_a_list() -> None:
     per_player_starting_age) needs: current_value() must fail loudly, not
     hand a list to a widget expecting a scalar."""
     loaded = _stub_loaded({("Map", "collide_and_correct"): _StubRetriever(b"\x01\x01", data=[1, 1])})
-    spec = next(s for s in specs_for(loaded) if s.field_id == "collide_and_correct")
+    # specs_for() drops a non-int retriever (GH #240), so take the spec directly.
+    spec = next(s for s in option_fields._SPECS if s.field_id == "collide_and_correct")
     with pytest.raises(TypeError):
         current_value(loaded, spec)
 
@@ -137,6 +148,15 @@ def test_every_spec_resolves_to_a_scalar_int() -> None:
     scenario_io.parse_triggers(loaded)
     for spec in specs_for(loaded):
         assert isinstance(current_value(loaded, spec), int), spec.field_id
+
+
+@pytest.mark.corpus
+def test_every_spec_resolves_to_a_scalar_int_across_the_corpus(scenario_path) -> None:
+    """The same invariant on real files: 1.49 files crashed here (GH #240)."""
+    loaded = scenario_io.load_map_and_units(scenario_path)
+    scenario_io.parse_triggers(loaded)
+    for spec in specs_for(loaded):
+        assert isinstance(current_value(loaded, spec), int), (scenario_path.name, spec.field_id)
 
 
 def test_current_value_matches_known_blank_template_defaults() -> None:
