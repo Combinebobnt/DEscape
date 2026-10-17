@@ -11,7 +11,7 @@ hand-written table, not derived from the generator or its output.
 
 from __future__ import annotations
 
-from descape.unit_stats_table import unit_stats
+from descape.unit_stats_table import line_of_sight, unit_stats
 
 # unit_const -> (name, hp, attack, melee_armour, pierce_armour, range,
 # max_range), read from empires2_x2_p1.dat directly. Hardcoded on purpose --
@@ -60,3 +60,20 @@ def test_a_tree_is_hp_only():
 
 def test_an_unknown_const_returns_an_empty_dict():
     assert unit_stats(999999) == {}
+
+
+def test_map_revealers_see_four_ten_and_twenty_tiles():
+    """GH #153: Map Revealer / Medium / Giant (837 / 1774 / 1775), read off
+    the .dat's line_of_sight, identical across every civ."""
+    assert [line_of_sight(c) for c in (837, 1774, 1775)] == [4.0, 10.0, 20.0]
+
+
+def test_invisible_object_a_and_an_unknown_const_have_no_line_of_sight():
+    """Invisible Object A (1291) carries LOS 0, which the table omits."""
+    assert line_of_sight(1291) is None
+    assert line_of_sight(999999) is None
+
+
+def test_line_of_sight_stays_out_of_the_stats_entries():
+    """A LOS key in "stats" would give every revealer a stats grid on its card."""
+    assert unit_stats(837) == {"hp": 1}

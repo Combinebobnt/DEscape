@@ -50,6 +50,8 @@ _ELEV_STEP_STOP_COUNT = len(settings.ELEV_STEP_PCT_STOPS)
 _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
 _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
+_TERRAIN_PICKER_MODE_IDS = " or ".join(mid for mid, _label in settings.TERRAIN_PICKER_MODES)
+_TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_SWATCH_SIZES)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
 _UNITS_CATALOG_MODES = ", ".join(settings.UNITS_CATALOG_MODES)
@@ -122,7 +124,8 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # Path to your AoE2:DE profile folder, the one holding numeric per-account
 # folders with resources/ and mods/ inside. Only read, never written, and
 # optional: without it only the install's own content is offered. Also
-# settable via the AOE2DE_PROFILE_PATH env var (checked first). Default:
+# settable from Settings > General's profile folder row, or via the
+# AOE2DE_PROFILE_PATH env var (checked first, overrides both). Default:
 # detected, as %USERPROFILE%\\Games\\Age of Empires 2 DE on Windows, or on
 # Linux as the Proton prefix beside aoe2de_install's Steam library
 # (steamapps/compatdata/{content_roots.AOE2DE_STEAM_APP_ID}/pfx/drive_c/users/steamuser/Games/...).
@@ -152,6 +155,11 @@ elev_step_pct: {iso_geometry.ELEV_STEP_DEFAULT_PCT}
 # zoom in. Clamped to {settings.PAN_SPEED_MIN}-{settings.PAN_SPEED_MAX} on read.
 # Default: {settings.PAN_SPEED_DEFAULT}.
 pan_speed: {settings.PAN_SPEED_DEFAULT}
+
+# Opacity of walls and gates in percent while View > Layers > Translucent
+# Walls is on, Settings > Appearance. Clamped to {view_layers.WALL_OPACITY_MIN_PCT}-{view_layers.WALL_OPACITY_MAX_PCT} on read.
+# Default: {view_layers.WALL_OPACITY_DEFAULT_PCT}.
+wall_opacity_pct: {view_layers.WALL_OPACITY_DEFAULT_PCT}
 
 # Anchor mouse-wheel zoom under the cursor (true) or the view center
 # (false). Default: true.
@@ -200,6 +208,13 @@ terrain_style: {settings.TERRAIN_STYLE_DEFAULT}
 view_layers:
 {view_layers_block}
 
+# Mods whose art View > Layers > Mod Art skips, Settings > General > Mod art,
+# as the game's mods/mod-status.json Path strings. A listed mod that is no
+# longer installed stays listed, so it stays off if resubscribed.
+# Default: [] (every enabled mod's art draws). The value below is only an example.
+# mod_art_excluded:
+#   - subscribed//12345_Example Mod
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false
@@ -221,6 +236,15 @@ stack_badges: true
 # Default: {settings.STACK_BADGE_POSITION_DEFAULT}.
 stack_badge_position: {settings.STACK_BADGE_POSITION_DEFAULT}
 
+# How Terrain mode's picker shows terrains, switched by the List/Grid buttons
+# beside its filter box: {_TERRAIN_PICKER_MODE_IDS}. Anything else falls back to the
+# default on read. Default: {settings.TERRAIN_PICKER_MODE_DEFAULT}.
+terrain_picker_mode: {settings.TERRAIN_PICKER_MODE_DEFAULT}
+
+# The terrain grid's swatch size in px, Settings > Appearance: {_TERRAIN_GRID_SWATCH_SIZES}.
+# Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.
+terrain_grid_swatch_px: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}
+
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.
 selection_by_owner: true
@@ -234,12 +258,29 @@ grid_overlay: false
 grid_follow_elevation: true
 
 # A circle around each selected building showing its attack range, View >
-# Range Rings. Buildings only, and only ones with a range. Default: false.
+# Range Rings > Selected Buildings. Buildings only, and only ones with a
+# range. Default: false.
 range_rings: false
 
 # Each ring in its owner's player colour, View > Range Rings > Colour by
-# Owner. GAIA keeps the overlay_colors range_ring colour. Default: false.
+# Owner. Applies to every ring layer. GAIA keeps the overlay_colors
+# range_ring colour. Default: false.
 range_rings_by_owner: false
+
+# A circle around every building that has a range, selected or not, in every
+# mode, View > Range Rings > All Buildings. Siege units are not included.
+# Default: false.
+range_rings_buildings: false
+
+# A circle around each selected map revealer showing the area it reveals
+# (its line of sight), View > Range Rings > Selected Map Revealers.
+# Default: false.
+range_rings_selected_revealers: false
+
+# A circle around every map revealer showing the area it reveals (its line of
+# sight), in every mode, View > Range Rings > All Map Revealers. Hidden while
+# Show Invisible Objects is off. Default: false.
+range_rings_revealers: false
 
 # A camera glyph on each player's stored starting view tile, View > Player
 # Cameras. Default: false.
@@ -249,6 +290,14 @@ camera_markers: false
 # View > Trigger Overlay. Draws nothing until a trigger is selected in the
 # Triggers panel. Default: true.
 trigger_overlay: true
+
+# Triggers mode's Edit Area toggle: with Pan, drag the selected trigger area's
+# middle to move it, or its edges and corners to resize it. Default: false.
+trigger_area_edit: false
+
+# Edit Area's Tile borders option: the outer ring of tiles resizes instead of
+# a thin border. Default: false.
+trigger_area_tile_borders: false
 
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.

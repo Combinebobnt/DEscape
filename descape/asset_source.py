@@ -33,7 +33,7 @@ from pathlib import Path
 import platformdirs
 import yaml
 
-from descape import perf_trace
+from descape import debug_log, perf_trace
 
 APP_NAME = "DEscape"
 
@@ -157,10 +157,10 @@ def set_install_path_override(path: Path | None) -> None:
     clear_install_caches()
 
 
-def clear_install_caches() -> None:
-    """Drops every cache downstream of the install path, leaving the override
-    as it is. The test suite calls this before each test (see tests/conftest.py)."""
-    get_install_path.cache_clear()
+def clear_art_caches() -> None:
+    """Drops every cache holding sprite or terrain-texture art, for a change
+    in which files draw it (mod art toggled or opted out, TASK-378), and
+    bumps install_generation() so ThumbLoader-keyed thumbnails reload."""
     get_terrain_texture_path.cache_clear()
     get_terrain_average_color.cache_clear()
     # Path-keyed rather than id-keyed, so a changed install that resolves to
@@ -168,22 +168,35 @@ def clear_install_caches() -> None:
     # the old swatch or texture.
     _terrain_thumbnail_for_path.cache_clear()
     _terrain_texture_for_path.cache_clear()
-    get_blendomatic.cache_clear()
-    get_blend_mask.cache_clear()
-    get_terrain_mask_array.cache_clear()
     _forget_prefetches()
-    _string_table.cache_clear()
-    get_unit_icon.cache_clear()
-    get_tech_icon.cache_clear()
-    get_stat_icon.cache_clear()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
     # as sprites -- deliberately, since re-deriving one costs a whole file walk
     # -- so without this, configuring an install for the first time would leave
     # every unit drawn as a coloured dot until the app was restarted.
-    from descape import unit_sprites
+    from descape import terrain_blend, unit_sprites
 
     unit_sprites.clear_caches()
+    # Blended blocks are built from the textures above.
+    terrain_blend.clear_caches()
+
+
+def clear_install_caches() -> None:
+    """Drops every cache downstream of the install path, leaving the override
+    as it is. The test suite calls this before each test (see tests/conftest.py)."""
+    get_install_path.cache_clear()
+    from descape import mod_graphics
+
+    # Its palettes come from the install, and its mod folders from the profile derived from it.
+    mod_graphics.clear()
+    clear_art_caches()
+    get_blendomatic.cache_clear()
+    get_blend_mask.cache_clear()
+    get_terrain_mask_array.cache_clear()
+    _string_table.cache_clear()
+    get_unit_icon.cache_clear()
+    get_tech_icon.cache_clear()
+    get_stat_icon.cache_clear()
     # object_catalog.py's name resolution reads resource_string() above --
     # same reasoning, a different module. Imported here for the same
     # cycle-avoidance reason (object_catalog.py imports this module).
@@ -194,10 +207,6 @@ def clear_install_caches() -> None:
     from descape import message_markup
 
     message_markup.clear_caches()
-    # Blended blocks are built from the textures and masks above.
-    from descape import terrain_blend
-
-    terrain_blend.clear_caches()
 
 
 def get_language() -> str:
@@ -434,16 +443,38 @@ def save_install_path_to_config(path: Path) -> None:
     write_config_file(CONFIG_PATH, config)
 
 
+def save_profile_path_to_config(path: Path | None) -> None:
+    """Persists the AoE2:DE profile folder (content_roots.PROFILE_CONFIG_KEY) the
+    same read-modify-write way; None removes the key, back to auto-detect."""
+    config = {}
+    if CONFIG_PATH.is_file():
+        try:
+            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        except (yaml.YAMLError, OSError):
+            config = {}
+    if path is None:
+        config.pop("aoe2de_profile", None)
+    else:
+        config["aoe2de_profile"] = str(path)
+    write_config_file(CONFIG_PATH, config)
+
+
 @lru_cache(maxsize=256)
 def get_terrain_texture_path(terrain_id: int) -> Path | None:
     """Returns the real .dds path for a terrain_id, or None if unavailable --
-    either no install is configured, or this terrain_id has no known texture."""
+    either no install is configured, or this terrain_id has no known texture.
+    An active mod's texture of the same name wins (mod_graphics, TASK-378)."""
     install = get_install_path()
     if install is None:
         return None
     filename = _terrain_texture_map().get(terrain_id)
     if filename is None:
         return None
+    from descape import mod_graphics
+
+    mod_path = mod_graphics.resolve_terrain_texture(filename)
+    if mod_path is not None:
+        return mod_path
     path = install / TERRAIN_TEXTURE_SUBPATH / filename
     return path if path.is_file() else None
 
@@ -489,8 +520,29 @@ def _terrain_thumbnail_for_path(path: Path, px: int):
     import numpy as np
     from PIL import Image
 
-    with Image.open(path) as img:
-        return np.array(img.convert("RGB").resize((px, px)))
+    def decode(file: Path):
+        with Image.open(file) as img:
+            return np.array(img.convert("RGB").resize((px, px)))
+
+    return _decode_with_install_fallback(path, decode)
+
+
+# A mod .dds Pillow cannot read: an unsupported DXGI/FourCC format, or a truncated download.
+_TEXTURE_DECODE_ERRORS = (OSError, ValueError, NotImplementedError, SyntaxError)
+
+
+def _decode_with_install_fallback(path: Path, decode):
+    """decode(path), or for a mod texture that will not decode (TASK-378), the
+    install's file of the same name, logged; an install file's error raises as before."""
+    try:
+        return decode(path)
+    except _TEXTURE_DECODE_ERRORS as exc:
+        install = get_install_path()
+        fallback = None if install is None else install / TERRAIN_TEXTURE_SUBPATH / path.name
+        if fallback is None or fallback == path or not fallback.is_file():
+            raise
+        debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); drawing the install's")
+        return decode(fallback)
 
 
 def get_terrain_thumbnail(terrain_id: int, px: int = TERRAIN_THUMBNAIL_PX):
@@ -549,9 +601,12 @@ def _load_texture(path: Path):
     import numpy as np
     from PIL import Image
 
-    with Image.open(path) as img:
-        rgb = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
-        arr = np.array(rgb)
+    def decode(file: Path):
+        with Image.open(file) as img:
+            rgb = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
+            return np.array(rgb)
+
+    arr = _decode_with_install_fallback(path, decode)
     arr.flags.writeable = False
     return arr
 
@@ -690,7 +745,8 @@ _generation = 0
 
 
 def install_generation() -> int:
-    """How many times clear_install_caches() has run: a key that changes with the install (GH #148's portraits)."""
+    """How many times clear_art_caches() has run (clear_install_caches() included): a key
+    that changes with the install or the mod art drawn (GH #148's portraits, TASK-378)."""
     return _generation
 
 

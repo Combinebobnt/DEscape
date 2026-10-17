@@ -480,7 +480,7 @@ class ButtonGrid(QWidget):
                 else:
                     cell.items, cell.blocked = others, True
             elif button == chosen:
-                cell.items = ((mover, kind),)
+                cell.items = ((mover, kind), *(item for item in items if item != (mover, kind)))
             elif moves_away and available and (mover, kind) in items:
                 cell.dimmed = True
                 cell.items = items
@@ -587,7 +587,8 @@ class ButtonGrid(QWidget):
 
     def _cell_icon(self, cell: _Cell) -> QIcon:
         if cell.items:
-            base, dimmed = self._icon(*cell.items[0]), cell.dimmed
+            # Dimmed only when the moved-away button is the one showing there.
+            base, dimmed = self._icon(*cell.items[0]), cell.dimmed and cell.items[0] == (self.mover(), self.kind)
         else:
             base, dimmed = (self._icon(*cell.ghost) if cell.ghost else None), True
         if base is None:

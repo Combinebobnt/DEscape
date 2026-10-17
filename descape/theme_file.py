@@ -120,7 +120,7 @@ def write_theme_file(path: Path | str, doc: dict) -> None:
     path = Path(path)
     try:
         blocked = is_workshop_subscribed(path)
-    except (OSError, RuntimeError) as e:  # 3.11 raises RuntimeError on a symlink loop
+    except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
         raise ThemeWriteBlockedError(f"refusing to write a theme to a path that cannot be resolved ({e}): {path}") from e
     if blocked:
         raise ThemeWriteBlockedError(

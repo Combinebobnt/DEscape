@@ -28,15 +28,25 @@ TRANSPARENT = (0, 0, 0, 0)
 
 def load_palette(path: str | Path) -> list[tuple[int, int, int]]:
     """Parses a JASC-PAL file into a list of (r, g, b) tuples."""
+    return [colour[:3] for colour in load_palette_rgba(path)]
+
+
+def load_palette_rgba(path: str | Path) -> list[tuple[int, int, int, int]]:
+    """Parses a JASC-PAL file, or DE's .palx variant (an `$ALPHA <n>` line, then
+    RGBA rows), into (r, g, b, a) tuples. Alpha is the fourth column only in a
+    file with an `$ALPHA` line: DE's 1024-entry .pal rows carry a fourth value
+    too, and treating it as opacity would make half of b_scen.pal translucent.
+    Elsewhere a is 255. `#` comment lines are skipped."""
     lines = Path(path).read_text().splitlines()
     if not lines or lines[0].strip() != "JASC-PAL":
         raise ValueError(f"{path} is not a JASC-PAL file")
     count = int(lines[2].strip())
+    rows = [line.split() for line in lines[3:] if line.strip() and not line.lstrip().startswith(("#", "$"))]
+    has_alpha = any(line.lstrip().startswith("$ALPHA") for line in lines[3:])
     colors = []
-    for line in lines[3 : 3 + count]:
-        parts = line.split()
-        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
-        colors.append((r, g, b))
+    for parts in rows[:count]:
+        alpha = int(parts[3]) if has_alpha and len(parts) > 3 else 255
+        colors.append((int(parts[0]), int(parts[1]), int(parts[2]), alpha))
     return colors
 
 

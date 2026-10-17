@@ -25,8 +25,9 @@ pytest
 # pytest.ini pins `qt_api = pyqt5` so binding detection can't drift.
 pytest-qt
 
-# pytest-xdist runs the default tier across CPUs. run_all_tests.sh/.bat and
-# tools/ci_parity.sh pass `-n auto --maxprocesses 16 --dist loadgroup`;
+# pytest-xdist runs the default tier across CPUs. run_all_tests.sh/.bat,
+# tools/ci_parity.sh and .github/actions/default-tier pass
+# `-n auto --maxprocesses 16 --dist loadgroup`;
 # pytest.ini's addopts deliberately does not, because the tests that spawn
 # child pytests would inherit it and fan out again. Without it installed the
 # wrappers fail on the unknown `-n`; a bare `.venv/bin/python3 -m pytest`

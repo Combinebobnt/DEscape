@@ -31,12 +31,25 @@ wrong parity for its span on 11/21 (INFO, the game writes those), and units
 off their tile centre on 6/21 (player) and 7/21 (GAIA), both INFO.
 Decorations, trees, fish and cliffs are left out on purpose.
 
-A resource or tree (unit_kind.gaia_only_consts(), the set Place Unit gives
-to GAIA) in a player's list fires on 0/21 examples/ files and on the one
-known bad file, the GH #206 tester's scenario (a player 1 Forage Bush that
-was missing in the official editor), so it is a WARNING. Its message states
-only that measured fact: whether the game drops such an object on its own
-is unconfirmed.
+A GAIA-only object (unit_kind.gaia_only_consts(), the set Place Unit gives
+to GAIA: resources, trees and the Gunpowder Keg) in a player's list fires
+on 0/21 examples/ files and on the one known bad file, the GH #206
+tester's scenario (a player 1 Forage Bush that was missing in the official
+editor), so it is a WARNING. Its message states only that measured fact:
+whether the game drops such an object on its own is unconfirmed.
+
+Objects in invalid positions (GH #173) reuse placement_rules' two rules,
+which are its approximations of the game's, not the game's own. Over the 21
+loadable examples/ files: a mobile unit on terrain its .dat row refuses fires
+on 0/21 (WARNING); a building on refused terrain on 6/21 with 53 objects (a
+House on Beach, a Stone Wall in shallow water; INFO); a mobile unit inside
+another object's box on 7/21 with 20 (INFO). Invisible objects are not
+blockers there: counting Map Revealers would add 4. Garrisoned units are
+skipped in all three (they stand wherever their host does: 12 false hits,
+all inside Transport Ships), and so are off-map ones. A unit on a bridge is
+not on water: the units row reads each building's foundation terrain
+(placement_rules.laid_terrain()), and a bridge lays 28, which the land rows
+pass. GAIA scenery, resources and fish are left out as decoration noise.
 
 GH #230's "Train and research buttons" check reports a Change Train
 Location, Add Train Location or Change Research Location effect whose button
@@ -75,7 +88,7 @@ import numpy as np
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
-from descape import civ_availability, command_buttons, library_compat, object_catalog, train_locations
+from descape import civ_availability, command_buttons, library_compat, object_catalog, placement_rules, train_locations
 from descape.command_buttons import TECH, UNIT
 from descape.fill_tools import connected_regions
 from descape.iso_geometry import MAX_ELEVATION, MIN_ELEVATION
@@ -84,7 +97,7 @@ from descape.player_fields import defined_player_ids
 from descape.render import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS
-from descape.unit_kind import gaia_only_consts, mobile_unit_consts
+from descape.unit_kind import gaia_only_consts, invisible_consts, mobile_unit_consts
 from descape.unit_references import all_units, build_reference_index, references_in
 
 Severity = Literal["error", "warning", "info"]
@@ -272,14 +285,14 @@ def check_off_grid_gaia_units(loaded: LoadedScenario) -> CheckResult:
 
 
 def check_gaia_only_ownership(loaded: LoadedScenario) -> CheckResult:
-    """A resource or tree in a player's list, wherever it is: off-map and
+    """A GAIA-only object in a player's list, wherever it is: off-map and
     garrisoned ones are reported too, since the owner is wrong either way."""
     label = "GAIA-only objects owned by a player"
     gaia_only = gaia_only_consts()
     findings = [
         Finding(
             f"Player {player_id} object {unit.unit_const} (id {unit.reference_id}) at "
-            f"({unit.x:g}, {unit.y:g}) is a resource or tree; game-made files only give those to GAIA",
+            f"({unit.x:g}, {unit.y:g}) is GAIA-only; game-made files only give those to GAIA",
             "warning",
             tile=(int(unit.x), int(unit.y)),
             unit_key=(player_id, unit.reference_id),
@@ -288,6 +301,72 @@ def check_gaia_only_ownership(loaded: LoadedScenario) -> CheckResult:
         if player_id != 0 and unit.unit_const in gaia_only
     ]
     return _capped(label, findings)
+
+
+def _standing_units(loaded: LoadedScenario, consts: frozenset[int] | set[int]):
+    """(player_id, unit) for each on-map, non-garrisoned unit of `consts`:
+    a garrisoned unit stands wherever its host does, an off-map one is the
+    off-map check's."""
+    mm = loaded.map_manager
+    for player_id, unit in _all_units(loaded):
+        if unit.unit_const not in consts:
+            continue
+        if _read(unit, "garrisoned_in_id") not in (None, -1):
+            continue
+        if unit_tile_bounds(unit, mm.map_width, mm.map_height) is None:
+            continue
+        yield player_id, unit
+
+
+def _placed(kind: str, player_id: int, unit, message: str, severity: Severity) -> Finding:
+    return Finding(
+        f"{_owner(player_id)} {kind} {unit.unit_const} (id {unit.reference_id}) at ({unit.x:g}, {unit.y:g}){message}",
+        severity,
+        tile=(int(unit.x), int(unit.y)),
+        unit_key=(player_id, unit.reference_id),
+    )
+
+
+def check_units_on_wrong_terrain(loaded: LoadedScenario) -> CheckResult:
+    """A mobile unit on a tile its .dat row refuses. A building's foundation
+    counts (placement_rules.laid_terrain()), so a unit on a bridge is not on
+    water."""
+    laid = placement_rules.laid_terrain(loaded)
+    findings = []
+    for player_id, unit in _standing_units(loaded, mobile_unit_consts()):
+        reason = placement_rules.terrain_refusal(loaded, unit.unit_const, unit.x, unit.y, laid)
+        if reason is not None:
+            findings.append(_placed("unit", player_id, unit, f": {reason}", "warning"))
+    return _capped("Units on terrain they can't stand on", findings)
+
+
+def check_buildings_on_wrong_terrain(loaded: LoadedScenario) -> CheckResult:
+    """A building on a tile its .dat row refuses, shore rule included."""
+    buildings = BUILDING_TILE_SPANS.keys() - mobile_unit_consts()
+    findings = []
+    for player_id, unit in _standing_units(loaded, buildings):
+        reason = placement_rules.terrain_refusal(loaded, unit.unit_const, unit.x, unit.y)
+        if reason is not None:
+            findings.append(_placed("building", player_id, unit, f": {reason}", "info"))
+    return _capped("Buildings on terrain they can't stand on (often deliberate)", findings)
+
+
+def check_overlapping_units(loaded: LoadedScenario) -> CheckResult:
+    """A mobile unit inside another object's box. Invisible objects (Map
+    Revealers and the like) are not blockers here, though Place Unit keeps
+    treating them as solid."""
+    invisible = invisible_consts()
+    hidden = [unit for _player_id, unit in _all_units(loaded) if unit.unit_const in invisible]
+    grid = placement_rules.BlockerGrid(loaded, exclude=hidden)
+    findings = []
+    for player_id, unit in _standing_units(loaded, mobile_unit_consts()):
+        found = grid.blocker(unit.unit_const, unit.x, unit.y, exclude=[unit])
+        if found is None:
+            continue
+        owner, blocker = found
+        where = f"{object_catalog.display_name(blocker.unit_const)} ({_owner(owner)}) at ({blocker.x:g}, {blocker.y:g})"
+        findings.append(_placed("unit", player_id, unit, f" overlaps {where}", "info"))
+    return _capped("Units overlapping another object", findings)
 
 
 def _elevation_grid(loaded: LoadedScenario) -> np.ndarray:
@@ -641,6 +720,9 @@ CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("off_grid_player_units", check_off_grid_player_units),
     ("off_grid_gaia_units", check_off_grid_gaia_units),
     ("gaia_only_ownership", check_gaia_only_ownership),
+    ("units_on_wrong_terrain", check_units_on_wrong_terrain),
+    ("buildings_on_wrong_terrain", check_buildings_on_wrong_terrain),
+    ("overlapping_units", check_overlapping_units),
     ("trigger_display_order", check_trigger_display_order),
     ("trigger_references", check_trigger_references),
     ("location_buttons", check_location_buttons),

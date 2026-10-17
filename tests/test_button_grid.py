@@ -19,6 +19,7 @@ pytestmark = [
 _CHANGE_TRAIN, _CHANGE_RESEARCH, _ADD_TRAIN = 46, 47, 102
 _BARRACKS, _DOCK, _STABLE, _BUILDER, _VILLAGER, _ARMY_TENT = 12, 45, 101, 118, 83, 1097
 _MILITIA, _SPEARMAN, _SCOUT, _KNIGHT, _MARKET, _CASTLE, _LOOM = 74, 93, 448, 38, 84, 82, 22
+_PIKEMAN = 358
 
 
 @pytest.fixture(autouse=True)
@@ -85,6 +86,38 @@ def test_a_higher_id_is_hidden_by_the_slots_button() -> None:
             "Hidden here: Scout Cavalry (the lower id shows). Move or disable Spearman to free the slot."
         )
         assert _cell(grid, 1, 1).items[0] == (_MILITIA, "unit")
+    finally:
+        _close(window)
+
+
+def test_a_unit_already_in_its_slot_still_lists_its_slot_mates() -> None:
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
+    )
+    try:
+        chosen = _cell(_grid(window), 1, 2)
+        assert chosen.isChecked() and chosen.items[0] == (_SPEARMAN, "unit")
+        assert (_PIKEMAN, "unit") in chosen.items
+        assert "Pikeman" in chosen.toolTip()
+    finally:
+        _close(window)
+
+
+def test_moving_away_a_unit_that_is_not_the_cells_icon_leaves_the_icon_undimmed() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QPixmap
+
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _PIKEMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 3}
+    )
+    try:
+        grid = _grid(window)
+        cell = _cell(grid, 1, 2)
+        assert cell.dimmed and cell.items[0] == (_SPEARMAN, "unit")
+        solid = QPixmap(8, 8)
+        solid.fill(Qt.red)
+        grid._icon = lambda _id, _kind: solid
+        assert grid._cell_icon(cell).pixmap(8, 8).toImage().pixelColor(4, 4).alpha() == 255
     finally:
         _close(window)
 
@@ -369,7 +402,10 @@ def test_a_read_only_file_disables_the_cells() -> None:
         grid = _grid(window)
         assert not any(cell.isEnabled() for cell in grid.cells)
         _cell(grid, 2, 2).click()
+        records = len(window.edit_history.records)
+        grid._cell_clicked(_cell(grid, 2, 2))
         assert panel._manager().triggers[0].effects[indices[0]].button_location == 2
+        assert len(window.edit_history.records) == records
     finally:
         _close(window)
 

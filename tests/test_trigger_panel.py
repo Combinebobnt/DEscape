@@ -8473,17 +8473,18 @@ def test_a_live_marker_change_sizes_the_name_columns_like_a_fresh_populate() -> 
 
 
 def _count_evaluations(monkeypatch) -> list:
-    """Every trigger object evaluate_trigger() is called on, in call order."""
+    """Every trigger object evaluate_with_references() is called on, in call
+    order: the panel's pass, and what evaluate_trigger() delegates to."""
     from descape import trigger_status
 
-    real = trigger_status.evaluate_trigger
+    real = trigger_status.evaluate_with_references
     calls: list = []
 
     def counting(trigger, context):
         calls.append(trigger)
         return real(trigger, context)
 
-    monkeypatch.setattr(trigger_status, "evaluate_trigger", counting)
+    monkeypatch.setattr(trigger_status, "evaluate_with_references", counting)
     return calls
 
 

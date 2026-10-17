@@ -26,13 +26,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render, unit_pick
+from descape import iso_geometry, render, unit_kind, unit_pick
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
 from descape.unit_pick import (
     build_index,
     pick_unit,
+    stack_cycle_step,
     stack_groups,
     stack_scan,
     unit_key,
@@ -852,6 +853,230 @@ def test_sloped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() ->
         assert expected in polygons, f"missing the plain diamond for footprint tile ({tx}, {ty})"
 
 
+def _ramped_farm_scenario(*extra) -> FakeScenario:
+    """A 3x3 farm at (10.5, 10.5) on the one-level-per-tile ramp, so its
+    footprint tiles sit at elevations 1, 2 and 3, plus `extra` player-1 units."""
+    tiles = [
+        SyntheticTile(x=x, y=y, elevation=max(0, min(4, x - 8)))
+        for y in range(MAP_H)
+        for x in range(MAP_W)
+    ]
+    units = [[] for _ in range(9)]
+    units[1] = [SyntheticUnit(x=10.5, y=10.5, unit_const=_FARM_CONST, reference_id=1), *extra]
+    return FakeScenario(MAP_W, MAP_H, tiles, units)
+
+
+def test_stepped_pick_covers_every_pixel_of_a_draped_farms_own_footprint_and_no_other() -> None:
+    """TASK-015: a draped Stepped farm paints each footprint tile as that
+    tile's own terrain, at that tile's own elevation, so pick follows the
+    terrain tile under the pixel. Skirt pixels (screen_to_tile None) are the
+    documented residual and are skipped."""
+    scn = _ramped_farm_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    entry = index.entries[0]
+    own_tiles = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H))
+    assert len(own_tiles) == 9, "fixture must be a real 3x3 farm or this proves nothing"
+    assert len({int(elevations[ty, tx]) for tx, ty in own_tiles}) == 3, "the farm must straddle three levels"
+
+    origins = [iso_geometry.tile_screen_origin(tx, ty, int(elevations[ty, tx]), proj) for tx, ty in own_tiles]
+    margin = 2 * proj.half_h
+    x0 = max(0, min(ox for ox, _oy in origins) - margin)
+    x1 = min(proj.canvas_w, max(ox for ox, _oy in origins) + 2 * proj.half_w + margin)
+    y0 = max(0, min(oy for _ox, oy in origins) - margin)
+    y1 = min(proj.canvas_h, max(oy for _ox, oy in origins) + 2 * proj.half_h + margin)
+
+    hits = misses = 0
+    for sy in range(y0, y1):
+        for sx in range(x0, x1):
+            tile = iso_geometry.screen_to_tile(sx, sy, elevations, proj)
+            if tile is None:
+                continue
+            got = pick_unit(
+                index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj,
+                terrain_tile=tile, farms_draped=True,
+            )
+            if tile in own_tiles:
+                hits += 1
+                assert got is entry, f"({sx}, {sy}) is on footprint tile {tile} but pick missed the farm"
+            else:
+                misses += 1
+                assert got is None, f"({sx}, {sy}) is on tile {tile}, off the farm, but picked it"
+    assert hits > 0 and misses > 0, "the window must hold both footprint and outside pixels"
+
+
+@pytest.mark.parametrize(
+    "farm_first",
+    [
+        pytest.param(True, id="unit-after-farm"),
+        pytest.param(False, id="farm-after-unit"),
+    ],
+)
+def test_stepped_pick_returns_a_1x1_unit_standing_on_a_draped_farm_in_either_index_order(farm_first: bool) -> None:
+    """GH #84's Stepped twin (TASK-015): the draped farm paints as the tile's
+    terrain and the unit's marker over it, whatever their index order."""
+    scn = _ramped_farm_scenario()
+    farm = scn.unit_manager.units[1][0]
+    unit = SyntheticUnit(x=11.5, y=10.5, unit_const=_PLAIN_CONST, reference_id=2)
+    scn.unit_manager.units[1] = [farm, unit] if farm_first else [unit, farm]
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+
+    unit_entry = next(e for e in index.entries if e.unit is unit)
+    farm_entry = next(e for e in index.entries if e.unit is farm)
+    assert (farm_entry.order > unit_entry.order) is not farm_first, "index order is not the one parametrized"
+    own = (unit_entry.own_x, unit_entry.own_y)
+    assert own in render.unit_occupied_tiles(farm, MAP_W, MAP_H), "the unit must stand on the farm"
+
+    ox, oy = iso_geometry.tile_screen_origin(own[0], own[1], int(elevations[own[1], own[0]]), proj)
+    cx, cy = ox + proj.half_w, oy + proj.half_h
+    for sx, sy in ((cx, cy), (cx - proj.half_w // 2, cy), (cx + proj.half_w // 2, cy), (cx, cy + proj.half_h // 2)):
+        assert iso_geometry.screen_to_tile(sx, sy, elevations, proj) == own
+        got = pick_unit(index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj, farms_draped=True)
+        assert got is not None and got.unit is unit, (
+            f"({sx}, {sy}) on the unit's tile picked {None if got is None else got.unit.unit_const}"
+        )
+
+
+def _iso_terrain_tile(style: str, scn, sx: int, sy: int, elevations, corner_rise, proj, tile_px: int):
+    if style == "stepped":
+        return iso_geometry.screen_to_tile(sx, sy, elevations, proj)
+    tile_id = int(_sloped_terrain_tiles(scn, corner_rise, proj, tile_px)[sy, sx])
+    return None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+
+
+def _iso_pick(style: str, index, sx: int, sy: int, tile_px: int, elevations, corner_rise, proj, tile):
+    return pick_unit(
+        index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations if style == "stepped" else None, proj,
+        corner_rise=corner_rise, terrain_tile=tile, farms_draped=True, sprites_on=True,
+    )
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_units_mark_overhanging_a_nearer_draped_farm_tile_picks_like_flat(style: str) -> None:
+    """With sprites on every unit paints after all terrain, so a villager
+    whose mark spills from its own farm tile onto the next one nearer the
+    camera covers the drape there. Stepped and Sloped must pick it, as Flat
+    does, rather than the farm painted as that nearer tile's terrain."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    farm = SyntheticUnit(x=10.5, y=10.5, unit_const=_FARM_CONST, reference_id=1)
+    villager = SyntheticUnit(x=10.5, y=10.9, unit_const=_PLAIN_CONST, reference_id=2)
+    units = [[] for _ in range(9)]
+    units[1] = [farm, villager]
+    scn = FakeScenario(MAP_W, MAP_H, tiles, units)
+    index = build_index(scn)
+    tile_px = _tile_px()
+    assert render.unit_paint_offset(villager) != (0.0, 0.0), "the villager's mark must be off-centre to overhang"
+
+    flat = pick_unit(
+        index, "flat", int(10.5 * tile_px), int(11.2 * tile_px), tile_px, MAP_W, MAP_H,
+        farms_draped=True, sprites_on=True,
+    )
+    assert flat is not None and flat.unit is villager, "Flat is the reference: the villager's rect covers (10.5, 11.2)"
+
+    if style == "stepped":
+        elevations, proj = render.elevations_and_proj(scn)
+        corner_rise = None
+    else:
+        elevations, corner_rise, proj = _sloped_geometry(scn)
+    sx, sy = (int(v) for v in iso_geometry.map_point_to_screen(10.5, 11.2, 0, proj))
+    tile = _iso_terrain_tile(style, scn, sx, sy, elevations, corner_rise, proj, tile_px)
+    assert tile == (10, 11) and tile in render.unit_occupied_tiles(farm, MAP_W, MAP_H), (
+        f"the pixel must sit on the farm tile nearer the camera than the villager's own, got {tile}"
+    )
+    got = _iso_pick(style, index, sx, sy, tile_px, elevations, corner_rise, proj, tile)
+    assert got is not None and got.unit is flat.unit, (
+        f"{style} picked {None if got is None else got.unit.unit_const}, Flat picked the villager"
+    )
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_draped_farm_still_picks_where_it_occludes_a_lower_units_overhang(style: str) -> None:
+    """The other half of the rule above: where a nearer, strictly higher farm
+    tile covers the overhanging mark, the pixel shows the drape, so pick
+    falls back to the farm rather than to nothing."""
+    villager = SyntheticUnit(x=9.9, y=10.5, unit_const=_PLAIN_CONST, reference_id=2)
+    scn = _ramped_farm_scenario(villager)
+    farm = scn.unit_manager.units[1][0]
+    index = build_index(scn)
+    tile_px = _tile_px()
+    if style == "stepped":
+        elevations, proj = render.elevations_and_proj(scn)
+        corner_rise = None
+    else:
+        elevations, corner_rise, proj = _sloped_geometry(scn)
+
+    entry = next(e for e in index.entries if e.unit is villager)
+    rise = (
+        int(elevations[entry.own_y, entry.own_x]) * proj.elev_step
+        if style == "stepped"
+        else unit_rise_px_for(entry, corner_rise)
+    )
+    own_tiles = set(render.unit_occupied_tiles(farm, MAP_W, MAP_H))
+    farm_hits = villager_hits = 0
+    # Every sample lies inside the villager's own diamond, centred on (9.9, 10.5).
+    for fx in np.linspace(9.45, 10.35, 10):
+        for fy in np.linspace(10.05, 10.95, 10):
+            sx, sy = (int(v) for v in iso_geometry.map_point_to_screen(fx, fy, rise, proj))
+            tile = _iso_terrain_tile(style, scn, sx, sy, elevations, corner_rise, proj, tile_px)
+            if tile is None:
+                continue
+            assert tile in own_tiles, f"({sx}, {sy}) resolved to {tile}, off the farm"
+            got = _iso_pick(style, index, sx, sy, tile_px, elevations, corner_rise, proj, tile)
+            assert got is not None, f"({sx}, {sy}) on farm tile {tile} picked nothing"
+            if got.unit is farm:
+                farm_hits += 1
+            else:
+                assert got.unit is villager
+                villager_hits += 1
+    assert farm_hits > 0 and villager_hits > 0, (
+        f"the window must hold both an occluded overhang and a visible mark ({farm_hits}, {villager_hits})"
+    )
+
+
+def test_stepped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() -> None:
+    """farms_draped=False: the farm keeps its plain mark, one diamond per
+    footprint tile all at its OWN tile's elevation, in pick and highlight."""
+    scn = _ramped_farm_scenario()
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    entry = index.entries[0]
+    own_e = int(elevations[entry.own_y, entry.own_x])
+
+    ox, oy = iso_geometry.tile_screen_origin(entry.own_x, entry.own_y, own_e, proj)
+    sx, sy = ox + proj.half_w, oy + proj.half_h
+    assert pick_unit(index, "stepped", sx, sy, tile_px, MAP_W, MAP_H, elevations, proj, farms_draped=False) is entry
+
+    polygons = unit_polygons(entry, "stepped", tile_px, MAP_W, MAP_H, elevations, proj, farms_draped=False)
+    expected = [
+        unit_pick.diamond_points(*iso_geometry.tile_screen_origin(tx, ty, own_e, proj), proj.half_w, proj.half_h)
+        for tx, ty in render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
+    ]
+    assert len(polygons) == 9 and polygons == expected
+
+
+def test_stepped_highlight_of_a_draped_farm_traces_each_tile_at_its_own_elevation() -> None:
+    scn = _ramped_farm_scenario()
+    index = build_index(scn)
+    elevations, proj = render.elevations_and_proj(scn)
+    entry = index.entries[0]
+    polygons = unit_polygons(entry, "stepped", _tile_px(), MAP_W, MAP_H, elevations, proj, farms_draped=True)
+    expected = [
+        unit_pick.diamond_points(
+            *iso_geometry.tile_screen_origin(tx, ty, int(elevations[ty, tx]), proj), proj.half_w, proj.half_h
+        )
+        for tx, ty in render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
+    ]
+    assert len(polygons) == 9 and polygons == expected
+    own_e = int(elevations[entry.own_y, entry.own_x])
+    assert polygons != unit_polygons(entry, "stepped", _tile_px(), MAP_W, MAP_H, elevations, proj), (
+        f"the ramp must put some footprint tile off the own level {own_e}, or this proves nothing"
+    )
+
+
 @pytest.mark.parametrize("pct", [25, 50, 100, 200])
 def test_sloped_pick_finds_every_unit_at_every_elev_step_stop(pct: int) -> None:
     """The candidate loop's own bound, at the stops it actually has to
@@ -1568,6 +1793,53 @@ def test_hidden_count_is_not_member_count_minus_one() -> None:
     assert (len(members), hidden) == (3, 1)
 
 
+# GH #193: passable eye candy never stacks; obstacles still do.
+_GRASS_CONST = 301  # Grass Patch Green
+_ROCK_CONST = 623  # Rock 1
+
+
+def test_the_stack_test_consts_are_what_they_say() -> None:
+    assert _GRASS_CONST in unit_kind.passable_eye_candy_consts()
+    assert _ROCK_CONST in unit_kind.obstacle_consts()
+    assert _PLAIN_CONST not in unit_kind.eye_candy_consts()
+    for const in (_GRASS_CONST, _ROCK_CONST):
+        assert render.tile_span(const, render.NON_BUILDING_SPAN) == (1, 1)
+
+
+def test_grass_under_a_building_is_not_a_stack() -> None:
+    scn = _stack_scenario((9.5, 9.5, _GRASS_CONST), (11.5, 11.5, _GRASS_CONST), (10.5, 10.5, _BUILDING_CONST))
+    assert stack_groups(build_index(scn)) == {}
+
+
+def test_a_unit_on_two_stacked_grass_tufts_is_not_a_stack() -> None:
+    scn = _stack_scenario((6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _PLAIN_CONST))
+    assert stack_groups(build_index(scn)) == {}
+
+
+def test_a_unit_on_grass_at_one_point_is_not_a_stack() -> None:
+    assert stack_groups(build_index(_stack_scenario((6.5, 6.5, _GRASS_CONST), (6.5, 6.5, _PLAIN_CONST)))) == {}
+
+
+def test_grass_painted_over_a_unit_at_one_point_still_stacks() -> None:
+    """The tuft would otherwise win every click and the unit could not be reached."""
+    groups = stack_groups(build_index(_stack_scenario((6.5, 6.5, _PLAIN_CONST), (6.5, 6.5, _GRASS_CONST))))
+    assert _group_refs(groups, (6, 6)) == [2, 1]
+    picked = groups[(6, 6)][0]
+    assert stack_cycle_step(groups[(6, 6)], picked, 0)[0].unit.reference_id == 1
+
+
+def test_grass_beside_a_unit_under_a_building_is_left_out_of_the_stack() -> None:
+    scn = _stack_scenario((9.5, 9.5, _GRASS_CONST), (9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
+    (members, hidden), = stack_scan(build_index(scn)).values()
+    assert [e.unit.reference_id for e in members] == [3, 2]
+    assert hidden == 1
+
+
+def test_a_rock_under_a_building_still_stacks() -> None:
+    groups = stack_groups(build_index(_stack_scenario((9.5, 9.5, _ROCK_CONST), (10.5, 10.5, _BUILDING_CONST))))
+    assert _group_refs(groups, (9, 9)) == [2, 1]
+
+
 @pytest.mark.parametrize("style", ["flat", "stepped"])
 def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) -> None:
     scn = _stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
@@ -1585,38 +1857,104 @@ def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) 
     assert cover == (9, 9)
 
 
+def _appended_cross_owner_index():
+    """A player-1 and a player-2 unit at one point, then a second player-1
+    unit appended the way Place does: list end, then patch_index_for_add."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [SyntheticUnit(x=6.5, y=6.5, unit_const=_PLAIN_CONST, reference_id=1)]
+    units_by_player[2] = [SyntheticUnit(x=6.5, y=6.5, unit_const=_PLAIN_CONST, reference_id=2)]
+    scn = FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+    index = build_index(scn)
+    added = SyntheticUnit(x=6.5, y=6.5, unit_const=_PLAIN_CONST, reference_id=3)
+    scn.unit_manager.units[1].append(added)
+    unit_pick.patch_index_for_add(scn, index, 1, added)
+    return scn, index
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped", "sloped"])
+def test_an_appended_unit_does_not_outrank_a_later_players_unit(style) -> None:
+    """TASK-004: the append's `order` is last, but a rebuild paints it inside
+    player 1's block, under player 2's unit, and pick must agree."""
+    scn, index = _appended_cross_owner_index()
+    assert [e.unit.reference_id for e in index.entries] == [1, 2, 3]  # else no drift to cover
+    tile_px = _tile_px()
+    if style == "flat":
+        sx, sy = 6 * tile_px + tile_px // 2, 6 * tile_px + tile_px // 2
+        entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H)
+    elif style == "stepped":
+        elevations, proj = render.elevations_and_proj(scn)
+        sx, sy = _tile_center(6, 6, proj)
+        entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
+    else:
+        _elevations, corner_rise, proj = _sloped_geometry(scn)
+        sx, sy = _tile_center(6, 6, proj)
+        entry = pick_unit(
+            index, style, sx, sy, tile_px, MAP_W, MAP_H, None, proj, corner_rise=corner_rise, terrain_tile=(6, 6)
+        )
+    assert entry is not None and (entry.player_id, entry.unit.reference_id) == (2, 2)
+
+
+def test_an_appended_units_stack_is_ordered_like_a_rebuild() -> None:
+    scn, index = _appended_cross_owner_index()
+    keys = [(e.player_id, e.unit.reference_id) for e in stack_groups(index)[(6, 6)]]
+    assert keys == [(e.player_id, e.unit.reference_id) for e in stack_groups(build_index(scn))[(6, 6)]]
+    assert keys == [(2, 2), (1, 3), (1, 1)]
+
+
+def test_an_appended_slab_does_not_hide_a_later_players_unit() -> None:
+    """A rebuild paints player 1's new building before player 2's 1x1 unit
+    under it, so the unit stays visible and there is no stack."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[2] = [SyntheticUnit(x=9.5, y=9.5, unit_const=_PLAIN_CONST, reference_id=1)]
+    scn = FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+    index = build_index(scn)
+    slab = SyntheticUnit(x=10.5, y=10.5, unit_const=_BUILDING_CONST, reference_id=2)
+    scn.unit_manager.units[1].append(slab)
+    unit_pick.patch_index_for_add(scn, index, 1, slab)
+    assert stack_groups(build_index(scn)) == {}
+    assert stack_groups(index) == {}
+
+
 # Per file, (groups, hidden units), re-measured rather than trusted. Summed over
 # the full corpus: 830 groups / 1151 hidden = the sizing plan's 826 / 1147 plus
 # its 5 duplicate-building cases, which that plan counted separately, less the
 # 2 old-allies groups GH #121 dissolved (a 1x1 unit on a now 3x1 blocker's point),
-# plus the 1 El Cid 4 group GH #178's 2x2 fish made (a Shore Fish under a Perch).
+# plus the 1 El Cid 4 group GH #178's 2x2 fish made (a Shore Fish under a Perch),
+# plus the 51 groups TASK-134's doodad footprints made (a 1x1 unit under a later
+# mountain or ruin; +4 more in 8tp3w9j, which this table does not list), less the
+# 219 groups / 260 hidden GH #193 dropped over these files (passable eye candy is
+# never a hidden member). Comments give each row before GH #193.
 _STACKS_PER_FILE = {
-    "0_June_Event_Scenario.aoe2scenario": (14, 14),
-    "2_Joan_coop_1_v0_13.aoe2scenario": (13, 14),
-    "2_Joan_coop_2_v0_15.aoe2scenario": (8, 8),
-    "2_Joan_coop_3_v0_14.aoe2scenario": (5, 5),
+    "0_June_Event_Scenario.aoe2scenario": (13, 13),  # (14, 14)
+    "2_Joan_coop_1_v0_13.aoe2scenario": (7, 7),  # (13, 14)
+    "2_Joan_coop_2_v0_15.aoe2scenario": (6, 6),  # (8, 8)
+    "2_Joan_coop_3_v0_14.aoe2scenario": (1, 1),  # (5, 5)
     "2_Joan_coop_4_v0_13.aoe2scenario": (3, 3),
-    "2_Joan_coop_5_v0_13.aoe2scenario": (38, 44),
-    "2_Joan_coop_6_v0_14.aoe2scenario": (21, 25),
-    "C2_ElCid_coop_1_v0_16.aoe2scenario": (90, 92),
-    "C2_ElCid_coop_2_v0_13.aoe2scenario": (19, 19),
-    "C2_ElCid_coop_3_v0_12.aoe2scenario": (14, 26),
-    "C2_ElCid_coop_4_v0_13.aoe2scenario": (54, 54),  # (53, 53) before GH #178's 2x2 Perch at (60, 4)
-    "C2_ElCid_coop_5_v0_14.aoe2scenario": (18, 18),
-    "C2_ElCid_coop_6_v0_13.aoe2scenario": (17, 21),
-    "F7_2_Dos Pilas (648).aoe2scenario": (91, 102),
-    "F7_3_York (865).aoe2scenario": (85, 93),
-    "R4_LeLoi_4.aoe2scenario": (162, 402),
-    "atilla_1_scn_resaved.aoe2scenario": (82, 95),
+    "2_Joan_coop_5_v0_13.aoe2scenario": (15, 16),  # (38, 44)
+    "2_Joan_coop_6_v0_14.aoe2scenario": (12, 15),  # (21, 25)
+    "C2_ElCid_coop_1_v0_16.aoe2scenario": (88, 89),  # (90, 92)
+    "C2_ElCid_coop_2_v0_13.aoe2scenario": (20, 20),  # (21, 21); (19, 19) before TASK-134's doodad spans
+    "C2_ElCid_coop_3_v0_12.aoe2scenario": (9, 10),  # (14, 26)
+    "C2_ElCid_coop_4_v0_13.aoe2scenario": (47, 47),  # (54, 54); (53, 53) before GH #178's 2x2 Perch at (60, 4)
+    "C2_ElCid_coop_5_v0_14.aoe2scenario": (8, 8),  # (18, 18)
+    "C2_ElCid_coop_6_v0_13.aoe2scenario": (5, 5),  # (17, 21)
+    "F7_2_Dos Pilas (648).aoe2scenario": (80, 90),  # (92, 103); (91, 102) before TASK-134
+    "F7_3_York (865).aoe2scenario": (74, 81),  # (85, 93)
+    "R4_LeLoi_4.aoe2scenario": (131, 355),  # (201, 441); (162, 402) before TASK-134
+    "atilla_1_scn_resaved.aoe2scenario": (54, 67),  # (83, 96); (82, 95) before TASK-134
     "blank_map.aoe2scenario": (0, 0),
-    "old-allies-final-v2.aoe2scenario": (96, 116),  # (98, 118) before GH #121's blocker spans
+    # (104, 124); (98, 118) before GH #121, (96, 116) before TASK-134. Two of
+    # its stacks are grass painted over a unit at its exact point.
+    "old-allies-final-v2.aoe2scenario": (89, 109),
     "ring75_v0_scx_resaved.aoe2scenario": (0, 0),
 }
 
 
 def test_the_per_file_stack_table_sums_to_the_sizing_measurement() -> None:
-    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1
-    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1
+    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1 + 51 - 219
+    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1 + 51 - 260
 
 
 @pytest.mark.corpus
@@ -1724,6 +2062,45 @@ def test_a_deep_fishs_stepped_outline_is_one_ring_centred_on_the_fish(const, x, 
     ys = [p[1] for p in merged[0]]
     assert ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2) == pytest.approx(centre, abs=1)
     assert (max(xs) - min(xs)) == pytest.approx(2 * proj.half_w * span)
+
+
+_MNTN3 = 744  # 6x6 (TASK-134)
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped"])
+def test_picking_a_mountains_outer_tile_selects_it(style) -> None:
+    """TASK-134: a mountain read as 1x1, so only its centre tile picked it."""
+    scn = _stack_scenario((10.0, 10.0, _MNTN3))
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    for tx, ty in ((7, 7), (12, 12), (7, 12), (12, 7)):
+        if style == "flat":
+            sx, sy = tx * tile_px + tile_px // 2, ty * tile_px + tile_px // 2
+        else:
+            sx, sy = _tile_center(tx, ty, proj)
+        entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
+        assert entry is not None and entry.unit.unit_const == _MNTN3, (style, tx, ty)
+
+
+def test_a_mountains_outline_is_6x6() -> None:
+    _scn, entry = _one_unit_entry(_MNTN3, 10.0, 10.0)
+    tp = _tile_px()
+    assert unit_polygons(entry, "flat", tp, MAP_W, MAP_H) == [
+        [(7 * tp, 7 * tp), (13 * tp, 7 * tp), (13 * tp, 13 * tp), (7 * tp, 13 * tp)]
+    ]
+    polygons = _stepped_polygons(_MNTN3, 10.0, 10.0)
+    assert len(polygons) == 36
+    _assert_one_ring_tracing(unit_pick.merge_footprint_polygons(polygons), polygons)
+
+
+def test_a_1x1_unit_under_a_later_painted_mountain_is_a_stack_member() -> None:
+    """TASK-134 decision 5: true to mark painting, and what keeps the unit
+    reachable (a second click). One placed after the mountain is not stacked."""
+    under = stack_groups(build_index(_stack_scenario((8.5, 8.5, _PLAIN_CONST), (10.0, 10.0, _MNTN3))))
+    assert _group_refs(under, (8, 8)) == [2, 1]
+    over = stack_groups(build_index(_stack_scenario((10.0, 10.0, _MNTN3), (8.5, 8.5, _PLAIN_CONST))))
+    assert over == {}
 
 
 def test_merge_returns_disjoint_polygons_unchanged() -> None:

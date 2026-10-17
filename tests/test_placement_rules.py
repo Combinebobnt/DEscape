@@ -15,7 +15,7 @@ import random
 import pytest
 
 from descape import asset_source, object_catalog, placement_rules
-from descape.terrain_palette import BUILDING_TILE_SPANS
+from descape.terrain_palette import BUILDING_TILE_SPANS, DOODAD_TILE_SPANS, FOUNDATION_TERRAIN
 from testkit.fakes import FakeScenario, SyntheticTile, SyntheticUnit
 
 VILLAGER = 83
@@ -123,6 +123,34 @@ def test_an_off_map_point_is_not_the_terrain_rules_to_refuse() -> None:
     assert placement_rules.terrain_refusal(scenario, VILLAGER, SIZE + 3.5, 5.5) is None
 
 
+# --- laid terrain (GH #173: Map Analysis reads a bridge's deck) ------------------
+
+BRIDGE_MIDDLE = 606  # Bridge A--Middle, 2x3, foundation terrain 28 (Water 2D, Bridge)
+BRIDGE_TILES = {(9, 9), (10, 9), (9, 10), (10, 10), (9, 11), (10, 11)}  # at (10, 10.5)
+
+
+def test_a_villager_on_a_bridge_over_shallow_water_passes_only_with_laid_terrain() -> None:
+    assert FOUNDATION_TERRAIN[BRIDGE_MIDDLE] == 28
+    scenario = _scenario([[_unit(BRIDGE_MIDDLE, 10, 10.5)]], fill=WATER_SHALLOW)
+    laid = placement_rules.laid_terrain(scenario)
+    assert laid == {tile: frozenset({28}) for tile in BRIDGE_TILES}
+    refused = "Villager Male can't stand on Water Shallow"
+    assert placement_rules.terrain_refusal(scenario, VILLAGER, 9.5, 10.5) == refused
+    assert placement_rules.terrain_refusal(scenario, VILLAGER, 9.5, 10.5, laid) is None
+    # Off the deck, the water still refuses.
+    assert placement_rules.terrain_refusal(scenario, VILLAGER, 11.5, 10.5, laid) == refused
+    # Place Unit and Move are unchanged: refusal() passes no laid terrain.
+    assert placement_rules.refusal(scenario, VILLAGER, 9.5, 10.5) == refused
+
+
+def test_a_garrisoned_bridge_and_a_const_without_a_foundation_lay_nothing() -> None:
+    assert STONE_WALL not in FOUNDATION_TERRAIN
+    garrisoned = _scenario([[_unit(BRIDGE_MIDDLE, 10, 10.5, garrisoned_in_id=7)]], fill=WATER_SHALLOW)
+    assert placement_rules.laid_terrain(garrisoned) == {}
+    walls = _scenario([[_unit(STONE_WALL, 9.5, 10.5), _unit(VILLAGER, 9.5, 10.5)]], fill=WATER_SHALLOW)
+    assert placement_rules.laid_terrain(walls) == {}
+
+
 # --- objects --------------------------------------------------------------------
 
 
@@ -202,6 +230,27 @@ def test_a_diagonal_gate_blocks_on_its_six_tiles_only() -> None:
         wall = [_unit(STONE_WALL, tx + 0.5, ty + 0.5)]
         assert _blocked(wall, GATE_DIAGONAL, 10, 10)
         assert _blocked([_unit(GATE_DIAGONAL, 10, 10)], STONE_WALL, tx + 0.5, ty + 0.5)
+
+
+MOUNTAIN = 744  # MNTN3: a 6x6 footprint (TASK-134), clearance 2.0
+
+
+def test_a_mountain_blocks_with_its_4x4_clearance_box_inside_its_6x6_footprint() -> None:
+    """TASK-134 decision 4: the object rule keeps the game's clearance box,
+    so it answers exactly as before the footprint grew."""
+    assert DOODAD_TILE_SPANS[MOUNTAIN] == (6, 6)
+    assert placement_rules.boxes(MOUNTAIN, 20.0, 20.0) == ((18.0, 18.0, 22.0, 22.0),)
+    assert _blocked([_unit(MOUNTAIN, 20.0, 20.0)], VILLAGER, 21.5, 21.5)
+    assert not _blocked([_unit(MOUNTAIN, 20.0, 20.0)], VILLAGER, 22.5, 22.5)  # footprint, outside the box
+
+
+def test_a_mountains_terrain_rule_reads_all_36_footprint_tiles() -> None:
+    footprint = [(x, y) for y in range(17, 23) for x in range(17, 23)]
+    for corner in (footprint[0], footprint[-1]):
+        scenario = _scenario(terrain={corner: WATER_DEEP})
+        assert placement_rules.terrain_refusal(scenario, MOUNTAIN, 20.0, 20.0) is not None, corner
+    outside = _scenario(terrain={(16, 16): WATER_DEEP, (23, 23): WATER_DEEP})
+    assert placement_rules.terrain_refusal(outside, MOUNTAIN, 20.0, 20.0) is None
 
 
 def test_a_straight_gate_is_one_box_of_its_span() -> None:

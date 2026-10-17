@@ -356,6 +356,28 @@ def test_navigating_to_a_unit_finding_switches_to_units_mode_and_selects_it() ->
         conftest.close_window(window)
 
 
+def test_the_invalid_position_rows_list_the_fixture_archer_and_select_it() -> None:
+    """GH #173: three group rows, the overlap one holding Archer 201 inside House 200 by name."""
+    window = _window()
+    try:
+        window.analysis_action.trigger()
+        dialog = window._analysis_dialog
+        for label in ("Units on terrain they can't stand on", "Buildings on terrain they can't stand on"):
+            group, rows = _rows(dialog, label)
+            assert group.text(0).endswith("(clean)") and rows == []
+        group, rows = _rows(dialog, "Units overlapping another object")
+        assert group.text(0) == "Units overlapping another object (1)"
+        assert (rows[0].text(0), rows[0].text(1)) == (
+            "Info",
+            "Player 1 unit 4 (id 201) at (11.5, 10.5) overlaps House (Player 1) at (10.5, 10.5)",
+        )
+        dialog.tree.itemDoubleClicked.emit(rows[0], 0)
+        assert window.mode_combo.currentText() == "Units"
+        assert window._selection == [(1, 201)]
+    finally:
+        conftest.close_window(window)
+
+
 @pytest.mark.parametrize("style", ["Flat top-down", "Flat", "Stepped", "Sloped"])
 def test_center_on_tile_centres_the_tile_in_every_terrain_style(style: str) -> None:
     from PyQt5.QtWidgets import QApplication

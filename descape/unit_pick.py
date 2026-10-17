@@ -73,6 +73,12 @@ class UnitEntry:
     own_y: int
     order: int
 
+    @property
+    def rank(self) -> tuple[int, int]:
+        """Paint order: player first, then index order, which is a rebuild's
+        order both after a build and after any number of appends."""
+        return (self.player_id, self.order)
+
 
 @dataclass
 class UnitIndex:
@@ -106,11 +112,9 @@ def unit_key(player_id: int, unit) -> tuple[int, int]:
 
 def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
     """Builds the index in EXACTLY render._flat_unit_draws()/_units_by_tile()'s
-    own player-then-unit-list iteration order, so `order` is directly
-    comparable against paint order right after a build. patch_index_for_add()
-    appends instead, so after a Place, Paste-inside or Garrison-add into any
-    owner but the last one indexed, `order` ranks the new unit above later
-    players' units that paint over it, until the next rebuild.
+    own player-then-unit-list iteration order. UnitEntry.rank, not `order`,
+    is the paint order: patch_index_for_add() appends, and `rank` sorts that
+    append into its owner's block where a rebuild would put it.
 
     Filtered units are absent entirely rather than flagged, so a hidden unit
     is not pickable -- the same object drives what's drawn and what's
@@ -118,10 +122,10 @@ def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
 
     Off-map units (render.unit_tile_bounds() returns None) are dropped,
     exactly as _flat_unit_draws() already drops them. `order` is therefore a
-    dense rank over the SURVIVING units, not a position in
-    unit_manager.units. That is fine because order is only ever compared
+    dense index over the SURVIVING units, not a position in
+    unit_manager.units. That is fine because rank only ever compares it
     relatively, and dropping a prefix-consistent subset preserves relative
-    order -- but it does mean order is not a unit address. by_key is.
+    order -- but it does mean order is not a stable unit address. by_key is.
     """
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
@@ -143,8 +147,8 @@ def _append_entry(index: UnitIndex, player_id: int, unit, bounds: tuple[int, int
     patch_index_for_add() (Batch D's D4) -- appends one new entry at
     `order = len(index.entries)` and registers it in by_key/by_tile, so a
     single Place gets the same footprint and key a full rebuild would give
-    that unit. Not necessarily the same `order`: a rebuild ranks it inside its owner's
-    block, an append after every entry (see build_index())."""
+    that unit. Not the same `order`, but the same relative `rank`: the
+    owner's block sorts first (see build_index())."""
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     entry = UnitEntry(
         player_id=player_id,
@@ -165,10 +169,12 @@ def patch_index_for_add(
     scenario, index: UnitIndex, player_id: int, unit, unit_filter: UnitFilter = UnitFilter()
 ) -> None:
     """Append-only UnitIndex update for a single Place (Batch D's D4): one
-    new entry at the end, so every existing entry's `order` -- a dense rank
+    new entry at the end, so every existing entry's `order` -- a dense index
     over build order, not a stable address, see build_index()'s own
-    docstring -- stays valid. A no-op if the filter hides the new unit or it
-    landed off-map, matching build_index()'s own two drop conditions."""
+    docstring -- stays valid, and the new entry's `rank` sorts after its own
+    player's units and before every later player's. A no-op if the filter
+    hides the new unit or it landed off-map, matching build_index()'s own two
+    drop conditions."""
     if not unit_filter.matches(player_id, unit):
         return
     mm = scenario.map_manager
@@ -234,14 +240,16 @@ def patch_index_for_move(
             index.by_tile.setdefault((tx, ty), []).append(entry.order)
 
 
-def _flat_key(entry: UnitEntry) -> int:
+def _flat_key(entry: UnitEntry, draped: bool = False) -> tuple[int, tuple[int, int]]:
     """Flat's paint order is composite_rect_flat()'s own: it selects hits
     with np.nonzero (ascending indices, i.e. overlay_units' order) and blits
-    opaque rects in that order, so last-drawn wins outright."""
-    return entry.order
+    opaque rects in that order, so last-drawn wins outright. `rank` is that
+    order. A draped farm (GH #150) paints in the terrain pass, so it ranks
+    under every other unit on its tile, as in _stepped_key()."""
+    return (0 if draped else 1, entry.rank)
 
 
-def _stepped_key(order: int, x: int, y: int, draped: bool = False) -> tuple[int, int, int, int]:
+def _stepped_key(rank: tuple[int, int], x: int, y: int) -> tuple[int, int, tuple[int, int]]:
     """Stepped's paint order, reproduced exactly.
 
     depth_order() lexsorts (d = y - x, x), and render._units_by_tile()
@@ -253,21 +261,41 @@ def _stepped_key(order: int, x: int, y: int, draped: bool = False) -> tuple[int,
     That is why this takes coordinates rather than reading own_x/own_y off
     the entry: those were here because a footprint extended past its own
     tile and same-d units could therefore overlap. Now the covering tile IS
-    the paint position, and `order` is what breaks a tie WITHIN one tile's
+    the paint position, and `rank` is what breaks a tie WITHIN one tile's
     bucket -- matching Flat's last-drawn-wins, which the renderer's
     per-tile bucketing made Stepped agree with.
 
-    `draped` ranks a draped farm under every non-draped unit on the same
-    tile, whatever their index order (GH #84): a draped farm paints AS that
-    tile's terrain, and the tile's own units paint over it afterwards. Only
-    Sloped passes it today; Stepped also drapes farms with sprites on, but
-    its caller does not know whether sprites are on, so it keeps the default.
+    A draped farm is not ranked by this key at all: it paints AS terrain,
+    under every unit whose mark covers the pixel, so both iso pick loops
+    keep it apart from the unit candidates (_PickHits).
     """
-    return (y - x, x, 0 if draped else 1, order)
+    return (y - x, x, rank)
+
+
+@dataclass
+class _PickHits:
+    """An iso pick loop's two answers. `unit` is the max-_stepped_key
+    candidate that is not a draped farm; `draped` is the draped farm on the
+    terrain tile under the pixel (GH #84, TASK-015). With sprites on every
+    unit paints after all terrain, so a draped farm shows only where no unit
+    covers the pixel or the winner is occluded (pick_unit_cover())."""
+
+    unit: tuple[UnitEntry, tuple[int, int]] | None = None
+    draped: tuple[UnitEntry, tuple[int, int]] | None = None
+    _unit_k: tuple[int, int, tuple[int, int]] | None = None
+    _draped_k: tuple[int, int, tuple[int, int]] | None = None
+
+    def offer(self, entry: UnitEntry, x: int, y: int, is_draped_farm: bool) -> None:
+        key = _stepped_key(entry.rank, x, y)
+        if is_draped_farm:
+            if self._draped_k is None or key > self._draped_k:
+                self.draped, self._draped_k = (entry, (x, y)), key
+        elif self._unit_k is None or key > self._unit_k:
+            self.unit, self._unit_k = (entry, (x, y)), key
 
 
 def _pick_unit_flat(
-    index: UnitIndex, sx: int, sy: int, tile_px: int, tile_w: int, tile_h: int
+    index: UnitIndex, sx: int, sy: int, tile_px: int, tile_w: int, tile_h: int, farms_draped: bool = False
 ) -> tuple[UnitEntry, tuple[int, int]] | None:
     """The 3x3 tile neighbourhood, with a per-entry rect test (off-grid placement,
     Stage 1). A span-1 mark is shifted off its tile by up to half a tile per
@@ -287,7 +315,7 @@ def _pick_unit_flat(
     max-over-the-bucket used to be."""
     tx, ty = sx // tile_px, sy // tile_px
     best: tuple[UnitEntry, tuple[int, int]] | None = None
-    best_key: int | None = None
+    best_key: tuple[int, tuple[int, int]] | None = None
     for y in range(ty - 1, ty + 2):
         for x in range(tx - 1, tx + 2):
             if not (0 <= x < tile_w and 0 <= y < tile_h):
@@ -300,7 +328,8 @@ def _pick_unit_flat(
                     continue
                 if not (y * tile_px + off_y <= sy < (y + 1) * tile_px + off_y):
                     continue
-                key = _flat_key(entry)
+                draped = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+                key = _flat_key(entry, draped)
                 if best_key is None or key > best_key:
                     best, best_key = (entry, (x, y)), key
     return best
@@ -312,11 +341,18 @@ def _pick_unit_stepped(
     sy: int,
     elevations: np.ndarray,
     proj: iso_geometry.IsoProjection,
-) -> tuple[UnitEntry, tuple[int, int]] | None:
+    terrain_tile: tuple[int, int] | None = None,
+    farms_draped: bool = False,
+) -> _PickHits:
     """iso_geometry.screen_to_tile()'s structure with the elevation gate
     swapped for a unit-footprint gate (see this module's asymmetry 1).
 
-    Returns (entry, (x, y)) -- the winner AND the footprint tile it was
+    A draped farm (farms_draped, TASK-015) skips both gates and is hit only
+    on `terrain_tile`, the tile under the pixel: the drape paints it as each
+    footprint tile's own terrain, as in _pick_unit_sloped(). It is returned
+    apart from the unit winner (_PickHits.draped).
+
+    Each hit is (entry, (x, y)) -- the winner AND the footprint tile it was
     covering when it won, because that tile is its paint position (see
     _stepped_key) and pick_unit() needs it for the terrain compare. The
     winner's own tile is the wrong thing to compare there once a unit paints
@@ -328,8 +364,7 @@ def _pick_unit_stepped(
     the survivors is a different -- also defensible, but untested -- rule.
     """
     h, w = elevations.shape
-    best: tuple[UnitEntry, tuple[int, int]] | None = None
-    best_key: tuple[int, int, int, int] | None = None
+    hits = _PickHits()
 
     for e in range(proj.min_elev, proj.max_elev + 1):
         u = sx - proj.origin_x - proj.half_w
@@ -359,22 +394,28 @@ def _pick_unit_stepped(
                 origin_sx, origin_sy = iso_geometry.tile_screen_origin(x, y, e, proj)
                 for order in orders:
                     entry = index.entries[order]
-                    # The swapped gate: this candidate diamond is only real
-                    # if the unit's OWN tile sits at elevation e, since that
-                    # is the single height its whole footprint is drawn at.
-                    if int(elevations[entry.own_y, entry.own_x]) != e:
-                        continue
-                    dx, dy = render.unit_paint_offset(entry.unit)
-                    if dx or dy:
-                        cen_x, cen_y = iso_geometry.map_point_to_screen(
-                            x + 0.5 + dx, y + 0.5 + dy, e * proj.elev_step, proj
-                        )
-                        ox, oy = cen_x - proj.half_w, cen_y - proj.half_h
+                    is_draped_farm = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+                    if is_draped_farm:
+                        # Every e that reaches this tile gives the same key.
+                        if (x, y) != terrain_tile:
+                            continue
                     else:
-                        ox, oy = origin_sx, origin_sy
-                    local_x, local_y = sx - ox, sy - oy
-                    if not bool(iso_geometry.diamond_membership(local_x, local_y, proj.half_w, proj.half_h)):
-                        continue
+                        # The swapped gate: this candidate diamond is only real
+                        # if the unit's OWN tile sits at elevation e, since that
+                        # is the single height its whole footprint is drawn at.
+                        if int(elevations[entry.own_y, entry.own_x]) != e:
+                            continue
+                        dx, dy = render.unit_paint_offset(entry.unit)
+                        if dx or dy:
+                            cen_x, cen_y = iso_geometry.map_point_to_screen(
+                                x + 0.5 + dx, y + 0.5 + dy, e * proj.elev_step, proj
+                            )
+                            ox, oy = cen_x - proj.half_w, cen_y - proj.half_h
+                        else:
+                            ox, oy = origin_sx, origin_sy
+                        local_x, local_y = sx - ox, sy - oy
+                        if not bool(iso_geometry.diamond_membership(local_x, local_y, proj.half_w, proj.half_h)):
+                            continue
                     # index.by_tile is Flat's own full-rect bucketing, shared
                     # here rather than duplicated (see build_index's
                     # docstring); narrow to the real occupied set for the 36
@@ -382,10 +423,8 @@ def _pick_unit_stepped(
                     # tile a gate doesn't actually occupy correctly misses.
                     if not render.unit_occupies_tile(entry.unit, x, y):
                         continue
-                    key = _stepped_key(order, x, y)
-                    if best_key is None or key > best_key:
-                        best, best_key = (entry, (x, y)), key
-    return best
+                    hits.offer(entry, x, y, is_draped_farm)
+    return hits
 
 
 def _pick_unit_sloped(
@@ -396,13 +435,13 @@ def _pick_unit_sloped(
     proj: iso_geometry.IsoProjection,
     terrain_tile: tuple[int, int] | None,
     farms_draped: bool,
-) -> tuple[UnitEntry, tuple[int, int]] | None:
+) -> _PickHits:
     """_pick_unit_stepped()'s shape, keyed on the SCREEN LATTICE instead of
     on integer elevation levels -- Track C5's Step 3.
 
-    Returns (entry, (x, y)) with the same meaning as the stepped branch:
-    the winner and the footprint tile it was covering when it won, since
-    that tile is its paint position (see _stepped_key).
+    Returns the same _PickHits as the stepped branch: each hit the winner
+    and the footprint tile it was covering when it won, since that tile is
+    its paint position (see _stepped_key).
 
     Why a different parametrization. Stepped can enumerate candidates by
     elevation because every unit sits at an integer level; a Sloped unit
@@ -480,8 +519,7 @@ def _pick_unit_sloped(
     d_lo = (v + rise_lo - 2 * half_h) // half_h - 2
     d_hi = (v + rise_hi) // half_h + 2
 
-    best: tuple[UnitEntry, tuple[int, int]] | None = None
-    best_key: tuple[int, int, int, int] | None = None
+    hits = _PickHits()
 
     for d in range(d_lo, d_hi + 1):
         for s in range(q - 2, q + 2):
@@ -542,10 +580,8 @@ def _pick_unit_sloped(
                 # occupied set for the 36 sparse diagonal-gate consts.
                 if not render.unit_occupies_tile(entry.unit, x, y):
                     continue
-                key = _stepped_key(order, x, y, is_draped_farm)
-                if best_key is None or key > best_key:
-                    best, best_key = (entry, (x, y)), key
-    return best
+                hits.offer(entry, x, y, is_draped_farm)
+    return hits
 
 
 def unit_rise_px_for(entry: UnitEntry, corner_rise: np.ndarray) -> int:
@@ -625,16 +661,17 @@ def pick_unit_cover(
     resolved the tile for its own use (MapView.pick_unit_at) passes it in so
     the same pixel is not unprojected twice per mouse move.
 
-    farms_draped (Track C6, Sloped only): whether a farm is CURRENTLY drawn
-    draped over its own footprint tiles rather than as a plain diamond --
-    i.e. the caller's own sprites-enabled state, since
-    _paint_tile_and_units_sloped only drapes a farm when sprites are on.
-    Defaults False (the conservative "don't know, assume plain diamond"
-    answer) rather than True, so a caller that forgets to pass it degrades
-    to the old shape rather than silently disagreeing with an off-by-default
-    render. A real caller passes its live sprites-enabled flag (e.g.
-    SlopedChunkCache.sprites_enabled) so pick can never assume a drape the
-    render isn't actually painting, or vice versa.
+    farms_draped (Track C6, every style; Flat keeps the hit shape and only
+    ranks a draped farm under its tile's units): whether a farm is CURRENTLY
+    drawn draped over its own footprint tiles rather than as a plain
+    diamond, i.e. the live cache's units shown AND sprites on AND View >
+    Layers > Farm Overlay on, the three gates the render's drape needs
+    (MapView._farms_draped()). Defaults False (the conservative "don't
+    know, assume plain diamond" answer) rather than True, so a caller that
+    forgets to pass it degrades to the old shape rather than silently
+    disagreeing with an off-by-default render. In Stepped a draped farm is
+    not pickable on a skirt face, where terrain_tile is None (the residual
+    below).
 
     sprites_on (Stepped and Sloped): whether the render paints terrain first
     and objects second (TASK-133), i.e. the live cache's with_units and
@@ -666,6 +703,10 @@ def pick_unit_cover(
        below. Sloped misses a later tile that stands higher but is itself
        overpainted by a nearer, lower one, which needs corner jumps of
        several levels (measured only on random 0-7 level fields).
+    4. A draped farm (farms_draped) takes no part in steps 1-3: it paints
+       as terrain, under every unit, so it is the answer only when no
+       non-draped unit covers the pixel or step 2/3 discarded the winner,
+       as in Flat. A unit mark overhanging a nearer farm tile wins there.
 
     Residual, documented rather than hidden: screen_to_tile() returns None
     on skirt-face pixels (phase 2's own accepted behavior). There, the unit
@@ -674,16 +715,15 @@ def pick_unit_cover(
     terrain_tile is None only genuinely off-map.
     """
     if style == "flat":
-        return _pick_unit_flat(index, sx, sy, tile_px, tile_w, tile_h)
+        return _pick_unit_flat(index, sx, sy, tile_px, tile_w, tile_h, farms_draped)
     if style == "sloped":
         if corner_rise is None or proj is None:
             return None
         terrain = None if terrain_tile is UNRESOLVED_TILE else terrain_tile
-        found = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain, farms_draped)
+        hits = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain, farms_draped)
     elif style == "stepped":
         if elevations is None or proj is None:
             return None
-        found = _pick_unit_stepped(index, sx, sy, elevations, proj)
         # Only when the caller resolved nothing: MapView.pick_unit_at has
         # already unprojected this pixel and hands the tile straight in.
         terrain = (
@@ -691,11 +731,15 @@ def pick_unit_cover(
             if terrain_tile is UNRESOLVED_TILE
             else terrain_tile
         )
+        hits = _pick_unit_stepped(index, sx, sy, elevations, proj, terrain, farms_draped)
     else:
         raise ValueError(f"unknown terrain style {style!r}")
 
+    # A draped farm is the terrain tile's own paint, so it shows exactly
+    # where the unit winner is missing or occluded (step 4).
+    found = hits.unit
     if found is None:
-        return None
+        return hits.draped
     winner, (cover_x, cover_y) = found
 
     if terrain is None:
@@ -704,7 +748,7 @@ def pick_unit_cover(
     if (ty - tx, tx) > (cover_y - cover_x, cover_x):
         if sprites_on and not _occluded_with_sprites(winner, terrain, style, elevations, proj, corner_rise):
             return found
-        return None
+        return hits.draped
     return found
 
 
@@ -724,10 +768,8 @@ def _occluded_with_sprites(
     1x1 mark's is its tile's lowest corner, but it never reaches here: its
     membership already collapses onto the terrain tile).
 
-    A farm drapes as terrain, not ink, yet needs no case here: Sloped
-    collapses it onto the terrain tile too, and in Stepped only an off-centre
-    (span-1) diamond can meet a later tile that is not strictly higher, which
-    no draping const is."""
+    A draped farm drapes as terrain, not ink, yet needs no case here: both
+    styles collapse it onto the terrain tile, so it never reaches here."""
     unit = entry.unit
     tx, ty = terrain
     if style == "sloped":
@@ -750,7 +792,7 @@ def _is_multi_tile(unit) -> bool:
 def _hides(top: UnitEntry, under: UnitEntry) -> bool:
     """Whether `top` exactly covers `under` on `under`'s own tile: a span-1
     unit under a multi-tile slab, or an identical point with an identical
-    span. Callers guarantee top.order > under.order."""
+    span. Callers guarantee top.rank > under.rank."""
     if not _is_multi_tile(under.unit) and _is_multi_tile(top.unit):
         return True
     if (top.unit.x, top.unit.y) != (under.unit.x, under.unit.y):
@@ -764,6 +806,7 @@ def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry],
     len(members) - 1 in general (two slabs over one 1x1 hide one unit
     between three members)."""
     groups: dict[tuple[int, int], tuple[list[UnitEntry], int]] = {}
+    eye_candy = unit_kind.passable_eye_candy_consts()
     for tile, orders in index.by_tile.items():
         if len(orders) < 2:
             continue
@@ -775,22 +818,22 @@ def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry],
         members: set[int] = set()
         hidden = 0
         for under in bucket:
-            if (under.own_x, under.own_y) != tile:
+            if (under.own_x, under.own_y) != tile or under.unit.unit_const in eye_candy:
                 continue
-            hiders = [top.order for top in bucket if top.order > under.order and _hides(top, under)]
+            hiders = [top.order for top in bucket if top.rank > under.rank and _hides(top, under)]
             if hiders:
                 hidden += 1
                 members.add(under.order)
                 members.update(hiders)
         if hidden:
-            ordered = sorted(members, reverse=True)
+            ordered = sorted(members, key=lambda o: index.entries[o].rank, reverse=True)
             groups[tile] = ([index.entries[o] for o in ordered], hidden)
     return groups
 
 
 def stack_groups(index: UnitIndex) -> dict[tuple[int, int], list[UnitEntry]]:
     """Every tile where a unit is hidden under another, mapped to that
-    stack's members ordered top-first (descending `order`, which is paint
+    stack's members ordered top-first (descending `rank`, which is paint
     order within one fixed tile in every style).
 
     "Stacked" is exact overlap only: a span-1 unit under a multi-tile slab, or two
@@ -798,6 +841,12 @@ def stack_groups(index: UnitIndex) -> dict[tuple[int, int], list[UnitEntry]]:
     different sub-tile positions are deliberately not stacked. Members are
     the hidden units and the units hiding them, never an unrelated occupant
     that merely overlaps the tile.
+
+    Passable eye candy (grass, plants, rubble) is never a hidden member (GH
+    #193): it hides nothing worth finding and badged every building on grass.
+    It still counts as the top of a stack, since a tuft at a unit's exact point
+    that paints later hides that unit. Obstacles stack both ways, since they
+    block placement.
 
     Accepted residuals: a unit standing on a farm counts as stacked even in
     Sloped with sprites on, where the farm is draped and the unit visible;
@@ -969,6 +1018,9 @@ def unit_polygons(
       elevation, matching render._draw_unit_iso(). This is asymmetry 2 --
       using each footprint tile's own terrain elevation here would look
       right on flat ground and drift apart on a slope.
+    - Stepped, farm with farms_draped=True: one diamond per footprint tile at
+      that tile's OWN elevation, the shape map_view._tile_polygon() gives
+      it, since the drape paints the farm as each tile's terrain.
     - Sloped, CENTRED 1x1 span: not a diamond at all -- the tile's own
       sloped_tile_outline(), placed exactly where map_view._tile_polygon()
       places the terrain highlight for that same tile (Track C6). This
@@ -984,9 +1036,9 @@ def unit_polygons(
       test the render and pick paths use, PLUS farms_draped, so the
       highlight cannot disagree with either about which units are farms
       NOR about whether farms are currently drawn draped at all -- pass the
-      caller's live sprites-enabled state, same as pick_unit's own
-      parameter of the same name; the default False means a farm keeps its
-      plain-diamond highlight (the next bullet) whenever that isn't known.
+      caller's live drape state, same as pick_unit's own parameter of the
+      same name; the default False means a farm keeps its plain-diamond
+      highlight (the next bullet) whenever that isn't known.
     - Sloped, other multi-tile spans, an OFF-CENTRE 1x1 span, and a farm
       when farms_draped=False: one diamond per footprint tile, all at the
       unit's own PIXEL rise (unit_rise_px_for()), matching
@@ -1035,6 +1087,13 @@ def unit_polygons(
     elif style == "stepped":
         if elevations is None or proj is None:
             return None
+        if farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None:
+            # A draped farm paints each footprint tile at that tile's own elevation.
+            polygons = []
+            for tx, ty in render.unit_occupied_tiles(entry.unit, tile_w, tile_h):
+                ox, oy = iso_geometry.tile_screen_origin(tx, ty, int(elevations[ty, tx]), proj)
+                polygons.append(diamond_points(ox, oy, proj.half_w, proj.half_h))
+            return polygons
         rise = 0
         elevation = int(elevations[entry.own_y, entry.own_x])
     else:

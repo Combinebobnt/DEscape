@@ -211,7 +211,7 @@ projection. DEscape's View > Distance Ticks letters each edge this way.
 
 ## 5. Players
 
-Per-player settings (14 total): Number of Players, Starting Age, Colour, Starting Resources (Food/Wood/Stone/Gold), Pop Limit (max 500), Base Priority (guide notes it appears to have no observed effect), Tribe Name (AI-only display name), Name String ID (built-in name reference, can auto-set Tribe Name), Personality (AI script; `E3-p2.ai` simulates an AFK player), Player Type (no gameplay effect beyond whether "Either" auto-fills lobby slots with AI), Civilization, Lock Civ, Architecture (visual set borrowed from another civ), Swap Players (swap two players' settings).
+Per-player settings (14 total): Number of Players, Starting Age, Colour, Starting Resources (Food/Wood/Stone/Gold), Pop Limit (max 500), Base Priority (guide notes it appears to have no observed effect), Tribe Name (AI-only display name), Name String ID (built-in name reference, can auto-set Tribe Name), Personality (AI script; `E3-p2.ai` simulates an AFK player), Player Type (no gameplay effect beyond whether "Either" auto-fills lobby slots with AI; stored as `player_data_1.human`, 1 for Either or Human, 0 for Computer), Civilization, Lock Civ, Architecture (visual set borrowed from another civ), Swap Players (swap two players' settings).
 
 GAIA is the first entry in the player list, with a subset of these rows: Food, Wood, Stone, Gold, Pop Limit, Starting Age, Colour, Civilization, Architecture, Lock Civ and Lock Personality (no Base Priority, Tribe Name, Name or Personality).
 

@@ -26,6 +26,10 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Cosmetic mods draw on the map**: art from your enabled mods (trees,
+  buildings, units, walls, terrain textures, `.sld` or `.smx`) replaces the
+  game's own in the game's mod order. View > Layers > Mod Art turns it off,
+  and Settings > General leaves single mods out.
 - **Units mode object list rework** (GH #68, GH #6): Units, Buildings,
   Heroes and Other buttons, a class filter, and icon, name or grid views
   (remembered) for the object list. Portraits and thumbnails load without
@@ -226,6 +230,9 @@ content, link the doc instead of summarizing it.
   player and GAIA units not at their tile's centre (info, one row each).
 - **Map Analysis flags resources and trees owned by a player** (warning,
   GH #206): game-made files only give those to GAIA.
+- **Map Analysis lists objects in invalid positions** (GH #173): units on
+  terrain they can't stand on (warning), buildings on terrain they can't
+  stand on (info) and units overlapping another object (info).
 - **Players mode lists GAIA** (GH #187), with the settings the in-game
   editor offers for it: civilization, architecture, the two locks, starting
   age, resources, colour and pop limit.
@@ -274,7 +281,8 @@ content, link the doc instead of summarizing it.
 - **Range rings in player colour** (GH #156): View > Range Rings > Colour by
   Owner draws each selected building's range ring in its owner's player
   colour; GAIA keeps the Range ring colour from Settings > Appearance. Show
-  Range Rings moved into the new View > Range Rings submenu as Show, and the
+  Range Rings moved into the new View > Range Rings submenu as Selected
+  Buildings, and the
   default ring colour is now dark gray (a config that ever saved an overlay
   colour keeps its ring colour until that row is reset in Settings >
   Appearance).
@@ -285,9 +293,67 @@ content, link the doc instead of summarizing it.
   `tools/game_data_stamp.json`. `--check` reports whether an install still
   reproduces the committed tables, `--status` whether the install and the
   tables still match the stamp.
+- **A radial facing dial beside the unit Rotation field**: facings and gate
+  orientations, following Flat or iso view.
+- **More brush shapes**: Rounded square, Square outline, Circle outline,
+  Plus and two Line brushes join Square and Circle for every brush tool. An
+  outline gets a Thickness (1-4) beside Shape. Lines follow the tile axes,
+  so they are diagonals in the isometric views. Raising elevation with a
+  hollow shape fills holes up to two tiles wide.
+- **Settable Player Type** (GH #126): Players mode sets a player to Either or
+  Computer. Settings > General gains an AoE2DE profile folder field with a
+  list of the folders scanned for content, and a custom Personality's
+  tooltip names the folder it came from.
+- **Terrain picker as a grid** (GH #161): a List/Grid switch beside the
+  terrain filter shows terrains as captioned swatches under category
+  headings. The swatch size is in Settings > Appearance.
+- **Gunpowder Keg in the Units list** (GH #208): the keg is listed under
+  Other without ticking "Show editor-hidden objects", as in the game's
+  editor. It is GAIA-only: Place Unit and Scatter give it to GAIA whatever
+  the owner picker says, reassigning one to a player warns, and Map Analysis
+  flags a player-owned keg, now worded "is GAIA-only". (contributed by
+  @teslatankx, #223)
+- **Drop a scenario onto the window to open it** (GH #221): dropping a local
+  `.aoe2scenario` file anywhere on the DEscape window opens it, the same as
+  File > Open, with the usual prompt for unsaved changes. Other files are
+  refused. Of several dropped files the first scenario opens, and the status
+  bar and log say how many were skipped. (contributed by @teslatankx, #224)
+- **Ctrl+1 to Ctrl+8 toggle players in the Filters popup** (GH #207), and
+  Ctrl+0 toggles Show GAIA. Each key flips that player's checkbox, so
+  players combine, and all nine are rebindable under Settings > Keybinds >
+  Filters. A config that already saved keybinds gets Ctrl+0 too, unless
+  Ctrl+0 is bound to something else there. Bare digits still pick the
+  active mode's player. (contributed by @teslatankx, #219)
+- **Translucent Walls** (GH #35): View > Layers > Translucent Walls draws
+  walls and gates at the opacity set by Settings > Appearance > Wall opacity
+  (10-90%, default 50%), so units behind a wall line show through. Off by
+  default, no key bound, remembered between launches, and greyed in Flat.
+  (contributed by @teslatankx, #227)
+- **Range rings around every building and around map revealers** (GH #153,
+  GH #155): View > Range Rings gains All Buildings, Selected Map Revealers
+  and All Map Revealers (their line of sight: 4, 10 or 20 tiles), each off
+  by default, remembered and rebindable. The two All rings follow the unit
+  filters (Show Buildings, Show Invisible Objects). Colour by Owner applies to every ring, and the submenu now sits
+  below Show Trigger Overlay. (contributed by @teslatankx, #222)
+- **Button slot grid for train and research location effects** (GH #169):
+  Change Train Location, Add Train Location and Change Research Location
+  label their fields "unit to train", "trained at" or "researched at" and
+  "button slot", name each slot, and show the building's command panel as
+  it will look after the trigger fires. Clicking a cell sets the slot.
+  (contributed by @teslatankx, #228)
+- **Move and resize a trigger area on the map** (GH #229): in Triggers mode
+  with Pan, tick Edit Area and drag the selected condition or effect's area
+  by its middle to move it, or by an edge or corner to resize it, one undo
+  step per drag. Move, Resize and Tile borders pick what grabs.
+  (contributed by @teslatankx, #232)
 
 ### Changed
 
+- **Linux uses the desktop's own file dialogs** (GH #220): when
+  xdg-desktop-portal is running, Open, Save As and the folder and export
+  pickers show the KDE or GNOME dialog instead of Qt's. Starting DEscape with
+  an empty `QT_QPA_PLATFORMTHEME=` keeps Qt's. (contributed by @teslatankx,
+  #233)
 - **Pan only pans in Units mode** (GH #47): a left-drag scrolls the view,
   and Pan no longer selects or moves units; use Select and Move. The first
   Pan click on a unit says so in the status line.
@@ -504,9 +570,42 @@ content, link the doc instead of summarizing it.
   conditions/effects pane below it now start as equal halves, so the list
   keeps the height the removed button rows freed. Dragging the divider works
   as before.
+- **Units inspector arrows move a group instead of aligning it** (GH #154):
+  with several units selected, the X, Y and Z arrows, Up/Down and the wheel
+  shift every unit by one step and stop at the map edge. Typing a value
+  still sets them all.
+- **GAIA units draw their facing** (GH #217): GAIA soldiers, wildlife,
+  relics and gunpowder kegs draw with their stored facing instead of all
+  facing one way, so editing a GAIA unit's Rotation now shows, and Place
+  Unit turns a GAIA unit's preview before placing it like any other owner's.
+  Trees and other variant scenery draw as before. (contributed by
+  @teslatankx, #218)
 
 ### Fixed
 
+- **No stacked-unit badge for grass and other eye candy** (GH #193): a
+  building or unit standing on grass, plants or rubble no longer shows a
+  stack count. Rocks and other obstacles still do. (contributed by
+  @teslatankx, #235)
+- **Save As adds the file to File > Open Recent** (GH #215), so a new map is
+  listed after its first save.
+- **Settings > Keybinds no longer clips the Mouse Wheel dropdowns** on
+  systems with short font names.
+- **Mountains, ruins and other large scenery** select, outline and block on
+  their real footprint.
+- **Farms show their farm texture in top-down Flat** (GH #150): with Show
+  sprites and Farm Terrain Overlay on, a placed farm paints its footprint as
+  farm terrain with a 1px owner-colour outline, as in Stepped and Sloped,
+  and a unit standing on it can be clicked.
+- **Clicking a unit on a farm in Stepped** selects the unit even when the
+  farm was placed later or the unit reaches onto the next farm tile, and a
+  farm's hover outline follows its tiles on uneven ground. With Farm Terrain
+  Overlay off, Stepped and Sloped pick a farm as the diamond they draw. A
+  selected or hovered farm's outline redraws when Show sprites or Farm
+  Terrain Overlay is toggled.
+- **Clicking a shared tile picks the unit drawn on top** right after placing
+  a unit, pasting into a garrison or garrisoning a unit for any player but
+  the last, and stacks list in paint order.
 - **Mirror Map gives diagonal walls the right shape** under West ↔ North,
   West ↔ South, 4-way rotational, 4-way reflective (map axes) and 8-way, in
   files that store wall shapes as whole numbers. They kept the old diagonal
@@ -609,7 +708,9 @@ content, link the doc instead of summarizing it.
   that cannot be resolved is refused with a "cannot be resolved" message
   instead of an internal error. A looped autosave folder is refused with the
   same reason and autosaves go to the default folder, as does the sidecar
-  autosave of a file opened through a looped folder.
+  autosave of a file opened through a looped folder. This also holds when
+  running from source on Python 3.13 or newer, and for Find's CSV export and
+  theme export.
 - **Triggers: the property form is sized to its fields on entering
   Triggers mode**, instead of starting squeezed until something re-fit it.
 - **Triggers mode: selecting several conditions/effects highlights all of

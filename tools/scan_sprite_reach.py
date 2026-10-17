@@ -164,14 +164,7 @@ def referenced_entries() -> list[tuple[str, int, int]]:
     unit_graphic_map.json and, since GH #48, every per-civ building entry in
     building_art_map.json (age targets are ordinary consts, already in the
     first table)."""
-    entries: set[tuple[str, int, int]] = set()
-    per_civ = [e for art in unit_sprites.building_art().civ_art.values() for e in art.values()]
-    for gm_entry in [*unit_sprites.graphic_map().values(), *per_civ]:
-        # A single-graphic entry's own dx/dy (a fish body, GH #178) moves it like a piece's.
-        entries.add((gm_entry["file_name"], *unit_sprites._body_offset(gm_entry)))
-        for piece in gm_entry.get("pieces", ()):
-            entries.add((piece["file_name"], piece["dx"], piece["dy"]))
-    return sorted(entries)
+    return unit_sprites.referenced_entries()
 
 
 def main() -> None:

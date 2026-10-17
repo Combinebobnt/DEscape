@@ -1,6 +1,7 @@
 """descape/content_roots.py: install/profile/mod discovery against fake trees
 under tmp_path. _isolated_settings (conftest.py, autouse) redirects
-CONFIG_PATH, so a test sees no config unless it writes one."""
+CONFIG_PATH and drops AOE2DE_PROFILE_PATH, so a test sees no config and no
+profile override unless it sets one."""
 
 from __future__ import annotations
 
@@ -9,7 +10,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 from descape import asset_source, content_roots
@@ -25,9 +25,10 @@ from descape.content_roots import (
 roots_of = content_roots.content_roots
 
 
-@pytest.fixture(autouse=True)
-def _no_profile_env(monkeypatch):
-    monkeypatch.delenv(content_roots.PROFILE_ENV_VAR, raising=False)
+def test_conftest_drops_the_profile_env_var() -> None:
+    import os
+
+    assert content_roots.PROFILE_ENV_VAR not in os.environ
 
 
 def _touch(path: Path, data: bytes = b"") -> Path:
@@ -189,6 +190,112 @@ def test_profile_path_windows(tmp_path, monkeypatch):
     assert profile_path(None, platform="win32") == target
 
 
+def _write_config(**keys) -> None:
+    asset_source.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    asset_source.CONFIG_PATH.write_text(yaml.safe_dump(keys))
+
+
+def test_profile_source_auto_and_none(tmp_path):
+    install = _install(tmp_path)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_NONE, None)
+    _profile(tmp_path).mkdir(parents=True)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_AUTO, None)
+
+
+def test_profile_source_config_then_env_beats_it(tmp_path, monkeypatch):
+    install = _install(tmp_path)
+    _profile(tmp_path).mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    _write_config(aoe2de_profile=str(cfg_dir))
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_CONFIG, str(cfg_dir))
+    monkeypatch.setenv(content_roots.PROFILE_ENV_VAR, str(env_dir))
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_ENV, str(env_dir))
+
+
+def test_profile_source_invalid_explicit_paths(tmp_path, monkeypatch):
+    """An explicit non-folder never falls through to auto-detect, so it is reported as such."""
+    install = _install(tmp_path)
+    _profile(tmp_path).mkdir(parents=True)
+    missing = str(tmp_path / "missing")
+    _write_config(aoe2de_profile=missing)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_CONFIG_INVALID, missing)
+    assert profile_path(install, platform="linux") is None
+    monkeypatch.setenv(content_roots.PROFILE_ENV_VAR, missing)
+    assert content_roots.profile_source(install, platform="linux") == (content_roots.SOURCE_ENV_INVALID, missing)
+
+
+def test_skipped_mods_lists_disabled_mods_that_exist(tmp_path):
+    _install_dir, profile = _full_tree(tmp_path)
+    status_path = profile / "7656" / "mods" / "mod-status.json"
+    status = json.loads(status_path.read_text())
+    status["Mods"].append({"Enabled": False, "Path": "subscribed//78_Gone"})  # not on disk
+    status["Mods"].append({"Enabled": False, "Path": "local//Local Thing"})
+    _touch(status_path, json.dumps(status).encode())
+    assert content_roots.skipped_mods(profile) == [("local", "Local Thing"), ("subscribed", "34_Off AI")]
+    kept = {r.mod_id for r in roots_of(_install_dir, profile) if r.mod_id}
+    assert kept.isdisjoint({"34_Off AI", "Local Thing"})
+
+
+def test_skipped_mods_none_without_a_status_file(tmp_path):
+    _install_dir, profile = _full_tree(tmp_path)
+    (profile / "7656" / "mods" / "mod-status.json").unlink()
+    assert content_roots.skipped_mods(profile) == []
+    assert content_roots.skipped_mods(tmp_path / "missing") == []
+
+
+def test_has_profile_ids(tmp_path):
+    _install_dir, profile = _full_tree(tmp_path)
+    assert content_roots.has_profile_ids(profile)
+    assert not content_roots.has_profile_ids(profile / "logs")
+    assert not content_roots.has_profile_ids(tmp_path / "missing")
+
+
+def _status(profile: Path, pid: str, mods: list[dict]) -> Path:
+    return _touch(profile / pid / "mods" / "mod-status.json", json.dumps({"Mods": mods, "Unsub": []}).encode())
+
+
+def test_priority_and_status_path(tmp_path):
+    install, profile = _full_tree(tmp_path)
+    _status(profile, "7656", [
+        {"Enabled": True, "Path": "subscribed//12_Alpha AI", "Priority": 3},
+        {"Enabled": False, "Path": "subscribed//34_Off AI", "Priority": 1},
+        {"Enabled": True, "Path": "local//Local Thing", "Priority": "2"},
+    ])
+    mods = {r.mod_id: (r.priority, r.status_path) for r in roots_of(install, profile) if r.mod_id}
+    assert mods == {
+        "12_Alpha AI": (3, "subscribed//12_Alpha AI"),
+        "56_Unlisted": (None, "subscribed//56_Unlisted"),  # not in the status file at all
+        "Local Thing": (None, "local//Local Thing"),  # a non-int Priority counts as unlisted
+    }
+
+
+def test_active_profile_id_is_the_newest_status_file(tmp_path):
+    import os
+
+    _install_dir, profile = _full_tree(tmp_path)
+    assert content_roots.active_profile_id(profile) == "7656"
+    newer = _status(profile, "0", [])
+    old = profile / "7656" / "mods" / "mod-status.json"
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
+    assert content_roots.active_profile_id(profile) == "0"
+    assert content_roots.active_profile_id(tmp_path / "missing") is None
+
+
+def test_capitalised_resources_folder_is_found(tmp_path):
+    install = _install(tmp_path)
+    profile = _profile(tmp_path)
+    mod = profile / "7656" / "mods" / "subscribed" / "90_Caps"
+    _touch(mod / "Resources" / "_Common" / "AI" / "Caps.ai")
+    roots = roots_of(install, profile)
+    caps = next(r for r in roots if r.mod_id == "90_Caps")
+    assert caps.common == mod / "Resources" / "_Common"
+    assert [(r.mod_id, p.name) for r, p in find_resources("ai", [".ai"], roots)][-1] == ("90_Caps", "Caps.ai")
+
+
 _WRITE_CALLS = re.compile(
     r"write_text|write_bytes|\.mkdir\(|\.touch\(|os\.remove|\.rename\(|\.replace\(|shutil|"
     r"""open\([^)]*['"][wax+]"""
@@ -198,3 +305,17 @@ _WRITE_CALLS = re.compile(
 def test_module_is_read_only():
     source = inspect.getsource(content_roots)
     assert _WRITE_CALLS.findall(source) == []
+
+
+# The mod art readers: `.replace(` is left out, since str.replace is legitimate there.
+_MOD_ART_WRITE_CALLS = re.compile(
+    r"write_text|write_bytes|\.mkdir\(|\.touch\(|os\.remove|\.rename\(|\.unlink\(|shutil|os\.replace|"
+    r"""open\([^)]*['"][wax+]"""
+)
+
+
+def test_mod_art_modules_are_read_only():
+    from descape import mod_graphics, smx_decoder
+
+    for module in (mod_graphics, smx_decoder):
+        assert _MOD_ART_WRITE_CALLS.findall(inspect.getsource(module)) == [], module.__name__

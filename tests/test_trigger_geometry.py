@@ -377,3 +377,116 @@ def test_the_fixture_reference_entries_read_back_as_unit_shapes() -> None:
     assert trigger_geometry.run_for_entry(task) == ruler.measure(centroid, gen.HOUSE_TILE)
     patrol = [s for s in shapes if s.entry_ref == ("effect", gen.PATROL_IDS_EFFECT)]
     assert trigger_geometry.run_for_entry(patrol) is None, "selected ids and no destination: markers only"
+
+
+# -- GH #229: Edit Area's grab zones and drags -----------------------------------
+
+DRAG_AREA = (10, 20, 19, 25)  # 10 x 6 tiles
+
+
+@pytest.mark.parametrize(
+    ("point", "zone"),
+    [
+        ((15.0, 22.5), "move"),
+        ((10.2, 22.5), "w"),
+        ((19.8, 22.5), "e"),
+        ((15.0, 20.1), "n"),
+        ((15.0, 25.9), "s"),
+        ((10.1, 20.1), "nw"),
+        ((19.9, 20.1), "ne"),
+        ((10.1, 25.9), "sw"),
+        ((19.9, 25.9), "se"),
+        ((9.9, 22.5), None),
+        ((20.0, 22.5), None),
+        ((15.0, 19.99), None),
+        ((15.0, 26.0), None),
+    ],
+)
+def test_area_hit_zone_names_the_part_under_the_point(point, zone) -> None:
+    assert trigger_geometry.area_hit_zone(DRAG_AREA, point, 0.5) == zone
+
+
+def test_a_wide_band_is_capped_so_a_one_tile_area_keeps_a_middle() -> None:
+    assert trigger_geometry.area_hit_zone((5, 5, 5, 5), (5.5, 5.5), 4.0) == "move"
+    assert trigger_geometry.area_hit_zone((5, 5, 5, 5), (5.1, 5.5), 4.0) == "w"
+    # A third of the 6-tile y span: 1.9 tiles in is the middle, 2.1 tiles from the far side too.
+    assert trigger_geometry.area_hit_zone(DRAG_AREA, (15.0, 21.9), 5.0) == "n"
+    assert trigger_geometry.area_hit_zone(DRAG_AREA, (15.0, 22.1), 5.0) == "move"
+
+
+@pytest.mark.parametrize(
+    ("zone", "end", "expected"),
+    [
+        ("move", (18, 24), (13, 22, 22, 27)),
+        ("w", (12, 99), (7, 20, 19, 25)),
+        ("e", (13, 0), (10, 20, 17, 25)),
+        ("n", (0, 18), (10, 16, 19, 25)),
+        ("s", (99, 26), (10, 20, 19, 29)),
+        ("nw", (14, 21), (9, 19, 19, 25)),
+        ("se", (17, 23), (10, 20, 21, 26)),
+        ("ne", (16, 19), (10, 17, 20, 25)),
+        ("sw", (13, 24), (8, 20, 19, 27)),
+        # Past the opposite side: stored min/max, like Set Area.
+        ("w", (40, 22), (19, 20, 35, 25)),
+        ("n", (15, 32), (10, 25, 19, 30)),
+        ("move", (15, 22), DRAG_AREA),
+    ],
+)
+def test_dragged_area_moves_or_resizes_by_the_drag_delta(zone, end, expected) -> None:
+    """The grabbed sides shift by the drag, not to the cursor, so a press inside a wide band never jumps."""
+    assert trigger_geometry.dragged_area(DRAG_AREA, zone, (15, 22), end, 120, 120) == expected
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ((-50, 22), (0, 20, 9, 25)),
+        ((500, 22), (110, 20, 119, 25)),
+        ((15, -50), (10, 0, 19, 5)),
+        ((15, 500), (10, 114, 19, 119)),
+    ],
+)
+def test_a_move_keeps_the_size_and_stops_at_each_map_edge(end, expected) -> None:
+    assert trigger_geometry.dragged_area(DRAG_AREA, "move", (15, 22), end, 120, 120) == expected
+
+
+@pytest.mark.parametrize(
+    ("zone", "end", "expected"),
+    [
+        ("w", (-50, 22), (0, 20, 19, 25)),
+        ("e", (500, 22), (10, 20, 119, 25)),
+        ("n", (15, -50), (10, 0, 19, 25)),
+        ("s", (15, 500), (10, 20, 19, 119)),
+        ("se", (500, 500), (10, 20, 119, 119)),
+    ],
+)
+def test_a_resize_clamps_the_grabbed_side_to_the_map(zone, end, expected) -> None:
+    assert trigger_geometry.dragged_area(DRAG_AREA, zone, (15, 22), end, 120, 120) == expected
+
+
+def test_a_non_square_map_clamps_each_axis_to_its_own_size() -> None:
+    assert trigger_geometry.dragged_area(DRAG_AREA, "move", (15, 22), (500, 500), 60, 40) == (50, 34, 59, 39)
+
+
+@pytest.mark.parametrize(
+    ("coords", "point", "zone"),
+    [
+        ((5, 5, 5, 5), (5.5, 5.5), "move"),  # 1x1: thin band, as with tile borders off
+        ((5, 5, 6, 6), (6.0, 6.0), "move"),  # 2x2 too
+        ((5, 5, 6, 6), (5.1, 6.0), "w"),
+        ((5, 5, 7, 7), (5.9, 6.5), "w"),  # 3x3: a one-tile ring and a middle tile
+        ((5, 5, 7, 7), (6.5, 6.5), "move"),
+        ((5, 5, 7, 7), (7.1, 7.9), "se"),
+        ((5, 5, 6, 9), (6.0, 5.9), "n"),  # 2x5: tile ends, a thin long side
+        ((5, 5, 6, 9), (5.5, 7.5), "move"),
+    ],
+)
+def test_tile_borders_widen_only_axes_of_three_or_more_tiles(coords, point, zone) -> None:
+    assert trigger_geometry.area_hit_zone(coords, point, 0.2, tile_borders=True) == zone
+
+
+def test_a_wider_pixel_band_with_tile_borders_still_keeps_a_middle() -> None:
+    six = (0, 0, 5, 5)
+    assert trigger_geometry.area_hit_zone(six, (1.9, 3.0), 3.0, tile_borders=True) == "w", "capped at a third: 2 tiles"
+    assert trigger_geometry.area_hit_zone(six, (2.1, 3.0), 3.0, tile_borders=True) == "move"
+    assert trigger_geometry.area_hit_zone(six, (0.9, 3.0), 0.5) == "move", "off: today's thin band"

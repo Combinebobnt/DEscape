@@ -60,6 +60,19 @@ def test_a_re_render_adds_the_farm_overlays_terrain_only_while_that_layer_draws(
     assert events[0] == ("prefetch", {0, _OTHER_TERRAIN}), events
 
 
+def test_top_down_flat_prefetches_the_farm_overlays_terrain_too(recorded):
+    """GH #150: top-down Flat drapes farms, so it fetches their terrain."""
+    _events, window = recorded
+    next(unit for units in window.scenario.unit_manager.units for unit in units).unit_const = _FARM
+    window.terrain_style_combo.setCurrentText("Flat")
+    window.iso_action.setChecked(False)
+    assert window._render_style == "flat", "fixture no longer reaches real Flat"
+    assert window._sprites_enabled and window._layers.farm_overlay
+    assert _FARM_TERRAIN in window._texture_prefetch_ids()
+    window._on_layer_toggled("farm_overlay", False)
+    assert _FARM_TERRAIN not in window._texture_prefetch_ids()
+
+
 def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(recorded, monkeypatch):
     from descape import asset_source, render
 

@@ -5,7 +5,7 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Eight tables, seven keyed by unit_const and one ("hero_glow") a sorted list of
+Nine tables, eight keyed by unit_const and one ("hero_glow") a sorted list of
 consts:
 
 - "buildings": [span_x, span_y] -- the footprint's real width and height in
@@ -110,12 +110,14 @@ consts:
   `max(1, round(2 * v))` rule "buildings" uses.
 
   Scoped to class 34 rather than "every non-building whose collision_size
-  disagrees with its clearance_size": free-placed class-14 decorations
-  (grass, flowers, shrubs) carry arbitrary non-.5 coordinates and are
-  re-snapped by the same branch, but they are genuinely free-placed
-  eye-candy rather than a grid family, and the displacement is invisible on
-  a 1-tile sprite. Widening this gate would move them for no gain. The one
-  class-14 exception is the "blocker_spans" allowlist below.
+  disagrees with its clearance_size". The worry was free-placed class-14
+  decorations (grass, flowers, shrubs), which carry arbitrary non-.5
+  coordinates and would be re-snapped. Re-measured on 2026-10-13 (TASK-134),
+  it does not apply to the class-14 objects that are really big: every
+  decoration it protects has collision_size 0 (132 consts, 9,618 corpus
+  placements, big only in outline_size), so a collision gate leaves them all
+  1x1. Class 14 gets its own key for that reason, "doodad_spans" below, and
+  its four blockers keep "blocker_spans".
 
 - "blocker_spans": [span_x, span_y] -- the same shape again, for exactly the
   four consts in `_BLOCKER_SPAN_CONSTS` (Blocker 1x3/3x1 2423/2424 and
@@ -149,6 +151,45 @@ consts:
   29/33, 456 480/482, 457 37/37, 458 52/56), which is where an even span
   centres. The Whale (3x3, centred on .5) has no corpus placement. Its own
   key for the same reason "blocker_spans" has one.
+
+- "doodad_spans": [span_x, span_y] -- the same shape, for every class-14
+  (`_DOODAD_CLASS`) non-building outside `_BLOCKER_SPAN_CONSTS` whose
+  collision span, `max(1, round(2 * collision_size))` like cliffs and
+  blockers, is above 1x1 (TASK-134, which folded in TASK-209): mountains,
+  ruins, rock formations, the Theatre, Stonehenge. A class rule, not an
+  allowlist, measured on 2026-10-13 against the current .dat and the 21
+  loadable examples/ files:
+
+  - 46 consts: 11 mountains 6x6 (310, 311, 744, 745, 1041-1047), Stonehenge
+    1979 and Theatre 2530 5x5, MRKT 1646 and CastleRuins 1837 4x4, 16 at
+    3x3, 15 at 2x2. `outline_size` gives the same span for all 46, and the
+    generator refuses when it stops doing so. `clearance_size` agrees for 35
+    and says 4x4 for the mountains.
+  - The decorations the old class-34 scoping protected have collision 0: 132
+    other class-14 consts are big in `outline_size` only (grass, plants,
+    every Rubble), with 9,618 corpus placements. All stay 1x1.
+  - Corpus parity matches the collision span with no counterexample: 205
+    placements of 17 of the consts, 181 on the half-tile grid, all 181 on
+    their span's parity (even span on .0, odd on .5). The other 24 are
+    free-placed (11 mountains, 13 of 42 ROCKB1 1148) and quantize like an
+    off-grid building.
+  - Mountains are 6x6, not clearance's 4x4: at half_w 48 their ink is 4.8
+    to 6.0 tiles wide and reaches 3.2 to 4.1 tile-heights below the hotspot,
+    where a 6x6 diamond reaches 3.0 and a 4x4 2.0.
+
+  Only the footprint is new: render._resolve_unit_sprite keeps a doodad's
+  sprite at its stored point and sorts it at its own tile, as before, and
+  placement_rules keeps the clearance box for the object rule. Its own key,
+  as for "blocker_spans" and "fish_spans". Accepted with no code of their
+  own: with sprites off, or in Flat, a mountain's mark is a 6x6 slab and
+  Flat's icon contain-fits the 6x6 rect; snapped Place Unit and a group
+  move's edge clamp put an even-span doodad on whole coordinates and keep
+  its footprint on the map; Replace re-anchors on the low corner when the
+  span changes (root AGENTS.md), so a tree replaced by a mountain lands the
+  mountain's low corner on the tree's tile; Scatter and Mirror treat doodads
+  as multi-tile; a free-placed doodad's footprint quantizes like an off-grid
+  building's, up to 0.74 tile from its sprite; and a 1x1 unit under a
+  later-painted doodad joins a stack group (+55 corpus-wide).
 
 - "hero_glow": [unit_const, ...] -- the heroes the game draws its golden glow
   around (GH #39). The rule is `(creatable.hero_mode & 0xff) & (1 | 64)` AND
@@ -218,6 +259,8 @@ _CLIFF_CLASS = 34
 _BLOCKER_SPAN_CONSTS = (2423, 2424, 2429, 2430)
 # Deep-water fish sized like the in-game selection box; see the "fish_spans" docs.
 _FISH_SPAN_CONSTS = (53, 61, 450, 455, 456, 457, 458, 2625)
+# Scenery, ruins, mountains; the class rule behind "doodad_spans" (see its docs).
+_DOODAD_CLASS = 14
 
 
 def _fish_span(unit_const: int, unit) -> list[int]:
@@ -228,6 +271,21 @@ def _fish_span(unit_const: int, unit) -> list[int]:
             f"{tuple(unit.clearance_size)} -- re-verify _FISH_SPAN_CONSTS against the .dat"
         )
     return [max(1, round(v * 2)) for v in outline]
+
+
+def _doodad_span(unit_const: int, unit) -> list[int] | None:
+    """A class-14 non-building's collision span when it is above 1x1, else
+    None. Refuses when `outline_size` gives a different span."""
+    span = [max(1, round(unit.collision_size_x * 2)), max(1, round(unit.collision_size_y * 2))]
+    if span == [1, 1]:
+        return None
+    outline = [max(1, round(unit.outline_size_x * 2)), max(1, round(unit.outline_size_y * 2))]
+    if outline != span:
+        raise SystemExit(
+            f"doodad {unit_const} collision span {span} != outline span {outline} "
+            "-- re-measure the doodad_spans rule against the .dat"
+        )
+    return span
 
 
 # The seven gold HeroGlow graphics; see the "hero_glow" docs above.
@@ -307,6 +365,7 @@ def main() -> None:
     object_spans: dict[str, list[int]] = {}
     blocker_spans: dict[str, list[int]] = {}
     fish_spans: dict[str, list[int]] = {}
+    doodad_spans: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
     foundation_terrain: dict[str, int] = {}
     hero_glow: list[int] = []
@@ -328,6 +387,10 @@ def main() -> None:
             ]
         if unit_const in _FISH_SPAN_CONSTS:
             fish_spans[str(unit_const)] = _fish_span(unit_const, unit)
+        if unit.class_ == _DOODAD_CLASS and unit.building is None and unit_const not in _BLOCKER_SPAN_CONSTS:
+            span = _doodad_span(unit_const, unit)
+            if span is not None:
+                doodad_spans[str(unit_const)] = span
         if unit.building is not None:
             cx, cy = unit.clearance_size
             span_x, span_y = max(1, round(cx * 2)), max(1, round(cy * 2))
@@ -364,6 +427,9 @@ def main() -> None:
                 "fish_spans": dict(
                     sorted(fish_spans.items(), key=lambda kv: int(kv[0]))
                 ),
+                "doodad_spans": dict(
+                    sorted(doodad_spans.items(), key=lambda kv: int(kv[0]))
+                ),
                 "resource_colors": dict(
                     sorted(resource_colors.items(), key=lambda kv: int(kv[0]))
                 ),
@@ -382,6 +448,7 @@ def main() -> None:
         f"{len(object_spans)} object_spans, "
         f"{len(blocker_spans)} blocker_spans, "
         f"{len(fish_spans)} fish_spans, "
+        f"{len(doodad_spans)} doodad_spans, "
         f"{len(resource_colors)} resource colors, "
         f"{len(foundation_terrain)} foundation terrains and "
         f"{len(hero_glow)} glowing heroes to {out_path}"

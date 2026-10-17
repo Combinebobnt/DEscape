@@ -31,6 +31,11 @@ First-run notes:
   (Ubuntu 20.04, Debian 10, RHEL 8 or later); the v0.7 builds need 2.35
   (Ubuntu 22.04, Debian 12, Fedora 36 or later). On an older distro they fail
   with a `GLIBC_2.xx not found` error; run from source there instead.
+- **Linux file dialogs:** when xdg-desktop-portal is running (most KDE and
+  GNOME desktops), Open, Save As and the folder pickers use the desktop's own
+  dialog; otherwise Qt's. To keep Qt's dialog anyway, start DEscape with an
+  empty `QT_QPA_PLATFORMTHEME=` (for example
+  `QT_QPA_PLATFORMTHEME= ./LAUNCH_DEscape_LinuxMac.sh`).
 - **Windows:** the build is not code-signed, so SmartScreen may show "Windows
   protected your PC". Choose More info, then Run anyway. A console window opens
   alongside the editor; that is expected.
@@ -208,6 +213,7 @@ directly:
 python3 map_editor.py    # Linux/macOS
 python map_editor.py      # Windows
 python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file immediately
+# A .aoe2scenario dropped onto the open window opens it too.
 
 # CLI summary + PNG export
 .venv/bin/python3 tools/dump_scenario.py path/to/scenario.aoe2scenario                       # Linux/macOS
@@ -337,7 +343,7 @@ in Terrain mode, then open the dialog from any mode. It filters the outlined
 region to eligible tiles (any tile, water only, or one terrain type),
 optionally skips tiles already under a unit, and places a count or a density of
 randomized copies as one undo step. The live "N eligible tiles" line is exactly
-what will be placed. Resources and trees always go to GAIA, whatever the owner.
+what will be placed. Resources, trees and the Gunpowder Keg always go to GAIA, whatever the owner.
 
 Its other mode, **Move the selected units**, takes the units selected in Units
 mode instead and moves each one to a random eligible tile of the region, one
@@ -425,10 +431,20 @@ content is offered. It is usually found on its own: on Windows at
 `%USERPROFILE%\Games\Age of Empires 2 DE`, and on Linux in the Proton prefix
 beside the install's Steam library
 (`steamapps/compatdata/813780/pfx/drive_c/users/steamuser/Games/Age of Empires 2 DE`).
-To point DEscape elsewhere, set `aoe2de_profile` in `config.yaml` or the
-`AOE2DE_PROFILE_PATH` environment variable (checked first). Players mode's
-Personality list is built from these folders: the install's AIs, plus any in
-your profile and enabled mods.
+To point DEscape elsewhere, use **Settings > General**'s profile folder row
+(Browse…, then Load; Use auto-detect goes back to finding it on its own),
+set `aoe2de_profile` in `config.yaml`, or set the `AOE2DE_PROFILE_PATH`
+environment variable (checked first, and it overrides the Settings row). The
+same tab lists every folder DEscape scans and how many mods the game's mod
+list has disabled. Players mode's Personality list is built from these
+folders: the install's AIs, plus any in your profile and enabled mods.
+
+Cosmetic mods draw too: the art your enabled mods ship (trees, buildings,
+units, walls, terrain textures, `.sld` or `.smx`) replaces the game's own on
+the map, in the game's mod order, the top mod winning where two ship the
+same file. **View > Layers > Mod Art** turns it off, and Settings > General's
+Mod art list leaves single mods out. Mods are read once per launch; after
+enabling one in the game, restart DEscape or reload the profile folder.
 
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`
@@ -562,6 +578,7 @@ Rules.
   `descape/slp_decoder.py`'s reimplementation (no code reused; see that
   module's docstring).
 - [openage](https://github.com/SFTtech/openage) by the SFTtech authors — its
-  documentation and reference decoder for AoE2:DE's SLD sprite format are the
-  basis for `descape/sld_decoder.py`'s reimplementation (no code reused; see
-  that module's docstring). GPL-3.0-or-later, the same license as this tool.
+  documentation and reference decoders for AoE2:DE's SLD and SMX sprite
+  formats are the basis for `descape/sld_decoder.py`'s and
+  `descape/smx_decoder.py`'s reimplementations (no code reused; see those
+  modules' docstrings). GPL-3.0-or-later, the same license as this tool.

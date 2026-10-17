@@ -17,9 +17,10 @@ distinct read-only reasons:
 - Fields (fixed byte length, a resizable str16, or Personality's own
   splices) that this file's own write path failed to verify for -- the
   window's `read_only_reasons`.
-- `player_type` (ai_type), which follows Personality and is only ever
-  written as part of a Personality choice -- `_PLAYER_TYPE_REASON`,
-  resolved here since it is a fact about the field, not the file.
+- `player_type` (ai_type, the "AI type" row), which follows Personality and
+  is only ever written as part of a Personality choice -- `_PLAYER_TYPE_REASON`,
+  resolved here since it is a fact about the field, not the file. The
+  in-game Player Type control is the separate, editable `human` row.
 
 `tribe_name` is the one TEXT-kind spec: a `QLineEdit` when editable, a
 read-only `QLabel` otherwise. civilization/architecture are COMBO-kind as of
@@ -767,18 +768,20 @@ class PlayersPanel(QWidget):
         ai_type = None if type_spec is None else current_value(self._loaded, type_spec, self._player_id)
         return str(name), ai_type
 
-    def _personality_rows(self, name: str) -> tuple[list[tuple[str, str, str]], str]:
-        """(label, key, disabled reason) per combo row, and the key of the
-        row the current player shows. The file's own value, when it matches
+    def _personality_rows(self, name: str) -> tuple[list[tuple[str, str, str, str]], str]:
+        """(label, key, disabled reason, tooltip) per combo row, and the key of
+        the row the current player shows. The file's own value, when it matches
         no choice (exact name bytes and ai_type), gets a first row that
-        stays offered after a switch, so picking it restores those bytes."""
+        stays offered after a switch, so picking it restores those bytes.
+        A custom row's tooltip names the folder it came from (GH #126), after
+        its disabled reason if it has one."""
         ai_type = self._values.get("player_type")
         options = self._personality
         original_name, original_type = self._original_personality()
-        rows: list[tuple[str, str, str]] = []
+        rows: list[tuple[str, str, str, str]] = []
         if not any(ai_scripts.matches_stored(c, original_name, original_type) for c in options.choices):
             label = stored_personality_label(original_name, original_type)
-            rows.append((label, STORED_PERSONALITY, ""))
+            rows.append((label, STORED_PERSONALITY, "", ""))
         pending_key = options.pending_keys.get(self._player_id)
         matched = [c.key for c in options.choices if ai_scripts.matches_stored(c, name, ai_type)]
         if pending_key in matched:
@@ -793,18 +796,24 @@ class PlayersPanel(QWidget):
             if name_counts[choice.stored_name] > 1:
                 label = f"{label} ({choice.source})"
             reason = options.custom_reason if choice.is_custom and options.custom_reason else ""
-            rows.append((label, choice.key, reason or options.unresolvable.get(choice.key, "")))
+            reason = reason or options.unresolvable.get(choice.key, "")
+            tooltip = reason
+            if choice.is_custom and choice.marker is not None:
+                source = f"From {choice.source}: {choice.marker}"
+                tooltip = f"{reason}\n{source}" if reason else source
+            rows.append((label, choice.key, reason, tooltip))
         return rows, current
 
     def _build_personality_combo(self, spec, name: str, editable: bool) -> QComboBox:
         widget = QComboBox()
         _fit_combo_width(widget)
         rows, current = self._personality_rows(name)
-        for i, (label, key, reason) in enumerate(rows):
+        for i, (label, key, reason, tooltip) in enumerate(rows):
             widget.addItem(label, key)
             if reason:
                 widget.model().item(i).setEnabled(False)
-                widget.setItemData(i, reason, Qt.ToolTipRole)
+            if tooltip:
+                widget.setItemData(i, tooltip, Qt.ToolTipRole)
         widget.setCurrentIndex(max(widget.findData(current), 0))
         # Only when editable: a read-only row's tooltip is its gate reason (_build_groups()).
         if editable and current == STORED_PERSONALITY:

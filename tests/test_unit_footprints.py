@@ -32,8 +32,11 @@ import pytest
 
 from descape import render
 from descape.terrain_palette import (
+    BLOCKER_TILE_SPANS,
     BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
+    DOODAD_TILE_SPANS,
+    FISH_TILE_SPANS,
     OBJECT_TILE_SPANS,
 )
 
@@ -392,11 +395,16 @@ def test_no_corpus_building_or_cliff_has_a_non_half_coordinate(corpus_files):
     """Counts span > 1 axis values that are not a multiple of 0.5, per table.
     Those are exactly the values whose owned tiles change if _span_start stops
     working in half-tiles (TASK-193), so free building placement rests on it.
-    Buildings and cliffs must have none; blockers are only reported."""
+    Buildings and cliffs must have none; blockers and doodads are only
+    reported (24 of 205 corpus doodads are free-placed, TASK-134)."""
     from descape.scenario_io import load_map_and_units
-    from descape.terrain_palette import BLOCKER_TILE_SPANS
 
-    tables = {"buildings": BUILDING_TILE_SPANS, "cliffs": OBJECT_TILE_SPANS, "blockers": BLOCKER_TILE_SPANS}
+    tables = {
+        "buildings": BUILDING_TILE_SPANS,
+        "cliffs": OBJECT_TILE_SPANS,
+        "blockers": BLOCKER_TILE_SPANS,
+        "doodads": DOODAD_TILE_SPANS,
+    }
     counts = dict.fromkeys(tables, 0)
     totals = dict.fromkeys(tables, 0)
     for path in corpus_files:
@@ -579,6 +587,122 @@ def test_a_fishs_own_tile_stays_inside_its_bounds_at_any_coordinate(frac):
     for unit_const in sorted(REAL_FISH_SPANS):
         x0, x1, y0, y1 = bounds(32.0 + frac, 20.0 + frac, unit_const)
         assert x0 <= 32 < x1 and y0 <= 20 < y1, (unit_const, frac)
+
+
+# -- class-14 doodads (TASK-134) ----------------------------------------------
+
+# Hardcoded from the .dat's `collision_size`, doubled (outline_size agrees on
+# all 46; the generator refuses when it stops). Names are the .dat's own.
+REAL_DOODAD_SPANS = {
+    310: ("MNTN1", (6, 6)),
+    311: ("MNTN2", (6, 6)),
+    744: ("MNTN3", (6, 6)),
+    745: ("MNTN4", (6, 6)),
+    758: ("BBURNED", (3, 3)),
+    856: ("RUINS", (2, 2)),
+    1041: ("MNTN5", (6, 6)),
+    1042: ("MNTN6", (6, 6)),
+    1043: ("MNTN7", (6, 6)),
+    1044: ("MNTN8", (6, 6)),
+    1045: ("MNTN9", (6, 6)),
+    1046: ("MNTN10", (6, 6)),
+    1047: ("MNTN11", (6, 6)),
+    1050: ("ROCKF3", (3, 3)),
+    1092: ("STELAEA", (2, 2)),
+    1148: ("ROCKB1", (2, 2)),
+    1171: ("BSTATUE1", (2, 2)),
+    1172: ("BSTATUE2", (3, 3)),
+    1176: ("TROWUG", (3, 3)),
+    1191: ("STUPAA", (2, 2)),
+    1201: ("PAGODA1", (2, 2)),
+    1202: ("PAGODA2", (2, 2)),
+    1563: ("PAGODA1", (3, 3)),
+    1566: ("RUINS", (3, 3)),
+    1646: ("MRKT", (4, 4)),
+    1778: ("REKHADEUL", (2, 2)),
+    1836: ("Chapel", (2, 2)),
+    1837: ("CastleRuins", (4, 4)),
+    1838: ("ChurchRuins", (3, 3)),
+    1979: ("STONEHENGE", (5, 5)),
+    2005: ("PAGODA4", (3, 3)),
+    2006: ("PAGODA5", (2, 2)),
+    2008: ("ROCKPILLAR", (2, 2)),
+    2023: ("BBURNEDB", (3, 3)),
+    2035: ("BBURNEDE", (3, 3)),
+    2082: ("PandaRock", (2, 2)),
+    2351: ("Tholos Shrine", (2, 2)),
+    2457: ("Beached Whale", (2, 2)),
+    2504: ("Burned Building Achaemenid", (3, 3)),
+    2505: ("Burned Building Greek", (3, 3)),
+    2508: ("Burned Building Thracian", (3, 3)),
+    2509: ("Burned Building Puru", (3, 3)),
+    2530: ("Theatre", (5, 5)),
+    2585: ("HowlerMonkey", (2, 2)),
+    2606: ("BBURNEDB", (3, 3)),
+    2744: ("BBURNEDD", (3, 3)),
+}
+_MNTN3 = 744
+
+
+def test_the_doodad_span_table_is_exactly_the_46_consts():
+    """A .dat class rule, so a game update that moves the set fails here."""
+    assert len(REAL_DOODAD_SPANS) == 46
+    table = DOODAD_TILE_SPANS
+    assert table == {c: span for c, (_name, span) in REAL_DOODAD_SPANS.items()}
+    for other in (BUILDING_TILE_SPANS, OBJECT_TILE_SPANS, BLOCKER_TILE_SPANS, FISH_TILE_SPANS):
+        assert not DOODAD_TILE_SPANS.keys() & other.keys()
+
+
+@pytest.mark.parametrize("unit_const", sorted(REAL_DOODAD_SPANS))
+def test_doodads_span_their_collision_box(unit_const):
+    name, expected = REAL_DOODAD_SPANS[unit_const]
+    x = 32.0 if expected[0] % 2 == 0 else 32.5
+    y = 32.0 if expected[1] % 2 == 0 else 32.5
+    assert span_of(x, y, unit_const) == expected, name
+
+
+@pytest.mark.parametrize("unit_const", [1358, 1413])
+def test_big_outline_decorations_without_a_collision_box_stay_one_tile(unit_const):
+    """Grass Green 1358 (outline 0.75) and Barracks Age2 Rubble 1413 (outline
+    1.5) have collision 0: the free-placed eye candy the old class-34 scoping
+    protected."""
+    assert unit_const not in DOODAD_TILE_SPANS
+    assert span_of(32.3, 32.7, unit_const) == (1, 1)
+
+
+def test_a_mountain_on_a_whole_coordinate_covers_6x6_centred_on_it():
+    assert bounds(20.0, 20.0, _MNTN3) == (17, 23, 17, 23)
+    assert render.unit_paint_offset(Unit(x=20.0, y=20.0, unit_const=_MNTN3)) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("frac", [0.0, 0.13, 0.5, 0.77, 0.99])
+def test_a_doodads_own_tile_stays_inside_its_bounds_at_any_coordinate(frac):
+    """24 corpus doodads are free-placed, unlike every building."""
+    for unit_const in sorted(REAL_DOODAD_SPANS):
+        x0, x1, y0, y1 = bounds(32.0 + frac, 20.0 + frac, unit_const)
+        assert x0 <= 32 < x1 and y0 <= 20 < y1, (unit_const, frac)
+
+
+@pytest.mark.corpus
+def test_every_half_grid_doodad_placement_is_on_its_spans_parity(corpus_files):
+    """The evidence the collision span is the right size: 181 of 205 corpus
+    placements sit on the half-tile grid, all on their span's parity (an even
+    span on .0, an odd one on .5). The free-placed rest is not judged."""
+    from descape.scenario_io import load_map_and_units
+
+    on_grid, wrong = 0, []
+    for path in corpus_files:
+        scenario = load_map_and_units(str(path))
+        for player_units in scenario.unit_manager.units:
+            for unit in player_units:
+                span = DOODAD_TILE_SPANS.get(unit.unit_const)
+                if span is None or not ((unit.x * 2).is_integer() and (unit.y * 2).is_integer()):
+                    continue
+                on_grid += 1
+                if is_off_parity(unit.x, span[0]) or is_off_parity(unit.y, span[1]):
+                    wrong.append((path.name, unit.unit_const, unit.x, unit.y))
+    assert on_grid > 0
+    assert wrong == []
 
 
 def test_the_cliff_span_table_and_the_cliff_variant_set_cover_the_same_consts():

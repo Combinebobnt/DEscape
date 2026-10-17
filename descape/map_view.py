@@ -400,6 +400,15 @@ class MapView(QGraphicsView):
     TRIGGER_DIM_PEN_ALPHA = 110
     # A location mark is its tile's own polygon shrunk to this fraction.
     TRIGGER_LOCATION_SCALE = 0.6
+    # GH #229: the edge and corner grab bands' screen width.
+    AREA_EDIT_BAND_PX = 6
+    # Each grab zone's drag direction in map axes, for its on-screen cursor.
+    _AREA_ZONE_AXES: ClassVar[dict[str, tuple[int, int]]] = {
+        "w": (1, 0), "e": (1, 0), "n": (0, 1), "s": (0, 1),
+        "nw": (1, 1), "se": (1, 1), "ne": (1, -1), "sw": (1, -1),
+    }
+    # A screen direction in 45 degree steps counter-clockwise from the x axis.
+    _SIZE_CURSORS = (Qt.SizeHorCursor, Qt.SizeBDiagCursor, Qt.SizeVerCursor, Qt.SizeFDiagCursor)
 
     # Map mirroring's (Stage 1) live preview overlay in MirrorDialog: the
     # shaded source slice and, in Flat mode only, the mode's own symmetry
@@ -440,6 +449,9 @@ class MapView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.scene().setBackgroundBrush(self.OUTSIDE_MAP_COLOR)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
+        # GH #221: file drops go up to ViewerWindow; the scene would otherwise swallow them.
+        self.setAcceptDrops(False)
+        self.viewport().setAcceptDrops(False)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         # Populates every self._*_pen/self._*_color attribute _update_highlight
         # et al. read below -- must run before anything else in __init__ could
@@ -552,6 +564,19 @@ class MapView(QGraphicsView):
         self._tile_pick_anchor: tuple[int, int] | None = None
         # Its own scene item, not the trigger overlay, which the View toggle hides.
         self._tile_pick_item: QGraphicsPathItem | None = None
+        # GH #229's Edit Area: the one area the mouse may move or resize (pushed by
+        # the window), the zone under the cursor, a live drag's (zone, start tile,
+        # coords) and its last tile, and the release's write. The drag previews
+        # through the pick's item above; the two are never live together.
+        self._area_edit: tuple[int, int, int, int] | None = None
+        # Its Move, Resize and Tile borders options: which zones grab, and how wide.
+        self._area_move = True
+        self._area_resize = True
+        self._area_tile_borders = False
+        self._area_hover: str | None = None
+        self._area_drag: tuple[str, tuple[int, int], tuple[int, int, int, int]] | None = None
+        self._area_drag_end: tuple[int, int] | None = None
+        self.on_area_edit = lambda x1, y1, x2, y2: None
         # (cover tile, stack index) of the last pick, so a repeat click walks the stack.
         self._picker_cycle: tuple[tuple[int, int], int] | None = None
         # The Eyedropper's Units-mode pick: on_unit_eyedrop(entry, cover_tile, modifiers),
@@ -756,6 +781,15 @@ class MapView(QGraphicsView):
         self._range_ring_items: dict = {}
         self._range_rings_enabled = settings.get_range_rings()
         self._range_rings_by_owner = settings.get_range_rings_by_owner()
+        self._range_rings_selected_revealers = settings.get_range_rings_selected_revealers()
+        # GH #153 / #155: the always-on ring layer, one item per colour group like the
+        # selection's rings above, but walking the unit index rather than the selection.
+        self._ring_layer_items: dict = {}
+        # (radius, cx, cy, rise_px) -> QPolygonF, valid for _ring_layer_projection only. See refresh_ring_layer().
+        self._ring_layer_polygons: dict = {}
+        self._ring_layer_projection = None
+        self._ring_layer_revealers = settings.get_range_rings_revealers()
+        self._ring_layer_buildings = settings.get_range_rings_buildings()
         # Memoized on the picked (player_id, reference_id) key, the same way
         # _highlight_key memoizes the tile highlight: mouseMoveEvent runs a
         # pick on every pixel, and rebuilding a 25-diamond path per pixel
@@ -805,6 +839,7 @@ class MapView(QGraphicsView):
         # is loaded) previews correctly with no special-casing.
         self._brush_size = brush.BRUSH_SIZE_MIN
         self._brush_shape = brush.BRUSH_SHAPE_SQUARE
+        self._brush_thickness = brush.BRUSH_THICKNESS_MIN
         # Set by set_source() alongside each render, cleared by clear_image()
         # -- needed to clip the brush footprint the same way
         # ViewerWindow.on_edit_stroke_tile clips a single tile today.
@@ -813,7 +848,7 @@ class MapView(QGraphicsView):
         # Memoizes the last highlight built, so mouseMoveEvent's per-pixel
         # calls into _update_highlight() don't rebuild an up-to-81-tile
         # QPainterPath every time the mouse moves within the same tile.
-        self._highlight_key: tuple[int, int, int, str] | None = None
+        self._highlight_key: tuple[int, int, int, str, int] | None = None
         self._map_rect: QRectF | None = None
         # Set by set_source() just before it calls set_isometric(), consumed
         # (and cleared) by set_isometric() itself -- see set_source()'s
@@ -1050,6 +1085,9 @@ class MapView(QGraphicsView):
         if None in self._range_ring_items:
             # Owner groups draw in player colours, which this setting does not reach.
             self._range_ring_items[None].setPen(self._range_ring_pen)
+        if None in self._ring_layer_items:
+            # The layer may hold only owner groups, hence the membership test.
+            self._ring_layer_items[None].setPen(self._range_ring_pen)
         if self._mirror_overlay_outline_item is not None:
             self._mirror_overlay_outline_item.setPen(self._mirror_overlay_outline_pen)
             self._mirror_overlay_fill_item.setBrush(QBrush(self._mirror_overlay_fill_color))
@@ -1146,14 +1184,16 @@ class MapView(QGraphicsView):
         self._wheel_brush_query = query
         self._on_wheel_brush_step = step
 
-    def set_brush(self, size: int, shape: str) -> None:
+    def set_brush(self, size: int, shape: str, thickness: int = brush.BRUSH_THICKNESS_MIN) -> None:
         """Updates the brush the hover-preview highlight (and, via
         ViewerWindow reading these same values back at stroke time, the
         actual edit) uses. Only the preview needs to react here -- the
         active stroke's own footprint is computed fresh per cursor tile in
-        ViewerWindow.on_edit_stroke_tile, not cached."""
+        ViewerWindow.on_edit_stroke_tile, not cached. `thickness` counts for
+        an outline shape only (brush.OUTLINE_SHAPES)."""
         self._brush_size = size
         self._brush_shape = shape
+        self._brush_thickness = thickness
         self._highlight_key = None  # force the next _update_highlight to rebuild
 
     def set_rect_filled(self, filled: bool) -> None:
@@ -1324,6 +1364,7 @@ class MapView(QGraphicsView):
         # forced-back-to-Pan path (which calls set_tool, which cancels
         # already), so this is a second belt on the same trousers.
         self._cancel_shape()
+        self._cancel_area_drag()
         self._sync_stack_badges_visible()
         # Units mode forces NoDrag for every tool but Pan. Without this a
         # Select or Move press would fall through to ScrollHandDrag and pan.
@@ -1339,6 +1380,8 @@ class MapView(QGraphicsView):
             (self._mode == "units" and self._tool != "pan")
             or self._unit_picker_active
             or self._tile_picker_kind is not None
+            or self._area_hover is not None
+            or self._area_drag is not None
             or self._tool in EDIT_TOOLS
             or self._tool == TOOL_RULER
             or self._tool == TOOL_EYEDROPPER
@@ -1355,6 +1398,7 @@ class MapView(QGraphicsView):
             return
         self._unit_picker_active = active
         self._picker_cycle = None
+        self._cancel_area_drag()
         if not active:
             self._clear_unit_hover()
         self._apply_drag_mode()
@@ -1366,6 +1410,7 @@ class MapView(QGraphicsView):
     def set_tile_picker(self, kind: str | None) -> None:
         """GH #138: "point" picks one tile (on_tile_pick), "rect" one dragged
         rectangle (on_rect_pick), None disarms. The window forces Pan first."""
+        self._cancel_area_drag()
         self._tile_picker_kind = kind
         self._tile_pick_anchor = None
         self._clear_tile_pick_preview()
@@ -1374,6 +1419,109 @@ class MapView(QGraphicsView):
 
     def tile_picker_kind(self) -> str | None:
         return self._tile_picker_kind
+
+    def set_area_edit(self, coords: tuple[int, int, int, int] | None) -> None:
+        """GH #229: the inclusive area (x1, y1, x2, y2) a Pan drag may move or
+        resize, or None. Pushed by the window; a change drops a live drag."""
+        if coords == self._area_edit:
+            return
+        self._area_edit = coords
+        self._cancel_area_drag()
+
+    def area_edit(self) -> tuple[int, int, int, int] | None:
+        return self._area_edit
+
+    def set_area_edit_options(self, move: bool, resize: bool, tile_borders: bool) -> None:
+        """Edit Area's options. Resize off makes the whole area the move zone, Move
+        off leaves only the edges and corners, Tile borders makes the border at
+        least one tile wide on an axis 3+ tiles long. A change drops a live drag."""
+        options = (move, resize, tile_borders)
+        if options == (self._area_move, self._area_resize, self._area_tile_borders):
+            return
+        self._area_move, self._area_resize, self._area_tile_borders = options
+        self._cancel_area_drag()
+
+    def _area_edit_live(self) -> bool:
+        return (
+            self._area_edit is not None
+            and (self._area_move or self._area_resize)
+            and self._tool == "pan"
+            and self._tile_picker_kind is None
+            and not self._unit_picker_active
+        )
+
+    def _map_axes_on_screen(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """One tile along map x and along map y as viewport-pixel vectors, through
+        the whole view transform (an iso view is squashed vertically)."""
+        if self._terrain_style == "flat" or self._iso_proj is None:
+            step = self._tile_pixels or 1
+            axes = ((step, 0.0), (0.0, step))
+        else:
+            hw, hh = self._iso_proj.half_w, self._iso_proj.half_h
+            axes = ((hw, -hh), (hw, hh))
+        t = self.transform()
+        return tuple((x * t.m11() + y * t.m21(), x * t.m12() + y * t.m22()) for x, y in axes)
+
+    def _area_band_tiles(self) -> float:
+        """AREA_EDIT_BAND_PX in tiles, across the narrower of a tile's two edge spacings."""
+        (ax, ay), (bx, by) = self._map_axes_on_screen()
+        area = abs(ax * by - ay * bx)
+        across = area / max(math.hypot(ax, ay), math.hypot(bx, by)) if area else 1.0
+        return self.AREA_EDIT_BAND_PX / across
+
+    def _area_hit(self, pos: QPointF) -> str | None:
+        """The live area's grab zone under scene-space pos, or None."""
+        if not self._area_edit_live():
+            return None
+        point = self._pick_map_point(pos) or self.ground_map_point(pos)
+        if point is None:
+            return None
+        # Resize off means no border at all, Tile borders included.
+        band = self._area_band_tiles() if self._area_resize else 0.0
+        tile_borders = self._area_tile_borders and self._area_resize
+        zone = trigger_geometry.area_hit_zone(self._area_edit, point, band, tile_borders)
+        return None if zone == trigger_geometry.ZONE_MOVE and not self._area_move else zone
+
+    def _area_zone_cursor(self, zone: str) -> Qt.CursorShape:
+        """The resize cursor along the zone's ON-SCREEN drag direction, so an
+        iso map's diagonal edges read right."""
+        if zone == trigger_geometry.ZONE_MOVE:
+            return Qt.SizeAllCursor
+        ax, ay = self._AREA_ZONE_AXES[zone]
+        (ex, ey), (fx, fy) = self._map_axes_on_screen()
+        sx, sy = ax * ex + ay * fx, ax * ey + ay * fy
+        return self._SIZE_CURSORS[round(math.degrees(math.atan2(-sy, sx)) / 45) % 4]
+
+    def _set_area_hover(self, zone: str | None) -> None:
+        if zone == self._area_hover:
+            return
+        self._area_hover = zone
+        self._apply_drag_mode()
+        self._apply_tool_cursor()
+
+    def _cancel_area_drag(self) -> None:
+        """Drops a GH #229 drag with no write, and the hover zone with it."""
+        if self._area_drag is not None:
+            self._area_drag = None
+            self._area_drag_end = None
+            self._clear_tile_pick_preview()
+        self._area_hover = None
+        self._apply_drag_mode()
+        self._apply_tool_cursor()
+
+    def _dragged_area(self) -> tuple[int, int, int, int]:
+        zone, start, coords = self._area_drag
+        return trigger_geometry.dragged_area(coords, zone, start, self._area_drag_end, self._map_width, self._map_height)
+
+    def _update_area_drag_preview(self) -> None:
+        rect = self._trigger_area_rect(self._dragged_area())
+        self._show_tile_pick_path(
+            self._rect_ring_path(rect) if rect is not None else QPainterPath(),
+            self._trigger_outline_pens[True],
+            QBrush(self._trigger_fill_colors[True]),
+            self.TRIGGER_AREA_Z,
+            self._overlay_opacity("trigger_area"),
+        )
 
     def _tile_pick_sample(self, pos: QPointF) -> tuple[int, int] | None:
         """A rect drag's tile under scene-space pos: _pick_tile on the map, else
@@ -1410,6 +1558,12 @@ class MapView(QGraphicsView):
                 path.addPolygon(polygon)
                 path.closeSubpath()
             pen, brush, z, opacity = self._trigger_run_pens[True], QBrush(Qt.NoBrush), self.TRIGGER_MARK_Z, 1.0
+        self._show_tile_pick_path(path, pen, brush, z, opacity)
+
+    def _show_tile_pick_path(self, path: QPainterPath, pen, brush: QBrush, z: float, opacity: float) -> None:
+        scene = self.scene()
+        if scene is None:
+            return
         item = self._tile_pick_item
         if item is None:
             item = scene.addPath(path, pen, brush)
@@ -1458,13 +1612,24 @@ class MapView(QGraphicsView):
         self._clear_unit_hover()
         self.refresh_unit_highlight()
         self.refresh_footprint_overlay()
+        self.refresh_ring_layer()
+
+    def refresh_drape_outlines(self) -> None:
+        """For a Show sprites or Farm Overlay toggle: a draped farm's outline
+        shape follows both (TASK-015), so the hover, the selection and the
+        footprint outlines are redrawn. The hover memo is dropped too, or a
+        cursor resting on the farm keeps its old path."""
+        self._clear_unit_hover()
+        self.refresh_unit_highlight()
+        self.refresh_footprint_overlay()
 
     def refresh_after_index_patch(self) -> None:
         """For a caller that patched _unit_index in place rather than
-        swapping it: everything derived from the index, which is the stacks
-        and the footprint outlines."""
+        swapping it: everything derived from the index, which is the stacks,
+        the footprint outlines and the always-on ring layer."""
         self.refresh_stack_groups()
         self.refresh_footprint_overlay()
+        self.refresh_ring_layer()
 
     def refresh_stack_groups(self) -> None:
         """Recomputes the stacks from the current index -- for a caller that
@@ -1582,7 +1747,7 @@ class MapView(QGraphicsView):
             self._iso_elevations,
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
-            farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
+            farms_draped=self._farms_draped(),
         )
 
     def _unit_path(self, entry) -> QPainterPath | None:
@@ -1741,28 +1906,39 @@ class MapView(QGraphicsView):
             return None
         return int(self._iso_elevations[entry.own_y, entry.own_x]) * self._iso_proj.elev_step
 
-    def _range_ring_points(self, entry):
-        """One entry's ring polygon in scene space, or None when it draws no
-        ring: not a building, no range, or no geometry to project with.
+    def _range_ring_points(self, entry, radius: float | None):
+        """One entry's ring polygon in scene space at `radius` tiles, or None
+        when it draws no ring: no radius, or no geometry to project with.
 
         The centre is the drawn footprint's own (render.unit_footprint_centre),
         not the stored coordinate: the two differ by half a tile for a
         building stored off its span's parity, e.g. a 4x4 at `.5` (GH #200).
-        The ring follows the footprint, by decision, wherever that is drawn."""
-        radius = range_overlay.ring_radius_for_const(entry.unit.unit_const)
+        The ring follows the footprint, by decision, wherever that is drawn.
+        For a 1x1 such as a map revealer the two are the same point."""
         if radius is None:
             return None
+        anchor = self._range_ring_anchor(entry)
+        if anchor is None:
+            return None
+        return self._range_ring_points_at(radius, *anchor)
+
+    def _range_ring_anchor(self, entry) -> tuple[float, float, int] | None:
+        """(cx, cy, rise_px) one entry's ring is drawn from, rise 0 in Flat,
+        or None with no geometry to project with."""
         cx, cy = render.unit_footprint_centre(entry.unit)
         if self._terrain_style == "flat":
-            return range_overlay.ring_points(cx, cy, radius, "flat", tile_px=self._tile_pixels or 1)
+            return cx, cy, 0
         if self._iso_proj is None:
             return None
         rise_px = self._range_ring_rise_px(entry)
         if rise_px is None:
             return None
-        return range_overlay.ring_points(
-            cx, cy, radius, self._terrain_style, proj=self._iso_proj, rise_px=rise_px
-        )
+        return cx, cy, rise_px
+
+    def _range_ring_points_at(self, radius: float, cx: float, cy: float, rise_px: int):
+        if self._terrain_style == "flat":
+            return range_overlay.ring_points(cx, cy, radius, "flat", tile_px=self._tile_pixels or 1)
+        return range_overlay.ring_points(cx, cy, radius, self._terrain_style, proj=self._iso_proj, rise_px=rise_px)
 
     def _draw_unit_range_rings(self, entries) -> None:
         """One QPainterPath per owner colour group unioning that group's
@@ -1773,12 +1949,17 @@ class MapView(QGraphicsView):
         composites its circle into the terrain so a palisade occludes it.
         That is an accepted deviation: drawing under the sprites means
         painting into cached chunk pixels, a different feature."""
-        if not self._range_rings_enabled:
+        if not (self._range_rings_enabled or self._range_rings_selected_revealers):
             self._clear_unit_range_rings()
             return
         paths: dict = {}
         for entry in entries:
-            points = self._range_ring_points(entry)
+            radius = range_overlay.selection_ring_radius(
+                entry.unit.unit_const,
+                buildings=self._range_rings_enabled,
+                revealers=self._range_rings_selected_revealers,
+            )
+            points = self._range_ring_points(entry, radius)
             if points:
                 key = self._owner_group_key(entry.player_id, self._range_rings_by_owner)
                 _add_closed_polygons(paths.setdefault(key, QPainterPath()), [points])
@@ -1812,10 +1993,98 @@ class MapView(QGraphicsView):
             self._clear_unit_range_rings()
         self.refresh_unit_highlight()
 
+    def set_range_rings_selected_revealers(self, enabled: bool) -> None:
+        """View > Range Rings > Selected Map Revealers: the selection's rings
+        also cover map revealers, at their line of sight. Scene items only."""
+        self._range_rings_selected_revealers = enabled
+        if not (enabled or self._range_rings_enabled):
+            self._clear_unit_range_rings()
+        self.refresh_unit_highlight()
+
     def set_range_rings_by_owner(self, enabled: bool) -> None:
-        """GH #156: each ring in its owner's player colour, GAIA in the configured one."""
+        """GH #156: each ring in its owner's player colour, GAIA in the configured one.
+        Applies to the always-on layer too."""
         self._range_rings_by_owner = enabled
         self.refresh_unit_highlight()
+        self.refresh_ring_layer()
+
+    def set_ring_layer_revealers(self, enabled: bool) -> None:
+        """GH #153: View > Range Rings > Map Revealers. Like set_range_rings,
+        this evicts no chunk cache: the rings are scene items only."""
+        self._ring_layer_revealers = enabled
+        self.refresh_ring_layer()
+
+    def set_ring_layer_buildings(self, enabled: bool) -> None:
+        """GH #155: View > Range Rings > All Buildings. Scene items only, as above."""
+        self._ring_layer_buildings = enabled
+        self.refresh_ring_layer()
+
+    def refresh_ring_layer_owner_colors(self) -> None:
+        """For a player colour edit, after set_selection_player_colors(): only
+        owner-coloured rings have anything to recolour."""
+        if self._range_rings_by_owner:
+            self.refresh_ring_layer()
+
+    def _ring_layer_wanted(self) -> bool:
+        return (self._ring_layer_revealers or self._ring_layer_buildings) and self._unit_index is not None
+
+    def refresh_ring_layer(self) -> None:
+        """Rebuilds the always-on rings (GH #153 / #155) from the live index,
+        in every mode, the way refresh_footprint_overlay() does the outlines.
+        Iterates index.entries, so it inherits the unit filter: Show Invisible
+        Objects off hides the revealer rings.
+
+        A selected building with All Buildings on also draws in the selection's
+        own ring item: same path, same pen, identical pixels, not deduplicated.
+
+        Each ring's polygon is kept between rebuilds, keyed on everything it
+        depends on but the projection, which invalidates the whole set: this
+        runs synchronously on every unit edit, and sampling 1300 rings from
+        scratch measured ~275 ms against the footprint layer's 45-80 ms.
+        Only rings still drawn are kept, so the set never outgrows the map."""
+        if not self._ring_layer_wanted():
+            self._clear_ring_layer()
+            return
+        projection = (self._terrain_style, self._tile_pixels, self._iso_proj)
+        previous = self._ring_layer_polygons if projection == self._ring_layer_projection else {}
+        polygons: dict = {}
+        paths: dict = {}
+        for entry in self._unit_index.entries:
+            radius = range_overlay.persistent_ring_radius(
+                entry.unit.unit_const, revealers=self._ring_layer_revealers, buildings=self._ring_layer_buildings
+            )
+            if radius is None:
+                continue
+            anchor = self._range_ring_anchor(entry)
+            if anchor is None:
+                continue
+            ring_key = (radius, *anchor)
+            polygon = polygons.get(ring_key) or previous.get(ring_key)
+            if polygon is None:
+                polygon = QPolygonF([QPointF(x, y) for x, y in self._range_ring_points_at(radius, *anchor)])
+            polygons[ring_key] = polygon
+            path = paths.setdefault(self._owner_group_key(entry.player_id, self._range_rings_by_owner), QPainterPath())
+            path.addPolygon(polygon)
+            path.closeSubpath()
+        self._ring_layer_polygons = polygons
+        self._ring_layer_projection = projection
+        for key in [k for k in self._ring_layer_items if k not in paths]:
+            self.scene().removeItem(self._ring_layer_items.pop(key))
+        for key, path in paths.items():
+            item = self._ring_layer_items.get(key)
+            if item is None:
+                # Cosmetic width 0 for an owner group too: see _range_ring_pen.
+                pen = self._range_ring_pen if key is None else QPen(QColor(*key), 0)
+                item = self._ring_layer_items[key] = self.scene().addPath(path, pen)
+                item.setZValue(self.RANGE_RING_Z)
+            else:
+                item.setPath(path)
+
+    def _clear_ring_layer(self) -> None:
+        for item in self._ring_layer_items.values():
+            self.scene().removeItem(item)
+        self._ring_layer_items = {}
+        self._ring_layer_polygons = {}
 
     def refresh_unit_highlight(self) -> None:
         """Re-entry point for state changing WITHOUT the mouse moving --
@@ -2049,9 +2318,18 @@ class MapView(QGraphicsView):
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
             terrain_tile=tile,
-            farms_draped=False if cache is None else (cache.with_units and cache.sprites_enabled),
+            farms_draped=self._farms_draped(),
             sprites_on=self._objects_after_terrain(),
         )
+
+    def _farms_draped(self) -> bool:
+        """Whether the live cache drapes farms as terrain, in any style: the
+        render's own three gates (units shown, sprites on, Farm Overlay
+        layer), so pick and highlight follow the paint (TASK-015, GH #150)."""
+        if self._canvas_item is None:
+            return False
+        cache = self._canvas_item._cache
+        return cache is not None and cache.farms_draped()
 
     def _objects_after_terrain(self) -> bool:
         """Whether the live cache paints objects after all terrain (TASK-133),
@@ -2109,6 +2387,7 @@ class MapView(QGraphicsView):
         # drops it.
         self._cancel_shape()
         self._brush_wheel_accum = 0  # a half-stepped brush notch belongs to the tool being left
+        self._cancel_area_drag()
         self._sync_pulse_timer()
         # Routed through _apply_drag_mode() rather than set here directly, so
         # Units mode's NoDrag can't be undone by a tool switch.
@@ -2123,6 +2402,10 @@ class MapView(QGraphicsView):
             return
         if self._unit_picker_active:
             self.setCursor(Qt.PointingHandCursor)
+            return
+        zone = self._area_drag[0] if self._area_drag is not None else self._area_hover
+        if zone is not None:
+            self.setCursor(self._area_zone_cursor(zone))
             return
         # Above the mode check, unlike every other tool: Units mode's
         # pointing hand otherwise wins and the Ruler loses its aiming cursor
@@ -2329,6 +2612,23 @@ class MapView(QGraphicsView):
                 if self._map_rect.contains(pos):
                     self._picker_click(pos)
             return
+        # GH #229: with Pan, a left press on the live area's middle, edge or corner
+        # starts a move or resize; elsewhere it pans. A right press mid-drag cancels it.
+        if self._area_drag is not None:
+            if event.button() == Qt.RightButton:
+                self._cancel_area_drag()
+            return
+        if event.button() == Qt.LeftButton and self._area_edit_live():
+            pos = self.mapToScene(event.pos())
+            zone = self._area_hit(pos)
+            start = self._tile_pick_sample(pos) if zone is not None else None
+            if start is not None:
+                self._area_drag = (zone, start, self._area_edit)
+                self._area_drag_end = start
+                self._apply_drag_mode()
+                self._apply_tool_cursor()
+                self._update_area_drag_preview()
+                return
         # No single tool arms every unit gesture field, so a stale drag or marquee
         # from a swallowed release dies at the next left press, whichever tool presses.
         if self._mode == "units" and event.button() == Qt.LeftButton:
@@ -2519,6 +2819,7 @@ class MapView(QGraphicsView):
                     self._pause_gc_for_stroke()
                     perf_trace.begin_drag(
                         f"{self._brush_size} {self._brush_shape}"
+                        + (f" t{self._brush_thickness}" if self._brush_shape in brush.OUTLINE_SHAPES else "")
                         if brush_applicable(self._tool, rect_filled=self._rect_filled)
                         else None
                     )
@@ -2548,6 +2849,19 @@ class MapView(QGraphicsView):
                 self.on_rect_pick(
                     min(anchor[0], end[0]), min(anchor[1], end[1]), max(anchor[0], end[0]), max(anchor[1], end[1])
                 )
+            return
+        # GH #229's drag writes once, here, and only a real change.
+        if self._area_drag is not None:
+            if event.button() == Qt.LeftButton:
+                pos = self.mapToScene(event.pos())
+                end = self._tile_pick_sample(pos)
+                if end is not None:
+                    self._area_drag_end = end
+                coords, area = self._area_drag[2], self._dragged_area()
+                self._cancel_area_drag()
+                if area != coords:
+                    self.on_area_edit(*area)
+                self._set_area_hover(self._area_hit(pos))
             return
         # A left release only ever DECIDES for the Ruler; the endpoint was
         # already placed by mouseMoveEvent, so there is nothing to redraw. A
@@ -2715,6 +3029,9 @@ class MapView(QGraphicsView):
             return
         if event.key() == Qt.Key_Escape and self._unit_picker_active:
             self.on_unit_picker_cancel()
+            return
+        if event.key() == Qt.Key_Escape and self._area_drag is not None:
+            self._cancel_area_drag()
             return
         # Above the Ruler's own Escape below: the two are never live at once
         # (different tools), so order is arbitrary, but a mutating tool's
@@ -2949,9 +3266,11 @@ class MapView(QGraphicsView):
         # Hover only -- a selection deliberately survives the cursor leaving
         # the map, the same way it survives moving onto empty ground.
         self._clear_unit_hover()
-        # A tile pick's hover goes; a held rect drag does not, its release still commits.
-        if self._tile_pick_anchor is None:
+        # A tile pick's hover goes; a held rect or area drag does not, its release still commits.
+        if self._tile_pick_anchor is None and self._area_drag is None:
             self._clear_tile_pick_preview()
+        if self._area_drag is None:
+            self._set_area_hover(None)
         # Defensive: a drag that exits the widget bounds without a release
         # (Qt usually still routes the eventual release back here via its
         # implicit mouse grab during a press-drag, but this covers the case
@@ -3117,7 +3436,7 @@ class MapView(QGraphicsView):
         borders included (one addPolygon() per tile into a single
         QPainterPath, deliberately not .simplified(): a bounding outline
         would misrepresent a circle brush's actual footprint). Memoized on
-        (tile_x, tile_y, size, shape) since this runs on every pixel of
+        (tile_x, tile_y, size, shape, thickness) since this runs on every pixel of
         mouseMoveEvent -- see _highlight_key's own comment in __init__.
 
         Passes coarse=True to _tile_polygon (draw-perf plan item 3): in
@@ -3135,14 +3454,15 @@ class MapView(QGraphicsView):
             if key != self._highlight_key:
                 self._set_highlight_tiles(list(self._cliff_footprint), key)
             return
-        key = (tile_x, tile_y, self._brush_size, self._brush_shape)
+        key = (tile_x, tile_y, self._brush_size, self._brush_shape, self._brush_thickness)
         if key == self._highlight_key:
             return
         if self._map_width is None or self._map_height is None:
             tiles = [(tile_x, tile_y)]
         else:
             tiles = brush.brush_tiles(
-                tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height
+                tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height,
+                self._brush_thickness,
             )
         self._set_highlight_tiles(tiles, key)
 
@@ -3208,7 +3528,7 @@ class MapView(QGraphicsView):
         out: dict[tuple[int, int], None] = {}
         for tx, ty in tiles:
             for tile in brush.brush_tiles(
-                tx, ty, self._brush_size, self._brush_shape, self._map_width, self._map_height
+                tx, ty, self._brush_size, self._brush_shape, self._map_width, self._map_height, self._brush_thickness
             ):
                 out[tile] = None
         return list(out)
@@ -3275,6 +3595,7 @@ class MapView(QGraphicsView):
             *self._shape_span(),
             self._brush_size,
             self._brush_shape,
+            self._brush_thickness,
             self._rect_filled,
             self._tool,
         )
@@ -4095,6 +4416,9 @@ class MapView(QGraphicsView):
         self._unit_hover_item = None
         self._unit_select_groups = {}
         self._range_ring_items = {}
+        self._ring_layer_items = {}
+        self._ring_layer_polygons = {}
+        self._ring_layer_projection = None
         self._selection_player_colors = None
         self._unit_hover_key = None
         self._unit_select_keys = []
@@ -4103,6 +4427,7 @@ class MapView(QGraphicsView):
         # Same for GH #138's pick preview; a held rect drag has no map left to commit against.
         self._tile_pick_item = None
         self._tile_pick_anchor = None
+        self._cancel_area_drag()
         self._unit_index = None
         # scene().clear() destroyed these too. Dropped outright, unlike
         # set_source()'s own region handling below: File > Close leaves no
@@ -4424,6 +4749,7 @@ class MapView(QGraphicsView):
         self._unit_hover_item = None
         self._unit_select_groups = {}
         self._range_ring_items = {}
+        self._ring_layer_items = {}
         # Mandatory, not tidiness: scene().clear() destroyed the C++ objects,
         # so a later removeItem() on one would raise. The pushed list itself
         # survives -- unlike the selection below, a stored camera view is
@@ -4448,6 +4774,7 @@ class MapView(QGraphicsView):
         # GH #138's pick preview went too; a held rect drag's anchor is in the old projection.
         self._tile_pick_item = None
         self._tile_pick_anchor = None
+        self._cancel_area_drag()
         # The ghost went with it too, and the drag behind it means nothing
         # against a new scenario -- dropped, not re-anchored, so the release
         # commits nothing (see keyPressEvent's Escape branch for the other
@@ -5228,7 +5555,8 @@ class MapView(QGraphicsView):
         path is built eagerly, and on the largest example file at All units
         in Sloped that is ~1s. So this defers it to the event loop: one
         8-step Set Elevation drag touches 131 tiles per _apply_dirty's own
-        comment, and rebuilding per touch would be unusable."""
+        comment, and rebuilding per touch would be unusable. The always-on
+        ring layer (GH #153 / #155) rides the same deferral."""
         self.schedule_footprint_refresh()
         # Not deferred: at most 8 items, each one _ruler_anchor lookup, and
         # unlike the footprint path there is no per-unit walk behind it.
@@ -5244,8 +5572,13 @@ class MapView(QGraphicsView):
         self._rebuild_stack_badges()
 
     def schedule_footprint_refresh(self) -> None:
+        """Queues one rebuild of the footprint outlines and the always-on ring
+        layer, whichever of the two is live."""
+        if self._footprint_refresh_pending:
+            return
         # Hidden: nothing to queue per drag step (refresh_footprint_overlay's invariant).
-        if self._footprint_refresh_pending or not self._footprint_items or not self._footprint_enabled:
+        footprints = bool(self._footprint_items) and self._footprint_enabled
+        if not footprints and not self._ring_layer_wanted():
             return
         self._footprint_refresh_pending = True
         QTimer.singleShot(0, self._flush_footprint_refresh)
@@ -5257,6 +5590,9 @@ class MapView(QGraphicsView):
         if self._footprint_items:
             with perf_trace.phase("footprint_refresh"):
                 self.refresh_footprint_overlay()
+        if self._ring_layer_wanted():
+            with perf_trace.phase("ring_layer_refresh"):
+                self.refresh_ring_layer()
 
     def set_grid_appearance(self, blend: int, thickness: int) -> bool:
         """Stores the appearance for both halves. Evicts only when the bake
@@ -5616,6 +5952,20 @@ class MapView(QGraphicsView):
             else:
                 self._update_tile_pick_preview(tile if on_map and tile is not None and self._on_map(tile) else None)
             return
+        # GH #229: a live drag redraws its preview, clamped like a rect pick; else the hover zone.
+        # A move with the button up means its release was swallowed: the drag dies unwritten.
+        if self._area_drag is not None and not event.buttons() & Qt.LeftButton:
+            self._cancel_area_drag()
+        if self._area_drag is not None:
+            self._clear_highlight()
+            self._clear_pan_highlight()
+            end = self._tile_pick_sample(pos)
+            if end is not None:
+                self._area_drag_end = end
+            self._update_area_drag_preview()
+            return
+        if self._area_edit is not None:
+            self._set_area_hover(self._area_hit(pos))
         # Pick from map's hover, the Units-mode unit cue in whatever mode is showing.
         if self._unit_picker_active:
             self._clear_highlight()

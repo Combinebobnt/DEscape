@@ -1,0 +1,18 @@
+name: Qt platform plugin system libs (Linux)
+description: >
+  Installs the system libraries the Qt xcb platform plugin dlopens, plus xvfb.
+  Linux runners only; run after actions/checkout.
+runs:
+  using: composite
+  steps:
+    - name: Install Qt platform plugin system libs
+      shell: bash
+      # The xcb plugin dlopens several of these at runtime and fails with
+      # "even though it was found" (not a missing-file error) if any are
+      # absent -- the hosted ubuntu-22.04 image doesn't ship them all.
+      run: >
+        sudo apt-get update && sudo apt-get install -y
+        libegl1 libgl1 libxkbcommon-x11-0 xvfb
+        libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+        libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+        libxcb-xkb1

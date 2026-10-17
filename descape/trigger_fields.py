@@ -428,7 +428,7 @@ _LOCATION_CAPTIONS: Mapping[str, Mapping[str, str]] = {
 _BUTTON_LOCATION_TOOLTIP = (
     "Where the button sits in the building's command panel: rows top to bottom, columns left "
     "to right. 0 gives no button. When two buttons share a slot, the lower unit id shows. Page 2 "
-    "is the Dock's second page. For a villager's build menu, train the building at the builder "
+    "is a building's second page, as on the Dock. For a villager's build menu, train the building at the builder "
     "(118); its row 3, col 4 and col 5 are the menu's own buttons."
 )
 _FIELD_TOOLTIPS: Mapping[str, Mapping[str, str]] = {

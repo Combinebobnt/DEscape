@@ -491,3 +491,30 @@ def test_apply_overlay_colors_re_inks_the_background_in_place() -> None:
         assert item._background == QColor(0x30, 0x60, 0xA0, item.BACKGROUND_ALPHA)
     finally:
         _close(window)
+
+
+_CASTLE = 82
+_GRASS = 301  # Grass Patch Green, passable eye candy
+
+
+def test_grass_under_a_castle_and_a_villager_shows_no_badge() -> None:
+    """GH #193: only the villager under the Castle badges, not the grass beside it."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.blank_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Place", [0, 1]):
+            model.add(0, _GRASS, 40.5, 40.5)
+            model.add(1, _VILLAGER, 40.5, 40.5)
+            model.add(0, _GRASS, 44.5, 44.5)
+            model.add(1, _VILLAGER, 45.5, 45.5)
+            model.add(1, _CASTLE, 45.0, 45.0)
+        window.show()
+        QApplication.processEvents()
+        map_view = window.map_view
+        assert list(map_view._stack_groups) == [(45, 45)]
+        assert [text for _anchor, _centre, text in map_view._stack_badge_item._badges] == ["2"]
+    finally:
+        _close(window)

@@ -304,6 +304,19 @@ def test_a_subscribed_path_is_refused_with_nothing_written(tmp_path) -> None:
     assert list(subscribed.iterdir()) == []
 
 
+@pytest.mark.parametrize("py313_resolve", [False, True])
+def test_a_looped_path_is_refused_with_nothing_written(tmp_path, monkeypatch, py313_resolve) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    loop = conftest.symlink_loop(out)
+    doc = theme_file.build_document()
+    if py313_resolve:
+        conftest.resolve_like_py313(monkeypatch)
+    with pytest.raises(theme_file.ThemeWriteBlockedError, match="cannot be resolved"):
+        theme_file.write_theme_file(loop / "t.yaml", doc)
+    assert sorted(p.name for p in out.iterdir()) == ["loop-a", "loop-b"]
+
+
 def test_a_symlink_into_mods_subscribed_is_refused_with_nothing_written(tmp_path) -> None:
     subscribed = tmp_path / "mods" / "subscribed" / "12345"
     subscribed.mkdir(parents=True)

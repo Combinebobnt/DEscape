@@ -224,3 +224,56 @@ def test_single_tile_vendored_recursion_matches_the_library(seed) -> None:
     after = [t.elevation for t in omm.terrain]
     assert after == [t.elevation for t in tmm.terrain]
     assert {i for i, (b, a) in enumerate(zip(before, after, strict=True)) if b != a} <= touched
+
+
+# TASK-257: tiles the gap-fill rule raises outside a hollow or thin brush, sizes 1-9, raising
+# flat ground by 1 (user decision 2026-10-13: the propagation stays). Measured, not derived.
+_GAP_FILL_EXTRA = {
+    ("square_outline", 1): [0, 0, 1, 4, 4, 4, 4, 4, 4],
+    ("square_outline", 2): [0, 0, 0, 0, 1, 4, 4, 4, 4],
+    ("square_outline", 3): [0, 0, 0, 0, 0, 0, 1, 4, 4],
+    ("square_outline", 4): [0, 0, 0, 0, 0, 0, 0, 0, 1],
+    ("circle_outline", 1): [0, 0, 1, 4, 4, 0, 0, 0, 0],
+    ("circle_outline", 2): [0, 0, 0, 0, 1, 4, 4, 0, 0],
+    ("circle_outline", 3): [0, 0, 0, 0, 0, 0, 1, 4, 4],
+    ("circle_outline", 4): [0, 0, 0, 0, 0, 0, 0, 0, 1],
+    ("plus", 1): [0, 0, 0, 0, 4, 4, 4, 4, 4],
+    ("rounded", 1): [0] * 9,
+    ("line_x", 1): [0] * 9,
+    ("line_y", 1): [0] * 9,
+}
+
+
+def _raised_outside(shape: str, thickness: int, size: int) -> int:
+    from descape import brush
+
+    scenario = _load()
+    mm = scenario.map_manager
+    assert all(t.elevation == 0 for t in mm.terrain)
+    footprint = set(brush.brush_tiles(40, 40, size, shape, mm.map_width, mm.map_height, thickness))
+    set_tiles_elevation(mm, [(x, y, 1) for x, y in footprint])
+    assert all(mm.get_tile(x, y).elevation == 1 for x, y in footprint)
+    lo, hi = 40 - (size - 1) // 2, 40 + size // 2
+    extra = [(i % mm.map_size, i // mm.map_size) for i, t in enumerate(mm.terrain) if t.elevation and
+             (i % mm.map_size, i // mm.map_size) not in footprint]
+    assert all(lo <= x <= hi and lo <= y <= hi for x, y in extra), "gap-fill stays inside the brush box"
+    return len(extra)
+
+
+@pytest.mark.parametrize(("shape", "thickness"), list(_GAP_FILL_EXTRA))
+def test_raising_a_hollow_or_thin_brush_on_flat_ground_fills_these_gaps(shape: str, thickness: int) -> None:
+    assert [_raised_outside(shape, thickness, size) for size in range(1, 10)] == _GAP_FILL_EXTRA[(shape, thickness)]
+
+
+def test_lowering_a_square_outline_writes_exactly_the_ring() -> None:
+    from descape import brush
+
+    scenario = _load()
+    mm = scenario.map_manager
+    for tile in mm.terrain:
+        tile.elevation = 2
+    ring = set(brush.brush_tiles(40, 40, 5, brush.BRUSH_SHAPE_SQUARE_OUTLINE, mm.map_width, mm.map_height))
+    assert len(ring) == 16
+    set_tiles_elevation(mm, [(x, y, 1) for x, y in ring])
+    lowered = {(i % mm.map_size, i // mm.map_size) for i, t in enumerate(mm.terrain) if t.elevation != 2}
+    assert lowered == ring

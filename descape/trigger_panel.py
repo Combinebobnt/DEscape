@@ -593,8 +593,6 @@ class TriggerPanel(QWidget):
         # Per populate: trigger index -> its statuses, and the triggers whose entries hold placed-unit ids.
         self._status: dict[int, trigger_status.TriggerStatuses] = {}
         self._unit_ref_triggers: set[int] = set()
-        # (kind, type id) -> its unit-reference fields, for the vocabulary of the last populate.
-        self._unit_ref_fields: dict[tuple[str, int], tuple[str, ...]] = {}
         # A unit edit outside Triggers mode skipped its recompute; the next show_scenario() does it.
         self._status_stale = False
         # The trigger indices that may differ from the parsed file, or None for "unknown, recompute
@@ -2129,12 +2127,11 @@ class TriggerPanel(QWidget):
     # (the window's group writes), refresh_unit_reference_labels() (unit
     # edits) and show_scenario() (everything else). show_scenario() reuses the
     # memo of every trigger that cannot have changed (_compute_all_statuses()):
-    # a full pass is 0.9 s on an 18k-trigger file, measured.
+    # a full pass is 0.4 s on an 18k-trigger file, measured (0.9 s before per-type plans).
 
     def _reset_statuses(self) -> None:
         self._status = {}
         self._unit_ref_triggers = set()
-        self._unit_ref_fields = {}
         self._status_stale = False
         self._status_memo = {}
         self._status_memo_vocabulary = None
@@ -2189,41 +2186,14 @@ class TriggerPanel(QWidget):
         if context is None:
             context = self._status_context(manager)
         trigger = manager.triggers[index]
-        statuses = trigger_status.evaluate_trigger(trigger, context)
+        statuses, unit_refs, trigger_targets = trigger_status.evaluate_with_references(trigger, context)
         self._status[index] = statuses
-        unit_refs, trigger_targets = self._references(trigger)
         self._status_memo[id(trigger)] = _StatusMemo(trigger, statuses, unit_refs, trigger_targets, clean)
         if unit_refs:
             self._unit_ref_triggers.add(index)
         else:
             self._unit_ref_triggers.discard(index)
         return statuses
-
-    def _references(self, trigger) -> tuple[bool, tuple]:
-        """(any entry holds a placed-unit id, the trigger ids its entries name):
-        what a unit edit, or a trigger-count change, can flip in its status."""
-        units = False
-        targets: list = []
-        for kind in ("condition", "effect"):
-            definitions, presentation, type_attribute = self._vocab_for(kind)
-            if definitions is None:
-                return False, ()
-            trigger_id_types = trigger_status.TRIGGER_ID_TYPES[kind]
-            for entry in self._read(trigger, f"{kind}s") or []:
-                type_id = self._read(entry, type_attribute)
-                if type_id in trigger_id_types:
-                    target = self._read(entry, "trigger_id")
-                    if isinstance(target, (int, float)) and not isinstance(target, bool):
-                        targets.append(target)
-                if units:
-                    continue
-                fields = self._unit_ref_fields.get((kind, type_id))
-                if fields is None:
-                    fields = unit_references.unit_reference_fields(definitions.get(type_id), presentation)
-                    self._unit_ref_fields[(kind, type_id)] = fields
-                if fields and unit_references.references_in(entry, definitions.get(type_id), presentation):
-                    units = True
-        return units, tuple(targets)
 
     def _group_statuses(self, trigger, statuses: trigger_status.TriggerStatuses) -> dict[str, EntryStatus]:
         """The Conditions and Effects rows' rollups. An empty Effects group on a

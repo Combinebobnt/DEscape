@@ -15,7 +15,8 @@ tests/test_content_roots.py scans this module's source for write calls.
 Profile location, in priority order (the same shape as
 asset_source.get_install_path()):
   1. the AOE2DE_PROFILE_PATH environment variable
-  2. an "aoe2de_profile" key in config.yaml
+  2. an "aoe2de_profile" key in config.yaml (Settings > General's profile
+     folder row writes it, through asset_source.save_profile_path_to_config())
   3. Windows: %USERPROFILE%/Games/Age of Empires 2 DE
   4. elsewhere: derived from the install path, via its nearest `steamapps`
      ancestor and the Proton prefix of app 813780. Never guesses ~/.steam,
@@ -26,8 +27,9 @@ fall-through to autodetection.
 The profile folder holds one numeric folder per account ("0" for offline,
 a SteamID otherwise), each with resources/_common/ and mods/{subscribed,
 local}/. A mods/mod-status.json, when present, carries each mod's Enabled
-flag keyed by a "subscribed//<folder>" style Path; a mod it lists as disabled
-is skipped. A mod folder it does not list at all is kept (the game adds new
+flag and Priority keyed by a "subscribed//<folder>" style Path; a mod it lists
+as disabled is skipped, and the Priority rides on the root for consumers that
+resolve overrides (mod_graphics). A mod folder it does not list at all is kept (the game adds new
 subscriptions on its next launch), and a missing or malformed status file
 means every mod folder is kept.
 """
@@ -71,10 +73,35 @@ class ContentRoot:
     path: Path  # the folder that contains resources/_common
     profile_id: str | None = None  # the numeric profile folder name, None for install
     mod_id: str | None = None  # the mod's folder name, None unless a mod
+    priority: int | None = None  # mod-status.json's Priority (1 is the in-game list's top), None if unlisted
+    status_path: str | None = None  # mod-status.json's Path form, "subscribed//<folder>", for any mod
 
     @property
     def common(self) -> Path:
-        return self.path / COMMON_SUBPATH
+        """resources/_common under this root, matched case-insensitively (a
+        mod may ship Resources/); the lowercase path when neither exists."""
+        return child_dir(self.path, *COMMON_SUBPATH.parts) or self.path / COMMON_SUBPATH
+
+
+def child_dir(folder: Path, *parts: str) -> Path | None:
+    """folder/<parts...> where each part matches an existing directory name
+    case-insensitively (an exact match first), or None if one is missing."""
+    current = Path(folder)
+    for part in parts:
+        exact = current / part
+        if exact.is_dir():
+            current = exact
+            continue
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            return None
+        wanted = part.casefold()
+        match = next((p for p in sorted(entries) if p.name.casefold() == wanted and p.is_dir()), None)
+        if match is None:
+            return None
+        current = match
+    return current
 
 
 def _config_value(key: str) -> str | None:
@@ -137,6 +164,28 @@ def profile_path(install: Path | None = None, *, platform: str | None = None) ->
     return derive_profile_from_install(install)
 
 
+SOURCE_ENV = "env"
+SOURCE_CONFIG = "config"
+SOURCE_AUTO = "auto"
+SOURCE_NONE = "none"
+SOURCE_ENV_INVALID = "env-invalid"
+SOURCE_CONFIG_INVALID = "config-invalid"
+
+
+def profile_source(install: Path | None = None, *, platform: str | None = None) -> tuple[str, str | None]:
+    """(source, raw) for what profile_path() answers: SOURCE_ENV or SOURCE_CONFIG
+    with the raw setting, their *_INVALID twins when it is not a folder (so
+    profile_path() is None), or SOURCE_AUTO / SOURCE_NONE with raw None."""
+    env_raw = os.environ.get(PROFILE_ENV_VAR)
+    if env_raw:
+        return (SOURCE_ENV if Path(env_raw).is_dir() else SOURCE_ENV_INVALID), env_raw
+    config_raw = _config_value(PROFILE_CONFIG_KEY)
+    if config_raw:
+        return (SOURCE_CONFIG if Path(config_raw).is_dir() else SOURCE_CONFIG_INVALID), config_raw
+    found = profile_path(install, platform=platform)
+    return (SOURCE_AUTO if found is not None else SOURCE_NONE), None
+
+
 def _sorted_dirs(folder: Path) -> list[Path]:
     """Sub-folders of `folder` by name; [] (logged) if it cannot be listed."""
     try:
@@ -147,25 +196,42 @@ def _sorted_dirs(folder: Path) -> list[Path]:
     return sorted((p for p in entries if p.is_dir()), key=lambda p: p.name)
 
 
-def _disabled_mods(mods_dir: Path) -> frozenset[tuple[str, str]]:
-    """(kind folder, mod folder) pairs mod-status.json marks disabled."""
+def _status_parts(raw) -> tuple[str, str] | None:
+    parts = [part for part in re.split(r"[\\/]+", str(raw)) if part]
+    return (parts[0], parts[-1]) if len(parts) >= 2 else None
+
+
+def _mod_status(mods_dir: Path) -> tuple[frozenset[tuple[str, str]], dict[tuple[str, str], int]]:
+    """One parse of mod-status.json: the (kind folder, mod folder) pairs it
+    marks disabled, and each listed mod's integer Priority. A non-integer
+    Priority leaves that mod unlisted for ordering; an unreadable file gives
+    nothing of either."""
     status_path = mods_dir / MOD_STATUS_FILE
     if not status_path.is_file():
-        return frozenset()
+        return frozenset(), {}
     try:
         data = json.loads(status_path.read_text(encoding="utf-8"))
         mods = data["Mods"]
         disabled = set()
+        priorities: dict[tuple[str, str], int] = {}
         for mod in mods:
-            if mod.get("Enabled", True):
+            pair = None if mod.get("Path") is None else _status_parts(mod["Path"])
+            if pair is None:
                 continue
-            parts = [part for part in re.split(r"[\\/]+", str(mod["Path"])) if part]
-            if len(parts) >= 2:
-                disabled.add((parts[0], parts[-1]))
+            if not mod.get("Enabled", True):
+                disabled.add(pair)
+            priority = mod.get("Priority")
+            if isinstance(priority, int) and not isinstance(priority, bool):
+                priorities[pair] = priority
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         debug_log.log(f"content roots: {status_path} unreadable, keeping every mod ({exc!r})")
-        return frozenset()
-    return frozenset(disabled)
+        return frozenset(), {}
+    return frozenset(disabled), priorities
+
+
+def _disabled_mods(mods_dir: Path) -> frozenset[tuple[str, str]]:
+    """(kind folder, mod folder) pairs mod-status.json marks disabled."""
+    return _mod_status(mods_dir)[0]
 
 
 def _profile_roots(profile: Path) -> list[ContentRoot]:
@@ -178,7 +244,7 @@ def _profile_roots(profile: Path) -> list[ContentRoot]:
         mods_dir = id_dir / "mods"
         if not mods_dir.is_dir():
             continue
-        disabled = _disabled_mods(mods_dir)
+        disabled, priorities = _mod_status(mods_dir)
         for kind, folder in _MOD_KINDS:
             kind_dir = mods_dir / folder
             if not kind_dir.is_dir():
@@ -189,8 +255,44 @@ def _profile_roots(profile: Path) -> list[ContentRoot]:
                 roots.append(ContentRoot(
                     kind, f"Mod ({folder}): {mod_dir.name}", mod_dir,
                     profile_id=profile_id, mod_id=mod_dir.name,
+                    priority=priorities.get((folder, mod_dir.name)),
+                    status_path=f"{folder}//{mod_dir.name}",
                 ))
     return roots
+
+
+def skipped_mods(profile: Path) -> list[tuple[str, str]]:
+    """(kind folder, mod folder) for each mod on disk that _profile_roots()
+    leaves out because mod-status.json disables it, in profile id order."""
+    skipped: list[tuple[str, str]] = []
+    for id_dir in _sorted_dirs(Path(profile)):
+        mods_dir = id_dir / "mods"
+        if not id_dir.name.isdigit() or not mods_dir.is_dir():
+            continue
+        disabled = _disabled_mods(mods_dir)
+        skipped.extend(sorted(pair for pair in disabled if (mods_dir / pair[0] / pair[1]).is_dir()))
+    return skipped
+
+
+def active_profile_id(profile: Path) -> str | None:
+    """The numeric profile id whose mods/mod-status.json was written last (the
+    account the game last ran), or None when no id folder has one."""
+    newest: tuple[float, str] | None = None
+    for id_dir in _sorted_dirs(Path(profile)):
+        if not id_dir.name.isdigit():
+            continue
+        try:
+            mtime = (id_dir / "mods" / MOD_STATUS_FILE).stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or mtime > newest[0]:
+            newest = (mtime, id_dir.name)
+    return None if newest is None else newest[1]
+
+
+def has_profile_ids(folder: Path) -> bool:
+    """Whether `folder` holds a numeric per-account folder, the shape a profile folder has."""
+    return any(p.name.isdigit() for p in _sorted_dirs(Path(folder)))
 
 
 _UNSET = object()
@@ -218,14 +320,15 @@ def find_resources(
 ) -> list[tuple[ContentRoot, Path]]:
     """(root, file) for every file directly inside resources/_common/<rel_dir>
     of each root whose suffix case-folds to one of `suffixes` (".ai"
-    matches "x.Ai"). Root order, then file name order. Not recursive."""
+    matches "x.Ai"), the folders matched case-insensitively too. Root order,
+    then file name order. Not recursive."""
     wanted = frozenset(s.casefold() for s in suffixes)
     if roots is None:
         roots = content_roots()
     found: list[tuple[ContentRoot, Path]] = []
     for root in roots:
-        folder = root.common / rel_dir
-        if not folder.is_dir():
+        folder = child_dir(root.common, *Path(rel_dir).parts)
+        if folder is None:
             continue
         try:
             entries = list(folder.iterdir())

@@ -14,9 +14,10 @@ re-deriving the same action/gating/keybind pattern.
 Layer visibility is a third axis, distinct from the two the existing menus
 already own: Filters is WHICH units are drawn, View > Show sprites is WHETHER
 unit art draws at all, and this is a render-category question -- which
-categories of rendering happen, and (small_trees) how big one category's art
-is drawn. That is why a row about tree ART size still belongs here and not in
-Filters, which decides membership rather than appearance.
+categories of rendering happen, and (small_trees, translucent_walls) how
+one category's art is drawn. That is why a row about tree or
+wall ART still belongs here and not in Filters, which decides membership
+rather than appearance.
 
 Every row persists across launches, by user decision (GH #182), stored by
 settings.get_view_layers()/set_view_layer() under the config key
@@ -38,12 +39,18 @@ user-adjustable: the value is a readability tradeoff settled once, so only
 the on/off bool is a setting, not the factor. Lives here because this
 module is where the bool is defined; unit_sprites wants only the float."""
 
+# Translucent Walls' opacity, Settings > Appearance (GH #35). Here rather than
+# in settings.py so this module stays a leaf: settings.py imports these.
+WALL_OPACITY_MIN_PCT = 10
+WALL_OPACITY_MAX_PCT = 90
+WALL_OPACITY_DEFAULT_PCT = 50
+
 
 @dataclass(frozen=True)
 class LayerState:
     """An immutable "render these layers" state, whose defaults are each row's
-    own LayerSpec.default (on for the two visibility rows and Hero Glow, off
-    for the Small Trees size row).
+    own LayerSpec.default (on for the two visibility rows, Hero Glow and Mod Art, off
+    for Small Trees and Translucent Walls).
 
     Frozen for exactly the reason UnitFilter is: it is stored on a chunk
     cache and compared BY VALUE to decide whether a change needs the cache
@@ -62,6 +69,11 @@ class LayerState:
     farm_overlay: bool = True
     small_trees: bool = False
     hero_glow: bool = True
+    translucent_walls: bool = False
+    # Read by mod_graphics, not by the render: the viewer pushes it there (TASK-378).
+    mod_art: bool = True
+    # Not a registry row: Settings > Appearance owns it, and the viewer fills it in.
+    wall_opacity_pct: int = WALL_OPACITY_DEFAULT_PCT
 
     @property
     def tree_scale(self) -> float:
@@ -69,6 +81,13 @@ class LayerState:
         the mapping is written once here rather than at each of the six
         cache re-resolve sites."""
         return SMALL_TREE_SCALE if self.small_trees else 1.0
+
+    @property
+    def wall_alpha(self) -> float:
+        """Translucent Walls as the alpha factor wall art is drawn at. The
+        caches compare this, not the raw pct, so moving the opacity slider
+        with the row off rebuilds nothing."""
+        return self.wall_opacity_pct / 100 if self.translucent_walls else 1.0
 
 
 DEFAULT_LAYERS = LayerState()
@@ -94,6 +113,8 @@ class LayerSpec:
     keybind_label: str
     # Draws over the real textures, so greyed while Terrain Textures is off.
     requires_textures: bool = False
+    # Greyed while no mod in the game's enabled list ships art (the viewer passes has_mod_art).
+    requires_mod_art: bool = False
 
 
 LAYERS: tuple[LayerSpec, ...] = (
@@ -136,16 +157,12 @@ LAYERS: tuple[LayerSpec, ...] = (
             "this hides the terrain override, not the farm."
         ),
         default=True,
-        # Flat has no farm path at all: FlatChunkCache composites through
-        # unit_draws/icons, never through the SpriteLayer that carries
-        # farm_by_tile. Stepped (P3 farm terrain) and Sloped (Track C6, which
-        # drapes a farm over its footprint's warped terrain) both do -- which
-        # is exactly terrain_style.ELEVATED_STYLES, not a coincidence worth
-        # re-enumerating here.
-        styles=frozenset(terrain_style.ELEVATED_STYLES),
-        # The farm override rides SpriteLayer, which the caches only build
-        # when sprites are enabled; with sprites off there is no farm_by_tile
-        # to suppress and the plain coloured mark is already what draws.
+        # All three caches drape: Stepped (P3 farm terrain), Sloped (Track C6,
+        # over its footprint's warped terrain) and top-down Flat (GH #150,
+        # FlatChunkCache's own farm tiles).
+        styles=None,
+        # Every cache builds the drape only when sprites are enabled; with
+        # sprites off the plain coloured mark is already what draws.
         requires_sprites=True,
         keybind_label="Farm Terrain Overlay Layer",
     ),
@@ -189,11 +206,48 @@ LAYERS: tuple[LayerSpec, ...] = (
         requires_sprites=True,
         keybind_label="Hero Glow Layer",
     ),
+    LayerSpec(
+        layer_id="translucent_walls",
+        label="T&ranslucent Walls",
+        tooltip=(
+            "Draw walls and gates see-through, at the opacity set in Settings "
+            "> Appearance, so units behind a wall line show. A wall is still "
+            "picked by its footprint -- this changes the art, not the unit."
+        ),
+        # Off, like Small Trees: it changes the map away from what the game shows.
+        default=False,
+        # Flat's icons are contain-fit into their own footprint, so a wall
+        # there hides nothing behind it.
+        styles=frozenset(terrain_style.ELEVATED_STYLES),
+        # Baked into the sprite the caches store, which they only build with
+        # sprites enabled.
+        requires_sprites=True,
+        keybind_label="Translucent Walls Layer",
+    ),
+    LayerSpec(
+        layer_id="mod_art",
+        label="&Mod Art",
+        tooltip=(
+            "Draw the art your enabled AoE2:DE cosmetic mods ship (trees, "
+            "buildings, units, walls, terrain textures) in place of the "
+            "game's own, in the game's mod order. Settings > General lists "
+            "the mods and can leave single ones out. Off, only the game's "
+            "own art draws."
+        ),
+        # On, for parity with the game, which draws the enabled mods' art.
+        default=True,
+        styles=None,
+        # It also swaps terrain textures, which draw with sprites off.
+        requires_sprites=False,
+        keybind_label="Mod Art Layer",
+        requires_mod_art=True,
+    ),
 )
 
 
 def availability(
-    spec: LayerSpec, *, style: str, sprites_enabled: bool, has_map: bool, terrain_textures: bool = True
+    spec: LayerSpec, *, style: str, sprites_enabled: bool, has_map: bool, terrain_textures: bool = True,
+    has_mod_art: bool = True,
 ) -> tuple[bool, str]:
     """Whether `spec`'s toggle is usable right now, plus the tooltip to show.
 
@@ -202,8 +256,9 @@ def availability(
     ViewerWindow._update_tool_enabled().
 
     `style` is the RENDER style ("flat"/"stepped"/"sloped"), not the terrain
-    style: Flat + Isometric View renders through IsoChunkCache, where farms
-    really do drape, so keying on the terrain style would grey a live layer.
+    style: Flat + Isometric View renders through IsoChunkCache, where small
+    trees really do shrink, so keying on the terrain style would grey a live
+    layer.
 
     Returns (enabled, tooltip). An unavailable layer keeps its checked state;
     the caller must never write the returned flag back into its LayerState.
@@ -219,4 +274,6 @@ def availability(
         return False, "Needs View > Show sprites, which is what builds this layer"
     if spec.requires_textures and not terrain_textures:
         return False, "Needs View > Layers > Terrain Textures, which is what this blends"
+    if spec.requires_mod_art and not has_mod_art:
+        return False, "No enabled mod ships art (Settings > General shows the profile folder scanned)"
     return True, spec.tooltip

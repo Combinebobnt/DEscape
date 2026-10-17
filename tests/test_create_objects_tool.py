@@ -117,7 +117,23 @@ def test_the_brush_reaches_the_hover_preview() -> None:
         _set_brush(window, 5, brush.BRUSH_SHAPE_CIRCLE)
         window.create_objects_action.setChecked(True)
         window.map_view.refresh_highlight(EDGE_CLICK)
-        assert window.map_view._highlight_key == (*EDGE_CLICK, 5, brush.BRUSH_SHAPE_CIRCLE)
+        assert window.map_view._highlight_key == (*EDGE_CLICK, 5, brush.BRUSH_SHAPE_CIRCLE, 1)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_square_outline_stamp_writes_its_ring_only() -> None:
+    """TASK-257: a non-terrain brush tool reads the shape and thickness through _brush_footprint()."""
+    from descape import brush
+
+    window = _window()
+    try:
+        template_index = _add_template(window)
+        _set_brush(window, 5, brush.BRUSH_SHAPE_SQUARE_OUTLINE)
+        window.stamp_create_objects(50, 50)
+        emitted = _effects(window)[template_index + 1:]
+        assert len(emitted) == 16
+        assert (50, 50) not in {(e.location_x, e.location_y) for e in emitted}
     finally:
         conftest.close_window(window)
 

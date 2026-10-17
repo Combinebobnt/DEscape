@@ -1160,6 +1160,102 @@ def test_a_composites_piece_offsets_shrink_with_its_art(install):
     assert (small[1].dx, small[1].dy) == (round(40 * 0.6), round(-20 * 0.6))
 
 
+# --- wall_alpha (View > Layers > Translucent Walls, GH #35) ------------
+
+
+def test_wall_alpha_multiplies_alpha_exactly_and_leaves_rgb_alone(install):
+    install.write(build_sld(1, canvas=32))
+    install.register(angle_count=1, frame_count=1)
+    half_w = unit_sprites.NATIVE_TILE_W // 2
+    opaque = _piece_draw(CONST, 0.0, 1, half_w)
+    faded = _piece_draw(CONST, 0.0, 1, half_w, wall_alpha=0.3)
+
+    assert faded.rgba.shape == opaque.rgba.shape
+    assert (faded.hotspot_x, faded.hotspot_y) == (opaque.hotspot_x, opaque.hotspot_y)
+    assert np.array_equal(faded.rgba[..., :3], opaque.rgba[..., :3])
+    expected = np.vectorize(lambda a: round(a * 0.3))(opaque.rgba[..., 3])
+    assert np.array_equal(faded.rgba[..., 3], expected)
+
+
+def test_wall_alpha_of_one_is_byte_identical_to_omitting_it(install):
+    install.write(build_sld(1, canvas=32))
+    install.write(build_sld(1, canvas=32, colour_base=7), name="t_annex_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1, "frame_count": 1, "dx": 0, "dy": 0},
+        {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
+    ])
+    omitted = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32)
+    passed = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_alpha=1.0)
+    assert len(omitted) == len(passed) == 2
+    for a, b in zip(omitted, passed, strict=True):
+        assert (a.dx, a.dy, a.draw.hotspot_x, a.draw.hotspot_y) == (b.dx, b.dy, b.draw.hotspot_x, b.draw.hotspot_y)
+        assert np.array_equal(a.draw.rgba, b.draw.rgba)
+
+
+def test_wall_alphas_do_not_collide_in_the_scaled_cache(install):
+    install.write(build_sld(1, canvas=32))
+    install.register(angle_count=1, frame_count=1)
+    plain = _piece_draw(CONST, 0.0, 1, 32)
+    half = _piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.5)
+    third = _piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.3)
+
+    assert int(plain.rgba[..., 3].max()) == 255
+    assert int(half.rgba[..., 3].max()) == 128
+    assert int(third.rgba[..., 3].max()) == 76
+    assert np.array_equal(_piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.5).rgba, half.rgba)
+
+
+def test_a_composite_wall_flattens_to_one_piece_in_place(install):
+    """Flattened, so a tower's flag and its body fade as one image instead of
+    stacking where they overlap, and the flag stays where it was drawn."""
+    install.write(build_sld(1, canvas=32))
+    install.write(build_sld(1, canvas=32, colour_base=7), name="t_annex_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1, "frame_count": 1, "dx": 0, "dy": 0},
+        {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
+    ])
+    half_w = unit_sprites.NATIVE_TILE_W // 2
+    body, flag = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w)
+    flag_rgb = tuple(int(c) for c in flag.draw.rgba[0, 0, :3])
+    base = body.draw.rgba.shape[0] - 1 - body.draw.hotspot_y
+    top = flag.dy - flag.draw.hotspot_y
+
+    faded = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, wall_alpha=0.5)
+    assert len(faded) == 1
+    assert (faded[0].dx, faded[0].dy) == (0, 0)
+    draw = faded[0].draw
+    assert draw.rgba.shape[0] - 1 - draw.hotspot_y == base
+    assert -draw.hotspot_y == top
+    ink = draw.rgba[..., 3] > 0
+    assert set(np.unique(draw.rgba[..., 3][ink])) == {128}, "the overlap stacked"
+    assert flag_rgb in {tuple(int(c) for c in px) for px in draw.rgba[ink][:, :3]}
+
+
+@pytest.mark.parametrize("half_w", [16, 32, 48])
+def test_a_scaled_composite_wall_fades_without_moving_a_pixel(install, half_w):
+    """At a downscale each piece's offset and hotspot round on their own; the
+    faded draw must keep exactly the layer-off pixels, not re-round a union."""
+    install.write(build_sld(1, canvas=32))
+    install.write(build_sld(1, canvas=32, colour_base=7), name="t_annex_x1")
+    install.register_composite(CONST, [
+        {"unit_id": CONST, "file_name": FILE_NAME, "angle_count": 1, "frame_count": 1, "dx": 0, "dy": 0},
+        {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 5, "dy": -41},
+    ])
+    plain = unit_sprites._assembled_with_origin(unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w))
+    faded = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, wall_alpha=0.5)
+    assert plain is not None and len(faded) == 1
+    rgba, ox, oy = plain
+    draw = faded[0].draw
+    assert (draw.hotspot_x, draw.hotspot_y) == (-ox, -oy)
+    assert np.array_equal(draw.rgba[..., :3], rgba[..., :3])
+    assert np.array_equal(draw.rgba[..., 3], np.rint(rgba[..., 3] * 0.5).astype(np.uint8))
+
+
+def test_a_wall_draw_with_no_parent_art_falls_back_to_the_mark(install):
+    install.register(angle_count=1, frame_count=1)  # registered, but no .sld written
+    assert unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_alpha=0.5) == []
+
+
 # --- caching ----------------------------------------------------------
 
 

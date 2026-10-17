@@ -9,8 +9,8 @@ rather than drained, and a fast scroll wastes at most one decode.
 
 Two rules carried from GOTCHAS: the install path is resolved on the GUI
 thread at request() and handed to the worker, never read lazily there; and a
-result from before asset_source.clear_install_caches() (the install
-generation moved) is discarded, never shown or memoized.
+result from before asset_source.clear_install_caches() or clear_art_caches()
+(the install generation moved) is discarded, never shown or memoized.
 
 View-agnostic: the catalog browser and the cards consume the same `ready`
 signal. Nothing here builds a widget.

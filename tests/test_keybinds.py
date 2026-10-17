@@ -57,9 +57,8 @@ def test_every_menu_command_is_rebindable_or_explicitly_exempt() -> None:
     try:
         bound = {id(action) for action in window._keybind_actions.values()}
         # Each exemption is a deliberate "not a command" call: preset sizes
-        # beside file_new/file_new_default, and per-player filter toggles.
+        # beside file_new/file_new_default.
         exempt = {id(a) for a in window.new_size_actions if a is not window.new_action}
-        exempt |= {id(a) for a in window.player_actions.values()}
 
         missing: list[str] = []
 
@@ -221,6 +220,9 @@ _TOGGLE_ACTION_IDS = (
     "view_selection_owner_colour",
     "view_range_rings",
     "view_range_rings_by_owner",
+    "view_range_rings_buildings",
+    "view_range_rings_revealers",
+    "view_range_rings_selected_revealers",
     "view_player_cameras",
     "view_trigger_overlay",
     "view_layer_terrain_textures",
@@ -228,6 +230,8 @@ _TOGGLE_ACTION_IDS = (
     "view_layer_farm_overlay",
     "view_layer_small_trees",
     "view_layer_hero_glow",
+    "view_layer_translucent_walls",
+    "view_layer_mod_art",
     "help_perf_trace",
     "filter_show_gaia",
     "filter_show_trees",
@@ -237,6 +241,7 @@ _TOGGLE_ACTION_IDS = (
     "filter_show_obstacles",
     "filter_show_invisible",
     "filter_show_garrisoned",
+    *(f"filter_player_{pid}" for pid in range(1, 9)),
 )
 
 
@@ -386,6 +391,63 @@ def test_player_select_action_count_matches_max_player_id() -> None:
 
     count = len([a for a, _, _ in settings.REBINDABLE_ACTIONS if a.startswith("player_select_")])
     assert count == viewer.MAX_PLAYER_ID + 1
+
+
+def test_owner_filter_actions_default_to_ctrl_digit() -> None:
+    """GH #207: Ctrl+1..8 toggle each player's Filters checkbox, Ctrl+0 Show GAIA."""
+    from descape import settings
+    from descape.viewer import GAIA_PLAYER_ID, MAX_PLAYER_ID, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        assert settings.get_keybind("filter_show_gaia") == "Ctrl+0"
+        assert window.show_gaia_action.shortcut().toString() == "Ctrl+0"
+        for pid in range(GAIA_PLAYER_ID + 1, MAX_PLAYER_ID + 1):
+            assert settings.get_keybind(f"filter_player_{pid}") == f"Ctrl+{pid}"
+            assert window._keybind_actions[f"filter_player_{pid}"] is window.player_actions[pid]
+            assert window.player_actions[pid].shortcut().toString() == f"Ctrl+{pid}"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_filter_player_action_count_matches_max_player_id() -> None:
+    from descape import settings, viewer
+
+    count = len([a for a, _, _ in settings.REBINDABLE_ACTIONS if a.startswith("filter_player_")])
+    assert count == viewer.MAX_PLAYER_ID
+
+
+def test_default_ctrl_digit_hides_and_shows_that_player() -> None:
+    """Pressing the shipped Ctrl+3 drops player 3 from the live unit filter, and again restores it."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+        assert window._unit_filter.players is None
+
+        QTest.keyClick(window, Qt.Key_3, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert not window.player_actions[3].isChecked()
+        assert window._unit_filter.players == frozenset({1, 2, 4, 5, 6, 7, 8})
+
+        QTest.keyClick(window, Qt.Key_3, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert window.player_actions[3].isChecked()
+        assert window._unit_filter.players is None
+    finally:
+        if not window.player_actions[3].isChecked():
+            window.player_actions[3].trigger()
+        conftest.close_window(window)
 
 
 def test_select_player_in_units_mode_sets_owner_combo_only() -> None:
@@ -708,6 +770,7 @@ def test_the_wheel_combos_list_every_action_and_start_from_the_stored_values() -
 def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
     """TASK-356: at the dialog's default size the combo clipped "Brush size or
     rotate preview" (190 px field, 225 px label at 96 DPI, offscreen Qt, pinned test font; 276 px after).
+    Those numbers are this machine's font list: the font picker sets the dialog's width (TASK-375).
     The wheel combos span the key-box and Default columns; Default sits in Clear's."""
     from PyQt5.QtWidgets import QApplication, QStyle, QStyleOptionComboBox, QTabWidget
 
@@ -734,6 +797,40 @@ def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
         assert default_btn.text() == "Default"
         assert grid.getItemPosition(grid.indexOf(default_btn)) == (combo_row, combo_col + combo_span, 1, 1)
         assert default_btn.geometry().left() > combo.geometry().right()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_every_wheel_combo_fits_its_longest_label_at_the_minimum_dialog_width() -> None:
+    """TASK-375: with short installed font names the font picker no longer widened
+    Settings, and the wheel combos shrank to a 104 px field (DejaVu-only fontconfig,
+    96 DPI, offscreen Qt). Pinning the picker narrow takes the machine's font list out."""
+    from PyQt5.QtWidgets import QApplication, QScrollArea, QStyle, QStyleOptionComboBox, QTabWidget
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        dialog.ui_font_combo.setFixedWidth(60)
+        # Appearance stays a hidden tab, so its row's cached minimum (735 px) only re-measures when activated.
+        dialog.ui_font_combo.parentWidget().layout().activate()
+        tabs = dialog.findChild(QTabWidget)
+        tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Keybinds"))
+        dialog.resize(dialog.minimumSizeHint())
+        dialog.show()
+        for _ in range(4):
+            QApplication.processEvents()
+        assert dialog.width() == dialog.minimumSizeHint().width()
+        scroll = tabs.currentWidget().findChild(QScrollArea)
+        assert scroll.horizontalScrollBar().maximum() == 0, "the Keybinds tab scrolls sideways"
+        for slot, combo in dialog._wheel_combos.items():
+            option = QStyleOptionComboBox()
+            combo.initStyleOption(option)
+            field = combo.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, combo)
+            metrics = combo.fontMetrics()
+            longest = max((combo.itemText(i) for i in range(combo.count())), key=metrics.horizontalAdvance)
+            need = metrics.horizontalAdvance(longest)
+            assert field.width() - 2 >= need, f"{slot}: a {field.width()} px field cuts {need} px of {longest!r}"
     finally:
         dialog.close()
         conftest.close_window(window)

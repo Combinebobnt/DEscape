@@ -184,7 +184,9 @@ def reserved_label(building: int, value: int) -> str:
 
 def shown_in_slot(mover: int, occupants, kind: str) -> bool:
     """Whether `mover`'s button shows over a slot's other `occupants`: the
-    lower id wins for units and buildings. A tech always gets its turn: techs
+    lower id wins for units and buildings, among those that are not editor-
+    hidden or heroes (base_of(); economic slot 7's hidden BLAC3 18 does not
+    beat Market 84, measured). A tech always gets its turn: techs
     in one slot show one after another, as each becomes researchable."""
     if kind == TECH:
         return True

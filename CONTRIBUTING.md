@@ -20,8 +20,10 @@ Pull requests are welcome. A small fix (a typo, an obvious bug together with
 its test) can go straight to a PR. Anything larger starts as an issue, so the
 approach is agreed before you write the code. Keep one change per PR.
 
-CI does not run on pull requests. Say in the PR description what you ran and
-what it printed.
+CI runs the default test tier on Linux for every PR, and the native kernel
+check on Linux, macOS and Windows when a PR touches the renderer or the
+kernel. A first-time contributor's run waits for the maintainer to approve
+it. The corpus tier is not in CI, so still say in the PR whether you ran it.
 
 ## Setup
 

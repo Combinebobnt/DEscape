@@ -158,7 +158,8 @@ class ValuePickerView(QWidget):
         # enum picker has no sprite to show and would otherwise carry a dead
         # 64 px column.
         self.preview: QLabel | None = None
-        tree_row = QHBoxLayout()
+        # Kept: TerrainPickerView swaps the tree here for a list/grid stack.
+        self._tree_row = tree_row = QHBoxLayout()
         tree_row.addWidget(self.tree, stretch=1)
         if preview is not None:
             self.preview = QLabel()

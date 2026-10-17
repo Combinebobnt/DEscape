@@ -43,7 +43,11 @@ from descape.view_layers import DEFAULT_LAYERS, LayerState
 # the unit sources rebuilding, not just the chunks evicting -- see
 # _ChunkCacheBase.set_layers(). A new build-time row belongs here; a paint-time
 # one deliberately does not.
-_BUILD_TIME_LAYER_FIELDS = ("farm_overlay", "small_trees", "hero_glow")
+# Translucent Walls is compared through its derived float, so an opacity change
+# with Translucent Walls off rebuilds nothing.
+# Mod Art's art comes from mod_graphics' module state; the viewer's toggle replaces the whole
+# cache (refresh_map), so this entry only guards a future set_layers() caller.
+_BUILD_TIME_LAYER_FIELDS = ("farm_overlay", "small_trees", "hero_glow", "wall_alpha", "mod_art")
 
 # Default chunk size for IsoChunkCache -- measured, not guessed: benched
 # CHUNK_PX in {256, 512, 1024} via tools/verify_iso_chunks.py on this
@@ -732,6 +736,7 @@ def _splice_building_and_sprites(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_alpha: float = 1.0,
 ) -> render.SpriteLayer | None:
     """_reanchor_units() for a single splice, with overrides {}. {} is only
     right for a splice of a unit that isn't rotation-variant-eligible, whose
@@ -741,7 +746,7 @@ def _splice_building_and_sprites(
     _splice_overrides() instead, as both invalidate_units() do."""
     return _reanchor_units(
         building_bboxes, sprites, scenario, proj, elevations, unit_filter, corner_rise,
-        extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow,
+        extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow, wall_alpha,
     )
 
 
@@ -759,6 +764,7 @@ def _reanchor_units(
     with_farms: bool = True,
     tree_scale: float = 1.0,
     hero_glow: bool = False,
+    wall_alpha: float = 1.0,
     old_bboxes: dict | None = None,
 ) -> render.SpriteLayer | None:
     """Applies every splice in `splices` to one level's building_bboxes --
@@ -813,7 +819,8 @@ def _reanchor_units(
     hardcoded True would quietly re-admit a farm's terrain override on the
     next move/rotate after the layer was turned off, and a hardcoded 1.0
     would re-inflate a moved tree to full size under Small Trees. hero_glow
-    too: a hardcoded False would drop a moved hero's ring.
+    too: a hardcoded False would drop a moved hero's ring. wall_alpha
+    likewise, or a moved wall would draw opaque.
 
     old_bboxes, if given, receives every building_bboxes key this call
     rewrites mapped to its value before (None if absent), for
@@ -856,7 +863,7 @@ def _reanchor_units(
         if sprites is not None and splice.new_tiles:
             contribution = render._resolve_unit_sprite(
                 scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                splice.player_id, splice.index, unit, tree_scale, hero_glow,
+                splice.player_id, splice.index, unit, tree_scale, hero_glow, wall_alpha,
             )
             if contribution is not None:
                 render._accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
@@ -1105,11 +1112,13 @@ class _ChunkCacheBase:
         wanted = set(levels)
         return [mip for mip in resident if mip in wanted]
 
-    def _layer_resolve_args(self) -> tuple[bool, float, bool]:
-        """(with_farms, tree_scale, hero_glow) for render._resolve_unit_sprite(),
-        from this cache's View > Layers state. The one source for every
-        _reanchor_units() call and sprite_extent_after(), so they cannot differ."""
-        return self.layers.farm_overlay, self.layers.tree_scale, self.layers.hero_glow
+    def _layer_resolve_args(self) -> tuple[bool, float, bool, float]:
+        """(with_farms, tree_scale, hero_glow, wall_alpha) for
+        render._resolve_unit_sprite(), from this cache's View > Layers state.
+        The one source for every _reanchor_units() call and
+        sprite_extent_after(), so they cannot differ."""
+        layers = self.layers
+        return layers.farm_overlay, layers.tree_scale, layers.hero_glow, layers.wall_alpha
 
     def _unit_level_state(self, mip: int):
         """(proj, sprites, building_bboxes, corner_rise, extra_top_px) for level
@@ -1188,7 +1197,7 @@ class _ChunkCacheBase:
         proj, _sprites, _bb, corner_rise, extra_top = self._unit_level_state(mip)
         scenario = self.scenario
         mm = scenario.map_manager
-        with_farms, tree_scale, hero_glow = self._layer_resolve_args()
+        with_farms, tree_scale, hero_glow, wall_alpha = self._layer_resolve_args()
         overrides = _splice_overrides(scenario, changed)
         box = None
         for s in changed:
@@ -1197,7 +1206,7 @@ class _ChunkCacheBase:
             if self.sprites_enabled:
                 contribution = render._resolve_unit_sprite(
                     scenario, proj, self.elevations, self.unit_filter, corner_rise, overrides, with_farms,
-                    s.player_id, s.index, s.unit, tree_scale, hero_glow,
+                    s.player_id, s.index, s.unit, tree_scale, hero_glow, wall_alpha,
                 )
                 if contribution is not None:
                     for bbox in contribution.bboxes.values():
@@ -2006,18 +2015,19 @@ class _ChunkCacheBase:
           self.layers by _composite_rect, so eviction alone is the whole
           update.
         - A BUILD-TIME field (_BUILD_TIME_LAYER_FIELDS: farm_overlay,
-          small_trees, hero_glow) is baked into the SpriteLayer's own contents when it
-          is BUILT, so it needs _refresh_unit_sources() first. Skipping that
-          would leave _LeveledChunkCache._level()'s `gen != self._source_gen`
+          small_trees, hero_glow, and Translucent Walls through wall_alpha) is
+          baked into the SpriteLayer's own contents when it is BUILT, so it
+          needs _refresh_unit_sources() first. Skipping that would leave
+          _LeveledChunkCache._level()'s `gen != self._source_gen`
           short-circuit holding and the level serving the pre-flip layer --
           the under-repaint class set_sprites_enabled() documents, not
           cosmetic staleness.
 
-        FlatChunkCache inherits this unchanged and correctly: it reaches
-        neither build-time field (no farm path at all, and icon_for()
-        contain-fits every unit into its own footprint), so a flip there
-        rebuilds and repaints to the same pixels rather than pretending to
-        apply a layer it has no path for."""
+        FlatChunkCache inherits this unchanged and correctly: it reads
+        farm_overlay at build time (its drape and FLAT_DRAPED icons, GH #150),
+        rebuilt by the same _refresh_unit_sources(), and reaches none of the
+        other build-time fields (icon_for() contain-fits every unit into its
+        own footprint), so those flips repaint to the same pixels."""
         if layers == self.layers:
             return
         rebuild = any(
@@ -2051,6 +2061,11 @@ class _ChunkCacheBase:
         Deliberately on the BASE class rather than on IsoChunkCache: it is the
         hook each style's sprite path fills in by overriding."""
         self.sprites_enabled = enabled
+
+    def farms_draped(self) -> bool:
+        """Whether this cache drapes farms as terrain, in every style: units
+        shown, sprites on and the Farm Overlay layer (GH #150, TASK-015)."""
+        return self.with_units and self.sprites_enabled and self.layers.farm_overlay
 
 
 # P3-g3: whether IsoChunkCache composites real .sld sprites instead of
@@ -2368,6 +2383,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
             with_farms=self.layers.farm_overlay,
             tree_scale=self.layers.tree_scale,
             hero_glow=self.layers.hero_glow,
+            wall_alpha=self.layers.wall_alpha,
             memo=lvl.memo or render.SpriteMemo(),
         )
 
@@ -2677,9 +2693,9 @@ class _LeveledChunkCache(_ChunkCacheBase):
         Small Trees does miss _scaled_cache for every tree (its key carries
         the factor), but the .sld decode behind that sits in its own
         _native_cache, keyed without the factor, so the flip pays a re-tint
-        and a re-resize rather than that method's cold decode. Flipping the
-        farm
-        layer re-walks the units but decodes no new .sld, so it does not pay
+        and a re-resize rather than that method's cold decode, and Translucent
+        Walls the same for every wall and gate. Flipping the farm layer
+        re-walks the units but decodes no new .sld, so it does not pay
         that method's 0.5-4.1s cold-decode case."""
         if layers == self.layers:
             return
@@ -2979,7 +2995,9 @@ class FlatChunkCache(_ChunkCacheBase):
 
     Real .sld icons as of P3-g7 (`sprites=`/set_sprites_enabled()), replacing
     the coloured rect per unit -- see _level_icons() and
-    render.composite_rect_flat()."""
+    render.composite_rect_flat(). With sprites on and the Farm Terrain
+    Overlay layer on, a farm drapes as terrain too (GH #150): _farm_tiles,
+    built with unit_draws, and the FLAT_DRAPED icon that drops its rect."""
 
     style = "flat"
 
@@ -3001,9 +3019,8 @@ class FlatChunkCache(_ChunkCacheBase):
         # Must be set before _refresh_source_caches() below, the same ordering
         # trap IsoChunkCache.__init__ and SlopedChunkCache.__init__ document.
         self.sprites_enabled = sprites
-        # Only layers.terrain_textures means anything here -- Flat has no
-        # farm path. Stored anyway so ViewerWindow can carry one state
-        # across a style switch without special-casing which cache is live.
+        # terrain_textures/terrain_blend are read per composite; farm_overlay
+        # at build time, by _refresh_source_caches() and the icon walks.
         self.layers = layers
         # Phase B-D-b: the real candidate ladder, UNFILTERED -- "unfiltered"
         # here means the MIP ladder, nothing to do with unit_filter. Flat has no
@@ -3046,7 +3063,11 @@ class FlatChunkCache(_ChunkCacheBase):
         unit_draws already exists (nothing a terrain/elevation edit touches
         can make it stale), except at construction, where it must actually
         build unit_draws the first time. elevation_changed unused -- Flat
-        has no elevation term at all, see this module's docstring."""
+        has no elevation term at all, see this module's docstring.
+
+        The farm drape (GH #150) is built in the same block, so construction
+        and every wholesale invalidate_units() (set_layers, set_sprites_enabled,
+        set_unit_filter) rebuild it with the draws."""
         if not hasattr(self, "unit_draws"):
             if self.with_units:
                 bboxes, colors, self._row_uid, self._row_player = render._flat_unit_rows(
@@ -3056,6 +3077,15 @@ class FlatChunkCache(_ChunkCacheBase):
             else:
                 self.unit_draws = None
                 self._row_uid = self._row_player = None
+            self._rebuild_farm_tiles()
+
+    def _rebuild_farm_tiles(self) -> None:
+        """_farm_tiles (flat_farm_tiles()' by_tile, mip-independent) and
+        _farm_unit_ids, or None and an empty set while farms don't drape."""
+        if self.farms_draped():
+            self._farm_tiles, self._farm_unit_ids = render.flat_farm_tiles(self.scenario, self.unit_filter)
+        else:
+            self._farm_tiles, self._farm_unit_ids = None, set()
 
     def can_splice(self, changed: list[UnitSplice] | None) -> bool:
         """Whether invalidate_units(changed) would take its row splice."""
@@ -3183,7 +3213,7 @@ class FlatChunkCache(_ChunkCacheBase):
             for mip, icons in icon_layers.items():
                 icon = render._flat_unit_icon(
                     s.unit, s.player_id, s.index, overrides, team_index, bounds, self._mip_tile_px[mip],
-                    render.player_art_for(scenario, s.player_id),
+                    render.player_art_for(scenario, s.player_id), self.layers.farm_overlay,
                 )
                 if icon is None:
                     icons.pop(row, None)
@@ -3244,6 +3274,7 @@ class FlatChunkCache(_ChunkCacheBase):
                     icon = render._flat_unit_icon(
                         s.unit, s.player_id, s.index, overrides, scenario.team_indices[s.player_id],
                         bounds, self._mip_tile_px[mip], render.player_art_for(scenario, s.player_id),
+                        self.layers.farm_overlay,
                     )
                     if icon is not None:
                         rekeyed[row] = icon
@@ -3252,6 +3283,13 @@ class FlatChunkCache(_ChunkCacheBase):
         self.unit_draws = draws.pop(0)
         self._level_draws.update(draws)
         self._level_icon_layers.update(icon_layers)
+        # A farm moved, added, removed, recoloured or replaced to or from a
+        # draping const: the drape is rebuilt whole. A unit merely on a farm is not.
+        if self.farms_draped() and any(
+            id(s.unit) in self._farm_unit_ids or render._terrain_overlay_for(s.unit.unit_const) is not None
+            for s in changed
+        ):
+            self._rebuild_farm_tiles()
         # An in-flight warm walked the pre-splice rows; this makes its install refuse.
         self._unit_gen += 1
         rows = len(self._row_uid)
@@ -3317,7 +3355,9 @@ class FlatChunkCache(_ChunkCacheBase):
             return None
         if mip not in self._level_icon_layers:
             with perf_trace.level("flat-icons", mip):
-                icons = render._flat_icon_layer(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+                icons = render._flat_icon_layer(
+                    self.scenario, self._mip_tile_px[mip], self.unit_filter, self.layers.farm_overlay
+                )
             self._install_icon_layer(mip, icons)
         return self._level_icon_layers[mip]
 
@@ -3354,7 +3394,9 @@ class FlatChunkCache(_ChunkCacheBase):
             return None
         start_gen = self._unit_gen
         start_unit_gen = self._model_unit_gen()
-        gen = render._flat_icon_layer_sliced(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+        gen = render._flat_icon_layer_sliced(
+            self.scenario, self._mip_tile_px[mip], self.unit_filter, self.layers.farm_overlay
+        )
 
         def install(icons_and_rows: tuple[dict[int, unit_sprites.SpriteDraw], int]) -> bool:
             if self._unit_gen != start_gen or self._model_unit_gen() != start_unit_gen:
@@ -3427,6 +3469,7 @@ class FlatChunkCache(_ChunkCacheBase):
                 terrain_ids=self._terrain_ids,
                 layer_ids=self._layer_ids,
                 key_map=self._blend_key_map,
+                farm_tiles=self._farm_tiles,
             )
 
 

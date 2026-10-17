@@ -34,7 +34,7 @@ from uuid import uuid4
 
 import numpy as np
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
-from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPointF, QSignalBlocker, QSize, Qt, QTimer, QUrl
 from PyQt5.QtGui import (
     QColor,
     QFont,
@@ -68,6 +68,8 @@ from PyQt5.QtWidgets import (
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -117,6 +119,7 @@ from descape import (
     library_compat,
     map_analysis,
     margin_warm,
+    mod_graphics,
     object_catalog,
     option_fields,
     perf_trace,
@@ -240,6 +243,7 @@ from descape.scenario_io import (
     load_map_and_units_from_bytes,
     parse_triggers,
     refresh_player_render_context,
+    resolve_detecting_loops,
     unit_field_supported,
     unsupported_version_sentence,
     xs_attachment,
@@ -326,6 +330,12 @@ _FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
 _AUTO_BEACH_TOOLS = ("draw", "draw_line", "draw_rect")
 
 
+def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
+    """GH #221: the local .aoe2scenario files among dropped URLs, in drop order."""
+    paths = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
+    return [path for path in paths if path.suffix.lower() == ".aoe2scenario"]
+
+
 def _new_map_tip(tiles: int) -> str:
     return f"Start a blank {tiles}x{tiles} scenario, the game's {STANDARD_MAP_SIZE_NAMES[tiles]} map size"
 
@@ -375,6 +385,19 @@ def clamp_group_delta(units, dx, dy, map_w: int, map_h: int, whole_tiles: bool):
         lo_y, hi_y = max(lo_y, ay_lo), min(hi_y, ay_hi)
     cx, cy = min(max(dx, lo_x), hi_x), min(max(dy, lo_y), hi_y)
     return cx, cy, (cx, cy) != (dx, dy)
+
+
+def clamp_level_delta(values, delta: float, lo: float, hi: float) -> tuple[float, bool]:
+    """(delta, clamped): a whole-step Z shift pulled into the range that keeps
+    every value already inside lo..hi there (GH #154). A value outside does
+    not limit it, as an off-map member does not limit clamp_group_delta()."""
+    inside = [value for value in values if lo <= value <= hi]
+    if not inside:
+        return delta, False
+    low = min(0, math.ceil(lo - min(inside)))
+    high = max(0, math.floor(hi - max(inside)))
+    clamped = float(min(max(delta, low), high))
+    return clamped, clamped != delta
 
 
 def clamp_paste_anchor(block, tx0: int, ty0: int, map_w: int, map_h: int) -> tuple[int, int]:
@@ -569,7 +592,7 @@ _DEFAULT_WALL_CONST = 117  # Stone Wall
 _CLIFF_HOVER_PARTS_MAX = 64
 # The tools the wall button keeps active when it re-picks the wall.
 _WALL_TOOLS = ("place_unit", "wall_rect")
-# TASK-288: Place Unit and Scatter coerced a resource or tree to GAIA.
+# TASK-288: Place Unit and Scatter coerced a GAIA-only object to GAIA.
 _GAIA_ONLY_PLACED_SUFFIX = " (GAIA-only, so placed for GAIA)"
 
 
@@ -819,6 +842,15 @@ class _VerticalScrollArea(QScrollArea):
         return QSize(max(hint.width(), width), hint.height())
 
 
+class _WholeLabelComboBox(NoWheelComboBox):
+    """Its minimum is its full sizeHint, re-measured on a font change, so the longest item never clips (TASK-375)."""
+
+    def minimumSizeHint(self) -> QSize:
+        # sizeHint alone leaves the edit field 2 px short of the label at 168 DPI.
+        hint = self.sizeHint()
+        return QSize(hint.width() + self.fontMetrics().horizontalAdvance(" "), hint.height())
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings dialog: General (app-wide behavior, including the
     AoE2DE install path -- not its own tab since it's a one-time setup
@@ -834,7 +866,8 @@ class SettingsDialog(QDialog):
         self._window = parent
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_general_tab(), "General")
+        # Scrolls too since the profile folder rows and their scanned list landed (GH #126).
+        tabs.addTab(self._scrolled_tab(self._build_general_tab(), see_through=True), "General")
         # TASK-210: Appearance alone outgrows a 768 px screen, so it scrolls.
         tabs.addTab(self._scrolled_tab(self._build_appearance_tab()), "Appearance")
         tabs.addTab(self._build_saving_tab(), "Saving")
@@ -849,11 +882,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     @staticmethod
-    def _scrolled_tab(page: QWidget) -> QScrollArea:
+    def _scrolled_tab(page: QWidget, *, see_through: bool = False) -> QScrollArea:
         scroll = _VerticalScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(page)
+        if see_through:
+            # The tab page shows through, the background status_color(on_tab_page=True) assumes.
+            # setWidget() turned the page's own fill on, so both are cleared.
+            scroll.viewport().setAutoFillBackground(False)
+            page.setAutoFillBackground(False)
         return scroll
 
     def _build_general_tab(self) -> QWidget:
@@ -884,6 +922,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(divider)
 
         self._add_install_section(layout)
+        self._add_profile_section(layout)
+        self._add_mod_art_section(layout)
 
         if sys.platform.startswith("linux"):
             self.xwayland_checkbox = QCheckBox("X11 compatibility on Wayland (takes effect next launch)")
@@ -1088,6 +1128,32 @@ class SettingsDialog(QDialog):
         pan_row.addWidget(self.pan_speed_value_label)
         layout.addLayout(pan_row)
 
+        wall_row = QHBoxLayout()
+        wall_row.addWidget(QLabel("Wall opacity:"))
+        self.wall_opacity_slider = QSlider(Qt.Horizontal)
+        self.wall_opacity_slider.setRange(view_layers.WALL_OPACITY_MIN_PCT, view_layers.WALL_OPACITY_MAX_PCT)
+        self.wall_opacity_slider.setTickInterval(10)
+        self.wall_opacity_slider.setTickPosition(QSlider.TicksBelow)
+        self.wall_opacity_slider.setSingleStep(5)
+        self.wall_opacity_slider.setPageStep(10)
+        self.wall_opacity_slider.setToolTip(
+            "How opaque walls and gates draw while View > Layers > Translucent "
+            "Walls is on. Lower shows more of the units behind a wall line. "
+            "Where two wall pieces' art overlaps, the overlap reads darker."
+        )
+        self.wall_opacity_slider.setValue(settings.get_wall_opacity_pct())
+        self.wall_opacity_value_label = QLabel()
+        self._update_wall_opacity_label(settings.get_wall_opacity_pct())
+        # Debounced like the sliders above: with the layer on, each apply rebuilds every wall sprite.
+        self._wall_opacity_apply_timer = QTimer(self)
+        self._wall_opacity_apply_timer.setSingleShot(True)
+        self._wall_opacity_apply_timer.timeout.connect(self._apply_wall_opacity)
+        self.wall_opacity_slider.valueChanged.connect(self._on_wall_opacity_slider_changed)
+        self.wall_opacity_slider.sliderReleased.connect(self._apply_wall_opacity)
+        wall_row.addWidget(self.wall_opacity_slider, stretch=1)
+        wall_row.addWidget(self.wall_opacity_value_label)
+        layout.addLayout(wall_row)
+
         layout.addWidget(self._build_overlay_colors_group())
         layout.addWidget(self._build_trigger_status_group())
 
@@ -1128,6 +1194,21 @@ class SettingsDialog(QDialog):
         stack_badge_row.addWidget(self.stack_badge_position_combo, stretch=0)
         stack_badge_row.addStretch(1)
         layout.addLayout(stack_badge_row)
+
+        # GH #161: the Terrain-mode grid's swatch size. Not in a theme file, so not in _refresh_appearance_widgets.
+        terrain_grid_row = QHBoxLayout()
+        terrain_grid_row.addWidget(QLabel("Terrain grid swatch size:"))
+        self.terrain_grid_swatch_combo = QComboBox()
+        for px in settings.TERRAIN_GRID_SWATCH_SIZES:
+            self.terrain_grid_swatch_combo.addItem(f"{px} px", px)
+        self.terrain_grid_swatch_combo.setCurrentIndex(
+            self.terrain_grid_swatch_combo.findData(settings.get_terrain_grid_swatch_px())
+        )
+        self.terrain_grid_swatch_combo.setToolTip("How big each terrain swatch is when Terrain mode's picker shows a grid.")
+        self.terrain_grid_swatch_combo.currentIndexChanged.connect(self._on_terrain_grid_swatch_changed)
+        terrain_grid_row.addWidget(self.terrain_grid_swatch_combo, stretch=0)
+        terrain_grid_row.addStretch(1)
+        layout.addLayout(terrain_grid_row)
 
         # View > Grid's appearance. A drag is bracketed rather than debounced:
         # its first tick swaps the baked grid for GridItem's preview (one
@@ -1451,17 +1532,25 @@ class SettingsDialog(QDialog):
 
     # Each status label's last `ok`, None until it is first set.
     _install_status_ok: bool | None = None
+    _profile_status_ok: bool | None = None
     _autosave_dir_status_ok: bool | None = None
 
     def changeEvent(self, event) -> None:
         # A theme change moves the tab page under the status labels, so their colours are re-derived.
         if event.type() == QEvent.PaletteChange:
-            if self._install_status_ok is not None:
-                self.install_status_label.setStyleSheet(f"color: {status_color(self._install_status_ok, on_tab_page=True)};")
-            if self._autosave_dir_status_ok is not None:
-                self.autosave_dir_status_label.setStyleSheet(
-                    f"color: {status_color(self._autosave_dir_status_ok, on_tab_page=True)};"
-                )
+            # One status_color() per value: each paints with the app style mid apply_theme(),
+            # which can segfault offscreen, so a new label must not add a paint.
+            colors: dict[bool, str] = {}
+            for ok, label in (
+                (self._install_status_ok, getattr(self, "install_status_label", None)),
+                (self._profile_status_ok, getattr(self, "profile_status_label", None)),
+                (self._autosave_dir_status_ok, getattr(self, "autosave_dir_status_label", None)),
+            ):
+                if ok is None:
+                    continue
+                if ok not in colors:
+                    colors[ok] = status_color(ok, on_tab_page=True)
+                label.setStyleSheet(f"color: {colors[ok]};")
         super().changeEvent(event)
 
     def _on_theme_changed(self, index: int) -> None:
@@ -1733,6 +1822,12 @@ class SettingsDialog(QDialog):
         self._window.map_view.set_stack_badge_position(position_id)
         self._window._log_status(f"Stacked-unit badge position: {self.stack_badge_position_combo.itemText(index)}")
 
+    def _on_terrain_grid_swatch_changed(self, index: int) -> None:
+        px = self.terrain_grid_swatch_combo.itemData(index)
+        settings.set_terrain_grid_swatch_px(px)
+        self._window.terrain_panel.set_grid_swatch_px(px)
+        self._window._log_status(f"Terrain grid swatch size: {px} px")
+
     def _set_ui_font_widgets(self, family: str, size: int | None, app_font) -> None:
         """Opens the pair on the persisted values, falling back to the live
         app font for either one that is unset. Signals are blocked: this
@@ -1854,6 +1949,25 @@ class SettingsDialog(QDialog):
         # No refresh_map(): MapView._pan_step reads get_pan_speed() on every
         # tick, so the new value is live on the next hold with no wiring.
         settings.set_pan_speed(self.pan_speed_slider.value())
+
+    def _update_wall_opacity_label(self, pct: int) -> None:
+        suffix = " (default)" if pct == view_layers.WALL_OPACITY_DEFAULT_PCT else ""
+        self.wall_opacity_value_label.setText(f"{pct}%{suffix}")
+
+    def _on_wall_opacity_slider_changed(self, value: int) -> None:
+        self._update_wall_opacity_label(value)
+        if self.wall_opacity_slider.isSliderDown():
+            return
+        self._wall_opacity_apply_timer.start(200)
+
+    def _apply_wall_opacity(self) -> None:
+        value = self.wall_opacity_slider.value()
+        settings.set_wall_opacity_pct(value)
+        # _apply_layers() disables the window, and this dialog with it, which drops the slider's focus.
+        had_focus = self.wall_opacity_slider.hasFocus()
+        self._window.set_wall_opacity_pct(value)
+        if had_focus:
+            self.wall_opacity_slider.setFocus()
 
     # action_id prefix (before the first "_") -> section header text. Covers
     # today's sections (REBINDABLE_ACTIONS's "file_*"/"edit_*"/"view_*"/
@@ -2114,7 +2228,8 @@ class SettingsDialog(QDialog):
         self._keybind_no_match_label.setHidden(True)
         outer_layout.addWidget(self._keybind_no_match_label)
 
-        scroll = QScrollArea()
+        # Vertical only, so the rows' minimum width widens the dialog (TASK-375).
+        scroll = _VerticalScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(rows_widget)
         outer_layout.addWidget(scroll)
@@ -2147,9 +2262,9 @@ class SettingsDialog(QDialog):
             grid.addWidget(slot_label, row, 0)
 
             # NoWheel: scrolling the tab over a row must not rebind it.
-            combo = NoWheelComboBox()
-            # The widest action label must not force the dialog to scroll sideways.
-            combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo = _WholeLabelComboBox()
+            # The widest action label widens the dialog; the tab still never scrolls sideways.
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
             for action in settings.WHEEL_ACTIONS:
                 combo.addItem(settings.WHEEL_ACTION_LABELS[action], action)
             combo.setCurrentIndex(settings.WHEEL_ACTIONS.index(bindings[slot]))
@@ -2330,12 +2445,203 @@ class SettingsDialog(QDialog):
         # The pending pick is sticky, so its card would otherwise wait for the next pick (TASK-337).
         self._window.units_panel.refresh_thumbnails()
         self._window.invalidate_ai_choices()  # GH #126: Personality lists this install's AIs
+        self._refresh_profile_section()  # auto-detect derives the profile from the install
 
     def _set_install_status(self, message: str, ok: bool) -> None:
         self._install_status_ok = ok
         color = status_color(ok, on_tab_page=True)
         self.install_status_label.setStyleSheet(f"color: {color};")
         self.install_status_label.setText(message)
+
+    # Rows the scanned-folders list shows before it scrolls.
+    _PROFILE_LIST_ROWS = 5
+
+    def _add_profile_section(self, layout: QVBoxLayout) -> None:
+        """The AoE2:DE profile folder row (GH #126), same shape as the install
+        row, plus a read-only list of every folder content_roots scans."""
+        profile_label = QLabel("AoE2DE profile folder (optional, for custom AIs from your profile and mods):")
+        profile_label.setWordWrap(True)
+        layout.addWidget(profile_label)
+
+        profile_row = QHBoxLayout()
+        self.profile_path_edit = QLineEdit()
+        profile_row.addWidget(self.profile_path_edit, stretch=1)
+        self.profile_browse_button = QPushButton("Browse…")
+        self.profile_browse_button.clicked.connect(self.browse_profile_path)
+        profile_row.addWidget(self.profile_browse_button)
+        layout.addLayout(profile_row)
+
+        button_row = QHBoxLayout()
+        self.profile_load_button = QPushButton("Load")
+        self.profile_load_button.clicked.connect(self.load_profile_path)
+        button_row.addWidget(self.profile_load_button)
+        self.profile_auto_button = QPushButton("Use auto-detect")
+        self.profile_auto_button.setToolTip("Forget the folder set here and find it from the install again.")
+        self.profile_auto_button.clicked.connect(self.use_auto_profile_path)
+        button_row.addWidget(self.profile_auto_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.profile_status_label = QLabel("")
+        self.profile_status_label.setWordWrap(True)
+        layout.addWidget(self.profile_status_label)
+
+        layout.addWidget(QLabel("Folders scanned for content:"))
+        self.profile_roots_list = QListWidget()
+        self.profile_roots_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.profile_roots_list.setFocusPolicy(Qt.NoFocus)
+        # Long paths scroll sideways inside the list instead of widening the dialog.
+        self.profile_roots_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.profile_roots_list.setWordWrap(False)
+        layout.addWidget(self.profile_roots_list)
+        self.profile_skipped_label = QLabel("")
+        self.profile_skipped_label.setWordWrap(True)
+        layout.addWidget(self.profile_skipped_label)
+
+        self._refresh_profile_section(refill_field=True)
+
+    def _add_mod_art_section(self, layout: QVBoxLayout) -> None:
+        """Every scanned mod that ships art, in the game's mod order (top
+        wins), ticked when View > Layers > Mod Art draws it (TASK-378). A tick
+        applies at once; an unticked mod stays off even if it is reinstalled."""
+        label = QLabel("Mod art drawn by View > Layers > Mod Art (the top mod wins where two ship one file):")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.mod_art_list = QListWidget()
+        self.mod_art_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.mod_art_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.mod_art_list.setWordWrap(False)
+        self.mod_art_list.itemChanged.connect(self._on_mod_art_item_changed)
+        layout.addWidget(self.mod_art_list)
+        self._refresh_mod_art_list()
+
+    def _refresh_mod_art_list(self) -> None:
+        view = self.mod_art_list
+        excluded = settings.get_mod_art_excluded()
+        view.blockSignals(True)
+        view.clear()
+        for mod in mod_graphics.mods_with_art():
+            item = QListWidgetItem(mod.title)
+            item.setData(Qt.UserRole, mod.status_path)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked if mod.status_path in excluded else Qt.Checked)
+            order = "not in the game's mod list" if mod.priority is None else f"priority {mod.priority} in the game's mod list"
+            item.setToolTip(
+                f"{mod.status_path}, {order}\n"
+                f"{mod.sld} .sld and {mod.smx} .smx sprites, {mod.textures} terrain textures"
+            )
+            view.addItem(item)
+        if view.count() == 0:
+            placeholder = QListWidgetItem("No enabled mod in the profile folder above ships art.")
+            placeholder.setFlags(Qt.NoItemFlags)
+            view.addItem(placeholder)
+        view.blockSignals(False)
+        self._fit_list_height(view)
+
+    def _on_mod_art_item_changed(self, item: QListWidgetItem) -> None:
+        status_path = item.data(Qt.UserRole)
+        if status_path is None:
+            return
+        drawn = item.checkState() == Qt.Checked
+        excluded = set(settings.get_mod_art_excluded())
+        if drawn:
+            excluded.discard(status_path)
+        else:
+            excluded.add(status_path)
+        settings.set_mod_art_excluded(excluded)
+        self._window._apply_mod_art_change(f"Mod art from {item.text()}: {'on' if drawn else 'off'}")
+
+    def _fit_profile_list_height(self) -> None:
+        self._fit_list_height(self.profile_roots_list)
+
+    def _fit_list_height(self, view: QListWidget) -> None:
+        row = view.sizeHintForRow(0) if view.count() else view.fontMetrics().height()
+        bar = view.horizontalScrollBar().sizeHint().height()
+        view.setFixedHeight(row * self._PROFILE_LIST_ROWS + bar + 2 * view.frameWidth())
+
+    def _refresh_profile_section(self, *, refill_field: bool = False) -> None:
+        """Status line, field state and scanned list from the live lookups.
+        The field is only overwritten on open, or when nothing explicit is set."""
+        source, raw = content_roots.profile_source()
+        profile = content_roots.profile_path()
+        from_env = source in (content_roots.SOURCE_ENV, content_roots.SOURCE_ENV_INVALID)
+        if refill_field or from_env or source in (content_roots.SOURCE_AUTO, content_roots.SOURCE_NONE):
+            shown = raw if raw is not None else (str(profile) if profile is not None else "")
+            self.profile_path_edit.setText(shown)
+        for widget in (self.profile_path_edit, self.profile_browse_button, self.profile_load_button):
+            widget.setEnabled(not from_env)
+        # Only a config.yaml setting has anything to forget.
+        self.profile_auto_button.setEnabled(source in (content_roots.SOURCE_CONFIG, content_roots.SOURCE_CONFIG_INVALID))
+
+        env = content_roots.PROFILE_ENV_VAR
+        if source == content_roots.SOURCE_ENV:
+            self._set_profile_status(f"Set by {env}, which overrides this field.", ok=True)
+        elif source == content_roots.SOURCE_ENV_INVALID:
+            self._set_profile_status(f"{env} points at {raw}, which is not a folder, so no profile is scanned.", ok=False)
+        elif source == content_roots.SOURCE_CONFIG:
+            self._set_profile_status("From config.yaml.", ok=True)
+        elif source == content_roots.SOURCE_CONFIG_INVALID:
+            self._set_profile_status(f"config.yaml points at {raw}, which is not a folder, so no profile is scanned.", ok=False)
+        elif source == content_roots.SOURCE_AUTO:
+            where = "your user folder" if sys.platform == "win32" else "the install"
+            self._set_profile_status(f"Auto-detected from {where}.", ok=True)
+        else:
+            self._set_profile_status("No profile folder found: only the install's own content is offered.", ok=False)
+
+        self.profile_roots_list.clear()
+        for root in content_roots.content_roots():
+            item = QListWidgetItem(f"{root.label}: {root.path}")
+            item.setToolTip(str(root.path))
+            self.profile_roots_list.addItem(item)
+        if self.profile_roots_list.count() == 0:
+            self.profile_roots_list.addItem("Nothing yet: set the install path above.")
+        skipped = content_roots.skipped_mods(profile) if profile is not None else []
+        self.profile_skipped_label.setText(
+            f"{len(skipped)} mod{'s' if len(skipped) != 1 else ''} disabled in the game's mod list "
+            f"{'are' if len(skipped) != 1 else 'is'} skipped."
+            if skipped else ""
+        )
+        self.profile_skipped_label.setVisible(bool(skipped))
+        self._fit_profile_list_height()
+        # Built after this section on open; refreshed with it on every later profile or install change.
+        if hasattr(self, "mod_art_list"):
+            self._refresh_mod_art_list()
+
+    def browse_profile_path(self) -> None:
+        start_dir = self.profile_path_edit.text().strip() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Select AoE2DE profile folder", start_dir)
+        if path:
+            self.profile_path_edit.setText(path)
+
+    def load_profile_path(self) -> None:
+        text = self.profile_path_edit.text().strip()
+        if not text:
+            self._set_profile_status("Enter or browse to a profile folder first.", ok=False)
+            return
+        path = Path(text)
+        if not path.is_dir() or not content_roots.has_profile_ids(path):
+            message = (
+                f"{text} is not a profile folder: it holds no numeric per-account folder "
+                "(the one named 0 or after your Steam ID). Nothing saved."
+            )
+            self._set_profile_status(message, ok=False)
+            self._window._log_status(f"Profile folder rejected ({text})")
+            return
+        asset_source.save_profile_path_to_config(path)
+        self._window._apply_mod_art_change(f"Profile folder set to {path}", rescan=True)
+        self._refresh_profile_section(refill_field=True)
+        self._window.invalidate_ai_choices()  # Personality rescans the new folder's AIs
+
+    def use_auto_profile_path(self) -> None:
+        asset_source.save_profile_path_to_config(None)
+        self._window._apply_mod_art_change("Profile folder: auto-detect", rescan=True)
+        self._refresh_profile_section(refill_field=True)
+        self._window.invalidate_ai_choices()
+
+    def _set_profile_status(self, message: str, ok: bool) -> None:
+        self._profile_status_ok = ok
+        self.profile_status_label.setStyleSheet(f"color: {status_color(ok, on_tab_page=True)};")
+        self.profile_status_label.setText(message)
 
 
 class MirrorDialog(QDialog):
@@ -2683,6 +2989,14 @@ class ViewerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # Mod Art (TASK-378) is module state the renderers read. Seeded before any panel: the
+        # Terrain panel's swatches resolve textures at construction, and that lookup is cached.
+        mod_graphics.set_enabled(settings.get_view_layers().mod_art)
+        mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        asset_source.clear_art_caches()
+        # (mod_graphics.generation(), whether any scanned mod ships art), for the row's greying.
+        self._mod_art_available: tuple[int, bool] | None = None
+
         # Tool-overflow state (Stage 3 of the tool-overflow plan). Set
         # before the resize() call below: that call fires resizeEvent(),
         # which calls _apply_toolbar_overflow(), before _build_toolbar()
@@ -2754,6 +3068,8 @@ class ViewerWindow(QMainWindow):
         # them regardless of enabled state. This flag is what actually
         # makes such a call a no-op rather than a reentrant interleave.
         self._busy = False
+        # GH #221: a .aoe2scenario dropped anywhere on the window opens it.
+        self.setAcceptDrops(True)
         # Seconds the last load's pre-freeze gc.collect() took (_freeze_loaded_document).
         self._load_gc_collect_s: float | None = None
         # Tools > Map Analysis results, modeless and reused; see _show_analysis().
@@ -3062,6 +3378,12 @@ class ViewerWindow(QMainWindow):
         # or None. Held here, not read off the panel, so an undo in View mode can
         # re-derive it while the panel sits unrefreshed.
         self._trigger_overlay_ref: tuple[tuple[int, ...], frozenset[tuple[str, int]]] | None = None
+        # The shapes the overlay last drew, and GH #229's Edit Area target in them:
+        # (trigger index, entry kind, entry index, area coords), or None.
+        self._trigger_overlay_shapes: list[trigger_geometry.TriggerShape] = []
+        self._area_edit_target: tuple | None = None
+        # Edit Area's own enable gate, Create Objects' trigger_editable.
+        self._area_edit_editable = False
         self.map_options_panel = MapOptionsPanel(on_option_field=self.set_option_field)
         self.players_panel = PlayersPanel(
             on_player_field=self.set_player_field,
@@ -3081,6 +3403,7 @@ class ViewerWindow(QMainWindow):
         self.messages_panel.on_text_box_lines = settings.set_text_box_lines
         self.units_panel = UnitsPanel(
             on_unit_field=self._on_unit_field_changed,
+            on_unit_field_step=self._on_unit_field_stepped,
             on_place_requested=self._on_units_panel_place_requested,
             on_pending_changed=self._refresh_place_ghost,
             on_garrison_add=self._on_garrison_add,
@@ -3100,7 +3423,10 @@ class ViewerWindow(QMainWindow):
             # GH #186: a pull like map_size, never the lazily built unit_edits model.
             codec_field_supported=lambda name: self.scenario is None or unit_field_supported(self.scenario, name),
         )
-        self.terrain_panel = TerrainPanel()
+        self.terrain_panel = TerrainPanel(
+            display_mode=settings.get_terrain_picker_mode(), swatch_px=settings.get_terrain_grid_swatch_px()
+        )
+        self.terrain_panel.display_mode_changed.connect(settings.set_terrain_picker_mode)
         self.terrain_panel.set_hover_text(HOVER_IDLE_TEXT)
         self.left_stack = QStackedWidget()
         self.left_stack.addWidget(info_widget)
@@ -3234,6 +3560,7 @@ class ViewerWindow(QMainWindow):
         self.map_view.on_unit_picker_cancel = self._on_unit_picker_cancel
         self.map_view.on_tile_pick = self._on_tile_picked
         self.map_view.on_rect_pick = self._on_rect_picked
+        self.map_view.on_area_edit = self._on_area_edited
         self.map_view.on_tile_picker_cancel = self.disarm_unit_picker
         self.map_view.on_unit_eyedrop = self.pick_unit_value
         self._build_keybind_actions()
@@ -3256,6 +3583,8 @@ class ViewerWindow(QMainWindow):
         # -- see self._terrain_style above), same gating on_terrain_style_
         # changed() applies on every later switch.
         self.iso_action.setEnabled(self._terrain_style == "flat")
+        # The first point where both _render_style inputs exist.
+        self._sync_rotation_dial_projection()
 
         # App-global, so the handler ignores widgets outside this window.
         QApplication.instance().focusChanged.connect(self._on_app_focus_changed)
@@ -3619,6 +3948,7 @@ class ViewerWindow(QMainWindow):
         )
         self.stack_badges_action.setToolTip(
             "In Units mode, a count over every spot where a unit is hidden under another. "
+            "Grass and other passable eye candy never counts as hidden. "
             "Click the spot repeatedly to cycle through the stack."
         )
         view_menu.addAction(self.stack_badges_action)
@@ -3633,31 +3963,8 @@ class ViewerWindow(QMainWindow):
         )
         view_menu.addAction(self.selection_owner_colour_action)
 
-        # GH #49. Persisted passive chrome like the two above, but off by
-        # default: it draws over the sprites, so it is opt-in.
-        range_menu = KeepOpenMenu("&Range Rings", view_menu)
-        view_menu.addMenu(range_menu)
-        range_menu.menuAction().setToolTip("Attack-range circles around selected buildings, and their colour")
-        self.range_rings_action = QAction(
-            "&Show", self, checkable=True, checked=settings.get_range_rings()
-        )
-        self.range_rings_action.setToolTip(
-            "In Units mode, a circle around each selected building showing its attack range. "
-            "Buildings only, and only ones that have a range. No technology or trigger "
-            "effects are applied."
-        )
-        range_menu.addAction(self.range_rings_action)
-        self.range_rings_by_owner_action = QAction(
-            "Colour by O&wner", self, checkable=True, checked=settings.get_range_rings_by_owner()
-        )
-        self.range_rings_by_owner_action.setToolTip(
-            "Each ring in its owner's player colour. GAIA keeps the Range ring colour "
-            "from Settings > Appearance."
-        )
-        range_menu.addAction(self.range_rings_by_owner_action)
-
         # GH #22. Persisted passive chrome, off by default for the same
-        # reason as the rings: it draws on the map rather than beside it.
+        # reason as the rings below: it draws on the map rather than beside it.
         # Not mode-gated -- a starting camera belongs to the scenario, not to
         # Players mode; only the emphasis on the selected player is.
         self.player_cameras_action = QAction(
@@ -3682,6 +3989,60 @@ class ViewerWindow(QMainWindow):
             "condition or effect is drawn strongest."
         )
         view_menu.addAction(self.trigger_overlay_action)
+
+        # GH #49. Persisted passive chrome, but off by default: it draws over
+        # the sprites, so it is opt-in.
+        range_menu = KeepOpenMenu("&Range Rings", view_menu)
+        view_menu.addMenu(range_menu)
+        range_menu.menuAction().setToolTip(
+            "Attack-range circles around buildings, sight circles around map revealers, and their colour"
+        )
+        self.range_rings_action = QAction(
+            "&Selected Buildings", self, checkable=True, checked=settings.get_range_rings()
+        )
+        self.range_rings_action.setToolTip(
+            "In Units mode, a circle around each selected building showing its attack range. "
+            "Buildings only, and only ones that have a range. No technology or trigger "
+            "effects are applied."
+        )
+        range_menu.addAction(self.range_rings_action)
+        # GH #155 / #153: always-on layers that follow the unit index, not the selection.
+        self.range_rings_buildings_action = QAction(
+            "All &Buildings", self, checkable=True, checked=settings.get_range_rings_buildings()
+        )
+        self.range_rings_buildings_action.setToolTip(
+            "A circle around every building that has a range, selected or not, in every mode. "
+            "Siege units are not included. No technology or trigger effects are applied."
+        )
+        range_menu.addAction(self.range_rings_buildings_action)
+        self.range_rings_selected_revealers_action = QAction(
+            "Selected &Map Revealers", self, checkable=True, checked=settings.get_range_rings_selected_revealers()
+        )
+        self.range_rings_selected_revealers_action.setToolTip(
+            "In Units mode, a circle around each selected map revealer showing the area it reveals "
+            "(its line of sight, e.g. 4, 10 or 20 tiles). Invisible Objects have no sight radius in "
+            "the game data, so they draw none; trigger changes are not applied."
+        )
+        range_menu.addAction(self.range_rings_selected_revealers_action)
+        self.range_rings_revealers_action = QAction(
+            "All Map &Revealers", self, checkable=True, checked=settings.get_range_rings_revealers()
+        )
+        self.range_rings_revealers_action.setToolTip(
+            "A circle around every map revealer showing the area it reveals (its line of sight, "
+            "e.g. 4, 10 or 20 tiles), in every mode. Invisible Objects have no sight radius in the "
+            "game data, so they draw none; trigger changes are not applied. Hidden while Show "
+            "Invisible Objects is off."
+        )
+        range_menu.addAction(self.range_rings_revealers_action)
+        range_menu.addSeparator()
+        self.range_rings_by_owner_action = QAction(
+            "Colour by O&wner", self, checkable=True, checked=settings.get_range_rings_by_owner()
+        )
+        self.range_rings_by_owner_action.setToolTip(
+            "Each ring in its owner's player colour. GAIA keeps the Range ring colour "
+            "from Settings > Appearance."
+        )
+        range_menu.addAction(self.range_rings_by_owner_action)
 
         # The ruler strip of tick marks outside the map border. Deliberately
         # NOT gated by mode or terrain style, unlike its two neighbours
@@ -3720,6 +4081,9 @@ class ViewerWindow(QMainWindow):
         self.selection_owner_colour_action.toggled.connect(self._on_selection_owner_colour_toggled)
         self.range_rings_action.toggled.connect(self._on_range_rings_toggled)
         self.range_rings_by_owner_action.toggled.connect(self._on_range_rings_by_owner_toggled)
+        self.range_rings_buildings_action.toggled.connect(self._on_range_rings_buildings_toggled)
+        self.range_rings_revealers_action.toggled.connect(self._on_range_rings_revealers_toggled)
+        self.range_rings_selected_revealers_action.toggled.connect(self._on_range_rings_selected_revealers_toggled)
         self.player_cameras_action.toggled.connect(self._on_player_cameras_toggled)
         self.trigger_overlay_action.toggled.connect(self._on_trigger_overlay_toggled)
         for tiles, action in self.distance_tick_interval_actions.items():
@@ -3909,7 +4273,8 @@ class ViewerWindow(QMainWindow):
         to one variant (GH #123), or with only gates every gate to one
         orientation (GH #61). Unit State and Capture Flag (GH #186) set every
         member to the picked raw value. A one-unit selection is a group of one, so
-        both cases share this path, and each edit is one undo record.
+        both cases share this path, and each edit is one undo record. A group's
+        X/Y/Z step goes through _on_unit_field_stepped instead (GH #154).
 
         UnitsPanel itself suppresses this during a programmatic populate (its
         own `_populating` guard, mirroring PlayersPanel._changed()'s), so
@@ -4064,6 +4429,50 @@ class ViewerWindow(QMainWindow):
                 new_own, new_tiles = self._unit_footprint(unit)
                 splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
                 self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+
+    def _on_unit_field_stepped(self, spec: unit_fields.UnitFieldSpec, delta: float) -> None:
+        """A group's X, Y or Z step (GH #154): every selected unit moves by
+        `delta` and the formation holds, where a typed value replaces.
+
+        A nudge, not a typed set: it goes through _move_units, so a host's
+        garrison rides along (GH #42) and "Moving a gate updates walls" (GH
+        #194) applies, with no placement-rule refusal, like the arrow-key
+        nudge. A step that would push a member off the map (or Z past its
+        limit) moves by as many whole steps as fit, as a group drag does
+        (GH #75). One undo record per step."""
+        if not self._selection:
+            return
+        model = self._ensure_unit_edits()
+        if model is None:
+            self._update_unit_inspector_from_selection()
+            return
+        index = self.map_view._unit_index
+        if index is None:
+            return
+        entries = [e for e in (index.entry_for_key(k) for k in self._selection) if e is not None]
+        if not entries:
+            return
+        mm = self.scenario.map_manager
+        units = [e.unit for e in entries]
+        dx = dy = dz = 0.0
+        if spec.field_id == "z":
+            lo, hi = unit_fields.coordinate_bounds("z", mm.map_width, mm.map_height)
+            dz, clamped = clamp_level_delta([unit.z for unit in units], delta, lo, hi)
+            moved, limit = dz, "at the Z limit"
+        else:
+            step = (delta, 0.0) if spec.field_id == "x" else (0.0, delta)
+            dx, dy, clamped = clamp_group_delta(units, *step, mm.map_width, mm.map_height, whole_tiles=True)
+            moved, limit = (dx if spec.field_id == "x" else dy), "at the map edge"
+        count = len(entries)
+        if moved == 0:
+            if clamped:
+                self._log_status(f"{count} units already {limit}; nothing moved")
+            return
+        gate_plan = self._move_units(model, entries, dx, dy, f"Shift {spec.label} on {count} units", dz=dz)
+        status = f"Moved {count} units by {moved:+g} on {spec.label}"
+        if clamped:
+            status += f", stopped {limit}"
+        self._log_status(status + self._gate_move_clauses(gate_plan))
 
     def _set_variant_field(self, model, entries, variant: int, single: bool) -> None:
         """The Rotation field's variant mode: every cyclable member takes
@@ -4821,11 +5230,18 @@ class ViewerWindow(QMainWindow):
         self._unit_filter = self._current_unit_filter()
 
     def _needs_unit_index(self) -> bool:
-        """Units mode needs the pick index, and so does View > Footprint
-        Outlines, which is reachable from every mode. Without the second
-        term the overlay silently draws nothing outside Units mode, since
-        the index is built on demand rather than at load."""
-        return self.mode == "units" or settings.get_footprint_outlines() or self._unit_picker is not None
+        """Units mode needs the pick index, and so do View > Footprint
+        Outlines and the always-on Range Rings layers (GH #153 / #155), which
+        are reachable from every mode. Without those terms the overlays
+        silently draw nothing outside Units mode, since the index is built on
+        demand rather than at load."""
+        return (
+            self.mode == "units"
+            or settings.get_footprint_outlines()
+            or settings.get_range_rings_revealers()
+            or settings.get_range_rings_buildings()
+            or self._unit_picker is not None
+        )
 
     def _rebuild_unit_index(self) -> None:
         """Rebuilds the pick index for the current scenario + filter and hands
@@ -5156,7 +5572,7 @@ class ViewerWindow(QMainWindow):
         if object_id is None:
             self._log_status("Place Unit: choose an object first")
             return
-        # TASK-288: resources and trees always go to GAIA, whatever the combo says.
+        # TASK-288: GAIA-only objects always go to GAIA, whatever the combo says.
         chosen = self.units_panel.owner_id()
         player = unit_kind.placement_owner(object_id, chosen)
         # GH #172: the same value on_place_preview's ghost was built with.
@@ -5317,6 +5733,7 @@ class ViewerWindow(QMainWindow):
             view._terrain_style,
             self._layers.tree_scale,
             self._layers.hero_glow,
+            self._layers.wall_alpha,
             id(view._iso_elevations),
         )
         # Snapped, the point only changes on a tile crossing (half-tile on an even span).
@@ -5382,8 +5799,6 @@ class ViewerWindow(QMainWindow):
             status = f"Placement: {_unit_name(new_const)}"
             if had_filter and not self.units_panel.catalog_view.filter_edit.text():
                 status += " (cleared the catalog filter to show it)"
-        elif outcome == place_rotation.GAIA_NO_FACING:
-            status = f"Placement: GAIA units have no facing, so {name} places facing 0"
         elif outcome == place_rotation.NOTHING:
             status = f"Placement: {name} has no facing or variant to rotate"
         else:
@@ -6252,9 +6667,12 @@ class ViewerWindow(QMainWindow):
             entries = list(entries) + self._garrison_occupant_entries(model, entries)
         return entries, self._gate_move_plan(model, [(e, e.unit.x + dx, e.unit.y + dy) for e in entries])
 
-    def _move_units(self, model, entries, dx: float, dy: float, label: str, planned=None) -> wall_run.GateMovePlan | None:
+    def _move_units(
+        self, model, entries, dx: float, dy: float, label: str, planned=None, dz: float = 0.0
+    ) -> wall_run.GateMovePlan | None:
         """Moves every entry by (dx, dy) in ONE undo record, splicing each
-        unit's footprint. `rotation` and `z` pass through verbatim.
+        unit's footprint. `rotation` passes through verbatim, and so does `z`
+        unless a group Z step (GH #154) passes a non-zero `dz`.
 
         A host's garrison rides along (GH #42): its occupants sit at its own
         point and cannot be selected while hidden, so the same delta applies
@@ -6274,7 +6692,8 @@ class ViewerWindow(QMainWindow):
                     model.remove_many([wall for _player_id, wall in gate_plan.removals])
                     for entry in entries:
                         unit = entry.unit
-                        model.set_position(unit, unit.x + dx, unit.y + dy, unit.z)
+                        # Guarded: unit.z + 0.0 would turn a stored -0.0 into 0.0.
+                        model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
                     wall_run.apply_gate_move_plan(model, gate_plan)
                 return gate_plan
             mm = self.scenario.map_manager
@@ -6286,7 +6705,7 @@ class ViewerWindow(QMainWindow):
                     old_own, old_tiles = self._unit_footprint(unit)
                     with perf_trace.phase("move_list_index"):
                         idx = self._unit_list_index(entry.player_id, unit)
-                    model.set_position(unit, unit.x + dx, unit.y + dy, unit.z)
+                    model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
                     new_own, new_tiles = self._unit_footprint(unit)
                     splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
                     with perf_trace.phase("move_pick_patch"):
@@ -6407,6 +6826,7 @@ class ViewerWindow(QMainWindow):
             # would drag a tree at full size and snap it small on drop.
             tree_scale=self._layers.tree_scale,
             hero_glow=self._layers.hero_glow,
+            wall_alpha=self._layers.wall_alpha,
         )
 
     def _ghost_sprites_on(self) -> bool:
@@ -7289,8 +7709,8 @@ class ViewerWindow(QMainWindow):
             # never moves.
             self.map_view.refresh_canvas_dims()
             self.map_view.invalidate_region((0, 0, *self._cache.canvas_dims(0)))
-            # Sloped farms drape only with sprites on, so their outlines change shape here.
-            self.map_view.refresh_footprint_overlay()
+            # Farms drape only with sprites on, so their outlines change shape here.
+            self.map_view.refresh_drape_outlines()
             elapsed = time.perf_counter() - t0
         finally:
             self._busy = was_busy
@@ -7318,6 +7738,30 @@ class ViewerWindow(QMainWindow):
         repaint from the now-empty cache."""
         self._layers = dataclasses.replace(self._layers, **{layer_id: on})
         settings.set_view_layer(layer_id, on)
+        label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
+        if layer_id == "mod_art":
+            self._apply_mod_art_change(f"{label}: {'on' if on else 'off'}")
+            return
+        self._apply_layers(f"{label}: {'on' if on else 'off'}", drape_outlines=layer_id == "farm_overlay")
+        if layer_id in ("terrain_textures", "terrain_blend"):
+            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
+            self._update_tool_enabled()
+
+    def set_wall_opacity_pct(self, pct: int) -> None:
+        """Settings > Appearance's wall opacity (GH #35), already persisted by
+        the caller. With Translucent Walls off the drawn wall_alpha is
+        unchanged, so only the window's copy updates: set_layers() would miss
+        its equality guard on the raw pct and evict the whole canvas for no
+        visible change."""
+        old_alpha = self._layers.wall_alpha
+        self._layers = dataclasses.replace(self._layers, wall_opacity_pct=pct)
+        if self._layers.wall_alpha != old_alpha:
+            self._apply_layers(f"Wall opacity: {pct}%")
+
+    def _apply_layers(self, status: str, drape_outlines: bool = False) -> None:
+        """Pushes self._layers into the live cache and repaints, logging
+        `status` with the time it took. See _on_layer_toggled() for the order.
+        drape_outlines re-derives the draped farms' per-tile outlines (Farm Overlay)."""
         self._cancel_warms()
         if self.scenario is None or self._cache is None:
             self._update_tool_enabled()
@@ -7333,16 +7777,57 @@ class ViewerWindow(QMainWindow):
             t0 = time.perf_counter()
             self._cache.set_layers(self._layers)
             self.map_view.invalidate_region((0, 0, *self._cache.canvas_dims(0)))
+            if drape_outlines:
+                # A draped farm outlines per tile in Stepped and Sloped (TASK-015).
+                self.map_view.refresh_drape_outlines()
             elapsed = time.perf_counter() - t0
         finally:
             self._busy = was_busy
             QApplication.restoreOverrideCursor()
             self.setEnabled(True)
-        label = next(s.label for s in view_layers.LAYERS if s.layer_id == layer_id).replace("&", "")
-        self._log_status(f"{label}: {'on' if on else 'off'} (applied in {elapsed:.2f}s)")
-        if layer_id in ("terrain_textures", "terrain_blend"):
-            # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
+        self._log_status(f"{status} (applied in {elapsed:.2f}s)")
+
+    def _apply_mod_art_change(self, status: str, *, rescan: bool = False) -> None:
+        """The one path for a Mod Art toggle, a Settings opt-out and a profile
+        folder change (TASK-378): mod_graphics takes the window's state, every
+        art cache drops, and the map, swatches and thumbnails redraw from the
+        files that now win. rescan also forgets the scanned mod folders."""
+        if rescan:
+            mod_graphics.clear()
+        toggled = mod_graphics.set_enabled(self._layers.mod_art)
+        mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        if not (toggled or mod_graphics.enabled()):
+            # Off before and after (an opt-out or a profile change): nothing drawn changes.
             self._update_tool_enabled()
+            self._log_status(status)
+            return
+        self._cancel_warms()
+        asset_source.clear_art_caches()
+        t0 = time.perf_counter()
+        # Walks every active mod file once (TASK-378 review): here, not inside the next edit's dirty bbox.
+        unit_sprites.sprite_reach()
+        reach_elapsed = time.perf_counter() - t0
+        self.refresh_map()
+        self.terrain_panel.view.refresh_swatches()
+        self.units_panel.refresh_thumbnails()
+        if self.scenario is None:
+            self._update_tool_enabled()  # refresh_map() re-gates when a map is open
+        self._log_status(f"{status}. {self._mod_art_status() or 'Mod art: none drawn'} (reach {reach_elapsed:.2f}s)")
+
+    def _mod_art_status(self) -> str:
+        """"Mod art: N mods" while any mod's art can draw, else "", so a
+        mod-derived render never goes unsaid in the log."""
+        if not mod_graphics.enabled():
+            return ""
+        count = sum(not mod.excluded for mod in mod_graphics.mods_with_art())
+        return f"Mod art: {count} mod{'s' if count != 1 else ''}" if count else ""
+
+    def _has_mod_art(self) -> bool:
+        """Whether any scanned mod ships art, cached per mod_graphics.generation()."""
+        generation = mod_graphics.generation()
+        if self._mod_art_available is None or self._mod_art_available[0] != generation:
+            self._mod_art_available = (generation, bool(mod_graphics.mods_with_art()))
+        return self._mod_art_available[1]
 
     def _filter_summary(self) -> str:
         if self._unit_filter.is_default:
@@ -7775,7 +8260,6 @@ class ViewerWindow(QMainWindow):
         )
         tool_group.addAction(self.create_objects_action)
         toolbar.addAction(self.create_objects_action)
-
         # Every tool action's only host has been this toolbar up to now.
         # Stage 3's overflow button moves some of these into a QMenu instead
         # (toolbar.removeAction()), and a QAction with no host at all can't
@@ -8045,11 +8529,11 @@ class ViewerWindow(QMainWindow):
         self.rect_fill_combo.currentIndexChanged.connect(self._on_rect_fill_changed)
         self.rect_fill_param_action = param_toolbar.addWidget(self.rect_fill_combo)
 
-        # Brush size/shape -- shown for any ToolDef.supports_brush tool
+        # Brush size/shape/thickness -- shown for any ToolDef.supports_brush tool
         # (Terrain, Elevate, Set Elevation), same visibility/enabled
         # convention as the two params above. Deliberately session-only, not
         # read from or written to settings.py's config: every launch starts
-        # at BRUSH_SIZE_MIN/square, so nothing here persists.
+        # at BRUSH_SIZE_MIN/square/BRUSH_THICKNESS_MIN, so nothing here persists.
         self.brush_param_label_action = param_toolbar.addWidget(QLabel(" Brush: "))
         self.brush_size_spin = QSpinBox()
         self.brush_size_spin.setRange(brush.BRUSH_SIZE_MIN, brush.BRUSH_SIZE_MAX)
@@ -8059,11 +8543,25 @@ class ViewerWindow(QMainWindow):
         self.brush_size_spin_action = param_toolbar.addWidget(self.brush_size_spin)
 
         self.brush_shape_combo = QComboBox()
-        self.brush_shape_combo.addItem("Square", brush.BRUSH_SHAPE_SQUARE)
-        self.brush_shape_combo.addItem("Circle", brush.BRUSH_SHAPE_CIRCLE)
+        for shape in brush.BRUSH_SHAPES:
+            # The two line labels follow the view: _refresh_brush_shape_labels().
+            self.brush_shape_combo.addItem(brush.shape_label(shape, isometric=True), shape)
         self.brush_shape_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
-        self.brush_shape_combo.currentIndexChanged.connect(self._on_brush_changed)
+        self.brush_shape_combo.currentIndexChanged.connect(self._on_brush_shape_changed)
         self.brush_shape_combo_action = param_toolbar.addWidget(self.brush_shape_combo)
+
+        # TASK-257: outline shapes only, so it shows and hides with the shape.
+        self.brush_thickness_label_action = param_toolbar.addWidget(QLabel(" Thickness: "))
+        self.brush_thickness_spin = QSpinBox()
+        self.brush_thickness_spin.setRange(brush.BRUSH_THICKNESS_MIN, brush.BRUSH_THICKNESS_MAX)
+        self.brush_thickness_spin.setValue(brush.BRUSH_THICKNESS_MIN)
+        self.brush_thickness_spin.setToolTip(
+            "How many tiles wide the outline is, measured inward from the brush edge. "
+            "A thickness that reaches the centre paints the filled shape"
+        )
+        self.brush_thickness_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.brush_thickness_spin.valueChanged.connect(self._on_brush_changed)
+        self.brush_thickness_spin_action = param_toolbar.addWidget(self.brush_thickness_spin)
 
         # Phase 2.8's paste filters -- which categories a Paste Region
         # actually writes. Visible only while Select is active (see
@@ -8128,6 +8626,36 @@ class ViewerWindow(QMainWindow):
         )
         self.gate_walls_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.gate_walls_param_action = param_toolbar.addWidget(self.gate_walls_check)
+
+        # GH #229, under Pan in Triggers mode: Edit Area (saved) lets Pan drag the shown
+        # entry's area; Move and Resize (session-only) pick which parts grab, and Tile
+        # borders (saved) widens the resize border. The last three grey out while it is off.
+        self.area_edit_check = QCheckBox("Edit Area")
+        self.area_edit_check.setToolTip(
+            "Drag the selected trigger area's middle to move it, or its edges and corners to "
+            "resize it -- one undo step per drag"
+        )
+        self.area_edit_check.setChecked(settings.get_trigger_area_edit())
+        self.area_edit_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.area_edit_check.toggled.connect(self._on_area_edit_toggled)
+        self._area_option_params = [(param_toolbar.addWidget(self.area_edit_check), self.area_edit_check)]
+        self._area_option_params.append((param_toolbar.addSeparator(), None))
+        self.area_move_check = QCheckBox("Move")
+        self.area_move_check.setToolTip("Drag the middle of the area to move it")
+        self.area_move_check.setChecked(True)
+        self.area_resize_check = QCheckBox("Resize")
+        self.area_resize_check.setToolTip("Drag an edge or corner of the area to resize it")
+        self.area_resize_check.setChecked(True)
+        self.area_tile_borders_check = QCheckBox("Tile borders")
+        self.area_tile_borders_check.setToolTip(
+            "Resize from the whole outer ring of tiles instead of a thin border, on sides at least 3 tiles long"
+        )
+        self.area_tile_borders_check.setChecked(settings.get_trigger_area_tile_borders())
+        for check in (self.area_move_check, self.area_resize_check, self.area_tile_borders_check):
+            check.setEnabled(False)  # re-gated by _update_tool_enabled()
+            check.toggled.connect(self._on_area_options_toggled)
+            self._area_option_params.append((param_toolbar.addWidget(check), check))
+        self.map_view.set_area_edit_options(True, True, self.area_tile_borders_check.isChecked())
 
         # GH #108/#109: removes every pinned ruler. Shown with the Ruler only,
         # enabled only while one exists (re-gated by _on_pinned_rulers_changed too).
@@ -8363,6 +8891,9 @@ class ViewerWindow(QMainWindow):
             "view_selection_owner_colour": self.selection_owner_colour_action,
             "view_range_rings": self.range_rings_action,
             "view_range_rings_by_owner": self.range_rings_by_owner_action,
+            "view_range_rings_buildings": self.range_rings_buildings_action,
+            "view_range_rings_revealers": self.range_rings_revealers_action,
+            "view_range_rings_selected_revealers": self.range_rings_selected_revealers_action,
             "view_player_cameras": self.player_cameras_action,
             "view_trigger_overlay": self.trigger_overlay_action,
             **{f"view_layer_{lid}": action for lid, action in self.layer_actions.items()},
@@ -8410,6 +8941,8 @@ class ViewerWindow(QMainWindow):
             self._keybind_actions[f"tool_{tool.tool_id}"] = getattr(self, f"{tool.tool_id}_action")
         for pid, action in self.player_select_actions.items():
             self._keybind_actions[f"player_select_{pid}"] = action
+        for pid, action in self.player_actions.items():
+            self._keybind_actions[f"filter_player_{pid}"] = action
         for action_id in self._keybind_actions:
             self.apply_keybind(action_id)
 
@@ -8519,6 +9052,22 @@ class ViewerWindow(QMainWindow):
         settings.set_range_rings_by_owner(checked)
         self.map_view.set_range_rings_by_owner(checked)
 
+    def _on_range_rings_selected_revealers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_selected_revealers(checked)
+        self.map_view.set_range_rings_selected_revealers(checked)
+
+    def _on_range_rings_buildings_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_buildings(checked)
+        if checked and self._needs_unit_index():
+            self._rebuild_unit_index()
+        self.map_view.set_ring_layer_buildings(checked)
+
+    def _on_range_rings_revealers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_revealers(checked)
+        if checked and self._needs_unit_index():
+            self._rebuild_unit_index()
+        self.map_view.set_ring_layer_revealers(checked)
+
     def _on_player_cameras_toggled(self, checked: bool) -> None:
         settings.set_camera_markers(checked)
         self.map_view.set_camera_markers_enabled(checked)
@@ -8534,6 +9083,84 @@ class ViewerWindow(QMainWindow):
         if checked and ref is not None and len(ref[0]) > 1:
             # A union is not derived while the overlay is off (_refresh_trigger_overlay()).
             self._refresh_trigger_overlay()
+        self._push_area_edit_target()
+
+    def _on_area_edit_toggled(self, checked: bool) -> None:
+        settings.set_trigger_area_edit(checked)
+        self._update_tool_enabled()
+        if checked and self.mode == "triggers" and self._area_edit_target is None:
+            self._log_status("Select one condition or effect with an area to move or resize it")
+
+    def _area_options_shown(self) -> bool:
+        """Edit Area's four checkboxes: under Pan in Triggers mode."""
+        return self.mode == "triggers" and self._current_tool == "pan"
+
+    def _area_edit_on(self) -> bool:
+        return self.area_edit_check.isChecked() and self.area_edit_check.isEnabled()
+
+    def _regate_area_options(self) -> None:
+        self.area_edit_check.setEnabled(self._area_options_shown() and self._area_edit_editable)
+        on = self._area_edit_on()
+        self.area_move_check.setEnabled(on)
+        self.area_resize_check.setEnabled(on)
+        # It only shapes the resize border.
+        self.area_tile_borders_check.setEnabled(on and self.area_resize_check.isChecked())
+
+    def _on_area_options_toggled(self) -> None:
+        tile_borders = self.area_tile_borders_check.isChecked()
+        if tile_borders != settings.get_trigger_area_tile_borders():
+            settings.set_trigger_area_tile_borders(tile_borders)
+        self._regate_area_options()
+        self.map_view.set_area_edit_options(
+            self.area_move_check.isChecked(), self.area_resize_check.isChecked(), tile_borders
+        )
+
+    def _push_area_edit_target(self) -> None:
+        """GH #229: hands the map view the one area Edit Area may drag, or None.
+        Live only with the box ticked, in Triggers mode with the overlay shown and
+        Pan active, and for the form's one entry whose area is set and on the map.
+        The map view itself stands down while a pick is armed."""
+        target = None
+        ref = self._trigger_overlay_ref
+        loaded = self.scenario
+        if (
+            self._area_edit_on()
+            and self.mode == "triggers"
+            and self.trigger_overlay_action.isChecked()
+            and self._current_tool == "pan"
+            and loaded is not None
+            and ref is not None
+            and len(ref[0]) == 1
+            and len(ref[1]) == 1
+        ):
+            (index,), (entry_ref,) = ref[0], tuple(ref[1])
+            mm = loaded.map_manager
+            for shape in self._trigger_overlay_shapes:
+                if (
+                    shape.trigger_index == index
+                    and shape.entry_ref == entry_ref
+                    and shape.fields == trigger_geometry.AREA_FIELDS
+                ):
+                    x1, y1, x2, y2 = shape.coords
+                    if 0 <= x1 <= x2 < mm.map_width and 0 <= y1 <= y2 < mm.map_height:
+                        target = (index, *entry_ref, shape.coords)
+                    break
+        previous = self._area_edit_target
+        self._area_edit_target = target
+        if previous is not None and target is not None and previous[:3] != target[:3]:
+            # Another entry with the same area: a live drag belongs to the old one.
+            self.map_view.set_area_edit(None)
+        self.map_view.set_area_edit(None if target is None else target[3])
+
+    def _on_area_edited(self, x1: int, y1: int, x2: int, y2: int) -> None:
+        """GH #229's release: one "Move Area" or "Resize Area" record, through GH #138's funnel."""
+        target = self._area_edit_target
+        if target is None or not self.trigger_panel.is_pick_target_current(target):
+            return
+        old = target[3]
+        moved = (x2 - x1, y2 - y1) == (old[2] - old[0], old[3] - old[1])
+        values = dict(zip(trigger_geometry.AREA_FIELDS, (x1, y1, x2, y2), strict=True))
+        self.set_entry_field_group(target[0], (target[1], target[2]), values, "Move Area" if moved else "Resize Area")
 
     def _on_trigger_selection_changed(self) -> None:
         """The panel's selection-set callback: Copy gating, and the overlay,
@@ -8803,6 +9430,10 @@ class ViewerWindow(QMainWindow):
             self._refresh_trigger_overlay()
 
     def _refresh_trigger_overlay(self) -> None:
+        self._trigger_overlay_shapes = self._draw_trigger_overlay()
+        self._push_area_edit_target()
+
+    def _draw_trigger_overlay(self) -> list[trigger_geometry.TriggerShape]:
         """Re-derives the overlay from a fresh parse_triggers(), never a held
         manager (the library's field gating is process-global). Read-only, so
         it never goes through TriggerEditModel.
@@ -8816,10 +9447,10 @@ class ViewerWindow(QMainWindow):
         # trigger_read_supported first: a ref only exists once the panel parsed.
         if ref is None or loaded is None or loaded.trigger_read_supported is not True:
             self.map_view.clear_trigger_overlay()
-            return
+            return []
         if len(ref[0]) > 1 and not self.trigger_overlay_action.isChecked():
             self.map_view.clear_trigger_overlay()
-            return
+            return []
         manager = parse_triggers(loaded)
         indices, emphasis = ref
         if (
@@ -8829,7 +9460,7 @@ class ViewerWindow(QMainWindow):
         ):
             self._trigger_overlay_ref = None
             self.map_view.clear_trigger_overlay()
-            return
+            return []
         vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
         references = self._unit_reference_index()
         shapes = []
@@ -8850,8 +9481,9 @@ class ViewerWindow(QMainWindow):
                     f"Trigger overlay hidden: the {len(indices)} selected triggers have more than "
                     f"{MAX_OVERLAY_SHAPES} areas, locations and units to draw"
                 )
-                return
+                return []
         self.map_view.show_trigger_overlay(shapes, emphasis or None)
+        return shapes
 
     def _on_distance_tick_interval(self, tiles: int) -> None:
         settings.set_distance_tick_interval(tiles)
@@ -9924,6 +10556,7 @@ class ViewerWindow(QMainWindow):
         self.map_view.refresh_unit_highlight()
         # Here, not in set_selection_player_colors(): _rebuild_unit_index() pushes colours too.
         self.map_view.refresh_footprint_owner_colors()
+        self.map_view.refresh_ring_layer_owner_colors()
         # An in-flight warm is walking unit data this recolour just changed;
         # re-armed below, same as _after_unit_mutation()'s own third
         # invalidation.
@@ -10366,6 +10999,7 @@ class ViewerWindow(QMainWindow):
         # clicks, so the template itself is validated per click instead.
         trigger_editable = has_map and self.mode == "triggers" and self.trigger_panel._editable
         self.create_objects_action.setEnabled(trigger_editable)
+        self._area_edit_editable = trigger_editable
         # Cycle Variant needs a selection as well as Units mode -- it acts on
         # what is already selected rather than on a click, so with nothing
         # selected there is no target and the button should say so by being
@@ -10447,6 +11081,8 @@ class ViewerWindow(QMainWindow):
             enabled, tip = view_layers.availability(
                 spec, style=self._render_style, sprites_enabled=self._sprites_enabled, has_map=has_map,
                 terrain_textures=self._layers.terrain_textures,
+                # Only asked with a map open, so the first mod-folder scan never lands on startup.
+                has_mod_art=has_map and self._has_mod_art(),
             )
             action = self.layer_actions[spec.layer_id]
             action.setEnabled(enabled)
@@ -10588,6 +11224,11 @@ class ViewerWindow(QMainWindow):
         self.brush_size_spin.setEnabled(brush_ok)
         self.brush_shape_combo_action.setVisible(brush_ok)
         self.brush_shape_combo.setEnabled(brush_ok)
+        thickness_ok = brush_ok and self.brush_shape_combo.currentData() in brush.OUTLINE_SHAPES
+        self.brush_thickness_label_action.setVisible(thickness_ok)
+        self.brush_thickness_spin_action.setVisible(thickness_ok)
+        self.brush_thickness_spin.setEnabled(thickness_ok)
+        self._refresh_brush_shape_labels()
         self.tool_value_inc_action.setEnabled(level_param_ok or brush_ok)
         self.tool_value_dec_action.setEnabled(level_param_ok or brush_ok)
         self.cliff_family_label_action.setVisible(cliff_param_ok)
@@ -10671,6 +11312,11 @@ class ViewerWindow(QMainWindow):
         self.wall_pick_param_action.setVisible(wall_pick_ok)
         self.wall_pick_button.setEnabled(wall_pick_ok)
 
+        area_param_ok = self._area_options_shown()
+        for action, _check in self._area_option_params:
+            action.setVisible(area_param_ok)
+        self._regate_area_options()
+
         ruler_param_ok = self._current_tool == "ruler" and self.ruler_action.isEnabled()
         self.clear_rulers_param_action.setVisible(ruler_param_ok)
         self.ruler_hint_param_action.setVisible(ruler_param_ok)
@@ -10680,7 +11326,7 @@ class ViewerWindow(QMainWindow):
             terrain_param_ok or level_param_ok or convert_param_ok or eraser_param_ok
             or cliff_param_ok or brush_ok or select_param_ok or rect_param_ok
             or beach_param_ok or unrestricted_ok or off_grid_ok or ruler_param_ok or skip_occupied_ok
-            or wall_pick_ok or gate_walls_ok
+            or wall_pick_ok or gate_walls_ok or area_param_ok
         )
 
         # Stage 3: mode may have just changed which tools are applicable,
@@ -10688,6 +11334,7 @@ class ViewerWindow(QMainWindow):
         # Tools button's own label should track -- both are this function's
         # business already, so recompute overflow membership here too.
         self._apply_toolbar_overflow()
+        self._push_area_edit_target()
 
     def _sync_map_view_brush(self) -> None:
         """Pushes the toolbar's current brush size/shape into MapView's
@@ -10705,9 +11352,30 @@ class ViewerWindow(QMainWindow):
         # two can't drift: every path that syncs the brush syncs this too.
         self.map_view.set_rect_filled(self._rect_filled())
         if brush_applicable(self._current_tool, rect_filled=self._rect_filled()):
-            self.map_view.set_brush(self.brush_size_spin.value(), self.brush_shape_combo.currentData())
+            self.map_view.set_brush(
+                self.brush_size_spin.value(), self.brush_shape_combo.currentData(), self.brush_thickness_spin.value()
+            )
         else:
-            self.map_view.set_brush(brush.BRUSH_SIZE_MIN, brush.BRUSH_SHAPE_SQUARE)
+            self.map_view.set_brush(brush.BRUSH_SIZE_MIN, brush.BRUSH_SHAPE_SQUARE, brush.BRUSH_THICKNESS_MIN)
+
+    def _brush_footprint(self, x: int, y: int) -> list[tuple[int, int]]:
+        """The toolbar brush's tiles at (x, y), clipped to the map: every brush tool's stroke reads this."""
+        mm = self.scenario.map_manager
+        return brush.brush_tiles(
+            x, y, self.brush_size_spin.value(), self.brush_shape_combo.currentData(),
+            mm.map_width, mm.map_height, self.brush_thickness_spin.value(),
+        )
+
+    def _refresh_brush_shape_labels(self) -> None:
+        """The two line shapes are named by how they run on screen, which flips between the
+        isometric views and top-down Flat (brush.shape_label())."""
+        isometric = self._render_style != "flat"
+        for index in range(self.brush_shape_combo.count()):
+            shape = self.brush_shape_combo.itemData(index)
+            if shape in (brush.BRUSH_SHAPE_LINE_X, brush.BRUSH_SHAPE_LINE_Y):
+                label = brush.shape_label(shape, isometric)
+                if self.brush_shape_combo.itemText(index) != label:
+                    self.brush_shape_combo.setItemText(index, label)
 
     def _rect_filled(self) -> bool:
         """Draw Rectangle's Fill/Outline state. A method rather than a plain
@@ -10772,6 +11440,11 @@ class ViewerWindow(QMainWindow):
     def _on_brush_changed(self) -> None:
         self._sync_map_view_brush()
         self.map_view.refresh_highlight(self._hover_tile)
+
+    def _on_brush_shape_changed(self) -> None:
+        # Re-gates the row as well: Thickness shows for an outline shape only.
+        self._update_tool_enabled()
+        self._on_brush_changed()
 
     def _on_terrain_changed(self, terrain_id: int) -> None:
         """The sidebar picker's hookup, for a user pick and the Eyedropper's
@@ -10842,6 +11515,7 @@ class ViewerWindow(QMainWindow):
             return
         self._terrain_style = style
         settings.set_terrain_style(style)  # after the _busy refusal, so a refused switch never persists
+        self._sync_rotation_dial_projection()
         # Flat's own view-rotation checkbox has nothing to do while a
         # Stepped image is loaded (its projection is already baked into the
         # pixels) -- see the checkbox's own tooltip.
@@ -10883,11 +11557,12 @@ class ViewerWindow(QMainWindow):
         reach the render below either: the checkbox is disabled in both, and
         only Flat's render path actually changes with this toggle."""
         self.map_view.set_isometric(checked)
+        self._sync_rotation_dial_projection()
         # Re-gate before the guarded render, not after: this action is one of
         # the two inputs to self._render_style, so flipping it moves Flat
         # between "really Flat" and "renders through IsoChunkCache" -- and
-        # View > Layers' farm row is gated on exactly that. Placed above the
-        # early returns so the busy/no-map paths re-gate too; with no map
+        # View > Layers' Small Trees and Hero Glow rows are gated on exactly
+        # that. Placed above the early returns so the busy/no-map paths re-gate too; with no map
         # every row is greyed anyway.
         self._update_tool_enabled()
         if self.scenario is None or self._busy or self._terrain_style != "flat":
@@ -10899,6 +11574,10 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Isometric View {state} (tile_px={tile_px}) prepared in {elapsed:.2f}s")
         finally:
             self._busy = False
+
+    def _sync_rotation_dial_projection(self) -> None:
+        """TASK-023: the inspector's facing dial follows the projection the map renders."""
+        self.units_panel.set_rotation_projection(self._render_style == "flat")
 
     # -- Edit-tool strokes (terrain paint / elevation raise-lower / set level) --
     # One stroke (mouse-down through release, or a defensive close on leave --
@@ -11044,9 +11723,7 @@ class ViewerWindow(QMainWindow):
         # is_edit_tool tool with no brush still degrades to its old
         # single-tile behavior instead of silently expanding.
         if self._current_tool in BRUSH_TOOLS:
-            footprint = brush.brush_tiles(
-                x, y, self.brush_size_spin.value(), self.brush_shape_combo.currentData(), mm.map_width, mm.map_height
-            )
+            footprint = self._brush_footprint(x, y)
         elif 0 <= x < mm.map_width and 0 <= y < mm.map_height:
             footprint = [(x, y)]
         else:
@@ -11470,10 +12147,7 @@ class ViewerWindow(QMainWindow):
         index = self.map_view._unit_index
         if index is None:
             return
-        mm = self.scenario.map_manager
-        footprint = brush.brush_tiles(
-            x, y, self.brush_size_spin.value(), self.brush_shape_combo.currentData(), mm.map_width, mm.map_height
-        )
+        footprint = self._brush_footprint(x, y)
         sources = {pid for pid, action in self.convert_source_actions.items() if action.isChecked()}
         destination = self._convert_destination
         destination_units = self.scenario.unit_manager.units[destination]
@@ -11596,10 +12270,9 @@ class ViewerWindow(QMainWindow):
         if stroke is None or self.scenario is None:
             return
         mm = self.scenario.map_manager
-        size, shape = self.brush_size_spin.value(), self.brush_shape_combo.currentData()
         footprint = []
         for x, y in tiles:
-            for tile in brush.brush_tiles(x, y, size, shape, mm.map_width, mm.map_height):
+            for tile in self._brush_footprint(x, y):
                 if tile not in stroke.touched_tiles:
                     stroke.touched_tiles.add(tile)
                     footprint.append(tile)
@@ -12572,8 +13245,8 @@ class ViewerWindow(QMainWindow):
 
         Reads the unit and writes UI state only, so there is no undo record.
         What a later click stores still comes from place_rotation.rotation_for()
-        alone, which is why a GAIA unit's facing may be kept here: it places 0.0.
-        Walls, gates, cliffs and single-frame consts leave the rotation alone."""
+        alone, a GAIA unit's facing included (GH #217). Walls, gates, cliffs
+        and single-frame consts leave the rotation alone."""
         if self.scenario is None:
             return
         unit = entry.unit
@@ -14461,11 +15134,7 @@ class ViewerWindow(QMainWindow):
             self._log_status("Create Objects: select a Create Object effect to stamp")
             return
 
-        mm = self.scenario.map_manager
-        footprint = brush.brush_tiles(
-            x, y, self.brush_size_spin.value(), self.brush_shape_combo.currentData(),
-            mm.map_width, mm.map_height,
-        )
+        footprint = self._brush_footprint(x, y)
         occupied = {
             (effect.location_x, effect.location_y)
             for effect in effects
@@ -15812,7 +16481,7 @@ class ViewerWindow(QMainWindow):
         # the default would aim inside TEMPLATE_DIR, which write_scenario()
         # unconditionally refuses to write into.
         try:
-            in_template = src.parent.resolve() == TEMPLATE_DIR.resolve()
+            in_template = resolve_detecting_loops(src.parent) == TEMPLATE_DIR.resolve()
         except (OSError, RuntimeError):  # a symlink loop: only a start folder, so keep it as given
             in_template = False
         parent = Path.home() if in_template else src.parent
@@ -16030,6 +16699,9 @@ class ViewerWindow(QMainWindow):
         # window is now editing that file, not the one it was opened from.
         self.scenario.path = Path(path)
         self._untitled = False
+        # GH #215: a new map or a renamed copy is otherwise missing from Open Recent until reopened.
+        settings.add_recent_file(self.scenario.path)
+        self._rebuild_recent_files_menu()
         self._update_info()  # the info panel's "File:" line just changed
         self.edit_history.mark_saved()
         self._update_title()
@@ -16900,7 +17572,7 @@ class ViewerWindow(QMainWindow):
     def _texture_prefetch_ids(self) -> list[int]:
         """The terrain ids a render of self.scenario textures: every tile's,
         every layered terrain's while blending draws them, plus the farm
-        overlay's where it draws (sprites on, not Flat)."""
+        overlay's where it draws (sprites on, every style)."""
         from descape import native_composite, render
 
         mm = self.scenario.map_manager
@@ -16910,7 +17582,7 @@ class ViewerWindow(QMainWindow):
             # A terrain used only as a layer has no base tile to list it above.
             layer_ids = np.unique(render.tile_field_mirror(self.scenario, "layer"))
             ids.extend(layer_ids[layer_ids >= 0].tolist())
-        if self._sprites_enabled and self._layers.farm_overlay and self._render_style != "flat":
+        if self._sprites_enabled and self._layers.farm_overlay:
             consts = {unit.unit_const for units in self.scenario.unit_manager.units for unit in units}
             ids.extend(tid for tid in map(render._terrain_overlay_for, consts) if tid is not None)
         return ids
@@ -17081,6 +17753,7 @@ class ViewerWindow(QMainWindow):
                 )
             finally:
                 self._busy = False
+            unit_sprites.sprite_reach()  # an install or mod-art change resets it; see load_scenario()
             # Re-gate too, not just re-render. "Show sprites" is the one action
             # whose enablement depends on the install path, and its greyed-out
             # tooltip tells the user to go configure one -- so without this,
@@ -17135,6 +17808,46 @@ class ViewerWindow(QMainWindow):
         if not self._confirm_discard_changes():
             return
         self.load_scenario(Path(path_str))
+
+    def _drop_paths(self, event) -> list[Path]:
+        """The scenario files a drag carries, or [] when it can't open one now."""
+        if self._busy or not event.mimeData().hasUrls() or not event.possibleActions() & Qt.CopyAction:
+            return []
+        return dropped_scenario_paths(event.mimeData().urls())
+
+    @staticmethod
+    def _accept_as_copy(event) -> None:
+        # Never Move (Shift-drag): Explorer deletes the source after a Move result, and opening consumes nothing.
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+
+    def dragEnterEvent(self, event) -> None:
+        if self._drop_paths(event):
+            self._accept_as_copy(event)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:
+        paths = self._drop_paths(event)
+        if not paths:
+            event.ignore()
+            return
+        self._accept_as_copy(event)
+        # Deferred: the discard prompt's modal loop inside dropEvent would stall the drag source.
+        QTimer.singleShot(0, lambda: self._open_dropped(paths))
+
+    def _open_dropped(self, paths: list[Path]) -> None:
+        if self._busy or not self._confirm_discard_changes():
+            return
+        before = self.scenario
+        self.load_scenario(paths[0])
+        if len(paths) > 1 and self.scenario is not before:
+            message = f"Opened {paths[0].name}; skipped {len(paths) - 1} other dropped file(s)"
+            self._log_status(message)
+            self.statusBar().showMessage(message)
 
     def _clear_recent_files(self) -> None:
         settings.clear_recent_files()
@@ -17508,6 +18221,10 @@ class ViewerWindow(QMainWindow):
                 f"tile_px={tile_px}, style={self._style_log_label}) "
                 f"in {total_elapsed:.2f}s ({generate_part}parse {parse_elapsed:.2f}s, prepare {elapsed:.2f}s)"
             )
+            if mod_line := self._mod_art_status():
+                self._log_status(mod_line)
+            # Walks every active mod file once per mod-art change (cached after): here, not in the first edit.
+            unit_sprites.sprite_reach()
             # Only now, with that line printed, may the follow-up drain. No
             # paint at all (a window never shown) means no second line.
             self._pending_paint_report["ready"] = True
@@ -17940,6 +18657,9 @@ def main() -> None:
     platform_line = qt_platform.apply_default(prefer_xcb=settings.get_xwayland_on_wayland())
     if platform_line is not None:
         debug_log.log(platform_line)
+    theme_line = qt_platform.apply_default_theme()
+    if theme_line is not None:
+        debug_log.log(theme_line)
     app = QApplication(sys.argv)
     debug_log.log(f"Qt platform: {QApplication.platformName()}")
     # Wayland's app_id, matching packaging/DEscape.desktop (StartupWMClass is X11-only).

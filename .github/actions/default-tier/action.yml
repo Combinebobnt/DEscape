@@ -1,0 +1,12 @@
+name: Default test tier (Linux)
+description: >
+  Runs the default pytest tier under xvfb with the native kernel required.
+  Assumes the qt-linux-libs and install-and-build actions already ran.
+runs:
+  using: composite
+  steps:
+    - name: Run the default test tier
+      shell: bash
+      env:
+        DESCAPE_REQUIRE_NATIVE: '1'
+      run: xvfb-run -a python -m pytest -n auto --maxprocesses 16 --dist loadgroup

@@ -90,6 +90,7 @@ ISO_CONFIGS = frozenset((style, sprites) for style, sprites in ALL_CONFIGS if st
 ELCID = "C2_ElCid_coop_1_v0_16.aoe2scenario"
 JOAN = "2_Joan_coop_1_v0_13.aoe2scenario"
 OLD_ALLIES = "old-allies-final-v2.aoe2scenario"
+LELOI = "R4_LeLoi_4.aoe2scenario"
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).
 CROP_W, CROP_H, UPSCALE = 240, 180, 5
@@ -199,6 +200,29 @@ def _no_blocker_spans() -> None:
     terrain_palette.BLOCKER_TILE_SPANS = {}
 
 
+def _v09_gaia_facing() -> None:
+    """Put the pre-GH #217 facing back: a GAIA unit whose rotation is not a variant index draws facing 0."""
+    from descape import render, unit_sprites
+
+    _require(render, "stored_rotation")
+
+    def stored_rotation(player_id: int, unit) -> float:
+        if player_id == 0 and not unit_sprites.rotation_is_variant(unit.unit_const):
+            return 0.0
+        return float(unit.rotation)
+
+    render.stored_rotation = stored_rotation
+
+
+def _no_doodad_spans() -> None:
+    """Put the pre-TASK-134 doodad footprint back: a mountain, ruin or other large class-14 doodad marks one tile."""
+    from descape import terrain_palette
+
+    _require(terrain_palette, "DOODAD_TILE_SPANS", "tile_span")
+    # In place: render and placement_rules import the dict by name.
+    terrain_palette.DOODAD_TILE_SPANS.clear()
+
+
 # ---------------------------------------------------------------------------
 # Exclusions: each names the consts removed on both sides. Evaluated in the driver, against this checkout.
 
@@ -291,6 +315,18 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         patch=_no_blocker_spans,
     ),
     Neutralization(
+        "doodad-spans",
+        "TASK-134: mountains, ruins and other large scenery cover their real footprint",
+        since="v0.9", control_file=LELOI, must_fail=SPRITES_OFF | {("flat", True)},
+        patch=_no_doodad_spans,
+    ),
+    Neutralization(
+        "gaia-facing",
+        "GH #217 (PR #218): GAIA creatables such as wildlife draw their stored facing",
+        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
+        patch=_v09_gaia_facing,
+    ),
+    Neutralization(
         "paint-order",
         "GH #107: with sprites on, all terrain paints first, then objects",
         since="v0.9", control_file=ELCID, must_fail=ISO_CONFIGS & SPRITES_ON,
@@ -312,6 +348,7 @@ MASK_MEASURED: dict[str, dict[int, float]] = {
     ELCID: {25: 0.1601, 50: 0.1548, 100: 0.1452, 200: 0.1288},
     "F7_2_Dos Pilas (648).aoe2scenario": {25: 0.0579, 50: 0.0574, 100: 0.0566, 200: 0.0549},
     OLD_ALLIES: {25: 0.2136, 50: 0.2111, 100: 0.2063, 200: 0.1973},
+    LELOI: {25: 0.0494, 50: 0.0486, 100: 0.0470, 200: 0.0441},
 }
 MASK_MARGIN = 0.005
 

@@ -49,7 +49,7 @@ def _changes(*transitions: tuple[int, int]) -> tuple[list, dict]:
 
 def test_every_terrain_unit_const_has_a_variant_graphic_entry():
     """The test that matters, per the plan: render.stored_rotation() returns
-    0.0 for a GAIA unit whose const is not rotation_is_variant, so a doodad
+    0.0 for a GAIA unit whose const is neither rotation_is_variant nor ANGLE, so a doodad
     const missing this would render as variant 0 inside DEscape while the
     file on disk is correct. A miss here is a generator bug, not something
     to fall back on at runtime."""

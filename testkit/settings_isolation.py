@@ -31,6 +31,7 @@ MEMOIZED_GLOBALS = (
     "_zoom_centered_on_cursor",
     "_graphics_quality",
     "_pan_speed",
+    "_wall_opacity_pct",
     "_theme",
     "_theme_colors",
     "_preload_zoom_levels",
@@ -69,8 +70,13 @@ MEMOIZED_GLOBALS = (
     "_selection_by_owner",
     "_range_rings",
     "_range_rings_by_owner",
+    "_range_rings_revealers",
+    "_range_rings_buildings",
+    "_range_rings_selected_revealers",
     "_camera_markers",
     "_trigger_overlay",
+    "_trigger_area_edit",
+    "_trigger_area_tile_borders",
     "_stack_badge_position",
     "_autosave_dir_refused",
     "_footprint_merged",
@@ -82,6 +88,9 @@ MEMOIZED_GLOBALS = (
     "_button_grid_all_triggers",
     "_terrain_style",
     "_view_layers",
+    "_mod_art_excluded",
+    "_terrain_picker_mode",
+    "_terrain_grid_swatch_px",
 )
 
 
@@ -121,4 +130,13 @@ def isolate_settings(config_dir: Path, *, redirect_asset_source: bool = True) ->
         asset_source_module.CONFIG_PATH = fake_config_path
     for name in MEMOIZED_GLOBALS:
         setattr(settings_module, name, None)
+    # Mod art is module state a window switches on (TASK-378): a capture starts with it off, and
+    # draws mods only from a profile named in AOE2DE_PROFILE_PATH, never the autodetected one.
+    import os
+
+    from descape import mod_graphics
+
+    mod_graphics.reset()
+    if not os.environ.get("AOE2DE_PROFILE_PATH"):  # an empty value autodetects too
+        os.environ["AOE2DE_PROFILE_PATH"] = str(config_dir / "no-profile")
     return fake_config_path
