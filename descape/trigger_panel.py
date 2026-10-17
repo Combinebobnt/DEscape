@@ -45,6 +45,7 @@ from descape import (
     messages_fields,
     object_catalog,
     player_labels,
+    train_locations,
     trigger_fields,
     trigger_geometry,
     trigger_organize,
@@ -2547,7 +2548,12 @@ class TriggerPanel(QWidget):
             if self._button_grid is not None:
                 fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
                 self._button_grid.bind(
-                    fields, self._button_grid_effect(entries), self._read, _entry, self._fit_property_height
+                    fields,
+                    self._button_grid_effect(entries),
+                    self._read,
+                    _entry,
+                    self._fit_property_height,
+                    self._button_grid_context(entries[0][1]),
                 )
             if len(entries) == 1 and kind == "effect" and self._read(_entry, "effect_type") == self._DISPLAY_INSTRUCTIONS:
                 self._add_instruction_preview(_entry)
@@ -2574,6 +2580,16 @@ class TriggerPanel(QWidget):
         return name if name in self._BUTTON_GRID_TYPES else ""
 
     _BUTTON_GRID_TYPES = frozenset(button_grid.EFFECT_MOVERS)
+
+    def _button_grid_context(self, effect_index: int):
+        """GH #230: source_player -> the grid's PlayerContext, leaving out
+        the effect being edited (current trigger, `effect_index`)."""
+        manager = self._manager()
+        trigger_index = self.current_trigger_index()
+        if manager is None or trigger_index is None or trigger_index >= len(manager.triggers):
+            return None
+        exclude = (manager.triggers[trigger_index].trigger_id, effect_index)
+        return lambda player: train_locations.player_context(self._manager(), self._loaded, player, exclude)
 
     def _add_instruction_preview(self, entry) -> None:
         """GH #140: a full-width, observe-only preview row under the fields."""

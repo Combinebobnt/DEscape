@@ -478,6 +478,12 @@ trigger_status_marker: color
 # Default: true.
 trigger_status_color_ok_rows: true
 
+# The trigger editor's button grid (under the button slot of Change Train
+# Location, Add Train Location and Change Research Location): whether its
+# "Show all triggers' changes" box is ticked, so the grid also applies every
+# other such effect for the same player. Default: false.
+button_grid_all_triggers: false
+
 # The two marker colours, as "#rrggbb"; omit one to leave it at its default.
 trigger_status_colors:
   ok: '#4caf50'

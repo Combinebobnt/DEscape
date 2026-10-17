@@ -448,3 +448,44 @@ def test_a_missing_json_still_gives_the_library_only_catalog(monkeypatch, tmp_pa
     finally:
         object_catalog._dat_table.cache_clear()
         object_catalog.clear_caches()
+
+
+# --- GH #230: which civs can have a trainable unit or a researchable tech -----
+
+
+def test_civs_lists_the_civs_that_can_have_a_unit() -> None:
+    """Mule Cart is Armenian and Georgian, Conquistador Spanish (14), Longbowman Briton (1), Krepost Bulgarian (32)."""
+    objects = object_catalog.dat_objects()
+    assert objects[1808]["civs"] == [44, 45]
+    assert objects[771]["civs"] == [14]
+    assert objects[8]["civs"] == [1]
+    assert objects[1251]["civs"] == [32]
+    assert 14 not in objects[39]["civs"], "Spanish have no Cavalry Archer"
+
+
+def test_civs_is_omitted_when_every_civ_can_and_only_set_with_a_location() -> None:
+    objects, techs = object_catalog.dat_objects(), object_catalog.dat_techs()
+    assert "civs" not in objects[74] and "civs" not in techs[22], "Militia and Loom are for everyone"
+    assert all("train" in row for row in objects.values() if "civs" in row)
+    assert all("research" in row for row in techs.values() if "civs" in row)
+    assert all(row["civs"] == sorted(row["civs"]) for row in [*objects.values(), *techs.values()] if "civs" in row)
+
+
+def test_regional_units_follow_the_civ_trees_re_enables() -> None:
+    """Disable Regionals takes camels from every civ; Saracens (9) get them back, Britons (1) do not."""
+    camel = object_catalog.dat_objects()[329]["civs"]
+    assert 9 in camel and 1 not in camel
+
+
+def test_gives_lists_the_trainable_units_a_tech_enables_or_upgrades_into() -> None:
+    techs = object_catalog.dat_techs()
+    assert techs[509]["gives"] == [881], "Elite Kamayuk upgrades Kamayuk into Elite Kamayuk"
+    assert "gives" not in techs[22]
+
+
+def test_age_is_the_age_a_tech_becomes_researchable_in() -> None:
+    """Measured: a later start has every generic tech of an earlier age (Loom 2, Bloodlines 3, Long Swordsman 4, Chemistry 5)."""
+    techs = object_catalog.dat_techs()
+    assert [techs[t]["age"] for t in (22, 435, 207, 47)] == [2, 3, 4, 5]
+    assert [techs[t]["age"] for t in (101, 102, 103)] == [2, 3, 4], "each age tech is researched in the age before"
+    assert all("age" in row for row in techs.values() if "research" in row)
