@@ -57,7 +57,8 @@ def test_the_ror_object_list_comes_from_the_ror_dat_not_the_aoe2_enums():
     assert listed[TOWN_CENTER].category == "Buildings"
     dat = object_catalog.dat_objects()
     spawners = set(object_catalog._ROR_EDITOR_LISTED_DAT_ONLY)
-    assert all(not dat[id_].get("hidden") for id_ in listed.keys() - spawners), "an editor-hidden RoR object was listed"
+    shown = {id_ for id_, entry in listed.items() if not entry.hidden}
+    assert all(not dat[id_].get("hidden") for id_ in shown - spawners), "an editor-hidden RoR object was listed as shown"
     assert 2607 not in listed or dat[2607].get("hidden") is False, "AoE2's Gunpowder Keg exception leaked into RoR"
     assert object_catalog.combined_object_name(HOPLITE_SPEARMAN) == "Hoplite"
 

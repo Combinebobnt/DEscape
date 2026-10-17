@@ -372,18 +372,19 @@ def _crop(arr: np.ndarray, ox: int, oy: int, tile_px: int) -> np.ndarray:
 
 def _compose(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
     own_tid, layer_tid, entries = key
-    base = asset_source.get_terrain_texture_array(own_tid)
+    size = asset_source.terrain_texture_size(tile_px)
+    base = asset_source.terrain_texture_at(own_tid, size)
     if base is None:
         return None
     out = _crop(base, ox, oy, tile_px).astype(np.uint32)
     if layer_tid >= 0:
-        layer = asset_source.get_terrain_texture_array(layer_tid)
-        mask = asset_source.get_terrain_mask_array(layer_mask_name(layer_tid))
+        layer = asset_source.terrain_texture_at(layer_tid, size)
+        mask = asset_source.terrain_mask_at(layer_mask_name(layer_tid), size)
         if layer is not None and mask is not None:
             m = _crop(mask, ox, oy, tile_px).astype(np.uint32)[:, :, None]
             out = (out * (256 - m) + _crop(layer, ox, oy, tile_px) * m + 128) >> 8
     for n_tid, mode, tile in entries:
-        neighbour = asset_source.get_terrain_texture_array(n_tid)
+        neighbour = asset_source.terrain_texture_at(n_tid, size)
         alpha = asset_source.get_blend_mask(mode, tile, tile_px)
         if neighbour is None or alpha is None:
             continue

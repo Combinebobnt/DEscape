@@ -13,8 +13,8 @@ form walls use. So writes are always a plain literal integer.
 Walls, cliffs and gates are excluded BY CONST SET, not by `unit.class_`: the
 game re-derives their stored index from neighbours (and a gate's orientation
 lives in its const). Class 27 is 36 consts of which only 9 are walls
-(counting Aqueduct, 231, since GH #110), so a class exclusion would also drop
-Mole (2421).
+(counting Aqueduct, 231, since GH #110; 8 in Return of Rome), so a class
+exclusion would also drop Mole (2421).
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def excluded_consts() -> frozenset[int]:
     JSON tables, the same reason unit_sprites.wall_connector_consts() is one.
     """
     gates = frozenset(const for group in gate_orientation.groups().values() for const in group)
-    return unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIFF_VARIANT_CONSTS | gates
+    return unit_sprites.rotation_variant_const_set() | unit_sprites.cliff_const_set() | gates
 
 
 @game_dataset.cache(maxsize=1)

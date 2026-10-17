@@ -44,7 +44,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import asset_source, catalog_thumbs, game_dataset, object_catalog, place_random, settings
+from descape import asset_source, catalog_thumbs, object_catalog, place_random, settings
 from descape.constant_picker import HIDDEN_LABEL
 from descape.terrain_palette import PLAYER_COLORS
 
@@ -260,10 +260,9 @@ class CatalogBrowserView(QWidget):
 
     @staticmethod
     def _load_entries() -> tuple[tuple, dict]:
-        """The active game dataset's objects, plus GH #164's random rows, which
-        name AoE2 consts and so are left out under Return of Rome (GH #67)."""
-        randoms = () if game_dataset.is_ror() else tuple(place_random.catalog_entries())
-        entries = tuple(object_catalog.objects()) + randoms
+        """The active game dataset's objects, plus GH #164's random rows (in Return
+        of Rome too: its 83 and 293 are the same male and female villagers, GH #67)."""
+        entries = tuple(object_catalog.objects()) + tuple(place_random.catalog_entries())
         return entries, {entry.id: entry for entry in entries}
 
     def reload_entries(self) -> None:

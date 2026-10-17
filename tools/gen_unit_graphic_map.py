@@ -951,6 +951,10 @@ _ANNEX_TREE_SCOPE: frozenset[int] = frozenset({1893, 1897})
 # The hut (1890's own graphic) supplies the entry's top-level fields.
 _ANNEX_TREE_PARENT_UNIT = 1890
 
+# The fence shell, a legacy graphic in AoE2; Return of Rome gives it the farm
+# sprite b_all_farm_x1 (2026-10-17), which is not a pasture piece. Never emitted.
+_ANNEX_TREE_SHELL_UNIT = 2078
+
 # Pieces an in-scope root must yield: hut + 4 posts + 4 edges x 5 fences.
 _ANNEX_TREE_PIECE_COUNT = 25
 
@@ -961,8 +965,8 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
 
     A DFS over building.annexes, summing misplacement down the tree: every
     node whose OWN standing_graphic resolves modern emits a piece at the summed
-    misplacement; a legacy node (the root, 2078) emits nothing but its annexes
-    still walk. Unlike a town centre, the parent is an annex's art (1890's
+    misplacement; the fence shell 2078 (_ANNEX_TREE_SHELL_UNIT) emits nothing
+    but its annexes still walk. Unlike a town centre, the parent is an annex's art (1890's
     hut), not the const's own. Every piece but the hut is `seeded`: its
     variant is picked per placed unit, not by the root's rotation."""
     found: list[tuple[int, float, float, object]] = []
@@ -971,7 +975,7 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
         unit = units[uid]
         if unit is None:
             return
-        if uid != unit_const:
+        if uid not in (unit_const, _ANNEX_TREE_SHELL_UNIT):
             standing = unit.standing_graphic
             graphic = _resolve_modern_graphic(graphics, standing[0] if standing else -1)
             if graphic is not None:
@@ -1636,10 +1640,23 @@ def _building_art(
 
 # GH #67: each list above is hand-measured on the AoE2 .dat, so a RoR run
 # starts with none of them and they are measured on the RoR .dat in their turn.
-_ROR_EMPTY_LISTS = (
-    "_EXTRA_ANGLE_CONSTS", "_COMPOSITE_SCOPE", "_PIECE_SLOTS", "_TOWN_CENTRE_SCOPE", "_PIECE_SLOTS_BY_ART",
-    "_ANNEX_TREE_SCOPE", "_BODY_GRAPHIC_OVERRIDES", "_UNDERWATER_BODY_CONSTS", "_BODY_FRAME_OFFSETS",
-)
+# Each hand-measured list's RoR value, measured on the RoR .dat and 8 RoR samples (2026-10-17).
+_ROR_VALUES: dict[str, object] = {
+    # The same four trebuchet objects (TREBU/PTREB, angle_count 32), hidden in RoR's editor.
+    "_EXTRA_ANGLE_CONSTS": _EXTRA_ANGLE_CONSTS,
+    # RoR town centres have only the empty annex 890; the pastures keep AoE2's slots (same pieces).
+    "_COMPOSITE_SCOPE": frozenset(),
+    "_PIECE_SLOTS": {const: _PIECE_SLOTS[const] for const in _ANNEX_TREE_SCOPE},
+    "_TOWN_CENTRE_SCOPE": frozenset(),
+    "_PIECE_SLOTS_BY_ART": {},
+    # Its pastures carry AoE2's annex tree (hut 1890, 2078, posts 1888); the hut shows in game.
+    "_ANNEX_TREE_SCOPE": _ANNEX_TREE_SCOPE,
+    # 72 is a plain wall there; 119 and 788 still draw the palisade flag shell.
+    "_BODY_GRAPHIC_OVERRIDES": {119: 605, 788: 6595},
+    # Same _underwater deltas, except Whale 2625, whose delta is empty there.
+    "_UNDERWATER_BODY_CONSTS": _UNDERWATER_BODY_CONSTS - {2625},
+    "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
+}
 # Measured on the RoR .dat (2026-10-16): _AGE_TECHS' 101/102/103 are its Tool,
 # Bronze and Iron Ages, so they stay; the holdout is the same hidden PORT as AoE2's.
 # _PARTICLE_CONSTS stays too (2026-10-17): 303 and 1608-1610 have the same graphics and effects.
@@ -1649,12 +1666,12 @@ _ROR_ART_INVARIANT_HOLDOUTS: dict[int, str] = {
 
 
 def _select_dataset(dataset: str) -> None:
-    """Empties every hand-measured const list for a RoR run (_ROR_EMPTY_LISTS)
-    and swaps in the RoR holdouts."""
+    """Swaps every hand-measured const list for its RoR value (_ROR_VALUES)
+    and the RoR holdouts in, for a RoR run."""
     global _ART_INVARIANT_HOLDOUTS
     if dataset == _game_root.ROR:
-        for name in _ROR_EMPTY_LISTS:
-            globals()[name] = type(globals()[name])()
+        assert _ROR_VALUES.keys() <= globals().keys(), "a _ROR_VALUES key names no list"
+        globals().update(_ROR_VALUES)
         _ART_INVARIANT_HOLDOUTS = _ROR_ART_INVARIANT_HOLDOUTS
 
 

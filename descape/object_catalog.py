@@ -12,8 +12,9 @@ Two different problems live here:
    `objects()` also lists every .dat-table object no dataset covers and the
    .dat does not hide from the editor, under `derived_category()`'s
    .dat-derived category, plus `_EDITOR_LISTED_DAT_ONLY` (the Gunpowder Keg),
-   which the .dat hides but the official editor lists. `combined_object_name()` stays dataset-only: the
-   trigger field formatter's ALL-CAPS contract depends on it.
+   which the .dat hides but the official editor lists. `combined_object_name()` stays dataset-only
+   in AoE2: the trigger field formatter's ALL-CAPS contract depends on it. Under
+   Return of Rome it names `objects()`' rows, the AoE2-shared hidden ones included.
 2. **Document-scoped references** (`TriggerId`/`VariableId`) -- resolved
    against the open document's own trigger/variable list, which no dataset
    covers.
@@ -26,6 +27,7 @@ install is configured never survives past that point.
 
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -69,6 +71,47 @@ def _dat_table() -> dict:
     if not path.is_file():
         return {"objects": {}, "techs": {}, "terrains": {}}
     return json.loads(path.read_text())
+
+
+@functools.cache
+def _aoe2_dat_objects() -> dict:
+    """The AoE2 table's object rows whatever dataset is active (GH #67's shared hidden objects)."""
+    path = game_dataset.table_path(_CATALOG_JSON_PATH, game_dataset.AOE2)
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text())["objects"]
+
+
+def _ror_shared_hidden() -> dict[int, str]:
+    """id -> category for every object the RoR editor hides that is the same
+    object as one AoE2's objects() lists (its editor's, plus the library
+    members it hides): same .dat code and class in both
+    tables (543 on 2026-10-17, the Castle among them). Listed as hidden, so
+    "Show editor-hidden objects" offers them; an emptied RoR slot (WALL5 2678)
+    or a reused one (93, Spearman there, Hoplite here) differs in code."""
+    aoe2 = _aoe2_dat_objects()
+    candidates: dict[int, str] = {}
+    for dataset, category in _OBJECT_DATASETS:
+        for member in dataset:
+            candidates.setdefault(member.ID, category)
+    for key, row in aoe2.items():
+        if not row.get("hidden"):
+            candidates.setdefault(int(key), derived_category(row))
+    for id_, category in _EDITOR_LISTED_DAT_ONLY.items():
+        candidates.setdefault(id_, category)
+    shared: dict[int, str] = {}
+    for id_, category in candidates.items():
+        old, new = aoe2.get(str(id_)), _dat_entry("objects", id_)
+        if old and new and new.get("hidden") and (old.get("code"), old.get("class")) == (new.get("code"), new.get("class")):
+            shared[id_] = category
+    return shared
+
+
+def same_object_in_aoe2(id_: int) -> bool:
+    """Whether id_ is the same object in both games' tables: same .dat code and
+    class (GH #67). A pick keeps only such a const across a dataset switch."""
+    old, new = _aoe2_dat_objects().get(str(id_)), _dat_table()["objects"].get(str(id_))
+    return bool(old and new) and (old.get("code"), old.get("class")) == (new.get("code"), new.get("class"))
 
 
 def _dat_entry(section: str, id_: int) -> dict | None:
@@ -177,6 +220,7 @@ def clear_caches() -> None:
     _combined_object_names.cache_clear()
     objects.cache_clear()
     techs.cache_clear()
+    _aoe2_dat_objects.cache_clear()
 
 
 @game_dataset.cache(maxsize=1)
@@ -192,7 +236,7 @@ def _combined_object_names() -> dict[int, str]:
     names: dict[int, str] = {}
     lang = asset_source.get_language()
     if game_dataset.is_ror():
-        # The library's enums are AoE2's: under Return of Rome every editor-listed .dat object stands in (GH #67).
+        # The library's enums are AoE2's: under Return of Rome objects()' rows stand in (GH #67).
         return {entry.id: entry.name for entry in objects()}
     for dataset, _category in _OBJECT_DATASETS:
         for member in dataset:
@@ -274,7 +318,8 @@ def objects() -> tuple[CatalogEntry, ...]:
     named install string -> .dat code and categorized by derived_category().
     Editor-hidden dat-only ids stay out (user decision 2026-09-27), except
     _EDITOR_LISTED_DAT_ONLY (_ROR_EDITOR_LISTED_DAT_ONLY under Return of
-    Rome), listed as not hidden under the official editor's category (GH #208)."""
+    Rome), listed as not hidden under the official editor's category (GH #208).
+    Under Return of Rome, also _ror_shared_hidden(), as hidden."""
     seen: set[int] = set()
     entries = []
     lang = asset_source.get_language()
@@ -297,6 +342,12 @@ def objects() -> tuple[CatalogEntry, ...]:
         dat_entry = raw_entry if category is None else {**raw_entry, "hidden": False}
         name = resolve_name(id_, "", dat_entry, lang)
         entries.append(_entry(id_, name, category or derived_category(dat_entry), dat_entry))
+        seen.add(id_)
+    if ror:
+        for id_, category in _ror_shared_hidden().items():
+            if id_ not in seen and id_ not in _ROR_EDITOR_UNLISTED:
+                dat_entry = _dat_entry("objects", id_)
+                entries.append(_entry(id_, resolve_name(id_, "", dat_entry, lang), category, dat_entry))
     return tuple(sorted(entries, key=lambda e: e.name))
 
 

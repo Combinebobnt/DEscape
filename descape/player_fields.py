@@ -110,6 +110,11 @@ class PlayerFieldSpec:
 
 
 _STARTING_AGE_CHOICES = tuple((m.value, m.name.replace("_", " ").title()) for m in StartingAge)
+# GH #67: Return of Rome's editor ages, stored 2..5 (measured in its editor 2026-10-17),
+# plus Post-Iron Age (the user, 2026-10-17) in AoE2's Post-Imperial slot, 6.
+_ROR_STARTING_AGE_CHOICES = (
+    (2, "Stone Age"), (3, "Tool Age"), (4, "Bronze Age"), (5, "Iron Age"), (6, "Post-Iron Age"),
+)
 _COLOR_CHOICES = tuple((m.value, m.name.title()) for m in ColorId if not m.name.startswith("INVALID"))
 # ai_type follows Personality, not the Human/Computer/Either control:
 # confirmed by in-game saves (GH #126 Step 0) and the name-class corpus census.
@@ -533,8 +538,12 @@ _STR16_LENGTH_STRUCT = struct.Struct("<h")
 # also what verify_player_block() re-encodes GAIA's slot with to check for
 # an offset shift, and GAIA's own slot is real per-file data this module
 # must be able to round-trip, not reject. Computed once at import time
-# since Civilization's membership is fixed.
-_ENCODABLE_CIVILIZATIONS = frozenset(m.value for m in Civilization)
+# since Civilization's membership is fixed. GH #67: the Return of Rome
+# tokens too, whatever the active dataset, so a 1.56+ RoR file's stored
+# civs re-encode and its Players rows stay writable.
+_ENCODABLE_CIVILIZATIONS = frozenset(m.value for m in Civilization) | frozenset(
+    token for _civ_id, token, _name in ROR_CIVILIZATIONS
+)
 
 # Never written as its own row: player_type (ai_type) is written only as
 # part of a Personality choice, never by itself (GH #126).
@@ -636,6 +645,11 @@ def _player_data_1_field_codec(loaded: LoadedScenario, struct_field: str) -> str
     if field_retriever is None:
         return None
     return _codec_for(field_retriever)
+
+
+def starting_age_choices() -> tuple[tuple[int, str], ...]:
+    """(value, label) pairs for the Starting age combo in the active game dataset (GH #67)."""
+    return _ROR_STARTING_AGE_CHOICES if game_dataset.is_ror() else _STARTING_AGE_CHOICES
 
 
 def civilization_choices(loaded: LoadedScenario) -> tuple[tuple[int | str, str], ...]:
@@ -1481,7 +1495,7 @@ def _encode_str16(value: int | str) -> bytes:
     See encode_target()'s own docstring for the format's provenance and
     the GAIA-inclusion rationale."""
     if not isinstance(value, str) or value not in _ENCODABLE_CIVILIZATIONS:
-        raise ValueError(f"{value!r} is not a real Civilization member")
+        raise ValueError(f"{value!r} is not a real Civilization or Return of Rome civ token")
     payload = value.encode("utf-8")
     return _STR16_LENGTH_STRUCT.pack(len(payload)) + payload
 

@@ -674,8 +674,28 @@ class UnitsPanel(QWidget):
         return self.selection_card.portrait_source
 
     def reload_catalog(self) -> None:
-        """After a game dataset switch (GH #67): the catalog's rows, re-read from object_catalog."""
+        """After a game dataset switch (GH #67): the catalog's rows, re-read from
+        object_catalog. The pending pick stays, under its new name, while the
+        new catalog lists its const as the same object (object_catalog.
+        same_object_in_aoe2), ticking the show-hidden box for a hidden row as
+        pick_object() does. It is dropped otherwise: an empty slot (Mule Cart
+        1808 under RoR) or a reused one (93, Spearman and Hoplite)."""
         self.catalog_view.reload_entries()
+        pending = self._pending_object_const
+        if pending is None or place_random.is_random(pending):
+            return
+        entry = object_catalog.entry(object_catalog.objects(), pending)
+        if entry is not None and object_catalog.same_object_in_aoe2(pending):
+            if entry.hidden and self.catalog_view.show_hidden_checkbox is not None:
+                self.catalog_view.show_hidden_checkbox.setChecked(True)
+            self._set_pending_object(pending)
+            return
+        self._pending_object_const = None
+        self._rolled_const = None
+        self._pending_name = None
+        self.placing_card.clear("Placing: (none)")
+        self.placing_label.setToolTip("")
+        self._on_pending_changed()
 
     def refresh_thumbnails(self) -> None:
         """After an install change: the list's thumbnails and modes, and both cards' stat icons and portraits."""

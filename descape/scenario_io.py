@@ -1412,11 +1412,7 @@ def _header_variant(header_retriever_map: dict) -> int | None:
 def _player_art_or_none(loaded: LoadedScenario, pending=None) -> tuple[tuple[int | None, int], ...] | None:
     """civ_art.player_art(), or None (today's Gaia-table art) when surprising
     player data makes player_fields raise: art must never make a file unopenable.
-    Always None for a Return of Rome file: civ_art's indices are AoE2's (GH #67)."""
-    from descape import game_dataset
-
-    if game_dataset.from_variant(loaded.game_variant) == game_dataset.ROR:
-        return None
+    A Return of Rome file indexes its own civs (GH #67)."""
     # Lazy: civ_art reads through player_fields, which imports this module.
     from descape import civ_art
 

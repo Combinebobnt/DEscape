@@ -1,7 +1,8 @@
 """Family/piece catalog for the Terrain-mode Cliff tool -- Track B Stage 1 of
 the 2026-09-02 cliffs plan.
 
-Cliffs are 96 GAIA `class_ == 34` consts: ten full nine-piece families
+Cliffs are 96 GAIA `class_ == 34` consts in AoE2 (60 in Return of Rome,
+which lacks the Short Marble family, GH #67): ten full nine-piece families
 sharing one graphic per family, plus a six-piece partial family
 (CLF01..CLF08, missing 05/07/09) that shares the Desert graphic. Family
 membership here is `unit_sprites.cliff_consts()` -- the same set

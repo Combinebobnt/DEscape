@@ -670,6 +670,11 @@ def angle_index(
 _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
     72, 117, 119, 155, 231, 370, 788, 1062, 2678,
 })
+# Return of Rome (GH #67, 2026-10-17): its .dat's class-27 angle_count-5 consts are the
+# AoE2 nine minus WALL5 2678 (an empty slot there); 1,548 RoR placements, 96.9% agreement.
+_ROR_ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
+    72, 117, 119, 155, 231, 370, 788, 1062,
+})
 
 
 # Cliffs (2026-09-05 cliffs plan, Track A2). Every `class_ == 34` const in the
@@ -707,6 +712,30 @@ _CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
         *range(2651, 2660),
     ]
 )
+# Return of Rome (GH #67, 2026-10-17): its 60 class-34 consts, the AoE2 set without the
+# Short Marble family 2190-2225 (empty slots there); 2,110 RoR placements, rotation == frame.
+_ROR_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
+    [
+        *range(264, 273),
+        1339, 1340, 1341, 1342, 1344, 1346,
+        *range(1849, 1867),
+        *range(2069, 2078),
+        *range(2178, 2187),
+        *range(2651, 2660),
+    ]
+)
+
+
+def rotation_variant_const_set() -> frozenset[int]:
+    """The active game dataset's wall family (GH #67). Reads the module
+    attribute at call time, so a test's monkeypatch of either set holds."""
+    return _ROR_ROTATION_VARIANT_CONSTS if game_dataset.is_ror() else _ROTATION_VARIANT_CONSTS
+
+
+def cliff_const_set() -> frozenset[int]:
+    """The active game dataset's cliff consts (GH #67), read at call time
+    like rotation_variant_const_set()."""
+    return _ROR_CLIFF_VARIANT_CONSTS if game_dataset.is_ror() else _CLIFF_VARIANT_CONSTS
 
 
 def rotation_is_variant(unit_const: int) -> bool:
@@ -744,10 +773,11 @@ def rotation_facing_viewer(unit_const: int) -> float | None:
 
 
 def cliff_consts() -> frozenset[int]:
-    """The public read of `_CLIFF_VARIANT_CONSTS`, for cliff_catalog.py's
-    family/piece grouping -- kept a function, not a re-exported name, so
-    every caller goes through one place if Tier B ever replaces the set."""
-    return _CLIFF_VARIANT_CONSTS
+    """The public read of the active dataset's cliff set (cliff_const_set()),
+    for cliff_catalog.py's family/piece grouping -- kept a function, not a
+    re-exported name, so every caller goes through one place if Tier B ever
+    replaces the set."""
+    return cliff_const_set()
 
 
 # Generated, not hand-kept (2026-09-12 plan): the gate half is every const in
@@ -780,7 +810,7 @@ def wall_connector_consts() -> frozenset[int]:
     constant, because the gate half reads two JSON tables via
     gate_orientation.groups(), and an import-time read is a cost this module
     does not otherwise pay."""
-    return _ROTATION_VARIANT_CONSTS | frozenset(
+    return rotation_variant_const_set() | frozenset(
         const for group in gate_orientation.groups().values() for const in group
     )
 
@@ -924,7 +954,7 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     Deliberately looks angle_count up via graphic_map() itself rather than
     taking it as a parameter, so render.py never has to reach into this
     module's data table directly."""
-    if unit_const not in _ROTATION_VARIANT_CONSTS:
+    if unit_const not in rotation_variant_const_set():
         return False
     entry = graphic_map().get(unit_const)
     return entry is not None and int(entry["angle_count"]) == 5
@@ -937,7 +967,7 @@ def wall_family_consts() -> tuple[int, ...]:
     UnitEditModel.set_wall_variant()'s own scope -- so a wall run can never
     place something the model would refuse. Gates are not here: their
     orientation lives in the const, not in `rotation`."""
-    return tuple(sorted(c for c in _ROTATION_VARIANT_CONSTS if rotation_variant_eligible(c)))
+    return tuple(sorted(c for c in rotation_variant_const_set() if rotation_variant_eligible(c)))
 
 
 def is_literal_variant_index(rotation: float, angle_count: int) -> bool:

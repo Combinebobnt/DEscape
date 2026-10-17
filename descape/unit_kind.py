@@ -19,8 +19,9 @@ test tier covers it, and unit_filter.py stays a leaf module (view_layers.py:6-8
 records why that matters).
 
 Deliberately NOT importing unit_sprites, which pulls numpy, asset_source and
-sld_decoder and would take unit_filter.py off the leaf list. The 9-wall
-frozenset it already holds as _ROTATION_VARIANT_CONSTS is re-derived here
+sld_decoder and would take unit_filter.py off the leaf list. The wall
+frozenset it already holds as _ROTATION_VARIANT_CONSTS (9 walls; 8 in Return
+of Rome, `_ROR_ROTATION_VARIANT_CONSTS`) is re-derived here
 rather than copied; tests/test_unit_kind.py pins the two against each other.
 
 ## wall_consts(): 105 consts, 9 walls plus 96 gates
@@ -400,10 +401,16 @@ def gaia_only_consts() -> frozenset[int]:
 
 
 def _ror_gaia_only() -> set[int]:
-    """The unhidden RoR objects its editor lists only for GAIA. See the module docstring."""
+    """The unhidden RoR objects its editor lists only for GAIA, by its measured
+    rule, which also covers the hidden ones that are the same object as in
+    AoE2 (same code and class), since the catalog offers those (GH #67: a
+    relic or a wild animal stays GAIA's). See the module docstring."""
+    aoe2 = json.loads(game_dataset.table_path(_CATALOG_PATH, game_dataset.AOE2).read_text())["objects"]
     found = set(_ROR_GAIA_ONLY_EXTRA_CONSTS)
     for const, entry in _objects().items():
-        if entry.get("hidden") or const in _ROR_PLAYER_UNIT_EXCEPTIONS:
+        old = aoe2.get(str(const))
+        shared = old is not None and (old.get("code"), old.get("class")) == (entry.get("code"), entry.get("class"))
+        if (entry.get("hidden") and not shared) or const in _ROR_PLAYER_UNIT_EXCEPTIONS:
             continue
         if entry.get("type") in _EYE_CANDY_TYPES or entry.get("class") == _RELIC_CLASS:
             if const not in _ROR_PLAYER_OTHERS:

@@ -61,6 +61,22 @@ TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 # ~85 distinct texture files a real install has, while still leaving plenty
 # of room to pick varied non-repeating crop origins.
 LOADED_TEXTURE_SIZE = 512
+# GH #67: the tile size at which a tile crops its share of a LOADED_TEXTURE_SIZE texture,
+# for terrain_texture_size(): render.SMALL_MAP_TILE_PIXELS, a small map's reference level.
+TEXTURE_REFERENCE_TILE_PIXELS = 64
+
+
+def terrain_texture_size(tile_px: int) -> int:
+    """The texture size a level of `tile_px` crops its tiles from. Under
+    Return of Rome (GH #67) a zoomed-out level reads textures shrunk by its
+    ratio to TEXTURE_REFERENCE_TILE_PIXELS, so a tile keeps the texture share
+    it has at the reference and a pattern shrinks with the map: RoR's farm
+    rows are twice as wide as AoE2's, and at one size for every level they
+    grew to a few coarse rows per farm. AoE2 keeps LOADED_TEXTURE_SIZE at
+    every level (user decision 2026-10-17). Always a multiple of tile_px."""
+    if not game_dataset.is_ror() or tile_px >= TEXTURE_REFERENCE_TILE_PIXELS:
+        return LOADED_TEXTURE_SIZE
+    return LOADED_TEXTURE_SIZE * tile_px // TEXTURE_REFERENCE_TILE_PIXELS
 
 # TASK-143 terrain blending. blendomatic_x1.dat holds the neighbour-transition
 # alpha masks; terrain/masks/*.png the layer ("Layering Mode") overlay masks.
@@ -178,6 +194,7 @@ def clear_art_caches() -> None:
     # the old swatch or texture.
     _terrain_thumbnail_for_path.cache_clear()
     _terrain_texture_for_path.cache_clear()
+    _shrunk_texture.cache_clear()
     _forget_prefetches()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
@@ -203,6 +220,7 @@ def clear_install_caches() -> None:
     get_blendomatic.cache_clear()
     get_blend_mask.cache_clear()
     get_terrain_mask_array.cache_clear()
+    _sized_terrain_mask.cache_clear()
     _string_table.cache_clear()
     _ror_icon_files.cache_clear()
     get_unit_icon.cache_clear()
@@ -631,6 +649,26 @@ def get_terrain_texture_array(terrain_id: int):
     return _terrain_texture_for_path(path)
 
 
+def terrain_texture_at(terrain_id: int, size: int):
+    """get_terrain_texture_array() at `size` (terrain_texture_size()): the
+    array itself at LOADED_TEXTURE_SIZE, else that array shrunk (GH #67)."""
+    if size == LOADED_TEXTURE_SIZE:
+        return get_terrain_texture_array(terrain_id)
+    path = get_terrain_texture_path(terrain_id)
+    return None if path is None else _shrunk_texture(path, size)
+
+
+@lru_cache(maxsize=256)
+def _shrunk_texture(path: Path, size: int):
+    """_terrain_texture_for_path(path) box-filtered to (size, size), read-only."""
+    import numpy as np
+    from PIL import Image
+
+    arr = np.array(Image.fromarray(_terrain_texture_for_path(path)).resize((size, size), Image.BOX))
+    arr.flags.writeable = False
+    return arr
+
+
 @lru_cache(maxsize=256)
 def _terrain_texture_for_path(path: Path):
     """get_terrain_texture_array's load, keyed on the FILE like
@@ -761,12 +799,25 @@ def get_blend_mask(mode: int, tile_index: int, tile_px: int):
     return mask
 
 
+def terrain_mask_at(name: str, size: int):
+    """get_terrain_mask_array() at `size`, as terrain_texture_at() (GH #67)."""
+    if size == LOADED_TEXTURE_SIZE:
+        return get_terrain_mask_array(name)
+    return _sized_terrain_mask(name, size)
+
+
 @lru_cache(maxsize=32)
 def get_terrain_mask_array(name: str):
     """terrain/masks/<name>'s red channel as a read-only (LOADED_TEXTURE_SIZE,
     LOADED_TEXTURE_SIZE) uint8 array, 0..255 = the layer terrain's weight, or
     None. The files mix L and RGB modes, so they go through RGB first; they
     are 512 px already, the same grid get_terrain_texture_array() crops."""
+    return _sized_terrain_mask(name, LOADED_TEXTURE_SIZE)
+
+
+@lru_cache(maxsize=96)  # every mask at up to three sizes under Return of Rome
+def _sized_terrain_mask(name: str, size: int):
+    """get_terrain_mask_array()'s load at `size`, box-filtered below LOADED_TEXTURE_SIZE."""
     path = game_dataset.resource_path(f"{TERRAIN_MASK_SUBPATH}/{name}") if name else None
     if path is None or not path.is_file():
         return None
@@ -778,6 +829,8 @@ def get_terrain_mask_array(name: str):
             rgb = img.convert("RGB")
             if rgb.size != (LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE):
                 rgb = rgb.resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
+            if size != LOADED_TEXTURE_SIZE:
+                rgb = rgb.resize((size, size), Image.BOX)
             arr = np.ascontiguousarray(np.array(rgb)[:, :, 0])
     except (OSError, ValueError):
         return None

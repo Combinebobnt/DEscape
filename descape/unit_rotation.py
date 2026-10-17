@@ -65,6 +65,9 @@ _CREATABLE_TYPE = 70
 # Mule Cart (1808) was checked and dropped: both its corpus placements are
 # integer-in-range at angle_count 16, the variant signature, not the angle one.
 # "It's a mobile unit" was the wrong prior.
+#
+# One set for both game datasets (GH #67): the four are the same TREBU/PTREB
+# objects in the Return of Rome .dat (angle_count 32, hidden in its editor).
 _EXTRA_ANGLE_CONSTS: frozenset[int] = frozenset({42, 331, 1690, 1691})
 
 

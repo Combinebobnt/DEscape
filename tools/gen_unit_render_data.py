@@ -335,14 +335,19 @@ def _gate_tile_offsets(unit, span_x: int, span_y: int) -> list[list[int]] | None
 
 
 # GH #67: the lists above are measured on the AoE2 .dat, so a RoR run starts without them.
-_ROR_EMPTY_LISTS = ("_BLOCKER_SPAN_CONSTS", "_FISH_SPAN_CONSTS", "_HERO_GLOW_GRAPHICS")
+# Each hand-measured list's RoR value, measured on the RoR .dat (2026-10-17).
+_ROR_VALUES: dict[str, object] = {
+    "_BLOCKER_SPAN_CONSTS": (),  # empty slots in RoR
+    "_FISH_SPAN_CONSTS": _FISH_SPAN_CONSTS,  # the same fish, same outlines
+    "_HERO_GLOW_GRAPHICS": _HERO_GLOW_GRAPHICS,  # 191 RoR heroes use 12218-12224, and glow in game
+}
 
 
 def _select_dataset(dataset: str) -> None:
-    """Empties every hand-measured const list for a RoR run (_ROR_EMPTY_LISTS)."""
+    """Swaps every hand-measured const list for its RoR value (_ROR_VALUES), for a RoR run."""
     if dataset == _game_root.ROR:
-        for name in _ROR_EMPTY_LISTS:
-            globals()[name] = ()
+        assert _ROR_VALUES.keys() <= globals().keys(), "a _ROR_VALUES key names no list"
+        globals().update(_ROR_VALUES)
 
 
 def main() -> None:

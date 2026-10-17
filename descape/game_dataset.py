@@ -79,14 +79,14 @@ def from_variant(variant) -> str:
         return AOE2
 
 
-def table_path(default: Path | str) -> Path:
-    """The active dataset's copy of a generated table. `default` is the AoE2
-    path (or just the file name); under RoR the same name in descape/ror/,
-    except SHARED_TABLES, which stay where `default` points."""
+def table_path(default: Path | str, dataset: str | None = None) -> Path:
+    """The active dataset's copy of a generated table, or `dataset`'s. `default`
+    is the AoE2 path (or just the file name); under RoR the same name in
+    descape/ror/, except SHARED_TABLES, which stay where `default` points."""
     path = Path(default)
     if len(path.parts) == 1:
         path = TABLES_DIR / path
-    if _active == ROR and path.name not in SHARED_TABLES:
+    if (dataset or _active) == ROR and path.name not in SHARED_TABLES:
         return ROR_TABLES_DIR / path.name
     return path
 

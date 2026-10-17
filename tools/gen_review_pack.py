@@ -664,7 +664,8 @@ _TEXTURE_VARIANTS: dict[tuple, np.ndarray] = {}
 
 
 def _texture_variant(kind: str, tile_px: int):
-    """A get_terrain_texture_array stand-in serving one derived texture."""
+    """A get_terrain_texture_array stand-in serving one derived texture. AoE2
+    only below 64 px tiles: Return of Rome crops a shrunk copy there (GH #67)."""
 
     def get(terrain_id: int):
         path = asset_source.get_terrain_texture_path(terrain_id)
@@ -1843,7 +1844,7 @@ def _border_seam_residues(frame_id: str, blend: bool = True) -> list[tuple[float
             n_layer = int(layer_ids[n[1] * width + n[0]])
             if n not in blocks or int(tids[n[1] * width + n[0]]) != n_tid or n_layer not in (-1, n_tid):
                 continue
-            texture = asset_source.get_terrain_texture_array(n_tid)
+            texture = asset_source.terrain_texture_at(n_tid, asset_source.terrain_texture_size(tp))
             ox, oy = render._crop_offset(x, y, texture.shape[0], tp)
             own = img[blocks[(x, y)]][line].sum(axis=-1)
             pure = texture[oy : oy + tp, ox : ox + tp].astype(np.int64)[line].sum(axis=-1)

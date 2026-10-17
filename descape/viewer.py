@@ -581,14 +581,14 @@ def _garrison_referrers(model, unit) -> list:
     return model.referencing(unit)
 
 
-@functools.cache
+@game_dataset.cache(maxsize=1)
 def _wall_consts() -> frozenset[int]:
     """Place Unit's wall-run consts (GH #98). Lazy: the graphic map it
     reads is not needed to import this module."""
     return frozenset(unit_sprites.wall_family_consts())
 
 
-_DEFAULT_WALL_CONST = 117  # Stone Wall
+_DEFAULT_WALL_CONST = 117  # Stone Wall in AoE2, Medium Wall in Return of Rome
 # The Cliff hover keeps one ghost's parts per tile crossed; past this many it starts over.
 _CLIFF_HOVER_PARTS_MAX = 64
 # The tools the wall button keeps active when it re-picks the wall.
@@ -6033,18 +6033,47 @@ class ViewerWindow(QMainWindow):
         self._last_wall_const = const
         self._refresh_wall_pick_button()
 
+    def _refresh_wall_menu(self) -> None:
+        """The wall button's menu: the active dataset's wall family, less what its
+        editor hides (GH #67: none in AoE2; 119, 370, 788 and 1062 in Return of
+        Rome). The last-used wall falls back to the default when it is gone."""
+        listed = {entry.id for entry in object_catalog.objects() if not entry.hidden}
+        consts = [const for const in unit_sprites.wall_family_consts() if const in listed]
+        menu = self.wall_pick_button.menu()
+        menu.clear()
+        for const in consts:
+            action = menu.addAction(_unit_name(const))
+            action.setData(const)
+            action.triggered.connect(lambda _=False, c=const: self._arm_wall(c))
+        if self._last_wall_const not in consts:
+            self._last_wall_const = _DEFAULT_WALL_CONST
+        self._refresh_wall_pick_button()
+
+    def _refresh_unit_tool_menus(self) -> None:
+        """GH #67: the wall menu and the cliff families follow the active game dataset."""
+        self._refresh_wall_menu()
+        self._populate_cliff_families()
+
     def _refresh_wall_pick_button(self) -> None:
         # _unit_name(), as the wall-run status line: object_name() reads "WALL2" with no install.
         self.wall_pick_button.setText(f"Wall: {_unit_name(self._last_wall_const)}")
 
     def _populate_cliff_families(self) -> None:
-        """One-time (construction-time) fill of the Family combo -- cliff
-        families are static within a session, unlike Piece (repopulated per
-        family) and Frame (re-ranged per piece) below."""
+        """Fills the Family combo, at construction and on every game dataset
+        change (GH #67: Return of Rome has no Short Marble). Keeps the picked
+        family and piece when the new lists still have them."""
+        current = self.cliff_family_combo.currentData()
+        piece = self.cliff_piece_combo.currentData()
         self._cliff_families = cliff_catalog.families()
+        self.cliff_family_combo.blockSignals(True)
+        self.cliff_family_combo.clear()
         for file_name in sorted(self._cliff_families, key=cliff_catalog.family_label):
             self.cliff_family_combo.addItem(cliff_catalog.family_label(file_name), file_name)
+        self.cliff_family_combo.setCurrentIndex(max(0, self.cliff_family_combo.findData(current)))
+        self.cliff_family_combo.blockSignals(False)
         self._on_cliff_family_changed(self.cliff_family_combo.currentIndex())
+        if piece is not None and self.cliff_piece_combo.findData(piece) > 0:
+            self.cliff_piece_combo.setCurrentIndex(self.cliff_piece_combo.findData(piece))
 
     def _on_cliff_family_changed(self, _index: int) -> None:
         """Repopulates Piece for the newly-selected family. Signals blocked
@@ -8535,15 +8564,10 @@ class ViewerWindow(QMainWindow):
             "Pick a wall to place. Click for the last-used wall, ▾ for another."
         )
         self.wall_pick_button.setEnabled(False)  # re-gated by _update_tool_enabled()
-        wall_menu = QMenu(self.wall_pick_button)
-        for const in unit_sprites.wall_family_consts():
-            action = wall_menu.addAction(_unit_name(const))
-            action.setData(const)
-            action.triggered.connect(lambda _=False, c=const: self._arm_wall(c))
-        self.wall_pick_button.setMenu(wall_menu)
+        self.wall_pick_button.setMenu(QMenu(self.wall_pick_button))  # filled by _refresh_wall_menu()
         self.wall_pick_button.clicked.connect(lambda: self._arm_wall(self._last_wall_const))
         self.wall_pick_param_action = param_toolbar.addWidget(self.wall_pick_button)
-        self._refresh_wall_pick_button()
+        self._refresh_wall_menu()
         # Carries the unit_wall_pick shortcut only, like the mode_* actions: no menu entry.
         self.wall_pick_action = QAction("Pick Last-Used Wall", self)
         self.wall_pick_action.setEnabled(False)  # re-gated by _update_tool_enabled()
@@ -10965,7 +10989,7 @@ class ViewerWindow(QMainWindow):
         # never calls get_tile()/set_elevation() either, so squareness is
         # irrelevant to it too.
         has_map = self.scenario is not None
-        # GH #67: a document shown in the other game's data, or a Return of Rome file, is read-only.
+        # GH #67: a document shown in the other game's data is read-only.
         unlocked = self.game_data_lock_reason() is None
         write_ok = has_map and self.scenario.terrain_write_supported and unlocked
         elevation_ok = write_ok and self.scenario.map_is_square
@@ -16533,7 +16557,8 @@ class ViewerWindow(QMainWindow):
 
     def game_data_lock_reason(self) -> str | None:
         """Why the open document may not be written, or None. Shown in the
-        status bar while it applies. PR 1 of GH #67 views Return of Rome only."""
+        status bar while it applies. GH #67: a file is editable only with its
+        own game's data shown (Return of Rome included)."""
         if self.scenario is None:
             return None
         file_game, shown = self._file_game_dataset(), self._shown_game_dataset()
@@ -16542,8 +16567,6 @@ class ViewerWindow(QMainWindow):
                 f"Read-only: showing {game_dataset.DISPLAY_NAMES[shown]} game data for a "
                 f"{game_dataset.DISPLAY_NAMES[file_game]} file. Set Settings > Advanced > Game data to Auto to edit it."
             )
-        if file_game == game_dataset.ROR:
-            return "Read-only: Return of Rome scenarios can be viewed but not yet edited."
         return None
 
     def _cross_game_refusal(self, block) -> str:
@@ -16582,10 +16605,11 @@ class ViewerWindow(QMainWindow):
 
     def _refresh_game_lists(self) -> None:
         """Every long-lived list built from game data: the Units catalog and its
-        thumbnails, the terrain swatches, the AI list."""
+        thumbnails, the terrain swatches, the wall and cliff menus, the AI list."""
         self.units_panel.reload_catalog()
         self.units_panel.refresh_thumbnails()
         self.terrain_panel.view.refresh_swatches()
+        self._refresh_unit_tool_menus()
         self._ai_choices = None
         self._ai_roots = None
         self._ai_unresolvable = {}
@@ -16597,6 +16621,8 @@ class ViewerWindow(QMainWindow):
         self._refresh_game_lists()
         self._close_analysis_dialog()
         self._close_find_dialog()
+        if self.scenario is None:
+            return  # Settings > Advanced with no document open
         self.refresh_map()
         if self.map_view._unit_index is not None:
             self._rebuild_unit_index()

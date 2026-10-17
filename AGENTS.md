@@ -22,6 +22,31 @@ commands, and architecture.
 - GAIA units' `rotation` field is not an angle for ~65% of GAIA objects — it's a
   tree/doodad graphic-variant index (integer values well outside `[0, 2π)`, e.g.
   7..53). Every write path must pass it through verbatim, never normalize it.
+- **Per game dataset (GH #67).** Return of Rome scenarios (header variant 2)
+  are edited with Return of Rome game data (`descape/game_dataset.py`). The
+  viewer refuses every edit and save of a document shown with the other
+  game's data (`ViewerWindow.game_data_lock_reason()`). Batch scripts are
+  unvalidated, as with `add()`. Every const set the rules below name is the
+  active dataset's, so each exception's scope follows the file being edited.
+  The AoE2 figures below come from the AoE2 corpus. The Return of Rome ones
+  come from 8 RoR scenarios (100,098 placements, 2026-10-17). Their rules
+  (not the exact counts) are re-checked by `tests/test_ror_corpus.py`, run as
+  `pytest -m corpus tests/test_ror_corpus.py --scenario-dir <RoR folder>
+  --corpus-full` (it skips where there are no RoR files):
+  - ANGLE: the RoR `.dat`'s own type 70 plus the same four trebuchet consts
+    (the same objects there, hidden in its editor); 1,697 placements, zero
+    counterexamples.
+  - Walls: 7 walls plus Aqueduct (WALL5 2678 does not exist there); 1,548
+    placements, all literal integers with `initial_animation_frame` 0,
+    96.9% neighbour agreement.
+  - Cliffs: 60 cliff consts (no Short Marble 2190-2225); 2,110 placements,
+    `rotation` equal to `initial_animation_frame` on each.
+  - Gates: 20 orientation groups (no Fort gate), 12 visible consts; 12
+    placements, all `7.0`, all on their span anchor.
+  - Cycle Variant: derived from the RoR table, so Farm 50, Pasture 1897 and
+    RoR scenery are cyclable there though INERT in AoE2; 56,364 placements,
+    all literal. A RoR farm stores 0-3 with `initial_animation_frame` 0.
+  - `_BODY_GRAPHIC_OVERRIDES`: 119 and 788 only (72 is a plain wall there).
 - **The exceptions to "verbatim", and their exact scope.** This list is
   exhaustive: every other write path stays verbatim as above, and each
   exception that goes through a model method raises rather than silently
@@ -94,11 +119,13 @@ commands, and architecture.
     gate left with new walls, `add_many()`ed with the same neighbour-derived
     literal integer index and frame 0; the gate itself only changes
     position), via
-    `UnitEditModel.set_wall_variant()`, only on the 9 wall-family consts
+    `UnitEditModel.set_wall_variant()`, only on the wall-family consts (9 in
+    AoE2, 8 in Return of Rome)
     `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
-    and only for an index in `0..4`. Those are the 8 walls plus Aqueduct
-    (231), which the user decided on 2026-09-26 (GH #110) to treat as a full
-    wall: same 1x1 footprint and five stored shapes. No corpus file has a
+    and only for an index in `0..4`. Those are the walls plus Aqueduct
+    (231): 8 walls in AoE2, 7 in Return of Rome. The user decided on
+    2026-09-26 (GH #110) to treat Aqueduct as a full wall: same 1x1
+    footprint and five stored shapes. No corpus file has a
     wall beside an Aqueduct, so that junction rests on the decision, not a
     measurement. Allowed for the same reason the bullet
     above forbids *cycling* a wall: the game re-derives a wall's index from
@@ -107,11 +134,13 @@ commands, and architecture.
     author-picked one would just be overwritten. The index is always the
     literal integer, never the radian re-encoding, and
     `initial_animation_frame` is not touched (it is 0 on all 8193 corpus wall
-    placements). Gates are outside the scope and stay there: they have
-    `angle_count == 1` and their orientation lives in the const.
+    placements, and on all 1,548 Return of Rome ones). Gates are outside
+    the scope and stay there: they have `angle_count == 1` and their
+    orientation lives in the const.
   - *Cliff drag's join rewrites* (GH #44), via
     `UnitEditModel.set_cliff_frame()`, which raises outside its guard. The
-    guard: only the 96 cliff consts (`unit_sprites.cliff_consts()`), always
+    guard: only the cliff consts (`unit_sprites.cliff_consts()`; 96 in AoE2,
+    60 in Return of Rome), always
     the literal integer, a frame inside the const's own frame count (and
     never 24, which no family has), with `rotation` and
     `initial_animation_frame` written together (they are equal on every
@@ -133,7 +162,7 @@ commands, and architecture.
     `initial_animation_frame` mean under the new const. The two move together
     (they are always equal in the corpus for cliffs, trees and doodads), by
     `unit_model.replaced_rotation()`: verbatim when both consts are ANGLE,
-    both are walls (the 9 `rotation_variant_eligible()` consts; the game
+    both are walls (the `rotation_variant_eligible()` consts; the game
     re-derives the index from neighbours), or both are INERT (which keeps the
     `7.0` sentinel); verbatim for two cyclable consts when the old variant
     index exists in the new const, else `0.0`/`0`; `0.0`/`0` for every other
@@ -153,7 +182,8 @@ commands, and architecture.
     `add()` itself stays unvalidated, as with mirroring and paste: the guard
     is `rotation_for()`, pinned by `tests/test_place_rotation.py`.
 - Gates carry no rotation at all: all 24 visible gate consts (6 families × 4
-  orientations) have `angle_count == 1`, so there is no second frame for a
+  orientations; Return of Rome: 12, 3 families × 4, and its 12 placements
+  are all `7.0`) have `angle_count == 1`, so there is no second frame for a
   rotation to select, and across 300 corpus gate placements the field is only
   ever `0.0` or the junk sentinel `7.0`. A gate's orientation lives in its
   `unit_const`. The graphic file names are `..._ne_closed_x1` / `_se_` / `_e_`
