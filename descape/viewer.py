@@ -110,6 +110,7 @@ from descape import (
     eraser,
     find_objects,
     find_triggers,
+    game_dataset,
     garrison,
     gate_orientation,
     gc_hold,
@@ -872,6 +873,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._scrolled_tab(self._build_appearance_tab()), "Appearance")
         tabs.addTab(self._build_saving_tab(), "Saving")
         tabs.addTab(self._build_keybinds_tab(), "Keybinds")
+        tabs.addTab(self._build_advanced_tab(), "Advanced")
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.close)
@@ -1989,6 +1991,40 @@ class SettingsDialog(QDialog):
         "tool": "Tools",
         "adjust": "Tool Value",
     }
+
+    def _build_advanced_tab(self) -> QWidget:
+        """Game data (GH #67): which game draws every opened scenario. A setting
+        rather than a View toggle, since anything but Auto shows the other
+        game's file read-only. Set before connecting, like the Saving tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Game data:"))
+        self.game_data_combo = QComboBox()
+        for choice_id, label in settings.GAME_DATA_CHOICES:
+            self.game_data_combo.addItem(label, choice_id)
+        self.game_data_combo.setCurrentIndex(self.game_data_combo.findData(settings.get_game_data()))
+        self.game_data_combo.setToolTip(
+            "Which game's units, names and art draw a scenario. Auto uses the game the "
+            "file was made for. The other two show every file in that game's data, and a "
+            "file made for the other game opens read-only."
+        )
+        self.game_data_combo.currentIndexChanged.connect(self._on_game_data_changed)
+        row.addWidget(self.game_data_combo)
+        row.addStretch(1)
+        layout.addLayout(row)
+        note = QLabel(
+            "Leave this on Auto unless a file names the wrong game. Applies to the open "
+            "scenario now and to every scenario opened later."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return tab
+
+    def _on_game_data_changed(self, index: int) -> None:
+        self._window.set_game_data(self.game_data_combo.itemData(index))
+        self._window._log_status(f"Game data: {self.game_data_combo.itemText(index)}")
 
     def _build_saving_tab(self) -> QWidget:
         """Autosave's four controls plus the .bak/.orig switch.
@@ -8670,6 +8706,10 @@ class ViewerWindow(QMainWindow):
         self.ruler_hint_param_action = param_toolbar.addWidget(self.ruler_hint_label)
 
     def _build_status_bar(self) -> None:
+        # GH #67: why the document is read-only, while it is (_show_game_data_status()).
+        self.game_data_banner = QLabel()
+        self.game_data_banner.setVisible(False)
+        self.statusBar().addPermanentWidget(self.game_data_banner)
         self.mode_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.mode_status_label)
         self._update_mode_status()
@@ -9671,6 +9711,8 @@ class ViewerWindow(QMainWindow):
         anchor can still edit exec-order, and a file that failed the trigger
         alignment gate can still edit every scalar.
         """
+        if self.game_data_lock_reason() is not None:
+            return frozenset()  # GH #67
         specs = option_fields.specs_for(self.scenario)
         editable = set()
         if options_write_supported(self.scenario, specs):
@@ -9813,6 +9855,8 @@ class ViewerWindow(QMainWindow):
         than swallowed, since silently ignoring an edit the user made is the
         worse failure.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.option_edits is not None:
             return self.option_edits
         if self.scenario is None:
@@ -9842,6 +9886,8 @@ class ViewerWindow(QMainWindow):
         reentrancy hole, and the setEnabled(False)/_busy pair those sites
         use to close it cannot nest.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.unit_edits is not None:
             return self.unit_edits
         if self.scenario is None:
@@ -10057,6 +10103,8 @@ class ViewerWindow(QMainWindow):
         a players_write_supported() failure, and can fail on its own while
         every per-player row here stays editable.
         """
+        if self.game_data_lock_reason() is not None:
+            return frozenset()  # GH #67
         if self.scenario is None:
             return frozenset()
         if not options_write_supported(self.scenario, option_fields.specs_for(self.scenario)):
@@ -10413,6 +10461,8 @@ class ViewerWindow(QMainWindow):
         direction, so an Options-region failure must not grey out a single
         Map Options row.
         """
+        if self.game_data_lock_reason() is not None:
+            return False  # GH #67
         if self.scenario is None:
             return False
         if not self._options_carrier_ok():
@@ -10662,6 +10712,8 @@ class ViewerWindow(QMainWindow):
         independent in the other direction: a Diplomacy-section-only failure
         must not grey out Map Options or Players mode.
         """
+        if self.game_data_lock_reason() is not None:
+            return frozenset()  # GH #67
         if self.scenario is None:
             return frozenset()
         if not options_write_supported(self.scenario, option_fields.specs_for(self.scenario)):
@@ -10757,7 +10809,7 @@ class ViewerWindow(QMainWindow):
         if self.scenario is None:
             self.messages_panel.clear_document()
             return
-        editable = self.scenario.messages_write_supported
+        editable = self.scenario.messages_write_supported and self.game_data_lock_reason() is None
         self.messages_panel.show_scenario(
             self.scenario,
             values=self._pending_message_values(),
@@ -10811,6 +10863,8 @@ class ViewerWindow(QMainWindow):
         rather than swallowed, since silently ignoring an edit the user made
         is the worse failure.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.message_edits is not None:
             return self.message_edits
         if self.scenario is None:
@@ -10911,7 +10965,9 @@ class ViewerWindow(QMainWindow):
         # never calls get_tile()/set_elevation() either, so squareness is
         # irrelevant to it too.
         has_map = self.scenario is not None
-        write_ok = has_map and self.scenario.terrain_write_supported
+        # GH #67: a document shown in the other game's data, or a Return of Rome file, is read-only.
+        unlocked = self.game_data_lock_reason() is None
+        write_ok = has_map and self.scenario.terrain_write_supported and unlocked
         elevation_ok = write_ok and self.scenario.map_is_square
         # Phase 3's decision #6 scope cut (Stepped had no bounded
         # incremental redraw, so editing there meant a full ~1-2s
@@ -10925,7 +10981,7 @@ class ViewerWindow(QMainWindow):
         # the first real attempt, same as every trigger/option edit action.
         # Mode-inapplicability is handled separately, by ToolDef.modes'
         # visibility loop below, same as the four Terrain tools.
-        unit_editable = has_map and self.mode == "units"
+        unit_editable = has_map and self.mode == "units" and unlocked
         # The four tools below carried a `sloped_editable` gate until Track
         # C4's Step 4: Sloped had no hit-testing, so none of them could
         # resolve a click to a tile there. C4 landed (pick plane, warped
@@ -10994,10 +11050,10 @@ class ViewerWindow(QMainWindow):
         self.wall_pick_action.setEnabled(unit_editable)
         self.convert_action.setEnabled(unit_editable)
         # GH #184: has_map only, in both its modes; ToolDef.modes hides it elsewhere.
-        self.eraser_action.setEnabled(has_map)
+        self.eraser_action.setEnabled(has_map and unlocked)
         # Deliberately coarse: this runs on mode changes, not entry-tree
         # clicks, so the template itself is validated per click instead.
-        trigger_editable = has_map and self.mode == "triggers" and self.trigger_panel._editable
+        trigger_editable = has_map and self.mode == "triggers" and self.trigger_panel._editable and unlocked
         self.create_objects_action.setEnabled(trigger_editable)
         self._area_edit_editable = trigger_editable
         # Cycle Variant needs a selection as well as Units mode -- it acts on
@@ -12674,6 +12730,9 @@ class ViewerWindow(QMainWindow):
         block = self._clipboard_history.active_block
         if self.scenario is None or block is None:
             return
+        if refusal := self._cross_game_refusal(block):
+            self._log_status(f"Paste refused: {refusal}")
+            return
         # A coalesced move still pending would leave _hover_tile one tile behind the cursor.
         self.map_view.flush_pending_move()
         if not block.has_tiles:
@@ -13803,6 +13862,8 @@ class ViewerWindow(QMainWindow):
         edited (the alignment gate), so this can return None after a
         successful parse.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.trigger_edits is not None:
             return self.trigger_edits
         if self.scenario is None:
@@ -14435,6 +14496,8 @@ class ViewerWindow(QMainWindow):
         (cross-version paste is not supported)."""
         if block is None or self.scenario is None:
             return "Nothing to paste."
+        if refusal := self._cross_game_refusal(block):
+            return refusal
         here = self.scenario.scenario_version
         if block.scenario_version != here:
             return f"Copied from a {block.scenario_version} scenario; this one is {here}."
@@ -16454,7 +16517,115 @@ class ViewerWindow(QMainWindow):
             self.setWindowTitle("DEscape")
             return
         marker = "*" if self.edit_history.is_dirty else ""
-        self.setWindowTitle(f"{marker}{self.scenario.path.name} — DEscape")
+        game = " [Return of Rome]" if game_dataset.is_ror() else ""
+        self.setWindowTitle(f"{marker}{self.scenario.path.name}{game} — DEscape")
+
+    # -- game data (GH #67) ------------------------------------------------
+
+    def _file_game_dataset(self) -> str:
+        """The open file's own game: its header variant flag, AoE2 with no document."""
+        return game_dataset.from_variant(None if self.scenario is None else self.scenario.game_variant)
+
+    def _shown_game_dataset(self) -> str:
+        """Settings > Advanced > Game data's choice, or the file's own game under Auto."""
+        choice = settings.get_game_data()
+        return self._file_game_dataset() if choice == settings.GAME_DATA_DEFAULT else choice
+
+    def game_data_lock_reason(self) -> str | None:
+        """Why the open document may not be written, or None. Shown in the
+        status bar while it applies. PR 1 of GH #67 views Return of Rome only."""
+        if self.scenario is None:
+            return None
+        file_game, shown = self._file_game_dataset(), self._shown_game_dataset()
+        if shown != file_game:
+            return (
+                f"Read-only: showing {game_dataset.DISPLAY_NAMES[shown]} game data for a "
+                f"{game_dataset.DISPLAY_NAMES[file_game]} file. Set Settings > Advanced > Game data to Auto to edit it."
+            )
+        if file_game == game_dataset.ROR:
+            return "Read-only: Return of Rome scenarios can be viewed but not yet edited."
+        return None
+
+    def _cross_game_refusal(self, block) -> str:
+        """Why a clipboard block copied under the other game's data may not be pasted here, or ""."""
+        copied = getattr(block, "dataset", game_dataset.AOE2)
+        if copied == game_dataset.active():
+            return ""
+        return (
+            f"Copied with {game_dataset.DISPLAY_NAMES[copied]} game data; this document shows "
+            f"{game_dataset.DISPLAY_NAMES[game_dataset.active()]}, where the same ids are other objects."
+        )
+
+    def _refuse_locked_save(self) -> bool:
+        reason = self.game_data_lock_reason()
+        if reason is None:
+            return False
+        self._log_status(f"Save refused. {reason}")
+        QMessageBox.information(self, "Read-only", reason)
+        return True
+
+    def _refuse_locked_edit(self) -> bool:
+        """True (and says why) when an edit model is asked for on a locked document."""
+        reason = self.game_data_lock_reason()
+        if reason is not None:
+            self._log_status(f"Edit refused. {reason}")
+        return reason is not None
+
+    def set_game_data(self, choice: str) -> None:
+        """Settings > Advanced > Game data: saves `choice` (a settings.GAME_DATA_CHOICES id)
+        and redraws the open document in it. Display only: the file's own flag is never
+        changed, and a mismatch locks the document."""
+        settings.set_game_data(choice)
+        if game_dataset.set_active(self._shown_game_dataset()):
+            self._refresh_game_assets()
+        self._after_game_data_change()
+
+    def _refresh_game_lists(self) -> None:
+        """Every long-lived list built from game data: the Units catalog and its
+        thumbnails, the terrain swatches, the AI list."""
+        self.units_panel.reload_catalog()
+        self.units_panel.refresh_thumbnails()
+        self.terrain_panel.view.refresh_swatches()
+        self._ai_choices = None
+        self._ai_roots = None
+        self._ai_unresolvable = {}
+
+    def _refresh_game_assets(self) -> None:
+        """After a dataset switch on an open document: the lists, the map, the
+        unit pick index, the labels and the open mode's panel. The Find and
+        Map Analysis dialogs close, since their rows name the other game's objects."""
+        self._refresh_game_lists()
+        self._close_analysis_dialog()
+        self._close_find_dialog()
+        self.refresh_map()
+        if self.map_view._unit_index is not None:
+            self._rebuild_unit_index()
+        self._refresh_player_labels()
+        self._update_info()
+
+    def _after_game_data_change(self) -> None:
+        """Re-gates everything the lock reaches: tools, edit actions, the open panel, the title and banner."""
+        self._repopulate_players()
+        self._repopulate_map_options()
+        self._repopulate_diplomacy()
+        self._repopulate_messages()
+        self._update_tool_enabled()
+        self._update_edit_actions()
+        self._update_title()
+        self._show_game_data_status()
+
+    def _show_game_data_status(self) -> None:
+        """The status bar's lock banner, and one line when RoR art is missing."""
+        reason = self.game_data_lock_reason()
+        self.game_data_banner.setText(reason or "")
+        self.game_data_banner.setVisible(reason is not None)
+        install = asset_source.get_install_path()
+        ror_root = game_dataset.ror_root(install)
+        if game_dataset.is_ror() and ror_root is not None and not ror_root.is_dir():
+            self._log_status(
+                "Return of Rome art is not installed: names and stats are Return of Rome's, "
+                "units draw as coloured marks."
+            )
 
     def _confirm_discard_changes(self) -> bool:
         """True if it's OK to proceed: no scenario loaded, no unsaved edits,
@@ -16575,6 +16746,8 @@ class ViewerWindow(QMainWindow):
         """
         if self.scenario is None or not settings.get_autosave_enabled():
             return
+        if self.game_data_lock_reason() is not None:  # GH #67: a locked document is never written
+            return
         if not self.edit_history.is_dirty:
             return
         if self.edit_history.content_key == self._autosaved_content:
@@ -16627,7 +16800,7 @@ class ViewerWindow(QMainWindow):
         self._log_status(f"Autosaved to {slot.name}")
 
     def save(self) -> None:
-        if self.scenario is None:
+        if self.scenario is None or self._refuse_locked_save():
             return
         if self._untitled:
             # No path to write back to yet -- same first-save-needs-a-name
@@ -16666,7 +16839,7 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Saved to {path}{suffix}")
 
     def save_as(self) -> None:
-        if self.scenario is None:
+        if self.scenario is None or self._refuse_locked_save():
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save scenario as", self._save_as_start_path(), "AoE2 Scenario (*.aoe2scenario)"
@@ -18113,6 +18286,9 @@ class ViewerWindow(QMainWindow):
             # mislabel whatever was previously open (self.scenario still holds it,
             # untouched, if the try block above returned early).
             self._untitled = untitled
+            # GH #67: before the first paint, the game data Settings > Advanced picks for this file.
+            if game_dataset.set_active(self._shown_game_dataset()):
+                self._refresh_game_lists()
             if untitled:
                 self.scenario.path = UNTITLED_PATH
             else:
@@ -18212,6 +18388,7 @@ class ViewerWindow(QMainWindow):
             self._update_edit_actions()
             self._update_title()
             self.statusBar().clearMessage()
+            self._show_game_data_status()
             total_elapsed = (generate_elapsed or 0.0) + parse_elapsed + elapsed
             generate_part = "" if generate_elapsed is None else f"generate {generate_elapsed:.2f}s, "
             self._log_status(
@@ -18301,6 +18478,7 @@ class ViewerWindow(QMainWindow):
         self.players_panel.clear_document()
         self.diplomacy_panel.clear_document()
         self.messages_panel.clear_document()
+        self._show_game_data_status()
         self._set_hover_text(HOVER_IDLE_TEXT)
         # A stale (x, y) from the just-closed map must not outlive it -- the
         # bounds check in paste_region()/copy_region() would likely catch a

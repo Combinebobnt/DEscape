@@ -543,6 +543,38 @@ def set_terrain_picker_mode(mode: str) -> None:
     _save_config(config)
 
 
+# GH #67: which game's data draws every opened scenario, Settings > Advanced. "auto"
+# follows the file's own header; the other two show it in that game's data, read-only
+# when it is the other game's file.
+GAME_DATA_CHOICES: list[tuple[str, str]] = [
+    ("auto", "Auto: the file's own game"),
+    ("aoe2", "Age of Empires II"),
+    ("ror", "Return of Rome"),
+]
+GAME_DATA_DEFAULT = "auto"
+_GAME_DATA_IDS = tuple(cid for cid, _label in GAME_DATA_CHOICES)
+_game_data: str | None = None
+
+
+def get_game_data() -> str:
+    """One of GAME_DATA_CHOICES' ids; an off-list value falls back to the default."""
+    global _game_data
+    if _game_data is None:
+        raw = _load_config().get("game_data")
+        _game_data = raw if raw in _GAME_DATA_IDS else GAME_DATA_DEFAULT
+    return _game_data
+
+
+def set_game_data(choice: str) -> None:
+    if choice not in _GAME_DATA_IDS:
+        raise ValueError(f"game_data must be one of {list(_GAME_DATA_IDS)}, got {choice!r}")
+    global _game_data
+    _game_data = choice
+    config = _load_config()
+    config["game_data"] = choice
+    _save_config(config)
+
+
 # GH #161: the terrain grid's swatch size, Settings > Appearance. 64 is the
 # ceiling: swatches decode at 64 px, so anything larger would upscale.
 TERRAIN_GRID_SWATCH_SIZES: tuple[int, ...] = (32, 48, 64)

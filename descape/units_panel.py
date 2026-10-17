@@ -673,6 +673,10 @@ class UnitsPanel(QWidget):
         """The selection card's: "icon", "sprite" or None."""
         return self.selection_card.portrait_source
 
+    def reload_catalog(self) -> None:
+        """After a game dataset switch (GH #67): the catalog's rows, re-read from object_catalog."""
+        self.catalog_view.reload_entries()
+
     def refresh_thumbnails(self) -> None:
         """After an install change: the list's thumbnails and modes, and both cards' stat icons and portraits."""
         self.thumb_loader.clear()

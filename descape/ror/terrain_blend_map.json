@@ -1,0 +1,675 @@
+{
+  "_comment": "terrain_id -> {priority, blend_type, overlay_mask} for every enabled terrain. Pure factual data extracted from the game's own terrain table via genieutils-py, not game asset content itself. Regenerate with tools/gen_terrain_blend_map.py.",
+  "terrains": {
+    "0": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 112
+    },
+    "1": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 169
+    },
+    "10": {
+      "blend_type": 0,
+      "overlay_mask": "leaves.png",
+      "priority": 95
+    },
+    "100": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 126
+    },
+    "101": {
+      "blend_type": 4,
+      "overlay_mask": "",
+      "priority": 81
+    },
+    "102": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 90
+    },
+    "103": {
+      "blend_type": 5,
+      "overlay_mask": "road_gravel.png",
+      "priority": 150
+    },
+    "104": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 98
+    },
+    "105": {
+      "blend_type": 7,
+      "overlay_mask": "snow_underbrush.png",
+      "priority": 165
+    },
+    "106": {
+      "blend_type": 7,
+      "overlay_mask": "snow_underbrush.png",
+      "priority": 161
+    },
+    "107": {
+      "blend_type": 2,
+      "overlay_mask": "beach_soft.png",
+      "priority": 134
+    },
+    "108": {
+      "blend_type": 2,
+      "overlay_mask": "beach_soft.png",
+      "priority": 136
+    },
+    "109": {
+      "blend_type": 2,
+      "overlay_mask": "beach_soft.png",
+      "priority": 138
+    },
+    "11": {
+      "blend_type": 0,
+      "overlay_mask": "dirt.png",
+      "priority": 83
+    },
+    "110": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 100
+    },
+    "111": {
+      "blend_type": 4,
+      "overlay_mask": "",
+      "priority": 140
+    },
+    "112": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 92
+    },
+    "113": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 74
+    },
+    "114": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 160
+    },
+    "115": {
+      "blend_type": 4,
+      "overlay_mask": "neutral_33.png",
+      "priority": 132
+    },
+    "116": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 164
+    },
+    "117": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 186
+    },
+    "118": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 189
+    },
+    "119": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 177
+    },
+    "12": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 118
+    },
+    "120": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 180
+    },
+    "121": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 183
+    },
+    "122": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 99
+    },
+    "123": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 101
+    },
+    "124": {
+      "blend_type": 7,
+      "overlay_mask": "snow.png",
+      "priority": 144
+    },
+    "125": {
+      "blend_type": 7,
+      "overlay_mask": "snow_light.png",
+      "priority": 152
+    },
+    "126": {
+      "blend_type": 7,
+      "overlay_mask": "snow_strong.png",
+      "priority": 148
+    },
+    "127": {
+      "blend_type": 6,
+      "overlay_mask": "ice.png",
+      "priority": 59
+    },
+    "128": {
+      "blend_type": 0,
+      "overlay_mask": "leaves.png",
+      "priority": 85
+    },
+    "129": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 199
+    },
+    "13": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 91
+    },
+    "130": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 167
+    },
+    "131": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 86
+    },
+    "132": {
+      "blend_type": 7,
+      "overlay_mask": "snow_underbrush.png",
+      "priority": 163
+    },
+    "133": {
+      "blend_type": 0,
+      "overlay_mask": "leaves.png",
+      "priority": 94
+    },
+    "14": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 89
+    },
+    "15": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 178
+    },
+    "16": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 122
+    },
+    "17": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 108
+    },
+    "18": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 97
+    },
+    "19": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 109
+    },
+    "2": {
+      "blend_type": 2,
+      "overlay_mask": "beach_soft.png",
+      "priority": 130
+    },
+    "20": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 102
+    },
+    "21": {
+      "blend_type": 7,
+      "overlay_mask": "",
+      "priority": 162
+    },
+    "22": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 176
+    },
+    "23": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 179
+    },
+    "24": {
+      "blend_type": 5,
+      "overlay_mask": "road.png",
+      "priority": 146
+    },
+    "25": {
+      "blend_type": 5,
+      "overlay_mask": "road_broken.png",
+      "priority": 147
+    },
+    "26": {
+      "blend_type": 6,
+      "overlay_mask": "ice.png",
+      "priority": 73
+    },
+    "27": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 141
+    },
+    "28": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 175
+    },
+    "29": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 182
+    },
+    "3": {
+      "blend_type": 0,
+      "overlay_mask": "dirt.png",
+      "priority": 84
+    },
+    "30": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 184
+    },
+    "31": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 185
+    },
+    "32": {
+      "blend_type": 7,
+      "overlay_mask": "snow.png",
+      "priority": 155
+    },
+    "33": {
+      "blend_type": 7,
+      "overlay_mask": "snow.png",
+      "priority": 156
+    },
+    "34": {
+      "blend_type": 7,
+      "overlay_mask": "snow.png",
+      "priority": 158
+    },
+    "35": {
+      "blend_type": 6,
+      "overlay_mask": "ice.png",
+      "priority": 75
+    },
+    "36": {
+      "blend_type": 7,
+      "overlay_mask": "snow.png",
+      "priority": 166
+    },
+    "37": {
+      "blend_type": 6,
+      "overlay_mask": "ice.png",
+      "priority": 76
+    },
+    "38": {
+      "blend_type": 5,
+      "overlay_mask": "road.png",
+      "priority": 195
+    },
+    "39": {
+      "blend_type": 5,
+      "overlay_mask": "road_broken.png",
+      "priority": 196
+    },
+    "4": {
+      "blend_type": 4,
+      "overlay_mask": "neutral_33.png",
+      "priority": 139
+    },
+    "40": {
+      "blend_type": 5,
+      "overlay_mask": "",
+      "priority": 153
+    },
+    "41": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 127
+    },
+    "42": {
+      "blend_type": 0,
+      "overlay_mask": "dirt.png",
+      "priority": 87
+    },
+    "43": {
+      "blend_type": 5,
+      "overlay_mask": "road.png",
+      "priority": 151
+    },
+    "44": {
+      "blend_type": 0,
+      "overlay_mask": "dirt.png",
+      "priority": 120
+    },
+    "45": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 88
+    },
+    "46": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 80
+    },
+    "47": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 198
+    },
+    "48": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 107
+    },
+    "49": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 106
+    },
+    "5": {
+      "blend_type": 0,
+      "overlay_mask": "leaves.png",
+      "priority": 2
+    },
+    "50": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 111
+    },
+    "51": {
+      "blend_type": 2,
+      "overlay_mask": "beach.png",
+      "priority": 125
+    },
+    "52": {
+      "blend_type": 2,
+      "overlay_mask": "beach.png",
+      "priority": 129
+    },
+    "53": {
+      "blend_type": 2,
+      "overlay_mask": "beach.png",
+      "priority": 128
+    },
+    "54": {
+      "blend_type": 4,
+      "overlay_mask": "neutral_33.png",
+      "priority": 142
+    },
+    "55": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 143
+    },
+    "56": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 96
+    },
+    "57": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 181
+    },
+    "58": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 168
+    },
+    "59": {
+      "blend_type": 4,
+      "overlay_mask": "neutral_33.png",
+      "priority": 145
+    },
+    "6": {
+      "blend_type": 0,
+      "overlay_mask": "dirt.png",
+      "priority": 82
+    },
+    "60": {
+      "blend_type": 0,
+      "overlay_mask": "jungle.png",
+      "priority": 123
+    },
+    "61": {
+      "blend_type": 5,
+      "overlay_mask": "road.png",
+      "priority": 154
+    },
+    "62": {
+      "blend_type": 0,
+      "overlay_mask": "leaves_jungle.png",
+      "priority": 71
+    },
+    "63": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 193
+    },
+    "64": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 194
+    },
+    "65": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 190
+    },
+    "66": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 191
+    },
+    "67": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 192
+    },
+    "68": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 113
+    },
+    "69": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 0
+    },
+    "7": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 187
+    },
+    "70": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 93
+    },
+    "71": {
+      "blend_type": 0,
+      "overlay_mask": "leaves.png",
+      "priority": 1
+    },
+    "72": {
+      "blend_type": 0,
+      "overlay_mask": "snow_underbrush.png",
+      "priority": 3
+    },
+    "73": {
+      "blend_type": 7,
+      "overlay_mask": "snow_light.png",
+      "priority": 159
+    },
+    "74": {
+      "blend_type": 7,
+      "overlay_mask": "snow_strong.png",
+      "priority": 157
+    },
+    "75": {
+      "blend_type": 5,
+      "overlay_mask": "road_broken.png",
+      "priority": 197
+    },
+    "76": {
+      "blend_type": 0,
+      "overlay_mask": "dirt.png",
+      "priority": 121
+    },
+    "77": {
+      "blend_type": 0,
+      "overlay_mask": "leaves_jungle.png",
+      "priority": 72
+    },
+    "78": {
+      "blend_type": 5,
+      "overlay_mask": "road_gravel.png",
+      "priority": 149
+    },
+    "79": {
+      "blend_type": 2,
+      "overlay_mask": "beach.png",
+      "priority": 131
+    },
+    "8": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 188
+    },
+    "80": {
+      "blend_type": 2,
+      "overlay_mask": "beach.png",
+      "priority": 133
+    },
+    "81": {
+      "blend_type": 2,
+      "overlay_mask": "",
+      "priority": 135
+    },
+    "82": {
+      "blend_type": 2,
+      "overlay_mask": "",
+      "priority": 137
+    },
+    "83": {
+      "blend_type": 0,
+      "overlay_mask": "jungle.png",
+      "priority": 124
+    },
+    "84": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 114
+    },
+    "85": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 115
+    },
+    "86": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 116
+    },
+    "87": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 117
+    },
+    "88": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 110
+    },
+    "89": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 103
+    },
+    "9": {
+      "blend_type": 0,
+      "overlay_mask": "grass.png",
+      "priority": 119
+    },
+    "90": {
+      "blend_type": 4,
+      "overlay_mask": "water.png",
+      "priority": 77
+    },
+    "91": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 104
+    },
+    "92": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 105
+    },
+    "93": {
+      "blend_type": 4,
+      "overlay_mask": "water.png",
+      "priority": 78
+    },
+    "94": {
+      "blend_type": 4,
+      "overlay_mask": "water.png",
+      "priority": 79
+    },
+    "95": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 170
+    },
+    "96": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 171
+    },
+    "97": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 172
+    },
+    "98": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 173
+    },
+    "99": {
+      "blend_type": 3,
+      "overlay_mask": "water.png",
+      "priority": 174
+    }
+  }
+}

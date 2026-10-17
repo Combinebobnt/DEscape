@@ -38,7 +38,7 @@ from AoE2ScenarioParser.datasets.object_support import Civilization, Civilizatio
 from AoE2ScenarioParser.datasets.players import ColorId
 from AoE2ScenarioParser.helper.bytes_conversions import fixed_chars_to_bytes
 
-from descape import ai_scripts
+from descape import ai_scripts, game_dataset
 from descape.option_fields import CHECKBOX, COMBO, SPINBOX
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -408,6 +408,36 @@ def current_value(loaded: LoadedScenario, spec: PlayerFieldSpec, player_id: int)
     return value
 
 
+# GH #67: Return of Rome's civilizations, as (int id, string token, name).
+# The ints index the RoR .dat's civ list (1.49/1.53 files store them); 1.56+
+# files store the tokens, measured on the user's RoR samples (2026-10-16).
+# Committed by hand: CARTHAGIAN and PALMYRAN are not derivable from the .dat's
+# names, and PERSIAN-CIV is also AoE2's Persians token, so RoR maps by token.
+ROR_CIVILIZATIONS: tuple[tuple[int, str, str], ...] = (
+    (1, "EGYPTIAN-CIV", "Egyptian"),
+    (2, "GREEK-CIV", "Greek"),
+    (3, "BABYLONIAN-CIV", "Babylonian"),
+    (4, "ASSYRIAN-CIV", "Assyrian"),
+    (5, "MINOAN-CIV", "Minoan"),
+    (6, "HITTITE-CIV", "Hittite"),
+    (7, "PHOENICIAN-CIV", "Phoenician"),
+    (8, "SUMERIAN-CIV", "Sumerian"),
+    (9, "PERSIAN-CIV", "Persian"),
+    (10, "SHANG-CIV", "Shang"),
+    (11, "YAMATO-CIV", "Yamato"),
+    (12, "CHOSON-CIV", "Choson"),
+    (13, "ROMAN-CIV", "Roman"),
+    (14, "CARTHAGIAN-CIV", "Carthaginian"),
+    (15, "PALMYRAN-CIV", "Palmyran"),
+    (16, "MACEDONIAN-CIV", "Macedonian"),
+    (17, "LAC-VIET-CIV", "Lac Viet"),
+)
+_ROR_CIV_NAMES: dict[int | str, str] = {
+    **{civ_id: name for civ_id, _token, name in ROR_CIVILIZATIONS},
+    **{token: name for _civ_id, token, name in ROR_CIVILIZATIONS},
+}
+
+
 def resolve_civilization_name(value: int | str) -> str:
     """Human-readable name for a raw civilization/architecture value -- an
     int (CivilizationOld) below scenario version 1.56, a str (Civilization,
@@ -418,6 +448,8 @@ def resolve_civilization_name(value: int | str) -> str:
     by name already) rather than raising -- an unrecognized row should
     display as itself, not break the panel.
     """
+    if game_dataset.is_ror() and value in _ROR_CIV_NAMES:
+        return _ROR_CIV_NAMES[value]
     try:
         if isinstance(value, str):
             return Civilization(value).name.title()
@@ -623,6 +655,11 @@ def civilization_choices(loaded: LoadedScenario) -> tuple[tuple[int | str, str],
     Sorted by display name for a scannable combo.
     """
     is_str16 = _player_data_1_field_codec(loaded, "civilization") == "str16"
+    if game_dataset.is_ror():
+        pairs = [(token if is_str16 else civ_id, name) for civ_id, token, name in ROR_CIVILIZATIONS]
+        # Random is the parser's own value in both encodings, as RoR files store it.
+        pairs.append((Civilization.RANDOM.value if is_str16 else CivilizationOld.RANDOM.value, "Random"))
+        return tuple(sorted(pairs, key=lambda pair: pair[1]))
     members = Civilization if is_str16 else CivilizationOld
     pairs = [
         (member.value, member.name.replace("_", " ").title())

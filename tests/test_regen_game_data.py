@@ -43,8 +43,10 @@ def _write_generator(tools_dir: Path, script: str, tables: dict[str, str], *, ex
         "parser = argparse.ArgumentParser()",
         'parser.add_argument("install", type=pathlib.Path)',
         'parser.add_argument("--out-dir", type=pathlib.Path)',
+        'parser.add_argument("--dataset", default="aoe2")',
         "args = parser.parse_args()",
-        'dat = (args.install / "resources/_common/dat/empires2_x2_p1.dat").read_bytes()',
+        'root = args.install / "modes/Pompeii" if args.dataset == "ror" else args.install',
+        'dat = (root / "resources/_common/dat/empires2_x2_p1.dat").read_bytes()',
     ]
     for name, text in tables.items():
         lines.append(f'(args.out_dir / {name!r}).write_text({text!r} + " " + str(len(dat)) + "\\n")')
@@ -71,6 +73,13 @@ class _World:
         self.version: str | None = "9.9"
         self.day = "2026-01-02"
         self.lines: list[str] = []
+
+    def add_ror(self, data: bytes = b"ror dat") -> Path:
+        """Gives the install a Return of Rome .dat, so the default --dataset all looks at both."""
+        ror_dat = self.install / regen.ROR_DAT_SUBPATH
+        ror_dat.parent.mkdir(parents=True, exist_ok=True)
+        ror_dat.write_bytes(data)
+        return ror_dat
 
     def set_buildid(self, buildid: str | None) -> None:
         manifest = self.steamapps / f"appmanifest_{AOE2DE_STEAM_APP_ID}.acf"
@@ -153,12 +162,26 @@ def test_each_committed_table_matches_its_stamp_entry():
         )
 
 
+def test_the_ror_tables_are_the_registry_and_match_their_stamp_section():
+    # GH #67: descape/ror/ holds one copy of every generated table, and nothing else.
+    outputs = regen.outputs_of(regen.GENERATORS)
+    ror_dir = regen.TABLES_DIR / regen.ROR_TABLES_SUBDIR
+    assert sorted(path.name for path in ror_dir.glob("*")) == sorted(outputs)
+    section = regen.load_stamp(regen.STAMP_PATH)["ror"]
+    assert sorted(section["tables"]) == sorted(outputs)
+    for name in outputs:
+        assert regen.table_sha256(ror_dir / name) == section["tables"][name], (
+            f"ror/{name} changed without its stamp: run tools/regen_game_data.py --dataset ror"
+        )
+
+
 def test_the_stamp_is_kept_out_of_the_bundled_data_and_carries_its_fields():
     # packaging/descape.spec bundles every descape/**/*.json, so the stamp must not live there.
     assert (ROOT / "descape") not in regen.STAMP_PATH.parents
     stamp = regen.load_stamp(regen.STAMP_PATH)
-    assert sorted(stamp) == ["_comment", "dat", "genieutils", "refreshed", "steam_buildid", "tables"]
+    assert sorted(stamp) == ["_comment", "dat", "genieutils", "refreshed", "ror", "steam_buildid", "tables"]
     assert sorted(stamp["dat"]) == ["sha256", "size"]
+    assert sorted(stamp["ror"]) == ["dat", "genieutils", "refreshed", "steam_buildid", "tables"]
     assert regen.STAMP_PATH.read_text(encoding="utf-8") == regen.stamp_text(stamp), "the stamp was edited by hand"
 
 
@@ -402,9 +425,61 @@ def test_regenerating_into_another_tables_dir_needs_its_own_stamp(tmp_path):
 
 def test_regenerating_refuses_a_subscribed_mods_folder(world, tmp_path):
     world.tables = tmp_path / "mods" / "subscribed" / "123_x" / "tables"
-    assert world.run() == regen.EXIT_CANNOT
+    assert world.run("--dataset", "aoe2") == regen.EXIT_CANNOT
     assert not world.tables.exists() and not world.stamp.exists()
     assert world.lines == [f"refusing to write into a subscribed-mods (mods/subscribed/) folder: {world.tables}"]
+
+
+# --- Return of Rome (GH #67) ---------------------------------------------
+
+
+def test_all_regenerates_both_datasets_into_their_own_tables_and_stamp_sections(world):
+    world.add_ror()
+    assert world.run() == regen.EXIT_OK, world.text
+    assert "=== Return of Rome ===" in world.lines
+    assert (world.tables / "alpha.json").read_text(encoding="utf-8") == "alpha 7\n"
+    assert (world.tables / "ror" / "alpha.json").read_text(encoding="utf-8") == "alpha 7\n"
+    stamp = world.stamp_data()
+    assert stamp["ror"] == {
+        "dat": regen.dat_fingerprint(world.install, regen.ROR_DAT_SUBPATH),
+        "steam_buildid": "111",
+        "genieutils": "9.9",
+        "refreshed": "2026-01-02",
+        "tables": {name: regen.table_sha256(world.tables / "ror" / name) for name in ("alpha.json", "beta.json", "gamma.json")},
+    }
+    assert stamp["dat"] == regen.dat_fingerprint(world.install), "the AoE2 section is the top level, as before"
+    assert world.run("--status") == regen.EXIT_OK, world.text
+
+
+def test_a_ror_change_is_stale_only_in_its_own_section(world):
+    ror_dat = world.add_ror()
+    assert world.run() == regen.EXIT_OK
+    ror_dat.write_bytes(b"ror dat, patched")
+    assert world.run("--status") == regen.EXIT_STALE
+    stale = [line for line in world.lines if line.startswith("STALE")]
+    assert len(stale) == 2 and all(line.startswith("STALE dat.") for line in stale), stale
+    assert world.lines.index("=== Return of Rome ===") < world.lines.index(stale[0])
+    assert world.run("--status", "--dataset", "aoe2") == regen.EXIT_OK
+
+
+def test_regenerating_one_dataset_keeps_the_other_section(world):
+    world.add_ror()
+    assert world.run() == regen.EXIT_OK
+    before = world.stamp_data()
+    world.dat.write_bytes(b"dat two, longer")
+    assert world.run("--dataset", "aoe2") == regen.EXIT_OK
+    after = world.stamp_data()
+    assert after["ror"] == before["ror"]
+    assert after["dat"] != before["dat"]
+
+
+def test_all_without_a_ror_dat_says_so_and_looks_at_aoe2_only(world):
+    assert world.run() == regen.EXIT_OK, world.text
+    assert world.lines[0].startswith("note: no Return of Rome .dat at ")
+    assert "ror" not in world.stamp_data()
+    assert not (world.tables / "ror").exists()
+    assert world.run("--dataset", "ror") == regen.EXIT_CANNOT
+    assert world.lines == [f"not found: {world.install / regen.ROR_DAT_SUBPATH}"]
 
 
 # --- without genieutils-py -----------------------------------------------

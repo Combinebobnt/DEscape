@@ -1,4 +1,4 @@
-"""GH #20: units drawn from a particle effect's atlas (Butterflies 1608-1610).
+"""GH #20: units drawn from a particle effect's atlas (Butterflies 1608-1610; Seagulls 303 since GH #67).
 
 Two halves. The synthetic one builds a tiny TexturePacker atlas in tmp_path
 and pins what descape/particle_art.py reads out of it: which rect a frame is
@@ -254,6 +254,8 @@ def test_the_flat_icon_fits_its_footprint_whatever_the_art_scale(particles):
 # --- the real atlas -----------------------------------------------------------
 
 BUTTERFLIES = {1608: "butterflies_1_low", 1609: "butterflies_2_low", 1610: "butterflies_3_low"}
+# Every particle entry the committed tables carry: the butterflies plus the seagulls (GH #67).
+PARTICLE_STEMS = {**BUTTERFLIES, 303: "dock_seagulls"}
 SOURCE = 400
 
 # Opaque px of each effect's first frame at native size, measured 2026-10-12.
@@ -273,7 +275,7 @@ def test_every_particle_stem_names_an_effect_this_install_has():
     not the graphics one, and its committed art_scale is that effect's Scale."""
     _require_install()
     entries = [e for e in unit_sprites.graphic_map().values() if e.get("particle")]
-    assert len(entries) == len(BUTTERFLIES), "the particle entries are missing, so this proves nothing"
+    assert {e["file_name"] for e in entries} == set(PARTICLE_STEMS.values()), "the particle entries are missing, so this proves nothing"
     folder = asset_source.get_install_path() / asset_source.PARTICLE_SUBPATH
     for entry in entries:
         stem = entry["file_name"]

@@ -24,8 +24,9 @@ covers that trap).
 from __future__ import annotations
 
 import json
-from functools import cache, lru_cache
 from pathlib import Path
+
+from descape import game_dataset
 
 _CLASSES_PATH = Path(__file__).resolve().parent / "terrain_classes.json"
 
@@ -45,9 +46,9 @@ WATER_FAMILIES = frozenset({"medium_water", "deep_water", "shallow_water", "shal
 DEFAULT_BEACH_ID = 2  # BEACH
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _classes() -> dict[int, dict]:
-    data = json.loads(_CLASSES_PATH.read_text())["classes"]
+    data = json.loads(game_dataset.table_path(_CLASSES_PATH).read_text())["classes"]
     return {int(k): v for k, v in data.items()}
 
 
@@ -73,18 +74,18 @@ def is_beach_family(terrain_id: int) -> bool:
     return terrain_family(terrain_id) == "beach"
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def beach_terrains() -> tuple[int, ...]:
     """Every beach-family id, ascending -- what the Beach combo offers."""
     return tuple(sorted(tid for tid in _classes() if is_beach_family(tid)))
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def water_terrains() -> tuple[int, ...]:
     return tuple(sorted(tid for tid in _classes() if is_water_family(tid)))
 
 
-@cache
+@game_dataset.cache(maxsize=None)
 def _beaches_in_climate(climate: str) -> tuple[int, ...]:
     return tuple(tid for tid in beach_terrains() if terrain_climate(tid) == climate)
 

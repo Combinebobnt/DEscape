@@ -41,9 +41,8 @@ the message names the blocker and where it stands so a hidden one is findable.
 from __future__ import annotations
 
 import math
-from functools import lru_cache
 
-from descape import object_catalog, render, terrain_catalog
+from descape import game_dataset, object_catalog, render, terrain_catalog
 from descape.terrain_palette import (
     BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
@@ -73,17 +72,17 @@ _PASSABLE_BUILDING_CLASSES = {
 Box = tuple[float, float, float, float]
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _objects() -> dict[int, dict]:
     return object_catalog.dat_objects()
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _restrictions() -> dict[int, frozenset[int]]:
     return object_catalog.dat_terrain_restrictions()
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _terrains() -> dict[int, dict]:
     return object_catalog.dat_terrains()
 
@@ -241,7 +240,7 @@ def _reach(shape) -> float:
     return max(span) / 2 + 0.5 if offsets is not None else max(half)
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _max_reach() -> float:
     """_reach() of the largest shape in the catalog: blocker()'s prefilter bound."""
     return max((_reach(shape) for shape in map(_shape, _objects()) if shape is not None), default=0.0)

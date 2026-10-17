@@ -21,15 +21,14 @@ from __future__ import annotations
 
 import json
 import random
-from functools import lru_cache
 from pathlib import Path
 
-from descape import gate_orientation, unit_rotation, unit_sprites
+from descape import game_dataset, gate_orientation, unit_rotation, unit_sprites
 
 _GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def excluded_consts() -> frozenset[int]:
     """Walls, cliffs and every gate: variant-indexed, but not the user's to cycle.
 
@@ -40,10 +39,10 @@ def excluded_consts() -> frozenset[int]:
     return unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIFF_VARIANT_CONSTS | gates
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _variant_counts() -> dict[int, int]:
     """unit_const -> the committed `variant_count` (.sld frames // frame_count)."""
-    data = json.loads(_GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(_GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(const): int(entry["variant_count"]) for const, entry in data.items() if "variant_count" in entry}
 
 
