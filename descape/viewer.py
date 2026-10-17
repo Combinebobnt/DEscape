@@ -202,6 +202,7 @@ from descape.options_model import (
     personality_write_supported,
     player_count_write_supported,
     players_write_supported,
+    script_name_write_supported,
 )
 from descape.players_panel import STORED_PERSONALITY, PersonalityOptions, PlayersPanel, personality_choice_label
 from descape.render import (
@@ -488,6 +489,7 @@ _MODE_ID_FOR_LABEL = {"Map Options": "map_options"}
 # fails silently in the direction of dropping the edit.
 _EXEC_ORDER_FIELD = "legacy_exec_order"
 _EXEC_ORDER_SECTION = "Triggers"
+_SCRIPT_NAME_FIELD = "script_name"
 
 # GH #168: the most shapes a several-trigger overlay draws. Every unit edit re-derives
 # the union, and 300 is what fits a 25 ms refresh on the corpus file with the most shapes.
@@ -498,10 +500,13 @@ def _mode_id(mode_text: str) -> str:
     return _MODE_ID_FOR_LABEL.get(mode_text, mode_text.lower())
 
 
-def _xs_info_lines(loaded) -> list[str]:
-    """The info panel's two read-only XS attachment lines. Honest about what is
-    not known yet, like the trigger-tail line above them."""
+def _xs_info_lines(loaded, pending_name: str | None = None) -> list[str]:
+    """The info panel's two XS attachment lines. Honest about what is not
+    known yet, like the trigger-tail line above them. `pending_name` is an
+    unsaved Script filename edit, shown in place of the file's."""
     script_name, embedded = xs_attachment(loaded)
+    if pending_name is not None:
+        script_name = pending_name
     if script_name is None:
         name_text = "(not stored before scenario 1.40)"
     else:
@@ -9675,8 +9680,15 @@ class ViewerWindow(QMainWindow):
         editable = set()
         if options_write_supported(self.scenario, specs):
             editable.update(
-                spec.field_id for spec in specs if spec.field_id != _EXEC_ORDER_FIELD
+                spec.field_id
+                for spec in specs
+                if spec.field_id not in (_EXEC_ORDER_FIELD, _SCRIPT_NAME_FIELD)
             )
+            # Its own gate (the Files walk); listed only on a 1.40+ file.
+            if any(spec.field_id == _SCRIPT_NAME_FIELD for spec in specs) and script_name_write_supported(
+                self.scenario
+            ):
+                editable.add(_SCRIPT_NAME_FIELD)
         if exec_order_write_supported(self.scenario):
             editable.add(_EXEC_ORDER_FIELD)
         return frozenset(editable)
@@ -9688,6 +9700,11 @@ class ViewerWindow(QMainWindow):
     _SCALARS_READ_ONLY = (
         "Read-only for this file: its map-option block failed verification, so "
         "patching this setting would land at an offset that cannot be trusted."
+    )
+
+    _SCRIPT_NAME_READ_ONLY = (
+        "Read-only for this file: its script filename or Files section failed "
+        "verification, so this setting cannot be written back."
     )
 
     def _map_options_read_only_reasons(self) -> dict[str, str]:
@@ -9709,11 +9726,14 @@ class ViewerWindow(QMainWindow):
         for spec in option_fields.specs_for(self.scenario):
             if spec.field_id in editable:
                 continue
-            reasons[spec.field_id] = (
-                self._EXEC_ORDER_READ_ONLY
-                if spec.section == _EXEC_ORDER_SECTION
-                else self._SCALARS_READ_ONLY
-            )
+            if spec.section == _EXEC_ORDER_SECTION:
+                reasons[spec.field_id] = self._EXEC_ORDER_READ_ONLY
+            elif spec.field_id == _SCRIPT_NAME_FIELD and options_write_supported(
+                self.scenario, option_fields.specs_for(self.scenario)
+            ):
+                reasons[spec.field_id] = self._SCRIPT_NAME_READ_ONLY
+            else:
+                reasons[spec.field_id] = self._SCALARS_READ_ONLY
         return reasons
 
     def _map_options_notes(self) -> list[str]:
@@ -9802,6 +9822,9 @@ class ViewerWindow(QMainWindow):
         except (KeyError, ValueError) as e:
             self._log_status(f"Map option {spec.field_id} not set: {e}")
             self._repopulate_map_options()
+            return
+        if spec.field_id == _SCRIPT_NAME_FIELD:
+            self._update_technical_info()
 
     def _ensure_option_edits(self) -> OptionsEditModel | None:
         """The document's OptionsEditModel, built on first use.
@@ -16442,6 +16465,7 @@ class ViewerWindow(QMainWindow):
             self._after_player_color_change()
             # An undone Number of Players edit changes the stats combo's list.
             self._repopulate_stats_players()
+            self._update_technical_info()
         elif "trigger" in kinds:
             self._update_player_stats()
         if "messages" in kinds:
@@ -18341,13 +18365,24 @@ class ViewerWindow(QMainWindow):
             (name_for_terrain_id(tid), f"{100 * count / total_tiles:.1f}%", "")
             for tid, count in terrain_hist.most_common(8)
         ], numeric=True)
+        self._update_technical_info()
+        # The trigger-tail/XS rows above and the Player section's trigger row flip together.
+        self._repopulate_stats_players()
+
+    def _update_technical_info(self) -> None:
+        """The info page's Technical rows alone, also refreshed after a Script
+        filename edit or its undo, so the XS line shows the pending name."""
+        s = self.scenario
+        if s is None:
+            return
         technical = [("Trigger tail", f"{len(s.trigger_tail):,}", "bytes (not parsed)")]
-        for line in _xs_info_lines(s):
+        pending_name = None
+        if self.option_edits is not None:
+            pending_name = self.option_edits.pending_values().get(_SCRIPT_NAME_FIELD)
+        for line in _xs_info_lines(s, pending_name):
             label, _, value = line.partition(": ")
             technical.append((label, "", value))
         self._set_info_children("Technical", technical)
-        # The trigger-tail/XS rows above and the Player section's trigger row flip together.
-        self._repopulate_stats_players()
 
     def _set_info_children(self, title: str, rows: list[tuple[str, str, str]], numeric: bool = False) -> None:
         """Replaces one static section's rows. numeric right-aligns the Value column."""

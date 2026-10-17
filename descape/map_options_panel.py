@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QLabel,
+    QLineEdit,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -415,6 +416,8 @@ class MapOptionsPanel(QWidget):
             self._fitting = False
 
     def _build_widget(self, spec) -> QWidget:
+        if spec.kind == option_fields.TEXT:
+            return self._text_field(spec, spec.field_id in self._editable_fields)
         # int() once, up front: a u8 retriever can parse as a bool, and both
         # QComboBox.findData and the range comparison below treat True and 1
         # as different keys.
@@ -551,6 +554,23 @@ class MapOptionsPanel(QWidget):
             f"forced into range."
         )
         return label
+
+    def _text_field(self, spec, editable: bool) -> QLineEdit:
+        """A TEXT row (script_name): commits on Enter or focus loss, not per
+        keystroke, so one typed name is one undo step. A trailing ".xs" is
+        dropped, since the game adds it."""
+        edit = QLineEdit(str(self._values[spec.field_id]))
+        edit.setEnabled(editable)
+
+        def commit(s=spec, w=edit):
+            text = w.text()
+            if text.lower().endswith(".xs"):
+                text = text[: -len(".xs")]
+                w.setText(text)
+            self._changed(s, text)
+
+        edit.editingFinished.connect(commit)
+        return edit
 
     def _plain_spinbox(self, spec, value: int, editable: bool) -> QSpinBox:
         spin = _make_spinbox(

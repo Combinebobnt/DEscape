@@ -225,7 +225,7 @@ class TriggerDiffRecord(DiffRecord):
 
 @dataclass
 class OptionsDiffRecord(DiffRecord):
-    """One map-option scalar (or, for tribe_name, string) edit, as the raw
+    """One map-option scalar (or, for tribe_name and script_name, string) edit, as the raw
     before/after values of one field.
 
     Values rather than a snapshot, unlike TriggerDiffRecord: an option field is

@@ -1478,8 +1478,9 @@ def refresh_player_render_context(
 def xs_attachment(loaded: LoadedScenario) -> tuple[str | None, int | None]:
     """(Map script_name, embedded Files script_file_content length in chars).
 
-    Read-only: script_name is a variable-length string ahead of terrain_data
-    in Map, so no byte-patch write path may ever change it. script_name is
+    As parsed: a pending Map Options edit of script_name (GH #216,
+    options_model.script_name_layout()) is not reflected here, and
+    script_file_content is never written. script_name is
     None before scenario 1.40 (no retriever). The embedded length is None
     until parse_triggers() has reached Files; this never forces that parse.
     Characters, not bytes: the value is already decoded.

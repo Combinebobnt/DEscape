@@ -132,11 +132,51 @@ def test_every_spec_resolves_to_a_scalar_int() -> None:
     points at a repeat-driven retriever. If a future spec (e.g. a
     Players-mode field) breaks this, it should fail here -- a plain,
     fast, default-tier sweep -- rather than surface as a mysterious list
-    reaching a Qt widget in the panel."""
+    reaching a Qt widget in the panel. A TEXT spec resolves to a str."""
     loaded = scenario_io.load_map_and_units(scenario_io.BLANK_TEMPLATE_PATH)
     scenario_io.parse_triggers(loaded)
     for spec in specs_for(loaded):
-        assert isinstance(current_value(loaded, spec), int), spec.field_id
+        expected = str if spec.kind == option_fields.TEXT else int
+        assert isinstance(current_value(loaded, spec), expected), spec.field_id
+
+
+# -- Script filename (GH #216) ---------------------------------------------------
+
+
+def test_script_name_spec_is_a_map_text_row() -> None:
+    spec = next(s for s in option_fields._SPECS if s.field_id == "script_name")
+    assert (spec.group, spec.section, spec.retriever, spec.kind) == ("Map", "Map", "script_name", option_fields.TEXT)
+    assert spec.panel == "map_options"
+    assert ".xs" in spec.tooltip and "spectators" in spec.tooltip
+    # The only TEXT spec, so a second one has to be wired through the model too.
+    assert [s.field_id for s in option_fields._SPECS if s.kind == option_fields.TEXT] == ["script_name"]
+
+
+def test_script_name_is_absent_without_its_retriever() -> None:
+    """Pre-1.40 structures have no Map.script_name, so the row is not listed."""
+    loaded = _stub_loaded({("Map", "script_name"): None})
+    ids = {s.field_id for s in specs_for(loaded)}
+    assert "script_name" not in ids
+    assert "collide_and_correct" in ids
+
+
+def test_script_name_is_listed_on_a_real_file() -> None:
+    loaded = scenario_io.load_map_and_units(scenario_io.BLANK_TEMPLATE_PATH)
+    spec = next(s for s in specs_for(loaded) if s.field_id == "script_name")
+    assert current_value(loaded, spec) == ""
+
+
+def test_current_value_of_a_text_spec_is_the_str() -> None:
+    loaded = _stub_loaded({("Map", "script_name"): _StubRetriever(b"\x05\x00probe", data="probe")})
+    spec = next(s for s in specs_for(loaded) if s.field_id == "script_name")
+    assert current_value(loaded, spec) == "probe"
+
+
+def test_current_value_of_a_text_spec_refuses_a_non_str() -> None:
+    loaded = _stub_loaded({("Map", "script_name"): _StubRetriever(b"\x02\x00\xff\xfe", data=b"\xff\xfe")})
+    spec = next(s for s in specs_for(loaded) if s.field_id == "script_name")
+    with pytest.raises(TypeError):
+        current_value(loaded, spec)
 
 
 def test_current_value_matches_known_blank_template_defaults() -> None:
