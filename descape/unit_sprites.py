@@ -61,6 +61,7 @@ from descape import (
     asset_source,
     debug_log,
     editor_markers,
+    game_dataset,
     gate_orientation,
     mod_graphics,
     particle_art,
@@ -465,15 +466,15 @@ def clear_caches() -> None:
     editor_markers.clear_caches()
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def graphic_map() -> dict[int, dict]:
     """unit_const -> {graphic_id, file_name, angle_count, mirroring_mode,
     frame_count}, from the committed table."""
-    data = json.loads(GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(k): v for k, v in data.items()}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _particle_stems() -> frozenset[str]:
     """The file_names that are particle effects, not .sld stems (GH #20):
     _native_frame() reads those through particle_art. Cleared by
@@ -489,10 +490,10 @@ class BuildingArt(NamedTuple):
     civ_names: dict[int, str]
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def building_art() -> BuildingArt:
     """The committed per-civ and per-age building art table."""
-    data = json.loads(BUILDING_ART_PATH.read_text())
+    data = json.loads(game_dataset.table_path(BUILDING_ART_PATH).read_text())
     entries = data["entries"]
     return BuildingArt(
         age_upgrades={
@@ -669,6 +670,11 @@ def angle_index(
 _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
     72, 117, 119, 155, 231, 370, 788, 1062, 2678,
 })
+# Return of Rome (GH #67, 2026-10-17): its .dat's class-27 angle_count-5 consts are the
+# AoE2 nine minus WALL5 2678 (an empty slot there); 1,548 RoR placements, 96.9% agreement.
+_ROR_ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
+    72, 117, 119, 155, 231, 370, 788, 1062,
+})
 
 
 # Cliffs (2026-09-05 cliffs plan, Track A2). Every `class_ == 34` const in the
@@ -706,6 +712,30 @@ _CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
         *range(2651, 2660),
     ]
 )
+# Return of Rome (GH #67, 2026-10-17): its 60 class-34 consts, the AoE2 set without the
+# Short Marble family 2190-2225 (empty slots there); 2,110 RoR placements, rotation == frame.
+_ROR_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
+    [
+        *range(264, 273),
+        1339, 1340, 1341, 1342, 1344, 1346,
+        *range(1849, 1867),
+        *range(2069, 2078),
+        *range(2178, 2187),
+        *range(2651, 2660),
+    ]
+)
+
+
+def rotation_variant_const_set() -> frozenset[int]:
+    """The active game dataset's wall family (GH #67). Reads the module
+    attribute at call time, so a test's monkeypatch of either set holds."""
+    return _ROR_ROTATION_VARIANT_CONSTS if game_dataset.is_ror() else _ROTATION_VARIANT_CONSTS
+
+
+def cliff_const_set() -> frozenset[int]:
+    """The active game dataset's cliff consts (GH #67), read at call time
+    like rotation_variant_const_set()."""
+    return _ROR_CLIFF_VARIANT_CONSTS if game_dataset.is_ror() else _CLIFF_VARIANT_CONSTS
 
 
 def rotation_is_variant(unit_const: int) -> bool:
@@ -743,10 +773,11 @@ def rotation_facing_viewer(unit_const: int) -> float | None:
 
 
 def cliff_consts() -> frozenset[int]:
-    """The public read of `_CLIFF_VARIANT_CONSTS`, for cliff_catalog.py's
-    family/piece grouping -- kept a function, not a re-exported name, so
-    every caller goes through one place if Tier B ever replaces the set."""
-    return _CLIFF_VARIANT_CONSTS
+    """The public read of the active dataset's cliff set (cliff_const_set()),
+    for cliff_catalog.py's family/piece grouping -- kept a function, not a
+    re-exported name, so every caller goes through one place if Tier B ever
+    replaces the set."""
+    return cliff_const_set()
 
 
 # Generated, not hand-kept (2026-09-12 plan): the gate half is every const in
@@ -772,14 +803,14 @@ def cliff_consts() -> frozenset[int]:
 # live editing (e.g. cycling a palisade gate's orientation no longer reshapes
 # its neighbouring walls, where cycling a stone gate already didn't), not
 # anything visible in the corpus.
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def wall_connector_consts() -> frozenset[int]:
     """The set of consts whose tiles count as a "wall neighbour" for
     render.wall_variant_rotation_overrides(). A function, not a module
     constant, because the gate half reads two JSON tables via
     gate_orientation.groups(), and an import-time read is a cost this module
     does not otherwise pay."""
-    return _ROTATION_VARIANT_CONSTS | frozenset(
+    return rotation_variant_const_set() | frozenset(
         const for group in gate_orientation.groups().values() for const in group
     )
 
@@ -923,7 +954,7 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     Deliberately looks angle_count up via graphic_map() itself rather than
     taking it as a parameter, so render.py never has to reach into this
     module's data table directly."""
-    if unit_const not in _ROTATION_VARIANT_CONSTS:
+    if unit_const not in rotation_variant_const_set():
         return False
     entry = graphic_map().get(unit_const)
     return entry is not None and int(entry["angle_count"]) == 5
@@ -936,7 +967,7 @@ def wall_family_consts() -> tuple[int, ...]:
     UnitEditModel.set_wall_variant()'s own scope -- so a wall run can never
     place something the model would refuse. Gates are not here: their
     orientation lives in the const, not in `rotation`."""
-    return tuple(sorted(c for c in _ROTATION_VARIANT_CONSTS if rotation_variant_eligible(c)))
+    return tuple(sorted(c for c in rotation_variant_const_set() if rotation_variant_eligible(c)))
 
 
 def is_literal_variant_index(rotation: float, angle_count: int) -> bool:
@@ -1043,6 +1074,16 @@ def _graphics_dir() -> Path | None:
     return None if root is None else root / GRAPHICS_SUBPATH
 
 
+def _sld_path(directory: Path, file_name: str) -> Path:
+    """The .sld for a stem: under Return of Rome the RoR root's copy when it
+    has one, else the install's in `directory` (GH #67)."""
+    if game_dataset.is_ror():
+        found = game_dataset.resource_path(f"{GRAPHICS_SUBPATH}/{file_name}.sld")
+        if found is not None:
+            return found
+    return directory / f"{file_name}.sld"
+
+
 @lru_cache(maxsize=512)
 def sld_frame_count(file_name: str) -> int | None:
     """How many frames the .sld file actually holds, or None when it can't be
@@ -1073,7 +1114,7 @@ def _sld_index(file_name: str):
     hit = _sld_index_cache.get_or_none(file_name)
     if hit is not None:
         return None if hit is _MISS else hit
-    sld = load_sld(directory / f"{file_name}.sld")
+    sld = load_sld(_sld_path(directory, file_name))
     if sld is not None:
         _sld_bytes_cache.put(file_name, sld.release_data())
     _sld_index_cache.put(file_name, _MISS if sld is None else sld)
@@ -1150,7 +1191,7 @@ def _sld_bytes(directory: Path, file_name: str) -> bytes:
     its walk is refused by decode_frame()'s length check."""
     data = _sld_bytes_cache.get_or_none(file_name)
     if data is None:
-        data = (directory / f"{file_name}.sld").read_bytes()
+        data = _sld_path(directory, file_name).read_bytes()
         _sld_bytes_cache.put(file_name, data)
     return data
 

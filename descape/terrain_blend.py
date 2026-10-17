@@ -40,7 +40,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from descape import asset_source
+from descape import asset_source, game_dataset
 
 BLEND_MAP_PATH = Path(__file__).resolve().parent / "terrain_blend_map.json"
 
@@ -109,13 +109,20 @@ class BlendEntry(NamedTuple):
 
 
 def _load_table() -> dict[int, BlendEntry]:
-    data = json.loads(BLEND_MAP_PATH.read_text())
+    data = json.loads(game_dataset.table_path(BLEND_MAP_PATH).read_text())
     return {
         int(tid): BlendEntry(e["priority"], e["blend_type"], e["overlay_mask"]) for tid, e in data["terrains"].items()
     }
 
 
 BLEND_TABLE: dict[int, BlendEntry] = _load_table()
+
+
+@game_dataset.on_switch
+def _reload_table() -> None:
+    """Refills BLEND_TABLE in place for the active dataset (GH #67)."""
+    BLEND_TABLE.clear()
+    BLEND_TABLE.update(_load_table())
 
 
 def tile_indices(bits: int, x: int, y: int) -> tuple[int, ...]:
@@ -365,18 +372,19 @@ def _crop(arr: np.ndarray, ox: int, oy: int, tile_px: int) -> np.ndarray:
 
 def _compose(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
     own_tid, layer_tid, entries = key
-    base = asset_source.get_terrain_texture_array(own_tid)
+    size = asset_source.terrain_texture_size(tile_px)
+    base = asset_source.terrain_texture_at(own_tid, size)
     if base is None:
         return None
     out = _crop(base, ox, oy, tile_px).astype(np.uint32)
     if layer_tid >= 0:
-        layer = asset_source.get_terrain_texture_array(layer_tid)
-        mask = asset_source.get_terrain_mask_array(layer_mask_name(layer_tid))
+        layer = asset_source.terrain_texture_at(layer_tid, size)
+        mask = asset_source.terrain_mask_at(layer_mask_name(layer_tid), size)
         if layer is not None and mask is not None:
             m = _crop(mask, ox, oy, tile_px).astype(np.uint32)[:, :, None]
             out = (out * (256 - m) + _crop(layer, ox, oy, tile_px) * m + 128) >> 8
     for n_tid, mode, tile in entries:
-        neighbour = asset_source.get_terrain_texture_array(n_tid)
+        neighbour = asset_source.terrain_texture_at(n_tid, size)
         alpha = asset_source.get_blend_mask(mode, tile, tile_px)
         if neighbour is None or alpha is None:
             continue

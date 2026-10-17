@@ -1,7 +1,8 @@
 """Family/piece catalog for the Terrain-mode Cliff tool -- Track B Stage 1 of
 the 2026-09-02 cliffs plan.
 
-Cliffs are 96 GAIA `class_ == 34` consts: ten full nine-piece families
+Cliffs are 96 GAIA `class_ == 34` consts in AoE2 (60 in Return of Rome,
+which lacks the Short Marble family, GH #67): ten full nine-piece families
 sharing one graphic per family, plus a six-piece partial family
 (CLF01..CLF08, missing 05/07/09) that shares the Desert graphic. Family
 membership here is `unit_sprites.cliff_consts()` -- the same set
@@ -15,9 +16,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import lru_cache
 
-from descape import asset_source, object_catalog, unit_sprites
+from descape import asset_source, game_dataset, object_catalog, unit_sprites
 
 # Falls back to the .dat's angle_count when no install is configured (no
 # .sld to read a real frame count from) -- unit_sprites.variant_index()'s
@@ -33,7 +33,7 @@ class CliffPiece:
     label: str  # object_catalog's own .dat "code", falling back to the bare const
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def families() -> dict[str, tuple[CliffPiece, ...]]:
     """Family label (the shared graphic's file_name) -> its pieces, sorted by
     unit_const. Not process-invalidated by an install change: file_name
@@ -84,7 +84,7 @@ def _label_suffix(label: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def suffixes() -> dict[int, int | None]:
     """piece_suffix() for every cliff const, read off families()' labels: a
     Cliff drag looks one up per contact per cursor event, and piece_suffix()

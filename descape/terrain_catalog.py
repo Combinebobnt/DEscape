@@ -12,9 +12,8 @@ filtered out of the default view.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 
-from descape import object_catalog
+from descape import game_dataset, object_catalog
 from descape.terrain_palette import is_dat_only_terrain, name_for_terrain_id, terrain_ids
 
 CATEGORY_UNUSED = "Unused / moddable"
@@ -86,7 +85,7 @@ def _entry(terrain_id: int, dat_terrains: dict[int, dict]) -> TerrainEntry:
     return TerrainEntry(id=terrain_id, name=name, category=category, hidden=hidden)
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def terrains() -> tuple[TerrainEntry, ...]:
     """Every terrain_palette.terrain_ids() id as a catalog row, id order:
     TerrainId plus the .dat-only ids (131-133). Built from

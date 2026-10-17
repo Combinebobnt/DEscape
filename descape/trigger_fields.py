@@ -45,7 +45,7 @@ from AoE2ScenarioParser.objects.data_objects.effect import (
 )
 from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
 
-from . import command_buttons, library_compat, object_catalog, scenario_io
+from . import command_buttons, game_dataset, library_compat, object_catalog, scenario_io
 from .library_compat import VocabularyEntry
 
 # -- kinds -------------------------------------------------------------------
@@ -338,6 +338,9 @@ def resolve_reference(presentation: str, value: Any) -> str:
         return ""
     if presentation in _COMBINED_OBJECT_PRESENTATIONS:
         return object_catalog.combined_object_name(value)
+    if presentation == "TechInfo" and game_dataset.is_ror():
+        # GH #67: TechInfo is AoE2's; Return of Rome names its own techs.
+        return object_catalog.name_for(object_catalog.techs(), value)
     dataset = _REFERENCE_DATASETS.get(presentation)
     if dataset is None:
         return ""

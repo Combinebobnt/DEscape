@@ -148,6 +148,12 @@ stack_badge_position: bottom_right
 # default on read. Default: list.
 terrain_picker_mode: list
 
+# Which game's data draws every opened scenario, Settings > Advanced (GH #67):
+# auto or aoe2 or ror. auto follows the file's own header; aoe2 or ror shows every
+# file in that game's data, read-only when it is the other game's file.
+# Anything else falls back to the default on read. Default: auto.
+game_data: auto
+
 # The terrain grid's swatch size in px, Settings > Appearance: 32, 48, 64.
 # Anything else falls back to the default on read. Default: 48.
 terrain_grid_swatch_px: 48

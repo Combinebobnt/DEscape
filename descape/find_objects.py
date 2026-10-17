@@ -12,11 +12,10 @@ import csv
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from descape import object_catalog, unit_kind
+from descape import game_dataset, object_catalog, unit_kind
 from descape.find_text import FindPatternError, compile_pattern, refuse_forbidden_path
 from descape.render import unit_tile_bounds
 from descape.terrain_palette import TREE_UNIT_IDS
@@ -50,7 +49,7 @@ def _kind_consts(kind: str) -> frozenset[int]:
     raise ValueError(f"unknown kind {kind!r}")
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _category_by_const() -> dict[int, str]:
     return {entry.id: entry.category for entry in object_catalog.objects()}
 

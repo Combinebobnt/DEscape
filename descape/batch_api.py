@@ -39,6 +39,7 @@ from AoE2ScenarioParser.datasets.buildings import BuildingInfo
 from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
+from descape import game_dataset, object_catalog
 from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import MAX_ELEVATION
 from descape.scenario_io import LoadedScenario, load_map_and_units
@@ -77,8 +78,15 @@ from descape.unit_model import UnitEditModel  # re-exported too, see below
 # descape/library_compat.py exists to route around; see this module's own
 # docstring above for the read-side gotcha that still applies across
 # multiple open documents in one process.
-load = load_map_and_units
 save = write_scenario
+
+
+def load(path) -> LoadedScenario:
+    """load_map_and_units(), then the file's own game data made active (GH #67),
+    so names, footprints and is_building() read Return of Rome's for a RoR file."""
+    loaded = load_map_and_units(path)
+    game_dataset.set_active(game_dataset.from_variant(loaded.game_variant))
+    return loaded
 
 # IMPORTANT: any new elevation-writing helper added to this module must go
 # through set_tile_elevation() above, never assign a tile's `elevation`
@@ -96,7 +104,10 @@ _DIAGONAL_OFFSETS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
 
 
 def is_building(unit: Unit) -> bool:
-    """True if unit's unit_const identifies a building, not a regular unit/hero/other."""
+    """True if unit's unit_const identifies a building, not a regular unit/hero/other.
+    Under Return of Rome the AoE2 dataset does not apply, so the RoR .dat row decides (GH #67)."""
+    if game_dataset.is_ror():
+        return object_catalog.is_building(unit.unit_const)
     return unit.unit_const in _BUILDING_IDS
 
 

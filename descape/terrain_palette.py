@@ -15,7 +15,7 @@ from pathlib import Path
 
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import asset_source, object_catalog
+from descape import asset_source, game_dataset, object_catalog
 
 _KEYWORD_COLORS: list[tuple[str, tuple[int, int, int]]] = [
     ("DEEP_WATER", (28, 62, 130)),
@@ -52,7 +52,9 @@ def _build_id_to_name() -> dict[int, str]:
     """TerrainId's names, plus every .dat-table terrain the enum lacks (the
     Sept 2026 patch's 131-133) under enum_style_name() of its .dat code. The
     .dat names only name dat-only ids: for old ids they do not reproduce the
-    enum's ("Forest" vs FOREST_OAK)."""
+    enum's ("Forest" vs FOREST_OAK). The active dataset's .dat (GH #67); the
+    RoR terrain table has the same 134 ids as AoE2's, measured 2026-10-16, so
+    TerrainId names it too."""
     names = {t.value: t.name for t in TerrainId}
     for terrain_id, entry in object_catalog.dat_terrains().items():
         if terrain_id not in names and entry.get("code", "").strip():
@@ -60,8 +62,8 @@ def _build_id_to_name() -> dict[int, str]:
     return names
 
 
-_ID_TO_NAME: dict[int, str] = _build_id_to_name()
-_TERRAIN_IDS: tuple[int, ...] = tuple(sorted(_ID_TO_NAME))
+_ID_TO_NAME: dict[int, str] = {}
+_TERRAIN_IDS: tuple[int, ...] = ()
 
 
 def terrain_ids() -> tuple[int, ...]:
@@ -82,9 +84,7 @@ def _color_for_name(name: str) -> tuple[int, int, int]:
     return _DEFAULT_COLOR
 
 
-_TERRAIN_COLOR_CACHE: dict[int, tuple[int, int, int]] = {
-    tid: _color_for_name(name) for tid, name in _ID_TO_NAME.items()
-}
+_TERRAIN_COLOR_CACHE: dict[int, tuple[int, int, int]] = {}
 
 
 def color_for_terrain_id(terrain_id: int) -> tuple[int, int, int]:
@@ -112,9 +112,9 @@ def known_terrain_name(terrain_id: int) -> str:
 # (which hardcodes tree coloring rather than reading it from unit data --
 # see that script's docstring).
 _TREE_UNIT_IDS_PATH = Path(__file__).resolve().parent / "tree_unit_ids.json"
-TREE_UNIT_IDS: frozenset[int] = frozenset(
-    int(uid) for uid in json.loads(_TREE_UNIT_IDS_PATH.read_text())["ids"]
-)
+# A set, not a frozenset, from here to FOUNDATION_TERRAIN: _load_tables() refills
+# each in place on a dataset switch (GH #67), so the names other modules imported stay live.
+TREE_UNIT_IDS: set[int] = set()
 TREE_COLOR: tuple[int, int, int] = (35, 65, 30)
 
 # unit_const -> (span_x, span_y) footprint size in whole tiles (buildings) /
@@ -126,12 +126,8 @@ TREE_COLOR: tuple[int, int, int] = (35, 65, 30)
 # BUILDING_FOOTPRINTS read its values as a radius about a centre tile, which
 # can only express odd sizes -- the bug that made every even-footprint
 # building render a tile too large per axis.
-_UNIT_RENDER_DATA = json.loads(
-    (Path(__file__).resolve().parent / "unit_render_data.json").read_text()
-)
-BUILDING_TILE_SPANS: dict[int, tuple[int, int]] = {
-    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA["buildings"].items()
-}
+_UNIT_RENDER_DATA_PATH = Path(__file__).resolve().parent / "unit_render_data.json"
+BUILDING_TILE_SPANS: dict[int, tuple[int, int]] = {}
 
 # unit_const -> the sparse set of local (ox, oy) tile offsets a diagonal gate
 # ACTUALLY occupies inside its BUILDING_TILE_SPANS bbox -- present only for
@@ -139,38 +135,27 @@ BUILDING_TILE_SPANS: dict[int, tuple[int, int]] = {
 # (see tools/gen_unit_render_data.py's "building_tiles" docs). Absent for
 # every other unit_const, including every other building, which occupies its
 # whole bbox.
-BUILDING_TILE_OFFSETS: dict[int, frozenset[tuple[int, int]]] = {
-    int(uid): frozenset((ox, oy) for ox, oy in offsets)
-    for uid, offsets in _UNIT_RENDER_DATA.get("building_tiles", {}).items()
-}
+BUILDING_TILE_OFFSETS: dict[int, frozenset[tuple[int, int]]] = {}
 # The 260 heroes the game draws its golden glow around (GH #39), generated
 # from the .dat's hero_mode bits and hero_glow_graphic; see
 # tools/gen_unit_render_data.py's "hero_glow" docs for the rule.
-HERO_GLOW_CONSTS: frozenset[int] = frozenset(_UNIT_RENDER_DATA.get("hero_glow", []))
+HERO_GLOW_CONSTS: set[int] = set()
 # unit_const -> (span_x, span_y) for the 96 cliff consts, which are not
 # buildings and so have no BUILDING_TILE_SPANS entry -- see
 # tools/gen_unit_render_data.py's "object_spans" docs for why they need one
 # anyway and why they must stay out of BUILDING_TILE_SPANS.
-OBJECT_TILE_SPANS: dict[int, tuple[int, int]] = {
-    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("object_spans", {}).items()
-}
+OBJECT_TILE_SPANS: dict[int, tuple[int, int]] = {}
 # unit_const -> (span_x, span_y) for the four 1x3/3x1 blockers (GH #121), an
 # explicit allowlist; see tools/gen_unit_render_data.py's "blocker_spans" docs.
-BLOCKER_TILE_SPANS: dict[int, tuple[int, int]] = {
-    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("blocker_spans", {}).items()
-}
+BLOCKER_TILE_SPANS: dict[int, tuple[int, int]] = {}
 # unit_const -> (span_x, span_y) for the eight deep-water fish (GH #178), an
 # explicit allowlist; see tools/gen_unit_render_data.py's "fish_spans" docs.
-FISH_TILE_SPANS: dict[int, tuple[int, int]] = {
-    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("fish_spans", {}).items()
-}
+FISH_TILE_SPANS: dict[int, tuple[int, int]] = {}
 # unit_const -> (span_x, span_y) for the 46 class-14 doodads bigger than 1x1
 # (mountains, ruins, TASK-134), a .dat class rule; see
 # tools/gen_unit_render_data.py's "doodad_spans" docs. Their sprites keep
 # their own point (render._resolve_unit_sprite): only the footprint uses this.
-DOODAD_TILE_SPANS: dict[int, tuple[int, int]] = {
-    int(uid): (sx, sy) for uid, (sx, sy) in _UNIT_RENDER_DATA.get("doodad_spans", {}).items()
-}
+DOODAD_TILE_SPANS: dict[int, tuple[int, int]] = {}
 
 def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
     """The footprint span every render path should ask for. BUILDING_TILE_SPANS
@@ -197,18 +182,46 @@ def tile_span(unit_const: int, default: tuple[int, int]) -> tuple[int, int]:
         return span
     return DOODAD_TILE_SPANS.get(unit_const, default)
 
-RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {
-    int(uid): tuple(rgb) for uid, rgb in _UNIT_RENDER_DATA["resource_colors"].items()
-}
+RESOURCE_COLORS: dict[int, tuple[int, int, int]] = {}
 
 # unit_const -> terrain_id, for every building whose .dat entry declares a
 # foundation terrain (`building.foundation_terrain_id >= 0`). A raw mirror of
 # the field, not a "renders as terrain" policy -- most buildings here also
 # have a real .sld and must keep drawing as their sprite; render.py's
 # _terrain_overlay_for is what decides which consts actually use this.
-FOUNDATION_TERRAIN: dict[int, int] = {
-    int(uid): tid for uid, tid in _UNIT_RENDER_DATA["foundation_terrain"].items()
-}
+FOUNDATION_TERRAIN: dict[int, int] = {}
+
+
+def _refill(table, values) -> None:
+    table.clear()
+    table.update(values)
+
+
+@game_dataset.on_switch
+def _load_tables() -> None:
+    """Fills every table above from the active dataset's generated tables, in
+    place. Runs at import and again after each dataset switch (GH #67)."""
+    global _TERRAIN_IDS
+    _refill(_ID_TO_NAME, _build_id_to_name())
+    _TERRAIN_IDS = tuple(sorted(_ID_TO_NAME))
+    _refill(_TERRAIN_COLOR_CACHE, {tid: _color_for_name(name) for tid, name in _ID_TO_NAME.items()})
+    _refill(TREE_UNIT_IDS, (int(uid) for uid in json.loads(game_dataset.table_path(_TREE_UNIT_IDS_PATH).read_text())["ids"]))
+    data = json.loads(game_dataset.table_path(_UNIT_RENDER_DATA_PATH).read_text())
+    _refill(BUILDING_TILE_SPANS, {int(uid): (sx, sy) for uid, (sx, sy) in data["buildings"].items()})
+    _refill(BUILDING_TILE_OFFSETS, {
+        int(uid): frozenset((ox, oy) for ox, oy in offsets) for uid, offsets in data.get("building_tiles", {}).items()
+    })
+    _refill(HERO_GLOW_CONSTS, data.get("hero_glow", []))
+    for table, key in (
+        (OBJECT_TILE_SPANS, "object_spans"), (BLOCKER_TILE_SPANS, "blocker_spans"),
+        (FISH_TILE_SPANS, "fish_spans"), (DOODAD_TILE_SPANS, "doodad_spans"),
+    ):
+        _refill(table, {int(uid): (sx, sy) for uid, (sx, sy) in data.get(key, {}).items()})
+    _refill(RESOURCE_COLORS, {int(uid): tuple(rgb) for uid, rgb in data["resource_colors"].items()})
+    _refill(FOUNDATION_TERRAIN, {int(uid): tid for uid, tid in data["foundation_terrain"].items()})
+
+
+_load_tables()
 
 # Distinct colors for GAIA (index 0) + up to 8 players, for unit dots. This is
 # the IDENTITY fallback -- player N's color when no valid stored override

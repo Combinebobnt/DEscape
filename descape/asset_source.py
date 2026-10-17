@@ -33,7 +33,7 @@ from pathlib import Path
 import platformdirs
 import yaml
 
-from descape import debug_log, perf_trace
+from descape import debug_log, game_dataset, perf_trace
 
 APP_NAME = "DEscape"
 
@@ -61,6 +61,22 @@ TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 # ~85 distinct texture files a real install has, while still leaving plenty
 # of room to pick varied non-repeating crop origins.
 LOADED_TEXTURE_SIZE = 512
+# GH #67: the tile size at which a tile crops its share of a LOADED_TEXTURE_SIZE texture,
+# for terrain_texture_size(): render.SMALL_MAP_TILE_PIXELS, a small map's reference level.
+TEXTURE_REFERENCE_TILE_PIXELS = 64
+
+
+def terrain_texture_size(tile_px: int) -> int:
+    """The texture size a level of `tile_px` crops its tiles from. Under
+    Return of Rome (GH #67) a zoomed-out level reads textures shrunk by its
+    ratio to TEXTURE_REFERENCE_TILE_PIXELS, so a tile keeps the texture share
+    it has at the reference and a pattern shrinks with the map: RoR's farm
+    rows are twice as wide as AoE2's, and at one size for every level they
+    grew to a few coarse rows per farm. AoE2 keeps LOADED_TEXTURE_SIZE at
+    every level (user decision 2026-10-17). Always a multiple of tile_px."""
+    if not game_dataset.is_ror() or tile_px >= TEXTURE_REFERENCE_TILE_PIXELS:
+        return LOADED_TEXTURE_SIZE
+    return LOADED_TEXTURE_SIZE * tile_px // TEXTURE_REFERENCE_TILE_PIXELS
 
 # TASK-143 terrain blending. blendomatic_x1.dat holds the neighbour-transition
 # alpha masks; terrain/masks/*.png the layer ("Layering Mode") overlay masks.
@@ -79,6 +95,8 @@ BLENDOMATIC_TILE_SIZE = 2353
 # 109 of ~19k parseable lines carry one, e.g. Sent to \"%s\":).
 _STRING_LINE = re.compile(r'^(\d+)\s+"((?:[^"\\]|\\.)*)"')
 STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-strings-utf8.txt"
+# GH #67: Return of Rome's own strings, a separate file under the RoR root, layered over the base file.
+ROR_STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-pompeii-strings-utf8.txt"
 DEFAULT_LANGUAGE = "en"
 
 # GH #140: a unit's in-game portrait, by object_catalog.icon_for() index. Uncompressed RGBA or DXT5, 256 px.
@@ -86,6 +104,12 @@ UNIT_ICON_DIR = "widgetui/textures/ingame/units"
 UNIT_ICON_NAME = "{icon:03d}_50730.dds"
 # GH #148: buildings index a separate set, named "{icon:03d}_<name>.dds" (007_castle.DDS).
 BUILDING_ICON_DIR = "widgetui/textures/ingame/buildings"
+# GH #67: Return of Rome renumbers portraits. Its icons.json maps an index to an atlas RefName, which
+# its morematerials.json (RoR's own files) or the install's materials.json (AoE2's) turns into a file.
+UI_DIR = "widgetui"
+ICON_TABLE_NAME = "icons.json"
+ROR_MATERIALS_NAME = "morematerials.json"
+MATERIALS_NAME = "materials.json"
 # GH #148: the stat icons the game's editorbottomunitspanel.json uses, as plain 66 px RGBA PNGs.
 STAT_ICON_DIR = "widgetui/textures/ingame/staticons"
 # GH #20: particle effects, one <name>.json each. An effect's AtlasFile is relative to this folder.
@@ -94,9 +118,13 @@ PARTICLE_SUBPATH = "resources/_common/particles"
 _override_path: Path | None = None
 
 
-@lru_cache(maxsize=1)
 def _terrain_texture_map() -> dict[int, str]:
-    data = json.loads((REPO_ROOT / "descape" / "terrain_texture_map.json").read_text())
+    return _terrain_texture_map_for(game_dataset.table_path(REPO_ROOT / "descape" / "terrain_texture_map.json"))
+
+
+@lru_cache(maxsize=2)
+def _terrain_texture_map_for(path: Path) -> dict[int, str]:
+    data = json.loads(path.read_text())
     return {int(k): v for k, v in data["mapping"].items()}
 
 
@@ -166,6 +194,7 @@ def clear_art_caches() -> None:
     # the old swatch or texture.
     _terrain_thumbnail_for_path.cache_clear()
     _terrain_texture_for_path.cache_clear()
+    _shrunk_texture.cache_clear()
     _forget_prefetches()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
@@ -191,7 +220,9 @@ def clear_install_caches() -> None:
     get_blendomatic.cache_clear()
     get_blend_mask.cache_clear()
     get_terrain_mask_array.cache_clear()
+    _sized_terrain_mask.cache_clear()
     _string_table.cache_clear()
+    _ror_icon_files.cache_clear()
     get_unit_icon.cache_clear()
     get_stat_icon.cache_clear()
     # object_catalog.py's name resolution reads resource_string() above --
@@ -229,20 +260,25 @@ def _unescape_string_value(text: str) -> str:
     return text.replace('\\"', '"').replace("\\\\", "\\")
 
 
-@lru_cache(maxsize=4)
+@game_dataset.cache(maxsize=4)
 def _string_table(lang: str) -> dict[int, str]:
+    """The install's strings for lang; under Return of Rome its own strings
+    file read over them, a RoR string winning on a shared key (GH #67)."""
     install = get_install_path()
     if install is None:
         return {}
-    path = install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)
-    if not path.is_file():
-        return {}
+    paths = [install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)]
+    if game_dataset.is_ror():
+        paths.append(game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang))
     table: dict[int, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        match = _STRING_LINE.match(line)
-        if match is None:
+    for path in paths:
+        if not path.is_file():
             continue
-        table[int(match.group(1))] = _unescape_string_value(match.group(2))
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = _STRING_LINE.match(line)
+            if match is None:
+                continue
+            table[int(match.group(1))] = _unescape_string_value(match.group(2))
     return table
 
 
@@ -273,15 +309,73 @@ def unit_icon_path_in(install: Path | None, icon: int | None, building: bool = F
     the Units catalog's thumbnail worker resolves it on the GUI thread (GH #68)."""
     if install is None or icon is None or icon < 0:
         return None
-    if building:
-        prefix = f"{icon:03d}_"
-        path = _find_file(install / BUILDING_ICON_DIR, lambda name: name.startswith(prefix) and name.endswith(".dds"))
+    if game_dataset.is_ror():
+        path = _ror_icon_files(install).get(("Buildings" if building else "Units", icon))
         if path is not None:
             return path
-    folder = install / UNIT_ICON_DIR
+    # GH #67: under Return of Rome without its icon table, its own icon set first, then the install's.
+    roots = [game_dataset.ror_root(install), install] if game_dataset.is_ror() else [install]
+    if building:
+        prefix = f"{icon:03d}_"
+        for root in roots:
+            path = _find_file(root / BUILDING_ICON_DIR, lambda name: name.startswith(prefix) and name.endswith(".dds"))
+            if path is not None:
+                return path
     wanted = UNIT_ICON_NAME.format(icon=icon)
-    path = folder / wanted
-    return path if path.is_file() else _find_file(folder, lambda name: name == wanted)
+    for root in roots:
+        folder = root / UNIT_ICON_DIR
+        path = folder / wanted
+        path = path if path.is_file() else _find_file(folder, lambda name: name == wanted)
+        if path is not None:
+            return path
+    return None
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _atlas_files(materials: dict) -> dict[str, str]:
+    """RefName -> FileName (relative to widgetui/) for every atlas texture a materials file defines."""
+    files = {}
+    for atlas in materials.get("AtlasTextures", ()):
+        for texture in atlas.get("AtlasDef", {}).get("Textures", ()):
+            if "RefName" in texture and "FileName" in texture:
+                files[texture["RefName"]] = texture["FileName"]
+    return files
+
+
+@lru_cache(maxsize=2)
+def _ror_icon_files(install: Path) -> dict[tuple[str, int], Path]:
+    """("Units" or "Buildings", RoR icon index) -> its portrait file, through RoR's icons.json (GH #67).
+    A RefName RoR's morematerials.json defines is a RoR file, else one the install's materials.json
+    defines is AoE2's. Only existing files; {} without the RoR icon table."""
+    ror_ui = game_dataset.ror_root(install) / UI_DIR
+    table = _read_json(ror_ui / ICON_TABLE_NAME)
+    if not table:
+        return {}
+    sources = [
+        (ror_ui, _atlas_files(_read_json(ror_ui / ROR_MATERIALS_NAME))),
+        (install / UI_DIR, _atlas_files(_read_json(install / UI_DIR / MATERIALS_NAME))),
+    ]
+    files = {}
+    for section in ("Units", "Buildings"):
+        for key, ref in (table.get(section) or {}).items():
+            if not key.isdigit():
+                continue
+            for root, refs in sources:
+                if ref in refs:
+                    path = root / refs[ref]
+                    wanted = path.name.lower()
+                    path = path if path.is_file() else _find_file(path.parent, lambda name, w=wanted: name == w)
+                    if path is not None:
+                        files[(section, int(key))] = path
+                    break
+    return files
 
 
 def read_unit_icon_in(install: Path | None, icon: int | None, building: bool = False, px: int | None = None):
@@ -373,10 +467,9 @@ def get_unit_icon(icon: int | None, building: bool = False):
 def get_stat_icon(name: str):
     """STAT_ICON_DIR/<name>.png ("hp", "damage", ...) as get_unit_icon()'s
     read-only RGBA array, or None."""
-    install = get_install_path()
-    if install is None:
+    folder = game_dataset.resource_path(STAT_ICON_DIR)
+    if folder is None:
         return None
-    folder = install / STAT_ICON_DIR
     wanted = f"{name}.png".lower()
     path = folder / f"{name}.png"
     return _read_rgba(path if path.is_file() else _find_file(folder, lambda n: n == wanted))
@@ -457,7 +550,7 @@ def get_terrain_texture_path(terrain_id: int) -> Path | None:
     mod_path = mod_graphics.resolve_terrain_texture(filename)
     if mod_path is not None:
         return mod_path
-    path = install / TERRAIN_TEXTURE_SUBPATH / filename
+    path = game_dataset.resource_path_in(install, f"{TERRAIN_TEXTURE_SUBPATH}/{filename}")
     return path if path.is_file() else None
 
 
@@ -556,6 +649,26 @@ def get_terrain_texture_array(terrain_id: int):
     return _terrain_texture_for_path(path)
 
 
+def terrain_texture_at(terrain_id: int, size: int):
+    """get_terrain_texture_array() at `size` (terrain_texture_size()): the
+    array itself at LOADED_TEXTURE_SIZE, else that array shrunk (GH #67)."""
+    if size == LOADED_TEXTURE_SIZE:
+        return get_terrain_texture_array(terrain_id)
+    path = get_terrain_texture_path(terrain_id)
+    return None if path is None else _shrunk_texture(path, size)
+
+
+@lru_cache(maxsize=256)
+def _shrunk_texture(path: Path, size: int):
+    """_terrain_texture_for_path(path) box-filtered to (size, size), read-only."""
+    import numpy as np
+    from PIL import Image
+
+    arr = np.array(Image.fromarray(_terrain_texture_for_path(path)).resize((size, size), Image.BOX))
+    arr.flags.writeable = False
+    return arr
+
+
 @lru_cache(maxsize=256)
 def _terrain_texture_for_path(path: Path):
     """get_terrain_texture_array's load, keyed on the FILE like
@@ -636,11 +749,11 @@ def get_blendomatic():
     per pixel, where the alpha is the tile's OWN weight and the bleeding
     neighbour's is 128 - alpha (measured, see terrain_blend). None without an
     install or when the file is missing or no longer parses."""
-    install = get_install_path()
-    if install is None:
+    path = game_dataset.resource_path(BLENDOMATIC_SUBPATH)
+    if path is None:
         return None
     try:
-        data = (install / BLENDOMATIC_SUBPATH).read_bytes()
+        data = path.read_bytes()
     except OSError:
         return None
     return _parse_blendomatic(data)
@@ -686,17 +799,27 @@ def get_blend_mask(mode: int, tile_index: int, tile_px: int):
     return mask
 
 
+def terrain_mask_at(name: str, size: int):
+    """get_terrain_mask_array() at `size`, as terrain_texture_at() (GH #67)."""
+    if size == LOADED_TEXTURE_SIZE:
+        return get_terrain_mask_array(name)
+    return _sized_terrain_mask(name, size)
+
+
 @lru_cache(maxsize=32)
 def get_terrain_mask_array(name: str):
     """terrain/masks/<name>'s red channel as a read-only (LOADED_TEXTURE_SIZE,
     LOADED_TEXTURE_SIZE) uint8 array, 0..255 = the layer terrain's weight, or
     None. The files mix L and RGB modes, so they go through RGB first; they
     are 512 px already, the same grid get_terrain_texture_array() crops."""
-    install = get_install_path()
-    if install is None or not name:
-        return None
-    path = install / TERRAIN_MASK_SUBPATH / name
-    if not path.is_file():
+    return _sized_terrain_mask(name, LOADED_TEXTURE_SIZE)
+
+
+@lru_cache(maxsize=96)  # every mask at up to three sizes under Return of Rome
+def _sized_terrain_mask(name: str, size: int):
+    """get_terrain_mask_array()'s load at `size`, box-filtered below LOADED_TEXTURE_SIZE."""
+    path = game_dataset.resource_path(f"{TERRAIN_MASK_SUBPATH}/{name}") if name else None
+    if path is None or not path.is_file():
         return None
     import numpy as np
     from PIL import Image
@@ -706,6 +829,8 @@ def get_terrain_mask_array(name: str):
             rgb = img.convert("RGB")
             if rgb.size != (LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE):
                 rgb = rgb.resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
+            if size != LOADED_TEXTURE_SIZE:
+                rgb = rgb.resize((size, size), Image.BOX)
             arr = np.ascontiguousarray(np.array(rgb)[:, :, 0])
     except (OSError, ValueError):
         return None

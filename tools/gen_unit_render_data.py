@@ -232,6 +232,8 @@ import json
 import math
 from pathlib import Path
 
+import _game_root
+
 
 def _load_palette(pal_path: Path) -> list[tuple[int, int, int]]:
     lines = pal_path.read_text().splitlines()
@@ -332,6 +334,22 @@ def _gate_tile_offsets(unit, span_x: int, span_y: int) -> list[list[int]] | None
     return [list(o) for o in sorted(offsets)]
 
 
+# GH #67: the lists above are measured on the AoE2 .dat, so a RoR run starts without them.
+# Each hand-measured list's RoR value, measured on the RoR .dat (2026-10-17).
+_ROR_VALUES: dict[str, object] = {
+    "_BLOCKER_SPAN_CONSTS": (),  # empty slots in RoR
+    "_FISH_SPAN_CONSTS": _FISH_SPAN_CONSTS,  # the same fish, same outlines
+    "_HERO_GLOW_GRAPHICS": _HERO_GLOW_GRAPHICS,  # 191 RoR heroes use 12218-12224, and glow in game
+}
+
+
+def _select_dataset(dataset: str) -> None:
+    """Swaps every hand-measured const list for its RoR value (_ROR_VALUES), for a RoR run."""
+    if dataset == _game_root.ROR:
+        assert _ROR_VALUES.keys() <= globals().keys(), "a _ROR_VALUES key names no list"
+        globals().update(_ROR_VALUES)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -345,12 +363,14 @@ def main() -> None:
         default=Path(__file__).resolve().parent.parent / "descape",
         help="Where to write unit_render_data.json (default: descape/)",
     )
+    _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _select_dataset(args.dataset)
 
     from genieutils.datfile import DatFile
 
-    dat_path = args.aoe2de_root / "resources/_common/dat/empires2_x2_p1.dat"
-    pal_path = args.aoe2de_root / "resources/_common/palettes/original.pal"
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
+    pal_path = _game_root.resource(args.aoe2de_root, args.dataset, "resources/_common/palettes/original.pal")
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
     if not pal_path.is_file():

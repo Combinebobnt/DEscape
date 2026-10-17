@@ -2902,6 +2902,15 @@
       "rotation_is_variant": true,
       "variant_count": 6
     },
+    "303": {
+      "graphic_id": 4411,
+      "file_name": "dock_seagulls",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.525
+    },
     "304": {
       "graphic_id": 8174,
       "file_name": "s_campfire_x1",
