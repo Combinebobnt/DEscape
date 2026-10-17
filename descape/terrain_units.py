@@ -29,31 +29,39 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from descape import unit_rotation
+from descape import game_dataset, unit_rotation
 
 _TERRAIN_UNIT_MAP_PATH = Path(__file__).resolve().parent / "terrain_unit_map.json"
 _TREE_UNIT_IDS_PATH = Path(__file__).resolve().parent / "tree_unit_ids.json"
 
 # terrain_id -> [{"id", "density", "centering"}, ...], in roll order.
-_TERRAIN_UNITS: dict[int, list[dict]] = {
-    int(tid): units
-    for tid, units in json.loads(_TERRAIN_UNIT_MAP_PATH.read_text())["terrains"].items()
-}
-
-_TREE_IDS: frozenset[int] = frozenset(
-    int(uid) for uid in json.loads(_TREE_UNIT_IDS_PATH.read_text())["ids"]
-)
-
-_ALL_TERRAIN_UNIT_CONSTS: frozenset[int] = frozenset(
-    spec["id"] for units in _TERRAIN_UNITS.values() for spec in units
-)
+_TERRAIN_UNITS: dict[int, list[dict]] = {}
 
 # Every const terrain_unit_map.json can place, partitioned by "is a tree" --
 # not "the const exists in tree_unit_ids.json", but restricted to consts this
 # feature actually places, so a future terrain-table addition outside either
-# set fails a test rather than silently falling into the wrong bucket.
-TREE_CONSTS: frozenset[int] = _ALL_TERRAIN_UNIT_CONSTS & _TREE_IDS
-DOODAD_CONSTS: frozenset[int] = _ALL_TERRAIN_UNIT_CONSTS - _TREE_IDS
+# set fails a test rather than silently falling into the wrong bucket. Sets
+# refilled in place by _load_tables() on a dataset switch (GH #67).
+TREE_CONSTS: set[int] = set()
+DOODAD_CONSTS: set[int] = set()
+
+
+@game_dataset.on_switch
+def _load_tables() -> None:
+    _TERRAIN_UNITS.clear()
+    _TERRAIN_UNITS.update(
+        (int(tid), units)
+        for tid, units in json.loads(game_dataset.table_path(_TERRAIN_UNIT_MAP_PATH).read_text())["terrains"].items()
+    )
+    tree_ids = {int(uid) for uid in json.loads(game_dataset.table_path(_TREE_UNIT_IDS_PATH).read_text())["ids"]}
+    placed = {spec["id"] for units in _TERRAIN_UNITS.values() for spec in units}
+    TREE_CONSTS.clear()
+    TREE_CONSTS.update(placed & tree_ids)
+    DOODAD_CONSTS.clear()
+    DOODAD_CONSTS.update(placed - tree_ids)
+
+
+_load_tables()
 
 
 def is_tree_terrain(terrain_id: int) -> bool:

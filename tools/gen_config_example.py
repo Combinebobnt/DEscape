@@ -51,6 +51,7 @@ _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
 _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 _TERRAIN_PICKER_MODE_IDS = " or ".join(mid for mid, _label in settings.TERRAIN_PICKER_MODES)
+_GAME_DATA_IDS = " or ".join(cid for cid, _label in settings.GAME_DATA_CHOICES)
 _TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_SWATCH_SIZES)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
@@ -240,6 +241,12 @@ stack_badge_position: {settings.STACK_BADGE_POSITION_DEFAULT}
 # beside its filter box: {_TERRAIN_PICKER_MODE_IDS}. Anything else falls back to the
 # default on read. Default: {settings.TERRAIN_PICKER_MODE_DEFAULT}.
 terrain_picker_mode: {settings.TERRAIN_PICKER_MODE_DEFAULT}
+
+# Which game's data draws every opened scenario, Settings > Advanced (GH #67):
+# {_GAME_DATA_IDS}. auto follows the file's own header; aoe2 or ror shows every
+# file in that game's data, read-only when it is the other game's file.
+# Anything else falls back to the default on read. Default: {settings.GAME_DATA_DEFAULT}.
+game_data: {settings.GAME_DATA_DEFAULT}
 
 # The terrain grid's swatch size in px, Settings > Appearance: {_TERRAIN_GRID_SWATCH_SIZES}.
 # Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.

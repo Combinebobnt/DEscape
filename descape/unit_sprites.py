@@ -61,6 +61,7 @@ from descape import (
     asset_source,
     debug_log,
     editor_markers,
+    game_dataset,
     gate_orientation,
     mod_graphics,
     particle_art,
@@ -465,15 +466,15 @@ def clear_caches() -> None:
     editor_markers.clear_caches()
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def graphic_map() -> dict[int, dict]:
     """unit_const -> {graphic_id, file_name, angle_count, mirroring_mode,
     frame_count}, from the committed table."""
-    data = json.loads(GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(k): v for k, v in data.items()}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _particle_stems() -> frozenset[str]:
     """The file_names that are particle effects, not .sld stems (GH #20):
     _native_frame() reads those through particle_art. Cleared by
@@ -489,10 +490,10 @@ class BuildingArt(NamedTuple):
     civ_names: dict[int, str]
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def building_art() -> BuildingArt:
     """The committed per-civ and per-age building art table."""
-    data = json.loads(BUILDING_ART_PATH.read_text())
+    data = json.loads(game_dataset.table_path(BUILDING_ART_PATH).read_text())
     entries = data["entries"]
     return BuildingArt(
         age_upgrades={
@@ -772,7 +773,7 @@ def cliff_consts() -> frozenset[int]:
 # live editing (e.g. cycling a palisade gate's orientation no longer reshapes
 # its neighbouring walls, where cycling a stone gate already didn't), not
 # anything visible in the corpus.
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def wall_connector_consts() -> frozenset[int]:
     """The set of consts whose tiles count as a "wall neighbour" for
     render.wall_variant_rotation_overrides(). A function, not a module
@@ -1043,6 +1044,16 @@ def _graphics_dir() -> Path | None:
     return None if root is None else root / GRAPHICS_SUBPATH
 
 
+def _sld_path(directory: Path, file_name: str) -> Path:
+    """The .sld for a stem: under Return of Rome the RoR root's copy when it
+    has one, else the install's in `directory` (GH #67)."""
+    if game_dataset.is_ror():
+        found = game_dataset.resource_path(f"{GRAPHICS_SUBPATH}/{file_name}.sld")
+        if found is not None:
+            return found
+    return directory / f"{file_name}.sld"
+
+
 @lru_cache(maxsize=512)
 def sld_frame_count(file_name: str) -> int | None:
     """How many frames the .sld file actually holds, or None when it can't be
@@ -1073,7 +1084,7 @@ def _sld_index(file_name: str):
     hit = _sld_index_cache.get_or_none(file_name)
     if hit is not None:
         return None if hit is _MISS else hit
-    sld = load_sld(directory / f"{file_name}.sld")
+    sld = load_sld(_sld_path(directory, file_name))
     if sld is not None:
         _sld_bytes_cache.put(file_name, sld.release_data())
     _sld_index_cache.put(file_name, _MISS if sld is None else sld)
@@ -1150,7 +1161,7 @@ def _sld_bytes(directory: Path, file_name: str) -> bytes:
     its walk is refused by decode_frame()'s length check."""
     data = _sld_bytes_cache.get_or_none(file_name)
     if data is None:
-        data = (directory / f"{file_name}.sld").read_bytes()
+        data = _sld_path(directory, file_name).read_bytes()
         _sld_bytes_cache.put(file_name, data)
     return data
 

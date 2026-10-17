@@ -40,7 +40,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from descape import asset_source
+from descape import asset_source, game_dataset
 
 BLEND_MAP_PATH = Path(__file__).resolve().parent / "terrain_blend_map.json"
 
@@ -109,13 +109,20 @@ class BlendEntry(NamedTuple):
 
 
 def _load_table() -> dict[int, BlendEntry]:
-    data = json.loads(BLEND_MAP_PATH.read_text())
+    data = json.loads(game_dataset.table_path(BLEND_MAP_PATH).read_text())
     return {
         int(tid): BlendEntry(e["priority"], e["blend_type"], e["overlay_mask"]) for tid, e in data["terrains"].items()
     }
 
 
 BLEND_TABLE: dict[int, BlendEntry] = _load_table()
+
+
+@game_dataset.on_switch
+def _reload_table() -> None:
+    """Refills BLEND_TABLE in place for the active dataset (GH #67)."""
+    BLEND_TABLE.clear()
+    BLEND_TABLE.update(_load_table())
 
 
 def tile_indices(bits: int, x: int, y: int) -> tuple[int, ...]:

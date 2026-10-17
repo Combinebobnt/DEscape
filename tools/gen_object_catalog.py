@@ -62,6 +62,8 @@ import argparse
 import json
 from pathlib import Path
 
+import _game_root
+
 
 def _blank_graphic_ids(graphics: list) -> frozenset[int]:
     return frozenset(i for i, g in enumerate(graphics) if g is not None and g.name.strip().upper() == "BLANK")
@@ -119,6 +121,18 @@ def _button_slots(locations) -> list[list[int]]:
 # The .dat's Beach restriction row. No object uses it, but it is the shore a
 # `side_terrain` object needs beside it (descape/placement_rules.py).
 _BEACH_RESTRICTION = 2
+
+
+def _drop_unrowed_restrictions(restrictions: list, objects: dict[str, dict]) -> list[str]:
+    """Removes the `restriction` key of each editor-hidden object whose id has no
+    .dat row, returning those consts. The RoR .dat has two (GH #67: 1905
+    PLACEHOLDER2, 1973 NESSIE); a visible one still fails the run below."""
+    dropped = []
+    for unit_const, entry in objects.items():
+        if entry.get("hidden") and entry.get("restriction", 0) >= len(restrictions):
+            del entry["restriction"]
+            dropped.append(unit_const)
+    return dropped
 
 
 def _terrain_restriction_entries(restrictions: list, objects: dict[str, dict], terrains: dict[str, dict]) -> dict:
@@ -197,11 +211,12 @@ def main() -> None:
         default=Path(__file__).resolve().parent.parent / "descape",
         help="Where to write object_catalog.json (default: descape/)",
     )
+    _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
 
     from genieutils.datfile import DatFile
 
-    dat_path = args.aoe2de_root / "resources/_common/dat/empires2_x2_p1.dat"
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
@@ -215,6 +230,8 @@ def main() -> None:
     objects = _object_entries(data.civs[0].units, blank_ids)
     techs = _tech_entries(data.techs)
     terrains = _terrain_entries(data.terrain_block.terrains)
+    for unit_const in _drop_unrowed_restrictions(data.terrain_restrictions, objects):
+        print(f"Hidden object {unit_const}'s terrain restriction has no .dat row; left out")
     terrain_restrictions = _terrain_restriction_entries(data.terrain_restrictions, objects, terrains)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

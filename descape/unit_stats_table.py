@@ -14,23 +14,24 @@ pays the parse cost.
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
+
+from descape import game_dataset
 
 _STATS_JSON_PATH = Path(__file__).resolve().parent / "unit_stats.json"
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _stats_json() -> dict:
-    return json.loads(_STATS_JSON_PATH.read_text())
+    return json.loads(game_dataset.table_path(_STATS_JSON_PATH).read_text())
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _stats_table() -> dict[int, dict[str, float]]:
     return {int(uid): entry for uid, entry in _stats_json()["stats"].items()}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _line_of_sight_table() -> dict[int, float]:
     return {int(uid): float(los) for uid, los in _stats_json().get("line_of_sight", {}).items()}
 

@@ -40,8 +40,9 @@ from __future__ import annotations
 
 import json
 import math
-from functools import lru_cache
 from pathlib import Path
+
+from descape import game_dataset
 
 # semantics_for()'s three answers.
 ANGLE = "angle"
@@ -67,19 +68,19 @@ _CREATABLE_TYPE = 70
 _EXTRA_ANGLE_CONSTS: frozenset[int] = frozenset({42, 331, 1690, 1691})
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _object_types() -> dict[int, int]:
     """unit_const -> the .dat's `unit.type`, from the committed catalog."""
-    data = json.loads(_CATALOG_PATH.read_text())["objects"]
+    data = json.loads(game_dataset.table_path(_CATALOG_PATH).read_text())["objects"]
     return {int(const): entry["type"] for const, entry in data.items() if "type" in entry}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _angle_counts() -> dict[int, int]:
     """unit_const -> its standing graphic's angle_count. Same table
     unit_sprites.graphic_map() reads, loaded independently to keep this module
     free of that one's install-dependent imports."""
-    data = json.loads(_GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(_GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(const): int(entry["angle_count"]) for const, entry in data.items()}
 
 

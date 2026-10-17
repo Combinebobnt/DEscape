@@ -64,6 +64,7 @@ into A's sections or raise once A is gone.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -71,7 +72,7 @@ from typing import Any
 
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
-from . import library_compat, trigger_fields, trigger_organize
+from . import game_dataset, library_compat, trigger_fields, trigger_organize
 from .trigger_model import entry_display_order, entry_order_after_insert, set_entry_order
 
 COPY_SUFFIX = trigger_organize.COPY_SUFFIX
@@ -105,6 +106,8 @@ class TriggerBlock:
     # from outside the block into it, which remove_triggers() reset to -1.
     from_cut: bool = False
     inbound: tuple = ()
+    # GH #67: the game data active at copy time; a paste under the other game's is refused.
+    dataset: str = dataclasses.field(default_factory=game_dataset.active)
 
 
 @dataclass(frozen=True)
@@ -352,6 +355,7 @@ class EntryBlock:
     source_doc_id: str = ""
     scenario_version: str = ""
     variable_names: tuple = ()
+    dataset: str = dataclasses.field(default_factory=game_dataset.active)  # as TriggerBlock's
 
 
 @dataclass(frozen=True)

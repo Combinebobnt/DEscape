@@ -29,7 +29,6 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from AoE2ScenarioParser.datasets.buildings import BuildingInfo
@@ -38,7 +37,7 @@ from AoE2ScenarioParser.datasets.other import OtherInfo
 from AoE2ScenarioParser.datasets.techs import TechInfo
 from AoE2ScenarioParser.datasets.units import UnitInfo
 
-from descape import asset_source
+from descape import asset_source, game_dataset
 
 # The in-game editor's own four object-placing menus
 # (docs/INGAME_EDITOR_REFERENCE.md:87) -- a grouping recoverable only from
@@ -60,15 +59,16 @@ _OBJECT_DATASETS = (
 _CATALOG_JSON_PATH = Path(__file__).resolve().parent / "object_catalog.json"
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _dat_table() -> dict:
     """The committed .dat-derived table, or an empty one if it has not been
     generated yet -- every reader below already degrades to the
     library-only name on a miss, so a missing file behaves exactly like the
     library-only catalog this module shipped with before slice 4."""
-    if not _CATALOG_JSON_PATH.is_file():
+    path = game_dataset.table_path(_CATALOG_JSON_PATH)
+    if not path.is_file():
         return {"objects": {}, "techs": {}, "terrains": {}}
-    return json.loads(_CATALOG_JSON_PATH.read_text())
+    return json.loads(path.read_text())
 
 
 def _dat_entry(section: str, id_: int) -> dict | None:
@@ -109,6 +109,10 @@ _RELIC_CLASS = 42
 
 # Dat-only ids the .dat hides but the official editor lists, by its category: Gunpowder Keg (GH #208).
 _EDITOR_LISTED_DAT_ONLY = {2607: "Others"}
+# The same for Return of Rome, from its in-game editor's Other tab: Invisible Spawner A-J (GH #67).
+_ROR_EDITOR_LISTED_DAT_ONLY = dict.fromkeys((2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648), "Others")
+# The reverse: unhidden RoR .dat ids its editor leaves out, a nameless wolf and pyramid (measured, GH #67).
+_ROR_EDITOR_UNLISTED = frozenset({89, 689})
 
 
 def derived_category(dat_entry: dict) -> str:
@@ -175,7 +179,7 @@ def clear_caches() -> None:
     techs.cache_clear()
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _combined_object_names() -> dict[int, str]:
     """object_const -> display name, merged across the four object datasets.
 
@@ -187,6 +191,9 @@ def _combined_object_names() -> dict[int, str]:
     """
     names: dict[int, str] = {}
     lang = asset_source.get_language()
+    if game_dataset.is_ror():
+        # The library's enums are AoE2's: under Return of Rome every editor-listed .dat object stands in (GH #67).
+        return {entry.id: entry.name for entry in objects()}
     for dataset, _category in _OBJECT_DATASETS:
         for member in dataset:
             if member.ID in names:
@@ -256,7 +263,7 @@ def _entry(id_: int, name: str, category: str, dat_entry: dict | None = None) ->
     )
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def objects() -> tuple[CatalogEntry, ...]:
     """Every object across the four datasets, categorized by which one it
     came from, alphabetical by name. An id already claimed by an earlier
@@ -266,12 +273,15 @@ def objects() -> tuple[CatalogEntry, ...]:
     from the editor (the Sept 2026 patch's Jarl, Longhouse, Spruce, ...),
     named install string -> .dat code and categorized by derived_category().
     Editor-hidden dat-only ids stay out (user decision 2026-09-27), except
-    _EDITOR_LISTED_DAT_ONLY, listed as not hidden under the official
-    editor's category (GH #208)."""
+    _EDITOR_LISTED_DAT_ONLY (_ROR_EDITOR_LISTED_DAT_ONLY under Return of
+    Rome), listed as not hidden under the official editor's category (GH #208)."""
     seen: set[int] = set()
     entries = []
     lang = asset_source.get_language()
-    for dataset, category in _OBJECT_DATASETS:
+    # Under Return of Rome the AoE2 enums and the AoE2 Gunpowder Keg id do not apply (GH #67).
+    ror = game_dataset.is_ror()
+    editor_listed = _ROR_EDITOR_LISTED_DAT_ONLY if ror else _EDITOR_LISTED_DAT_ONLY
+    for dataset, category in () if ror else _OBJECT_DATASETS:
         for member in dataset:
             if member.ID in seen:
                 continue
@@ -281,8 +291,8 @@ def objects() -> tuple[CatalogEntry, ...]:
             entries.append(_entry(member.ID, name, category, dat_entry))
     for key, raw_entry in _dat_table()["objects"].items():
         id_ = int(key)
-        category = _EDITOR_LISTED_DAT_ONLY.get(id_)
-        if id_ in seen or (raw_entry.get("hidden") and category is None):
+        category = editor_listed.get(id_)
+        if id_ in seen or (raw_entry.get("hidden") and category is None) or (ror and id_ in _ROR_EDITOR_UNLISTED):
             continue
         dat_entry = raw_entry if category is None else {**raw_entry, "hidden": False}
         name = resolve_name(id_, "", dat_entry, lang)
@@ -290,11 +300,16 @@ def objects() -> tuple[CatalogEntry, ...]:
     return tuple(sorted(entries, key=lambda e: e.name))
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def techs() -> tuple[CatalogEntry, ...]:
-    """Every tech in TechInfo, alphabetical by name."""
+    """Every tech in TechInfo, alphabetical by name. Under Return of Rome,
+    every named tech of its own .dat instead (GH #67)."""
     entries = []
     lang = asset_source.get_language()
+    if game_dataset.is_ror():
+        for key, dat_entry in _dat_table().get("techs", {}).items():
+            entries.append(_entry(int(key), resolve_name(int(key), "", dat_entry, lang), "Techs"))
+        return tuple(sorted(entries, key=lambda e: e.name))
     for member in TechInfo:
         dat_entry = _dat_entry("techs", member.ID)
         name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)

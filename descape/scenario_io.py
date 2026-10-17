@@ -459,6 +459,11 @@ class LoadedScenario:
     # requires defaulted fields to come after all non-defaulted ones.
     unit_gen: int = 0
 
+    # GH #67: the header's game variant (FileHeader.unknown_value_2: 1 AoE2,
+    # 2 Return of Rome), read off the parsed header rather than the library's
+    # byte-pattern guess; game_dataset.from_variant() maps it. None if unread.
+    game_variant: int | None = None
+
     # Files section bounds within decompressed_body, captured by parse_triggers()'s
     # walk (the only time it is known); -1 until then, or if the structure has no Files.
     files_section_start: int = -1
@@ -1389,14 +1394,29 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         team_indices=team_indices,
         _scenario=scenario,
         unit_spans=unit_spans,
+        game_variant=_header_variant(header_retriever_map),
     )
     loaded.player_art = _player_art_or_none(loaded)
     return loaded
 
 
+def _header_variant(header_retriever_map: dict) -> int | None:
+    """FileHeader.unknown_value_2 as an int, or None when the header has no such field."""
+    retriever = header_retriever_map.get("unknown_value_2")
+    try:
+        return None if retriever is None else int(retriever.data)
+    except (TypeError, ValueError):
+        return None
+
+
 def _player_art_or_none(loaded: LoadedScenario, pending=None) -> tuple[tuple[int | None, int], ...] | None:
     """civ_art.player_art(), or None (today's Gaia-table art) when surprising
-    player data makes player_fields raise: art must never make a file unopenable."""
+    player data makes player_fields raise: art must never make a file unopenable.
+    Always None for a Return of Rome file: civ_art's indices are AoE2's (GH #67)."""
+    from descape import game_dataset
+
+    if game_dataset.from_variant(loaded.game_variant) == game_dataset.ROR:
+        return None
     # Lazy: civ_art reads through player_fields, which imports this module.
     from descape import civ_art
 

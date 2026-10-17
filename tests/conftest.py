@@ -488,6 +488,16 @@ def _no_perf_trace_hooks_left():
 
 
 @pytest.fixture(autouse=True)
+def _aoe2_dataset():
+    """GH #67: every test starts and ends with the AoE2 game data active."""
+    from descape import game_dataset
+
+    game_dataset.set_active(game_dataset.AOE2)
+    yield
+    game_dataset.set_active(game_dataset.AOE2)
+
+
+@pytest.fixture(autouse=True)
 def _no_gc_hold_left():
     """A warm started under the shared QApplication engages descape.gc_hold;
     its raised threshold2 would otherwise stop full collections for the rest
