@@ -34,6 +34,13 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _text_toolbar_buttons():
+    """Pinned to text buttons, the widest style, so MIN_WINDOW_WIDTH still overflows several tools.
+    The bar-xor-menu test sets each style itself."""
+    settings.set_toolbar_style("text")
+
+
 # ---------------------------------------------------------------------------
 # Pure partition() tests -- no QApplication.
 # ---------------------------------------------------------------------------
@@ -91,9 +98,11 @@ _WIDTHS = [800, 1000, 1280, 1600]
 _MODES = [("View", "view"), ("Terrain", "terrain"), ("Units", "units")]
 
 
+@pytest.mark.parametrize("style", [sid for sid, _label in settings.TOOLBAR_STYLES])
 @pytest.mark.parametrize("width", _WIDTHS)
 @pytest.mark.parametrize("mode_text,mode_id", _MODES)
-def test_every_tool_is_on_bar_xor_in_menu_or_neither_if_inapplicable(mode_text, mode_id, width):
+def test_every_tool_is_on_bar_xor_in_menu_or_neither_if_inapplicable(mode_text, mode_id, width, style):
+    settings.set_toolbar_style(style)
     window = conftest.shown_terrain_window(width=width)
     try:
         window.mode_combo.setCurrentText(mode_text)

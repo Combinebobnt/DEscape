@@ -58,6 +58,8 @@ from descape.trigger_model import (
 )
 from descape.trigger_organize import parse_tag, sections, tag_chain
 
+import conftest
+
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
 _REFERENCE_EFFECT_TYPES = (8, 9)  # ACTIVATE_TRIGGER, DEACTIVATE_TRIGGER
@@ -668,6 +670,23 @@ def test_adding_a_trigger_marks_only_the_new_one_dirty(tmp_path: Path) -> None:
     assert [trigger.name for trigger in manager.triggers][-1] == "Added by a test"
 
 
+@pytest.mark.parametrize("effect_type", [77, 78])
+def test_a_new_create_object_attack_or_armor_effect_round_trips(tmp_path: Path, effect_type: int) -> None:
+    """TASK-395: the library ships 77/78's armour/attack pair defaulting to [],
+    which packed into quantity wrote a Triggers section that no longer parsed.
+    The New effect path, saved with its defaults untouched."""
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.structural_edit(lambda manager: manager.add_trigger("Create object attack/armor")._add_effect(effect_type))
+
+    out = tmp_path / "create_object_aa.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+    manager = parse_triggers(load_map_and_units(out))
+    assert manager is not None
+    effect = manager.triggers[-1].effects[-1]
+    assert (effect.effect_type, effect.armour_attack_quantity, effect.armour_attack_class) == (effect_type, 1, 0)
+
+
 def test_both_trigger_counters_follow_the_trigger_count(tmp_path: Path) -> None:
     """Options.number_of_triggers and FileHeader.trigger_count, the two
     counters that live outside the Triggers section."""
@@ -1102,7 +1121,6 @@ def test_write_is_blocked_when_edits_exist_on_an_ungated_file(tmp_path: Path) ->
 # -- corpus tier ------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_clean_serialize_is_verbatim_across_the_corpus(scenario_path: Path) -> None:
     """Plan verification items 1, 2 and 4 against real files: the alignment
     gate decides which files are editable, per-trigger byte lengths account for
@@ -1125,22 +1143,32 @@ def test_clean_serialize_is_verbatim_across_the_corpus(scenario_path: Path) -> N
 def test_a_legacy_file_with_a_custom_display_order_serializes_cleanly(name: str) -> None:
     """The measurement that ruled out a "legacy implies identity display
     order" coherence rule. If this starts failing, someone added it."""
-    from descape.trigger_model import exec_order_value
-
     path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
     if not path.exists():
         pytest.skip(f"{path.name} is not in this corpus")
     loaded = load_map_and_units(path)
     if parse_triggers(loaded) is None or not loaded.trigger_write_supported:
         pytest.skip(f"{path.name}: triggers are not writable")
+    _check_legacy_custom_order_serializes_cleanly(loaded)
+
+
+def _check_legacy_custom_order_serializes_cleanly(loaded) -> None:
+    from descape.trigger_model import exec_order_value
+
     model = TriggerEditModel(loaded)
     order = list(model.manager().trigger_display_order)
-    assert exec_order_value(loaded) == 1, "corpus assumption: legacy mode"
-    assert order != sorted(order), "corpus assumption: non-identity display order"
+    assert exec_order_value(loaded) == 1, "assumption: legacy mode"
+    assert order != sorted(order), "assumption: non-identity display order"
     assert model.serialize() == _section_bytes(loaded)
 
 
-@pytest.mark.corpus
+@pytest.mark.test_map
+def test_the_test_maps_legacy_custom_display_order_serializes_cleanly() -> None:
+    loaded = load_map_and_units(conftest.TEST_MAP_PATH)
+    assert parse_triggers(loaded) is not None and loaded.trigger_write_supported, "test map assumption: writable"
+    _check_legacy_custom_order_serializes_cleanly(loaded)
+
+
 def test_display_order_survives_an_unrelated_trigger_save_across_the_corpus(
     scenario_path: Path, tmp_path: Path
 ) -> None:
@@ -1181,7 +1209,6 @@ def test_display_order_survives_an_unrelated_trigger_save_across_the_corpus(
     )
 
 
-@pytest.mark.corpus
 def test_a_new_condition_and_effect_match_each_files_own_vocabulary(
     scenario_path: Path, tmp_path: Path
 ) -> None:
@@ -1274,7 +1301,6 @@ def test_new_entries_on_a_1_54_trigger_4_1_file_reread(request, tmp_path: Path) 
     assert [(e.effect_type, e.message) for e in reloaded.triggers[0].effects] == [(3, "1.54 filler")]
 
 
-@pytest.mark.corpus
 def test_retyping_an_effect_keeps_its_place_and_survives_the_write_path(
     scenario_path: Path, tmp_path: Path
 ) -> None:
@@ -1345,7 +1371,6 @@ def test_retyping_an_effect_keeps_its_place_and_survives_the_write_path(
     )
 
 
-@pytest.mark.corpus
 def test_copying_a_trigger_preserves_a_custom_display_order_across_the_corpus(
     scenario_path: Path,
 ) -> None:
@@ -1404,7 +1429,6 @@ def test_copying_a_trigger_preserves_a_custom_display_order_across_the_corpus(
     )
 
 
-@pytest.mark.corpus
 def test_single_trigger_edit_stays_local_across_the_corpus(
     scenario_path: Path, tmp_path: Path
 ) -> None:
@@ -1477,7 +1501,6 @@ def _check_section_moves_round_trip(path: Path, tmp_path: Path) -> int:
     return len(moves)
 
 
-@pytest.mark.corpus
 def test_a_section_move_keeps_every_section_whole_across_the_corpus(scenario_path: Path, tmp_path: Path) -> None:
     _check_section_moves_round_trip(scenario_path, tmp_path)
 
@@ -1501,6 +1524,28 @@ def test_a_section_move_on_both_leading_run_branches(name: str, has_leading_run:
     assert _check_section_moves_round_trip(path, tmp_path) == 2
 
 
+@pytest.mark.test_map
+def test_a_section_move_on_the_test_maps_leading_run_branch() -> None:
+    """The named pair's leading-run branch on the test map, in memory only:
+    the write round trip is the map240 item of
+    test_a_section_move_keeps_every_section_whole_across_the_corpus."""
+    manager = parse_triggers(load_map_and_units(conftest.TEST_MAP_PATH))
+    assert manager is not None
+    names = [t.name or "" for t in manager.triggers]
+    order = list(manager.trigger_display_order)
+    before = sections(names, order)
+    assert before[0].header_index is None, "test map assumption: a leading run"
+    real = [p for p, s in enumerate(before) if s.header_index is not None]
+    assert len(real) >= 2, "test map assumption: two real sections"
+    with pytest.raises(IndexError):
+        moved_section_display_order(order, names, before[real[0]].header_index, -1)
+    for position, delta in ((real[0], 1), (real[-1], -1)):
+        moved = moved_section_display_order(order, names, before[position].header_index, delta)
+        expected = list(before)
+        expected[position], expected[position + delta] = expected[position + delta], expected[position]
+        assert sections(names, moved) == expected, f"moving section {before[position].title!r} by {delta}"
+
+
 @pytest.mark.corpus
 @pytest.mark.parametrize("name", ["F7_3_York (865)", "old-allies-final-v2"])
 def test_an_edge_move_never_changes_any_sections_member_set(name: str) -> None:
@@ -1510,6 +1555,18 @@ def test_an_edge_move_never_changes_any_sections_member_set(name: str) -> None:
     path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
     if not path.exists():
         pytest.skip(f"{path.name} is not in this corpus")
+    _check_edge_moves_keep_member_sets(path)
+
+
+@pytest.mark.test_map
+def test_an_edge_move_never_changes_any_sections_member_set_on_the_test_map() -> None:
+    # The leading run and 3 real sections, each of 4+ members: 6 unrefused moves apiece.
+    assert _check_edge_moves_keep_member_sets(conftest.TEST_MAP_PATH) >= 24, "test map assumption: 4 sections"
+
+
+def _check_edge_moves_keep_member_sets(path: Path) -> int:
+    """Returns how many edge moves ran."""
+    name = path.stem
     manager = parse_triggers(load_map_and_units(path))
     assert manager is not None
     names = [t.name or "" for t in manager.triggers]
@@ -1539,6 +1596,7 @@ def test_an_edge_move_never_changes_any_sections_member_set(name: str) -> None:
                 assert list(edge) == [i for i in order if i in indices], (name, section.title, indices, top)
                 moves += 1
     assert moves, f"{name}: no edge move ran"
+    return moves
 
 
 # -- the quantity cluster: an object_attributes switch must still save --------
@@ -2413,7 +2471,6 @@ def _check_removals_keep_display_order(scenario_path: Path) -> int:
     return checked
 
 
-@pytest.mark.corpus
 def test_removing_any_entry_keeps_the_survivors_display_order_across_the_corpus(scenario_path: Path) -> None:
     if not _check_removals_keep_display_order(scenario_path):
         pytest.skip(f"{scenario_path.name}: every condition and effect order is identity")
@@ -2606,7 +2663,6 @@ def test_removing_a_tag_nobody_carries_records_nothing(tmp_path: Path) -> None:
         window.close()
 
 
-@pytest.mark.corpus
 def test_renaming_each_files_commonest_tag_survives_a_reload(scenario_path: Path, tmp_path: Path) -> None:
     from collections import Counter
 

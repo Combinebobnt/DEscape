@@ -516,7 +516,6 @@ def test_sloped_pick_takes_an_already_resolved_terrain_tile() -> None:
     assert _pick(terrain_tile=None) is entry
 
 
-@pytest.mark.corpus
 def test_stepped_pick_agrees_with_the_id_plane_on_a_real_file(scenario_path) -> None:
     """The plan's own corpus-tier requirement: run the oracle against a real
     scenario, not just the synthetic fixture.

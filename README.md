@@ -550,6 +550,10 @@ grants any rights over Microsoft's Age of Empires II content; use of game
 assets from your own install is governed by Microsoft's Game Content Usage
 Rules.
 
+The generated test map, `tests/fixtures/test_map_240x240.aoe2scenario`, is
+built by `tools/gen_test_map.py` from the shipped
+`descape/templates/blank_120x120.aoe2scenario` template.
+
 ## Credits
 
 - **Age of Empires II**, created by Ensemble Studios, and **Age of Empires

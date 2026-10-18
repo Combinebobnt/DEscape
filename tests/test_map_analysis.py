@@ -604,6 +604,8 @@ def test_marker_anchors_from_a_real_elevation_violation() -> None:
 
 
 # -- corpus ---------------------------------------------------------------------
+# Real-file false-positive baselines: they stay corpus, since the synthetic test map
+# (conftest.TEST_MAP_PATH) is no baseline for what real maps hold.
 
 
 @pytest.mark.corpus

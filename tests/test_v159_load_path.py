@@ -26,6 +26,7 @@ from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.scenario_write import write_scenario
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
+from testkit.zlib_runtime import BYTES_DIFFER, NOT_STOCK_REASON, STOCK_ZLIB, scenario_parts
 
 import conftest
 
@@ -60,7 +61,12 @@ def _save_and_reload(loaded, tmp_path, name: str, **models):
 
 
 def test_fixture_matches_its_generator() -> None:
-    assert _gen().build_fixture_bytes() == FIXTURE.read_bytes()
+    assert scenario_parts(_gen().build_fixture_bytes()) == scenario_parts(FIXTURE.read_bytes())
+
+
+@pytest.mark.skipif(not STOCK_ZLIB, reason=NOT_STOCK_REASON)
+def test_fixture_matches_its_generator_byte_identical() -> None:
+    assert _gen().build_fixture_bytes() == FIXTURE.read_bytes(), BYTES_DIFFER
 
 
 def test_fixture_loads_from_the_library_structure_with_triggers() -> None:

@@ -26,6 +26,9 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Icons for every tool and menu command**, in colour, re-inked to suit each
+  theme. Settings > Appearance > *Toolbar buttons* picks icons and text (the
+  default), icons only, or text only; each tool's tooltip names it and its key.
 - **Cosmetic mods draw on the map**: art from your enabled mods (trees,
   buildings, units, walls, terrain textures, `.sld` or `.smx`) replaces the
   game's own in the game's mod order. View > Layers > Mod Art turns it off,
@@ -346,6 +349,12 @@ content, link the doc instead of summarizing it.
   by its middle to move it, or by an edge or corner to resize it, one undo
   step per drag. Move, Resize and Tile borders pick what grabs.
   (contributed by @teslatankx, #232)
+- **Set the XS script filename in Map Options** (GH #216): a Script filename
+  row (scenario 1.40 and later) attaches an XS script without the official
+  editor, saved the way the game's editor saves it. Type the name without
+  `.xs`, or leave it empty for no script. Each name is one undo step, and the
+  info page shows the unsaved name. Read-only on a file that embeds its
+  script's text. (contributed by @teslatankx, #238)
 
 ### Changed
 
@@ -583,10 +592,18 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **New Create Object Attack and Create Object Armor effects save
+  correctly**: one added through New effect now starts at amount 1, class 0
+  (like Change Object Attack/Armor) instead of writing a Triggers section
+  that would not load back.
 - **No stacked-unit badge for grass and other eye candy** (GH #193): a
   building or unit standing on grass, plants or rubble no longer shows a
   stack count. Rocks and other obstacles still do. (contributed by
   @teslatankx, #235)
+- **No more "Wayland does not support QWindow::requestActivate()" lines**
+  (GH #236): on a native Wayland session the terminal no longer fills with
+  that warning each time a dialog opens. Every other Qt message still
+  prints. (contributed by @teslatankx, #237)
 - **Save As adds the file to File > Open Recent** (GH #215), so a new map is
   listed after its first save.
 - **Settings > Keybinds no longer clips the Mouse Wheel dropdowns** on

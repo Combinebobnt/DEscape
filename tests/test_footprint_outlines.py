@@ -1042,3 +1042,185 @@ def test_a_player_colour_edit_builds_nothing_while_outlines_use_one_colour(monke
         assert calls == []
     finally:
         conftest.close_window(window)
+
+
+# --- the owed in-app passes, offscreen (TASK-131) ------------------------------
+
+_DOS_PILAS = "F7_2_Dos Pilas"
+
+
+def _dos_pilas_window(corpus_files, style: str = "Stepped"):
+    """F7_2_Dos Pilas (648) with View > Footprint Outlines > Show on, in `style`."""
+    from PyQt5.QtWidgets import QApplication
+
+    path = next((p for p in corpus_files if _DOS_PILAS in p.name), None)
+    if path is None:
+        pytest.skip(f"{_DOS_PILAS} is not in this run's corpus_files")
+    window = conftest.stepped_window(path)
+    window.terrain_style_combo.setCurrentText(style)
+    window.refresh_map()
+    QApplication.processEvents()
+    if style == "Flat":
+        # Offscreen, a restyle never reaches MapView (GOTCHAS); safe for geometry-only checks.
+        window.map_view._terrain_style = "flat"
+    window.footprint_action.setChecked(True)
+    return window
+
+
+def _points_of(view, entries, merged: bool = False) -> set[tuple[float, float]]:
+    points = set()
+    for entry in entries:
+        polygons = view._unit_polygons_for(entry) or []
+        if merged:
+            polygons = unit_pick.merge_footprint_polygons(polygons)
+        points |= {(round(x, 3), round(y, 3)) for polygon in polygons for x, y in polygon}
+    return points
+
+
+@pytest.mark.corpus
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_units_only_on_dos_pilas_drops_every_building_wall_and_gate_and_keeps_every_unit(corpus_files) -> None:
+    """GH #143 step 1 on the real file, through View > Footprint Outlines > Units only.
+
+    Pass conditions:
+    - the file has buildings/walls/gates and other units, so the scope has something to cut;
+    - every index entry whose const is a building, wall or gate (Show Buildings/Show Walls sets)
+      is out of scope, unless it is mobile siege; every other entry is in scope;
+    - the drawn outline is exactly the in-scope entries' polygons, and has fewer points than All
+      units draws.
+    (Dos Pilas has no trebuchet; Units only keeping siege is the synthetic
+    test_units_only_drops_buildings_walls_and_gates_and_keeps_siege.)
+    """
+    from descape import unit_kind
+
+    window = _dos_pilas_window(corpus_files)
+    try:
+        view = window.map_view
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_UNITS].setChecked(True)
+        assert view._footprint_scope == unit_pick.FOOTPRINT_SCOPE_UNITS
+        structures = unit_kind.building_consts() | unit_kind.wall_consts()
+        entries = view._unit_index.entries
+        in_scope = {id(e) for e in unit_pick.footprint_entries(view._unit_index, view._footprint_scope)}
+        dropped = [e for e in entries if e.unit.unit_const in structures and e.unit.unit_const not in _SIEGE_IN_BOTH_SCOPES]
+        kept = [e for e in entries if e.unit.unit_const not in structures]
+        assert dropped and kept
+        assert not any(id(e) in in_scope for e in dropped)
+        assert all(id(e) in in_scope for e in kept)
+        drawn = _drawn_points(view)
+        assert drawn == _points_of(view, [e for e in entries if id(e) in in_scope])
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_ALL].setChecked(True)
+        assert len(drawn) < len(_drawn_points(view))
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.corpus
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_merge_on_dos_pilas_outlines_each_town_centre_once(corpus_files, style: str) -> None:
+    """GH #143 step 2's town-centre half on the real file, Multi-tile objects scope.
+
+    Pass conditions, with Merge ticked through its menu action:
+    - every Town Centre (109) on the file merges to exactly one ring (16 per-tile polygons in
+      Stepped and Sloped, one rect in Flat);
+    - the drawn outline is exactly the in-scope entries' merged rings, with one subpath per
+      ring, and in Stepped and Sloped fewer subpaths than with Merge off.
+    """
+    window = _dos_pilas_window(corpus_files, style)
+    try:
+        view = window.map_view
+        assert view._terrain_style == style.lower()
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_MULTITILE].setChecked(True)
+        per_tile = _subpath_count(_overlay_item(view).path())
+        window.footprint_merged_action.setChecked(True)
+        entries = unit_pick.footprint_entries(view._unit_index, view._footprint_scope)
+        centres = [e for e in entries if e.unit.unit_const == _TOWN_CENTRE]
+        assert centres
+        for entry in centres:
+            polygons = view._unit_polygons_for(entry)
+            assert len(polygons) == (1 if style == "Flat" else 16)
+            assert len(unit_pick.merge_footprint_polygons(polygons)) == 1
+        rings = sum(len(unit_pick.merge_footprint_polygons(view._unit_polygons_for(e) or [])) for e in entries)
+        merged = _overlay_item(view).path()
+        assert _subpath_count(merged) == rings
+        assert _drawn_points(view) == _points_of(view, entries, merged=True)
+        if style != "Flat":
+            assert rings < per_tile
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_merge_in_sloped_with_sprites_joins_a_gently_draped_farm_and_leaves_a_multi_level_one_per_tile() -> None:
+    """GH #143 step 2's farm half (Dos Pilas has no farm), Sloped with Show sprites on.
+
+    A farm on a one-level-per-tile ramp, and one straddling a sharp 0 -> 4 step in y, whose
+    draped staircase leaves several loops. Pass conditions, with Merge ticked:
+    - both farms are draped 3x3 footprints (nine per-tile polygons each);
+    - the drawn outline is one ring for the gentle farm plus the steep farm's nine per-tile
+      polygons, ten subpaths in all, and those points exactly.
+    """
+    from PyQt5.QtWidgets import QApplication
+
+    gentle, steep = (21.5, 21.5), (60.5, 46.5)
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        for tile in window.scenario.map_manager.terrain:
+            if tile.y < 35:
+                tile.elevation = max(0, min(4, tile.x - 18))
+            else:
+                tile.elevation = 4 if tile.y >= 46 else 0
+        units = window.scenario.unit_manager.units[1]
+        units.append(_Unit(*gentle, _FARM, reference_id=701))
+        units.append(_Unit(*steep, _FARM, reference_id=702))
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.refresh_map()
+        QApplication.processEvents()
+        assert window.show_sprites_action.isChecked()
+        window.footprint_action.setChecked(True)
+        view = window.map_view
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_BUILDINGS].setChecked(True)
+        window.footprint_merged_action.setChecked(True)
+        farms = {(e.unit.x, e.unit.y): e for e in view._unit_index.entries if e.unit.unit_const == _FARM}
+        assert set(farms) == {gentle, steep}
+        for entry in farms.values():
+            assert len(view._unit_polygons_for(entry)) == 9
+        assert len(unit_pick.merge_footprint_polygons(view._unit_polygons_for(farms[gentle]))) == 1
+        assert len(unit_pick.merge_footprint_polygons(view._unit_polygons_for(farms[steep]))) == 9
+        assert _subpath_count(_overlay_item(view).path()) == 1 + 9
+        assert _drawn_points(view) == _points_of(view, farms.values(), merged=True)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_scope_merge_and_owner_colour_ticked_in_the_menu_survive_a_restart(monkeypatch) -> None:
+    """GH #143 step 5, end to end. Pass conditions: after Units only, Merge tiles and Colour by
+    Owner are ticked in the View menu and the window closes, a restart (settings memos dropped,
+    a new window) shows all three ticked and MapView using all three."""
+    from descape.viewer import ViewerWindow
+
+    window = _window_with_units("Stepped")
+    try:
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_UNITS].setChecked(True)
+        window.footprint_merged_action.setChecked(True)
+        window.footprint_by_owner_action.setChecked(True)
+    finally:
+        conftest.close_window(window)
+    for name in ("_footprint_outlines", "_footprint_scope", "_footprint_merged", "_footprint_by_owner"):
+        monkeypatch.setattr(settings, name, None)
+    window = ViewerWindow()
+    try:
+        assert window.footprint_action.isChecked()
+        assert window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_UNITS].isChecked()
+        assert window.footprint_merged_action.isChecked()
+        assert window.footprint_by_owner_action.isChecked()
+        view = window.map_view
+        assert view._footprint_scope == unit_pick.FOOTPRINT_SCOPE_UNITS
+        assert view._footprint_merged is True and view._footprint_by_owner is True
+    finally:
+        conftest.close_window(window)

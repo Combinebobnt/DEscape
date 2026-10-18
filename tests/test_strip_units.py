@@ -107,7 +107,6 @@ def test_relocated_real_oracle_is_unit_free(tiles: int) -> None:
     assert next_unit_id == 0
 
 
-@pytest.mark.corpus
 def test_strip_removes_real_units_corpus(scenario_path, tmp_path: Path) -> None:
     original = load_map_and_units(scenario_path)
     if not original.units_write_supported:

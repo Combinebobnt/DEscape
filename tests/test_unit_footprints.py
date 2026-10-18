@@ -326,6 +326,7 @@ def test_the_snapped_anchors_edge_clamp_keeps_a_4x4_on_the_map():
 # -- against real placement data -----------------------------------------
 
 
+# Stays corpus: the test map's anchors come from the app's own span_anchor, not the game.
 @pytest.mark.corpus
 def test_real_buildings_span_their_real_footprints(scenario_path):
     """The synthetic checks above all place units by hand. This one takes the

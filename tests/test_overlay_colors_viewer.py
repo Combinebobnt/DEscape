@@ -378,3 +378,149 @@ def test_apply_overlay_colors_clears_the_stale_edit_highlight() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# --- the owed in-app passes, offscreen (TASK-148) ------------------------------
+
+
+def _region_window():
+    window = conftest.blank_window()
+    window.map_view.set_region((2, 2, 6, 6))
+    return window
+
+
+def _selection_window():
+    window = _units_window(by_owner=True)
+    _select_all_units(window)
+    assert len(_selection_items(window.map_view)) == 9, "three owner-coloured groups"
+    return window
+
+
+def _trigger_area_items(map_view) -> list:
+    return [item for role, item in _trigger_roles(map_view).items() if role.startswith(("fill_", "outline_"))]
+
+
+_GROUP_CASES = {
+    "unit_select": (_selection_window, _selection_items),
+    "region": (_region_window, _region_items),
+    "trigger_area": (_trigger_window, _trigger_area_items),
+}
+
+
+def _flush_and_close(dialog) -> None:
+    """done() persists a pending debounced opacity; a never-shown dialog's close() skips done(),
+    so the 200 ms timer would otherwise fire inside a later test and write into its config."""
+    dialog.done(0)
+    dialog.close()
+    assert not dialog._overlay_opacity_timer.isActive()
+
+
+def _effective_alpha(item) -> float:
+    """What the item paints with: its opacity times its own colour's alpha."""
+    role = item.data(0)
+    color = item.brush().color() if role.startswith("fill_") else item.pen().color()
+    return item.opacity() * color.alpha()
+
+
+@pytest.mark.parametrize("group_id", sorted(_GROUP_CASES))
+def test_dragging_each_opacity_slider_fades_its_overlay_live_and_default_restores_it(group_id: str) -> None:
+    """Settings > Appearance's real slider, with its overlay on the map (the selection with
+    Colour Selection by Owner on, a region, a trigger's areas).
+
+    Pass conditions:
+    - every one of the group's items starts at opacity 1.0;
+    - while the slider is held, each value it moves to (40, then 70) is every item's opacity at
+      once, and nothing is persisted yet;
+    - releasing it persists the last value;
+    - the row's Default button puts the slider, the setting and every item back at 100%.
+    """
+    from descape.viewer import SettingsDialog
+
+    build, items_of = _GROUP_CASES[group_id]
+    window = build()
+    dialog = SettingsDialog(window)
+    try:
+        mv = window.map_view
+        assert _opacities(items_of(mv)) and set(_opacities(items_of(mv))) == {1.0}
+        slider = dialog._overlay_opacity_sliders[group_id]
+        slider.setSliderDown(True)
+        for value in (40, 70):
+            slider.setValue(value)
+            assert set(_opacities(items_of(mv))) == {value / 100}, value
+            assert dialog._overlay_opacity_labels[group_id].text() == f"{value}%"
+            assert settings.get_overlay_opacity(group_id) == 100, "a held slider persists nothing"
+        slider.setSliderDown(False)
+        assert settings.get_overlay_opacity(group_id) == 70
+
+        dialog._overlay_opacity_defaults[group_id].click()
+        assert slider.value() == 100
+        assert settings.get_overlay_opacity(group_id) == 100
+        assert set(_opacities(items_of(mv))) == {1.0}
+    finally:
+        _flush_and_close(dialog)
+        conftest.close_window(window)
+
+
+def test_a_faded_trigger_keeps_its_dim_siblings_proportionally_dimmer() -> None:
+    """Pass conditions, the patrol trigger selected (strong) with its dim sibling areas:
+    - before any fade, each dim fill/outline paints below its strong counterpart;
+    - after the Area opacity slider moves to 40, every area item's effective alpha (opacity x
+      colour alpha) is 0.4 of what it was, so each dim/strong ratio is unchanged.
+    """
+    from descape.viewer import SettingsDialog
+
+    window = _trigger_window()
+    dialog = SettingsDialog(window)
+    try:
+        mv = window.map_view
+        before = {role: _effective_alpha(item) for role, item in _trigger_roles(mv).items() if role.startswith(("fill_", "outline_"))}
+        assert {"fill_strong", "fill_dim", "outline_strong", "outline_dim"} <= set(before)
+        for kind in ("fill", "outline"):
+            assert before[f"{kind}_dim"] < before[f"{kind}_strong"], kind
+        dialog._overlay_opacity_sliders["trigger_area"].setValue(40)
+        after = {role: _effective_alpha(item) for role, item in _trigger_roles(mv).items() if role in before}
+        for role, alpha in before.items():
+            assert after[role] == pytest.approx(0.4 * alpha), role
+        for kind in ("fill", "outline"):
+            assert after[f"{kind}_dim"] / after[f"{kind}_strong"] == pytest.approx(before[f"{kind}_dim"] / before[f"{kind}_strong"])
+    finally:
+        _flush_and_close(dialog)
+        conftest.close_window(window)
+
+
+def test_an_opacity_survives_closing_and_reopening_settings_and_a_restart(monkeypatch) -> None:
+    """Pass conditions:
+    - the Select tool's region opacity slider moved to 35 is persisted when Settings closes;
+    - a reopened Settings shows 35 on that slider;
+    - after settings' memo is dropped (a restart), a new window's region starts at 0.35 and its
+      Settings shows 35.
+    """
+    from descape.viewer import SettingsDialog
+
+    window = _region_window()
+    try:
+        dialog = SettingsDialog(window)
+        slider = dialog._overlay_opacity_sliders["region"]
+        slider.setValue(35)
+        _flush_and_close(dialog)
+        assert settings.get_overlay_opacity("region") == 35
+        reopened = SettingsDialog(window)
+        try:
+            assert reopened._overlay_opacity_sliders["region"].value() == 35
+            assert reopened._overlay_opacity_labels["region"].text() == "35%"
+        finally:
+            reopened.close()
+    finally:
+        conftest.close_window(window)
+
+    monkeypatch.setattr(settings, "_overlay_opacity", None)
+    window = _region_window()
+    try:
+        assert set(_opacities(_region_items(window.map_view))) == {0.35}
+        dialog = SettingsDialog(window)
+        try:
+            assert dialog._overlay_opacity_sliders["region"].value() == 35
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)

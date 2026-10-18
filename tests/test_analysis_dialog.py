@@ -611,3 +611,107 @@ def test_the_marker_colour_setting_paints_and_repaints(tmp_path, monkeypatch) ->
         assert not _colour_hits(array, (255, 0, 255), tolerance=8).any(), "old colour still showing"
     finally:
         conftest.close_window(window)
+
+
+# --- the owed in-app passes, offscreen (TASK-097) ------------------------------
+
+
+def _marker_boxes_at_scale(window, monkeypatch, linear_scale: float) -> list:
+    """Zoom MapView to `linear_scale` on the bump, repaint, and return the device-space marker
+    boxes AnalysisMarkerItem.paint() drew (its own drawRoundedRect calls, focus ring excluded)."""
+    from PyQt5.QtGui import QPainter
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer_canvas import AnalysisMarkerItem
+
+    view = window.map_view
+    current = abs(view.transform().determinant()) ** 0.5
+    view.scale(linear_scale / current, linear_scale / current)
+    view.center_on_tile(*_BUMP)
+    QApplication.processEvents()
+    boxes: list = []
+    inside = {"on": False}
+    real_round = QPainter.drawRoundedRect
+    real_paint = AnalysisMarkerItem.paint
+
+    def spy_round(painter, rect, *args):
+        if inside["on"]:
+            boxes.append((round(rect.width(), 3), round(rect.height(), 3)))
+        return real_round(painter, rect, *args)
+
+    def spy_paint(item, painter, option, widget=None):
+        inside["on"] = True
+        try:
+            return real_paint(item, painter, option, widget)
+        finally:
+            inside["on"] = False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(QPainter, "drawRoundedRect", spy_round)
+        patch.setattr(AnalysisMarkerItem, "paint", spy_paint)
+        view.viewport().grab()
+    assert abs(abs(view.transform().determinant()) ** 0.5 - linear_scale) < 1e-6 * linear_scale
+    return boxes
+
+
+def test_markers_keep_one_device_size_from_the_furthest_zoom_out_to_the_furthest_zoom_in(monkeypatch) -> None:
+    """TASK-097 step 3, at MapView's own zoom limits (more than 100x apart), no focus ring.
+
+    Pass conditions:
+    - markers are drawn at both limits;
+    - every box drawn at the furthest zoom in has a size that a box at the furthest zoom out
+      also has, and every box is one text line tall at the marker font (font height + padding).
+    """
+    from PyQt5.QtGui import QFontMetricsF
+
+    from descape.viewer_canvas import AnalysisMarkerItem
+
+    window = _marker_window()
+    try:
+        view = window.map_view
+        window.analysis_action.trigger()
+        item = view.analysis_marker_item()
+        lo, hi = view._min_linear_scale, view._max_linear_scale
+        assert hi / lo > 100
+        far = _marker_boxes_at_scale(window, monkeypatch, lo)
+        assert item.markers_drawn >= 1 and far
+        near = _marker_boxes_at_scale(window, monkeypatch, hi)
+        assert item.markers_drawn >= 1 and near
+        assert set(near) <= set(far), (near, far)
+        height = QFontMetricsF(item._font).height() + AnalysisMarkerItem.PAD_PX
+        assert all(abs(h - height) < 1.0 for _w, h in far + near), (height, far, near)
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_map_analysis_marker_swatch_recolours_the_live_markers(monkeypatch) -> None:
+    """TASK-097 step 7 through Settings > Appearance's own "Map Analysis markers" swatch.
+    Pass conditions: picking #00ffff persists it and the live marker item draws in it at once;
+    the row's Default button puts back the shipped colour on both."""
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog
+
+    from descape import settings
+    from descape.viewer import SettingsDialog
+
+    window = _marker_window()
+    dialog = SettingsDialog(window)
+    try:
+        window.analysis_action.trigger()
+        item = window.map_view.analysis_marker_item()
+        default = settings.get_default_overlay_color("analysis_marker")
+        assert item.color().name() == default
+        monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: QColor("#00ffff")))
+        swatch = dialog._overlay_swatches["analysis_marker"]
+        swatch.click()
+        assert settings.get_overlay_color("analysis_marker") == "#00ffff"
+        assert window.map_view.analysis_marker_item() is item
+        assert item.color().name() == "#00ffff"
+        grid = swatch.parentWidget().layout()
+        row, column, _rs, _cs = grid.getItemPosition(grid.indexOf(swatch))
+        grid.itemAtPosition(row, column + 1).widget().click()
+        assert settings.get_overlay_color("analysis_marker") == default
+        assert item.color().name() == default
+    finally:
+        dialog.close()
+        conftest.close_window(window)

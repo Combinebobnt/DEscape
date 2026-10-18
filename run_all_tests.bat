@@ -1,8 +1,7 @@
 @echo off
 REM Runs the default (fast, no-corpus) pytest tier. See tests/README.md for
-REM what that covers. For the corpus/gui tier, see run_corpus_quick.bat
-REM (~15 min, the default scope) and run_corpus_stress.bat (~27 min, the
-REM complete corpus).
+REM what that covers. run_corpus_quick.bat adds the test map; for the
+REM examples/ corpus, see run_corpus_stress.bat (~27 min).
 REM
 REM Parallel via pytest-xdist: one worker per CPU, capped at 8 so the machine
 REM stays usable. Arguments come last, so -n 0 runs serially and

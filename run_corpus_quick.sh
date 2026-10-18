@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs the corpus/gui pytest tier against the default QUICK_CORPUS_NAMES
-# subset (~15 min) -- see tests/README.md and tests/conftest.py. For the
-# complete corpus (~27 min), use run_corpus_stress.sh instead.
+# Runs the default tier plus the generated test map's `test_map` items and
+# the `slow` checks, in parallel like run_all_tests.sh. No examples/ map runs
+# here: the real corpus is run_corpus_stress.sh's (~27 min). See
+# tests/README.md and tests/conftest.py.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -10,4 +11,4 @@ if [ ! -x ".venv/bin/python3" ]; then
     exit 1
 fi
 
-.venv/bin/python3 -m pytest -m "corpus or slow" "$@"
+.venv/bin/python3 -m pytest -n auto --maxprocesses 8 --dist loadgroup -m "not corpus" "$@"

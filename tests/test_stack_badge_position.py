@@ -518,3 +518,168 @@ def test_grass_under_a_castle_and_a_villager_shows_no_badge() -> None:
         assert [text for _anchor, _centre, text in map_view._stack_badge_item._badges] == ["2"]
     finally:
         _close(window)
+
+
+# --- the owed in-app passes, offscreen (TASK-126) ------------------------------
+
+_QUADRANTS = {"bottom_right": (1, 1), "bottom_left": (-1, 1), "top_right": (1, -1), "top_left": (-1, -1)}
+
+
+@pytest.mark.parametrize(("style", "iso"), _ALL_CASES)
+def test_the_appearance_combo_drives_all_five_positions_in_every_style(style: str, iso: bool) -> None:
+    """Settings > Appearance's real combo, every position, ending back on the default.
+
+    Pass conditions, per position chosen in the combo:
+    - the setting and MapView's own position follow it, on the same live badge item;
+    - a tucked position puts the anchor in its screen quadrant of the tile centre, and its
+      drawn box centre inside the tile's on-screen shape;
+    - "above" untucks the item and anchors it on the tile's top vertex (the square's top edge
+      midpoint in Flat).
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QPolygonF
+
+    from descape.viewer import SettingsDialog
+
+    window = _window(style, iso=iso)
+    dialog = SettingsDialog(window)
+    try:
+        map_view = window.map_view
+        item = map_view._stack_badge_item
+        combo = dialog.stack_badge_position_combo
+        order = ["bottom_left", "top_right", "top_left", "above", "bottom_right"]
+        assert sorted(order) == sorted(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
+        for position in order:
+            combo.setCurrentIndex(combo.findData(position))
+            assert settings.get_stack_badge_position() == position
+            assert map_view._stack_badge_position == position
+            assert map_view._stack_badge_item is item
+            _zoom_on_stack(map_view)
+            anchor, centre = _anchor_and_centre(map_view)
+            outline = _outline(map_view)
+            if position == "above":
+                assert not item._tucked
+                top = _top_vertex(outline)
+                tol = _tolerance(map_view)
+                assert abs(anchor.x() - top.x()) <= tol, position
+                assert abs(anchor.y() - top.y()) <= tol, position
+            else:
+                assert item._tucked
+                sx, sy = _QUADRANTS[position]
+                assert (anchor.x() - centre.x()) * sx > 1, position
+                assert (anchor.y() - centre.y()) * sy > 1, position
+                (box,) = item.drawn_boxes
+                assert QPolygonF(outline).containsPoint(box.center(), Qt.OddEvenFill), position
+    finally:
+        dialog.close()
+        _close(window)
+
+
+def test_the_badge_background_changes_through_its_swatch_and_its_default_button_restores_it(monkeypatch) -> None:
+    """Pass conditions:
+    - picking #3060a0 on the "Stacked-unit badge background" swatch (colour dialog answered)
+      persists it, shows it on the swatch and re-inks the live badge item at its alpha;
+    - that row's Default button puts back the shipped default in settings, swatch and item.
+    """
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog, QPushButton
+
+    from descape.viewer import SettingsDialog
+
+    default = settings.get_default_overlay_color("unit_stack_background")
+    window = _window("Flat")
+    dialog = SettingsDialog(window)
+    try:
+        item = window.map_view._stack_badge_item
+        swatch = dialog._overlay_swatches["unit_stack_background"]
+        expected = QColor(default)
+        expected.setAlpha(item.BACKGROUND_ALPHA)
+        assert item._background == expected
+        monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: QColor("#3060a0")))
+        swatch.click()
+        assert settings.get_overlay_color("unit_stack_background") == "#3060a0"
+        assert swatch.toolTip() == "#3060a0"
+        assert window.map_view._stack_badge_item is item
+        assert item._background == QColor(0x30, 0x60, 0xA0, item.BACKGROUND_ALPHA)
+
+        # The row's Default button sits in the column right of the swatch (_add_swatch_row).
+        grid = swatch.parentWidget().layout()
+        row, column, _rs, _cs = grid.getItemPosition(grid.indexOf(swatch))
+        default_btn = grid.itemAtPosition(row, column + 1).widget()
+        assert isinstance(default_btn, QPushButton) and default_btn.text() == "Default"
+        default_btn.click()
+        assert settings.get_overlay_color("unit_stack_background") == default
+        assert swatch.toolTip() == default
+        assert item._background == expected
+    finally:
+        dialog.close()
+        _close(window)
+
+
+def test_a_new_window_starts_with_the_saved_position_and_background(monkeypatch) -> None:
+    """Pass conditions: with top_left and #3060a0 saved and settings' memos dropped (a
+    restart), a freshly built window's MapView has position top_left, its badge item is
+    tucked with the anchor up-left of the tile centre, and the background is #3060a0 at the
+    badge alpha.
+    """
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QApplication
+
+    settings.set_stack_badge_position("top_left")
+    settings.set_overlay_color("unit_stack_background", "#3060a0")
+    monkeypatch.setattr(settings, "_stack_badge_position", None)
+    monkeypatch.setattr(settings, "_overlay_colors", None)
+
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText("Stepped")
+        window.mode_combo.setCurrentText("Units")
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Stack", [1]):
+            for _ in range(3):
+                model.add(1, _VILLAGER, _STACK_TILE[0] + 0.5, _STACK_TILE[1] + 0.5)
+        window.resize(1000, 800)
+        window.show()
+        QApplication.processEvents()
+        map_view = window.map_view
+        assert map_view._stack_badge_position == "top_left"
+        item = map_view._stack_badge_item
+        assert item._tucked
+        assert item._background == QColor(0x30, 0x60, 0xA0, item.BACKGROUND_ALPHA)
+        _zoom_on_stack(map_view)
+        anchor, centre = _anchor_and_centre(map_view)
+        assert anchor.x() < centre.x() - 1 and anchor.y() < centre.y() - 1
+    finally:
+        _close(window)
+
+
+def test_in_sloped_a_badge_hidden_through_a_raise_lands_inside_the_raised_tile(monkeypatch) -> None:
+    """Pass conditions, Sloped, bottom_right: raising the stacked tile by 4 through the real
+    stroke path while in Terrain (badges hidden), then switching to Units, draws exactly one
+    badge box whose centre is inside the raised tile's on-screen silhouette, and the
+    silhouette really moved up (its top is above the unraised one's).
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QPolygonF
+
+    window = _window("Sloped")
+    try:
+        map_view = window.map_view
+        flat_scene_top = min(p.y() for p in map_view._tile_polygon(*_STACK_TILE))
+        window.mode_combo.setCurrentText("Terrain")
+        assert not map_view._stack_badge_item.isVisible()
+        mm = window.scenario.map_manager
+        history = EditHistory()
+        history.begin_stroke(mm.terrain)
+        set_tile_elevation(mm, *_STACK_TILE, mm.get_tile(*_STACK_TILE).elevation + 4)
+        window._apply_dirty(history.commit_stroke("raise", mm.terrain))
+        window.mode_combo.setCurrentText("Units")
+        assert map_view._stack_badge_item.isVisible()
+        _zoom_on_stack(map_view)
+        outline = _outline(map_view)
+        (box,) = map_view._stack_badge_item.drawn_boxes
+        assert QPolygonF(outline).containsPoint(box.center(), Qt.OddEvenFill), (box, QPolygonF(outline).boundingRect())
+        # _zoom_on_stack re-fits the view, so the raise is compared in scene space.
+        assert min(p.y() for p in map_view._tile_polygon(*_STACK_TILE)) < flat_scene_top
+    finally:
+        _close(window)

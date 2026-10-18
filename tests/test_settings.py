@@ -1113,6 +1113,33 @@ def test_the_trigger_status_marker_round_trips(tmp_path: Path, monkeypatch, mark
     assert settings.get_trigger_status_marker() == marker
 
 
+# -- TASK-271: toolbar button style --------------------------------------------
+
+
+def test_the_toolbar_style_defaults_to_icons_and_text(tmp_path: Path) -> None:
+    assert settings.get_toolbar_style() == "icons_text"
+    assert [sid for sid, _label in settings.TOOLBAR_STYLES] == ["icons", "icons_text", "text"]
+
+
+@pytest.mark.parametrize("raw", ["icon", "'ICONS'", "0", "true", "[text]"])
+def test_an_off_list_toolbar_style_falls_back(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"toolbar_style: {raw}\n")
+    assert settings.get_toolbar_style() == "icons_text"
+
+
+def test_setting_an_unknown_toolbar_style_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_toolbar_style("icon")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("style", [sid for sid, _label in settings.TOOLBAR_STYLES])
+def test_the_toolbar_style_round_trips(tmp_path: Path, monkeypatch, style: str) -> None:
+    settings.set_toolbar_style(style)
+    monkeypatch.setattr(settings, "_toolbar_style", None)
+    assert settings.get_toolbar_style() == style
+
+
 @pytest.mark.parametrize("raw", ["0", "'false'", "[]", "null"])
 def test_a_non_bool_ok_rows_value_reads_as_the_default(tmp_path: Path, raw: str) -> None:
     _write_config(tmp_path, f"trigger_status_color_ok_rows: {raw}\n")

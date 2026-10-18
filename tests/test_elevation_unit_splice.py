@@ -23,6 +23,8 @@ own tests.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 from test_bystander_grid_patch import grid_state
@@ -38,7 +40,7 @@ from test_invalidate_units_splice import (
 )
 from test_sprite_edit_bbox import REACH_NAMES, sprite_install  # noqa: F401 -- fixture
 
-from descape import asset_source, debug_log, perf_trace, render, render_cache, unit_sprites
+from descape import asset_source, composite_backend, debug_log, perf_trace, render, render_cache, unit_sprites
 from descape.elevation_tools import set_tiles_elevation
 from descape.render import (
     dirty_screen_bbox_iso,
@@ -1180,6 +1182,54 @@ def test_a_warm_started_before_an_elevation_splice_is_refused(sprite_install):  
 # --- end to end through the viewer ------------------------------------------
 
 
+def _brush_9_window(style: str, shown: bool = False):
+    """terrain_edit_window() (shown_terrain_window() when `shown`) in `style`
+    with the end-to-end test's stacked sprites and Mills added and level 0
+    resident; the Elevate tool at brush 9."""
+    window = conftest.shown_terrain_window() if shown else conftest.terrain_edit_window()
+    scenario = window.scenario
+    scenario.map_manager.get_tile(*BUMP_TILE).elevation = 1
+    units = window._ensure_unit_edits()
+    for x, y in ((32.5, 40.5), (36.5, 37.5), (40.5, 43.5), (47.5, 40.5)):
+        units.add(1, SPRITE_CONST, x, y)
+    units.add(2, MILL_CONST, 44.0, 38.0)
+    units.add(3, SPRITE_CONST, 34.5, 41.5)
+    units.add(2, SPRITE_CONST, 34.5, 41.5)
+    units.add(1, SPRITE_CONST, 37.5, 41.5)  # the Mill below's sprite anchor tile, (37, 41)
+    units.add(3, MILL_CONST, 38.0, 41.0)  # x 37..38, y 40..41
+    # A style round trip rebuilds the cache from the edited scenario.
+    window.terrain_style_combo.setCurrentText("Sloped" if style == "Stepped" else "Stepped")
+    window.terrain_style_combo.setCurrentText(style)
+    window._cache.render_rect(0, 0, *window._cache.canvas_dims(0), mip=0)
+    window._on_tool_selected("elevation")
+    window.brush_size_spin.setValue(9)
+    return window
+
+
+def _brush_9_drag(window) -> None:
+    window.on_edit_stroke_start()
+    for x in range(30, 50):
+        window.on_edit_stroke_tile(x, 40, 0)
+    window.on_edit_stroke_end()
+
+
+def _assert_live_matches_numpy(style: str, window, cache, counts, step: str) -> None:
+    """The window kept `cache`, its level 0 repaint took no wholesale walk,
+    and it equals a fresh full render under numpy (TASK-031.08). Zeroes counts
+    after, since the oracle walks too."""
+    assert cache.sprites_enabled
+    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+        assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
+    assert window._cache is cache, f"{step}: rebuilt the cache"
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert counts == {"building_bboxes": 0, "sprites": 0}, f"{step}: took the wholesale path"
+    with composite_backend.use_backend("numpy"):
+        full = _oracle(style.lower(), window.scenario, True)
+    assert np.array_equal(stitched, full[:canvas_h, :canvas_w]), f"{step}: differs from a fresh numpy render"
+    counts.update(building_bboxes=0, sprites=0)
+
+
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
@@ -1189,42 +1239,128 @@ def test_a_brush_9_elevate_stroke_matches_a_fresh_render(style, sprite_install, 
     together, the way the app composes them. A stacked sprite pair (a shared
     by_anchor key, so paint order is in pixels) and a Mill with a unit on its
     anchor tile (MILL_CONST has no art here, so that one checks the bbox union
-    and the component walk) make it the end-to-end shared-tile check."""
-    window = conftest.terrain_edit_window()
+    and the component walk) make it the end-to-end shared-tile check. The
+    oracle renders under numpy, so a native live path is held to numpy."""
+    window = _brush_9_window(style)
     try:
-        scenario = window.scenario
-        mm = scenario.map_manager
-        mm.get_tile(*BUMP_TILE).elevation = 1
-        units = window._ensure_unit_edits()
-        for x, y in ((32.5, 40.5), (36.5, 37.5), (40.5, 43.5), (47.5, 40.5)):
-            units.add(1, SPRITE_CONST, x, y)
-        units.add(2, MILL_CONST, 44.0, 38.0)
-        units.add(3, SPRITE_CONST, 34.5, 41.5)
-        units.add(2, SPRITE_CONST, 34.5, 41.5)
-        units.add(1, SPRITE_CONST, 37.5, 41.5)  # the Mill below's sprite anchor tile, (37, 41)
-        units.add(3, MILL_CONST, 38.0, 41.0)  # x 37..38, y 40..41
-        # A style round trip rebuilds the cache from the edited scenario.
-        other = "Sloped" if style == "Stepped" else "Stepped"
-        window.terrain_style_combo.setCurrentText(other)
-        window.terrain_style_combo.setCurrentText(style)
         cache = window._cache
-        assert cache.sprites_enabled
-        canvas_w, canvas_h = cache.canvas_dims(0)
-        cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+        counts = _call_counts(monkeypatch)
+        _brush_9_drag(window)
+        _assert_live_matches_numpy(style, window, cache, counts, "stroke")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_brush_9_elevate_stroke_undoes_and_redoes_to_a_fresh_render(style, sprite_install, monkeypatch):  # noqa: F811
+    """TASK-031.06 step 4 / TASK-031.07 step 2 (Elevate): the brush-9 stroke,
+    then window.undo() and window.redo(). After each step:
+    - the window keeps its cache and the repaint takes no wholesale walk;
+    - level 0, never repainted whole in between, equals a fresh numpy render.
+    And undo puts every tile's elevation back, redo the stroke's."""
+    window = _brush_9_window(style)
+    try:
+        cache = window._cache
+        terrain = window.scenario.map_manager.terrain
+        start = [t.elevation for t in terrain]
+        counts = _call_counts(monkeypatch)
+        _brush_9_drag(window)
+        stroked = [t.elevation for t in terrain]
+        assert stroked != start, "the stroke raised nothing -- vacuous"
+        _assert_live_matches_numpy(style, window, cache, counts, "stroke")
+        for step, act, want in (("undo", window.undo, start), ("redo", window.redo, stroked)):
+            act()
+            assert [t.elevation for t in terrain] == want, f"{step}: elevations"
+            _assert_live_matches_numpy(style, window, cache, counts, step)
+    finally:
+        conftest.close_window(window)
+
+
+def _wheel_notch(view, out: bool) -> None:
+    """One real 120-unit wheel notch at the viewport centre as a fresh gesture
+    (test_zoom_status's _wheel()), then the paint it schedules."""
+    from PyQt5.QtCore import QPoint, QPointF, Qt
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    centre = QPointF(view.viewport().rect().center())
+    angle = QPoint(0, -120 if out else 120)
+    event = QWheelEvent(centre, centre, QPoint(0, 0), angle, Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    view._end_wheel_gesture()
+    view.wheelEvent(event)
+    QApplication.processEvents()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_brush_9_elevate_stroke_leaves_no_level_stale_after_a_zoom_out_and_back(
+    style, sprite_install, monkeypatch,  # noqa: F811
+):
+    """TASK-031.06 step 5 at viewer level: the brush-9 Elevate drag in a shown
+    window, then one wheel notch out and one back.
+    - before the drag the view shows mip 0, and mip 0 and mip -1 are both wholly resident
+    - the drag changes mip -1's pixels (not vacuous)
+    - the drag defers mip -1 (pending_elev non-empty), so the zoom is what has to flush it
+    - the notch out shows mip -1 and its paint clears that pending set; the notch back shows mip 0
+    - the window keeps its cache and _source_gen never moves
+    - no unit walk runs through the notch out; after the notch back the only walks are first builds
+      of levels the zoom's level warm added (mip -2), never a rebuild of mip 0 or -1
+    - after the round trip, both levels' whole canvases equal a fresh numpy cache's"""
+    from PyQt5.QtGui import QTransform
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import iso_geometry
+
+    window = _brush_9_window(style, shown=True)
+    try:
+        cache = window._cache
+        view = window.map_view
+        cache.max_bytes *= 8  # room for both levels at once
+        # Just above the mip -1 boundary (0.5), so one 0.8x notch out crosses it.
+        view.setTransform(QTransform.fromScale(0.55, 0.55))
+        view.centerOn(*iso_geometry.tile_screen_origin(40, 40, 0, window._iso_proj))
+        QApplication.processEvents()
+        assert view.viewport_chunk_target()[0] == 0
+        levels = (0, -1)
+        for mip in levels:
+            cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+        for mip in levels:
+            cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, 0, 0, *cache.canvas_dims(mip))
+            resident = sum(1 for m, _cx, _cy in cache._cache if m == mip)
+            assert resident == (cx1 - cx0 + 1) * (cy1 - cy0 + 1), f"mip {mip}: {resident} chunks resident"
+        before = cache.render_rect(0, 0, *cache.canvas_dims(-1), mip=-1).copy()
+        gen = cache._source_gen
         counts = _call_counts(monkeypatch)
 
-        window._on_tool_selected("elevation")
-        window.brush_size_spin.setValue(9)
-        window.on_edit_stroke_start()
-        for x in range(30, 50):
-            window.on_edit_stroke_tile(x, 40, 0)
-        window.on_edit_stroke_end()
-
-        assert window._cache is cache, "the stroke rebuilt the cache"
-        stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+        _brush_9_drag(window)
+        assert cache._levels[-1].pending_elev, "mip -1 spliced inside the stroke -- the zoom flushes nothing"
+        _wheel_notch(view, out=True)
+        assert view.viewport_chunk_target()[0] == -1, "one notch out did not show mip -1"
+        assert not cache._levels[-1].pending_elev, "the paint at mip -1 left its deferred splice unflushed"
         _no_wholesale(counts)
-        full = _oracle(style.lower(), scenario, True)
-        assert np.array_equal(stitched, full[:canvas_h, :canvas_w])
+        _wheel_notch(view, out=False)
+        assert view.viewport_chunk_target()[0] == 0, "one notch back did not show mip 0"
+
+        assert window._cache is cache, "rebuilt the cache"
+        assert cache._source_gen == gen, "a step bumped the gen (wholesale level rebuild)"
+        live = {mip: cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip) for mip in levels}
+        assert not np.array_equal(live[-1], before), "the drag changed nothing at mip -1 -- vacuous"
+        # Before the fresh cache, which walks.
+        built = [mip for mip in cache.mip_levels() if mip not in levels and cache.is_level_resident(mip)]
+        assert counts["building_bboxes"] == len(built) and counts["sprites"] <= len(built), (
+            f"unit walks {counts} beyond the first builds of {built}"
+        )
+        if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+            assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
+        with composite_backend.use_backend("numpy"):
+            fresh = _fresh_window_cache(style, window)
+            for mip, pixels in live.items():
+                assert np.array_equal(pixels, fresh.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)), (
+                    f"mip {mip} differs from a fresh numpy render after the zoom round trip"
+                )
     finally:
         conftest.close_window(window)
 

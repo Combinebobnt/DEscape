@@ -55,7 +55,6 @@ def test_zero_edit_save_is_byte_identical(path, with_model: bool, tmp_path: Path
     assert body == loaded.decompressed_body
 
 
-@pytest.mark.corpus
 def test_zero_edit_save_with_a_clean_model_is_byte_identical_corpus(
     scenario_path, tmp_path: Path
 ) -> None:

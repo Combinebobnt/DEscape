@@ -117,7 +117,6 @@ def test_gate_passes_on_the_default_tier_fixtures(path) -> None:
     assert disables_fields.verify_disables_block(load_map_and_units(path)) is True
 
 
-@pytest.mark.corpus
 def test_zero_edit_encode_is_byte_identical_corpus(scenario_path) -> None:
     """Measurement 2 of the plan turned into a standing assertion: every
     corpus file's region re-encodes exactly, so a browse-only save of any

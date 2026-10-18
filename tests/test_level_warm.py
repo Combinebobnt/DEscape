@@ -214,6 +214,7 @@ def test_a_partial_sprite_walk_yields_no_layer(sprite_install, mixed_scenario) -
     assert next(gen) is units[1]
 
 
+# Stays corpus: needs an install, which the default tier hides.
 @pytest.mark.corpus
 def test_sliced_walks_equal_the_whole_ones_on_real_files(scenario_path) -> None:
     """The default-tier fixture above is three hand-written units; a real file
@@ -876,6 +877,7 @@ def test_the_sliced_assembly_equals_the_whole_one(sprite_install, mixed_scenario
     assert yields >= units + len(sprites.bboxes), f"assembly barely sliced: {yields} yields"
 
 
+# Stays corpus: needs an install, which the default tier hides.
 @pytest.mark.corpus
 def test_the_sliced_assembly_equals_the_whole_one_on_real_files(scenario_path, monkeypatch) -> None:
     if asset_source.get_install_path() is None:

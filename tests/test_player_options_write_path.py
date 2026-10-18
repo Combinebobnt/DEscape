@@ -470,7 +470,6 @@ def test_set_value_refuses_tribe_name_text_that_overflows_its_slot(_loaded) -> N
 # -- 7. corpus ----------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_a_browsed_player_model_saves_byte_identically_across_the_corpus(
     scenario_path, tmp_path: Path
 ) -> None:

@@ -27,7 +27,10 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from descape.scenario_io import load_map_and_units
+from testkit.zlib_runtime import BYTES_DIFFER, NOT_STOCK_REASON, STOCK_ZLIB, scenario_parts
 
 import conftest
 
@@ -79,7 +82,12 @@ def test_committed_fixture_matches_its_generator() -> None:
     """The file in git is what the generator produces now. A failure here
     means either the generator changed or the fixture was edited by hand;
     either way, regenerate rather than adjusting this assertion."""
-    assert FIXTURE_PATH.read_bytes() == _generator().build_fixture_bytes()
+    assert scenario_parts(FIXTURE_PATH.read_bytes()) == scenario_parts(_generator().build_fixture_bytes())
+
+
+@pytest.mark.skipif(not STOCK_ZLIB, reason=NOT_STOCK_REASON)
+def test_committed_fixture_matches_its_generator_byte_identical() -> None:
+    assert FIXTURE_PATH.read_bytes() == _generator().build_fixture_bytes(), BYTES_DIFFER
 
 
 def test_fixture_passes_its_own_verification() -> None:

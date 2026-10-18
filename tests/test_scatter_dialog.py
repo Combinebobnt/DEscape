@@ -570,3 +570,18 @@ def test_move_mode_is_sticky_only_while_something_is_selected() -> None:
     finally:
         again.deleteLater()
         empty.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_move_mode_shows_the_full_count_line() -> None:
+    """GH #105. Pass condition: in "Move the selected units" mode the count
+    line reads exactly "N selected units, M eligible tiles in a CxR region
+    (K tiles)", here two movers over a free 4x3 region."""
+    movers = [fakes.SyntheticUnit(x=0.5 + i, y=0.5, unit_const=_FISH, reference_id=i) for i in range(2)]
+    dialog = _move_dialog(_scenario(), movers, region=(0, 0, 4, 3))
+    try:
+        dialog.move_radio.setChecked(True)
+        assert dialog.count_label.text() == "2 selected units, 12 eligible tiles in a 4x3 region (12 tiles)"
+    finally:
+        dialog.deleteLater()

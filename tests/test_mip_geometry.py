@@ -239,31 +239,34 @@ def test_flat_level_minus_one_matches_a_forced_half_tile_px_render(monkeypatch) 
 
 # ---------------------------------------------------------------------------
 # Layer 3: corpus-marked -- need real per-file content the fixture can't give.
+# Each has an `_on_test_map` twin on conftest.TEST_MAP_PATH that fails rather than skips.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.corpus
-def test_level_minus_one_matches_forced_render_corpus(corpus_files, monkeypatch) -> None:
+def _level_minus_one_matches_forced_render(files, monkeypatch) -> int:
     checked = 0
-    for path in corpus_files:
+    for path in files:
         scenario = load_map_and_units(path)
         if not scenario.map_is_square:
             continue
         checked += 1
         _check_iso_level_matches_forced_render(scenario, -1, monkeypatch)
-    if checked == 0:
-        pytest.skip("no square corpus file in this run")
+    return checked
 
 
 @pytest.mark.corpus
-def test_building_bboxes_are_genuinely_per_level(corpus_files) -> None:
-    """The fixture donor is unit-free (tests/README.md), so at fixture
-    tier building_bboxes == {} at EVERY level and a naive test would pass
-    vacuously against a broken 'reuse level 0's bboxes at every level'
-    implementation -- exactly the gap this whole per-level design exists
-    to close (see render_cache.IsoChunkCache._level()'s own docstring). Only a
-    real corpus file with actual buildings can exercise this for real."""
-    for path in corpus_files:
+def test_level_minus_one_matches_forced_render_corpus(corpus_files, monkeypatch) -> None:
+    if _level_minus_one_matches_forced_render(corpus_files, monkeypatch) == 0:
+        pytest.skip("no square corpus file in this run")
+
+
+@pytest.mark.test_map
+def test_level_minus_one_matches_forced_render_on_test_map(monkeypatch) -> None:
+    assert _level_minus_one_matches_forced_render([conftest.TEST_MAP_PATH], monkeypatch) == 1
+
+
+def _building_bboxes_are_genuinely_per_level(files) -> bool:
+    for path in files:
         scenario = load_map_and_units(path)
         mm = scenario.map_manager
         tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
@@ -285,19 +288,30 @@ def test_building_bboxes_are_genuinely_per_level(corpus_files) -> None:
             t0, t1 = cache.tile_px, cache.mip_tile_px(-1)
             for v0, v1 in zip(b0, b1, strict=True):
                 assert v1 * t0 == v0 * t1
-        return
-    pytest.skip("no corpus file in this run has both a real building and an enumerated level -1")
+        return True
+    return False
 
 
 @pytest.mark.corpus
-def test_patch_rebuilds_only_resident_levels(corpus_files, monkeypatch) -> None:
-    """The gen-counter design's own direct test: with only level 0
-    resident, one patch() must trigger exactly 1 building_bboxes rebuild;
-    after level -1 is warmed too, one patch() must trigger exactly 2,
-    NEVER len(cache.mip_levels()) (5, on this fixture's own elev_step_pct).
-    On a real 480x480 map this is the difference between ~15-20ms and
-    ~75-100ms per edit -- a performance-correctness assertion, not style."""
-    for path in corpus_files:
+def test_building_bboxes_are_genuinely_per_level(corpus_files) -> None:
+    """The fixture donor is unit-free (tests/README.md), so at fixture
+    tier building_bboxes == {} at EVERY level and a naive test would pass
+    vacuously against a broken 'reuse level 0's bboxes at every level'
+    implementation -- exactly the gap this whole per-level design exists
+    to close (see render_cache.IsoChunkCache._level()'s own docstring). Only a
+    real corpus file with actual buildings can exercise this for real."""
+    if not _building_bboxes_are_genuinely_per_level(corpus_files):
+        pytest.skip("no corpus file in this run has both a real building and an enumerated level -1")
+
+
+@pytest.mark.test_map
+def test_building_bboxes_are_genuinely_per_level_on_test_map() -> None:
+    assert _building_bboxes_are_genuinely_per_level([conftest.TEST_MAP_PATH]), "map has no building or no level -1"
+
+
+def _patch_rebuilds_only_resident_levels(files, monkeypatch) -> int:
+    """Returns how many of the two patch() assertions ran on the first qualifying file (0 if none qualified)."""
+    for path in files:
         scenario = load_map_and_units(path)
         if not scenario.terrain_write_supported or not scenario.map_is_square:
             continue
@@ -352,23 +366,39 @@ def test_patch_rebuilds_only_resident_levels(corpus_files, monkeypatch) -> None:
         toggle_paint()
         dirty = hist.commit_stroke("terrain paint 2", mm.terrain)
         if not dirty:
-            return
+            return 1
         bbox = dirty_screen_bbox_iso(scenario, dirty, cache.elevations, proj, with_units=True)
         if bbox is None:
-            return
+            return 1
         calls.clear()
         cache.patch(bbox)
         assert len(calls) == 2, f"{path.name}: expected 2 rebuilds with 2 levels resident, got {len(calls)}"
         assert len(cache.mip_levels()) != 2  # sanity: the level COUNT is not coincidentally 2
-        return
-    pytest.skip("no editable square corpus file in this run enumerates level -1")
+        return 2
+    return 0
 
 
 @pytest.mark.corpus
-def test_patch_at_a_non_reference_level_re_establishes_equality(corpus_files, monkeypatch) -> None:
+def test_patch_rebuilds_only_resident_levels(corpus_files, monkeypatch) -> None:
+    """The gen-counter design's own direct test: with only level 0
+    resident, one patch() must trigger exactly 1 building_bboxes rebuild;
+    after level -1 is warmed too, one patch() must trigger exactly 2,
+    NEVER len(cache.mip_levels()) (5, on this fixture's own elev_step_pct).
+    On a real 480x480 map this is the difference between ~15-20ms and
+    ~75-100ms per edit -- a performance-correctness assertion, not style."""
+    if _patch_rebuilds_only_resident_levels(corpus_files, monkeypatch) == 0:
+        pytest.skip("no editable square corpus file in this run enumerates level -1")
+
+
+@pytest.mark.test_map
+def test_patch_rebuilds_only_resident_levels_on_test_map(monkeypatch) -> None:
+    assert _patch_rebuilds_only_resident_levels([conftest.TEST_MAP_PATH], monkeypatch) == 2
+
+
+def _patch_at_a_non_reference_level(files, monkeypatch) -> int | None:
+    """Returns the number of patch() calls on the first qualifying file, or None if none qualified."""
     verify_iso_chunks = conftest.load_verify_module("verify_iso_chunks")
-    checked = 0
-    for path in corpus_files:
+    for path in files:
         scenario = load_map_and_units(path)
         if not scenario.terrain_write_supported or not scenario.map_is_square:
             continue
@@ -378,7 +408,6 @@ def test_patch_at_a_non_reference_level_re_establishes_equality(corpus_files, mo
         cache = IsoChunkCache(scenario, elevations, proj, tile_px)
         if -1 not in cache.mip_levels():
             continue
-        checked += 1
 
         ref_w, ref_h = cache.canvas_dims(0)
         lvl_w, lvl_h = cache.canvas_dims(-1)
@@ -386,6 +415,7 @@ def test_patch_at_a_non_reference_level_re_establishes_equality(corpus_files, mo
         cache.render_rect(0, 0, lvl_w, lvl_h, mip=-1)
 
         hist = EditHistory()
+        patched = 0
         for label, apply_fn in verify_iso_chunks._scripted_ops(mm):
             hist.begin_stroke(mm.terrain)
             apply_fn()
@@ -396,6 +426,7 @@ def test_patch_at_a_non_reference_level_re_establishes_equality(corpus_files, mo
             if bbox is None:
                 continue
             cache.patch(bbox)
+            patched += 1
 
         stitched0 = cache.render_rect(0, 0, ref_w, ref_h, mip=0)
         truth0 = render_terrain_iso(scenario)
@@ -406,33 +437,24 @@ def test_patch_at_a_non_reference_level_re_establishes_equality(corpus_files, mo
         truth_lvl = render.render_terrain_iso(scenario)
         monkeypatch.undo()
         assert np.array_equal(stitched_lvl, truth_lvl), f"{path.name}: level -1 diverged after patch()"
-        return
-    if checked == 0:
-        pytest.skip("no editable square corpus file in this run enumerates level -1")
+        return patched
+    return None
 
 
 @pytest.mark.corpus
-def test_invalidate_region_at_the_canvas_high_edge_evicts_finer_levels(corpus_files) -> None:
-    """The case the old mip-agnostic chunk-index match got WRONG: a finer
-    level's canvas is LARGER, so its chunk grid extends further, and a
-    reference-derived index range used unconverted misses its high-edge
-    chunks entirely. Warms only a small high-corner rect at a finer level
-    (never the whole finer canvas -- 4x the reference's bytes) to keep
-    this affordable.
+def test_patch_at_a_non_reference_level_re_establishes_equality(corpus_files, monkeypatch) -> None:
+    if _patch_at_a_non_reference_level(corpus_files, monkeypatch) is None:
+        pytest.skip("no editable square corpus file in this run enumerates level -1")
 
-    The warmed set can NOT be asserted evicted wholesale: the warm rect is
-    chunk_px-sized and anchored at the canvas corner, but the canvas is
-    not generally a whole number of chunks (measured: 2_Joan at level +1
-    is 18432x9440 against chunk_px=512, so the rect straddles two chunk
-    ROWS), while the probe bbox is one reference pixel and lands in only
-    one of them. So compare against the exact set the bbox really covers,
-    derived here by plain multiplication rather than through the
-    _bbox_to_level() under test -- sound because a finer level's tile_px
-    ratio is an exact integer. Asserting set EQUALITY rather than mere
-    containment additionally pins that conversion as precise, not merely
-    over-broad; over-eviction is harmless per this track's plan doc, so
-    treat that half as a tightening, not a load-bearing invariant."""
-    for path in corpus_files:
+
+@pytest.mark.test_map
+def test_patch_at_a_non_reference_level_re_establishes_equality_on_test_map(monkeypatch) -> None:
+    # All four scripted ops (paint, raise, lower, big jump) must reach patch().
+    assert _patch_at_a_non_reference_level([conftest.TEST_MAP_PATH], monkeypatch) == 4
+
+
+def _invalidate_region_at_the_canvas_high_edge(files) -> bool:
+    for path in files:
         scenario = load_map_and_units(path)
         mm = scenario.map_manager
         tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
@@ -474,5 +496,35 @@ def test_invalidate_region_at_the_canvas_high_edge_evicts_finer_levels(corpus_fi
 
         after = cache.render_rect(corner_x0, corner_y0, lw, lh, mip=finer)
         assert np.array_equal(before, after)
-        return
-    pytest.skip("no corpus file in this run enumerates a finer level (+1)")
+        return True
+    return False
+
+
+@pytest.mark.corpus
+def test_invalidate_region_at_the_canvas_high_edge_evicts_finer_levels(corpus_files) -> None:
+    """The case the old mip-agnostic chunk-index match got WRONG: a finer
+    level's canvas is LARGER, so its chunk grid extends further, and a
+    reference-derived index range used unconverted misses its high-edge
+    chunks entirely. Warms only a small high-corner rect at a finer level
+    (never the whole finer canvas -- 4x the reference's bytes) to keep
+    this affordable.
+
+    The warmed set can NOT be asserted evicted wholesale: the warm rect is
+    chunk_px-sized and anchored at the canvas corner, but the canvas is
+    not generally a whole number of chunks (measured: 2_Joan at level +1
+    is 18432x9440 against chunk_px=512, so the rect straddles two chunk
+    ROWS), while the probe bbox is one reference pixel and lands in only
+    one of them. So compare against the exact set the bbox really covers,
+    derived here by plain multiplication rather than through the
+    _bbox_to_level() under test -- sound because a finer level's tile_px
+    ratio is an exact integer. Asserting set EQUALITY rather than mere
+    containment additionally pins that conversion as precise, not merely
+    over-broad; over-eviction is harmless per this track's plan doc, so
+    treat that half as a tightening, not a load-bearing invariant."""
+    if not _invalidate_region_at_the_canvas_high_edge(corpus_files):
+        pytest.skip("no corpus file in this run enumerates a finer level (+1)")
+
+
+@pytest.mark.test_map
+def test_invalidate_region_at_the_canvas_high_edge_evicts_finer_levels_on_test_map() -> None:
+    assert _invalidate_region_at_the_canvas_high_edge([conftest.TEST_MAP_PATH]), "map enumerates no finer level (+1)"

@@ -308,6 +308,116 @@ def test_a_tile_returned_to_its_stroke_start_state_is_repainted() -> None:
         window.close()
 
 
+def _level_0_chunks(cache) -> int:
+    """How many level 0 chunks are resident, after asserting that is all of them."""
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(0, 0, 0, *cache.canvas_dims(0))
+    resident = sum(1 for mip, _cx, _cy in cache._cache if mip == 0)
+    assert resident == (cx1 - cx0 + 1) * (cy1 - cy0 + 1), f"{resident} level 0 chunks resident, not all"
+    return resident
+
+
+def _warm_styled(window, style: str, monkeypatch):
+    """`style` through a round trip (a fresh cache over the scenario as it is
+    now), mip 0 the visible level and its whole canvas resident. Returns the
+    cache, its _source_gen and _call_counts()' wholesale-walk counter, installed after the warm."""
+    from test_invalidate_units_splice import _call_counts
+
+    window.terrain_style_combo.setCurrentText("Sloped" if style == "Stepped" else "Stepped")
+    window.terrain_style_combo.setCurrentText(style)
+    cache = window._cache
+    # The unshown window's viewport picks a coarse level, which would evict mip 0 rather than patch it.
+    _cx0, _cy0, cx1, cy1 = cache.chunk_index_range(0, 0, 0, *cache.canvas_dims(0))
+    monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (0, 0, 0, cx1, cy1))
+    cache.render_rect(0, 0, *cache.canvas_dims(0), mip=0)
+    _level_0_chunks(cache)
+    return cache, cache._source_gen, _call_counts(monkeypatch)
+
+
+def _assert_matches_fresh_render(window, style: str, cache, gen: int, counts) -> None:
+    """The window kept `cache`; every level 0 chunk is still resident (patched
+    in place, not evicted); no wholesale unit walk or gen bump ran; and level
+    0, repainted only by the stroke, equals a fresh full render under numpy."""
+    import os
+
+    import numpy as np
+
+    from descape import composite_backend, render
+
+    assert window._cache is cache, "the stroke rebuilt the cache"
+    _level_0_chunks(cache)
+    assert counts == {"building_bboxes": 0, "sprites": 0}, f"the stroke took a wholesale walk: {counts}"
+    assert cache._source_gen == gen, "the stroke bumped the gen (a wholesale level rebuild)"
+    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+        assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
+    w, h = cache.canvas_dims(0)
+    stitched = cache.render_rect(0, 0, w, h, mip=0)
+    fresh = render.render_terrain_iso_with_proj if style == "Stepped" else render.render_terrain_sloped_with_proj
+    with composite_backend.use_backend("numpy"):
+        full = fresh(window.scenario, with_units=True, with_sprites=cache.sprites_enabled)[0]
+    assert np.array_equal(stitched, full[:h, :w]), "the live canvas differs from a fresh render"
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_brush_9_draw_stroke_matches_a_fresh_render(style: str, monkeypatch) -> None:
+    """TASK-031.07 step 1: a warm canvas, then a multi-step brush-9 Draw drag
+    over uneven ground. After release:
+    - every footprint tile is the new terrain and the cache was not rebuilt;
+    - level 0, never repainted whole, equals a fresh render (no gaps, no
+      stale tiles or skirts), every chunk of it patched in place with no wholesale walk."""
+    from descape.brush import brush_tiles
+
+    window = _edit_window("draw")
+    try:
+        mm = window.scenario.map_manager
+        for y in range(30, 51):
+            for x in range(25, 56):
+                mm.get_tile(x, y).elevation = 5 * ((x + 2 * y) % 4)  # 0..15, steps of 5-15 on every axis
+        warm = _warm_styled(window, style, monkeypatch)
+        window.brush_size_spin.setValue(9)
+        window.on_edit_stroke_start()
+        for x in range(30, 50, 2):
+            window.on_edit_stroke_tile(x, 40, 0)
+        window.on_edit_stroke_end()
+
+        shape = window.brush_shape_combo.currentData()
+        want = {t for x in range(30, 50, 2) for t in brush_tiles(x, 40, 9, shape, mm.map_width, mm.map_height)}
+        assert {(t.x, t.y) for t in mm.terrain if t.terrain_id == _TERRAIN} == want
+        _assert_matches_fresh_render(window, style, *warm)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_tile_returned_to_its_stroke_start_state_repaints_to_a_fresh_render(style: str, monkeypatch) -> None:
+    """TASK-031.07 step 3: test_a_tile_returned_to_its_stroke_start_state_is_repainted's
+    Shift-revert scenario, with the whole canvas warm before the stroke. After release:
+    - both tiles are back at their start elevations;
+    - level 0 equals a fresh render (no stale hill, ramp or skirt), every chunk of it patched in
+      place with no wholesale walk."""
+    from PyQt5.QtCore import Qt
+
+    window = _edit_window("set_level")
+    try:
+        mm = window.scenario.map_manager
+        window.elevation_level_spin.setValue(1)
+        _stroke(window, 40, 40)
+        window._on_tool_selected("elevation")
+        warm = _warm_styled(window, style, monkeypatch)
+
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(40, 40, 0)
+        assert mm.get_tile(40, 40).elevation == 2 and mm.get_tile(41, 40).elevation == 1
+        window.on_edit_stroke_tile(41, 40, Qt.ShiftModifier)
+        window.on_edit_stroke_end()
+
+        assert mm.get_tile(40, 40).elevation == 1 and mm.get_tile(41, 40).elevation == 0
+        _assert_matches_fresh_render(window, style, *warm)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def _full_scan_guard(window, events):
     """Drives one stroke of `events` ((tiles, modifiers) per mouse event) and
     asserts, after each, that _apply_dirty got exactly the full-map oracle:

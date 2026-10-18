@@ -1203,6 +1203,7 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         # _get_structure() parses the JSON fresh per call, so this cannot leak across loads.
         library_compat.fix_structure(scenario.structure, scenario_version)
         _initialise_version_dependencies(scenario.game_version, scenario.scenario_version)
+        library_compat.fix_effect_defaults(effect_dataset.effect_names, effect_dataset.default_attributes)
     else:
         # Parsed fresh per load: the library mutates the structure dict it is
         # given. A repo version with no vocabulary (v1.21) gets no init, and
@@ -1478,8 +1479,9 @@ def refresh_player_render_context(
 def xs_attachment(loaded: LoadedScenario) -> tuple[str | None, int | None]:
     """(Map script_name, embedded Files script_file_content length in chars).
 
-    Read-only: script_name is a variable-length string ahead of terrain_data
-    in Map, so no byte-patch write path may ever change it. script_name is
+    As parsed: a pending Map Options edit of script_name (GH #216,
+    options_model.script_name_layout()) is not reflected here, and
+    script_file_content is never written. script_name is
     None before scenario 1.40 (no retriever). The embedded length is None
     until parse_triggers() has reached Files; this never forces that parse.
     Characters, not bytes: the value is already decoded.

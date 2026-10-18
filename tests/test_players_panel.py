@@ -1036,7 +1036,6 @@ def test_a_read_only_pov_row_keeps_its_gate_reason_tooltip() -> None:
         panel.deleteLater()
 
 
-@pytest.mark.corpus
 def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
     """The group and its buttons on every real file: absent on the files
     predating initial_player_views (the 1.37 one among them), present with
@@ -1068,7 +1067,6 @@ def test_point_of_view_rows_and_buttons_per_real_file(scenario_path) -> None:
 # --- corpus tier -----------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_players_panel_populates_every_corpus_file(scenario_path) -> None:
     """The tier that exercises the version-gated fields: 6 of 20 files
     predate per_player_population_cap (Pop Limit falls back to
@@ -1099,7 +1097,6 @@ def test_players_panel_populates_every_corpus_file(scenario_path) -> None:
         _close(window)
 
 
-@pytest.mark.corpus
 def test_browsing_players_leaves_the_document_clean(scenario_path, tmp_path) -> None:
     from PyQt5.QtWidgets import QApplication
 

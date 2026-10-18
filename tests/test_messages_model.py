@@ -19,6 +19,8 @@ from descape.messages_model import MessageEditsUnavailableError, MessagesEditMod
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 
+import conftest
+
 F7_YORK_PATH = Path(__file__).resolve().parent.parent / "examples" / "F7_3_York (865).aoe2scenario"
 
 
@@ -33,7 +35,6 @@ def test_serialize_of_unedited_model_is_byte_identical() -> None:
     assert model.serialize() == loaded.decompressed_body[start:end]
 
 
-@pytest.mark.corpus
 def test_serialize_of_unedited_model_is_byte_identical_corpus(scenario_path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.messages_write_supported:
@@ -121,9 +122,7 @@ def _requires_york():
     return load_map_and_units(F7_YORK_PATH)
 
 
-@pytest.mark.corpus
-def test_set_string_id_field_is_readable_and_clearable() -> None:
-    loaded = _requires_york()
+def _check_set_string_id_is_readable_and_clearable(loaded) -> None:
     model = MessagesEditModel(loaded)
     assert model.current_value("hints_id") != STRING_ID_UNSET
     original_id = model.current_value("hints_id")
@@ -133,11 +132,8 @@ def test_set_string_id_field_is_readable_and_clearable() -> None:
     assert not model.has_edits
 
 
-@pytest.mark.corpus
-def test_lone_cr_newline_field_round_trips_through_display() -> None:
-    loaded = _requires_york()
+def _check_lone_cr_newline_round_trips_through_display(loaded) -> None:
     model = MessagesEditModel(loaded)
-    # instructions is '\r\r' on this file -- see the plan's corpus findings.
     original = model.current_value("instructions")
     assert original == "\n\n"  # normalize_for_display() maps \r -> \n
     model.set_value("instructions", original)
@@ -145,7 +141,39 @@ def test_lone_cr_newline_field_round_trips_through_display() -> None:
 
 
 @pytest.mark.corpus
+def test_set_string_id_field_is_readable_and_clearable() -> None:
+    _check_set_string_id_is_readable_and_clearable(_requires_york())
+
+
+@pytest.mark.corpus
+def test_lone_cr_newline_field_round_trips_through_display() -> None:
+    # instructions is '\r\r' on this file -- see the plan's corpus findings.
+    _check_lone_cr_newline_round_trips_through_display(_requires_york())
+
+
+@pytest.mark.corpus
 def test_header_instructions_mirror_verified_on_york() -> None:
     loaded = _requires_york()
     model = MessagesEditModel(loaded)
+    assert model._header_sync_verified
+
+
+# -- the same branches on the generated test map (quick tier) ----------------
+
+
+@pytest.mark.test_map
+def test_set_string_id_field_is_readable_and_clearable_on_the_test_map() -> None:
+    _check_set_string_id_is_readable_and_clearable(load_map_and_units(conftest.TEST_MAP_PATH))
+
+
+@pytest.mark.test_map
+def test_lone_cr_newline_field_round_trips_through_display_on_the_test_map() -> None:
+    # tools/gen_test_map.py writes instructions as '\r\r'.
+    _check_lone_cr_newline_round_trips_through_display(load_map_and_units(conftest.TEST_MAP_PATH))
+
+
+@pytest.mark.test_map
+def test_header_instructions_mirror_verified_on_the_test_map() -> None:
+    model = MessagesEditModel(load_map_and_units(conftest.TEST_MAP_PATH))
+    assert model.current_value("instructions") == "\n\n", "the map no longer carries non-empty instructions"
     assert model._header_sync_verified

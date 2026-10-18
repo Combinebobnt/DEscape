@@ -15,6 +15,9 @@ from descape.scenario_io import LoadedScenario, retriever_length
 CHECKBOX = "checkbox"
 COMBO = "combo"
 SPINBOX = "spinbox"
+# A free-text str16 row (script_name). Not byte-patched: options_model gives
+# it its own gate and splice, so field_offsets() skips this kind.
+TEXT = "text"
 
 
 @dataclass(frozen=True)
@@ -24,7 +27,7 @@ class OptionFieldSpec:
     group: str  # panel group box title, e.g. "Global Victory"
     section: str  # scenario section name, e.g. "GlobalVictory"
     retriever: str  # retriever name within that section, e.g. "mode"
-    kind: str  # CHECKBOX / COMBO / SPINBOX
+    kind: str  # CHECKBOX / COMBO / SPINBOX / TEXT
     choices: tuple[tuple[int, str], ...] = ()  # (value, label) pairs, COMBO only
     minimum: int | None = None  # SPINBOX bounds
     maximum: int | None = None
@@ -207,6 +210,18 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
         "Map", "no_waves_on_shore", CHECKBOX,
         tooltip="Hides the animated waves along shorelines.",
     ),
+    OptionFieldSpec(
+        "script_name", "Script filename", "Map",
+        "Map", "script_name", TEXT,
+        tooltip=(
+            "The XS script file the game runs with this scenario, typed without "
+            ".xs. The game looks it up by name in the profile's "
+            "resources/_common/xs folder and sends it to the other players in a "
+            "lobby, but not to spectators. Empty for none."
+        ),
+        # Written to Map.script_name and Files.script_file_path (name + ".xs"),
+        # as the 1.59 editor does; the file's content is never embedded.
+    ),
 
     # -- Options ------------------------------------------------------------
     OptionFieldSpec(
@@ -272,10 +287,11 @@ def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
     return tuple(out)
 
 
-def current_value(loaded: LoadedScenario, spec: OptionFieldSpec) -> int:
+def current_value(loaded: LoadedScenario, spec: OptionFieldSpec) -> int | str:
     """The field's current raw value, as parsed -- callers apply `scale`
     themselves (e.g. victory_years divides by 10 for display). Only valid
-    for a spec that specs_for(loaded) actually returned.
+    for a spec that specs_for(loaded) actually returned. A TEXT spec's value
+    is its str ("" when the file stores none).
 
     Every spec in _SPECS today resolves to a plain int, because none of them
     point at a repeat-driven retriever -- but two that would (
@@ -287,6 +303,10 @@ def current_value(loaded: LoadedScenario, spec: OptionFieldSpec) -> int:
     test_option_fields.py's test_every_spec_resolves_to_a_scalar_int.
     """
     value = loaded._scenario.sections[spec.section].retriever_map[spec.retriever].data
+    if spec.kind == TEXT:
+        if not isinstance(value, str):
+            raise TypeError(f"{spec.field_id!r} resolved to a {type(value).__name__}, not a str")
+        return value
     if not isinstance(value, int):
         raise TypeError(
             f"{spec.field_id!r} resolved to a {type(value).__name__}, not an int -- "

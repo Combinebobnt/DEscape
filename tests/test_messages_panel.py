@@ -143,22 +143,49 @@ def _requires_york():
     return _loaded(F7_YORK_PATH)
 
 
-@pytest.mark.corpus
-def test_set_string_id_shows_a_warning_and_clear_button() -> None:
-    panel = _panel(_requires_york(), editable=True)
+def _check_set_string_id_shows_a_warning_and_clear_button(loaded) -> None:
+    panel = _panel(loaded, editable=True)
     assert panel.widget_for("hints_id") is not None  # the clear button
     assert "hints" in panel._warning_labels
 
 
-@pytest.mark.corpus
-def test_clearing_a_string_id_reports_the_id_field_edit() -> None:
+def _check_clearing_a_string_id_reports_the_id_field_edit(loaded) -> None:
     calls = []
-    panel = _panel(_requires_york(), editable=True)
+    panel = _panel(loaded, editable=True)
     panel._on_message_field = lambda *args: calls.append(args)
     from descape.messages_fields import STRING_ID_UNSET
 
     panel.widget_for("hints_id").click()
     assert calls == [("hints_id", STRING_ID_UNSET)]
+
+
+@pytest.mark.corpus
+def test_set_string_id_shows_a_warning_and_clear_button() -> None:
+    _check_set_string_id_shows_a_warning_and_clear_button(_requires_york())
+
+
+@pytest.mark.corpus
+def test_clearing_a_string_id_reports_the_id_field_edit() -> None:
+    _check_clearing_a_string_id_reports_the_id_field_edit(_requires_york())
+
+
+@pytest.mark.test_map
+def test_set_string_id_shows_a_warning_and_clear_button_on_the_test_map() -> None:
+    _check_set_string_id_shows_a_warning_and_clear_button(_test_map())
+
+
+@pytest.mark.test_map
+def test_clearing_a_string_id_reports_the_id_field_edit_on_the_test_map() -> None:
+    _check_clearing_a_string_id_reports_the_id_field_edit(_test_map())
+
+
+def _test_map():
+    from descape.messages_fields import STRING_ID_UNSET
+    from descape.messages_model import MessagesEditModel
+
+    loaded = _loaded(conftest.TEST_MAP_PATH)
+    assert MessagesEditModel(loaded).current_value("hints_id") != STRING_ID_UNSET, "the map's hints string id is unset"
+    return loaded
 
 
 @pytest.mark.corpus
@@ -218,3 +245,60 @@ def test_a_messages_box_follows_its_grip_both_ways(lines: int, pane: int) -> Non
     assert hints.visible_lines() == hints.VISIBLE_LINES + lines
     assert hints.height() - before == lines * hints.fontMetrics().lineSpacing()
     panel.close()
+
+
+@pytest.mark.parametrize("size", [(1000, 600), (2560, 1440)], ids=["small window", "maximised-size window"])
+def test_each_messages_box_follows_its_grip_both_ways_in_the_window(size: tuple[int, int]) -> None:
+    """TASK-165 step 4: Messages mode of a shown window, small and at a
+    maximised screen's size. Pass conditions, for each of the six boxes in turn:
+    - dragged 4 lines down it shows 10 lines and is 4 line heights taller;
+    - dragged 6 lines back up it shows 4 lines and is 2 line heights shorter
+      than it started;
+    - after each drag every box sits inside its own group frame, and no two
+      frames overlap."""
+    from itertools import pairwise
+
+    from PyQt5.QtWidgets import QApplication
+    from test_text_edits import _drag
+
+    from descape.messages_fields import MESSAGE_FIELDS
+
+    def settle() -> None:
+        for _ in range(5):
+            QApplication.processEvents()
+
+    def assert_frames_apart() -> None:
+        frames = [panel.widget_for(spec.field_id).parentWidget() for spec in MESSAGE_FIELDS]
+        for spec, frame in zip(MESSAGE_FIELDS, frames, strict=True):
+            box = panel.widget_for(spec.field_id)
+            assert frame.rect().contains(box.geometry()), (spec.field_id, frame.rect(), box.geometry())
+        for upper, lower in pairwise(frames):
+            assert upper.geometry().bottom() < lower.geometry().top(), (upper.title(), lower.title())
+
+    window = conftest.shown_window(*size)
+    try:
+        window.load_scenario(FIXTURE_PATH)
+        window.mode_combo.setCurrentText("Messages")
+        settle()
+        assert (window.width(), window.height()) == size
+        panel = window.messages_panel
+        assert len(MESSAGE_FIELDS) == 6
+        for spec in MESSAGE_FIELDS:
+            box = panel.widget_for(spec.field_id)
+            line = box.fontMetrics().lineSpacing()
+            start = box.height()
+            assert box.visible_lines() == box.VISIBLE_LINES == 6
+
+            _drag(box.grip(), 4)
+            settle()
+            assert box.visible_lines() == 10, spec.field_id
+            assert box.height() - start == 4 * line, spec.field_id
+            assert_frames_apart()
+
+            _drag(box.grip(), -6)
+            settle()
+            assert box.visible_lines() == 4, spec.field_id
+            assert box.height() - start == -2 * line, spec.field_id
+            assert_frames_apart()
+    finally:
+        conftest.close_window(window)

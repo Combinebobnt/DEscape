@@ -251,6 +251,17 @@ def close_window(window) -> None:
     window.close()
 
 
+def menu_items(menu, path: str):
+    """(path, action) for every non-separator action under `menu`, submenus included."""
+    for action in menu.actions():
+        if action.isSeparator():
+            continue
+        where = f"{path} > {action.text()}"
+        yield where, action
+        if action.menu() is not None:
+            yield from menu_items(action.menu(), where)
+
+
 @contextlib.contextmanager
 def restoring_app_theme():
     """Yields the shared QApplication, then puts back all that viewer_dialogs.
@@ -393,6 +404,13 @@ QUICK_CORPUS_NAMES = frozenset(
 )
 
 
+# tools/gen_test_map.py's output: the quick/stress-tier (`test_map`) `scenario_path`
+# param of every per-file test that no longer carries `corpus` (pytest_generate_tests).
+TEST_MAP_PATH = ROOT / "tests" / "fixtures" / "test_map_240x240.aoe2scenario"
+# The same map opened and saved once in the AoE2:DE 1.59 editor; never regenerated.
+TEST_MAP_RESAVE_PATH = ROOT / "tests" / "fixtures" / "test_map_game_resave.aoe2scenario"
+
+
 def _scenario_dir(config: pytest.Config) -> Path:
     override = config.getoption("--scenario-dir")
     return Path(override) if override else ROOT / "examples"
@@ -430,17 +448,47 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     `scenario_path` argument, one instance per real corpus file. A missing
     corpus produces one explicitly-skipped instance rather than silently
     collecting zero tests, so an empty examples/ still shows up as a named
-    skip instead of just vanishing from the run."""
+    skip instead of just vanishing from the run.
+
+    A test that still carries `corpus` (function, class or module mark) gets
+    only that. Any other test runs first on the generated test map (id
+    `map240`) and its game resave (id `test_map_game_resave`), both marked
+    `test_map`, then on each corpus file with `corpus` on that param alone,
+    so the default tier is unchanged, `-m corpus` runs the files as before
+    and run_corpus_quick/stress add the map items."""
     if "scenario_path" not in metafunc.fixturenames:
         return
     files = _corpus_files(metafunc.config)
-    if not files:
-        reason = f"no .aoe2scenario files in {_corpus_description(metafunc.config)}"
-        metafunc.parametrize(
-            "scenario_path", [pytest.param(None, marks=pytest.mark.skip(reason=reason), id="no-corpus")]
-        )
+    reason = f"no .aoe2scenario files in {_corpus_description(metafunc.config)}"
+    if metafunc.definition.get_closest_marker("corpus"):
+        if not files:
+            metafunc.parametrize(
+                "scenario_path", [pytest.param(None, marks=pytest.mark.skip(reason=reason), id="no-corpus")]
+            )
+            return
+        metafunc.parametrize("scenario_path", files, ids=[f.name for f in files])
         return
-    metafunc.parametrize("scenario_path", files, ids=[f.name for f in files])
+    params = [
+        pytest.param(TEST_MAP_PATH, marks=pytest.mark.test_map, id="map240"),
+        pytest.param(TEST_MAP_RESAVE_PATH, marks=pytest.mark.test_map, id="test_map_game_resave"),
+    ]
+    if files:
+        params += [pytest.param(f, marks=pytest.mark.corpus, id=f.name) for f in files]
+    else:
+        params.append(pytest.param(None, marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)], id="no-corpus"))
+    metafunc.parametrize("scenario_path", params)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items) -> None:
+    """Marks `test_map` on any item parametrized with a test map file (a
+    tests/fixtures/ glob, say), before -m deselects, so it stays out of the
+    default tier like the map items pytest_generate_tests makes."""
+    names = {TEST_MAP_PATH.name, TEST_MAP_RESAVE_PATH.name}
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        if callspec and any(isinstance(v, Path) and v.name in names for v in callspec.params.values()):
+            item.add_marker(pytest.mark.test_map)
 
 
 _MODULE_CACHE: dict[str, object] = {}
@@ -523,6 +571,35 @@ def _no_mouse_button_left_held():
         if held & (1 << bit):
             QTest.mouseRelease(sink, Qt.MouseButton(1 << bit))
     pytest.fail(f"left mouse button(s) {held:#x} held: send the release QTest.mouseDClick() omits")
+
+
+@pytest.fixture(autouse=True)
+def _release_latched_modifiers():
+    """A QTest click carrying a modifier leaves QApplication.keyboardModifiers()
+    reporting it for the rest of the process, so a later test's ExtendedSelection
+    setCurrentItem() acts as a Ctrl- or Shift-click (TASK-403 W1, TASK-406).
+    Releases whatever the test left held."""
+    yield
+    widgets = sys.modules.get("PyQt5.QtWidgets")
+    if widgets is None or widgets.QApplication.instance() is None:
+        return
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    held = widgets.QApplication.keyboardModifiers()
+    if held == Qt.NoModifier:
+        return
+    sink = widgets.QWidget()
+    for modifier, key in (
+        (Qt.ControlModifier, Qt.Key_Control),
+        (Qt.ShiftModifier, Qt.Key_Shift),
+        (Qt.AltModifier, Qt.Key_Alt),
+        (Qt.MetaModifier, Qt.Key_Meta),
+    ):
+        if held & modifier:
+            QTest.keyRelease(sink, key)
+    sink.deleteLater()
+    assert widgets.QApplication.keyboardModifiers() == Qt.NoModifier
 
 
 @pytest.fixture(autouse=True)
@@ -617,6 +694,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     skipped = len(terminalreporter.stats.get("skipped", []))
     if deselected or skipped:
         terminalreporter.write_line(
-            f"tiers: {deselected} deselected (corpus/slow -- opt in with -m), "
+            f"tiers: {deselected} deselected (corpus/slow/test_map -- opt in with -m), "
             f"{skipped} skipped this run (see reasons above; not the same as passing)"
         )

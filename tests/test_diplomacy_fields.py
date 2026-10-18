@@ -135,7 +135,6 @@ def test_an_unavailable_anchor_fails_the_gate_closed() -> None:
 # -- against the corpus -----------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_verify_diplomacy_block_true_across_the_corpus(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     assert verify_diplomacy_block(loaded), scenario_path.name

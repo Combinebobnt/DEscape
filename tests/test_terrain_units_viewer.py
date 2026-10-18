@@ -7,6 +7,8 @@ call edit_history.mark_saved() before close().
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 from test_sprite_toggle_viewer import sprite_install  # noqa: F401 -- fixture, requested by name
@@ -360,6 +362,20 @@ def _fresh(window, style: str):
     return full[:canvas_h, :canvas_w]
 
 
+def _assert_numpy_fresh(window, style: str, pixels, step: str) -> None:
+    """With native active, `pixels` equal _fresh() on the numpy backend, so
+    native is not only checked against native. A no-op on numpy."""
+    from descape import composite_backend
+
+    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+        assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
+    if composite_backend.active_backend() != "native":
+        return
+    with composite_backend.use_backend("numpy"):
+        reference = _fresh(window, style)
+    assert np.array_equal(pixels, reference), f"{step}: mip 0 differs from a fresh numpy render"
+
+
 def _spy(window, monkeypatch):
     """Records every _after_unit_mutation `changed` argument, every wholesale
     source rebuild (a _refresh_source_caches() call from inside
@@ -421,35 +437,63 @@ def _pin_area_ratio(monkeypatch, value: float, rects: float = 0.0) -> None:
     monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", rects)
 
 
-@pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
-def test_draw_through_existing_trees_splices_and_repaints_like_a_fresh_render(style, monkeypatch) -> None:
+@pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
+@pytest.mark.parametrize("size", [1, 9])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat", "FlatIso"])
+def test_draw_through_existing_trees_splices_and_repaints_like_a_fresh_render(
+    style, size, sprites, monkeypatch, request
+) -> None:
+    """Plan Verification 1: brush 1 and 9 through a forest, every style, tree sprites off and on.
+    - Stroke B's end splices (a non-empty `changed`) with a remove + add on shared tiles.
+    - Brush 9's batch is wider than brush 1's (over twice the stroke's 8 tiles), so the size applied.
+    - No wholesale source rebuild at the stroke end or its redo.
+    - The undo splices too, except Flat 2D at brush 9 (A's oaks go back mid-list: the tail-insert guard).
+    - mip 0 changes and equals a fresh render after the stroke, the undo and the redo.
+    - With native active, mip 0 also equals a fresh numpy render after the stroke, and at brush 9
+      after its undo and redo too (each numpy render costs ~0.7 s)."""
+    if sprites:
+        request.getfixturevalue("tree_sprites")
     _splice_any_batch(monkeypatch)
     window = _styled_window(style)
+    fresh_style = "Stepped" if style == "FlatIso" else style
     try:
+        window.show_sprites_action.setChecked(sprites)
+        assert window._cache.sprites_enabled is sprites
+        window.brush_size_spin.setValue(size)
         _draw(window, FOREST_OAK)
         before = _canvas(window)  # every chunk resident, so a stale one would show
-        assert np.array_equal(before, _fresh(window, style))
+        assert np.array_equal(before, _fresh(window, fresh_style))
         calls = _spy(window, monkeypatch)
 
         _draw(window, FOREST_PALM, SHIFTED_TILES)
 
         (changed,) = calls["changed"]
         assert changed, "the stroke end took the wholesale unit invalidation"
+        # Brush 1: 4 removes + 8 adds; brush 9 sweeps a 9-tile-tall band.
+        assert (len(changed) > 2 * len(SHIFTED_TILES)) is (size > 1), len(changed)
         removed = {s.old_own_tile for s in changed if s.new_own_tile is None}
         assert removed and removed <= {s.new_own_tile for s in changed}, "expected remove + add on shared tiles"
         assert calls["wholesale"] == 0, "the cache fell back to a wholesale source rebuild"
         after = _canvas(window)
         assert not np.array_equal(after, before), "the new trees changed nothing on screen"
-        assert np.array_equal(after, _fresh(window, style))
+        assert np.array_equal(after, _fresh(window, fresh_style))
+        _assert_numpy_fresh(window, fresh_style, after, "stroke")
 
         window.undo()
-        assert calls["changed"][-1], "undo took the wholesale unit invalidation"
-        assert np.array_equal(_canvas(window), _fresh(window, style))
+        mid_list = style == "Flat" and size > 1
+        assert bool(calls["changed"][-1]) is not mid_list, f"undo took {calls['changed'][-1]}"
+        undo_wholesale = calls["wholesale"]
+        assert undo_wholesale == 0 or mid_list
+        assert np.array_equal(_canvas(window), _fresh(window, fresh_style))
         assert np.array_equal(_canvas(window), before)
+        if size > 1:
+            _assert_numpy_fresh(window, fresh_style, _canvas(window), "undo")
         window.redo()
         assert calls["changed"][-1], "redo took the wholesale unit invalidation"
-        assert calls["wholesale"] == 0
+        assert calls["wholesale"] == undo_wholesale
         assert np.array_equal(_canvas(window), after)
+        if size > 1:
+            _assert_numpy_fresh(window, fresh_style, _canvas(window), "redo")
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -921,7 +965,7 @@ def _fresh_cache(window, layers=None):
     """A new cache of the window's style over its current scenario, with its
     settings (`layers` in place of the window's, when given)."""
     from descape import render
-    from descape.render_cache import IsoChunkCache, SlopedChunkCache
+    from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 
     mm = window.scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
@@ -929,6 +973,8 @@ def _fresh_cache(window, layers=None):
         "unit_filter": window._unit_filter, "sprites": window._sprites_enabled,
         "layers": window._layers if layers is None else layers,
     }
+    if isinstance(window._cache, FlatChunkCache):
+        return FlatChunkCache(window.scenario, tile_px, **kwargs)
     if isinstance(window._cache, IsoChunkCache):
         elevations, proj = render.elevations_and_proj(window.scenario)
         return IsoChunkCache(window.scenario, elevations, proj, tile_px, **kwargs)
@@ -960,18 +1006,38 @@ def _render_levels(window) -> None:
         assert resident == (cx1 - cx0 + 1) * (cy1 - cy0 + 1), f"mip {mip}: {resident} chunks resident"
 
 
-def _check_against_fresh(window, step: str) -> None:
-    from descape import render
+def _check_against_fresh(window, step: str, numpy: bool = False) -> None:
+    """units_by_tile (Flat 2D: its unit rows) equals a fresh build's; every
+    oracle level's pixels equal a fresh cache's: on the active backend, or with
+    `numpy` a numpy one, so native is not only checked against native
+    (TASK-031.08/.09). The numpy reference replaces the native one, never
+    both: a numpy fresh build costs several times a native one."""
+    from descape import composite_backend, render
+    from descape.render_cache import FlatChunkCache
 
     cache = window._cache
-    fresh_units = render._units_by_tile(window.scenario, cache.unit_filter)
-    assert _ids_by_tile(cache.units_by_tile) == _ids_by_tile(fresh_units), f"{step}: units_by_tile is stale"
-    fresh = _fresh_cache(window)
+    if numpy and os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+        assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
+    live = {}
     for mip in _oracle_levels(window):
-        w, h = cache.canvas_dims(mip)
-        assert np.array_equal(cache.render_rect(0, 0, w, h, mip=mip), fresh.render_rect(0, 0, w, h, mip=mip)), (
-            f"{step}: mip {mip} differs from a fresh render"
-        )
+        live[mip] = cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+    with composite_backend.use_backend("numpy" if numpy else composite_backend.active_backend()):
+        fresh = _fresh_cache(window)
+        if isinstance(cache, FlatChunkCache):
+            for name, live_rows, fresh_rows in (
+                ("bboxes", cache.unit_draws[0], fresh.unit_draws[0]),
+                ("colors", cache.unit_draws[1], fresh.unit_draws[1]),
+                ("row_uid", cache._row_uid, fresh._row_uid),
+                ("row_player", cache._row_player, fresh._row_player),
+            ):
+                assert np.array_equal(live_rows, fresh_rows), f"{step}: Flat unit rows' {name} are stale"
+        else:
+            fresh_units = render._units_by_tile(window.scenario, cache.unit_filter)
+            assert _ids_by_tile(cache.units_by_tile) == _ids_by_tile(fresh_units), f"{step}: units_by_tile is stale"
+        for mip, pixels in live.items():
+            assert np.array_equal(pixels, fresh.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)), (
+                f"{step}: mip {mip} differs from a fresh {'numpy ' if numpy else ''}render"
+            )
 
 
 def _over_cap_window(style: str, monkeypatch):
@@ -1068,6 +1134,57 @@ def test_the_over_cap_check_names_the_one_stroke_whose_update_went_stale(
         monkeypatch.setattr(cache, "_update_units_by_tile_in_place", update)
         with pytest.raises(AssertionError, match=f"{broken}: "):
             _over_cap_strokes(window, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# Flat 2D has no area-ratio patch-or-evict choice, so only "patch" applies to it.
+WITHIN_CAP_CASES = [
+    (style, repaint) for style in ("Stepped", "Sloped", "FlatIso", "Flat") for repaint in ("patch", "evict")
+    if not (style == "Flat" and repaint == "evict")
+]
+
+
+@pytest.mark.parametrize("style, repaint", WITHIN_CAP_CASES, ids=[f"{s}-{r}" for s, r in WITHIN_CAP_CASES])
+def test_within_cap_strokes_their_undo_and_redo_match_a_fresh_render_on_every_resident_level(
+    style, repaint, tree_sprites, monkeypatch
+) -> None:
+    """Plan Verification 4 (zoom and pan): the within-cap splice, on every resident level.
+    - More than one level is resident, so a level the splice skipped would be checked.
+    - Strokes A and B, B's undo and its redo each splice (non-empty `changed`, no wholesale rebuild).
+    - Each step evicts at the visible level only when `repaint` is evict.
+    - After each, units_by_tile (Flat 2D: its unit rows) and every oracle level's pixels equal a fresh
+      cache's: a numpy one for stroke B, the undo and the redo (stroke A is setup, on the active backend)."""
+    _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
+    import descape.viewer as viewer_module
+
+    monkeypatch.setattr(viewer_module, "_SPLICE_COST_RATIO", 0)
+    window = _styled_window(style)
+    try:
+        window.show_sprites_action.setChecked(True)
+        assert window._cache.sprites_enabled
+        window._cache.max_bytes *= 8  # room for every oracle level at once
+        _cx0, _cy0, cx1, cy1 = window._cache.chunk_index_range(0, 0, 0, *window._cache.canvas_dims(0))
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (0, 0, 0, cx1, cy1))
+        assert len(_oracle_levels(window)) > 1
+        calls = _spy(window, monkeypatch)
+        evictions = _spy_evictions(window, monkeypatch)
+        steps = (
+            ("stroke A", lambda: _draw(window, FOREST_OAK)),
+            ("stroke B", lambda: _draw(window, FOREST_PALM, SHIFTED_TILES)),
+            ("undo B", window.undo),
+            ("redo B", window.redo),
+        )
+        for step, act in steps:
+            _render_levels(window)
+            act()
+            changed = calls["changed"][-1]
+            assert changed and len(changed) <= render_cache.UNIT_SPLICE_MAX_UNITS, f"{step}: took {changed}"
+            assert calls["wholesale"] == 0, f"{step}: wholesale source rebuild"
+            assert bool(evictions) is (repaint == "evict"), f"{step}: {evictions}"
+            del evictions[:]
+            _check_against_fresh(window, step, numpy=step != "stroke A")
     finally:
         window.edit_history.mark_saved()
         window.close()

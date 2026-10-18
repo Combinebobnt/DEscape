@@ -170,7 +170,6 @@ def test_load_vocabulary_rejects_an_unknown_version() -> None:
         library_compat.load_vocabulary("1.21")
 
 
-@pytest.mark.corpus
 def test_trigger_read_and_alignment_gate(scenario_path) -> None:
     """The alignment gate: a full walk of Triggers and every section after it
     must consume exactly len(trigger_tail).
@@ -529,6 +528,58 @@ def test_fix_structure_leaves_other_versions_alone(version: str) -> None:
     library_compat.fix_structure(structure, version)
     assert structure == _library_structure(version)
     assert _map_names(structure) == _map_names(_library_structure(version))
+
+
+# -- _EFFECT_DEFAULT_FIXES: effects 77/78's armour/attack pair (TASK-395) -----
+
+_CREATE_OBJECT_AA = ("create_object_attack", "create_object_armor")
+
+
+def _versions_with_create_object_aa() -> list[str]:
+    return [
+        v for v in library_compat.vocabulary_versions()
+        if {e.name for e in library_compat.load_vocabulary(v).effects.values()} >= set(_CREATE_OBJECT_AA)
+    ]
+
+
+def test_the_installed_library_still_ships_an_empty_armour_attack_pair_on_77_78() -> None:
+    """Fails once a pin bump fixes the library's own defaults: the fix is then
+    a no-op and can be removed."""
+    import json
+
+    raw = json.loads((library_compat.VERSIONS_DIR / "v1.59" / "effects.json").read_text(encoding="utf-8"))
+    for key in ("77", "78"):
+        defaults = raw[key]["default_attributes"]
+        assert (defaults["armour_attack_quantity"], defaults["armour_attack_class"]) == ([], [])
+
+
+def test_every_vocabulary_defaults_77_78_like_change_object_attack() -> None:
+    from descape import trigger_fields
+
+    versions = _versions_with_create_object_aa()
+    assert "1.59" in versions
+    for version in versions:
+        vocab = library_compat.load_vocabulary(version)
+        for entry in vocab.effects.values():
+            if entry.name not in _CREATE_OBJECT_AA:
+                continue
+            pair = (entry.default_attributes["armour_attack_quantity"], entry.default_attributes["armour_attack_class"])
+            assert pair == (1, 0), (version, entry.name)
+            kinds = {
+                spec.name: spec.kind
+                for spec in trigger_fields.field_specs(entry, vocab.effect_presentation, "effect_type")
+            }
+            assert trigger_fields.INT_LIST not in (kinds["armour_attack_quantity"], kinds["armour_attack_class"])
+
+
+def test_fix_effect_defaults_touches_only_77_78_and_only_the_shipped_value() -> None:
+    names = {28: "change_object_attack", 77: "create_object_attack", 78: "create_object_armor"}
+    shipped = {"armour_attack_quantity": [], "armour_attack_class": [], "quantity": -1}
+    defaults = {28: dict(shipped), 77: dict(shipped), 78: {**shipped, "armour_attack_quantity": 4}}
+    library_compat.fix_effect_defaults(names, defaults)
+    assert defaults[28] == shipped
+    assert defaults[77] == {"armour_attack_quantity": 1, "armour_attack_class": 0, "quantity": -1}
+    assert defaults[78] == {"armour_attack_quantity": 4, "armour_attack_class": 0, "quantity": -1}
 
 
 def _synthetic_v141(names: list[str]) -> dict:

@@ -396,3 +396,137 @@ def test_ctrl_c_copies_the_selected_rows_tab_separated() -> None:
         assert QApplication.clipboard().text() == "Placements\t3\nEconomy\t1"
     finally:
         conftest.close_window(window)
+
+
+# -- the owed in-app passes, offscreen (TASK-153) --------------------------------
+
+
+def _example(name: str) -> Path:
+    path = Path(__file__).resolve().parent.parent / "examples" / name
+    if not path.is_file():
+        pytest.skip(f"{name} not in examples/")
+    return path
+
+
+def _assert_rows(window, expected: dict[tuple[str, str], str]) -> None:
+    """Each (parent, label) row shows exactly `text` (count, then note if any)."""
+    shown = {key: _row(window, key[1], key[0]) for key in expected}
+    assert shown == expected
+
+
+@pytest.mark.corpus
+def test_old_allies_player_five_shows_the_measured_table() -> None:
+    """GH #145 owed step (1), the View table as displayed (numbers from the task body).
+
+    Pass conditions, P5 in View mode: Placements 1,910; Units 861 (Economy 47, Military 663,
+    Other 151, Water 2, Unique 466, Heroes 2); Buildings 1,039 (Economy 167, Military 109,
+    Walls & gates 753, Other 10); Animals 4; Eye candy 6; after a Triggers-mode visit,
+    Triggers 95 (of 590).
+    """
+    window = _window(_example("old-allies-final-v2.aoe2scenario"))
+    try:
+        window._select_player(5)
+        _assert_rows(window, {
+            ("", "Placements"): "1,910",
+            ("", "Units"): "861",
+            ("Units", "Economy"): "47",
+            ("Units", "Military"): "663",
+            ("Units", "Other"): "151 flags, revealers, markers",
+            ("Units", "Water"): "2 also counted above",
+            ("Units", "Unique"): "466 also counted above",
+            ("Units", "Heroes"): "2 also counted above",
+            ("", "Buildings"): "1,039",
+            ("Buildings", "Economy"): "167",
+            ("Buildings", "Military"): "109",
+            ("Buildings", "Walls & gates"): "753",
+            ("Buildings", "Other"): "10",
+            ("", "Animals"): "4",
+            ("", "Eye candy"): "6",
+        })
+        window.mode_combo.setCurrentText("Triggers")
+        window.mode_combo.setCurrentText("View")
+        assert window.stats_player_combo.currentData() == 5
+        assert re.match(r"95 +\(of 590;", _row(window, "Triggers")), _row(window, "Triggers")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.corpus
+def test_old_allies_gaia_shows_the_measured_table() -> None:
+    """GH #145 owed step (2). Pass conditions, GAIA in View mode: Placements 8,687; Food
+    23,665 / Wood 612,275 / Gold 117,600 / Stone 17,150; Resource piles 309 (Gold 147, Stone
+    49, Berry 57, Fish 56); Trees 6,153; Animals 30; Cliffs 907; Relics 1; Units 100;
+    Buildings 14; Eye candy 1,173."""
+    window = _window(_example("old-allies-final-v2.aoe2scenario"))
+    try:
+        window._select_player(0)
+        _assert_rows(window, {
+            ("", "Placements"): "8,687",
+            ("Resources on map", "Food"): "23,665",
+            ("Resources on map", "Wood"): "612,275",
+            ("Resources on map", "Gold"): "117,600",
+            ("Resources on map", "Stone"): "17,150",
+            ("", "Resource piles"): "309",
+            ("Resource piles", "Gold mines"): "147",
+            ("Resource piles", "Stone mines"): "49",
+            ("Resource piles", "Berry bushes"): "57",
+            ("Resource piles", "Fish"): "56",
+            ("", "Trees"): "6,153",
+            ("", "Animals"): "30",
+            ("", "Cliffs"): "907",
+            ("", "Relics"): "1",
+            ("", "Units"): "100",
+            ("", "Buildings"): "14",
+            ("", "Eye candy"): "1,173",
+        })
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.corpus
+def test_dos_pilas_gaia_shows_the_measured_table() -> None:
+    """GH #145 owed step (3). Pass conditions, GAIA in View mode: Placements 28,466; Food
+    251,725 / Wood 2,466,900 / Gold 49,600 / Stone 23,100; Resource piles 1,327; Trees
+    24,745; Cliffs 546; Relics 23."""
+    window = _window(_example("F7_2_Dos Pilas (648).aoe2scenario"))
+    try:
+        window._select_player(0)
+        _assert_rows(window, {
+            ("", "Placements"): "28,466",
+            ("Resources on map", "Food"): "251,725",
+            ("Resources on map", "Wood"): "2,466,900",
+            ("Resources on map", "Gold"): "49,600",
+            ("Resources on map", "Stone"): "23,100",
+            ("", "Resource piles"): "1,327",
+            ("", "Trees"): "24,745",
+            ("", "Cliffs"): "546",
+            ("", "Relics"): "23",
+        })
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_short_window_scrolls_the_table_down_to_embedded_xs() -> None:
+    """GH #145 owed step (4). Pass conditions, a 1200x500 window with GAIA's (longest) table:
+    the Embedded XS row starts below the visible area, and once the table's own scroll bar is
+    at its end that row's full height lies inside the viewport (vertical scrolling only: the
+    row's width at this pane size is step (6)'s question)."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.shown_window(1200, 500)
+    try:
+        window.load_scenario(UNITS_FIXTURE)
+        window._select_player(0)
+        QApplication.processEvents()
+        tree = window.info_tree
+        (xs,) = tree.findItems("Embedded XS", Qt.MatchStartsWith | Qt.MatchRecursive, 0)
+        height = tree.viewport().height()
+        assert tree.visualItemRect(xs).top() >= height, "nothing to scroll to"
+        bar = tree.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        QApplication.processEvents()
+        rect = tree.visualItemRect(xs)
+        assert rect.height() > 0 and rect.top() >= 0 and rect.bottom() < height, (rect, height)
+    finally:
+        conftest.close_window(window)

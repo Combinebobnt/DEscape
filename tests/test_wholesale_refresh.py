@@ -5,7 +5,8 @@ one, so the cache, its elevations array and the sprite memos survive.
 Oracles are test_terrain_units_viewer's A2 set: sprites on, every oracle
 level resident and re-rendered right before each step (GOTCHAS: an evicted
 chunk redraws fresh and hides a stale one), then units_by_tile and every
-level's pixels against fresh builds, failing as `<step>: ...`. Every window
+level's pixels against fresh builds, failing as `<step>: ...`; the positive
+tests also hold the live pixels to a fresh numpy build (TASK-031.09). Every window
 here ends with edit_history.mark_saved() before close()."""
 
 from __future__ import annotations
@@ -101,7 +102,8 @@ def test_an_over_threshold_elevation_undo_and_redo_refresh_the_cache_in_place(
 ) -> None:
     """The cache and its elevations array survive, the next walk re-resolves
     only the units whose elevation key moved (the memo was reused, not just
-    kept), and every oracle level and the pick match a fresh build."""
+    kept), and every oracle level and the pick match a fresh build.
+    Each step's live pixels also equal a fresh numpy build's."""
     window = _units_window(style, monkeypatch)
     try:
         cache = window._cache
@@ -127,7 +129,7 @@ def test_an_over_threshold_elevation_undo_and_redo_refresh_the_cache_in_place(
             # entry predates the raise), not all of them.
             assert walks, f"{step}: no level walked its units again"
             assert len(resolves) <= 2 * len(walks) < units, f"{step}: {len(resolves)} resolves, {len(walks)} walks"
-            _check_against_fresh(window, step)
+            _check_against_fresh(window, step, numpy=True)
             _check_picks(window, step, _pick_points(window))
     finally:
         window.edit_history.mark_saved()
@@ -173,7 +175,8 @@ def test_the_refresh_check_names_the_step_whose_elevations_went_stale(
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_a_large_fill_and_its_undo_and_redo_refresh_in_place(style, trees, tree_sprites, monkeypatch) -> None:  # noqa: F811
     """A Paint Can past the threshold, terrain only or Trees on (the A2b
-    tile + unit case, whose unit step stays wholesale), then its undo and redo."""
+    tile + unit case, whose unit step stays wholesale), then its undo and redo.
+    Each step's live pixels also equal a fresh numpy build's."""
     import descape.viewer as viewer_module
 
     monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
@@ -195,7 +198,7 @@ def test_a_large_fill_and_its_undo_and_redo_refresh_in_place(style, trees, tree_
             # This step's own line: the log keeps the earlier steps' refreshes.
             assert window.status_log.toPlainText().count(REFRESHED) == refreshes + 1, f"{step}: did not refresh"
             assert window._cache is cache, f"{step}: rebuilt the cache"
-            _check_against_fresh(window, step)
+            _check_against_fresh(window, step, numpy=True)
         assert bool(window.scenario.unit_manager.units[0]) is trees
     finally:
         window.edit_history.mark_saved()

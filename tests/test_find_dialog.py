@@ -1200,3 +1200,93 @@ def test_save_reload_keeps_every_untouched_triggers_bytes(tmp_path) -> None:
         assert blobs[0] != original_blobs[0]
     finally:
         _close(window)
+
+
+# -- GH #144 follow-up: the popup and the Objects tab's ops after a bulk tick ---
+
+
+def test_a_right_click_on_the_result_list_pops_the_tick_menu_there(monkeypatch) -> None:
+    """Pass conditions:
+    - a real context-menu event on the Objects list's viewport reaches
+      _show_check_menu through customContextMenuRequested, and pops exactly one
+      menu, at the click's global position (QMenu.exec_ patched);
+    - that menu holds Tick selected / Untick selected, both enabled with a
+      highlight, and choosing Untick selected unticks only the highlighted rows."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QContextMenuEvent
+    from PyQt5.QtWidgets import QApplication, QMenu
+
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        tab.run_find()
+        tree = tab.tree
+        assert tree.contextMenuPolicy() == Qt.CustomContextMenu
+        _click_row(tree, _object_item(tab, _REF_OAK))
+        _click_row(tree, _object_item(tab, _REF_WALL), Qt.ShiftModifier)
+        popped = []
+
+        def fake_exec(menu, *args):
+            popped.append(([a.text() for a in menu.actions()], [a.isEnabled() for a in menu.actions()], args))
+            _menu_action(menu, "Untick selected").trigger()
+
+        monkeypatch.setattr(QMenu, "exec_", fake_exec)
+        pos = tree.visualItemRect(_object_item(tab, _REF_PINE)).center()
+        global_pos = tree.viewport().mapToGlobal(pos)
+        QApplication.sendEvent(tree.viewport(), QContextMenuEvent(QContextMenuEvent.Mouse, pos, global_pos))
+
+        assert len(popped) == 1, popped
+        texts, enabled, args = popped[0]
+        assert texts == ["Tick selected", "Untick selected"]
+        assert enabled == [True, True]
+        assert args[0] == global_pos
+        assert _ticked_refs(tab) == _ALL_REFS - {_REF_OAK, _REF_PINE, _REF_WALL}
+    finally:
+        _close(window)
+
+
+def _bulk_tick_two_archers(tab) -> None:
+    """Check none, then Ctrl+click highlight two archers and tick both with one Space."""
+    from PyQt5.QtCore import Qt
+
+    tab.check_none.click()
+    tree = tab.tree
+    _click_row(tree, _object_item(tab, _REF_ARCHER_P1))
+    _click_row(tree, _object_item(tab, _REF_ARCHER_P2), Qt.ControlModifier)
+    _press_space(tree)
+    assert _ticked_refs(tab) == {_REF_ARCHER_P1, _REF_ARCHER_P2}
+
+
+def test_select_on_map_after_a_partial_bulk_tick_selects_only_the_ticked_rows() -> None:
+    """Pass condition: after a bulk tick of two of the eight object rows,
+    Select on Map leaves exactly those two units selected in Units mode."""
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        tab.run_find()
+        _bulk_tick_two_archers(tab)
+        tab.select_button.click()
+        assert window.mode == "units"
+        assert sorted(window._selection) == [(1, _REF_ARCHER_P1), (2, _REF_ARCHER_P2)]
+    finally:
+        _close(window)
+
+
+def test_delete_after_a_partial_bulk_tick_deletes_only_the_ticked_rows() -> None:
+    """Pass conditions: after a bulk tick of two of the eight object rows,
+    Delete confirms "Delete 2 objects", removes exactly those two units in
+    one undo step, and leaves the other six placed."""
+    window, boxes = _window()
+    try:
+        dialog = _dialog(window)
+        tab = dialog.objects_tab
+        tab.run_find()
+        _bulk_tick_two_archers(tab)
+        before = window.edit_history.cursor
+        tab.delete_button.click()
+        assert "Delete 2 objects" in boxes.confirmed[-1][1]
+        assert window.edit_history.cursor == before + 1
+        placed = {u.reference_id for u in window.scenario.unit_manager.get_all_units()}
+        assert placed == _ALL_REFS - {_REF_ARCHER_P1, _REF_ARCHER_P2}
+    finally:
+        _close(window)

@@ -51,12 +51,17 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
 
 ## When the corpus tier matters
 
-Run it for a change to rendering or to anything that writes a scenario. The
+Most per-file corpus tests also run on a generated test map
+(`tests/fixtures/test_map_240x240.aoe2scenario`). Those items are marked
+`test_map` and stay out of `run_all_tests`; `./run_corpus_quick.sh` runs the
+default tier plus them with no setup.
+
+Run the corpus tier for a change to rendering or to anything that writes a scenario. The
 scenario corpus (`examples/`) is not in the repo, so point the tier at your
 own scenarios:
 
 ```
-.venv/bin/python3 -m pytest --scenario-dir=/path/to/your/scenarios -m "corpus or slow"
+.venv/bin/python3 -m pytest --scenario-dir=/path/to/your/scenarios -m "corpus or slow or test_map"
 ```
 
 If you can't run it, say so in the PR. The maintainer runs it before merging.

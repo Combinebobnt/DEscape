@@ -56,7 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, native_composite, render, terrain_blend
+from descape import asset_source, native_composite, render, terrain_blend, unit_kind
 from descape import iso_geometry as ig
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.view_layers import LayerState
@@ -1136,9 +1136,23 @@ class _SlopedInject:
     def __enter__(self):
         from descape.render_cache import SlopedChunkCache
 
-        self.saved = [(SlopedChunkCache, "_level_rise"), (render, "composite_rect_sloped")]
+        self.saved = [
+            (SlopedChunkCache, "_level_rise"),
+            (render, "composite_rect_sloped"),
+            (render, "_resolve_unit_sprite"),
+            (render, "_paint_terrain_sloped"),
+        ]
         self.saved = [(obj, name, getattr(obj, name)) for obj, name in self.saved]
-        real_rise, real_composite = self.saved[0][2], self.saved[1][2]
+        real_rise, real_composite, real_resolve, real_terrain = (old for _o, _n, old in self.saved)
+        # (scenario id, tile_px) -> level 0's corner_rise, for the coarsest level only.
+        coarsest: dict[tuple, np.ndarray] = {}
+
+        def note_coarsest(cache, lvl):
+            lvl = real_rise(cache, lvl)
+            if lvl.tile_px * 4 == cache.tile_px:
+                coarsest[(id(cache.scenario), lvl.tile_px)] = cache.corner_rise
+            return lvl
+
         if self.name == "level0-rise":
             true_rise: dict[tuple, np.ndarray] = {}
 
@@ -1170,6 +1184,54 @@ class _SlopedInject:
                 return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
 
             render.composite_rect_sloped = composite
+        elif self.name == "drape-rise":
+            drape_rise: list[np.ndarray] = []  # the wrong rise while a coarsest-level composite runs
+
+            def terrain(img, tile, tile_px, proj, corner_rise, map_w, map_h, *args, **kwargs):
+                sprites = kwargs.get("sprites")
+                if not drape_rise or sprites is None or (tile.x, tile.y) not in sprites.farm_by_tile:
+                    return real_terrain(img, tile, tile_px, proj, corner_rise, map_w, map_h, *args, **kwargs)
+                # Bare ground where the field belongs, then the field against level 0's rise.
+                real_terrain(img, tile, tile_px, proj, corner_rise, map_w, map_h, *args, **{**kwargs, "sprites": None})
+                return real_terrain(img, tile, tile_px, proj, drape_rise[0], map_w, map_h, *args, **kwargs)
+
+            def composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs):
+                wrong = coarsest.get((id(scenario), proj.tile_px))
+                if wrong is None:
+                    return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
+                # Taller by the largest lift, so a field drawn up into this rect from below it is a candidate.
+                lift = max(0, int((wrong - corner_rise).max()))
+                drape_rise.append(wrong)
+                try:
+                    out = real_composite(
+                        scenario, x0, y0, x1, y1 + lift, corner_rise, proj, *args, **{**kwargs, "unit_pack": None}
+                    )
+                finally:
+                    drape_rise.clear()
+                return out[: y1 - y0]
+
+            SlopedChunkCache._level_rise = note_coarsest
+            render.composite_rect_sloped = composite
+            render._paint_terrain_sloped = terrain
+        elif self.name == "building-step":
+            stepped: dict[int, np.ndarray] = {}  # id(true rise) -> stepped rise; the level keeps the key alive
+
+            def resolve(scenario, proj, elevations, unit_filter, corner_rise, *args, **kwargs):
+                unit = args[4]
+                if (
+                    corner_rise is not None
+                    and (id(scenario), proj.tile_px) in coarsest
+                    and unit.unit_const in unit_kind.building_consts()
+                ):
+                    # Buildings on raised ground stand one elev_step high; terrain and fields keep their rise.
+                    if id(corner_rise) not in stepped:
+                        lift = proj.elev_step * _SLOPED_BUILDING_STEPS
+                        stepped[id(corner_rise)] = np.where(corner_rise > 0, corner_rise + lift, corner_rise)
+                    corner_rise = stepped[id(corner_rise)]
+                return real_resolve(scenario, proj, elevations, unit_filter, corner_rise, *args, **kwargs)
+
+            SlopedChunkCache._level_rise = note_coarsest
+            render._resolve_unit_sprite = resolve
         return self
 
     def __exit__(self, *exc):
@@ -1177,8 +1239,18 @@ class _SlopedInject:
             setattr(obj, name, old)
 
 
-SLOPED_INJECTS = {"level0-rise": None, "chunk-row-shift": "one-chunk"}
+SLOPED_INJECTS = {"level0-rise": None, "chunk-row-shift": "one-chunk", "drape-rise": None, "building-step": "one-step"}
 SLOPED_COARSE_INJECT = "level0-rise"
+# building-step's lift in elev_steps; its bound in --check stays one elev_step.
+_SLOPED_BUILDING_STEPS = 1
+# The frames each inject must change, and no others. level0-rise moves every coarsest-level
+# object, drape-rise the coarsest level's farm drapes, building-step its buildings on raised ground.
+_SLOPED_REACH = {
+    "level0-rise": ("forest_b", "farms_b", "buildings_b"),
+    "chunk-row-shift": _SLOPED_ROW_SHIFT_FRAMES,
+    "drape-rise": ("farms_b",),
+    "building-step": ("farms_b", "buildings_b"),
+}
 
 
 def _sloped_frame_images(inject: str | None, chunk_px: int = SLOPED_CHUNK_PX) -> dict[str, np.ndarray]:
@@ -1235,14 +1307,16 @@ def _sloped_mip_spec() -> rp.PackSpec:
                 "map cells at different heights, drawn as one continuous sloping surface. First, in your own "
                 "words, describe how the ground runs across each frame: its slopes, its texture, and any place "
                 "where it looks interrupted.\n\n"
-                "Then the closed question, which is about the GROUND only. Is there a straight horizontal or "
-                "vertical line, running across the ground, where the ground on one side does not continue on "
-                "the other: its texture, shading or slope jumps, is offset up or down, or is cut off, or a "
-                "strip of black shows through? NOT such a line: (1) the border between grassland and forest "
-                "floor, which follows the diagonal cell grid and wanders; (2) a change of shading where the "
-                "slope bends, which also runs along the diagonal grid; (3) trees and anything else standing on "
-                "the ground, however they are placed; (4) the frame's own edges.\n\n"
-                "Answer BREAK if at least one such straight line is visible, CONTINUOUS if the ground carries "
+                "Then the closed question, which is about the GROUND only. Is there a straight edge in the "
+                "ground, exactly vertical or exactly horizontal, where the ground on one side does not continue "
+                "on the other: its texture, shading or slope jumps, is offset up or down, or is cut off, or a "
+                "strip of black shows through? Any such edge counts, however short: one no longer than a single "
+                "map cell counts as much as one crossing the whole frame. NOT such an edge: (1) the border between grassland "
+                "and forest floor, which follows the diagonal cell grid and wanders; (2) a change of shading "
+                "where the slope bends, which runs along the diagonal grid and never forms an exactly vertical "
+                "or horizontal edge; (3) trees and anything else standing on the ground, however they are "
+                "placed; (4) the frame's own edges.\n\n"
+                "Answer BREAK if at least one such straight edge is visible, CONTINUOUS if the ground carries "
                 "on across every frame."
             ),
             frames=("hill_a", "hill_b", "forest_a", "forest_b"),
@@ -1321,12 +1395,47 @@ def _sloped_prerequisites() -> str | None:
     return None
 
 
+def _sloped_masks(frame_id: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(object ink, farm field, ink band) for one clean frame at 1:1: every
+    pixel a sprite draws with nonzero alpha, every pixel whose topmost
+    terrain tile is a farm drape's, and the ink plus the elev_step above it
+    (ink just below the frame included, which a lift carries into it)."""
+    map_key, mip, centre, units = _SLOPED_FRAMES[frame_id]
+    with _PinnedSettings():
+        cache = _sloped_cache(map_key, units)
+        x0, y0, x1, y1 = box = _sloped_box(cache, mip, centre)
+        lvl = cache._level(mip)
+        step = lvl.proj.elev_step
+        ink = np.zeros((y1 - y0 + step, x1 - x0), dtype=bool)
+        field = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+        if not lvl.sprites:
+            return ink[:-step], field, ink[:-step]
+        for draws in lvl.sprites.by_anchor.values():
+            for draw, ax, ay, _rise in draws:
+                alpha = draw.rgba[..., 3] > 0
+                top, left = ay - draw.hotspot_y - y0, ax - draw.hotspot_x - x0
+                sy0, sx0 = max(0, -top), max(0, -left)
+                sy1, sx1 = min(alpha.shape[0], ink.shape[0] - top), min(alpha.shape[1], ink.shape[1] - left)
+                if sy1 > sy0 and sx1 > sx0:
+                    ink[top + sy0 : top + sy1, left + sx0 : left + sx1] |= alpha[sy0:sy1, sx0:sx1]
+        if lvl.sprites.farm_by_tile:
+            map_w = cache.scenario.map_manager.map_width
+            ids = render.composite_ids_rect_sloped(
+                cache.scenario, *box, cache._level_corner_rise(lvl), lvl.proj, lvl.tile_px
+            )
+            field = np.isin(ids, [ty * map_w + tx for tx, ty in lvl.sprites.farm_by_tile])
+    band = ink[:-step] | ink[step:]
+    return ink[:-step], field, band
+
+
 def _check_sloped_mip() -> None:
     """--check for sloped_mip: spec coupling, frame band, the clean frames
-    byte-identical at the app's chunk size, each inject's reach (printed), the
-    specificity frame untouched by both, level0-rise reaching only the
-    coarsest level's object frames, and chunk-row-shift one chunk-bounded
-    piece in each of its frames, under level0-rise's largest delta."""
+    byte-identical at the app's chunk size, each inject's reach (printed) and
+    exactly its own frames, none reaching the specificity frame,
+    chunk-row-shift one chunk-bounded piece per hillside frame, drape-rise
+    moving fields but no object pixel, and building-step inside one
+    elev_step of object ink. Both localized injects stay under level0-rise's
+    largest delta on every frame they share."""
     from descape.render_cache import DEFAULT_CHUNK_PX
 
     reason = _sloped_prerequisites()
@@ -1362,31 +1471,50 @@ def _check_sloped_mip() -> None:
                 failures.append(f"frame {frame_id}: level {mip} built no farm drape")
 
     one_chunk = rp.LocalizedBound(max_changed_fraction=0.5, max_component_px=SLOPED_CHUNK_PX**2)
+    masks = {fid: _sloped_masks(fid) for fid in sorted({*_SLOPED_REACH["drape-rise"], *_SLOPED_REACH["building-step"]})}
     reach: dict[str, dict[str, tuple[int, int]]] = {}
     for name, bound in SLOPED_INJECTS.items():
         injected = _sloped_frame_images(name)
-        touched = {}
+        touched, shown = {}, []
         for frame_id in _SLOPED_FRAMES:
             mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
             changed = int(np.count_nonzero(mask))
+            where, note = f"inject {name} on {frame_id}", ""
+            if bound == "one-chunk" and frame_id in _SLOPED_ROW_SHIFT_FRAMES:
+                failures += one_chunk.failures(mask, where)
+            if name == "drape-rise" and frame_id in _SLOPED_REACH[name]:
+                # Fields leave their ground; no object pixel moves with them.
+                ink, field, _band = masks[frame_id]
+                field = field & ~ink
+                moved, on_ink = int(np.count_nonzero(mask & field)), int(np.count_nonzero(mask & ink))
+                note = f", fields {moved}/{int(field.sum())}px, object ink {on_ink}/{int(ink.sum())}px"
+                if moved < 0.25 * np.count_nonzero(field):
+                    failures.append(f"{where}: moved {moved} of {int(field.sum())} field px, under a quarter")
+                if on_ink > 0.01 * np.count_nonzero(ink):
+                    failures.append(f"{where}: changed {on_ink} object px, over 1% of {int(ink.sum())}")
+            elif name == "building-step" and frame_id in _SLOPED_REACH[name]:
+                # A building one elev_step high changes only its own ink and the step above it.
+                band = masks[frame_id][2]
+                outside = int(np.count_nonzero(mask & ~band))
+                note = f", outside one elev_step of ink {outside}px"
+                if outside:
+                    failures.append(f"{where}: {outside} px changed outside one elev_step of object ink")
             if changed:
                 touched[frame_id] = (changed, rp.largest_component_px(mask))
-            if bound and frame_id in _SLOPED_ROW_SHIFT_FRAMES:
-                failures += one_chunk.failures(mask, f"inject {name} on {frame_id}")
+                delta = np.abs(clean[frame_id].astype(np.int16) - injected[frame_id]).sum(axis=-1).max()
+                shown.append(
+                    f"{frame_id} {changed}px bbox {rp.delta_bbox(mask)} largest {touched[frame_id][1]}px "
+                    f"max delta {delta}{note}"
+                )
         if _SLOPED_SPECIFICITY in touched:
             failures.append(f"inject {name}: reached the specificity frame {_SLOPED_SPECIFICITY}")
-        if name == SLOPED_COARSE_INJECT:
-            want = {fid for fid, (_m, mip, _c, units) in _SLOPED_FRAMES.items() if mip == -2 and units}
-            want.discard(_SLOPED_SPECIFICITY)
-        else:
-            want = set(_SLOPED_ROW_SHIFT_FRAMES)
+        want = set(_SLOPED_REACH[name])
         if missed := sorted(want - set(touched)):
             failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
         if stray := sorted(set(touched) - want):
             failures.append(f"inject {name}: reached {', '.join(stray)}, outside its frames")
         reach[name] = touched
-        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
-        print(f"reach: {name} -> {shown or 'nothing'}")
+        print(f"reach: {name} -> {'; '.join(shown) or 'nothing'}")
 
     coarse = reach[SLOPED_COARSE_INJECT]
     for name, bound in SLOPED_INJECTS.items():
@@ -1405,8 +1533,9 @@ def _check_sloped_mip() -> None:
         raise SystemExit(f"{len(failures)} check(s) failed")
     print(
         f"OK: sloped_mip frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and match "
-        f"chunk_px {DEFAULT_CHUNK_PX}; {SLOPED_COARSE_INJECT} bites every coarsest-level object frame, "
-        f"chunk-row-shift one bounded chunk per hillside frame, and neither reaches {_SLOPED_SPECIFICITY}"
+        f"chunk_px {DEFAULT_CHUNK_PX}; all {len(SLOPED_INJECTS)} injects bite exactly their own frames, "
+        f"the two localized ones inside their bounds and under {SLOPED_COARSE_INJECT}, drape-rise moves "
+        f"fields and no object, and none reaches {_SLOPED_SPECIFICITY}"
     )
 
 

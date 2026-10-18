@@ -99,6 +99,7 @@ del _entry
 # entry's migrated_test_nodeid points there instead. --
 
 
+# Stays corpus: its migrated twin, test_scenario_io.py's load test, already runs on the test map.
 @pytest.mark.corpus
 def test_roundtrip__main_load_assertion(scenario_path) -> None:
     """Phase 1 stand-in for verify_roundtrip.py's main(): every file must

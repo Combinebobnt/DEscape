@@ -132,7 +132,9 @@ def test_a_trees_on_draw_stroke_end_splits_unit_plan_into_its_sub_phases(traced_
 
 def test_a_real_set_elevation_stroke_traces_its_press_steps_and_release(traced_window):
     """set-elevation-untimed-stalls plan Step 2: the snapshot, the mutation and
-    the commit are phases on the drag line, and the spans give it a wall."""
+    the commit are phases on the drag line, and the spans give it a wall.
+    The repaint-set phase is stroke_dirty (O(tiles written)), never the old
+    O(map) stroke_scan (TASK-031.07)."""
     import re
 
     from PyQt5.QtCore import QEvent, Qt
@@ -155,8 +157,9 @@ def test_a_real_set_elevation_stroke_traces_its_press_steps_and_release(traced_w
     drag = text[text.index("perf drag set-elevation:") :]
     # Set elevation takes a brush, so MapView names it (TASK-031.38).
     assert re.search(r", wall \d+ms, untimed \d+ms, brush 1 square, composite", drag), drag
-    for name in ("stroke_snapshot", "stroke_mutate", "stroke_commit", "edit_actions", "gc_resume"):
+    for name in ("stroke_snapshot", "stroke_mutate", "stroke_dirty", "stroke_commit", "edit_actions", "gc_resume"):
         assert f"{name} " in drag, f"{name} missing from the drag line:\n{drag}"
+    assert "stroke_scan" not in drag, drag
     assert "span" not in drag and perf_trace._span_stack == []
 
 
