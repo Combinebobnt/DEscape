@@ -20,7 +20,8 @@ Pull requests are welcome. A small fix (a typo, an obvious bug together with
 its test) can go straight to a PR. Anything larger starts as an issue, so the
 approach is agreed before you write the code. Keep one change per PR.
 
-CI runs the default test tier on Linux for every PR, and the native kernel
+CI runs the default test tier and then the `test_map` items (below) on Linux
+for every PR, and the native kernel
 check on Linux, macOS and Windows when a PR touches the renderer or the
 kernel. A first-time contributor's run waits for the maintainer to approve
 it. The corpus tier is not in CI, so still say in the PR whether you ran it.
@@ -53,8 +54,8 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
 
 Most per-file corpus tests also run on a generated test map
 (`tests/fixtures/test_map_240x240.aoe2scenario`). Those items are marked
-`test_map` and stay out of `run_all_tests`; `./run_corpus_quick.sh` runs the
-default tier plus them with no setup.
+`test_map` and stay out of `run_all_tests`, but CI runs them;
+`./run_corpus_quick.sh` runs the default tier plus them with no setup.
 
 Run the corpus tier for a change to rendering or to anything that writes a scenario. The
 scenario corpus (`examples/`) is not in the repo, so point the tier at your

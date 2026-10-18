@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One command for a CI-equivalent local run. Run it before every tag:
 #
-#     bash tools/ci_parity.sh v0.8     # tag check, then the default tier
-#     bash tools/ci_parity.sh          # the default tier only
+#     bash tools/ci_parity.sh v0.8     # tag check, then the default tier and test map items
+#     bash tools/ci_parity.sh          # the default tier and test map items only
 #
 # Hides what CI's runner does not have: the Workshop corpus (under $HOME), the
 # AoE2:DE install (AOE2DE_INSTALL_PATH, or config.yaml under XDG_CONFIG_HOME)

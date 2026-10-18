@@ -12,7 +12,7 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 run_all_tests.bat                                   # same, for Windows
 ./run_all_tests.sh -n 0                             # same tier, serially -- ~29 min
 .venv/bin/python3 -m pytest                         # same tier, invoked directly: serial, see below
-bash tools/ci_parity.sh [tag]                       # same tier as CI sees it (corpus, install, examples/ hidden); run before every tag
+bash tools/ci_parity.sh [tag]                       # same tier plus the test map items, as CI sees them (corpus, install, examples/ hidden); run before every tag
 
 ./run_corpus_quick.sh                                # default tier plus the test map and slow items, in parallel; no examples/ needed
 .venv/bin/python3 -m pytest -m "not corpus"          # same thing, invoked directly: serial
@@ -301,8 +301,9 @@ regenerate it on stock zlib.
   build (about 2.6 s), checks it holds every catalog and vocabulary entry,
   and holds each of the generator's `REGIONS` and `SECTIONS` to its one-line
   "why". Those checks are `test_map`, so the default tier does not notice a
-  stale map (CI and `tools/ci_parity.sh` run them as a second step): after a serialization or `tools/gen_test_map.py`
-  change, run `./run_corpus_quick.sh` (or `-m test_map` alone). The run also writes
+  stale map (CI and `tools/ci_parity.sh` run them as a second step): after
+  a serialization or `tools/gen_test_map.py` change, run
+  `./run_corpus_quick.sh` (or `-m test_map` alone). The run also writes
   `build/test_map_bisect/` (each risky region or section alone, for an
   in-game check); `--no-bisect` skips that.
   **`REGIONS` is the contract for finding a feature**: a test that needs
