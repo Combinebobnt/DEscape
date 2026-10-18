@@ -300,8 +300,8 @@ regenerate it on stock zlib.
   64,437 bytes. `tests/test_test_map_fixture.py` pins it against a fresh
   build (about 2.6 s), checks it holds every catalog and vocabulary entry,
   and holds each of the generator's `REGIONS` and `SECTIONS` to its one-line
-  "why". Those checks are `test_map`, so neither the default tier nor CI
-  notices a stale map: after a serialization or `tools/gen_test_map.py`
+  "why". Those checks are `test_map`, so the default tier does not notice a
+  stale map (CI and `tools/ci_parity.sh` run them as a second step): after a serialization or `tools/gen_test_map.py`
   change, run `./run_corpus_quick.sh` (or `-m test_map` alone). The run also writes
   `build/test_map_bisect/` (each risky region or section alone, for an
   in-game check); `--no-bisect` skips that.

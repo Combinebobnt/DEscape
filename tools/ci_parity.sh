@@ -43,9 +43,20 @@ HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" DESCAPE_REQUIRE_NATIVE=1 
     env -u AOE2DE_INSTALL_PATH -u DESCAPE_COMPOSITE -u QT_QPA_PLATFORM \
     .venv/bin/python3 -m pytest -n auto --maxprocesses 16 --dist loadgroup "--scenario-dir=$sandbox/scenarios"
 status=$?
+if [ "$status" -ne 0 ]; then
+    echo "ci_parity: default tier failed (exit $status)" >&2
+    exit "$status"
+fi
+
+# Same as default-tier's second step: the test map items pytest.ini leaves out.
+HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" DESCAPE_REQUIRE_NATIVE=1 \
+    env -u AOE2DE_INSTALL_PATH -u DESCAPE_COMPOSITE -u QT_QPA_PLATFORM \
+    .venv/bin/python3 -m pytest -n auto --maxprocesses 16 --dist loadgroup "--scenario-dir=$sandbox/scenarios" \
+    -m "test_map and not corpus"
+status=$?
 if [ "$status" -eq 0 ]; then
     echo "ci_parity: clean"
 else
-    echo "ci_parity: default tier failed (exit $status)" >&2
+    echo "ci_parity: test map items failed (exit $status)" >&2
 fi
 exit "$status"
