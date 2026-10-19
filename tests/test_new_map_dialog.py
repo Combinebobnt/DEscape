@@ -121,6 +121,10 @@ def test_elevation_spin_spans_the_elevation_tool_range(dialog_for) -> None:
     assert (spin.minimum(), spin.maximum()) == (iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION)
 
 
+def test_elevation_tooltip_says_the_game_editor_shows_it_one_higher(dialog_for) -> None:
+    assert "one higher" in dialog_for().elevation_spin.toolTip()
+
+
 def test_an_initial_custom_size_selects_custom(dialog_for) -> None:
     from descape.new_map_dialog import NewMapChoice
 

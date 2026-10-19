@@ -135,7 +135,11 @@ class NewMapDialog(QDialog):
 
         self.elevation_spin = QSpinBox()
         self.elevation_spin.setRange(iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION)
-        self.elevation_spin.setToolTip("The height every tile starts at, as with the Elevation tool")
+        # Measured in the 1.59 editor: a stored 3 shows as height 4 there.
+        self.elevation_spin.setToolTip(
+            "The height every tile starts at, as stored in the file.\n"
+            "The game's Scenario Editor shows it one higher (0 shows as 1)."
+        )
         form.addRow("Elevation:", self.elevation_spin)
         layout.addLayout(form)
 
